@@ -137,11 +137,11 @@ mod tests {
     use super::*;
 
     fn spec(command: &str, args: &[&str]) -> LspSpec {
-        LspSpec {
-            command: command.to_owned(),
-            args: args.iter().map(|&arg| arg.to_owned()).collect(),
-            languages: vec!["java".to_owned()],
-        }
+        LspSpec::new(
+            command,
+            args.iter().map(|&arg| arg.to_owned()).collect(),
+            vec!["java".to_owned()],
+        )
     }
 
     #[test]

@@ -112,16 +112,16 @@ impl LspManager {
             .filter(|setting| setting.enabled && !setting.command.is_empty())
             .map(|setting| {
                 (
-                    LspSpec {
-                        command: setting.command.clone(),
-                        args: setting.args.clone(),
-                        languages: vec![language.to_owned()],
-                    },
+                    LspSpec::new(
+                        setting.command.clone(),
+                        setting.args.clone(),
+                        vec![language.to_owned()],
+                    ),
                     LanguageServerSource::Configured,
                 )
             })
             .or_else(|| {
-                let fallback = builtin_spec(server, language);
+                let fallback = builtin_spec(server, language)?;
                 self.resolve_builtin(server, language, root, fallback)
             });
         let slot = self

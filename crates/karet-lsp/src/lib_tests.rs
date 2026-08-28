@@ -593,15 +593,44 @@ async fn shutdown_performs_the_handshake() -> TestResult {
     Ok(())
 }
 
+/// A missing binary is reported as such, with the argv, so the message can say
+/// what has to end up on PATH rather than "failed to spawn language server".
 #[tokio::test]
-async fn spawn_missing_binary_is_a_spawn_error() {
+async fn spawn_missing_binary_names_the_command_and_why_it_failed() -> TestResult {
     let spec = LspSpec {
         command: "karet-lsp-test-no-such-binary".into(),
-        args: vec![],
+        args: vec!["lsp".into(), "stdio".into()],
         languages: vec!["rust".into()],
+        initialization_options: None,
     };
-    let err = LspClient::spawn(spec, Path::new("/tmp")).await;
-    assert!(matches!(err, Err(LspError::Spawn)));
+    let Err(LspError::Launch(failure)) = LspClient::spawn(spec, Path::new("/tmp")).await else {
+        return Err("a missing binary should be a launch failure".into());
+    };
+    assert_eq!(failure.cause, LaunchCause::NotFound);
+    assert_eq!(
+        failure.command_line(),
+        "karet-lsp-test-no-such-binary lsp stdio"
+    );
+    assert!(failure.cause.is_permanent(), "retrying cannot find it");
+    Ok(())
+}
+
+/// A server that prints usage and exits -- bare `taplo` is exactly this -- used
+/// to surface as a bare `Closed`, indistinguishable from a clean shutdown.
+#[tokio::test]
+async fn a_server_that_exits_during_the_handshake_reports_its_last_words() -> TestResult {
+    let mut command = tokio::process::Command::new("sh");
+    command.args(["-c", "echo 'error: unrecognized subcommand' >&2; exit 2"]);
+    let Err(LspError::Launch(failure)) =
+        LspClient::spawn_command(command, "taplo", Path::new("/tmp")).await
+    else {
+        return Err("a server that exits should be a launch failure".into());
+    };
+    assert_eq!(failure.cause, LaunchCause::Exited);
+    assert_eq!(failure.exit, Some(ExitReport::Code(2)));
+    assert_eq!(failure.diagnosis(), "error: unrecognized subcommand");
+    assert!(failure.to_string().contains("taplo"), "{failure}");
+    Ok(())
 }
 
 #[test]
@@ -695,5 +724,121 @@ async fn raw_notifications_fan_out_every_server_notification() -> TestResult {
     assert_eq!(first.params["message"], json!("Ready"));
     let second = tokio::time::timeout(Duration::from_secs(5), raw.recv()).await??;
     assert_eq!(second.method, "textDocument/publishDiagnostics");
+    Ok(())
+}
+
+/// The dying server's own words used to be a race: the stderr drain ran in a
+/// detached task, so the failure could be described before the pipe had been
+/// read, leaving a bare `exit 2` with no diagnosis about one launch in five.
+///
+/// Made deterministic by a child that exits at once while a background job
+/// still holds the stderr write end for a moment: nothing has been read when
+/// the child is reaped, so only a report that joins the drain can carry the
+/// server's last words. The job's stdout goes to `/dev/null` so the handshake
+/// still fails the instant the server itself exits.
+#[tokio::test]
+async fn a_dying_servers_last_words_are_never_raced_away() -> TestResult {
+    let mut command = tokio::process::Command::new("sh");
+    command.args([
+        "-c",
+        "{ sleep 0.05; echo 'error: unrecognized subcommand' >&2; } >/dev/null & exit 2",
+    ]);
+    let Err(LspError::Launch(failure)) =
+        LspClient::spawn_command(command, "taplo", Path::new("/tmp")).await
+    else {
+        return Err("a server that exits should be a launch failure".into());
+    };
+    assert_eq!(failure.cause, LaunchCause::Exited);
+    assert_eq!(failure.exit, Some(ExitReport::Code(2)));
+    assert_eq!(
+        failure.diagnosis(),
+        "error: unrecognized subcommand",
+        "the diagnosis was raced away: {failure}"
+    );
+    Ok(())
+}
+
+// A 30-iteration repeat of the same launch (`echo ... >&2; exit 2`) used to sit
+// here, on the theory that repetition would catch the race a single attempt
+// misses. It was removed rather than kept: it is not a falsifier. Deleting the
+// `STDERR_DRAIN_GRACE` join that the fix added leaves it green through all
+// thirty attempts, because that shape of child has always written and closed
+// its stderr before the reaper looks -- while its deterministic sibling above,
+// which holds the write end open past the exit, fails immediately. A loop that
+// stays green against the unfixed code buys nothing but runtime, and a
+// probabilistic test has no place in the merge gate.
+
+/// How a launch failure is classified when a child running `script` ends its
+/// handshake with `error` — the seam [`LspClient::spawn_command_with`] reaches
+/// once the handshake has failed.
+async fn classify(script: &str, error: LspError) -> Result<LspError, std::io::Error> {
+    let mut child = tokio::process::Command::new("sh")
+        .args(["-c", script])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()?;
+    let tail = launch::StderrTail::default();
+    let drain = child
+        .stderr
+        .take()
+        .map(|stderr| drain_stderr(stderr, "gopls".to_owned(), tail.clone()));
+    Ok(
+        LspClient::launch_failure(child, tail, drain, error, |cause, exit, stderr| {
+            LspError::Launch(Box::new(
+                LaunchFailure::new("gopls", vec!["serve".to_owned()], cause)
+                    .with_exit(exit)
+                    .with_stderr(stderr),
+            ))
+        })
+        .await,
+    )
+}
+
+/// `Exited` is permanent, so it has to mean the process is gone. A server that
+/// is still running and merely slow to answer `initialize` used to be labelled
+/// `Exited` purely because it had logged something, which disabled it for the
+/// rest of the session.
+#[tokio::test]
+async fn a_live_server_that_times_out_is_not_written_off() -> TestResult {
+    let error = classify("echo 'loading packages' >&2; sleep 30", LspError::Timeout).await?;
+    let LspError::Launch(failure) = error else {
+        return Err("a timed-out handshake should be a launch failure".into());
+    };
+    assert_eq!(failure.cause, LaunchCause::Timeout);
+    assert_eq!(failure.exit, None, "the child is still running");
+    assert!(
+        !failure.cause.is_permanent(),
+        "a slow server may still answer: {failure}"
+    );
+    assert_eq!(failure.diagnosis(), "loading packages");
+    Ok(())
+}
+
+/// A server that closed its stdio but is still running is a protocol failure,
+/// not a launch one -- and above all not `Exited`, whatever it wrote first.
+#[tokio::test]
+async fn a_live_server_that_closes_its_stdio_is_not_reported_as_exited() -> TestResult {
+    let error = classify("echo 'goodbye' >&2; sleep 30", LspError::Closed).await?;
+    assert!(
+        matches!(error, LspError::Closed),
+        "a running child must not be reported as exited: {error}"
+    );
+    Ok(())
+}
+
+/// A child that really did exit still reports its status, with the cause that
+/// stops the runtime from respawning it forever.
+#[tokio::test]
+async fn a_server_that_really_exited_still_reports_exited() -> TestResult {
+    let error = classify("echo 'boom' >&2; exit 3", LspError::Closed).await?;
+    let LspError::Launch(failure) = error else {
+        return Err("a dead child should be a launch failure".into());
+    };
+    assert_eq!(failure.cause, LaunchCause::Exited);
+    assert_eq!(failure.exit, Some(ExitReport::Code(3)));
+    assert!(failure.cause.is_permanent());
+    assert_eq!(failure.diagnosis(), "boom");
     Ok(())
 }

@@ -8,146 +8,141 @@ pub(crate) struct ProviderDescriptor {
     pub(crate) manual_install_reason: Option<String>,
 }
 
-const BUILTIN_PROVIDERS: &[(&str, &str)] = &[
-    ("rust", "rust-analyzer"),
-    ("typescript", "typescript-language-server"),
-    ("javascript", "typescript-language-server"),
-    ("jsx", "typescript-language-server"),
-    ("tsx", "typescript-language-server"),
-    ("python", "pyright"),
-    ("tex", "texlab"),
-    ("c", "clangd"),
-    ("c++", "clangd"),
-    ("c#", "csharp"),
-    ("go", "gopls"),
-    ("java", "jdtls"),
-    ("zig", "zls"),
-    ("astro", "astro-language-server"),
-    ("svelte", "svelte-language-server"),
-    ("vue", "vue-language-server"),
-    ("yaml", "yaml-language-server"),
-    ("xml", "lemminx"),
-    ("svg", "lemminx"),
-    ("ruby", "ruby-lsp"),
-    ("php", "phpactor"),
-    ("swift", "sourcekit-lsp"),
-    ("scala", "metals"),
-    ("lua", "lua-language-server"),
-    ("haskell", "haskell-language-server"),
-    ("ocaml", "ocamllsp"),
-    ("erlang", "elp"),
-    ("dart", "dart-language-server"),
-    ("r", "r-languageserver"),
-    ("clojure", "clojure-lsp"),
-    ("html", "vscode-html-language-server"),
-    ("css", "vscode-css-language-server"),
-    ("sass", "vscode-css-language-server"),
-    ("less", "vscode-css-language-server"),
-    ("json", "vscode-json-language-server"),
-    ("toml", "taplo"),
-    ("pkl", "pkl-lsp"),
-    ("protobuf", "buf"),
-    ("graphql", "graphql-lsp"),
-    ("shell", "bash-language-server"),
-    ("bash", "bash-language-server"),
-    ("powershell", "powershell-editor-services"),
-    ("markdown", "marksman"),
-    ("restructuredtext", "esbonio"),
-    ("dockerfile", "docker-langserver"),
-    ("cmake", "neocmakelsp"),
-];
-
 pub(crate) fn managed_provider(server: &LanguageServerId) -> bool {
     crate::lsp_registry::managed_provider(server)
 }
 
 pub(crate) fn builtin_catalog() -> Vec<ProviderDescriptor> {
-    let mut providers = std::collections::BTreeMap::<String, Vec<String>>::new();
-    for (language, server) in BUILTIN_PROVIDERS {
-        providers
-            .entry((*server).to_owned())
-            .or_default()
-            .push((*language).to_owned());
-    }
-    // Ruff is a built-in Python diagnostics/formatting companion rather than
-    // Python's primary intelligence provider, so it is not in the direct map.
-    providers
-        .entry("ruff".to_owned())
-        .or_default()
-        .push("python".to_owned());
-    providers
-        .entry("biome".to_owned())
-        .or_default()
-        .extend(["javascript".to_owned(), "typescript".to_owned()]);
-    providers
-        .into_iter()
-        .map(|(server, languages)| {
-            let server = LanguageServerId::new(server);
+    let mut providers = catalog::builtin_providers()
+        .iter()
+        .map(|provider| {
+            let server = LanguageServerId::new(provider.key);
             ProviderDescriptor {
                 managed: managed_provider(&server),
                 manual_install_reason: crate::lsp_registry::manual_install_reason(&server),
                 server,
-                languages,
+                languages: provider
+                    .languages
+                    .iter()
+                    .map(|it| (*it).to_owned())
+                    .collect(),
             }
         })
-        .collect()
+        .collect::<Vec<_>>();
+    providers.sort_by(|left, right| left.server.key().cmp(right.server.key()));
+    providers
 }
 
-/// The built-in default servers, used when `lsp.servers` has no entry for a
-/// language. Keys are lowercase language names (the same keys user config uses).
+/// The built-in default server for a language, used when `lsp.servers` has no
+/// entry for it. Keys are lowercase language names (the same keys user config
+/// uses).
+///
+/// Only a [`Role::Primary`] provider answers here: `ruff`, `biome` and `pylsp`
+/// also name a language, but they are companions attached per document by
+/// repository markers, never a language's default.
 pub(crate) fn builtin_server(language: &str) -> Option<LanguageServerId> {
-    BUILTIN_PROVIDERS.iter().find_map(|(candidate, server)| {
-        (*candidate == language).then(|| LanguageServerId::new(*server))
-    })
+    catalog::builtin_providers()
+        .iter()
+        .find(|provider| {
+            provider.role == catalog::Role::Primary && provider.languages.contains(&language)
+        })
+        .map(|provider| LanguageServerId::new(provider.key))
 }
 
-pub(super) fn builtin_spec(provider: &LanguageServerId, language: &str) -> LspSpec {
-    let (command, args): (&str, &[&str]) = match provider.key() {
-        "typescript-language-server" => ("typescript-language-server", &["--stdio"]),
-        "pyright" => ("pyright-langserver", &["--stdio"]),
-        "ruff" => ("ruff", &["server"]),
-        "csharp" => ("Microsoft.CodeAnalysis.LanguageServer", &["--stdio"]),
-        "astro-language-server" => ("astro-ls", &["--stdio"]),
-        "svelte-language-server" => ("svelteserver", &["--stdio"]),
-        "vue-language-server" => ("vue-language-server", &["--stdio"]),
-        "yaml-language-server" => ("yaml-language-server", &["--stdio"]),
-        "vscode-html-language-server" => ("vscode-html-language-server", &["--stdio"]),
-        "vscode-css-language-server" => ("vscode-css-language-server", &["--stdio"]),
-        "vscode-json-language-server" => ("vscode-json-language-server", &["--stdio"]),
-        "bash-language-server" => ("bash-language-server", &["start"]),
-        "docker-langserver" => ("docker-langserver", &["--stdio"]),
-        "biome" => ("biome", &["lsp-proxy"]),
-        "buf" => ("buf", &["beta", "lsp"]),
-        "graphql-lsp" => ("graphql-lsp", &["server", "-m", "stream"]),
-        "dart-language-server" => ("dart", &["language-server"]),
-        "r-languageserver" => ("R", &["--no-echo", "-e", "languageserver::run()"]),
-        key => (key, &[]),
+/// How karet launches `provider` when the executable comes from the project or
+/// `PATH`.
+///
+/// [`None`] for an id with no row in the launch table. Every built-in has one
+/// (asserted by `catalog_tests::every_provider_has_a_reviewed_launch_and_no_row_is_stale`),
+/// so a missing row means a user-configured id — and the launch table has no
+/// opinion about those. Falling back to "the key, with no arguments" launched
+/// a bare `mypy-ls` off `PATH` for a user whose config named
+/// `/opt/tools/mypy-lsp --stdio`; the caller now consults `lsp.servers` for
+/// those, or reports the id rather than guessing at it.
+pub(super) fn builtin_spec(provider: &LanguageServerId, language: &str) -> Option<LspSpec> {
+    let launch = catalog::builtin_provider(provider)?;
+    Some(LspSpec::new(
+        launch.command,
+        launch
+            .args
+            .iter()
+            .map(|argument| (*argument).to_owned())
+            .collect(),
+        vec![language.to_owned()],
+    ))
+}
+
+/// Whether `path` is a file this process could actually execute.
+///
+/// The executable bit is part of the question, not a detail: a file that is
+/// present but not runnable was accepted as a resolved server and then failed
+/// at exec, which is a far more confusing failure than simply looking further
+/// along `PATH`. Metadata is followed through symlinks deliberately -- a
+/// `node_modules/.bin` entry is one, and what matters is the target.
+pub(super) fn is_executable_file(path: &Path) -> bool {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
     };
-    LspSpec {
-        command: command.to_owned(),
-        args: args.iter().map(|argument| (*argument).to_owned()).collect(),
-        languages: vec![language.to_owned()],
+    if !metadata.is_file() {
+        return false;
     }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+/// `candidate` with `extension` **appended**, which is what probing `PATHEXT`
+/// means.
+///
+/// [`Path::with_extension`] replaces everything after the last dot instead, and
+/// several providers are named with dots: it turned the C# server's
+/// `Microsoft.CodeAnalysis.LanguageServer` into `Microsoft.CodeAnalysis.EXE`,
+/// so an installed Roslyn server on `PATH` was probed for under a name nothing
+/// has ever been called and reported missing.
+///
+/// Compiled on every platform, and gated only at its call site, so the naming
+/// rule stays unit-testable where the tests actually run.
+#[cfg_attr(not(windows), allow(dead_code))] // only the Windows PATHEXT probe calls it
+pub(super) fn with_appended_extension(candidate: &Path, extension: &str) -> PathBuf {
+    let Some(name) = candidate.file_name() else {
+        return candidate.to_path_buf();
+    };
+    let mut name = name.to_os_string();
+    name.push(".");
+    name.push(extension);
+    candidate.with_file_name(name)
 }
 
 pub(super) fn executable_exists(command: &OsStr) -> bool {
     let path = Path::new(command);
     if path.components().count() > 1 {
-        return path.is_file();
+        return is_executable_file(path);
     }
     let Some(paths) = std::env::var_os("PATH") else {
         return false;
     };
     std::env::split_paths(&paths).any(|directory| {
         let candidate = directory.join(path);
-        if candidate.is_file() {
+        if is_executable_file(&candidate) {
             return true;
         }
         #[cfg(windows)]
         {
-            ["exe", "cmd", "bat"]
-                .iter()
-                .any(|extension| candidate.with_extension(extension).is_file())
+            // Windows marks executability by extension, so PATHEXT is the
+            // authority rather than the hardcoded three this used to try.
+            let extensions =
+                std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_owned());
+            extensions.split(';').any(|extension| {
+                let extension = extension.trim().trim_start_matches('.');
+                !extension.is_empty()
+                    && is_executable_file(&with_appended_extension(&candidate, extension))
+            })
         }
         #[cfg(not(windows))]
         {
@@ -159,7 +154,7 @@ pub(super) fn executable_exists(command: &OsStr) -> bool {
 pub(super) fn project_local_spec(root: &Path, spec: &LspSpec) -> Option<LspSpec> {
     let command = Path::new(&spec.command);
     if command.components().count() > 1 {
-        return command.is_file().then(|| spec.clone());
+        return is_executable_file(command).then(|| spec.clone());
     }
     let candidates = [
         root.join("node_modules").join(".bin").join(command),
@@ -172,7 +167,7 @@ pub(super) fn project_local_spec(root: &Path, spec: &LspSpec) -> Option<LspSpec>
     ];
     candidates
         .into_iter()
-        .find(|candidate| candidate.is_file())
+        .find(|candidate| is_executable_file(candidate))
         .map(|command| {
             let mut resolved = spec.clone();
             resolved.command = command.to_string_lossy().into_owned();
@@ -227,6 +222,50 @@ pub(super) fn uses_biome(root: &Path) -> bool {
         .any(|marker| root.join(marker).is_file())
 }
 
+/// The built-in provider id of the Astro language server.
+pub(super) const ASTRO: &str = "astro-language-server";
+
+/// Whether this launch is Astro's language server.
+///
+/// Astro refuses the handshake unless it is told where TypeScript lives, so the
+/// caller has to recognise it whichever way karet resolved the executable: by
+/// provider id, since a managed install runs `node` rather than `astro-ls`, and
+/// by command name for anything that resolved to the `astro-ls` script itself.
+/// A command the user configured never reaches here — the caller's preflight
+/// diagnoses karet's own launches only.
+pub(super) fn is_astro(provider: Option<&LanguageServerId>, spec: &LspSpec) -> bool {
+    provider.is_some_and(|provider| provider.key() == ASTRO)
+        || Path::new(&spec.command)
+            .file_stem()
+            .is_some_and(|stem| stem == "astro-ls")
+}
+
+/// The TypeScript SDK directory for a project-resolved Astro server.
+///
+/// The project's own TypeScript is the natural SDK for a project-local install
+/// — an Astro repository with `@astrojs/language-server` in `node_modules` has
+/// one right there — so the `node_modules` the executable came out of is tried
+/// before the repository root's.
+pub(super) fn project_typescript_sdk(command: &Path, root: &Path) -> Option<PathBuf> {
+    command
+        .ancestors()
+        .filter(|ancestor| {
+            ancestor
+                .file_name()
+                .is_some_and(|name| name == "node_modules")
+        })
+        .map(Path::to_path_buf)
+        .chain(std::iter::once(root.join("node_modules")))
+        .map(|modules| modules.join("typescript").join("lib"))
+        .find(|lib| lib.is_dir())
+}
+
+/// The `initializationOptions` that point a server at `tsdk` as its TypeScript
+/// SDK, in the shape Astro (and every other `tsdk` consumer) reads.
+pub(super) fn typescript_sdk_options(tsdk: &Path) -> serde_json::Value {
+    serde_json::json!({ "typescript": { "tsdk": tsdk.to_string_lossy() } })
+}
+
 /// The lookup/settings key for a document's display language (`"Rust"` →
 /// `"rust"`), doubling as the LSP `languageId`.
 pub(super) fn language_key(language: Option<&str>) -> Option<String> {
@@ -237,4 +276,79 @@ pub(super) fn language_key(language: Option<&str>) -> Option<String> {
 /// realistic session; documents do not see 2³¹ edits).
 pub(crate) fn version_i32(version: u64) -> i32 {
     i32::try_from(version % 2_147_483_647).unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `with_extension` would have made this `Microsoft.CodeAnalysis.exe`.
+    #[test]
+    fn a_pathext_probe_appends_to_a_command_name_containing_dots() {
+        let candidate = Path::new("/opt/roslyn/Microsoft.CodeAnalysis.LanguageServer");
+        assert_eq!(
+            with_appended_extension(candidate, "exe"),
+            Path::new("/opt/roslyn/Microsoft.CodeAnalysis.LanguageServer.exe")
+        );
+    }
+
+    #[test]
+    fn a_pathext_probe_appends_to_an_ordinary_command_name() {
+        assert_eq!(
+            with_appended_extension(Path::new("/opt/bin/rust-analyzer"), "cmd"),
+            Path::new("/opt/bin/rust-analyzer.cmd")
+        );
+    }
+
+    #[test]
+    fn a_pathext_probe_leaves_a_nameless_path_alone() {
+        assert_eq!(
+            with_appended_extension(Path::new("/"), "exe"),
+            Path::new("/")
+        );
+    }
+
+    #[test]
+    fn the_typescript_sdk_next_to_the_executable_wins_over_the_repository_root()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let dir = tempfile::tempdir()?;
+        let root = dir.path();
+        let package = root.join("packages").join("site");
+        std::fs::create_dir_all(root.join("node_modules").join("typescript").join("lib"))?;
+        std::fs::create_dir_all(package.join("node_modules").join("typescript").join("lib"))?;
+        let command = package.join("node_modules").join(".bin").join("astro-ls");
+        assert_eq!(
+            project_typescript_sdk(&command, root),
+            Some(package.join("node_modules").join("typescript").join("lib"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_repository_typescript_serves_an_executable_resolved_off_path()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let dir = tempfile::tempdir()?;
+        let root = dir.path();
+        let lib = root.join("node_modules").join("typescript").join("lib");
+        std::fs::create_dir_all(&lib)?;
+        assert_eq!(
+            project_typescript_sdk(Path::new("/usr/bin/astro-ls"), root),
+            Some(lib)
+        );
+        assert_eq!(
+            project_typescript_sdk(Path::new("/usr/bin/astro-ls"), Path::new("/nowhere")),
+            None
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_unknown_provider_has_no_builtin_launch() {
+        assert!(builtin_spec(&LanguageServerId::new("mypy-ls"), "python").is_none());
+        let rust = builtin_spec(&LanguageServerId::RustAnalyzer, "rust");
+        assert_eq!(
+            rust.map(|spec| spec.command),
+            Some("rust-analyzer".to_owned())
+        );
+    }
 }

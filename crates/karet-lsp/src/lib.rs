@@ -40,9 +40,13 @@
 /// the implementation now lives; the `karet_lsp::codec` path is kept because it
 /// is this crate's published surface.
 pub use karet_jsonrpc::framing::content_length as codec;
+pub use launch::ExitReport;
+pub use launch::LaunchCause;
+pub use launch::LaunchFailure;
 
 mod conn;
 mod convert;
+mod launch;
 mod snippet;
 mod uri;
 
@@ -73,9 +77,16 @@ use tokio::sync::broadcast;
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum LspError {
-    /// The language server process could not be spawned.
-    #[error("failed to spawn language server")]
-    Spawn,
+    /// The language server could not be launched, with what is known about why.
+    ///
+    /// Replaces the `Spawn` variant this enum used to carry, which nothing
+    /// constructed any more. Deprecating it rather than removing it would have
+    /// left a downstream `match e { LspError::Spawn => ..., _ => ... }`
+    /// compiling with a warning on the pattern alone while its missing-binary
+    /// arm went dead, sending every launch failure to `_`; the removal makes
+    /// that a compile error instead, which is the only way the arm gets moved.
+    #[error("{0}")]
+    Launch(Box<LaunchFailure>),
     /// The server responded with an error.
     #[error("language server error: {0}")]
     Server(String),
@@ -91,8 +102,28 @@ pub enum LspError {
     Closed,
 }
 
+/// How long a failed handshake waits for the child to exit before reporting.
+///
+/// Only spent on a launch that already failed, and only to learn whether the
+/// process died -- a server that is still running is a protocol failure, and
+/// must not be waited on.
+const CHILD_EXIT_GRACE: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// How long a failed launch waits for the stderr drain to reach EOF.
+///
+/// The child's exit closes the write end, so the drain finishes on its own and
+/// this is normally not spent at all. It bounds the one case where it cannot:
+/// a surviving grandchild still holding that end open.
+const STDERR_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_millis(250);
+
 /// How to launch a language server.
-#[derive(Clone, Debug)]
+///
+/// Constructed through [`LspSpec::new`] rather than as a struct literal, so a
+/// server that later needs another knob -- as Astro needed
+/// `initialization_options` -- can be given one without breaking every consumer
+/// that builds a spec. The fields stay public and assignable.
+#[derive(Clone, Debug, Default)]
+#[non_exhaustive]
 pub struct LspSpec {
     /// The server executable.
     pub command: String,
@@ -100,6 +131,37 @@ pub struct LspSpec {
     pub args: Vec<String>,
     /// Language identifiers this server handles (e.g. `"rust"`).
     pub languages: Vec<String>,
+    /// Server-specific `initializationOptions`, sent verbatim with
+    /// `initialize`.
+    ///
+    /// Some servers cannot start without one. Astro's, for instance, refuses
+    /// the handshake unless it is told where a TypeScript SDK lives, rather
+    /// than looking for one itself — no argv can substitute, because the option
+    /// is part of the protocol rather than the command line.
+    pub initialization_options: Option<Value>,
+}
+
+impl LspSpec {
+    /// A spec launching `command` with `args`, serving `languages`.
+    ///
+    /// Server-specific `initializationOptions` are attached separately with
+    /// [`LspSpec::with_initialization_options`]; most servers need none.
+    #[must_use]
+    pub fn new(command: impl Into<String>, args: Vec<String>, languages: Vec<String>) -> Self {
+        Self {
+            command: command.into(),
+            args,
+            languages,
+            initialization_options: None,
+        }
+    }
+
+    /// Attach the `initializationOptions` sent verbatim with `initialize`.
+    #[must_use]
+    pub fn with_initialization_options(mut self, options: Option<Value>) -> Self {
+        self.initialization_options = options;
+        self
+    }
 }
 
 /// One complete diagnostic publication from a language server.
@@ -145,12 +207,13 @@ impl LspClient {
     /// [`LspClient::connect`] for what is negotiated).
     ///
     /// # Errors
-    /// Returns [`LspError::Spawn`] if the process cannot start, or any handshake
-    /// error from [`LspClient::connect`].
+    /// Returns [`LspError::Launch`] if the process cannot start or dies during
+    /// the handshake, or any other handshake error from
+    /// [`LspClient::connect`].
     pub async fn spawn(spec: LspSpec, root: &Path) -> Result<Self, LspError> {
         let mut command = tokio::process::Command::new(&spec.command);
         command.args(&spec.args).current_dir(root);
-        Self::spawn_command(command, &spec.command, root).await
+        Self::spawn_command_with(command, &spec.command, root, spec.initialization_options).await
     }
 
     /// Spawn and initialize a server through a caller-prepared command.
@@ -162,38 +225,125 @@ impl LspClient {
     /// [`Self::spawn`].
     ///
     /// # Errors
-    /// Returns [`LspError::Spawn`] if the prepared process cannot start or does
-    /// not expose piped standard I/O, plus initialization errors from
-    /// [`Self::connect`].
+    /// Returns [`LspError::Launch`] if the prepared process cannot start, does
+    /// not expose piped standard I/O, or dies during the handshake — carrying
+    /// the argv, the exit status and the tail of the server's stderr. Other
+    /// initialization errors come from [`Self::connect`].
     pub async fn spawn_command(
-        mut command: tokio::process::Command,
+        command: tokio::process::Command,
         display_name: &str,
         root: &Path,
     ) -> Result<Self, LspError> {
+        Self::spawn_command_with(command, display_name, root, None).await
+    }
+
+    /// Spawn as [`Self::spawn_command`], sending `initialization_options` with
+    /// the handshake.
+    ///
+    /// # Errors
+    /// As [`Self::spawn_command`].
+    pub async fn spawn_command_with(
+        mut command: tokio::process::Command,
+        display_name: &str,
+        root: &Path,
+        initialization_options: Option<Value>,
+    ) -> Result<Self, LspError> {
+        // Recovered from the prepared command rather than taken as a parameter,
+        // so the reported argv is what was actually run. `display_name` stays
+        // the caller's friendlier label for the executable.
+        let args = command
+            .as_std()
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let fail = |cause, exit, stderr: Vec<String>| {
+            let failure = LaunchFailure::new(display_name, args.clone(), cause)
+                .with_exit(exit)
+                .with_stderr(stderr);
+            tracing::warn!(error = %failure, "language server launch failed");
+            LspError::Launch(Box::new(failure))
+        };
         let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true)
             .spawn()
-            .map_err(|e| {
-                tracing::warn!(command = %display_name, error = %e, "failed to spawn language server");
-                LspError::Spawn
+            .map_err(|error| {
+                let cause = match error.kind() {
+                    std::io::ErrorKind::NotFound => launch::LaunchCause::NotFound,
+                    std::io::ErrorKind::PermissionDenied => launch::LaunchCause::PermissionDenied,
+                    _ => launch::LaunchCause::Io,
+                };
+                fail(cause, None, vec![error.to_string()])
             })?;
-        let stdin = child.stdin.take().ok_or(LspError::Spawn)?;
-        let stdout = child.stdout.take().ok_or(LspError::Spawn)?;
-        if let Some(stderr) = child.stderr.take() {
-            let command = display_name.to_owned();
-            tokio::spawn(async move {
-                let mut lines = BufReader::new(stderr).lines();
-                while let Ok(Some(line)) = lines.next_line().await {
-                    tracing::debug!(target: "karet_lsp::stderr", server = %command, "{line}");
-                }
-            });
+        let tail = launch::StderrTail::default();
+        let stderr_drain = child
+            .stderr
+            .take()
+            .map(|stderr| drain_stderr(stderr, display_name.to_owned(), tail.clone()));
+        let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
+            return Err(fail(launch::LaunchCause::NoStdio, None, tail.lines()));
+        };
+        match Self::connect_with(stdout, stdin, root, initialization_options).await {
+            Ok(mut client) => {
+                client.child = Some(child);
+                // Dropping the drain's handle detaches it rather than
+                // cancelling it, so a healthy server keeps logging its stderr
+                // and the success path neither waits nor leaks.
+                drop(stderr_drain);
+                Ok(client)
+            },
+            // A server that dies during the handshake reaches here as a bare
+            // `Closed`, which says nothing. Its exit status and last words do.
+            Err(error) => Err(Self::launch_failure(child, tail, stderr_drain, error, fail).await),
         }
-        let mut client = Self::connect(stdout, stdin, root).await?;
-        client.child = Some(child);
-        Ok(client)
+    }
+
+    /// Turn a handshake failure into a launch failure when the child is the
+    /// reason, leaving a genuine protocol error alone.
+    async fn launch_failure(
+        mut child: tokio::process::Child,
+        tail: launch::StderrTail,
+        stderr_drain: Option<tokio::task::JoinHandle<()>>,
+        error: LspError,
+        fail: impl Fn(launch::LaunchCause, Option<ExitReport>, Vec<String>) -> LspError,
+    ) -> LspError {
+        if !matches!(error, LspError::Closed | LspError::Timeout) {
+            return error;
+        }
+        // Bounded: a server that closed its stdio but is still running is a
+        // protocol failure, not a launch one, and must not stall the report.
+        let exit = tokio::time::timeout(CHILD_EXIT_GRACE, child.wait())
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .and_then(ExitReport::from_status);
+        // The server's last words only reach the tail once the drain has read
+        // the pipe, so joining it is what makes the diagnosis reliable instead
+        // of a race the reader wins about four times in five. The child's exit
+        // closes the pipe, so the drain ends by itself; the bound only covers
+        // a grandchild still holding the write end, and a handle dropped on
+        // timeout detaches rather than blocking.
+        if let Some(drain) = stderr_drain {
+            let _ = tokio::time::timeout(STDERR_DRAIN_GRACE, drain).await;
+        }
+        let stderr = tail.lines();
+        // `Exited` is permanent, so it has to mean the process really is gone:
+        // an expired wait grace says the opposite. Stderr is evidence about
+        // *what* the server is unhappy about, never that it died.
+        let Some(exit) = exit else {
+            return match error {
+                // Alive and silent past the handshake deadline -- a large
+                // workspace still indexing looks exactly like this, so it
+                // keeps its retries.
+                LspError::Timeout => fail(launch::LaunchCause::Timeout, None, stderr),
+                // Alive with its stdio closed is a protocol failure rather
+                // than a launch one, and is reported as it arrived.
+                other => other,
+            };
+        };
+        fail(launch::LaunchCause::Exited, Some(exit), stderr)
     }
 
     /// Connect over an arbitrary async I/O pair and perform the `initialize`
@@ -216,7 +366,31 @@ impl LspClient {
         R: AsyncRead + Send + Unpin + 'static,
         W: AsyncWrite + Send + Unpin + 'static,
     {
-        let params = initialize_params(root)?;
+        Self::connect_with(read, write, root, None).await
+    }
+
+    /// Connect as [`Self::connect`], sending `initialization_options` with the
+    /// handshake.
+    ///
+    /// Separate from [`Self::connect`] rather than a parameter on it, so the
+    /// common case stays a three-argument call. Some servers cannot start
+    /// without their options: Astro's refuses the handshake unless it is told
+    /// where a TypeScript SDK lives.
+    ///
+    /// # Errors
+    /// As [`Self::connect`].
+    pub async fn connect_with<R, W>(
+        read: R,
+        write: W,
+        root: &Path,
+        initialization_options: Option<Value>,
+    ) -> Result<Self, LspError>
+    where
+        R: AsyncRead + Send + Unpin + 'static,
+        W: AsyncWrite + Send + Unpin + 'static,
+    {
+        let mut params = initialize_params(root)?;
+        params.initialization_options = initialization_options;
         let conn = conn::Connection::start(read, write);
         let _server_capabilities: Value = conn.request("initialize", params).await?;
         conn.notify("initialized", lsp_types::InitializedParams {})?;
@@ -639,6 +813,25 @@ impl LspClient {
     ) -> Result<(), LspError> {
         self.conn.notify(method, params)
     }
+}
+
+/// Drain a child's stderr into the debug log and into `tail`.
+///
+/// The returned handle is the synchronization point a failed launch needs: the
+/// tail holds the server's last words only once this task has read the pipe to
+/// EOF.
+fn drain_stderr(
+    stderr: tokio::process::ChildStderr,
+    command: String,
+    tail: launch::StderrTail,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(stderr).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            tracing::debug!(target: "karet_lsp::stderr", server = %command, "{line}");
+            tail.push(line);
+        }
+    })
 }
 
 fn text_document_position(

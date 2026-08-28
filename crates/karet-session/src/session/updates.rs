@@ -1,6 +1,7 @@
 use karet_core::Symbol;
 
 use super::*;
+use crate::session::notify_text::one_line;
 
 impl Session {
     /// The session's configuration (workspace roots, format-on-save, spell-check).
@@ -234,25 +235,50 @@ impl Session {
                 self.publish_document_diagnostics(doc_id);
             },
             LspUpdate::SpawnFailed {
-                language, command, ..
-            } => self.emit(
-                None,
-                Event::Notification {
-                    severity: Severity::Warning,
-                    kind: NotificationKind::Lsp,
-                    message: format!(
-                        "no language server for {language}: '{command}' could not be started \
-                         (language features disabled for {language})"
-                    ),
-                },
-            ),
+                server,
+                root,
+                command,
+                reason,
+                permanent,
+                ..
+            } => {
+                // The log and, through `RuntimeState`, the Language Servers
+                // panel keep the full evidence: the repository root, and the
+                // server's own words exactly as it wrote them. The toast names
+                // the launch and flattens those words to one line.
+                tracing::warn!(
+                    server = %server.key(),
+                    root = %root.display(),
+                    command = %command,
+                    reason = %reason,
+                    "language server launch failed"
+                );
+                let outcome = if permanent {
+                    "will not be retried"
+                } else {
+                    "retrying with backoff"
+                };
+                self.emit(
+                    None,
+                    Event::Notification {
+                        severity: Severity::Warning,
+                        kind: NotificationKind::Lsp,
+                        message: format!(
+                            "{} failed to start ({outcome}): '{command}' — {}",
+                            server.display_name(),
+                            one_line(&reason)
+                        ),
+                    },
+                );
+            },
             LspUpdate::ServerDied { language, .. } => self.emit(
                 None,
                 Event::Notification {
                     severity: Severity::Warning,
                     kind: NotificationKind::Lsp,
                     message: format!(
-                        "the {language} language server stopped; reconnecting with bounded backoff"
+                        "the {} language server stopped; reconnecting with bounded backoff",
+                        provider_of(&language)
                     ),
                 },
             ),
@@ -316,6 +342,13 @@ impl Session {
                         );
                     },
                     crate::config::schema::ManagedDownloads::Auto => {
+                        // Second guard. `report_unresolved` already routes an
+                        // unmanaged provider elsewhere, but this arm queues a
+                        // download with no prompt in front of it, so it does not
+                        // take that on trust.
+                        if !crate::lsp_registry::managed_provider(&server) {
+                            return;
+                        }
                         let request = RequestId(0);
                         self.queue_lsp_registry(
                             request,
@@ -325,6 +358,23 @@ impl Session {
                     crate::config::schema::ManagedDownloads::Off => {},
                 }
             },
+            // Reported whatever `managedDownloads` says, including `off`: it
+            // performs no network I/O and describes something only the user can
+            // do, so suppressing it would just hide why the language has no
+            // server.
+            LspUpdate::ManualInstallRequired {
+                server,
+                command,
+                reason,
+                ..
+            } => self.emit(
+                None,
+                Event::LanguageServerManualInstallRequired {
+                    server,
+                    command,
+                    reason,
+                },
+            ),
         }
     }
 
@@ -744,4 +794,26 @@ pub(super) fn utf16_caret(doc: &Document, position: LineCol) -> LineCol {
 impl Session {
     /// Without the `mdlint` feature there is no markdown lint layer.
     pub(crate) fn refresh_markdown_lint(&mut self, _doc: crate::api::DocumentId) {}
+}
+
+/// The provider half of a server task's slot key.
+///
+/// Task keys are `provider@/absolute/repository/root`. The path is useful in
+/// the manager and the log, and is only noise in a notification.
+fn provider_of(key: &str) -> &str {
+    key.split_once('@').map_or(key, |(provider, _)| provider)
+}
+
+#[cfg(test)]
+mod update_text_tests {
+    use super::*;
+
+    #[test]
+    fn a_notification_never_carries_a_repository_path() {
+        assert_eq!(
+            provider_of("rust-analyzer@/home/me/work/repo"),
+            "rust-analyzer"
+        );
+        assert_eq!(provider_of("taplo"), "taplo");
+    }
 }

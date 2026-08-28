@@ -13,7 +13,7 @@ use super::*;
 
 /// Newline-delimited JSON — deliberately not the LSP framing.
 #[derive(Clone, Copy, Debug)]
-struct LineFraming;
+pub(crate) struct LineFraming;
 
 impl Framing for LineFraming {
     async fn read_message<R>(reader: &mut R) -> io::Result<Option<Value>>
@@ -41,12 +41,14 @@ impl Framing for LineFraming {
     }
 }
 
+/// The throwaway protocol. `pub(crate)` so [`crate::broker::lease`]'s own tests
+/// can elect brokers with it rather than restate one.
 #[derive(Clone, Copy, Debug)]
-struct TestProtocol;
+pub(crate) struct TestProtocol;
 
 /// Records the teardown the skeleton owes every client that has authenticated.
 #[derive(Debug, Default)]
-struct TestState {
+pub(crate) struct TestState {
     gone: AtomicUsize,
 }
 
@@ -97,6 +99,11 @@ struct Harness {
     token: String,
     upstream: mpsc::Receiver<Value>,
     server: tokio::io::DuplexStream,
+    /// The live accept loop. Retained rather than detached: what it *returns*,
+    /// and how long it takes to, is the only way a test can observe the broker
+    /// stopping. Dropping this handle left that unobservable, so the test below
+    /// had to settle for the latch the broker sets on the way.
+    accepting: tokio::task::JoinHandle<Result<(), BrokerError>>,
 }
 
 impl Harness {
@@ -110,10 +117,10 @@ impl Harness {
             brokered,
             Arc::clone(&core),
         ));
-        let accepting = Arc::clone(&core);
+        let serving = Arc::clone(&core);
         let accept_token = token.to_owned();
-        tokio::spawn(async move {
-            accept_clients::<TestProtocol>(&listener, &accept_token, accepting).await
+        let accepting = tokio::spawn(async move {
+            accept_clients::<TestProtocol>(&listener, &accept_token, serving).await
         });
         Ok(Self {
             core,
@@ -121,12 +128,27 @@ impl Harness {
             token: token.to_owned(),
             upstream,
             server,
+            accepting,
         })
     }
 
+    /// An authenticated client, past the broker's acknowledgement.
+    ///
+    /// The acknowledgement is read here rather than left on the wire because it
+    /// is what a real connector does: it precedes every protocol message, and a
+    /// caller that did not consume it would parse it as one.
     async fn client(&self) -> Result<Client, BoxError> {
-        self.raw_client(&format!("{}{}", TestProtocol::PRELUDE, self.token))
-            .await
+        let (mut reader, writer) = self
+            .raw_client(&format!("{}{}", TestProtocol::PRELUDE, self.token))
+            .await?;
+        let mut greeting = String::new();
+        tokio::time::timeout(Duration::from_secs(5), reader.read_line(&mut greeting)).await??;
+        assert_eq!(
+            acknowledged::<TestProtocol>(&greeting),
+            Some(std::process::id()),
+            "an authenticated client must be told which broker it reached"
+        );
+        Ok((reader, writer))
     }
 
     async fn raw_client(&self, prelude: &str) -> Result<Client, BoxError> {
@@ -179,6 +201,26 @@ async fn recv(reader: &mut BufReader<OwnedReadHalf>) -> Result<Value, BoxError> 
     tokio::time::timeout(Duration::from_secs(5), LineFraming::read_message(reader))
         .await??
         .ok_or_else(|| BoxError::from("client stream ended"))
+}
+
+/// The acknowledgement has to be unforgeable by accident, or it proves
+/// nothing. Another protocol's broker greeting, a bare marker with no prelude,
+/// and a broker that answers with anything but a process id are all strangers.
+#[test]
+fn only_a_brokers_own_acknowledgement_names_a_broker() {
+    assert_eq!(
+        acknowledged::<TestProtocol>(&acknowledgement::<TestProtocol>(4242)),
+        Some(4242)
+    );
+    for line in [
+        "",
+        "OK 4242",
+        "KARET-LSP-BROKER OK 4242",
+        "KARET-TEST-BROKER hello",
+        "KARET-TEST-BROKER OK not-a-pid",
+    ] {
+        assert_eq!(acknowledged::<TestProtocol>(line), None, "{line}");
+    }
 }
 
 #[tokio::test]
@@ -296,5 +338,117 @@ async fn an_unterminated_prelude_is_cut_off_at_the_cap() -> Result<(), BoxError>
     // The rejected connection wedged nothing: the broker still serves.
     let (_reader, _writer) = harness.client().await?;
     harness.wait_for_clients(1).await?;
+    Ok(())
+}
+
+/// `upstream_reader` runs before `accept_clients`, so a brokered process that
+/// dies immediately signals before anything is parked on the notification.
+/// With a bare `Notify` that wakeup was dropped and the broker sat until its
+/// 30s idle timeout, outlasting the connector's 5s deadline. The latch is what
+/// makes the signal survive the gap.
+#[tokio::test]
+async fn a_server_that_dies_before_any_client_arrives_still_stops_the_broker()
+-> Result<(), BoxError> {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+    let (upstream_tx, _upstream) = mpsc::channel(16);
+    let core = Core::<TestProtocol>::new(upstream_tx);
+
+    // Close the brokered process's stdout and let the reader observe it before
+    // `accept_clients` is ever entered.
+    let (server, brokered) = tokio::io::duplex(64 * 1024);
+    drop(server);
+    upstream_reader::<TestProtocol, _>(brokered, Arc::clone(&core)).await;
+    assert!(core.upstream_closed.load(Ordering::Acquire));
+
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(5),
+        accept_clients::<TestProtocol>(&listener, "token", core),
+    )
+    .await?;
+    assert!(
+        matches!(outcome, Err(BrokerError::Io(ref message)) if message.contains("closed")),
+        "the broker should report the dead server, not wait for the idle timeout"
+    );
+    Ok(())
+}
+
+/// The live path: a server that dies while the broker is already parked.
+///
+/// Two things stop a broker whose server's stdout ended, and only one of them
+/// is this test's. The latch is checked at the top of every loop, so a broker
+/// *between* iterations notices unaided; a broker already parked in the
+/// `select!` has nothing but `notify_waiters`, whose absence is invisible to
+/// any assertion about the outcome alone — the 2s idle tick eventually wakes
+/// the loop and it returns the very same error. So this asserts on time: the
+/// broker is parked before the server dies, and its accept task has to return
+/// well inside that tick.
+#[tokio::test]
+async fn a_server_that_dies_while_serving_stops_the_parked_broker() -> Result<(), BoxError> {
+    let mut harness = Harness::start("token").await?;
+    let (_reader, _writer) = harness.client().await?;
+    harness.wait_for_clients(1).await?;
+    // The loop has taken its client and gone back to `select!`; this is the
+    // moment it needs to be parked there rather than between iterations.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let (spare, _unused) = tokio::io::duplex(1);
+    drop(std::mem::replace(&mut harness.server, spare));
+
+    let started = std::time::Instant::now();
+    let outcome = tokio::time::timeout(Duration::from_secs(1), harness.accepting).await??;
+    assert!(
+        matches!(outcome, Err(BrokerError::Io(ref message)) if message.contains("closed")),
+        "the broker should stop once its server's stdout ends"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "the parked broker took {:?} to notice, which is the idle tick doing the \
+         work the wakeup should have done",
+        started.elapsed()
+    );
+    Ok(())
+}
+
+/// A broker gives up only the election files that still name it.
+///
+/// Unlinking whatever happened to sit at the key's paths is how a broker on its
+/// way out deleted a live sibling's endpoint, leaving that sibling serving a
+/// server no connector could find until it idled out.
+#[test]
+fn a_broker_leaves_a_siblings_election_files_alone() -> Result<(), BoxError> {
+    let directory = tempfile::tempdir()?;
+    let spec = BrokerSpec {
+        launch: crate::broker::key::Launch {
+            command: "test-server".to_owned(),
+            args: Vec::new(),
+            root: PathBuf::from("/workspace"),
+        },
+        metadata: directory.path().join("key.json"),
+        lock: directory.path().join("key.lock"),
+        failure: directory.path().join("key.error"),
+        token: "token".to_owned(),
+        supervisor: PathBuf::from("/karet"),
+    };
+    let endpoint =
+        |pid: u32| format!(r#"{{"address":"127.0.0.1:1","token":"t","pid":{pid},"command":null}}"#);
+
+    // A younger broker's files, under the paths this one was handed.
+    let sibling = std::process::id().wrapping_add(1);
+    std::fs::write(&spec.metadata, endpoint(sibling))?;
+    std::fs::write(&spec.lock, sibling.to_string())?;
+    release_election(&spec);
+    assert!(spec.metadata.exists(), "a sibling's endpoint was removed");
+    assert!(spec.lock.exists(), "a sibling's lease was removed");
+
+    // Its own, by contrast, must not be left for the next connector to trip on.
+    let me = std::process::id();
+    std::fs::write(&spec.metadata, endpoint(me))?;
+    std::fs::write(&spec.lock, me.to_string())?;
+    release_election(&spec);
+    assert!(
+        !spec.metadata.exists(),
+        "the broker left its endpoint behind"
+    );
+    assert!(!spec.lock.exists(), "the broker left its lease behind");
     Ok(())
 }

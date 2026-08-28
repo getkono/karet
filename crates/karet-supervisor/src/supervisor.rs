@@ -214,25 +214,68 @@ fn supervise(
         drop(child_stdin);
         let _ = parent_gone_tx.send(result.map(|_| ()));
     });
+    // Bounded rather than joined. The pumps end on their own when the child's
+    // pipes reach EOF, but a grandchild that inherited them holds the write end
+    // open after the child is reaped, and an unbounded join would hang the
+    // supervisor forever on exactly the process trees it exists to outlive.
+    let (pumps_done_tx, pumps_done_rx) = mpsc::sync_channel(2);
+    let stdout_done = pumps_done_tx.clone();
     std::thread::spawn(move || {
         pump(&mut child_stdout, &mut parent_output);
+        let _ = stdout_done.send(());
     });
     std::thread::spawn(move || {
         pump(&mut child_stderr, &mut parent_error);
+        let _ = pumps_done_tx.send(());
     });
 
     loop {
+        // This fires when the copy into the child's stdin ends, which is not
+        // only the parent going away: a child that exits at once breaks that
+        // pipe itself, so a failed launch reaches this arm too and must report
+        // what the child said and how it ended. Killing an already-dead group
+        // is harmless, and its `wait` still yields the child's own status.
         if parent_gone_rx.try_recv().is_ok() {
             let _ = group.kill();
-            let _ = group.wait();
-            return Ok(0);
+            let status = group.wait().ok().and_then(|status| status.code());
+            drain_pumps(&pumps_done_rx);
+            return Ok(status.unwrap_or(0));
         }
         match group
             .try_wait()
             .map_err(|error| SupervisorError::Io(error.to_string()))?
         {
-            Some(status) => return Ok(status.code().unwrap_or(1)),
+            // Let the pumps finish before returning: the caller exits the
+            // process on this value, and a child that failed on startup says
+            // why on its way out. Returning the moment `try_wait` reports the
+            // child gone discarded those last words perhaps a quarter of the
+            // time, leaving a launch failure with an exit code and no reason.
+            Some(status) => {
+                drain_pumps(&pumps_done_rx);
+                return Ok(status.code().unwrap_or(1));
+            },
             None => std::thread::sleep(Duration::from_millis(20)),
+        }
+    }
+}
+
+/// How long the output pumps get to drain once the child has been reaped.
+///
+/// Generous for the work involved -- the child is gone, so each pump has at
+/// most one pipe buffer left to forward -- and bounded so a surviving
+/// grandchild holding the write end costs a fixed delay rather than a hang.
+const PUMP_DRAIN_GRACE: Duration = Duration::from_millis(500);
+
+/// Wait for both output pumps to report they are done, up to a shared deadline.
+///
+/// Gives up quietly on timeout: losing a trailing line is a worse report, while
+/// blocking here would be a stuck editor.
+fn drain_pumps(done: &mpsc::Receiver<()>) {
+    let deadline = std::time::Instant::now() + PUMP_DRAIN_GRACE;
+    for _ in 0..2 {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if done.recv_timeout(remaining).is_err() {
+            return;
         }
     }
 }

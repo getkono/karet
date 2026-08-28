@@ -33,6 +33,7 @@ mod lsp_requests;
 mod mdlint;
 #[cfg(feature = "notebook-kernel")]
 mod notebooks;
+mod notify_text;
 mod persistence;
 mod search;
 mod spelling;

@@ -24,6 +24,7 @@
 //!   the skeleton may learn what `initialize` or `textDocument/didOpen` is.
 
 mod endpoint;
+mod failure;
 mod framing;
 mod key;
 mod lease;
@@ -31,6 +32,7 @@ mod lsp;
 mod protocol;
 mod serve;
 
+pub use failure::BrokeredLaunchFailure;
 pub use framing::Framing;
 pub use key::Launch;
 pub use lsp::MODE_ENV;
@@ -45,10 +47,51 @@ pub use protocol::ClientLink;
 pub use protocol::ServerLink;
 pub use protocol::ServerRoute;
 
+/// Connect to the shared LSP broker for `launch`, and say which broker
+/// answered.
+///
+/// [`connect`] is the same call with the identity dropped. A caller that has to
+/// decide, after a handshake fails, whether its *own* broker is the reason
+/// needs the process id: `{key}.error` is one path shared by every broker the
+/// key ever had, and the verdict it carries is permanent, so a report credited
+/// to the wrong attempt retires a server that never failed. Pair it with
+/// [`reported_failure`].
+///
+/// # Errors
+/// As [`connect`].
+pub async fn connect_observed(
+    executable: &std::path::Path,
+    state_root: &std::path::Path,
+    launch: &Launch,
+) -> Result<(tokio::net::TcpStream, u32), BrokerError> {
+    lease::connect_observed::<lsp::LspBroker>(executable, state_root, launch).await
+}
+
+/// What the broker `pid` reported about `launch`, if it reported anything.
+///
+/// The only positive evidence that a brokered server is the thing that failed.
+/// A closed socket is not: on this path a close is a fact about a TCP
+/// connection, which may not even have been our broker's.
+#[must_use]
+pub fn reported_failure(
+    state_root: &std::path::Path,
+    launch: &Launch,
+    pid: u32,
+) -> Option<BrokeredLaunchFailure> {
+    lease::reported::<lsp::LspBroker>(state_root, launch, pid)
+}
+
 /// Errors returned while locating or starting a broker.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum BrokerError {
+    /// The brokered process itself failed to run.
+    ///
+    /// Distinct from [`BrokerError::Io`] because the two need opposite
+    /// responses: a broker that could not be reached may answer on the next
+    /// attempt, and a server that exits on sight will not.
+    #[error("{0}")]
+    Launch(Box<BrokeredLaunchFailure>),
     /// Broker state or transport I/O failed.
     #[error("language-server broker I/O failed: {0}")]
     Io(String),

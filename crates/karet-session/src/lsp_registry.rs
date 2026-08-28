@@ -52,6 +52,12 @@ use crate::api::LanguageServerPlanId;
 use crate::api::RequestId;
 
 const PLAN_LIFETIME: Duration = Duration::from_secs(15 * 60);
+/// How much of a failing npm install's stderr is kept.
+///
+/// `read_to_end` on a child's pipe is unbounded, and this text is quoted back
+/// in an error that reaches a notification. It is truncated again, far harder,
+/// on the way there; this only keeps the buffer from growing without limit.
+const NPM_STDERR_LIMIT: u64 = 64 * 1024;
 const USER_AGENT: &str = concat!("karet/", env!("CARGO_PKG_VERSION"));
 /// Work accepted by the blocking registry worker.
 pub(crate) enum RegistryJob {
@@ -115,6 +121,49 @@ struct ActiveInstallation {
     version: String,
     command: PathBuf,
     args: Vec<String>,
+    /// The part of `args` that belongs to this installation rather than to the
+    /// provider's launch table — the entry script an npm package is run
+    /// through, and nothing for a standalone binary.
+    ///
+    /// Recorded so the launch arguments can be re-derived from the current
+    /// table at read time. Without it, `args` froze at install time: a provider
+    /// installed under a recipe with the wrong argv kept launching wrongly
+    /// until it was reinstalled, which is precisely what a fix to the table is
+    /// supposed to prevent.
+    ///
+    /// Absent in journals written before this existed, and those keep replaying
+    /// `args` verbatim — the behaviour they were written under.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    entry: Option<Vec<String>>,
+    /// `initializationOptions` this installation must be launched with.
+    ///
+    /// Recorded here rather than recomputed at launch because it names paths
+    /// inside this immutable version directory, which only the install knew.
+    /// Defaulted so journals written before this existed still replay.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    initialization_options: Option<serde_json::Value>,
+}
+
+impl ActiveInstallation {
+    /// The arguments to launch this installation with.
+    ///
+    /// Composed from the recorded entry point plus the provider's *current*
+    /// launch arguments, so correcting a built-in's argv takes effect on the
+    /// next launch rather than the next reinstall.
+    fn launch_args(&self, server: &LanguageServerId) -> Vec<String> {
+        let Some(entry) = &self.entry else {
+            return self.args.clone();
+        };
+        entry
+            .iter()
+            .cloned()
+            .chain(
+                crate::lsp::managed_arguments(server.key())
+                    .iter()
+                    .map(|argument| (*argument).to_owned()),
+            )
+            .collect()
+    }
 }
 
 #[derive(Clone)]
@@ -147,11 +196,14 @@ pub(crate) fn installed_spec(
     language: &str,
 ) -> Option<LspSpec> {
     let active = read_active(root?, server)?;
-    Some(LspSpec {
-        command: active.command.to_string_lossy().into_owned(),
-        args: active.args,
-        languages: vec![language.to_owned()],
-    })
+    Some(
+        LspSpec::new(
+            active.command.to_string_lossy().into_owned(),
+            active.launch_args(server),
+            vec![language.to_owned()],
+        )
+        .with_initialization_options(active.initialization_options),
+    )
 }
 
 /// Read the active managed version without performing network I/O.
@@ -180,7 +232,16 @@ pub(crate) fn managed_provider(server: &LanguageServerId) -> bool {
     managed_recipe(server).is_some()
 }
 
-/// Why a built-in provider must be supplied by the user on this platform.
+/// Why karet will not install `server` itself, if it will not.
+///
+/// [`None`] means exactly one thing: karet owns this provider's installation on
+/// this platform, so offering to install it is honest. Every other case -- a
+/// provider that must come from a project toolchain, one whose publisher ships
+/// no verified artifact for this `(os, arch)`, and an id karet has never heard
+/// of -- yields a reason the user can act on.
+///
+/// Callers rely on that totality to decide between offering an install and
+/// explaining one, so a new arm must never fall through to [`None`].
 pub(crate) fn manual_install_reason(server: &LanguageServerId) -> Option<String> {
     if managed_provider(server) {
         return None;
@@ -199,10 +260,14 @@ pub(crate) fn manual_install_reason(server: &LanguageServerId) -> Option<String>
         "elp" => "release selection must match the project's Erlang and OTP toolchain",
         "dart-language-server" => "ships with the Dart or Flutter SDK",
         "r-languageserver" => "must be installed into the user's R library",
-        "powershell-editor-services" => "requires and is hosted by the user's PowerShell runtime",
+        "powershell-editor-services" => {
+            "has no standalone executable; it is a PowerShell module bundle entered through \
+             Start-EditorServices.ps1"
+        },
         "esbonio" => "must use the project's Python and Sphinx environment",
         "pkl-lsp" => "requires compatible user-installed Java and Pkl runtimes",
         "taplo" => "current native releases have no publisher-authenticated SHA-256 digest",
+        "pylsp" => "must be installed in the project's Python environment, with its Flake8 plugin",
         key if catalog::managed_recipes()
             .iter()
             .any(|recipe| recipe.server == key) =>
@@ -213,7 +278,13 @@ pub(crate) fn manual_install_reason(server: &LanguageServerId) -> Option<String>
                 std::env::consts::ARCH
             ));
         },
-        _ => return None,
+        // A provider karet has never heard of, which in practice means a user
+        // `lsp.servers` entry. Its installation was always the user's, and
+        // saying so is better than the silence that used to imply karet could
+        // fetch it.
+        // No name here: every caller already prints the provider before the
+        // reason, and repeating it read as "Foo foo is not a provider...".
+        _ => "is not a provider karet knows how to install",
     };
     Some(reason.to_owned())
 }
@@ -253,6 +324,15 @@ fn run(
         plans.retain(|_, plan| plan.created.elapsed() <= PLAN_LIFETIME);
         let result = match job {
             RegistryJob::Install { request, server } => {
+                // Last guard, and the one that decides what the user reads. An
+                // unmanaged provider reaching here used to fail deep in
+                // discovery with "has no managed installer"; the reason it is
+                // manual is more useful and is known up front.
+                if let Some(reason) = manual_install_reason(&server) {
+                    let message = format!("{} {reason}", server.display_name());
+                    send_result(updates, request, Err(message));
+                    continue;
+                }
                 let client = match client.as_ref() {
                     Ok(client) => client,
                     Err(error) => {
@@ -606,13 +686,19 @@ fn install_release(
             retain_archive,
             ..
         } => {
-            let bytes = download_verified(client, url, sha256, |downloaded, total| {
-                let _ = updates.send(RegistryUpdate::Progress {
-                    server: release.server.clone(),
-                    downloaded,
-                    total,
-                });
-            })?;
+            let bytes = download_verified(
+                client,
+                url,
+                sha256,
+                release.download_bytes,
+                |downloaded, total| {
+                    let _ = updates.send(RegistryUpdate::Progress {
+                        server: release.server.clone(),
+                        downloaded,
+                        total,
+                    });
+                },
+            )?;
             if *retain_archive {
                 extract_archive(&bytes, *archive, destination, true)
             } else {
@@ -630,13 +716,16 @@ fn install_release(
         } => {
             let supervisor =
                 supervisor.ok_or_else(|| "process supervisor is unavailable".to_owned())?;
-            let bytes = download_verified(client, node_url, node_sha256, |downloaded, total| {
-                let _ = updates.send(RegistryUpdate::Progress {
-                    server: release.server.clone(),
-                    downloaded,
-                    total,
-                });
-            })?;
+            // nodejs.org's index publishes no per-asset size, so this download
+            // falls back to the absolute ceiling.
+            let bytes =
+                download_verified(client, node_url, node_sha256, None, |downloaded, total| {
+                    let _ = updates.send(RegistryUpdate::Progress {
+                        server: release.server.clone(),
+                        downloaded,
+                        total,
+                    });
+                })?;
             let node_root = destination.join("node");
             extract_archive(&bytes, *node_archive, &node_root, true)?;
             let node = find_file_named(&node_root, node_executable())
@@ -648,7 +737,11 @@ fn install_release(
             let mut args = vec![
                 npm.to_string_lossy().into_owned(),
                 "install".into(),
-                "--global-style".into(),
+                // `--global-style` is deprecated in favour of this since npm 9;
+                // the bundled runtime is active LTS, so the newer spelling is
+                // always available. Same layout: dependencies stay unhoisted
+                // under the package, which is what `activation` resolves against.
+                "--install-strategy=shallow".into(),
                 "--ignore-scripts".into(),
                 "--no-audit".into(),
                 "--no-fund".into(),
@@ -671,13 +764,16 @@ fn install_release(
             // This open pipe is the supervisor lease. `wait_with_output` would
             // close it before waiting and therefore (correctly) kill npm.
             let lease = child.stdin.take();
-            let mut stderr = child
+            let stderr = child
                 .stderr
                 .take()
                 .ok_or_else(|| "npm supervisor exposed no stderr".to_owned())?;
             let reader = std::thread::spawn(move || {
                 let mut bytes = Vec::new();
-                let _ = stderr.read_to_end(&mut bytes);
+                // Bounded: the pipe is npm's to fill, and the tail of it ends
+                // up in a notification. Far more than any real failure prints,
+                // and still nothing a runaway installer can grow without end.
+                let _ = stderr.take(NPM_STDERR_LIMIT).read_to_end(&mut bytes);
                 bytes
             });
             let status = child.wait().map_err(|error| error.to_string())?;
@@ -697,12 +793,16 @@ fn install_release(
 }
 
 fn activation(release: &Release, destination: &Path) -> Result<ActiveInstallation, String> {
+    let mut options = None;
+    // Assigned by both arms; deferred so neither can be forgotten.
+    let entry;
     let (command, args) = match &release.kind {
         ReleaseKind::Standalone {
             executable_name,
             arguments,
             ..
         } => {
+            entry = Some(Vec::new());
             let command = find_file_named(destination, executable_name).ok_or_else(|| {
                 format!(
                     "installed {} executable is missing",
@@ -720,6 +820,7 @@ fn activation(release: &Release, destination: &Path) -> Result<ActiveInstallatio
         },
         ReleaseKind::Npm {
             package,
+            companion,
             entrypoint,
             arguments,
             ..
@@ -743,7 +844,27 @@ fn activation(release: &Release, destination: &Path) -> Result<ActiveInstallatio
                     )
                 })?;
             let mut args = vec![cli.to_string_lossy().into_owned()];
+            entry = Some(args.clone());
             args.extend(arguments.iter().map(|argument| (*argument).to_owned()));
+            // A server given a TypeScript companion needs to be told where it
+            // went. karet installs the pair into an immutable version directory
+            // that is on nobody's search path, and a server like Astro's takes
+            // the location as an init option rather than looking for one.
+            if companion
+                .as_ref()
+                .is_some_and(|(name, _)| name == "typescript")
+            {
+                let tsdk = destination
+                    .join("package")
+                    .join("node_modules")
+                    .join("typescript")
+                    .join("lib");
+                if tsdk.is_dir() {
+                    options = Some(serde_json::json!({
+                        "typescript": { "tsdk": tsdk.to_string_lossy() }
+                    }));
+                }
+            }
             (node, args)
         },
     };
@@ -757,6 +878,8 @@ fn activation(release: &Release, destination: &Path) -> Result<ActiveInstallatio
         version: release.active_version(),
         command,
         args,
+        entry,
+        initialization_options: options,
     })
 }
 

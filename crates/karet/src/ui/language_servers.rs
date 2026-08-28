@@ -804,7 +804,9 @@ fn runtime_role(state: LanguageServerRuntimeState) -> ThemeRole {
         // The breaker being open is a successful protective state; its associated
         // runtime failure remains separately rendered in the error color.
         LanguageServerRuntimeState::CircuitOpen => ThemeRole::DiagnosticHint,
-        LanguageServerRuntimeState::Stopped => ThemeRole::DiagnosticError,
+        LanguageServerRuntimeState::Unavailable | LanguageServerRuntimeState::Stopped => {
+            ThemeRole::DiagnosticError
+        },
         _ => ThemeRole::Muted,
     }
 }
@@ -816,6 +818,7 @@ fn runtime_label(state: LanguageServerRuntimeState) -> &'static str {
         LanguageServerRuntimeState::Running => "running",
         LanguageServerRuntimeState::Retrying => "retrying",
         LanguageServerRuntimeState::CircuitOpen => "circuit open",
+        LanguageServerRuntimeState::Unavailable => "unavailable",
         LanguageServerRuntimeState::Stopped => "stopped",
         _ => "unknown",
     }

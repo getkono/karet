@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -22,6 +23,7 @@ use tokio::io::AsyncBufReadExt;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWrite;
+use tokio::io::AsyncWriteExt as _;
 use tokio::io::BufReader;
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
@@ -34,6 +36,7 @@ use crate::broker::endpoint::Endpoint;
 use crate::broker::endpoint::write_endpoint;
 use crate::broker::framing::Framing;
 use crate::broker::io_error;
+use crate::broker::lease;
 use crate::broker::lease::BrokerSpec;
 use crate::broker::protocol::BrokerProtocol;
 use crate::broker::protocol::ClientFlow;
@@ -43,7 +46,31 @@ use crate::broker::protocol::ServerLink;
 use crate::broker::protocol::ServerRoute;
 
 const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+/// The one message a client sees when the brokered process's stdout ended.
+const UPSTREAM_CLOSED: &str = "language server connection closed";
 const CLIENT_QUEUE: usize = 256;
+/// How long a failing broker waits for the stderr drain to reach EOF.
+///
+/// The child's exit closes the write end, so the drain finishes on its own and
+/// this is normally not spent at all; it bounds the one case where it cannot,
+/// a surviving grandchild still holding that end open. `karet-lsp` keeps the
+/// same grace on the direct fork, and for the same reason: the last words only
+/// reach the tail once the drain has read the pipe, so writing the report
+/// without joining it first is a race the reader usually -- not always -- wins.
+const STDERR_DRAIN_GRACE: Duration = Duration::from_millis(250);
+/// The marker a broker answers an authenticated client with, before any
+/// protocol message: the protocol's prelude, this, and its own process id.
+///
+/// A client that has written the prelude has proved nothing about *who* it
+/// reached. The endpoint file records an address, and an address outlives the
+/// process that bound it: a broker killed before it could clean up leaves a
+/// `{key}.json` whose port the OS is free to hand to any other local listener
+/// (another karet broker for another key is the likeliest, and it rejects the
+/// foreign token and closes). Without an answer to read, the connector
+/// happily wrote `initialize` into that stranger and reported the resulting
+/// close as its own server exiting -- permanently, and self-sustaining,
+/// because a connection that keeps succeeding never re-elects anything.
+const ACK: &str = "OK ";
 
 /// A request the broker forwarded upstream and still owes an answer for.
 pub(crate) struct Pending<T> {
@@ -62,7 +89,18 @@ pub(crate) struct Core<P: BrokerProtocol> {
     pub(crate) next_client: AtomicU64,
     pub(crate) active_clients: AtomicUsize,
     pub(crate) last_activity: std::sync::Mutex<Instant>,
-    pub(crate) upstream_closed: Notify,
+    /// Set once the brokered process's stdout ends, for any reason.
+    ///
+    /// A latch, not a bare [`Notify`]: `notify_waiters` wakes only the waiters
+    /// registered at the moment it is called and stores nothing for anyone who
+    /// arrives later. `upstream_reader` is spawned before `accept_clients`, so
+    /// a server that dies immediately -- bare `taplo` printing usage is exactly
+    /// this -- signalled into an empty waiter set and the broker then sat until
+    /// its 30s idle timeout, long after the client gave up at 5s. The flag is
+    /// what makes the signal survive that gap; the `Notify` only wakes a
+    /// waiter that is already parked.
+    pub(crate) upstream_closed: AtomicBool,
+    pub(crate) upstream_closed_signal: Notify,
 }
 
 impl<P: BrokerProtocol> Core<P> {
@@ -76,13 +114,108 @@ impl<P: BrokerProtocol> Core<P> {
             next_client: AtomicU64::new(1),
             active_clients: AtomicUsize::new(0),
             last_activity: std::sync::Mutex::new(Instant::now()),
-            upstream_closed: Notify::new(),
+            upstream_closed: AtomicBool::new(false),
+            upstream_closed_signal: Notify::new(),
         })
     }
 }
 
 /// Publish an endpoint, run the brokered process, and serve clients until idle.
+///
+/// The election files are given up on every exit path, including the failures
+/// before a client is ever accepted. Leaving them behind cost the next
+/// connector its full `CONNECT_TIMEOUT`: it could not connect to the endpoint
+/// that named a dead broker, and could not take a lock that already existed.
 pub(crate) async fn run_broker<P: BrokerProtocol>(spec: BrokerSpec) -> Result<(), BrokerError> {
+    let mut stderr = ChildStderr::default();
+    let outcome = run_broker_inner::<P>(&spec, &mut stderr).await;
+    if let Err(error) = &outcome {
+        // The last words only reach the tail once the drain has read the pipe,
+        // so the join happens before the report is written rather than after.
+        if let Some(drain) = stderr.drain.take() {
+            let _ = tokio::time::timeout(STDERR_DRAIN_GRACE, drain).await;
+        }
+        // The connector cannot see any of this: the server is the broker's
+        // child, and the broker's own stderr goes nowhere. Recorded before the
+        // endpoint is removed, so a client still waiting finds it.
+        crate::broker::failure::write(
+            &spec.failure,
+            &crate::broker::BrokeredLaunchFailure {
+                command: spec.launch.command.clone(),
+                args: spec.launch.args.clone(),
+                message: error.to_string(),
+                // Why this failure is diagnosable at all. Drained to
+                // `tracing::debug!` -- in a process with no subscriber, whose
+                // own stderr goes to `/dev/null` -- these lines went nowhere,
+                // and the fork the app always takes reported "connection
+                // closed" where the direct fork reported "Cannot find module".
+                stderr: stderr.tail.lines(),
+                // The upstream reader only reports a closed stream for a
+                // process that got far enough to have one.
+                ran: matches!(error, BrokerError::Io(message) if message == UPSTREAM_CLOSED),
+                // Whose verdict this is. Every broker for the key writes to
+                // this one path, so without it a connector cannot tell a report
+                // about its own launch from one about somebody else's.
+                pid: std::process::id(),
+            },
+        );
+    }
+    release_election(&spec);
+    outcome
+}
+
+/// Give up the election files, but only those that still name this broker.
+///
+/// Removing them unconditionally is half of how one key came to have two live
+/// brokers. The other half is a connector that gave up at its deadline and
+/// unlinked the lease of a broker that was merely slow; a second broker was
+/// then elected over the same paths, and *this* removal — running when the
+/// first broker finally exited — deleted the second's endpoint file. Every
+/// later connector then found no endpoint and elected yet another broker, while
+/// the abandoned one held its server process open until it idled out.
+fn release_election(spec: &BrokerSpec) {
+    let me = std::process::id();
+    if lease::published(&spec.metadata).is_some_and(|endpoint| endpoint.pid == me) {
+        let _ = std::fs::remove_file(&spec.metadata);
+    }
+    lease::release_lease(&spec.lock, me);
+}
+
+/// What a broker for `P` answers an authenticated client with.
+///
+/// Prefixed with the protocol's own prelude so it cannot be mistaken for
+/// another protocol's greeting, and terminated by a newline so a client can
+/// read it without over-reading into the protocol stream that follows.
+pub(crate) fn acknowledgement<P: BrokerProtocol>(pid: u32) -> String {
+    format!("{}{ACK}{pid}\n", P::PRELUDE)
+}
+
+/// The broker identity in an acknowledgement written by a broker for `P`.
+///
+/// `None` for anything else on the wire, which is the whole point: a listener
+/// that cannot produce this line is not the broker the endpoint file named.
+pub(crate) fn acknowledged<P: BrokerProtocol>(line: &str) -> Option<u32> {
+    line.trim_end()
+        .strip_prefix(P::PRELUDE)?
+        .strip_prefix(ACK)?
+        .parse()
+        .ok()
+}
+
+/// The brokered child's stderr: a bounded tail, and the task filling it.
+///
+/// The handle is kept rather than detached so the report can wait for the
+/// drain to finish; dropping it detaches, which is what the success path wants.
+#[derive(Default)]
+struct ChildStderr {
+    tail: crate::broker::failure::StderrTail,
+    drain: Option<tokio::task::JoinHandle<()>>,
+}
+
+async fn run_broker_inner<P: BrokerProtocol>(
+    spec: &BrokerSpec,
+    stderr: &mut ChildStderr,
+) -> Result<(), BrokerError> {
     let listener = TcpListener::bind(("127.0.0.1", 0))
         .await
         .map_err(io_error)?;
@@ -111,13 +244,17 @@ pub(crate) async fn run_broker<P: BrokerProtocol>(spec: BrokerSpec) -> Result<()
         .stdout
         .take()
         .ok_or_else(|| BrokerError::Io("server stdout unavailable".to_owned()))?;
-    if let Some(stderr) = child.stderr.take() {
-        tokio::spawn(async move {
-            let mut lines = BufReader::new(stderr).lines();
+    if let Some(pipe) = child.stderr.take() {
+        let tail = stderr.tail.clone();
+        // Not logged as well: this process has no tracing subscriber and its
+        // own stderr is `/dev/null`, so a `tracing::debug!` here is a line
+        // written to nowhere. The tail is where these lines become visible.
+        stderr.drain = Some(tokio::spawn(async move {
+            let mut lines = BufReader::new(pipe).lines();
             while let Ok(Some(line)) = lines.next_line().await {
-                tracing::debug!(target: "karet_supervisor::broker", "{line}");
+                tail.push(line);
             }
-        });
+        }));
     }
 
     let (upstream_tx, upstream_rx) = mpsc::channel(CLIENT_QUEUE);
@@ -136,8 +273,6 @@ pub(crate) async fn run_broker<P: BrokerProtocol>(spec: BrokerSpec) -> Result<()
         let _ = child.kill().await;
         let _ = child.wait().await;
     }
-    let _ = std::fs::remove_file(&spec.metadata);
-    let _ = std::fs::remove_file(&spec.lock);
     outcome
 }
 
@@ -148,6 +283,11 @@ async fn accept_clients<P: BrokerProtocol>(
 ) -> Result<(), BrokerError> {
     let mut idle_check = tokio::time::interval(Duration::from_secs(2));
     loop {
+        // Checked before every park, so a stdout that ended before this task
+        // first ran is observed rather than waited on.
+        if core.upstream_closed.load(Ordering::Acquire) {
+            return Err(BrokerError::Io(UPSTREAM_CLOSED.to_owned()));
+        }
         tokio::select! {
             accepted = listener.accept() => {
                 let (stream, _) = accepted.map_err(io_error)?;
@@ -165,8 +305,8 @@ async fn accept_clients<P: BrokerProtocol>(
                     return Ok(());
                 }
             },
-            () = core.upstream_closed.notified() => {
-                return Err(BrokerError::Io("language server connection closed".to_owned()));
+            () = core.upstream_closed_signal.notified() => {
+                return Err(BrokerError::Io(UPSTREAM_CLOSED.to_owned()));
             },
         }
     }
@@ -178,7 +318,7 @@ async fn serve_client<P: BrokerProtocol>(
     core: Arc<Core<P>>,
 ) -> Result<(), BrokerError> {
     let client = core.next_client.fetch_add(1, Ordering::Relaxed);
-    let (read, write) = stream.into_split();
+    let (read, mut write) = stream.into_split();
     let mut reader = BufReader::new(read);
     let expected = format!("{}{token}", P::PRELUDE);
     // Cap the one unauthenticated read at the only line that could be valid,
@@ -195,6 +335,14 @@ async fn serve_client<P: BrokerProtocol>(
     if prelude.trim_end() != expected {
         return Err(BrokerError::Io("broker authentication failed".to_owned()));
     }
+    // Written before the client is registered and before any protocol message,
+    // so the connector knows it is talking to a broker for this key -- and to
+    // *which* broker, which is what makes a `{key}.error` report attributable
+    // to the launch that failed rather than to whoever wrote there last.
+    write
+        .write_all(acknowledgement::<P>(std::process::id()).as_bytes())
+        .await
+        .map_err(io_error)?;
     let (tx, rx) = mpsc::channel(CLIENT_QUEUE);
     core.clients.lock().await.insert(client, tx.clone());
     core.active_clients.fetch_add(1, Ordering::AcqRel);
@@ -323,7 +471,8 @@ where
             ServerRoute::Discard => {},
         }
     }
-    core.upstream_closed.notify_waiters();
+    core.upstream_closed.store(true, Ordering::Release);
+    core.upstream_closed_signal.notify_waiters();
 }
 
 async fn message_writer<F, W>(mut writer: W, mut messages: mpsc::Receiver<Value>)
@@ -346,4 +495,4 @@ fn touch<P: BrokerProtocol>(core: &Core<P>) {
 
 #[cfg(test)]
 #[path = "serve_tests.rs"]
-mod tests;
+pub(crate) mod tests;

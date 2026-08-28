@@ -132,6 +132,21 @@ pub enum Event {
         /// question than installing an enabled provider that is simply absent.
         enabled: bool,
     },
+    /// An open document needs a provider karet cannot install for the user.
+    ///
+    /// Distinct from [`Event::LanguageServerInstallRequired`] so a client never
+    /// has to read a message to tell an offer from an explanation. Offering to
+    /// install these providers produced a prompt whose install always failed.
+    /// Emitting this performs no network traffic.
+    LanguageServerManualInstallRequired {
+        /// The provider the user must supply.
+        server: LanguageServerId,
+        /// The executable karet looked for on `PATH` and in the project.
+        command: String,
+        /// Why karet will not install it — a toolchain requirement, a missing
+        /// publisher-verified artifact, or an unrecognized provider id.
+        reason: String,
+    },
     /// Local managed-language-server status, answering
     /// [`Command::LanguageServerStatus`].
     LanguageServerStatus {

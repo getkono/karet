@@ -11,7 +11,19 @@ use crate::api::LanguageServerId;
 pub(super) struct ManagedRecipe {
     pub(super) server: &'static str,
     pub(super) source: ManagedSource,
-    pub(super) arguments: &'static [&'static str],
+}
+
+/// A second npm package installed beside the server, because the server cannot
+/// work without it.
+#[derive(Clone, Copy)]
+pub(super) struct Companion {
+    pub(super) package: &'static str,
+    /// The major version to pin to, when the newest release is the wrong one.
+    ///
+    /// `None` takes `latest`. Pinning is not premature caution: TypeScript 7 is
+    /// a ground-up rewrite that ships no `tsserver.js` at all, so every server
+    /// that drives tsserver breaks the moment it becomes `latest`.
+    pub(super) major: Option<u64>,
 }
 
 #[derive(Clone, Copy)]
@@ -21,10 +33,21 @@ pub(super) enum ManagedSource {
     },
     Npm {
         package: &'static str,
-        companion: Option<&'static str>,
+        companion: Option<Companion>,
         binary: &'static str,
     },
 }
+
+/// The TypeScript that servers driving `tsserver` need.
+///
+/// Pinned to 5: `latest` is now TypeScript 7, the Go rewrite, whose `lib`
+/// directory contains no `tsserver.js`. Installing it leaves
+/// typescript-language-server refusing to start with "Could not find a valid
+/// TypeScript installation".
+const TYPESCRIPT_5: Companion = Companion {
+    package: "typescript",
+    major: Some(5),
+};
 
 const MANAGED_RECIPES: &[ManagedRecipe] = &[
     ManagedRecipe {
@@ -32,16 +55,14 @@ const MANAGED_RECIPES: &[ManagedRecipe] = &[
         source: ManagedSource::Github {
             repository: "rust-lang/rust-analyzer",
         },
-        arguments: &[],
     },
     ManagedRecipe {
         server: "typescript-language-server",
         source: ManagedSource::Npm {
             package: "typescript-language-server",
-            companion: Some("typescript"),
+            companion: Some(TYPESCRIPT_5),
             binary: "typescript-language-server",
         },
-        arguments: &["--stdio"],
     },
     ManagedRecipe {
         server: "pyright",
@@ -50,30 +71,28 @@ const MANAGED_RECIPES: &[ManagedRecipe] = &[
             companion: None,
             binary: "pyright-langserver",
         },
-        arguments: &["--stdio"],
     },
     ManagedRecipe {
         server: "ruff",
         source: ManagedSource::Github {
             repository: "astral-sh/ruff",
         },
-        arguments: &["server"],
     },
     ManagedRecipe {
         server: "texlab",
         source: ManagedSource::Github {
             repository: "latex-lsp/texlab",
         },
-        arguments: &[],
     },
     ManagedRecipe {
         server: "astro-language-server",
         source: ManagedSource::Npm {
             package: "@astrojs/language-server",
-            companion: None,
+            // Astro refuses to initialize without a TypeScript SDK, which it
+            // takes as an init option rather than finding for itself.
+            companion: Some(TYPESCRIPT_5),
             binary: "astro-ls",
         },
-        arguments: &["--stdio"],
     },
     ManagedRecipe {
         server: "svelte-language-server",
@@ -82,7 +101,6 @@ const MANAGED_RECIPES: &[ManagedRecipe] = &[
             companion: None,
             binary: "svelteserver",
         },
-        arguments: &["--stdio"],
     },
     ManagedRecipe {
         server: "vue-language-server",
@@ -91,7 +109,6 @@ const MANAGED_RECIPES: &[ManagedRecipe] = &[
             companion: None,
             binary: "vue-language-server",
         },
-        arguments: &["--stdio"],
     },
     ManagedRecipe {
         server: "biome",
@@ -100,7 +117,6 @@ const MANAGED_RECIPES: &[ManagedRecipe] = &[
             companion: None,
             binary: "biome",
         },
-        arguments: &["lsp-proxy"],
     },
     ManagedRecipe {
         server: "yaml-language-server",
@@ -109,7 +125,6 @@ const MANAGED_RECIPES: &[ManagedRecipe] = &[
             companion: None,
             binary: "yaml-language-server",
         },
-        arguments: &["--stdio"],
     },
     ManagedRecipe {
         server: "vscode-html-language-server",
@@ -118,7 +133,6 @@ const MANAGED_RECIPES: &[ManagedRecipe] = &[
             companion: None,
             binary: "vscode-html-language-server",
         },
-        arguments: &["--stdio"],
     },
     ManagedRecipe {
         server: "vscode-css-language-server",
@@ -127,7 +141,6 @@ const MANAGED_RECIPES: &[ManagedRecipe] = &[
             companion: None,
             binary: "vscode-css-language-server",
         },
-        arguments: &["--stdio"],
     },
     ManagedRecipe {
         server: "vscode-json-language-server",
@@ -136,7 +149,6 @@ const MANAGED_RECIPES: &[ManagedRecipe] = &[
             companion: None,
             binary: "vscode-json-language-server",
         },
-        arguments: &["--stdio"],
     },
     ManagedRecipe {
         server: "bash-language-server",
@@ -145,7 +157,6 @@ const MANAGED_RECIPES: &[ManagedRecipe] = &[
             companion: None,
             binary: "bash-language-server",
         },
-        arguments: &["start"],
     },
     ManagedRecipe {
         server: "docker-langserver",
@@ -154,7 +165,6 @@ const MANAGED_RECIPES: &[ManagedRecipe] = &[
             companion: None,
             binary: "docker-langserver",
         },
-        arguments: &["--stdio"],
     },
     ManagedRecipe {
         server: "graphql-lsp",
@@ -163,56 +173,48 @@ const MANAGED_RECIPES: &[ManagedRecipe] = &[
             companion: None,
             binary: "graphql-lsp",
         },
-        arguments: &["server", "-m", "stream"],
     },
     ManagedRecipe {
         server: "clangd",
         source: ManagedSource::Github {
             repository: "clangd/clangd",
         },
-        arguments: &[],
     },
     ManagedRecipe {
         server: "zls",
         source: ManagedSource::Github {
             repository: "zigtools/zls",
         },
-        arguments: &[],
     },
     ManagedRecipe {
         server: "lua-language-server",
         source: ManagedSource::Github {
             repository: "LuaLS/lua-language-server",
         },
-        arguments: &[],
     },
     ManagedRecipe {
         server: "clojure-lsp",
         source: ManagedSource::Github {
             repository: "clojure-lsp/clojure-lsp",
         },
-        arguments: &[],
     },
     ManagedRecipe {
         server: "buf",
         source: ManagedSource::Github {
             repository: "bufbuild/buf",
         },
-        arguments: &["beta", "lsp"],
     },
     ManagedRecipe {
         server: "marksman",
         source: ManagedSource::Github {
             repository: "artempyanykh/marksman",
         },
-        arguments: &[],
     },
     ManagedRecipe {
         server: "neocmakelsp",
         source: ManagedSource::Github {
             repository: "neocmakelsp/neocmakelsp",
         },
-        arguments: &[],
     },
 ];
 
@@ -324,14 +326,12 @@ pub(super) fn discover(client: &Client, server: LanguageServerId) -> Result<Rele
         )
     })?;
     match recipe.source {
-        ManagedSource::Github { repository } => {
-            discover_github(client, server, repository, recipe.arguments)
-        },
+        ManagedSource::Github { repository } => discover_github(client, server, repository),
         ManagedSource::Npm {
             package,
             companion,
             binary,
-        } => discover_npm(client, server, package, companion, binary, recipe.arguments),
+        } => discover_npm(client, server, package, companion, binary),
     }
 }
 
@@ -353,7 +353,6 @@ fn discover_github(
     client: &Client,
     server: LanguageServerId,
     repository: &str,
-    arguments: &'static [&'static str],
 ) -> Result<Release, String> {
     let release: GithubRelease = client
         .get(format!(
@@ -380,6 +379,7 @@ fn discover_github(
         .digest
         .and_then(|digest| digest.strip_prefix("sha256:").map(str::to_owned))
         .ok_or_else(|| format!("{name} has no publisher SHA-256 digest"))?;
+    let arguments = crate::lsp::managed_arguments(server.key());
     Ok(Release {
         server,
         version: release.tag_name.trim_start_matches('v').to_owned(),
@@ -592,7 +592,47 @@ pub(super) fn github_asset_for(
 struct NpmMetadata {
     version: String,
     #[serde(default)]
-    bin: std::collections::BTreeMap<String, String>,
+    bin: NpmBin,
+}
+
+/// npm's `bin` field, which is legally either a map of names to paths or a bare
+/// string when the package publishes a single executable named after itself.
+///
+/// Modelling only the map made the string form fatal: serde failed the whole
+/// `NpmMetadata`, so discovery died with a parse error rather than installing.
+/// None of the twelve managed packages publishes the string form today, which
+/// is the only reason this has not fired.
+#[derive(Deserialize, Default)]
+#[serde(untagged)]
+enum NpmBin {
+    /// One executable, named after the package's unscoped name.
+    Single(String),
+    /// Executable name to path within the package.
+    Named(std::collections::BTreeMap<String, String>),
+    /// Absent, or a shape npm does not define.
+    #[default]
+    None,
+}
+
+impl NpmBin {
+    /// The path `binary` is published at, if the package publishes it.
+    fn path(&self, package: &str, binary: &str) -> Option<&str> {
+        match self {
+            Self::Single(path) => {
+                // `@scope/name` publishes its single binary as `name`.
+                let unscoped = package.rsplit('/').next().unwrap_or(package);
+                (unscoped == binary).then_some(path.as_str())
+            },
+            Self::Named(paths) => paths.get(binary).map(String::as_str),
+            Self::None => None,
+        }
+    }
+}
+
+/// The abbreviated packument, which lists every published version.
+#[derive(Deserialize)]
+struct NpmPackument {
+    versions: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -606,20 +646,20 @@ fn discover_npm(
     client: &Client,
     server: LanguageServerId,
     package: &str,
-    companion: Option<&str>,
+    companion: Option<Companion>,
     binary: &str,
-    arguments: &'static [&'static str],
 ) -> Result<Release, String> {
     let npm = npm_metadata(client, package)?;
     let entrypoint = npm
         .bin
-        .get(binary)
+        .path(package, binary)
         .filter(|path| safe_relative_path(path))
-        .cloned()
+        .map(str::to_owned)
         .ok_or_else(|| format!("{package} publishes no safe {binary} executable"))?;
     let companion = companion
-        .map(|package| {
-            npm_metadata(client, package).map(|metadata| (package.to_owned(), metadata.version))
+        .map(|companion| {
+            companion_version(client, companion)
+                .map(|version| (companion.package.to_owned(), version))
         })
         .transpose()?;
     let nodes: Vec<NodeRelease> = client
@@ -633,7 +673,7 @@ fn discover_npm(
         .into_iter()
         .find(|release| !release.lts.is_boolean() || release.lts != serde_json::Value::Bool(false))
         .ok_or_else(|| "Node publishes no active LTS release".to_owned())?;
-    let (file, archive) = node_asset(&node)?;
+    let (file, archive) = node_asset(&node, std::env::consts::OS, std::env::consts::ARCH)?;
     let base = format!("https://nodejs.org/dist/{}/", node.version);
     let sums = client
         .get(format!("{base}SHASUMS256.txt"))
@@ -649,6 +689,7 @@ fn discover_npm(
             (candidate == file).then(|| digest.to_owned())
         })
         .ok_or_else(|| format!("Node checksum manifest has no {file}"))?;
+    let arguments = crate::lsp::managed_arguments(server.key());
     Ok(Release {
         server,
         version: npm.version,
@@ -683,6 +724,54 @@ fn safe_relative_path(path: &str) -> bool {
         && saw_normal
 }
 
+/// The version of `companion` to install: the newest within its pinned major,
+/// or simply the newest when it is unpinned.
+///
+/// The registry resolves dist-tags and exact versions on `/{package}/{spec}`
+/// but not ranges, so a pin reads the abbreviated packument -- the same
+/// document npm itself installs from -- and picks the highest stable release.
+fn companion_version(client: &Client, companion: Companion) -> Result<String, String> {
+    let Some(major) = companion.major else {
+        return Ok(npm_metadata(client, companion.package)?.version);
+    };
+    let packument: NpmPackument = client
+        .get(format!("https://registry.npmjs.org/{}", companion.package))
+        .header("Accept", "application/vnd.npm.install-v1+json")
+        .send()
+        .and_then(reqwest::blocking::Response::error_for_status)
+        .map_err(|error| error.to_string())?
+        .json()
+        .map_err(|error| error.to_string())?;
+    highest_stable_in_major(packument.versions.keys().map(String::as_str), major).ok_or_else(|| {
+        format!(
+            "{} publishes no stable {major}.x release",
+            companion.package
+        )
+    })
+}
+
+/// The highest `major.x` release among `versions`, ignoring prereleases.
+///
+/// Compares numerically: `5.10.0` is newer than `5.9.3`, which string ordering
+/// gets backwards.
+fn highest_stable_in_major<'a>(
+    versions: impl Iterator<Item = &'a str>,
+    major: u64,
+) -> Option<String> {
+    versions
+        .filter(|version| !version.contains('-'))
+        .filter_map(|version| {
+            let parts = version
+                .split('.')
+                .map(str::parse::<u64>)
+                .collect::<Result<Vec<_>, _>>()
+                .ok()?;
+            (parts.first() == Some(&major)).then(|| (parts, version.to_owned()))
+        })
+        .max()
+        .map(|(_, version)| version)
+}
+
 fn npm_metadata(client: &Client, package: &str) -> Result<NpmMetadata, String> {
     client
         .get(format!("https://registry.npmjs.org/{package}/latest"))
@@ -693,74 +782,68 @@ fn npm_metadata(client: &Client, package: &str) -> Result<NpmMetadata, String> {
         .map_err(|error| error.to_string())
 }
 
-fn node_asset(node: &NodeRelease) -> Result<(String, Archive), String> {
-    let platform = (std::env::consts::OS, std::env::consts::ARCH);
-    let suffix = match node_platform(platform.0, platform.1) {
-        Some(suffix) => suffix,
-        None => {
-            return Err(format!(
-                "Node has no managed release for {}-{}",
-                platform.0, platform.1
-            ));
-        },
+/// How one platform's Node runtime is named upstream.
+///
+/// The two names are independent, and assuming otherwise is a trap: Node ships
+/// the archive `node-<version>-darwin-arm64.tar.gz` but advertises it in the
+/// release's `files` array as `osx-arm64-tar`, and `win-x64.zip` as
+/// `win-x64-zip`. Only the Linux pair happens to agree.
+#[derive(Clone, Copy)]
+struct NodePlatform {
+    /// The filename suffix following `node-<version>-`.
+    suffix: &'static str,
+    /// The key this build is published under in the release's `files` array.
+    manifest_key: &'static str,
+}
+
+/// Resolve the Node download for `(os, arch)`, refusing a release that does not
+/// publish it.
+///
+/// `os` and `arch` are parameters rather than [`std::env::consts`] reads so the
+/// mappings for every supported platform are checkable from one host — the gap
+/// that let the macOS and Windows keys stay wrong.
+fn node_asset(node: &NodeRelease, os: &str, arch: &str) -> Result<(String, Archive), String> {
+    let Some(platform) = node_platform(os, arch) else {
+        return Err(format!("Node has no managed release for {os}-{arch}"));
     };
-    let file = format!("node-{}-{suffix}", node.version);
-    let key = suffix.trim_end_matches(".tar.gz").trim_end_matches(".zip");
-    if !node.files.iter().any(|candidate| candidate == key) {
-        return Err(format!("Node {} does not publish {key}", node.version));
+    if !node
+        .files
+        .iter()
+        .any(|candidate| candidate == platform.manifest_key)
+    {
+        return Err(format!(
+            "Node {} does not publish {}",
+            node.version, platform.manifest_key
+        ));
     }
+    let archive = if platform.suffix.ends_with(".zip") {
+        Archive::Zip
+    } else {
+        Archive::TarGzip
+    };
     Ok((
-        file,
-        if suffix.ends_with(".zip") {
-            Archive::Zip
-        } else {
-            Archive::TarGzip
-        },
+        format!("node-{}-{}", node.version, platform.suffix),
+        archive,
     ))
 }
 
-fn node_platform(os: &str, arch: &str) -> Option<&'static str> {
+fn node_platform(os: &str, arch: &str) -> Option<NodePlatform> {
+    let platform = |suffix, manifest_key| {
+        Some(NodePlatform {
+            suffix,
+            manifest_key,
+        })
+    };
     match (os, arch) {
-        ("linux", "x86_64") => Some("linux-x64.tar.gz"),
-        ("linux", "aarch64") => Some("linux-arm64.tar.gz"),
-        ("macos", "x86_64") => Some("darwin-x64.tar.gz"),
-        ("macos", "aarch64") => Some("darwin-arm64.tar.gz"),
-        ("windows", "x86_64") => Some("win-x64.zip"),
+        ("linux", "x86_64") => platform("linux-x64.tar.gz", "linux-x64"),
+        ("linux", "aarch64") => platform("linux-arm64.tar.gz", "linux-arm64"),
+        ("macos", "x86_64") => platform("darwin-x64.tar.gz", "osx-x64-tar"),
+        ("macos", "aarch64") => platform("darwin-arm64.tar.gz", "osx-arm64-tar"),
+        ("windows", "x86_64") => platform("win-x64.zip", "win-x64-zip"),
         _ => None,
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn npm_latest_metadata_exposes_the_published_executable() -> Result<(), serde_json::Error> {
-        let metadata: NpmMetadata = serde_json::from_str(
-            r#"{
-                "name": "typescript-language-server",
-                "version": "5.3.0",
-                "bin": {
-                    "typescript-language-server": "lib/cli.mjs"
-                }
-            }"#,
-        )?;
-
-        assert_eq!(metadata.version, "5.3.0");
-        assert_eq!(
-            metadata.bin.get("typescript-language-server"),
-            Some(&"lib/cli.mjs".to_owned())
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn npm_executable_paths_must_stay_inside_the_package() {
-        assert!(safe_relative_path("lib/cli.mjs"));
-        assert!(safe_relative_path("./bin/nodeServer.js"));
-        assert!(!safe_relative_path("../outside.js"));
-        assert!(!safe_relative_path("/tmp/outside.js"));
-        assert!(!safe_relative_path("./"));
-        assert!(!safe_relative_path(""));
-    }
-}
+#[path = "catalog_tests.rs"]
+mod tests;

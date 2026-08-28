@@ -158,6 +158,13 @@ impl App {
             } => {
                 self.prompt_language_server_install(server, &language, enabled);
             },
+            SessionEvent::LanguageServerManualInstallRequired {
+                server,
+                command,
+                reason,
+            } => {
+                self.report_manual_language_server(&server, &command, &reason);
+            },
             SessionEvent::LanguageServerStatus { servers } => {
                 self.show_language_server_status(id, servers);
             },

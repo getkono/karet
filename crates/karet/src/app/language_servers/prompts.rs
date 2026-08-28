@@ -64,6 +64,32 @@ impl App {
         ));
     }
 
+    /// Say why a missing provider is the user's to install.
+    ///
+    /// A notification, not a dialog, because there is nothing to decide: karet
+    /// cannot fetch these, so a prompt would only offer an action that fails.
+    /// It is tagged per provider so opening ten Go files states the condition
+    /// once, and it names the executable karet looked for, since "install
+    /// gopls" is not actionable until you know what has to end up on `PATH`.
+    pub(in crate::app) fn report_manual_language_server(
+        &mut self,
+        server: &LanguageServerId,
+        command: &str,
+        reason: &str,
+    ) {
+        let name = server.display_name();
+        self.notify_tagged(
+            Severity::Warning,
+            NotificationKind::Lsp,
+            format!(
+                "No language server for {name}: it {reason}. Install it yourself so \
+                 '{command}' is on PATH, or point lsp.servers.{} at it.",
+                server.key()
+            ),
+            Some(format!("lsp-manual-install:{}", server.key())),
+        );
+    }
+
     /// Forget the selected provider's recorded refusal, so it is offered again.
     ///
     /// The counterpart to *Never ask*: a refusal the user cannot take back is a

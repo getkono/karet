@@ -463,11 +463,7 @@ mod tests {
 
     #[test]
     fn broker_identity_separates_roots_and_launches() {
-        let spec = LspSpec {
-            command: "rust-analyzer".to_owned(),
-            args: Vec::new(),
-            languages: vec!["rust".to_owned()],
-        };
+        let spec = LspSpec::new("rust-analyzer", Vec::new(), vec!["rust".to_owned()]);
         assert_eq!(
             broker_key(&spec, Path::new("/a")),
             broker_key(&spec, Path::new("/a"))

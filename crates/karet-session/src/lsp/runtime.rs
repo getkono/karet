@@ -251,6 +251,9 @@ pub(super) async fn server_task(task: ServerTask) {
     let mut next_restart = Instant::now();
     let mut failures = VecDeque::<Instant>::new();
     let mut spawn_failure_reported = false;
+    // Whether this task ever reached a working connection. A server that has
+    // worked here before is worth retrying; one that has never started is not.
+    let mut ever_connected = false;
 
     loop {
         if client.is_none() {
@@ -308,6 +311,7 @@ pub(super) async fn server_task(task: ServerTask) {
                         generation,
                     ));
                     client = Some(candidate);
+                    ever_connected = true;
                     failures.clear();
                     restart_delay = RESTART_MIN_DELAY;
                     spawn_failure_reported = false;
@@ -317,13 +321,51 @@ pub(super) async fn server_task(task: ServerTask) {
                 },
                 Err(error) => {
                     tracing::warn!(language, command = %spec.command, error = %error, "language server failed to start");
+                    let launch = match &error {
+                        LspError::Launch(failure) => Some(failure.as_ref()),
+                        _ => None,
+                    };
                     if !spawn_failure_reported {
                         let _ = updates.send(LspUpdate::SpawnFailed {
                             generation,
-                            language: language.clone(),
-                            command: spec.command.clone(),
+                            server: provider.clone(),
+                            root: root.clone(),
+                            // The spec, not the failure's own argv: through
+                            // the supervisor and the broker the process karet
+                            // literally ran is a hidden re-exec of the editor
+                            // binary, and the user needs to see the provider
+                            // launch they configured.
+                            command: std::iter::once(spec.command.as_str())
+                                .chain(spec.args.iter().map(String::as_str))
+                                .collect::<Vec<_>>()
+                                .join(" "),
+                            reason: launch.map_or_else(
+                                || error.to_string(),
+                                karet_lsp::LaunchFailure::diagnosis,
+                            ),
+                            permanent: launch.is_some_and(|failure| failure.cause.is_permanent()),
                         });
                         spawn_failure_reported = true;
+                    }
+                    let permanent = launch.is_some_and(|failure| failure.cause.is_permanent());
+                    // Nothing about a binary that is absent or unusable changes
+                    // by waiting, so this stops rather than respawning it every
+                    // five minutes forever. A server that once connected and
+                    // then started exiting is a different case -- it keeps the
+                    // circuit, which is a cooldown, not a verdict.
+                    if permanent && !ever_connected {
+                        tracing::warn!(language, error = %error, "language server is unavailable");
+                        report_state(
+                            LanguageServerRuntimeState::Unavailable,
+                            Some(error.to_string()),
+                        );
+                        // Drain rather than return: callers must keep getting
+                        // empty answers instead of waiting on a dead channel.
+                        while let Some(cmd) = rx.recv().await {
+                            remember_document(&mut documents, &cmd);
+                            answer_empty(&updates, cmd, generation);
+                        }
+                        return;
                     }
                     failures.push_back(now);
                     next_restart = if failures.len() >= RESTART_LIMIT {

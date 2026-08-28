@@ -57,6 +57,8 @@ fn activation_journal_ignores_a_torn_tail() -> Result<(), Box<dyn std::error::Er
         version: "1.2.3".into(),
         command,
         args: Vec::new(),
+        entry: None,
+        initialization_options: None,
     };
     let encoded = serde_json::to_string(&active)?;
     std::fs::write(provider.join("active.jsonl"), format!("{encoded}\n{{"))?;
@@ -68,6 +70,17 @@ fn activation_journal_ignores_a_torn_tail() -> Result<(), Box<dyn std::error::Er
 #[test]
 fn unsafe_versions_cannot_escape_the_provider_directory() {
     assert_eq!(safe_version("../../bad release"), ".._.._bad_release");
+    // The bare navigation names survive the character filter untouched, and
+    // `versions/..` is the provider root: the install silently no-ops on a
+    // destination that already exists, and retiring that "version" hands the
+    // provider root to `remove_dir_all`.
+    for version in ["..", ".", ""] {
+        let name = safe_version(version);
+        assert!(
+            !matches!(name.as_str(), "" | "." | ".."),
+            "{version:?} became {name:?}"
+        );
+    }
 }
 
 #[test]
@@ -214,6 +227,7 @@ fn builtin_install_recipes_are_complete_for_supported_targets() {
         "phpactor",
         "pkl-lsp",
         "powershell-editor-services",
+        "pylsp",
         "r-languageserver",
         "ruby-lsp",
         "sourcekit-lsp",
@@ -230,8 +244,14 @@ fn builtin_install_recipes_are_complete_for_supported_targets() {
             "{server} has no manual-install reason"
         );
     }
-    assert_eq!(actual.len() + manual.len(), 40);
-    assert!(manual_install_reason(&LanguageServerId::new("company-lsp")).is_none());
+    assert_eq!(actual.len() + manual.len(), 41);
+    // A reason is total: an id karet has never heard of is still explained,
+    // because callers use `None` to mean "karet can install this" and must
+    // never read an unknown provider that way.
+    assert!(
+        manual_install_reason(&LanguageServerId::new("company-lsp"))
+            .is_some_and(|reason| !reason.trim().is_empty())
+    );
 
     let targets = [
         ("linux", "x86_64"),
@@ -286,6 +306,8 @@ fn uninstall_deactivates_resolution_and_reclaims_unused_payload()
             version: "1.2.3".into(),
             command,
             args: Vec::new(),
+            entry: None,
+            initialization_options: None,
         },
     )?;
 
@@ -312,6 +334,8 @@ fn uninstall_defers_payload_cleanup_while_a_broker_is_live()
             version: "1.2.3".into(),
             command: command.clone(),
             args: Vec::new(),
+            entry: None,
+            initialization_options: None,
         },
     )?;
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
@@ -351,6 +375,8 @@ fn activate(root: &Path, server: &LanguageServerId, version: &str) -> std::io::R
         version: version.into(),
         command,
         args: Vec::new(),
+        entry: None,
+        initialization_options: None,
     };
     let Ok(encoded) = serde_json::to_string(&active) else {
         return Ok(());
@@ -451,4 +477,77 @@ fn a_corrupt_declined_file_reads_as_no_refusal() -> Result<(), Box<dyn std::erro
     // the user never refused, with no way to discover why.
     assert!(read_declined(Some(dir.path()), &server).is_none());
     Ok(())
+}
+
+/// Correcting a built-in's launch arguments has to reach the providers already
+/// installed under the old ones.
+///
+/// `ActiveInstallation.args` is written into the journal at install time, so it
+/// froze there: a neocmakelsp installed while the recipe still said "no
+/// arguments" kept launching bare — the exact bug the table fix was for — until
+/// someone reinstalled it.
+#[test]
+fn an_installed_provider_picks_up_a_corrected_launch_argument() {
+    let server = LanguageServerId::new("neocmakelsp");
+    let installed = ActiveInstallation {
+        version: "0.11.0".to_owned(),
+        command: PathBuf::from("/managed/neocmakelsp"),
+        // What the old recipe recorded: the launch table's arguments, empty.
+        args: Vec::new(),
+        entry: Some(Vec::new()),
+        initialization_options: None,
+    };
+    assert_eq!(installed.launch_args(&server), vec!["stdio".to_owned()]);
+}
+
+/// An npm install runs its package through an entry script, which belongs to
+/// the installation and must survive re-derivation.
+#[test]
+fn re_derived_arguments_keep_the_installations_own_entry_point() {
+    let server = LanguageServerId::new("bash-language-server");
+    let cli = "/managed/package/node_modules/bash-language-server/out/cli.js";
+    let installed = ActiveInstallation {
+        version: "5.6.0".to_owned(),
+        command: PathBuf::from("/managed/node/bin/node"),
+        args: vec![cli.to_owned(), "start".to_owned()],
+        entry: Some(vec![cli.to_owned()]),
+        initialization_options: None,
+    };
+    assert_eq!(
+        installed.launch_args(&server),
+        vec![cli.to_owned(), "start".to_owned()]
+    );
+}
+
+/// A journal written before the entry point was recorded cannot be split, so it
+/// keeps replaying exactly what it recorded.
+#[test]
+fn an_older_journal_entry_replays_the_arguments_it_recorded() {
+    let server = LanguageServerId::new("neocmakelsp");
+    let installed = ActiveInstallation {
+        version: "0.11.0".to_owned(),
+        command: PathBuf::from("/managed/neocmakelsp"),
+        args: vec!["--legacy".to_owned()],
+        entry: None,
+        initialization_options: None,
+    };
+    assert_eq!(installed.launch_args(&server), vec!["--legacy".to_owned()]);
+}
+
+/// A user-configured provider has no launch table row, so re-derivation must
+/// not silently empty its arguments.
+#[test]
+fn a_provider_outside_the_launch_table_re_derives_to_its_entry_point_alone() {
+    let server = LanguageServerId::new("company-lsp");
+    let installed = ActiveInstallation {
+        version: "1.0.0".to_owned(),
+        command: PathBuf::from("/managed/node/bin/node"),
+        args: vec!["/managed/cli.js".to_owned()],
+        entry: Some(vec!["/managed/cli.js".to_owned()]),
+        initialization_options: None,
+    };
+    assert_eq!(
+        installed.launch_args(&server),
+        vec!["/managed/cli.js".to_owned()]
+    );
 }

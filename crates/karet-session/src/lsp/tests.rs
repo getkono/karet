@@ -3,8 +3,10 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use karet_core::Change;
+use karet_core::CompletionItem;
 use karet_core::NotificationKind;
 use karet_core::Range;
+use karet_core::Symbol;
 use karet_core::TextEdit;
 use karet_text::EditCause;
 use serde_json::Value;
@@ -340,9 +342,14 @@ fn test_connector(
 
 /// A connector that always fails as if the binary were missing.
 fn failing_connector(spawns: Arc<AtomicUsize>) -> Connector {
-    Arc::new(move |_spec, _root| {
+    Arc::new(move |spec, _root| {
         spawns.fetch_add(1, Ordering::SeqCst);
-        Box::pin(async { Err(LspError::Spawn) })
+        let failure = karet_lsp::LaunchFailure::new(
+            spec.command.clone(),
+            spec.args.clone(),
+            karet_lsp::LaunchCause::NotFound,
+        );
+        Box::pin(async move { Err(LspError::Launch(Box::new(failure))) })
     })
 }
 
@@ -823,3 +830,6 @@ async fn crashed_server_restarts_and_replays_open_documents() -> TestResult {
 
 mod inventory_tests;
 mod jdtls_tests;
+mod launch_tests;
+mod manual_provider_tests;
+mod restart_tests;

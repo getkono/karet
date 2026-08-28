@@ -1,7 +1,8 @@
 # Language support and language servers
 
 This is the canonical support matrix and precedence policy for karet. Changes to
-the built-in catalog in `karet-session/src/lsp.rs`, the managed catalog in
+the built-in catalog in `karet-session/src/lsp/catalog.rs` (which is also where
+every provider's launch command and arguments live), the release recipes in
 `karet-session/src/lsp_registry/catalog.rs`, or the grammar registry in
 `karet-treesitter/src/registry.rs` must update this document in the same change.
 
@@ -34,7 +35,7 @@ explicitly manual:
 | Language | Default providers | Managed by karet | Tree-sitter |
 |---|---|---:|---:|
 | Rust | **rust-analyzer** | yes | yes |
-| JavaScript, TypeScript, JSX, TSX | **typescript-language-server**; **Biome** diagnostics/formatting when a Biome config exists | yes (both) | yes |
+| JavaScript, TypeScript, JSX, TSX | **typescript-language-server** (with a managed TypeScript 5); **Biome** diagnostics/formatting when a Biome config exists | yes (both) | yes |
 | Python | **Pyright** intelligence/type checking + **Ruff** diagnostics/formatting | yes (both) | yes |
 | TeX / LaTeX | **texlab** | yes | yes |
 | C / C++ | **clangd** | yes on x86_64; project/PATH elsewhere | yes |
@@ -42,7 +43,7 @@ explicitly manual:
 | Go | **gopls** | project/PATH | yes |
 | Java | **jdtls** | project/PATH | yes |
 | Zig | **zls** | yes | yes |
-| Astro | **Astro language server** | yes | yes, with injections |
+| Astro | **Astro language server** (with a managed TypeScript 5) | yes | yes, with injections |
 | Svelte | **svelte-language-server** | yes | yes, with injections |
 | Vue | **vue-language-server** | yes | yes, with injections |
 | YAML | **yaml-language-server** | yes | yes |
@@ -93,6 +94,76 @@ On an architecture for which a normally managed provider has no verified upstrea
 artifact, the manager reports that platform-specific reason and treats the provider
 as manual. Currently this applies to clangd on ARM.
 
+### How providers are launched
+
+Every provider is launched over stdio with a command and arguments recorded once,
+in `karet-session/src/lsp/catalog.rs`. The same row is used whether the executable
+came from the project, from `PATH`, or from a karet-managed install, so those can
+never disagree.
+
+Of the 41 providers, 17 speak LSP on stdio when run bare and are launched with no
+arguments at all. The remaining 24 are launched as shown here — this table is the
+complete set, so a provider absent from it takes no arguments.
+
+Eleven need only the conventional flag that selects stdio over a socket:
+
+| Provider | Invocation |
+|---|---|
+| astro-language-server | `astro-ls --stdio` |
+| csharp | `Microsoft.CodeAnalysis.LanguageServer --stdio` |
+| docker-langserver | `docker-langserver --stdio` |
+| pyright | `pyright-langserver --stdio` |
+| svelte-language-server | `svelteserver --stdio` |
+| typescript-language-server | `typescript-language-server --stdio` |
+| vscode-css-language-server | `vscode-css-language-server --stdio` |
+| vscode-html-language-server | `vscode-html-language-server --stdio` |
+| vscode-json-language-server | `vscode-json-language-server --stdio` |
+| vue-language-server | `vue-language-server --stdio` |
+| yaml-language-server | `yaml-language-server --stdio` |
+
+Thirteen enter their language-server mode some other way — a subcommand, a
+different executable, or an expression. These are the rows worth reading before
+changing anything, because a bare invocation of any of them does something else
+entirely (`taplo` prints usage to *stdout*, which is fatal to the framing):
+
+| Provider | Invocation |
+|---|---|
+| taplo | `taplo lsp stdio` |
+| neocmakelsp | `neocmakelsp stdio` |
+| phpactor | `phpactor language-server` |
+| elp | `elp server` |
+| haskell-language-server | `haskell-language-server-wrapper --lsp` |
+| marksman | `marksman server` |
+| ruff | `ruff server` |
+| biome | `biome lsp-proxy` |
+| buf | `buf beta lsp` |
+| graphql-lsp | `graphql-lsp server -m stream` |
+| bash-language-server | `bash-language-server start` |
+| dart | `dart language-server` |
+| R | `R --no-echo -e languageserver::run()` |
+
+Two rows are known-incomplete rather than verified:
+
+- **PowerShell Editor Services** has no standalone executable — it is a module
+  bundle entered through `Start-EditorServices.ps1`. Point `lsp.servers` at your
+  own bundle; the built-in row only keeps the language routed.
+- **esbonio** is launched as the published `esbonio` console script, which suits
+  karet's `.venv/bin` resolution better than hardcoding an interpreter. Its
+  bare-invocation behavior has not been verified against a live install.
+
+### TypeScript's managed companion
+
+typescript-language-server and the Astro language server both drive `tsserver`,
+which they do not ship. karet installs TypeScript alongside them, **pinned to
+5**: `latest` is now TypeScript 7, a ground-up rewrite whose `lib` directory
+contains no `tsserver.js` at all, so taking the newest release leaves both
+servers unable to start.
+
+Astro additionally takes the SDK location as an `initializationOptions` value
+rather than looking for one itself, so karet records the installed path with the
+activation and sends it with `initialize`. Nothing on the command line can
+substitute for it — the option is part of the protocol.
+
 ### GraphQL specifics
 
 GraphQL highlighting is not limited to `.graphql`/`.gql`/`.graphqls` files
@@ -117,6 +188,28 @@ specific diagnosis (missing `java`, or an older version) rather than an opaque
 spawn failure; karet never downloads a JDK. During the initial import — which
 can take a minute or two on a large build — jdtls's `language/status`
 notifications are forwarded to the status line so the server never looks hung.
+
+### Checking the catalogue against upstream
+
+The support matrix above is a claim about other people's release processes, so
+it can go stale without anything in this repository changing: an asset gets
+renamed, a publisher stops attaching a SHA-256 digest, an npm flag is removed.
+No offline test can see that.
+
+`mise run test-servers-live` checks it for real. For every managed provider it
+installs into a throwaway registry, opens a file of that provider's language,
+waits for the connection to reach `running`, and prints a table:
+
+```text
+| provider | version | install | launch | secs | note |
+```
+
+It needs network and takes minutes, so it is `#[ignore]`d and never runs as part
+of `mise run verify`. `KARET_LIVE_SERVERS=taplo,bash-language-server` narrows it
+to a subset. A weekly non-blocking workflow (`.github/workflows/servers.yml`)
+runs it so drift surfaces before a user hits it.
+
+Run it whenever this matrix, the launch table, or the release recipes change.
 
 ## Capability ownership and overlap
 
