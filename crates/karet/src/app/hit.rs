@@ -120,6 +120,10 @@ pub(crate) enum ScrollSurface {
     /// The Markdown preview beside a code tab (not the standalone preview tab,
     /// which is [`TabRows`](Self::TabRows)).
     EditorPreview,
+    /// A GitHub page's own content. Distinct from [](Self::TabRows) because
+    /// the GitHub surface is not a tab: routing it through the focused tab would
+    /// scroll whatever document happens to sit behind it.
+    GithubPage,
     /// A pull request's commit list, which scrolls independently of its conversation.
     GithubPullRequestCommits,
     /// The Explorer file tree.

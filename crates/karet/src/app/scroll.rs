@@ -18,7 +18,12 @@ use super::*;
 
 /// A cursor pulled into the window `[position, position + viewport)`, left alone when
 /// it is already inside it.
-fn cursor_in_window(cursor: usize, position: usize, viewport: usize, len: usize) -> usize {
+pub(in crate::app) fn cursor_in_window(
+    cursor: usize,
+    position: usize,
+    viewport: usize,
+    len: usize,
+) -> usize {
     if viewport == 0 || len == 0 {
         return cursor;
     }
@@ -130,11 +135,12 @@ impl App {
             ScrollSurface::TabRows => self.scroll_tab_rows_to(position, viewport),
             ScrollSurface::TabColumns => self.scroll_tab_columns_to(position),
             ScrollSurface::EditorPreview => self.set_markdown_preview_scroll(position),
+            ScrollSurface::GithubPage => self.scroll_github_page_to(position, viewport),
             ScrollSurface::GithubPullRequestCommits => {
-                if let Some(TabKind::Github(github::GithubViewState::PullRequest(view))) =
+                if let Some(TabKind::Github(view)) =
                     self.tabs.get_mut(self.active).map(|tab| &mut tab.kind)
                 {
-                    view.commit_offset = clamp_u16(position);
+                    view.scroll_commits_to(position);
                 }
             },
             // The tree's offset is pinned to its cursor by the render, so the cursor
@@ -186,6 +192,18 @@ impl App {
         }
     }
 
+    /// Land the GitHub page on an absolute offset.
+    ///
+    /// Separate from [`scroll_tab_rows_to`](Self::scroll_tab_rows_to) because the
+    /// GitHub surface is not a tab: routing its scrollbar through the focused tab
+    /// would drag whatever document sits behind it.
+    fn scroll_github_page_to(&mut self, position: usize, viewport: usize) {
+        if let Some(TabKind::Github(view)) = self.tabs.get_mut(self.active).map(|tab| &mut tab.kind)
+        {
+            view.scroll_to(position, viewport);
+        }
+    }
+
     /// The absolute counterpart to [`scroll_lines`](Self::scroll_lines): the same
     /// per-tab-kind split, but landing on a position instead of stepping by a delta.
     fn scroll_tab_rows_to(&mut self, position: usize, viewport: usize) {
@@ -206,20 +224,7 @@ impl App {
             },
             TabKind::Hex { scroll, .. } => *scroll = position,
             TabKind::LanguageServers(view) => view.offset = position,
-            TabKind::Github(github::GithubViewState::Issue { scroll, .. })
-            | TabKind::Github(github::GithubViewState::WorkflowRun { scroll, .. }) => {
-                *scroll = clamp_u16(position);
-            },
-            TabKind::Github(github::GithubViewState::PullRequest(view)) => {
-                view.scroll = clamp_u16(position);
-            },
-            // The dashboard recomputes `first_visible` from its cursor every frame,
-            // and its extent counts items rather than rows.
-            TabKind::Github(github::GithubViewState::Dashboard(dashboard)) => {
-                let len = dashboard.row_count();
-                dashboard.cursor = cursor_in_window(dashboard.cursor, position, viewport, len);
-                dashboard.first_visible = position;
-            },
+            TabKind::Github(view) => view.scroll_to(position, viewport),
             // The graph view pans freely: dragging its scrollbar moves the viewport and
             // leaves the selection where the user put it.
             TabKind::CommitGraph { .. } => self.graph_scroll_to(position),
@@ -272,7 +277,7 @@ fn delta_to(from: usize, to: usize) -> i32 {
 }
 
 /// A position narrowed to the `u16` several views store their offset in.
-fn clamp_u16(position: usize) -> u16 {
+pub(in crate::app) fn clamp_u16(position: usize) -> u16 {
     u16::try_from(position).unwrap_or(u16::MAX)
 }
 

@@ -319,7 +319,7 @@ fn draw_dashboard_rows(
             ScrollExtent::new(state.row_count(), state.first_visible, visible),
             ScrollExtent::default(),
         ),
-        ScrollSurface::TabRows,
+        ScrollSurface::GithubPage,
     );
 }
 

@@ -7,6 +7,7 @@ mod forms;
 mod keys;
 mod mouse;
 mod pull_request;
+mod scroll;
 mod selection;
 mod state;
 

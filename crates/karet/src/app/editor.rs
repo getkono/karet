@@ -226,18 +226,7 @@ impl App {
                 let next = (*scroll as i64 + i64::from(delta)).clamp(0, max);
                 *scroll = next as usize;
             },
-            TabKind::Github(crate::app::github::GithubViewState::Issue { scroll, .. })
-            | TabKind::Github(crate::app::github::GithubViewState::WorkflowRun {
-                scroll, ..
-            }) => {
-                let next = (i64::from(*scroll) + i64::from(delta)).clamp(0, i64::from(u16::MAX));
-                *scroll = next as u16;
-            },
-            TabKind::Github(crate::app::github::GithubViewState::PullRequest(view)) => {
-                let next =
-                    (i64::from(view.scroll) + i64::from(delta)).clamp(0, i64::from(u16::MAX));
-                view.scroll = next as u16;
-            },
+            TabKind::Github(view) => view.scroll_lines(delta),
             // Scrolling a document turns pages (one page per scroll gesture).
             #[cfg(feature = "pdf")]
             TabKind::Document {
@@ -323,13 +312,7 @@ impl App {
                     bytes.len().div_ceil(16).saturating_sub(1)
                 };
             },
-            TabKind::Github(crate::app::github::GithubViewState::Issue { scroll, .. })
-            | TabKind::Github(crate::app::github::GithubViewState::WorkflowRun {
-                scroll, ..
-            }) => *scroll = if top { 0 } else { u16::MAX },
-            TabKind::Github(crate::app::github::GithubViewState::PullRequest(view)) => {
-                view.scroll = if top { 0 } else { u16::MAX };
-            },
+            TabKind::Github(view) => view.scroll_edge(top),
             #[cfg(feature = "pdf")]
             TabKind::Document {
                 page, page_count, ..
