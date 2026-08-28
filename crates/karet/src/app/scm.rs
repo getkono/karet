@@ -590,17 +590,24 @@ impl App {
         self.commit_input.focused = true;
     }
 
-    /// Arm a discard confirmation for the current selection.
+    /// Ask before throwing away the working-tree changes to the selection.
     pub(super) fn scm_arm_discard(&mut self) {
         let paths = self.scm.selected_paths();
         if paths.is_empty() {
             return;
         }
-        self.status = Some(format!(
-            "discard {} file(s)? press y to confirm, any other key to cancel",
-            paths.len()
-        ));
-        self.pending_discard = Some(paths);
+        let body = format!(
+            "Throws away every uncommitted change to {}. This cannot be undone.",
+            describe_paths(&paths, &self.root)
+        );
+        let title = format!("Discard changes to {} file(s)?", paths.len());
+        self.confirm_action(
+            title,
+            body,
+            "Keep changes",
+            "Discard",
+            ConfirmAction::DiscardPaths(paths),
+        );
     }
 
     /// Blur the commit editor while preserving its draft.
@@ -685,22 +692,18 @@ impl App {
             .insert_text(&text.replace("\r\n", "\n").replace('\r', "\n"));
     }
 
-    /// Resolve a pending discard: `confirmed` discards the armed paths, otherwise
-    /// the prompt is cancelled. Any key without a `DiscardConfirm` binding cancels.
-    pub(super) fn resolve_discard(&mut self, confirmed: bool) {
-        let paths = self.pending_discard.take();
-        if confirmed {
-            if let Some(paths) = paths {
-                self.send_command(SessionCommand::Discard { paths });
-                self.notify(
-                    Severity::Information,
-                    NotificationKind::Vcs,
-                    "discarded changes",
-                );
-            }
-        } else {
-            self.status = Some("discard cancelled".to_string());
+    /// Discard the working-tree changes to `paths`, once confirmed.
+    pub(super) fn discard_paths(&mut self, paths: Vec<PathBuf>) {
+        if paths.is_empty() {
+            return;
         }
+        let count = paths.len();
+        self.send_command(SessionCommand::Discard { paths });
+        self.notify(
+            Severity::Information,
+            NotificationKind::Vcs,
+            format!("discarding changes to {count} file(s)…"),
+        );
     }
 
     /// Replace the Source-Control panel state from a fresh backend status,

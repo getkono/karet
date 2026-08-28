@@ -426,11 +426,19 @@ fn explorer_delete_requires_confirmation() {
     select_explorer_path(&mut app, &dir.join("gone.txt"));
     app.dispatch(Command::ExplorerDelete);
     assert!(dir.join("gone.txt").exists());
-    assert!(app.pending_explorer_delete.is_some());
+    assert!(app.confirm.is_some(), "the delete raised a confirmation");
 
-    app.dispatch(Command::ConfirmExplorerDelete);
+    // The safe answer is selected on open, so Enter alone keeps the file.
+    send_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert!(dir.join("gone.txt").exists(), "Enter alone deleted nothing");
+    assert!(app.confirm.is_none());
+
+    // Reaching the delete costs a deliberate step onto its row.
+    app.dispatch(Command::ExplorerDelete);
+    send_key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    send_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     assert!(!dir.join("gone.txt").exists());
-    assert!(app.pending_explorer_delete.is_none());
+    assert!(app.confirm.is_none());
     let _ = std::fs::remove_dir_all(&dir);
 }
 

@@ -337,15 +337,39 @@ fn search_modal_switches_between_input_and_list() {
 
 #[test]
 fn discard_prompt_confirms_and_cancels_through_the_keymap() {
+    let backend = Arc::new(RecordingBackend::new());
     let mut app = app();
-    // A bound confirm key (Enter) resolves to ConfirmDiscard and clears the arm.
-    app.pending_discard = Some(vec![PathBuf::from("a.rs")]);
+    app.backend = Some(backend.clone());
+    app.sidebar_panel = SidebarPanel::SourceControl;
+    app.focus = Focus::Sidebar;
+
+    // Enter takes the selected row, which on an unread dialog is the safe one.
+    app.dispatch(Command::ScmDiscard);
     send_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-    assert!(app.pending_discard.is_none());
+    assert!(app.confirm.is_none());
+    let discarded = |backend: &RecordingBackend| {
+        backend
+            .sent
+            .lock()
+            .map(|sent| {
+                sent.iter()
+                    .any(|(_, c)| matches!(c, SessionCommand::Discard { .. }))
+            })
+            .unwrap_or(false)
+    };
+    assert!(!discarded(&backend), "Enter alone discarded nothing");
+
     // Any unbound key at the prompt cancels (the documented fall-through).
-    app.pending_discard = Some(vec![PathBuf::from("a.rs")]);
+    app.dispatch(Command::ScmDiscard);
     send_key(&mut app, KeyCode::Char('n'), KeyModifiers::NONE);
-    assert!(app.pending_discard.is_none());
+    assert!(app.confirm.is_none());
+    assert!(!discarded(&backend));
+
+    // Stepping onto the destructive row and accepting is what actually discards.
+    app.dispatch(Command::ScmDiscard);
+    send_key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    send_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert!(discarded(&backend));
 }
 
 #[test]

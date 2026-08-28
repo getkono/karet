@@ -164,16 +164,16 @@ impl App {
             Some(Modal::SwapRecover)
         } else if self.pending_close.is_some() {
             Some(Modal::CloseConfirm)
+        } else if self.confirm.is_some() {
+            // A question outranks the picker or menu it was raised from: answering
+            // it is what everything under it is waiting on.
+            Some(Modal::Confirm)
         } else if self.overlay.is_some() {
             Some(Modal::Overlay)
         } else if self.commit_input.focused {
             Some(Modal::CommitInput)
         } else if self.rev_input.is_some() {
             Some(Modal::RevInput)
-        } else if self.pending_discard.is_some() {
-            Some(Modal::DiscardConfirm)
-        } else if self.pending_explorer_delete.is_some() {
-            Some(Modal::ExplorerDeleteConfirm)
         } else if self.context_menu.is_some() {
             Some(Modal::ContextMenu)
         } else if self.find_open {
@@ -255,9 +255,10 @@ impl App {
             Modal::ExplorerEdit => self.explorer_edit(key),
             Modal::SearchInput => self.search_edit(key),
             Modal::SearchList => {},
-            Modal::DiscardConfirm => self.resolve_discard(false),
-            Modal::ExplorerDeleteConfirm => self.resolve_explorer_delete(false),
             Modal::ContextMenu => self.close_context_menu(),
+            // An unbound key cancels a confirmation, matching every other confirm
+            // prompt: the default answer to a question the user did not answer is no.
+            Modal::Confirm => self.confirm_cancel(),
             // An unbound key cancels the close prompt (stay in the editor); the
             // default for every irreversible close is to abort.
             Modal::CloseConfirm => self.cancel_close(),
@@ -317,9 +318,10 @@ impl App {
                 edit.insert(target, text);
             },
             Modal::SearchList
-            | Modal::DiscardConfirm
-            | Modal::ExplorerDeleteConfirm
             | Modal::ContextMenu
+            // A confirmation captures no text: pasting into a question is
+            // meaningless, and must not fall through to the editor underneath.
+            | Modal::Confirm
             | Modal::CloseConfirm
             | Modal::SwapRecover => {},
         }

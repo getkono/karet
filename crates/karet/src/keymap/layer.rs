@@ -190,12 +190,10 @@ pub enum Layer {
     CommitInput,
     /// Active while the go-to-commit (revision) input is open.
     RevInput,
-    /// Active while the discard-confirmation prompt is up.
-    DiscardConfirm,
-    /// Active while the explorer delete-confirmation prompt is up.
-    ExplorerDeleteConfirm,
     /// Active while a context menu is open.
     ContextMenu,
+    /// Active while a confirmation dialog is open.
+    Confirm,
     /// Active while the unsaved-changes close-confirmation prompt (quit or tab/pane
     /// close) is up.
     CloseConfirm,
@@ -222,12 +220,10 @@ pub enum Modal {
     CommitInput,
     /// The go-to-commit (revision) input.
     RevInput,
-    /// The discard-confirmation prompt.
-    DiscardConfirm,
-    /// The explorer delete-confirmation prompt.
-    ExplorerDeleteConfirm,
     /// A context menu.
     ContextMenu,
+    /// A confirmation dialog awaiting a choice.
+    Confirm,
     /// The unsaved-changes confirmation prompt shown before an irreversible close
     /// (quit or closing a tab/pane).
     CloseConfirm,
@@ -280,9 +276,8 @@ pub fn active_layers(ctx: Context) -> &'static [Layer] {
         Some(Modal::Find) => &[L::Find],
         Some(Modal::CommitInput) => &[L::CommitInput],
         Some(Modal::RevInput) => &[L::RevInput],
-        Some(Modal::DiscardConfirm) => &[L::DiscardConfirm],
-        Some(Modal::ExplorerDeleteConfirm) => &[L::ExplorerDeleteConfirm],
         Some(Modal::ContextMenu) => &[L::ContextMenu],
+        Some(Modal::Confirm) => &[L::Confirm],
         Some(Modal::CloseConfirm) => &[L::CloseConfirm],
         Some(Modal::SwapRecover) => &[L::SwapRecover],
         Some(Modal::ExplorerEdit) => &[L::ExplorerEdit],

@@ -378,14 +378,6 @@ pub(super) static BINDINGS: &[Binding] = &[
     // Go-to-commit (revision) input.
     b(RevInput, false, false, false, Esc,   Command::RevInputCancel),
     b(RevInput, false, false, false, Enter, Command::RevInputSubmit),
-    // Discard confirmation: only the confirm keys are bound; anything else cancels.
-    b(DiscardConfirm, false, false, false, Enter,     Command::ConfirmDiscard),
-    b(DiscardConfirm, false, false, false, Char('y'), Command::ConfirmDiscard),
-    b(DiscardConfirm, false, false, false, Char('Y'), Command::ConfirmDiscard),
-    // Explorer delete confirmation: only confirm keys are bound; anything else cancels.
-    b(ExplorerDeleteConfirm, false, false, false, Enter,     Command::ConfirmExplorerDelete),
-    b(ExplorerDeleteConfirm, false, false, false, Char('y'), Command::ConfirmExplorerDelete),
-    b(ExplorerDeleteConfirm, false, false, false, Char('Y'), Command::ConfirmExplorerDelete),
     // Context menu.
     b(ContextMenu, false, false, false, Esc,       Command::ContextMenuCancel),
     b(ContextMenu, false, false, false, Enter,     Command::ContextMenuAccept),
@@ -393,6 +385,15 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(ContextMenu, false, false, false, Char('k'), Command::ContextMenuUp),
     b(ContextMenu, false, false, false, Down,      Command::ContextMenuDown),
     b(ContextMenu, false, false, false, Char('j'), Command::ContextMenuDown),
+    // Confirmation dialog. Navigation mirrors the context menu; every other key
+    // cancels, and the safe choice is always the one selected on open, so neither a
+    // stray Enter nor a stray anything-else can run a destructive action.
+    b(Confirm, false, false, false, Esc,       Command::ConfirmCancel),
+    b(Confirm, false, false, false, Enter,     Command::ConfirmAccept),
+    b(Confirm, false, false, false, Up,        Command::ConfirmUp),
+    b(Confirm, false, false, false, Char('k'), Command::ConfirmUp),
+    b(Confirm, false, false, false, Down,      Command::ConfirmDown),
+    b(Confirm, false, false, false, Char('j'), Command::ConfirmDown),
     // Close confirmation (unsaved changes: quit or tab/pane close): save, discard, or
     // (any other key) cancel — the default is always to abort.
     b(CloseConfirm, false, false, false, Char('s'), Command::CloseConfirmSave),

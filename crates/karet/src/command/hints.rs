@@ -160,10 +160,10 @@ impl Command {
             Self::CommitGenerate => "generate",
             Self::ExplorerEditSubmit => "confirm",
             Self::ExplorerEditCancel => "cancel",
-            Self::ConfirmDiscard => "confirm",
-            Self::ConfirmExplorerDelete => "confirm",
             Self::ContextMenuAccept => "accept",
             Self::ContextMenuCancel => "cancel",
+            Self::ConfirmAccept => "accept",
+            Self::ConfirmCancel => "cancel",
             Self::CloseConfirmSave => "save & close",
             Self::CloseConfirmDiscard => "discard & close",
             Self::RecoverSwaps => "recover",
@@ -306,6 +306,8 @@ impl Command {
             | Self::SearchSelectDown
             | Self::ContextMenuUp
             | Self::ContextMenuDown
+            | Self::ConfirmUp
+            | Self::ConfirmDown
             | Self::OpenCommitByHash
             | Self::ShowFileHistory
             | Self::DiffUnpushed

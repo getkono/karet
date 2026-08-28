@@ -393,20 +393,24 @@ impl App {
             return;
         }
         self.context_menu_clear();
-        self.status = Some(format!(
-            "delete {} item(s)? press y to confirm, any other key to cancel",
-            paths.len()
-        ));
-        self.pending_explorer_delete = Some(paths);
+        let body = format!(
+            "Permanently removes {} from disk. Folders are deleted with everything \
+             inside them. This cannot be undone.",
+            describe_paths(&paths, &self.root)
+        );
+        let title = format!("Delete {} item(s)?", paths.len());
+        self.confirm_action(
+            title,
+            body,
+            "Keep",
+            "Delete",
+            ConfirmAction::DeleteExplorerPaths(paths),
+        );
     }
 
-    /// Resolve a pending explorer delete confirmation.
-    pub(super) fn resolve_explorer_delete(&mut self, confirmed: bool) {
-        let Some(paths) = self.pending_explorer_delete.take() else {
-            return;
-        };
-        if !confirmed {
-            self.status = Some("delete cancelled".to_string());
+    /// Delete `paths` from disk, once confirmed.
+    pub(super) fn delete_explorer_paths(&mut self, paths: Vec<PathBuf>) {
+        if paths.is_empty() {
             return;
         }
         self.close_tabs_under(&paths);

@@ -483,10 +483,6 @@ pub enum Command {
     ExplorerEditSubmit,
     /// Cancel the explorer inline name editor.
     ExplorerEditCancel,
-    /// Confirm the pending discard.
-    ConfirmDiscard,
-    /// Confirm the pending explorer delete.
-    ConfirmExplorerDelete,
     /// Move the context menu selection up.
     ContextMenuUp,
     /// Move the context menu selection down.
@@ -495,6 +491,14 @@ pub enum Command {
     ContextMenuAccept,
     /// Dismiss the context menu.
     ContextMenuCancel,
+    /// Move the confirmation dialog's selection up.
+    ConfirmUp,
+    /// Move the confirmation dialog's selection down.
+    ConfirmDown,
+    /// Run the confirmation dialog's selected choice.
+    ConfirmAccept,
+    /// Dismiss the confirmation dialog without acting.
+    ConfirmCancel,
     /// At the close prompt (quit or tab/pane close): save the at-risk documents, then
     /// run the close.
     CloseConfirmSave,
@@ -844,12 +848,14 @@ impl Command {
             Self::CommitGenerate => "Commit: Generate Message (AI)",
             Self::ExplorerEditSubmit => "Explorer: Confirm Name",
             Self::ExplorerEditCancel => "Explorer: Cancel Edit",
-            Self::ConfirmDiscard => "Source Control: Confirm Discard",
-            Self::ConfirmExplorerDelete => "Explorer: Confirm Delete",
             Self::ContextMenuUp => "Context Menu: Select Previous",
             Self::ContextMenuDown => "Context Menu: Select Next",
             Self::ContextMenuAccept => "Context Menu: Accept",
             Self::ContextMenuCancel => "Context Menu: Cancel",
+            Self::ConfirmUp => "Confirm: Select Previous",
+            Self::ConfirmDown => "Confirm: Select Next",
+            Self::ConfirmAccept => "Confirm: Accept",
+            Self::ConfirmCancel => "Confirm: Cancel",
             Self::CloseConfirmSave => "Confirm Close: Save and Close",
             Self::CloseConfirmDiscard => "Confirm Close: Discard and Close",
             Self::RecoverSwaps => "Recover Unsaved Changes",
