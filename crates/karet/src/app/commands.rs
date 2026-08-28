@@ -377,6 +377,8 @@ impl App {
             Command::SeamConfiguration => self.seam_configuration(),
             Command::SeamCopyIdentity => self.seam_copy_identity(),
             Command::SeamCopyQuery => self.seam_copy_query(),
+            Command::SeamSync => self.seam_sync(),
+            Command::SeamForceSync => self.seam_force_sync(),
             Command::ShowCommitGraph => self.open_commit_graph(),
             Command::CommitGraphNext => self.graph_select(1),
             Command::CommitGraphPrev => self.graph_select(-1),

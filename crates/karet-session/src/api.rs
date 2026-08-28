@@ -693,10 +693,13 @@ pub enum Command {
         /// `true` for the staged entry, `false` for the working-tree entry.
         staged: bool,
     },
-    /// Index a package's seams, answering with [`Event::SeamIndexed`].
+    /// Index a repository's seams, answering with a stream of
+    /// [`Event::SeamPackageIndexed`] closed by one [`Event::SeamIndexFinished`].
     IndexSeams {
         /// The package root to index. Defaults to the first workspace root when absent.
         root: Option<PathBuf>,
+        /// Whether to trust the stored index or rebuild it from source.
+        mode: SeamSync,
     },
     /// Re-index one file whose text changed, keeping the rest of the tree.
     ReindexSeams {

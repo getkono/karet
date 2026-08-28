@@ -56,6 +56,8 @@ static PALETTE: &[Command] = &[
     Command::SeamConfiguration,
     Command::SeamCopyIdentity,
     Command::SeamCopyQuery,
+    Command::SeamSync,
+    Command::SeamForceSync,
     Command::ShowCommitGraph,
     Command::OpenCommitByHash,
     Command::ShowFileHistory,

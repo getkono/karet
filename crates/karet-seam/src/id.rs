@@ -58,7 +58,7 @@ pub enum SeamPathError {
 
 /// One segment of a [`SeamPath`]: a name plus its disambiguating ordinal.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SeamSegment {
     /// The segment text, without any `#n` suffix. Braced for anonymous constructs.
     pub name: String,
@@ -108,7 +108,7 @@ impl fmt::Display for SeamSegment {
 ///
 /// See the [module docs](self) for the identity rules this encodes.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SeamPath {
     segments: Vec<SeamSegment>,
 }
@@ -270,7 +270,7 @@ fn parse_segment(raw: &str, position: usize) -> Result<SeamSegment, SeamPathErro
 /// constant time, and keeps the node arena dense. Resolve one back to its path through
 /// [`SeamInterner::path`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SeamId(pub u32);
 
 /// The two-way map between [`SeamPath`]s and [`SeamId`]s.

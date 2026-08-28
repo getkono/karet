@@ -20,7 +20,9 @@ fn index_requests(backend: &RecordingBackend) -> Vec<(RequestId, PathBuf)> {
         .map(|sent| {
             sent.iter()
                 .filter_map(|(id, command)| match command {
-                    SessionCommand::IndexSeams { root: Some(root) } => Some((*id, root.clone())),
+                    SessionCommand::IndexSeams {
+                        root: Some(root), ..
+                    } => Some((*id, root.clone())),
                     _ => None,
                 })
                 .collect()

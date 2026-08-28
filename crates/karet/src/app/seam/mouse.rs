@@ -58,6 +58,8 @@ impl App {
             SeamTarget::Configuration => self.seam_configuration(),
             // A second click on a lens turns it back off, which is what the digit does.
             SeamTarget::Lens(index) => self.seam_toggle_lens(*index),
+            SeamTarget::Sync => self.seam_sync(),
+            SeamTarget::ForceSync => self.seam_force_sync(),
             SeamTarget::Row(id) => self.seam_select_row(id, again),
             SeamTarget::Spine => {
                 if let Some(state) = self.active_seam() {
@@ -159,6 +161,8 @@ impl App {
                     SeamTarget::Crumb(_)
                         | SeamTarget::Configuration
                         | SeamTarget::Lens(_)
+                        | SeamTarget::Sync
+                        | SeamTarget::ForceSync
                         | SeamTarget::Row(_)
                         | SeamTarget::Edge(_)
                         | SeamTarget::Widen

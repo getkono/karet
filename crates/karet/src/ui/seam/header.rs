@@ -8,6 +8,7 @@
 use karet_core::ThemeRole;
 use karet_filetype::IconStyle;
 use karet_theme::Theme;
+use karet_widgets::UiIcon;
 use karet_widgets::glyph::slot;
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -105,10 +106,65 @@ pub(super) fn draw(
         lenses.push((merge(glyph, name), index));
     }
 
+    // Right-aligned, and placed last so the row's own content decides whether there is
+    // room. The navigator's rows are its scarcest resource, so these cost none of them —
+    // and when the header is too narrow they are simply absent rather than overlapping
+    // the name, with `s` and `S` still doing the same thing.
+    let (sync, force_sync) = place_actions(&mut spans, theme, area, state, icons, x);
+
     state.hits.crumbs = crumbs;
     state.hits.lenses = lenses;
     state.hits.config = config;
+    state.hits.sync = sync;
+    state.hits.force_sync = force_sync;
     f.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// Pad out to the right edge and place the two sync affordances there.
+///
+/// Returns their rects, both zero-width when the row has no room left for them.
+fn place_actions(
+    spans: &mut Vec<Span<'static>>,
+    theme: &Theme,
+    area: Rect,
+    state: &SeamViewState,
+    icons: IconStyle,
+    used: u16,
+) -> (Rect, Rect) {
+    let sync_label = format!(" {}", slot(UiIcon::Refresh.glyph(icons), icons));
+    let force_label = format!(" {}!  ", slot(UiIcon::Refresh.glyph(icons), icons));
+    let sync_width = karet_widgets::text::width(&sync_label);
+    let force_width = karet_widgets::text::width(&force_label);
+    let needed = u16::try_from(sync_width.saturating_add(force_width)).unwrap_or(u16::MAX);
+
+    let remaining = area.right().saturating_sub(used);
+    if remaining < needed {
+        return (Rect::default(), Rect::default());
+    }
+
+    let pad = remaining.saturating_sub(needed);
+    if pad > 0 {
+        spans.push(Span::raw(" ".repeat(usize::from(pad))));
+    }
+    let mut x = used.saturating_add(pad);
+
+    // Emphasized while a sync is running, so the row the reader clicked says it is
+    // working without a spinner stealing the caveat area.
+    let running = state.syncing.is_some();
+    let style = if running {
+        theme
+            .style(ThemeRole::DiagnosticInfo)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        theme.style(ThemeRole::Muted)
+    };
+
+    let sync = span_rect(area, x, area.y, sync_width);
+    spans.push(Span::styled(sync_label, style));
+    x = x.saturating_add(u16::try_from(sync_width).unwrap_or(u16::MAX));
+    let force = span_rect(area, x, area.y, force_width);
+    spans.push(Span::styled(force_label, style));
+    (sync, force)
 }
 
 /// The smallest rect covering both, treating a zero-width one as absent.

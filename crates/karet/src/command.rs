@@ -515,6 +515,10 @@ pub enum Command {
     SeamCopyIdentity,
     /// Copy the query this Seam view is equivalent to.
     SeamCopyQuery,
+    /// Re-index what changed since the Seam view was last built.
+    SeamSync,
+    /// Discard the stored index and read every file again.
+    SeamForceSync,
     /// Move the Seam selection down within its column.
     SeamNextRow,
     /// Move the Seam selection up within its column.
@@ -868,6 +872,8 @@ impl Command {
             Self::SeamConfiguration => "Seam: Set Configuration",
             Self::SeamCopyIdentity => "Seam: Copy Node Identity",
             Self::SeamCopyQuery => "Seam: Copy Query",
+            Self::SeamSync => "Seam: Sync",
+            Self::SeamForceSync => "Seam: Force Re-sync",
             Self::ShowCommitGraph => "Source Control: Commit Graph",
             Self::CommitGraphNext => "Commit Graph: Next Commit",
             Self::CommitGraphPrev => "Commit Graph: Previous Commit",

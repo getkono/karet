@@ -19,7 +19,7 @@ use crate::id::SeamId;
 
 /// The kind of relation an edge expresses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "kebab-case"))]
 #[non_exhaustive]
 pub enum EdgeKind {
@@ -73,7 +73,7 @@ impl EdgeKind {
 
 /// What an edge points at.
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "kebab-case"))]
 pub enum Endpoint {
     /// A node in this package's tree.
@@ -130,7 +130,7 @@ impl Endpoint {
 
 /// One typed relation between a node and something else.
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Edge {
     /// Which relation this is.
     pub kind: EdgeKind,
@@ -174,6 +174,16 @@ impl EdgeStore {
     #[must_use]
     pub fn all(&self) -> &[Edge] {
         &self.edges
+    }
+
+    /// Take every edge, consuming the store.
+    ///
+    /// Merging one index into another re-assigns node ids, so the edges are rebuilt
+    /// rather than kept — this hands them over without cloning what is about to be
+    /// dropped.
+    #[must_use]
+    pub fn into_all(self) -> Vec<Edge> {
+        self.edges
     }
 
     /// How many edges are stored.

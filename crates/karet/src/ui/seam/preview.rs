@@ -426,7 +426,7 @@ mod tests {
     #[test]
     fn the_block_fills_its_budget_whatever_was_answered() {
         let theme = Theme::dark();
-        let mut state = SeamViewState::pending();
+        let mut state = SeamViewState::pending(std::path::PathBuf::new());
         // Nothing answered, an error, a node mid-file, and a node at line zero all have
         // to occupy the same rows, or the pane below shifts as the selection moves.
         let answers = [
@@ -458,7 +458,7 @@ mod tests {
     fn a_wrapped_signature_is_painted_whole() {
         // The bug this pane had: a four-line signature showed two lines and an ellipsis.
         let theme = Theme::dark();
-        let mut state = SeamViewState::pending();
+        let mut state = SeamViewState::pending(std::path::PathBuf::new());
         state.preview = Some(Ok(built(20, 3, 4, 40, 46)));
         let rows = painted(&rows(&theme, &state, 60, 13, IconStyle::Ascii));
         for offset in 0..4 {
@@ -513,7 +513,7 @@ mod tests {
         // The fetch cap cut the middle out; the marker has to account for both the rows
         // the pane could not show and the lines the worker never sent.
         let theme = Theme::dark();
-        let mut state = SeamViewState::pending();
+        let mut state = SeamViewState::pending(std::path::PathBuf::new());
         let mut preview = built(0, 3, 1, 200, 206);
         preview.dropped = 300;
         state.preview = Some(Ok(preview));
@@ -528,7 +528,7 @@ mod tests {
     #[test]
     fn context_the_file_does_not_have_is_reserved_blank() {
         let theme = Theme::dark();
-        let mut state = SeamViewState::pending();
+        let mut state = SeamViewState::pending(std::path::PathBuf::new());
         state.preview = Some(Ok(preview(0, 0, 2, 6)));
         let rows = rows(
             &theme,
@@ -547,7 +547,7 @@ mod tests {
     #[test]
     fn trailing_context_comes_from_after_the_node() {
         let theme = Theme::dark();
-        let mut state = SeamViewState::pending();
+        let mut state = SeamViewState::pending(std::path::PathBuf::new());
         state.preview = Some(Ok(built(0, 3, 1, 4, 10)));
         let rows = painted(&rows(
             &theme,

@@ -36,6 +36,8 @@ impl Command {
             Self::SeamConfiguration => "config",
             Self::SeamCopyIdentity => "copy id",
             Self::SeamCopyQuery => "copy query",
+            Self::SeamSync => "sync",
+            Self::SeamForceSync => "force re-sync",
             // Global.
             Self::Quit => "quit",
             Self::ToggleSidebar => "sidebar",

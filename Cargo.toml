@@ -210,6 +210,11 @@ ssh-key = { version = "0.6.7", default-features = false, features = ["alloc", "s
 # Filesystem watching (karet-watch)
 notify                 = "8.2"
 notify-debouncer-full  = "0.7"
+# Parallelism
+# Data parallelism for the seam index: packages fan out, and each package's module
+# walk is a work-stolen frontier. Already in the lock file transitively (via nucleo).
+rayon         = "1.12"
+
 # Search
 ignore        = "0.4.26"
 regex         = "1.12.4"

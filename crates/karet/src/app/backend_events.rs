@@ -330,6 +330,17 @@ impl App {
             SessionEvent::SeamIndexed { summary, nodes } => {
                 self.on_seam_indexed(id, summary, nodes);
             },
+            SessionEvent::SeamPackageIndexed {
+                order,
+                root,
+                nodes,
+                unresolved_modules,
+            } => self.on_seam_package_indexed(id, order, &root, nodes, unresolved_modules),
+            SessionEvent::SeamIndexFinished {
+                summary,
+                parsed,
+                files,
+            } => self.on_seam_index_finished(id, summary, parsed, files),
             SessionEvent::SeamIndexFailed { message } => self.on_seam_index_failed(id, message),
             SessionEvent::SeamQueryResult { nodes, error, .. } => {
                 self.on_seam_query_result(id, nodes, error);

@@ -13,6 +13,7 @@ use karet_session::api::SeamNodeView;
 use karet_session::api::SeamPreview;
 use karet_session::api::SeamQueryError;
 use karet_session::api::SeamSummary;
+use karet_session::api::SeamSync;
 
 use super::Reroot;
 use super::SeamFocus;
@@ -47,7 +48,7 @@ impl Tab {
     pub fn seam(root: std::path::PathBuf) -> Self {
         Self::new(
             Self::seam_title(&root),
-            TabKind::Seam(Box::new(SeamViewState::pending())),
+            TabKind::Seam(Box::new(SeamViewState::pending(root))),
         )
     }
 
@@ -57,7 +58,7 @@ impl Tab {
     /// where the view reads is not the same as closing it and opening another.
     pub(crate) fn repoint_seam(&mut self, root: std::path::PathBuf) {
         self.title = Self::seam_title(&root);
-        self.kind = TabKind::Seam(Box::new(SeamViewState::pending()));
+        self.kind = TabKind::Seam(Box::new(SeamViewState::pending(root)));
     }
 }
 
@@ -163,7 +164,44 @@ impl App {
             None => self.push_tab(Tab::seam(root.clone())),
         }
         self.apply_seam_settings();
-        self.seam_index_req = self.send(SessionCommand::IndexSeams { root: Some(root) });
+        self.request_seam_index(root, SeamSync::Incremental);
+    }
+
+    /// Re-index what changed, keeping everything the stored index still describes.
+    pub(crate) fn seam_sync(&mut self) {
+        self.start_seam_sync(SeamSync::Incremental);
+    }
+
+    /// Throw the stored index away and read every file again.
+    ///
+    /// The recourse when the stored index is itself suspect. Nothing else can detect that,
+    /// which is why it is a button rather than something inferred.
+    pub(crate) fn seam_force_sync(&mut self) {
+        self.start_seam_sync(SeamSync::Forced);
+    }
+
+    /// Start a sync of the open Seam view.
+    fn start_seam_sync(&mut self, mode: SeamSync) {
+        let Some(root) = self.seam_view().map(|state| state.root.clone()) else {
+            self.status = Some("seam: open the Seam view first".to_owned());
+            return;
+        };
+        if let Some(state) = self.seam_view() {
+            state.begin_sync();
+        }
+        self.status = Some(match mode {
+            SeamSync::Incremental => "seam: syncing…".to_owned(),
+            SeamSync::Forced => "seam: rebuilding from source…".to_owned(),
+        });
+        self.request_seam_index(root, mode);
+    }
+
+    /// Send the index request and record what the view is waiting on.
+    fn request_seam_index(&mut self, root: std::path::PathBuf, mode: SeamSync) {
+        self.seam_index_req = self.send(SessionCommand::IndexSeams {
+            root: Some(root),
+            mode,
+        });
     }
 
     /// Seed a freshly opened view from the reader's settings.
@@ -284,6 +322,66 @@ impl App {
             // Ask for what the reader just landed on. Without this the detail pane stays
             // empty until they press a key, which reads as a view that failed to load.
             self.request_seam_node();
+        }
+    }
+
+    /// Merge one package that has finished indexing.
+    ///
+    /// Arrives while the request is still outstanding, so the request id is checked
+    /// without being cleared — the run is not over until `SeamIndexFinished`.
+    pub(crate) fn on_seam_package_indexed(
+        &mut self,
+        id: Option<RequestId>,
+        order: usize,
+        root: &str,
+        nodes: Vec<SeamNodeView>,
+        unresolved: Vec<(String, Vec<std::path::PathBuf>)>,
+    ) {
+        if id.is_none() || id != self.seam_index_req {
+            return;
+        }
+        let Some(state) = self.seam_view() else {
+            return;
+        };
+        let first = state.selection.is_empty();
+        state.adopt_package(order, root, nodes, unresolved);
+        // Land on something as soon as there is something to land on, so the facet pane
+        // has content from the first package rather than from the last.
+        if first {
+            if let Some(state) = self.seam_view() {
+                state.move_row(0);
+            }
+            self.request_seam_node();
+        }
+    }
+
+    /// Settle the view once every package is in.
+    pub(crate) fn on_seam_index_finished(
+        &mut self,
+        id: Option<RequestId>,
+        summary: SeamSummary,
+        parsed: usize,
+        files: usize,
+    ) {
+        if !self.awaiting_seam_index(id) {
+            return;
+        }
+        let syncing = self.seam_view().and_then(|state| state.syncing).is_some();
+        if let Some(state) = self.seam_view() {
+            state.finish_sync(summary);
+            if state.selection.is_empty() {
+                state.move_row(0);
+            }
+        }
+        // Said only for a sync the reader asked for: the first index of a view is not a
+        // report about what changed, and announcing "0 of 524 files" on open would be
+        // noise about work nobody requested.
+        if syncing {
+            self.status = Some(match parsed {
+                0 => format!("seam: up to date ({files} files)"),
+                1 => format!("seam: re-read 1 of {files} files"),
+                _ => format!("seam: re-read {parsed} of {files} files"),
+            });
         }
     }
 

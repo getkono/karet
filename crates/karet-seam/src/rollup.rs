@@ -13,7 +13,7 @@ use crate::model::Lens;
 
 /// Per-lens facet counts over a node's whole subtree, including the node itself.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(transparent))]
 pub struct Rollups([u32; LENSES.len()]);
 

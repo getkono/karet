@@ -69,7 +69,7 @@ aicommit-core = { workspace = true, optional = true }   # AI commit-message gene
 karet-search = { workspace = true, features = ["serde"] } # workspace search runs on the backend's worker
 # The seam index is owned by its own worker and projected across the seam; `lang-rust`
 # and `lang-python` are the mappings that exist, so those are the grammars it can use.
-karet-seam = { workspace = true, features = ["lang-rust", "lang-python", "lang-typescript", "lang-swift", "lang-kotlin"] }
+karet-seam = { workspace = true, features = ["serde", "lang-rust", "lang-python", "lang-typescript", "lang-swift", "lang-kotlin"] }
 karet-watch.workspace = true          # centralized filesystem watching
 karet-supervisor.workspace = true     # crash-safe process ownership + shared LSP broker
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync", "macros", "process", "time", "net", "io-util"] }
@@ -78,6 +78,12 @@ thiserror.workspace = true
 ec4rs = { workspace = true, features = ["language-tags"] } # settings / EditorConfig + spelling_language
 spellbook.workspace = true            # spell-check → diagnostics (migrated from the app)
 directories.workspace = true          # server-side config / session paths
+# The seam index cache, which is written once per sync and read on every cold start —
+# so it is worth the compactness of a binary encoding over JSON's inspectability.
+ciborium.workspace    = true
+# The stored index decodes in parallel: it is the one part of a warm start that would
+# otherwise stay serial while the cold path it replaces runs on every core.
+rayon.workspace       = true
 command-group.workspace = true        # crash-safe process groups / Windows Job Objects
 serde = { workspace = true }          # derive Deserialize/Serialize for the Settings schema
 serde_json.workspace = true           # the merge/deserialize target for JSONC config

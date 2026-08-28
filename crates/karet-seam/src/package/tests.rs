@@ -353,9 +353,14 @@ fn the_file_budget_is_shared_across_packages() -> TestResult {
         .filter(|path| path.extension().is_some_and(|ext| ext == "rs"))
         .count();
     assert_eq!(scanned, 2, "the budget is per index, not per package");
-    // The third package never got a root at all: absent, which `truncated_after`
-    // explains, rather than present and falsely empty.
-    assert_eq!(root_names(&index), ["alpha", "beta"]);
+    // Every discovered package keeps its root, including the one the budget never
+    // reached. Discovery is complete and cheap; only *reading* is capped, so the
+    // package list is a fact the cap does not touch — and `truncated_after` says the
+    // contents are partial. Dropping the root instead would claim the workspace has no
+    // such member, which is the confusion this crate exists to avoid. It would also be
+    // unanswerable now that packages are read concurrently: which member fell off the
+    // end would depend on which core finished first.
+    assert_eq!(root_names(&index), ["alpha", "beta", "gamma"]);
     Ok(())
 }
 

@@ -97,6 +97,8 @@ pub(crate) enum Reroot {
 
 /// The Seam view's whole state.
 pub(crate) struct SeamViewState {
+    /// The root this view reads, and the one a sync re-reads.
+    pub(crate) root: PathBuf,
     /// Every node, by identity.
     pub(crate) nodes: HashMap<String, SeamNodeView>,
     /// The tree roots, in order.
@@ -142,6 +144,16 @@ pub(crate) struct SeamViewState {
     pub(crate) files: HashSet<PathBuf>,
     /// The in-flight index request, driving the delayed placeholder.
     pub(crate) loading_since: Option<Pending>,
+    /// How many packages have landed in the sync now running, if one is.
+    pub(crate) syncing: Option<usize>,
+    /// Each root's position in discovery order, so the package column is stable.
+    pub(crate) root_order: HashMap<String, usize>,
+    /// Which package roots this sync has already replaced.
+    ///
+    /// A sync replaces each package the first time it reports, and merges thereafter.
+    /// Without this a package that lost a node would keep it, because merging alone never
+    /// removes anything.
+    pub(crate) replaced: HashSet<String>,
     /// Why the package could not be indexed, when it could not.
     pub(crate) error: Option<String>,
     /// Where the last frame painted everything clickable.
@@ -154,13 +166,14 @@ pub(crate) struct SeamViewState {
 }
 
 impl SeamViewState {
-    /// A view awaiting its first index.
+    /// A view awaiting its first index of `root`.
     ///
-    /// The root it was opened on lives in the tab's title and in the request that was
-    /// sent for it; the view itself is identified by what the index answers, so holding a
-    /// second copy here would only be something to keep in step.
-    pub(crate) fn pending() -> Self {
+    /// The root is held because a sync has to ask for the same one again, and the tab
+    /// keeps only a display title. It is set once when the view is opened or re-pointed
+    /// and never derived from an answer, so there is nothing to keep in step.
+    pub(crate) fn pending(root: PathBuf) -> Self {
         Self {
+            root,
             nodes: HashMap::new(),
             roots: Vec::new(),
             summary: SeamSummary::default(),
@@ -182,6 +195,9 @@ impl SeamViewState {
             facet_row: 0,
             files: HashSet::new(),
             loading_since: Some(Pending::start()),
+            syncing: None,
+            root_order: HashMap::new(),
+            replaced: HashSet::new(),
             error: None,
             hits: geometry::SeamHits::default(),
             hover: None,
@@ -202,8 +218,103 @@ impl SeamViewState {
             .collect();
         self.summary = summary;
         self.loading_since = None;
+        self.syncing = None;
+        self.replaced.clear();
         self.error = None;
         self.repair();
+    }
+
+    /// Begin a sync: keep the tree on screen, and start counting packages in.
+    ///
+    /// The previous tree stays until its replacement arrives, package by package. Clearing
+    /// it here would blank the view for the length of a sync in exchange for nothing — the
+    /// reader is looking at an answer that is still true for every package not yet re-read.
+    pub(crate) fn begin_sync(&mut self) {
+        self.syncing = Some(0);
+        self.replaced.clear();
+        self.error = None;
+    }
+
+    /// Merge one package's nodes, replacing whatever that package held before.
+    ///
+    /// Packages arrive in completion order, so this must not assume anything about which
+    /// ones have landed. Each is complete and final on arrival, which is what lets it be
+    /// merged rather than accumulated into a pending pile.
+    pub(crate) fn adopt_package(
+        &mut self,
+        order: usize,
+        root: &str,
+        nodes: Vec<SeamNodeView>,
+        unresolved: Vec<(String, Vec<PathBuf>)>,
+    ) {
+        // A re-sync of a package the view already holds must replace it, not double it:
+        // a node the package no longer produces has to disappear.
+        if self.replaced.insert(root.to_owned()) {
+            self.forget_package(root);
+        }
+
+        for node in &nodes {
+            self.files.insert(node.file.clone());
+        }
+        if nodes.iter().any(|node| node.parent.is_none()) {
+            // Kept in discovery order, never arrival order: packages are read
+            // concurrently, so the column would otherwise be shuffled differently on
+            // every sync.
+            self.root_order.insert(root.to_owned(), order);
+            self.roots.push(root.to_owned());
+            self.roots
+                .sort_by_key(|id| self.root_order.get(id).copied().unwrap_or(usize::MAX));
+        }
+        for node in nodes {
+            self.nodes.insert(node.id.clone(), node);
+        }
+        self.summary.unresolved_modules.extend(unresolved);
+        self.summary.packages = self.roots.len();
+        self.summary.nodes = self.nodes.len();
+        self.summary.files = self.files.len();
+        self.syncing = Some(self.syncing.unwrap_or(0).saturating_add(1));
+        self.loading_since = None;
+    }
+
+    /// Settle the header once every package is in.
+    pub(crate) fn finish_sync(&mut self, summary: SeamSummary) {
+        // A package deleted from disk never reports, so it is not caught by the
+        // replace-on-first-report that keeps an edited package honest. Anything the run
+        // did not speak for is gone, and saying otherwise would leave the reader
+        // navigating a crate that no longer exists.
+        let gone: Vec<String> = self
+            .roots
+            .iter()
+            .filter(|root| !self.replaced.contains(*root))
+            .cloned()
+            .collect();
+        for root in gone {
+            self.forget_package(&root);
+        }
+
+        // Rebuilt rather than added to, so a dropped package takes its files with it.
+        // This set decides whether saving a file re-indexes, and the whole-tree path
+        // derives it the same way.
+        self.files = self.nodes.values().map(|node| node.file.clone()).collect();
+
+        self.summary = summary;
+        self.syncing = None;
+        self.replaced.clear();
+        self.loading_since = None;
+        self.error = None;
+        self.repair();
+    }
+
+    /// Drop a package root and everything beneath it.
+    fn forget_package(&mut self, root: &str) {
+        let under = format!("{root}::");
+        self.nodes
+            .retain(|id, _| id != root && !id.starts_with(&under));
+        self.roots.retain(|id| id != root);
+        self.root_order.remove(root);
+        self.summary
+            .unresolved_modules
+            .retain(|(id, _)| id != root && !id.starts_with(&under));
     }
 
     /// Record that indexing failed.
