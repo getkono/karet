@@ -334,3 +334,47 @@ fn recovery_discards_the_backups_only_on_the_third_row() {
             .any(|c| matches!(c, SessionCommand::DiscardSwaps))
     );
 }
+
+#[test]
+fn a_dialog_displaced_by_another_releases_what_it_had_parked() {
+    let mut app = app();
+    dirty_doc_tab(&mut app, "notes.md", 1);
+    app.guarded_close(CloseRequest::Quit);
+    assert!(app.pending_close.is_some());
+
+    // A backend event can raise a question over an unanswered one. The close is
+    // never going to be answered now, so it must not stay armed with nothing on
+    // screen to release it.
+    app.on_backend_event(
+        None,
+        SessionEvent::LanguageServerInstallRequired {
+            server: karet_session::LanguageServerId::Texlab,
+            language: "latex".into(),
+            enabled: true,
+        },
+    );
+    assert!(app.confirm.is_some(), "the newer question is up");
+    assert!(
+        app.pending_close.is_none(),
+        "the displaced close released its parked request"
+    );
+    assert!(!app.should_quit, "and did not run it either");
+}
+
+#[test]
+fn a_displaced_recovery_prompt_keeps_the_backups() {
+    let (backend, mut app) = recording_app();
+    app.arm_swap_recovery(vec![SwapInfo {
+        original: PathBuf::from("./notes.md"),
+        updated_unix_ms: 0,
+        conflict: false,
+    }]);
+    app.confirm(dialog());
+    assert!(app.pending_swaps.is_none());
+    assert!(
+        !sent(&backend)
+            .iter()
+            .any(|c| matches!(c, SessionCommand::DiscardSwaps)),
+        "being displaced must never delete a backup"
+    );
+}

@@ -142,6 +142,12 @@ impl App {
     /// activatable row, so that choice is what `Enter` runs on a dialog the user
     /// has not read.
     pub(crate) fn confirm(&mut self, dialog: ConfirmDialog) {
+        // Displacing a question is a way of not answering it, so the one being
+        // replaced is declined rather than dropped. A backend event can arrive
+        // while a dialog is up — a language server reporting itself missing, say,
+        // over an unanswered close prompt — and without this the close would stay
+        // parked in `pending_close` with nothing left on screen to release it.
+        self.confirm_cancel();
         // A confirmation outranks a context menu, and the menu's rows would
         // otherwise keep painting under it.
         self.context_menu = None;
