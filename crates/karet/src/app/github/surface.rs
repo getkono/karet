@@ -112,6 +112,12 @@ impl GithubSurface {
     /// a second copy: under tabs a duplicate was at least visible and closeable, but a
     /// stack the user pops with `Esc` would just accumulate them.
     pub(crate) fn push(&mut self, page: GithubViewState) {
+        // Nothing stacks on an ineligible workspace: a detail page with no dashboard
+        // beneath it would be a surface `Esc` could not get out of, and the next
+        // availability would replace it wholesale.
+        if !self.is_active() {
+            return;
+        }
         if let Some(index) = self.pages.iter().position(|open| open.same_resource(&page)) {
             self.active = index;
             return;

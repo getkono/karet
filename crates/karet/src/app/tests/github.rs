@@ -296,6 +296,9 @@ fn pull_request_body_comment_merge_and_readiness_controls_submit_typed_commands(
     app.backend = Some(backend.clone());
     app.view = View::GitHub;
     app.focus = Focus::Editor;
+    // A detail page stacks on the dashboard; the surface refuses to hold one without
+    // it, since `Esc` would then have nothing to fall back to.
+    app.apply_github_availability(Some(repository()), anonymous_auth());
     app.push_github_page(crate::app::github::github_pull_request(
         pull_request(12, false),
         true,
@@ -390,6 +393,9 @@ fn pull_request_tabs_use_commits_and_existing_range_diff_paths() {
     app.backend = Some(backend.clone());
     app.view = View::GitHub;
     app.focus = Focus::Editor;
+    // A detail page stacks on the dashboard; the surface refuses to hold one without
+    // it, since `Esc` would then have nothing to fall back to.
+    app.apply_github_availability(Some(repository()), anonymous_auth());
     app.push_github_page(crate::app::github::github_pull_request(
         pull_request(12, false),
         true,
@@ -706,4 +712,18 @@ fn the_github_view_names_a_workspace_with_no_github_behind_it() -> Result<(), St
         "the surface exists; it is the repository that does not"
     );
     Ok(())
+}
+
+#[test]
+fn nothing_stacks_on_a_workspace_with_no_github_behind_it() {
+    // The surface is empty or the dashboard is its floor — never a detail page on its
+    // own, which `Esc` could not get out of and the next availability would replace
+    // wholesale.
+    let mut app = app();
+    app.view = View::GitHub;
+
+    app.push_github_page(crate::app::github::github_issue(204, None));
+
+    assert!(!app.github.is_active());
+    assert!(app.github.pages().is_empty());
 }
