@@ -25,7 +25,7 @@ attribution, with line and semantic-scope modes.
 
 ```
 ┌ views ───────────────────────────────────────────────┐
-│  ✎ Editor   ⎈ GitHub   ⁂ Agents                      │  ← view switcher
+│  ✎ Editor   ⎈ GitHub                                 │  ← view switcher
 ├ tabs ────────────────────────────────────────────────┤
 │  main.rs   logo.png   [diff: app.rs]                 │
 ├ breadcrumb (collapses when the tab has no path) ─────┤
@@ -43,10 +43,13 @@ attribution, with line and semantic-scope modes.
 A persistent one-row **view switcher** owns the top of the terminal. A *view* sits
 above panes and tabs: the Editor view is the pane/tab shell below, while the others
 own the content area outright, so a surface that is not a document need not be
-wedged into a tab it does not behave like. The Agents view takes the full width —
-its sessions span every worktree, so this checkout's sidebar has nothing to say
-about them. (The GitHub and Agents surfaces themselves are still being built; both
-views render a placeholder today, and the GitHub dashboard remains an Editor tab.)
+wedged into a tab it does not behave like.
+
+The **GitHub view** is one such surface — issues, pull requests, and workflow runs,
+with a page strip of its own: the dashboard sits leftmost and never closes, detail
+pages stack on top of it, and `Esc` goes back. Opening a pull request's *Files
+changed* hands you to the Editor view, because a diff *is* a document. In a checkout
+whose `origin` is not on GitHub the view says so rather than sitting empty.
 
 Below it, a single switchable **sidebar** (Explorer / Search / Source Control) sits
 beside the **main area**. Overlays (quick-open, command palette) draw centered on
@@ -75,7 +78,7 @@ See [docs/binary-size.md](../../docs/binary-size.md).
 
 **Global:** `Ctrl+P` quick-open · `Ctrl+Shift+P` (or `F1`) command palette · `Ctrl+F`
 find in file · `Ctrl+Shift+F` workspace search · `Ctrl+B` toggle sidebar ·
-`Ctrl+1/2/3` Explorer/Search/Source Control · `Ctrl+K 1/2/3` Editor/GitHub/Agents
+`Ctrl+1/2/3` Explorer/Search/Source Control · `Ctrl+K 1/2` Editor/GitHub
 view · `Ctrl+C` copy · `Tab` switch focus · `Ctrl+Q` quit (`q` also quits in a
 viewer). The view switcher's buttons are also clickable, and each view has a
 `View: …` command-palette entry.

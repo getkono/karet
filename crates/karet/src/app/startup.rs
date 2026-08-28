@@ -24,6 +24,7 @@ impl App {
             icon_override: None,
             caps: TerminalCaps::detect(),
             view: View::default(),
+            github: github::GithubSurface::default(),
             focus: Focus::Sidebar,
             sidebar_panel: SidebarPanel::Explorer,
             sidebar_visible: true,
@@ -448,7 +449,6 @@ impl App {
                 | TabKind::LatexPreview { .. }
                 | TabKind::Hex { .. },
             ) => EditorTab::Pager,
-            Some(TabKind::Github(_)) => EditorTab::Github,
             Some(TabKind::LanguageServers(_)) => EditorTab::LanguageServers,
             Some(TabKind::CommitGraph { .. }) => EditorTab::CommitGraph,
             Some(TabKind::Seam(_)) => EditorTab::Seam,

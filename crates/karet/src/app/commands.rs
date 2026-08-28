@@ -42,6 +42,9 @@ impl App {
             Command::OpenFind => self.open_find(),
             Command::OpenGlobalSearch => self.start_global_search(),
             Command::CloseTab => self.request_close_active_tab(),
+            Command::GithubClosePage => {
+                self.close_github_page();
+            },
             Command::NextTab => self.next_tab(),
             Command::PrevTab => self.prev_tab(),
             Command::MoveTabLeft => self.move_active_tab(-1),

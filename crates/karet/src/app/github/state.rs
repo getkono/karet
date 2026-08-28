@@ -216,7 +216,83 @@ impl GithubViewState {
         Self::Dashboard(GithubDashboard::new(repository, auth))
     }
 
-    pub(crate) fn is_pinned(&self) -> bool {
-        matches!(self, Self::Dashboard(_))
+    /// The page's name, as shown on whatever strip is hosting it.
+    ///
+    /// Derived from the state rather than stored beside it: a creation form
+    /// *becomes* the resource it created once the response lands (see
+    /// `apply_github_issue`), so a stored copy would have to be rewritten in
+    /// lockstep with every such change — and would silently go stale the one time
+    /// it was not.
+    pub(crate) fn title(&self) -> String {
+        match self {
+            Self::Dashboard(_) => "GitHub".to_string(),
+            Self::Issue { number, .. } => format!("Issue #{number}"),
+            Self::NewIssue { .. } => "New GitHub Issue".to_string(),
+            Self::PullRequest(view) => format!("Pull Request #{}", view.pull_request.number),
+            Self::WorkflowRun { run, .. } => format!("Actions #{}", run.run_number),
+            Self::NewPullRequest { .. } => "New Pull Request".to_string(),
+        }
+    }
+
+    /// When this page started waiting on the backend, if something is still in
+    /// flight and no error has landed yet.
+    ///
+    /// Drives the delayed-loading reveal, so it has to answer for every page the
+    /// surface holds — not only the one in front. A page whose wait is invisible
+    /// here never schedules its repaint, and its placeholder would then appear only
+    /// on the next keystroke.
+    pub(crate) fn loading_since(&self) -> Option<Pending> {
+        match self {
+            Self::Dashboard(dashboard) => dashboard.loading_since,
+            Self::Issue {
+                pending: Some(_),
+                loading_since,
+                error: None,
+                ..
+            } => Some(*loading_since),
+            Self::PullRequest(view) if view.pending.is_some() && view.error.is_none() => {
+                Some(view.loading_since)
+            },
+            _ => None,
+        }
+    }
+
+    /// Whether both values stand for the same GitHub resource, ignoring how much of
+    /// it has loaded. Lets the surface focus an open page instead of stacking a
+    /// duplicate.
+    pub(crate) fn same_resource(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Dashboard(_), Self::Dashboard(_)) => true,
+            (Self::Issue { number: a, .. }, Self::Issue { number: b, .. }) => a == b,
+            (Self::PullRequest(a), Self::PullRequest(b)) => {
+                a.pull_request.number == b.pull_request.number
+            },
+            (Self::WorkflowRun { run: a, .. }, Self::WorkflowRun { run: b, .. }) => a.id == b.id,
+            // Two creation forms are two drafts, not one resource: opening a second
+            // must never silently discard what was typed into the first.
+            _ => false,
+        }
+    }
+
+    /// Every request this page is still waiting on.
+    pub(crate) fn pending_requests(&self) -> Vec<RequestId> {
+        match self {
+            Self::Dashboard(dashboard) => dashboard
+                .pending
+                .iter()
+                .chain(dashboard.login_pending.iter())
+                .copied()
+                .collect(),
+            Self::Issue { pending, .. } => pending.iter().copied().collect(),
+            Self::PullRequest(view) => view.pending.iter().copied().collect(),
+            Self::NewIssue { form, .. } => form
+                .submitting
+                .iter()
+                .chain(form.metadata_pending.iter())
+                .copied()
+                .collect(),
+            Self::NewPullRequest { form, .. } => form.submitting.iter().copied().collect(),
+            Self::WorkflowRun { .. } => Vec::new(),
+        }
     }
 }

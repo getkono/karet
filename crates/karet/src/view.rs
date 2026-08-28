@@ -20,23 +20,32 @@ pub enum View {
     Editor,
     /// The GitHub surface — issues, pull requests, and workflow runs.
     GitHub,
-    /// Agent sessions across worktrees.
-    Agents,
+    // #211: the Agents view ships commented out until its surface exists. It had no
+    // module, no state, and no backend behind it, so the switcher was offering a
+    // button that could only ever say "not available yet".
+    // /// Agent sessions across worktrees.
+    // Agents,
 }
 
 impl View {
     /// Every view, in switcher order.
-    pub const ALL: [Self; 3] = [Self::Editor, Self::GitHub, Self::Agents];
+    pub const ALL: [Self; 2] = [Self::Editor, Self::GitHub];
+    // #211: pub const ALL: [Self; 3] = [Self::Editor, Self::GitHub, Self::Agents];
 
     /// Whether the sidebar is drawn beside this view.
     ///
-    /// The Agents view owns the full terminal width: it lists sessions across
-    /// *every* worktree, so the sidebar's workspace-scoped panels — this
-    /// checkout's files, this checkout's changes — have nothing to say about
-    /// what it shows.
+    /// Every view shows it today. #211's Agents view will not: it lists sessions
+    /// across *every* worktree, so the sidebar's workspace-scoped panels — this
+    /// checkout's files, this checkout's changes — have nothing to say about what it
+    /// shows.
+    //
+    // The `self` argument is what makes this a property of the view rather than of the
+    // app, which is the whole point of asking a view; #211 restores the body below.
+    #[allow(clippy::unused_self, reason = "#211 restores the discriminant test")]
     #[must_use]
     pub const fn shows_sidebar(self) -> bool {
-        !matches!(self, Self::Agents)
+        true
+        // #211: !matches!(self, Self::Agents)
     }
 
     /// The view's name, as shown on the chrome row.
@@ -45,7 +54,7 @@ impl View {
         match self {
             Self::Editor => "Editor",
             Self::GitHub => "GitHub",
-            Self::Agents => "Agents",
+            // #211: Self::Agents => "Agents",
         }
     }
 
@@ -56,7 +65,7 @@ impl View {
         match self {
             Self::Editor => "EDITOR",
             Self::GitHub => "GITHUB",
-            Self::Agents => "AGENTS",
+            // #211: Self::Agents => "AGENTS",
         }
     }
 
@@ -66,7 +75,7 @@ impl View {
         match self {
             Self::Editor => UiIcon::ViewEditor,
             Self::GitHub => UiIcon::ViewGithub,
-            Self::Agents => UiIcon::ViewAgents,
+            // #211: Self::Agents => UiIcon::ViewAgents,
         }
     }
 }
@@ -83,11 +92,18 @@ mod tests {
     }
 
     #[test]
-    fn only_the_agents_view_takes_the_full_width() {
+    fn every_view_shows_the_sidebar() {
         assert!(View::Editor.shows_sidebar());
         assert!(View::GitHub.shows_sidebar());
-        assert!(!View::Agents.shows_sidebar());
     }
+
+    // #211: the Agents view is the one that will not.
+    // #[test]
+    // fn only_the_agents_view_takes_the_full_width() {
+    //     assert!(View::Editor.shows_sidebar());
+    //     assert!(View::GitHub.shows_sidebar());
+    //     assert!(!View::Agents.shows_sidebar());
+    // }
 
     #[test]
     fn every_focus_label_is_the_upper_cased_title() {

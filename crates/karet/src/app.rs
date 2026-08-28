@@ -316,6 +316,8 @@ pub struct App {
     pub(crate) caps: TerminalCaps,
     /// Which top-level view owns the content area.
     pub(crate) view: View,
+    /// The GitHub view's pages. Empty while the workspace is not GitHub-eligible.
+    pub(crate) github: github::GithubSurface,
     /// Which area has keyboard focus.
     pub(crate) focus: Focus,
     /// The active sidebar panel.

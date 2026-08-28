@@ -63,15 +63,16 @@ fn focus_target_derivation() {
 fn a_non_editor_view_owns_the_content_area() {
     // The view outranks the active tab: whatever tab is open behind it, keys aimed
     // at the content area belong to the showing view.
-    for (view, target) in [
-        (View::GitHub, FocusTarget::Github),
-        (View::Agents, FocusTarget::Agents),
-    ] {
-        assert_eq!(
-            FocusTarget::from(Focus::Editor, SidebarPanel::Explorer, EditorTab::Diff, view),
-            target
-        );
-    }
+    // #211 adds `(View::Agents, FocusTarget::Agents)` back beside this one.
+    assert_eq!(
+        FocusTarget::from(
+            Focus::Editor,
+            SidebarPanel::Explorer,
+            EditorTab::Diff,
+            View::GitHub
+        ),
+        FocusTarget::Github
+    );
     // …but the sidebar and the outline are not the content area, so they resolve
     // the same way in every view.
     assert_eq!(
@@ -79,7 +80,7 @@ fn a_non_editor_view_owns_the_content_area() {
             Focus::Sidebar,
             SidebarPanel::SourceControl,
             EditorTab::Plain,
-            View::Agents
+            View::GitHub
         ),
         FocusTarget::SourceControl
     );
@@ -94,8 +95,8 @@ fn a_non_editor_view_owns_the_content_area() {
     );
     // Self-contained, like the graph and seam browsers: never the editor's keys.
     assert_eq!(
-        active_layers(Context::focus(FocusTarget::Agents)),
-        &[Layer::Agents, Layer::Global]
+        active_layers(Context::focus(FocusTarget::Github)),
+        &[Layer::Github, Layer::Global]
     );
 }
 
@@ -107,7 +108,7 @@ fn the_view_switcher_chords_resolve_from_every_focus() {
     for (digit, view) in [
         ('1', View::Editor),
         ('2', View::GitHub),
-        ('3', View::Agents),
+        // #211: ('3', View::Agents),
     ] {
         let chord = KeyChord::from_event(key(KeyCode::Char(digit), KeyModifiers::NONE));
         // Global, so the switcher works from the sidebar as well as the content area.

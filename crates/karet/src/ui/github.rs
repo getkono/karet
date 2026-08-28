@@ -2,9 +2,11 @@
 
 mod detail;
 mod forms;
+mod strip;
 
 use detail::*;
 use forms::*;
+pub(super) use strip::draw_github_view;
 
 use super::*;
 use crate::app::github::DASHBOARD_ROW_HEIGHT;
@@ -319,7 +321,7 @@ fn draw_dashboard_rows(
             ScrollExtent::new(state.row_count(), state.first_visible, visible),
             ScrollExtent::default(),
         ),
-        ScrollSurface::TabRows,
+        ScrollSurface::GithubPage,
     );
 }
 

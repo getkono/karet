@@ -110,6 +110,7 @@ use Layer::Explorer;
 use Layer::ExplorerDeleteConfirm;
 use Layer::ExplorerEdit;
 use Layer::Find;
+use Layer::Github;
 use Layer::Global;
 use Layer::LanguageServers;
 use Layer::Outline;

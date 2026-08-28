@@ -19,7 +19,7 @@
   <circle cx="80" cy="37" r="6" fill="#28c840"/>
   <g clip-path="url(#grid-clip)" transform="translate(38 72)" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, &quot;DejaVu Sans Mono&quot;, monospace" font-size="15" xml:space="preserve">
     <text x="9" y="15" fill="#737aa2" textLength="72" lengthAdjust="spacingAndGlyphs" font-weight="700">✎ Editor</text>
-    <text x="99" y="15" fill="#3b4261" textLength="162" lengthAdjust="spacingAndGlyphs">⎈ GitHub  ⁂ Agents</text>
+    <text x="99" y="15" fill="#3b4261" textLength="81" lengthAdjust="spacingAndGlyphs">⎈ GitHub</text>
     <rect x="414" y="20" width="108" height="20" fill="#c0caf5"/>
     <text x="9" y="35" fill="#737aa2" textLength="72" lengthAdjust="spacingAndGlyphs" font-weight="700">EXPLORER</text>
     <text x="99" y="35" fill="#3b4261" textLength="63" lengthAdjust="spacingAndGlyphs">▤ ▰ ↻ −</text>

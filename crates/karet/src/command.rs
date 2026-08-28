@@ -114,6 +114,8 @@ pub enum Command {
     /// Copy a web URL for the active file at the current `HEAD` commit on its
     /// origin remote (GitHub, GitLab, Gitea, or Forgejo).
     CopyRemoteFileUrl,
+    /// Close the GitHub page in front, falling back to the one beneath it.
+    GithubClosePage,
     /// Copy a GitHub permalink for the active file: the blob at the `HEAD` commit,
     /// anchored to the caret line in a code tab.
     CopyGithubPermalink,
@@ -621,7 +623,7 @@ impl Command {
             Self::ToggleFocus => "View: Toggle Focus (Sidebar / Editor)",
             Self::SelectView(View::Editor) => "View: Editor",
             Self::SelectView(View::GitHub) => "View: GitHub",
-            Self::SelectView(View::Agents) => "View: Agents",
+            // #211: Self::SelectView(View::Agents) => "View: Agents",
             Self::SelectPanel(SidebarPanel::Explorer) => "View: Show Explorer",
             Self::SelectPanel(SidebarPanel::Search) => "View: Show Search",
             Self::SelectPanel(SidebarPanel::SourceControl) => "View: Show Source Control",
@@ -664,6 +666,7 @@ impl Command {
             Self::CopyRelativePath => "Copy Relative Path of Active File",
             Self::RevealActiveInExplorer => "File: Reveal Active File in Explorer",
             Self::CopyRemoteFileUrl => "Copy Remote File URL of Active File",
+            Self::GithubClosePage => "GitHub: Close Page",
             Self::CopyGithubPermalink => "Copy GitHub Permalink of Active File",
             Self::CopyGithubHeadLink => "Copy GitHub Head Link of Active File",
             Self::OpenChangesWithPrevious => "Open Changes: With Previous Revision",

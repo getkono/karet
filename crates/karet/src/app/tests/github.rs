@@ -10,7 +10,7 @@ use karet_session::GithubWorkflowRun;
 
 use super::support::*;
 use crate::app::*;
-fn anonymous_auth() -> GithubAuth {
+pub(super) fn anonymous_auth() -> GithubAuth {
     GithubAuth {
         source: GithubAuthSource::Anonymous,
         can_write: false,
@@ -39,239 +39,50 @@ pub(super) fn pull_request(number: u64, draft: bool) -> GithubPullRequest {
     }
 }
 
-#[test]
-fn github_dashboard_is_singleton_leftmost_and_uncloseable() {
+/// An app sitting in the GitHub view with an eligible repository, which is where
+/// every GitHub key and click below is aimed. `push_tab` used to set `Focus::Editor`
+/// as a side effect; a page pushed onto the surface does not, so it is set here.
+fn github_app() -> App {
     let mut app = app();
-    let repository = repository();
-    let auth = anonymous_auth();
-    app.apply_github_availability(Some(repository.clone()), auth.clone());
-    app.apply_github_availability(Some(repository), auth);
-
-    assert_eq!(app.tabs.len(), 1);
-    assert!(app.tabs[0].is_github_dashboard());
-    app.request_close_active_tab();
-    assert!(app.tabs[0].is_github_dashboard());
-
-    app.push_tab(Tab::welcome());
-    assert!(app.tabs[0].is_github_dashboard());
-    app.move_tab(0, 1);
-    assert!(app.tabs[0].is_github_dashboard());
-    app.close_all_tabs();
-    assert_eq!(app.tabs.len(), 1);
-    assert!(app.tabs[0].is_github_dashboard());
+    app.view = View::GitHub;
+    app.focus = Focus::Editor;
+    app.apply_github_availability(Some(repository()), anonymous_auth());
+    app
 }
 
 #[test]
-fn github_dashboard_install_does_not_steal_focus_from_the_startup_preview() {
-    let dir = test_dir("github_startup_focus");
-    let _ = std::fs::create_dir_all(&dir);
-    let readme = dir.join("README.md");
-    let _ = std::fs::write(&readme, "# karet\n");
+fn every_github_page_names_itself_from_its_own_state() {
+    // The strip and the tab both label a page with `title()`, and a creation form
+    // *becomes* the resource it created (`apply_github_issue`) rather than being
+    // replaced — so the name has to follow the state, not be stored beside it.
+    use crate::app::github::GithubViewState;
 
-    let mut app = app();
-    app.open_initial_preview(&readme);
-    assert_eq!(app.tabs.len(), 1);
-    assert_eq!(app.focus, Focus::Sidebar);
+    let dashboard = GithubViewState::dashboard(repository(), anonymous_auth());
+    assert_eq!(dashboard.title(), "GitHub");
 
-    // Availability arrives asynchronously, well after startup settled.
-    app.apply_github_availability(Some(repository()), anonymous_auth());
+    let issue = crate::app::github::github_issue(204, None);
+    assert_eq!(issue.title(), "Issue #204");
 
-    assert_eq!(app.tabs.len(), 2, "the preview tab survives the dashboard");
-    assert!(app.tabs[0].is_github_dashboard());
-    assert_eq!(app.active, 1, "the README stays the active tab");
-    assert_eq!(app.tabs[app.active].path(), Some(readme.as_path()));
-    assert_eq!(app.focus, Focus::Sidebar, "the sidebar keeps focus");
+    let review = crate::app::github::github_pull_request(pull_request(262, false), true, None);
+    assert_eq!(review.title(), "Pull Request #262");
 
-    // ...and the unfocused dashboard still kicked off its first section load.
-    let dashboard = app.tabs.first().and_then(|tab| match &tab.kind {
-        TabKind::Github(crate::app::github::GithubViewState::Dashboard(dashboard)) => {
-            Some(dashboard)
-        },
-        _ => None,
-    });
-    assert!(dashboard.is_some_and(|dashboard| dashboard.loading_since.is_some()));
-
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn github_dashboard_disappears_when_repository_becomes_ineligible() {
-    let mut app = app();
-    app.apply_github_availability(Some(repository()), anonymous_auth());
-    app.push_tab(Tab::welcome());
-    app.apply_github_availability(None, anonymous_auth());
-
-    assert!(!app.all_tabs().any(Tab::is_github_dashboard));
-    assert!(!app.tabs.is_empty());
-}
-
-#[test]
-fn github_dashboard_cannot_be_moved_off_the_leftmost_slot() {
-    let mut app = app();
-    app.apply_github_availability(Some(repository()), anonymous_auth());
-    app.push_tab(Tab::welcome());
-    assert_eq!(app.tabs.len(), 2);
-    assert!(app.tabs[0].is_github_dashboard());
-
-    // "View: Move Editor Right" with the pin in front.
-    app.set_active(0);
-    app.move_active_tab(1);
-    assert!(
-        app.tabs[0].is_github_dashboard(),
-        "the pinned dashboard must not move off the leftmost slot"
-    );
-
-    // ...and its neighbour must not be able to swap it rightwards either.
-    app.set_active(1);
-    app.move_active_tab(-1);
-    assert!(
-        app.tabs[0].is_github_dashboard(),
-        "a neighbour must not displace the pinned dashboard"
-    );
-}
-
-#[test]
-fn closing_editors_to_the_right_spares_the_pinned_dashboard() {
-    let mut app = app();
-    app.apply_github_availability(Some(repository()), anonymous_auth());
-    app.push_tab(Tab::welcome());
-
-    // Seat the dashboard to the right of the active tab directly, so this pins
-    // `close_tabs_to_right` on its own rather than through whatever else can
-    // put it there.
-    app.tabs.swap(0, 1);
-    app.set_active(0);
-    assert!(app.tabs[1].is_github_dashboard());
-
-    app.close_tabs_to_right();
-    assert!(
-        app.tabs.iter().any(Tab::is_github_dashboard),
-        "closing editors to the right must spare the uncloseable pinned dashboard"
-    );
+    let form = crate::app::github::github_new_issue(repository(), None);
+    assert_eq!(form.title(), "New GitHub Issue");
 }
 
 /// Availability is re-emitted on every `GithubJob::Refresh`, so the install path
 /// has to recognise a dashboard parked in a pane that is not the focused one.
 #[test]
-fn github_dashboard_stays_a_singleton_across_split_panes() {
-    let mut app = app();
-    app.apply_github_availability(Some(repository()), anonymous_auth());
-    app.push_tab(Tab::welcome());
-    app.split_focused(SplitDir::Right);
-
-    assert!(
-        !app.tabs.iter().any(Tab::is_github_dashboard),
-        "the new pane hosts no dashboard"
-    );
-    assert!(
-        app.stored
-            .values()
-            .flat_map(|pane| pane.tabs.iter())
-            .any(Tab::is_github_dashboard),
-        "the dashboard stayed behind in its host pane"
-    );
-
-    app.apply_github_availability(Some(repository()), anonymous_auth());
-
-    assert_eq!(
-        app.all_tabs()
-            .filter(|tab| tab.is_github_dashboard())
-            .count(),
-        1,
-        "a refresh must update the parked dashboard, not install a second one"
-    );
-    assert!(
-        !app.tabs.iter().any(Tab::is_github_dashboard),
-        "and must not pull it into the focused pane"
-    );
-}
-
-#[test]
-fn github_dashboard_is_removed_from_a_background_pane() {
-    let mut app = app();
-    app.apply_github_availability(Some(repository()), anonymous_auth());
-    app.push_tab(Tab::welcome());
-    app.split_focused(SplitDir::Right);
-
-    app.apply_github_availability(None, anonymous_auth());
-
-    assert!(!app.all_tabs().any(Tab::is_github_dashboard));
-    assert!(!app.tabs.is_empty());
-    assert!(
-        app.stored.values().all(|pane| !pane.tabs.is_empty()),
-        "a pane the dashboard vacated falls back to a tab"
-    );
-}
-
-#[test]
-fn splitting_on_the_dashboard_does_not_clone_it() {
-    let mut app = app();
-    app.apply_github_availability(Some(repository()), anonymous_auth());
-    assert_eq!(app.tabs.len(), 1);
-    assert!(app.tabs[0].is_github_dashboard());
-
-    app.split_focused(SplitDir::Right);
-
-    assert!(
-        matches!(app.tabs[0].kind, TabKind::Welcome),
-        "the new pane opens on a welcome tab, not a copy of the pin"
-    );
-    assert_eq!(
-        app.all_tabs()
-            .filter(|tab| tab.is_github_dashboard())
-            .count(),
-        1
-    );
-}
-
-#[test]
-fn github_dashboard_cannot_be_dragged_into_another_pane() {
-    let mut app = app();
-    app.apply_github_availability(Some(repository()), anonymous_auth());
-    app.push_tab(Tab::welcome());
-    app.split_focused(SplitDir::Right);
-
-    // Back to the pane hosting the dashboard, with the pin in front.
-    app.focus_pane_cycle(false);
-    app.set_active(0);
-    assert!(app.tabs[0].is_github_dashboard());
-
-    let targets: Vec<_> = app.stored.keys().copied().collect();
-    assert!(!targets.is_empty(), "the split left a pane to drop onto");
-    for target in targets {
-        app.drop_tab_on(target, DropZone::Center);
-    }
-
-    assert!(
-        app.tabs[0].is_github_dashboard(),
-        "the pin never leaves its pane"
-    );
-    assert!(
-        !app.stored
-            .values()
-            .flat_map(|pane| pane.tabs.iter())
-            .any(Tab::is_github_dashboard)
-    );
-}
-
-#[test]
 fn github_dashboard_opens_a_masked_in_tui_sign_in_control() {
-    let mut app = app();
-    app.apply_github_availability(Some(repository()), anonymous_auth());
+    let mut app = github_app();
     // Installing the dashboard no longer grabs focus, so drive it as a user does:
     // select the tab first.
-    app.select_tab(0);
 
     assert!(app.github_key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE)));
     assert!(app.github_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE)));
     assert!(app.github_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE)));
 
-    let dashboard = app.tabs.first().and_then(|tab| match &tab.kind {
-        TabKind::Github(crate::app::github::GithubViewState::Dashboard(dashboard)) => {
-            Some(dashboard)
-        },
-        _ => None,
-    });
+    let dashboard = app.github.dashboard();
     assert!(dashboard.is_some_and(|dashboard| dashboard.login_editing));
     assert_eq!(
         dashboard.map(|dashboard| dashboard.login_token.as_str()),
@@ -281,9 +92,7 @@ fn github_dashboard_opens_a_masked_in_tui_sign_in_control() {
 
 #[test]
 fn github_issue_table_supports_keyboard_multi_selection() {
-    let mut app = app();
-    app.apply_github_availability(Some(repository()), anonymous_auth());
-    app.select_tab(0);
+    let mut app = github_app();
     app.apply_github_issues(
         None,
         GithubPage {
@@ -297,19 +106,13 @@ fn github_issue_table_supports_keyboard_multi_selection() {
     app.github_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
     app.github_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     app.github_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
-    let selected = app.tabs.first().and_then(|tab| match &tab.kind {
-        TabKind::Github(crate::app::github::GithubViewState::Dashboard(state)) => {
-            Some(state.selected.clone())
-        },
-        _ => None,
-    });
+    let selected = app.github.dashboard().map(|state| state.selected.clone());
     assert_eq!(selected, Some(BTreeSet::from([0, 1])));
 }
 
 #[test]
 fn github_shift_click_appends_focused_range_across_card_rows() {
-    let mut app = app();
-    app.apply_github_availability(Some(repository()), anonymous_auth());
+    let mut app = github_app();
     app.apply_github_issues(
         None,
         GithubPage {
@@ -319,9 +122,7 @@ fn github_shift_click_appends_focused_range_across_card_rows() {
             total_count: Some(5),
         },
     );
-    if let Some(TabKind::Github(crate::app::github::GithubViewState::Dashboard(dashboard))) =
-        app.tabs.first_mut().map(|tab| &mut tab.kind)
-    {
+    if let Some(dashboard) = app.github.dashboard_mut() {
         dashboard.cursor = 1;
         dashboard.selected = BTreeSet::from([0]);
         dashboard.table_rect = Rect::new(0, 10, 80, 15);
@@ -334,10 +135,7 @@ fn github_shift_click_appends_focused_range_across_card_rows() {
         modifiers: KeyModifiers::SHIFT,
     }));
 
-    let state = app.tabs.first().and_then(|tab| match &tab.kind {
-        TabKind::Github(crate::app::github::GithubViewState::Dashboard(state)) => Some(state),
-        _ => None,
-    });
+    let state = app.github.dashboard();
     assert_eq!(state.map(|state| state.cursor), Some(4));
     assert_eq!(
         state.map(|state| state.selected.clone()),
@@ -347,12 +145,8 @@ fn github_shift_click_appends_focused_range_across_card_rows() {
 
 #[test]
 fn github_section_labels_are_clickable_and_actions_rows_open() {
-    let mut app = app();
-    app.apply_github_availability(Some(repository()), anonymous_auth());
-    app.select_tab(0);
-    if let Some(TabKind::Github(crate::app::github::GithubViewState::Dashboard(dashboard))) =
-        app.tabs.first_mut().map(|tab| &mut tab.kind)
-    {
+    let mut app = github_app();
+    if let Some(dashboard) = app.github.dashboard_mut() {
         dashboard.section_hits = vec![
             (
                 crate::app::github::GithubSection::PullRequests,
@@ -372,12 +166,12 @@ fn github_section_labels_are_clickable_and_actions_rows_open() {
     };
     assert!(app.github_mouse(click(12)));
     assert!(matches!(
-        app.tabs.first().map(|tab| &tab.kind),
-        Some(TabKind::Github(
-            crate::app::github::GithubViewState::Dashboard(crate::app::github::GithubDashboard {
+        app.github.active_page(),
+        Some(crate::app::github::GithubViewState::Dashboard(
+            crate::app::github::GithubDashboard {
                 section: crate::app::github::GithubSection::PullRequests,
                 ..
-            })
+            }
         ))
     ));
     assert!(app.github_mouse(click(32)));
@@ -418,10 +212,8 @@ fn github_section_labels_are_clickable_and_actions_rows_open() {
     );
     assert!(app.github_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
     assert!(matches!(
-        app.tabs.last().map(|tab| &tab.kind),
-        Some(TabKind::Github(
-            crate::app::github::GithubViewState::WorkflowRun { .. }
-        ))
+        app.github.active_page(),
+        Some(crate::app::github::GithubViewState::WorkflowRun { .. })
     ));
 }
 
@@ -430,19 +222,24 @@ fn ctrl_r_refreshes_every_github_page_that_loads_remote_data() {
     let backend = Arc::new(RecordingBackend::new());
     let mut app = app();
     app.backend = Some(backend.clone());
+    app.view = View::GitHub;
+    app.focus = Focus::Editor;
     app.apply_github_availability(Some(repository()), anonymous_auth());
-    app.select_tab(0);
     if let Ok(mut sent) = backend.sent.lock() {
         sent.clear();
     }
     let refresh = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL);
     assert!(app.github_key(refresh));
 
-    app.push_tab(Tab::github_issue(4, None));
+    app.push_github_page(crate::app::github::github_issue(4, None));
     assert!(app.github_key(refresh));
-    app.push_tab(Tab::github_pull_request(pull_request(5, false), true, None));
+    app.push_github_page(crate::app::github::github_pull_request(
+        pull_request(5, false),
+        true,
+        None,
+    ));
     assert!(app.github_key(refresh));
-    app.push_tab(Tab::github_workflow_run(
+    app.push_github_page(crate::app::github::github_workflow_run(
         repository(),
         None,
         GithubWorkflowRun {
@@ -497,13 +294,18 @@ fn pull_request_body_comment_merge_and_readiness_controls_submit_typed_commands(
     let backend = Arc::new(RecordingBackend::new());
     let mut app = app();
     app.backend = Some(backend.clone());
-    app.push_tab(Tab::github_pull_request(
+    app.view = View::GitHub;
+    app.focus = Focus::Editor;
+    // A detail page stacks on the dashboard; the surface refuses to hold one without
+    // it, since `Esc` would then have nothing to fall back to.
+    app.apply_github_availability(Some(repository()), anonymous_auth());
+    app.push_github_page(crate::app::github::github_pull_request(
         pull_request(12, false),
         true,
         None,
     ));
-    if let TabKind::Github(crate::app::github::GithubViewState::PullRequest(view)) =
-        &mut app.tabs[app.active].kind
+    if let Some(crate::app::github::GithubViewState::PullRequest(view)) =
+        app.github.active_page_mut()
     {
         view.body_rect = Rect::new(2, 3, 40, 5);
     }
@@ -515,21 +317,21 @@ fn pull_request_body_comment_merge_and_readiness_controls_submit_typed_commands(
     }));
     assert!(app.github_key(KeyEvent::new(KeyCode::Char('!'), KeyModifiers::NONE)));
     assert!(app.github_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL)));
-    if let TabKind::Github(crate::app::github::GithubViewState::PullRequest(view)) =
-        &mut app.tabs[app.active].kind
+    if let Some(crate::app::github::GithubViewState::PullRequest(view)) =
+        app.github.active_page_mut()
     {
         view.pending = None;
         view.editor = None;
     }
     assert!(app.github_key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE)));
-    if let TabKind::Github(crate::app::github::GithubViewState::PullRequest(view)) =
-        &mut app.tabs[app.active].kind
+    if let Some(crate::app::github::GithubViewState::PullRequest(view)) =
+        app.github.active_page_mut()
     {
         view.pending = None;
     }
     assert!(app.github_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE)));
-    if let TabKind::Github(crate::app::github::GithubViewState::PullRequest(view)) =
-        &mut app.tabs[app.active].kind
+    if let Some(crate::app::github::GithubViewState::PullRequest(view)) =
+        app.github.active_page_mut()
     {
         view.pending = None;
     }
@@ -589,15 +391,20 @@ fn pull_request_tabs_use_commits_and_existing_range_diff_paths() {
     let backend = Arc::new(RecordingBackend::new());
     let mut app = app();
     app.backend = Some(backend.clone());
-    app.push_tab(Tab::github_pull_request(
+    app.view = View::GitHub;
+    app.focus = Focus::Editor;
+    // A detail page stacks on the dashboard; the surface refuses to hold one without
+    // it, since `Esc` would then have nothing to fall back to.
+    app.apply_github_availability(Some(repository()), anonymous_auth());
+    app.push_github_page(crate::app::github::github_pull_request(
         pull_request(12, false),
         true,
         None,
     ));
     assert!(app.github_key(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE)));
     assert!(matches!(
-        &app.tabs[app.active].kind,
-        TabKind::Github(crate::app::github::GithubViewState::PullRequest(view))
+        app.github.active_page(),
+        Some(crate::app::github::GithubViewState::PullRequest(view))
             if view.section == crate::app::github::GithubPullRequestSection::Commits
     ));
     assert!(app.github_key(KeyEvent::new(KeyCode::Char('3'), KeyModifiers::NONE)));
@@ -626,8 +433,10 @@ fn pull_request_conversation_renders_github_familiar_controls_and_success_colour
     use ratatui::backend::TestBackend;
     use ratatui::style::Color;
 
-    let mut app = app();
-    app.push_tab(Tab::github_pull_request(
+    // Drawn through the real `ui::draw`, so the page has to be where the view layer
+    // will look for it: on the GitHub surface, under the GitHub view.
+    let mut app = github_app();
+    app.push_github_page(crate::app::github::github_pull_request(
         pull_request(12, false),
         true,
         None,
@@ -693,8 +502,8 @@ fn pull_request_conversation_renders_github_familiar_controls_and_success_colour
     assert!(painted.contains("Merge pull request"));
     assert!(painted.contains("Convert to draft"));
     assert!(painted.contains("Leave a comment · Markdown"));
-    let merge_rect = match &app.tabs[app.active].kind {
-        TabKind::Github(crate::app::github::GithubViewState::PullRequest(view)) => view.merge_rect,
+    let merge_rect = match app.github.active_page() {
+        Some(crate::app::github::GithubViewState::PullRequest(view)) => view.merge_rect,
         _ => Rect::default(),
     };
     assert_eq!(buffer[(merge_rect.x, merge_rect.y)].bg, Color::Green);
@@ -735,4 +544,273 @@ fn other_github_failures_still_reach_the_user() {
         rendered.contains("Could not merge the pull request"),
         "{rendered}"
     );
+}
+
+#[test]
+fn the_surface_holds_one_dashboard_and_never_closes_it() {
+    // What the pinned-tab guards used to enforce across every pane is now a property
+    // of the surface: availability can arrive any number of times and there is still
+    // exactly one dashboard, sitting at the bottom of the stack.
+    let mut app = github_app();
+    app.apply_github_availability(Some(repository()), anonymous_auth());
+    app.apply_github_availability(Some(repository()), anonymous_auth());
+    assert_eq!(app.github.pages().len(), 1);
+
+    // Esc on the dashboard declines rather than emptying the view.
+    assert!(!app.close_github_page());
+    assert_eq!(app.github.pages().len(), 1);
+}
+
+#[test]
+fn a_detail_page_stacks_on_the_dashboard_and_esc_pops_it() {
+    let mut app = github_app();
+    app.push_github_page(crate::app::github::github_issue(204, None));
+    assert_eq!(app.github.pages().len(), 2);
+    assert_eq!(app.github.active(), 1);
+
+    assert!(app.github_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+    assert_eq!(app.github.pages().len(), 1);
+    assert_eq!(app.github.active(), 0);
+}
+
+#[test]
+fn opening_the_same_issue_twice_focuses_the_page_already_open() {
+    // A stack the user pops with Esc would otherwise accumulate duplicates, and
+    // unlike a tab strip there is no "close all" to dig out of it.
+    let mut app = github_app();
+    app.push_github_page(crate::app::github::github_issue(204, None));
+    app.github.select(0);
+    app.push_github_page(crate::app::github::github_issue(204, None));
+
+    assert_eq!(app.github.pages().len(), 2);
+    assert_eq!(app.github.active(), 1);
+}
+
+#[test]
+fn a_detail_page_leaves_the_dashboard_keys_alone() {
+    // `n` and 1/2/3 belong to the dashboard. They must not act on it through a detail
+    // page that happens to be in front, which is what a single `pages[0]` accessor
+    // would have allowed.
+    let mut app = github_app();
+    let before = app
+        .github
+        .dashboard()
+        .map(|dashboard| dashboard.section)
+        .expect("a dashboard");
+    app.push_github_page(crate::app::github::github_issue(204, None));
+
+    app.github_key(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE));
+    app.github_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+
+    assert_eq!(
+        app.github.dashboard().map(|dashboard| dashboard.section),
+        Some(before)
+    );
+    assert_eq!(app.github.pages().len(), 2, "no form was opened");
+}
+
+#[test]
+fn config_churn_keeps_open_pages_and_the_typed_query() {
+    // Availability is re-emitted on every refresh, `.git/config` watch churn
+    // included. Rebuilding the surface there would throw away the user's work each
+    // time git touched its own config.
+    let mut app = github_app();
+    app.push_github_page(crate::app::github::github_issue(204, None));
+    if let Some(dashboard) = app.github.dashboard_mut() {
+        dashboard.query = "is:open author:@me".to_string();
+        dashboard.cursor = 3;
+    }
+
+    app.apply_github_availability(Some(repository()), anonymous_auth());
+
+    assert_eq!(app.github.pages().len(), 2, "the issue page survived");
+    let dashboard = app.github.dashboard().expect("a dashboard");
+    assert_eq!(dashboard.query, "is:open author:@me");
+    assert_eq!(dashboard.cursor, 3);
+}
+
+#[test]
+fn the_surface_withdraws_when_the_repository_becomes_ineligible() {
+    let mut app = github_app();
+    app.push_github_page(crate::app::github::github_issue(204, None));
+
+    app.apply_github_availability(None, anonymous_auth());
+
+    assert!(!app.github.is_active());
+    assert!(app.github.dashboard().is_none());
+    // The editor keeps whatever it had; only the GitHub view emptied.
+    assert!(!app.tabs.is_empty());
+}
+
+#[test]
+fn a_detail_page_scrolls_itself_rather_than_the_document_behind_it() {
+    // `scroll_lines` walks the active *tab*. Under the GitHub view that tab is a
+    // document drawn over, so a wheel or a `j` reaching it would move something
+    // invisible.
+    let mut app = github_app();
+    app.push_github_page(crate::app::github::github_issue(204, None));
+    let editor_before = app.tabs[app.active].editor.scroll_line;
+
+    app.github_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert!(app.github_mouse(MouseEvent {
+        kind: MouseEventKind::ScrollDown,
+        column: 4,
+        row: 8,
+        modifiers: KeyModifiers::NONE,
+    }));
+
+    assert!(matches!(
+        app.github.active_page(),
+        Some(crate::app::github::GithubViewState::Issue { scroll, .. }) if *scroll > 0
+    ));
+    assert_eq!(
+        app.tabs[app.active].editor.scroll_line, editor_before,
+        "the hidden document did not move"
+    );
+}
+
+#[test]
+fn opening_a_tab_from_the_github_view_shows_it() {
+    // A pull request's "Files changed" opens the range diff as an editor tab. Without
+    // the view switch the user presses the button and, from inside the GitHub view,
+    // nothing appears to happen at all.
+    let mut app = github_app();
+    app.push_tab(Tab::welcome());
+
+    assert_eq!(app.view, View::Editor);
+    assert_eq!(app.focus, Focus::Editor);
+}
+
+#[test]
+fn the_github_view_names_a_workspace_with_no_github_behind_it() -> Result<(), String> {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    // Reaching the view in a non-GitHub checkout is ordinary — `--view github`, or
+    // `Ctrl+K 2` out of habit. It has to say why it is empty rather than just be.
+    let mut app = app();
+    app.view = View::GitHub;
+
+    let mut terminal =
+        Terminal::new(TestBackend::new(100, 24)).map_err(|error| error.to_string())?;
+    terminal
+        .draw(|frame| crate::ui::draw(frame, &mut app))
+        .map_err(|error| error.to_string())?;
+    let buffer = terminal.backend().buffer();
+    let painted = (0..24)
+        .map(|y| {
+            (0..100)
+                .map(|x| buffer[(x, y)].symbol().to_owned())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(painted.contains("not a GitHub repository"));
+    assert!(
+        !painted.contains("not available yet"),
+        "the surface exists; it is the repository that does not"
+    );
+    Ok(())
+}
+
+#[test]
+fn nothing_stacks_on_a_workspace_with_no_github_behind_it() {
+    // The surface is empty or the dashboard is its floor — never a detail page on its
+    // own, which `Esc` could not get out of and the next availability would replace
+    // wholesale.
+    let mut app = app();
+    app.view = View::GitHub;
+
+    app.push_github_page(crate::app::github::github_issue(204, None));
+
+    assert!(!app.github.is_active());
+    assert!(app.github.pages().is_empty());
+}
+
+#[test]
+fn closing_a_page_behind_the_one_in_front_leaves_the_reader_alone() {
+    // The strip closes by index. Reading page 3 and dismissing page 1 must keep you
+    // on what you were reading — it just shifts left — rather than dropping you onto
+    // whatever sat under the page you dismissed.
+    let mut app = github_app();
+    app.push_github_page(crate::app::github::github_issue(1, None));
+    app.push_github_page(crate::app::github::github_issue(2, None));
+    assert_eq!(app.github.active(), 2);
+
+    assert!(app.github.close_at(1));
+
+    assert_eq!(app.github.pages().len(), 2);
+    assert_eq!(app.github.active(), 1, "still reading issue #2");
+    assert!(matches!(
+        app.github.active_page(),
+        Some(crate::app::github::GithubViewState::Issue { number: 2, .. })
+    ));
+}
+
+#[test]
+fn selecting_an_existing_tab_from_the_github_view_shows_it() {
+    // `select_tab` sets focus without the view, which is what strands a caller from
+    // another view: the tab takes the keyboard while staying invisible, and
+    // `FocusTarget::from` then routes the next keys to the view still on screen.
+    let mut app = github_app();
+    app.push_tab(Tab::welcome());
+    app.dispatch(Command::SelectView(View::GitHub));
+
+    app.select_tab(0);
+
+    assert_eq!(app.view, View::Editor);
+    assert_eq!(app.focus, Focus::Editor);
+}
+
+#[test]
+fn previewing_from_the_sidebar_does_not_yank_you_out_of_the_github_view() {
+    // Selection-follows-preview is passive: arrowing a file tree must not rip the
+    // user out of the view they are reading. Only a focus-stealing open does that.
+    let mut app = github_app();
+    app.focus = Focus::Sidebar;
+
+    app.install_preview_tab(Tab::welcome(), false);
+
+    assert_eq!(app.view, View::GitHub);
+    assert_eq!(app.focus, Focus::Sidebar);
+}
+
+#[test]
+fn reopening_an_issue_focuses_it_without_orphaning_a_request() {
+    // `push` drops the page it is handed when one for the same resource is open, and
+    // with it that page's request id. Sending first would leave a reply nobody owns —
+    // and an error for it would surface as a toast the user never asked for.
+    let backend = Arc::new(RecordingBackend::new());
+    let mut app = app();
+    app.backend = Some(backend.clone());
+    app.view = View::GitHub;
+    app.focus = Focus::Editor;
+    app.apply_github_availability(Some(repository()), anonymous_auth());
+    app.apply_github_issues(
+        None,
+        GithubPage {
+            items: vec![issue(1)],
+            page: 1,
+            next_page: None,
+            total_count: Some(1),
+        },
+    );
+    app.github_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(app.github.pages().len(), 2);
+    if let Ok(mut sent) = backend.sent.lock() {
+        sent.clear();
+    }
+
+    // Back to the dashboard, then open the same row again.
+    app.github.select(0);
+    app.github_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_eq!(app.github.pages().len(), 2, "focused, not stacked");
+    assert_eq!(app.github.active(), 1);
+    let issued = backend.sent.lock().is_ok_and(|sent| {
+        sent.iter()
+            .any(|(_, command)| matches!(command, SessionCommand::GithubIssue { .. }))
+    });
+    assert!(!issued, "no request without a page to own its reply");
 }

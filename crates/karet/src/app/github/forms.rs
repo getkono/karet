@@ -224,8 +224,7 @@ impl App {
         {
             return false;
         }
-        let Some(TabKind::Github(view)) = self.tabs.get_mut(self.active).map(|tab| &mut tab.kind)
-        else {
+        let Some(view) = self.github.active_page_mut() else {
             return false;
         };
         match view {
@@ -244,8 +243,8 @@ impl App {
             Issue(GithubNewIssue),
             PullRequest(GithubNewPullRequest),
         }
-        let submission = match self.tabs.get(self.active).map(|tab| &tab.kind) {
-            Some(TabKind::Github(GithubViewState::NewIssue { form, .. })) => {
+        let submission = match self.github.active_page() {
+            Some(GithubViewState::NewIssue { form, .. }) => {
                 if form.title.trim().is_empty() {
                     self.status = Some("issue title is required".to_string());
                     return;
@@ -259,7 +258,7 @@ impl App {
                     issue_type: nonempty(&form.issue_type),
                 })
             },
-            Some(TabKind::Github(GithubViewState::NewPullRequest { form, .. })) => {
+            Some(GithubViewState::NewPullRequest { form, .. }) => {
                 if form.title.trim().is_empty()
                     || form.head.trim().is_empty()
                     || form.base.trim().is_empty()
@@ -286,8 +285,7 @@ impl App {
             },
         };
         let request = self.send(command);
-        if let Some(TabKind::Github(view)) = self.tabs.get_mut(self.active).map(|tab| &mut tab.kind)
-        {
+        if let Some(view) = self.github.active_page_mut() {
             match view {
                 GithubViewState::NewIssue { form, .. } => form.submitting = request,
                 GithubViewState::NewPullRequest { form, .. } => form.submitting = request,

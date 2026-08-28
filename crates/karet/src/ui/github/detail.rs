@@ -811,6 +811,6 @@ fn draw_conversation(
             ScrollExtent::new(total, scroll.into(), body.height.into()),
             ScrollExtent::default(),
         ),
-        ScrollSurface::TabRows,
+        ScrollSurface::GithubPage,
     );
 }

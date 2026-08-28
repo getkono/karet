@@ -108,7 +108,7 @@ impl App {
         // Tab-driven key hooks only apply while the editor shell owns the content
         // area; in another view the active tab is off screen, and a key aimed at
         // the showing view must not reach it.
-        if self.view == View::Editor && self.input_context().modal.is_none() && self.github_key(key)
+        if self.view == View::GitHub && self.input_context().modal.is_none() && self.github_key(key)
         {
             return;
         }

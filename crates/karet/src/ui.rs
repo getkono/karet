@@ -235,9 +235,12 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
     match app.view {
         View::Editor => draw_panes(f, app, &theme, app.main_rect, &mut hits),
-        view => {
+        // `clear_pane_render_state` before every non-Editor body: the panes are not
+        // redrawn under it, so last frame's hit regions would keep claiming clicks
+        // aimed at whatever is now on screen.
+        View::GitHub => {
             clear_pane_render_state(app);
-            draw_view_placeholder(f, &theme, app.main_rect, view, app.icon_style);
+            draw_github_view(f, app, &theme, app.main_rect, &mut hits);
         },
     }
     if let Some(divider) = outline_divider {
@@ -500,15 +503,14 @@ fn draw_pane_tabs(
         }
         spans.push(Span::styled(title.name.clone(), style));
         spans.push(Span::styled(" ", style));
-        let pinned = tab.is_github_dashboard();
-        spans.push(Span::styled(if pinned { " " } else { "\u{00d7}" }, style));
+        spans.push(Span::styled("\u{00d7}", style));
         spans.push(Span::styled(" ", style));
         let close = start + label_w;
         x = close + 2;
         hits.push(TabHit {
             start,
             end: x,
-            close: if pinned { u16::MAX } else { close },
+            close,
         });
     }
     let bar = Style::default().bg(ctx.theme.role(ThemeRole::Background).to_ratatui());

@@ -38,12 +38,10 @@ impl App {
                         self.request_close_tab_at(i);
                     } else {
                         self.select_tab(i);
-                        if !self.tabs[i].is_github_dashboard() {
-                            self.tab_drag = Some(TabDrag {
-                                from_pane: pane,
-                                hover: None,
-                            });
-                        }
+                        self.tab_drag = Some(TabDrag {
+                            from_pane: pane,
+                            hover: None,
+                        });
                     }
                 }
             },

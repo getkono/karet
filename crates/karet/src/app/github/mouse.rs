@@ -1,18 +1,27 @@
-//! Mouse handling for GitHub dashboard tabs.
+//! Mouse handling for the GitHub view's pages.
 
 use super::*;
 
 impl App {
     /// Handle a click or wheel gesture within the active GitHub dashboard table.
     pub(in crate::app) fn github_mouse(&mut self, mouse: MouseEvent) -> bool {
-        if self
-            .tabs
-            .get(self.active)
-            .is_some_and(|tab| matches!(tab.kind, TabKind::Github(GithubViewState::PullRequest(_))))
-        {
+        let point = (mouse.column, mouse.row);
+        if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+            if self.github_strip_click(point) {
+                return true;
+            }
+            // Any press inside this view's body claims the keyboard too, so a click
+            // that moves the dashboard cursor is followed by keys that drive it.
+            if rect_contains(self.main_rect, point) {
+                self.focus = Focus::Editor;
+            }
+        }
+        if matches!(
+            self.github.active_page(),
+            Some(GithubViewState::PullRequest(_))
+        ) {
             return self.github_pull_request_mouse(mouse);
         }
-        let point = (mouse.column, mouse.row);
         let Some((section_hit, query_hit, auth_hit, table_rect, first_visible, row_count)) =
             self.active_dashboard_mut().map(|dashboard| {
                 (
@@ -27,7 +36,14 @@ impl App {
                 )
             })
         else {
-            return false;
+            // No dashboard in front means a detail page is, and it scrolls itself.
+            // Falling through would reach the region match in `app/mouse.rs`, whose
+            // wheel arm is not view-gated and would scroll the hidden document.
+            return match mouse.kind {
+                MouseEventKind::ScrollDown => self.scroll_github_page(3),
+                MouseEventKind::ScrollUp => self.scroll_github_page(-3),
+                _ => rect_contains(self.main_rect, point),
+            };
         };
 
         if let Some(section) = section_hit {
@@ -58,7 +74,10 @@ impl App {
             return true;
         }
         if !rect_contains(table_rect, point) {
-            return false;
+            // Missed the table, but the GitHub view still owns this area of the
+            // screen: claiming the gesture keeps it away from the editor drawn
+            // beneath, whose wheel arm in `app/mouse.rs` is not view-gated.
+            return rect_contains(self.main_rect, point);
         }
         match mouse.kind {
             MouseEventKind::ScrollDown => self.github_move_cursor(3, false),

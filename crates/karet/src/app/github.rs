@@ -7,8 +7,10 @@ mod forms;
 mod keys;
 mod mouse;
 mod pull_request;
+mod scroll;
 mod selection;
 mod state;
+mod surface;
 
 pub(crate) use forms::GithubIssueForm;
 pub(crate) use forms::GithubPullRequestForm;
@@ -34,6 +36,12 @@ pub(crate) use state::GithubPullRequestSupplement;
 pub(crate) use state::GithubPullRequestView;
 pub(crate) use state::GithubSection;
 pub(crate) use state::GithubViewState;
+pub(crate) use surface::GithubSurface;
+pub(crate) use surface::github_issue;
+pub(crate) use surface::github_new_issue;
+pub(crate) use surface::github_new_pull_request;
+pub(crate) use surface::github_pull_request;
+pub(crate) use surface::github_workflow_run;
 
 use super::*;
 

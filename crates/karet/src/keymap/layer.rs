@@ -55,8 +55,6 @@ pub enum EditorTab {
     CommitGraph,
     /// The full-screen Seam view.
     Seam,
-    /// GitHub dashboard, detail, or form tab.
-    Github,
     /// Language-server inventory and lifecycle manager.
     LanguageServers,
     /// A too-large-file placeholder, which offers an "open anyway" override.
@@ -82,10 +80,10 @@ pub enum FocusTarget {
     CommitGraph,
     /// The full-screen Seam view.
     Seam,
-    /// A GitHub dashboard, detail, or form.
+    /// The GitHub view's dashboard, detail, and form pages.
     Github,
-    /// The Agents view — agent sessions across worktrees.
-    Agents,
+    // #211: /// The Agents view — agent sessions across worktrees.
+    // #211: Agents,
     /// The language-server inventory and lifecycle manager.
     LanguageServers,
     /// A too-large-file placeholder, which offers an "open anyway" override.
@@ -120,13 +118,12 @@ impl FocusTarget {
             // A non-editor view owns the content area outright: the active tab is
             // still there, but it is not what the keys are aimed at.
             Focus::Editor if view == View::GitHub => FocusTarget::Github,
-            Focus::Editor if view == View::Agents => FocusTarget::Agents,
+            // #211: Focus::Editor if view == View::Agents => FocusTarget::Agents,
             Focus::Editor => match tab {
                 EditorTab::Diff => FocusTarget::DiffEditor,
                 EditorTab::Pager => FocusTarget::Pager,
                 EditorTab::CommitGraph => FocusTarget::CommitGraph,
                 EditorTab::Seam => FocusTarget::Seam,
-                EditorTab::Github => FocusTarget::Github,
                 EditorTab::LanguageServers => FocusTarget::LanguageServers,
                 EditorTab::Oversize => FocusTarget::Oversize,
                 EditorTab::Plain => FocusTarget::Editor,
@@ -168,10 +165,10 @@ pub enum Layer {
     CommitGraph,
     /// Active when the full-screen Seam view has focus.
     Seam,
-    /// Active on GitHub dashboard, detail, and form tabs.
+    /// Active on the GitHub view's dashboard, detail, and form pages.
     Github,
-    /// Active when the Agents view has focus.
-    Agents,
+    // #211: /// Active when the Agents view has focus.
+    // #211: Agents,
     /// Active on the language-server manager tab.
     LanguageServers,
     /// Active when a too-large-file placeholder has focus (the "open anyway"
@@ -306,7 +303,7 @@ pub fn active_layers(ctx: Context) -> &'static [Layer] {
             FocusTarget::Github => &[L::Github, L::Global],
             // Self-contained like the graph and seam browsers: a list/detail surface
             // with navigation keys of its own, never the editor's motion keys.
-            FocusTarget::Agents => &[L::Agents, L::Global],
+            // #211: FocusTarget::Agents => &[L::Agents, L::Global],
             FocusTarget::LanguageServers => &[L::LanguageServers, L::Global],
             FocusTarget::Oversize => &[L::Oversize, L::Global],
             FocusTarget::Explorer => &[L::Explorer, L::Sidebar, L::Global],

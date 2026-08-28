@@ -8,10 +8,7 @@ impl App {
         if self.focus != Focus::Editor {
             return false;
         }
-        let Some(kind) = self.tabs.get(self.active).map(|tab| &tab.kind) else {
-            return false;
-        };
-        if !matches!(kind, TabKind::Github(_)) {
+        if self.view != View::GitHub || !self.github.is_active() {
             return false;
         }
         if self.github_form_key(key) {
@@ -24,23 +21,17 @@ impl App {
             return true;
         }
         if self.active_dashboard_mut().is_none() {
+            // A detail page scrolls *itself*. `self.scroll_lines` walks the active
+            // tab, which is a document the GitHub view is drawn over — scrolling it
+            // would move something the user cannot see.
             return match key.code {
-                KeyCode::Down | KeyCode::Char('j') => {
-                    self.scroll_lines(1);
-                    true
-                },
-                KeyCode::Up | KeyCode::Char('k') => {
-                    self.scroll_lines(-1);
-                    true
-                },
-                KeyCode::PageDown => {
-                    self.scroll_lines(12);
-                    true
-                },
-                KeyCode::PageUp => {
-                    self.scroll_lines(-12);
-                    true
-                },
+                KeyCode::Esc => self.close_github_page(),
+                KeyCode::Down | KeyCode::Char('j') => self.scroll_github_page(1),
+                KeyCode::Up | KeyCode::Char('k') => self.scroll_github_page(-1),
+                KeyCode::PageDown => self.scroll_github_page(12),
+                KeyCode::PageUp => self.scroll_github_page(-12),
+                KeyCode::Home => self.scroll_github_page_edge(true),
+                KeyCode::End => self.scroll_github_page_edge(false),
                 _ => false,
             };
         }
