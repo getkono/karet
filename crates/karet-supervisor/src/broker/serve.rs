@@ -284,13 +284,26 @@ where
         let Some(mut message) = message else {
             break;
         };
-        if message.get("method").is_none()
+        // Taken in its own statement so the guard drops here: as a let-chain
+        // scrutinee it would live to the end of the `if`, holding `pending`
+        // locked across `on_response` and both sends, so a slow hook or a full
+        // client queue would stall every `proxy_request` insert behind it.
+        let pending = if message.get("method").is_none()
             && let Some(id) = message.get("id").and_then(Value::as_u64)
-            && let Some(pending) = core.pending.lock().await.remove(&id)
         {
+            core.pending.lock().await.remove(&id)
+        } else {
+            None
+        };
+        if let Some(pending) = pending {
             P::on_response(&mut message, &pending.tag, &ServerLink::new(&core)).await;
             message["id"] = pending.original_id;
-            if let Some(tx) = core.clients.lock().await.get(&pending.client).cloned() {
+            // Same reason, and the sharper case: this guard would span
+            // `tx.send`, so one client that stopped draining its `CLIENT_QUEUE`
+            // would block `clients` — and with it every client's join and
+            // teardown, leaving `active_clients` stuck above zero.
+            let client = core.clients.lock().await.get(&pending.client).cloned();
+            if let Some(tx) = client {
                 let _ = tx.send(message).await;
             }
             continue;

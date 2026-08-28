@@ -234,7 +234,12 @@ async fn handle_initialize(
         let mut ready = pin!(state.initialize_ready.notified());
         ready.as_mut().enable();
 
-        if let Some(result) = state.initialize_result.lock().await.clone() {
+        // Cloned in its own statement so the guard drops here. Held as an
+        // `if let` scrutinee it would span `reply`, and one client that had
+        // stopped draining its channel would park every other client's
+        // `initialize` on `initialize_result` — the same wedge by another lock.
+        let cached = state.initialize_result.lock().await.clone();
+        if let Some(result) = cached {
             if let Some(id) = message.get("id").cloned() {
                 link.reply(json!({"jsonrpc": "2.0", "id": id, "result": result}))
                     .await;
