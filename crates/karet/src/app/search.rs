@@ -575,6 +575,15 @@ impl App {
             self.search
                 .set_all_collapsed(matches_found > SEARCH_AUTO_EXPAND);
         }
+        // A settled search with nothing in it leaves the results holding a focus
+        // with no row under it, so hand the focus back to the query — that is the
+        // thing you go on to edit. Only here, never on the re-run that empties the
+        // list: any file save re-runs a live search through the watcher, and
+        // pulling focus into a text field mid-stream would turn a reader's next
+        // arrow press into typing.
+        if !self.search.input && self.search.rows.is_empty() {
+            self.search_focus_field(SearchPanelField::Find);
+        }
         self.refresh_search_decorations();
     }
 

@@ -677,6 +677,18 @@ impl SearchPanel {
         self.selection = ListSelection::new(self.rows.len());
         self.selection
             .move_to(cursor.min(self.rows.len().saturating_sub(1)));
+        self.clamp_focus();
+    }
+
+    /// Keep the panel's focus on something the panel actually paints.
+    ///
+    /// Every path that hides a section already bounces the field, so this is an
+    /// invariant rather than a fix — it means no future one can leave the caret
+    /// on a field that is no longer on screen.
+    pub(crate) fn clamp_focus(&mut self) {
+        if self.input && !self.visible_fields().any(|field| field == self.field) {
+            self.field = SearchPanelField::Find;
+        }
     }
 
     /// Show or hide one file's match rows.

@@ -761,3 +761,69 @@ fn k_at_the_first_row_stays_in_the_list() {
     assert!(!app.search.input, "list-only, unlike the arrows");
     assert_eq!(app.search.selection.cursor(), 0);
 }
+
+/// A settled search with nothing in it leaves the results holding a focus with
+/// no row under it, so the query takes it back — that is what you go on to edit.
+#[test]
+fn a_search_that_ends_empty_hands_focus_back_to_the_query() {
+    let mut app = app();
+    app.search.query = "needle".into();
+    app.search.input = false;
+    app.search.searching = Some(RequestId(1));
+    app.search_finished(Some(RequestId(1)), 12, 0, false, None);
+    assert!(app.search.input);
+    assert_eq!(app.search.field, SearchPanelField::Find);
+}
+
+/// …but only once it has settled. Any file save re-runs a live search through
+/// the watcher, and the list is empty for the whole window between the re-run
+/// and its first batch. Grabbing focus there turns a reader's next arrow press
+/// into typing.
+#[test]
+fn a_re_run_that_empties_the_list_does_not_grab_focus() {
+    let mut app = app();
+    app.search.query = "needle".into();
+    app.search.searching = Some(RequestId(1));
+    app.search_progress(
+        Some(RequestId(1)),
+        vec![search_hit(std::path::Path::new("/w/a.rs"), 4)],
+        1,
+        4,
+    );
+    app.search.input = false;
+    app.search.selection.move_to(3);
+
+    app.run_global_search();
+    assert!(app.search.rows.is_empty(), "the re-run empties the list");
+    assert!(!app.search.input, "the reader keeps the list's focus");
+}
+
+/// A search that finds something leaves the focus where it was.
+#[test]
+fn a_search_with_results_leaves_the_focus_on_the_list() {
+    let mut app = app();
+    app.search.query = "needle".into();
+    app.search.searching = Some(RequestId(1));
+    app.search_progress(
+        Some(RequestId(1)),
+        vec![search_hit(std::path::Path::new("/w/a.rs"), 2)],
+        1,
+        2,
+    );
+    app.search.input = false;
+    app.search_finished(Some(RequestId(1)), 1, 2, false, None);
+    assert!(!app.search.input);
+}
+
+/// The focus can only sit on a field the panel paints. Every path that hides a
+/// section already bounces the field; this pins it as an invariant so a future
+/// one cannot strand the caret off screen.
+#[test]
+fn rebuilding_rows_pulls_focus_off_a_hidden_field() {
+    let mut app = app();
+    app.search.filters_visible = false;
+    app.search.input = true;
+    app.search.field = SearchPanelField::Excludes;
+    app.search.rebuild_rows();
+    assert_eq!(app.search.field, SearchPanelField::Find);
+}
