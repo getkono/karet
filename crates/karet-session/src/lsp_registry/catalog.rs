@@ -566,7 +566,41 @@ pub(super) fn github_asset_for(
 struct NpmMetadata {
     version: String,
     #[serde(default)]
-    bin: std::collections::BTreeMap<String, String>,
+    bin: NpmBin,
+}
+
+/// npm's `bin` field, which is legally either a map of names to paths or a bare
+/// string when the package publishes a single executable named after itself.
+///
+/// Modelling only the map made the string form fatal: serde failed the whole
+/// `NpmMetadata`, so discovery died with a parse error rather than installing.
+/// None of the twelve managed packages publishes the string form today, which
+/// is the only reason this has not fired.
+#[derive(Deserialize, Default)]
+#[serde(untagged)]
+enum NpmBin {
+    /// One executable, named after the package's unscoped name.
+    Single(String),
+    /// Executable name to path within the package.
+    Named(std::collections::BTreeMap<String, String>),
+    /// Absent, or a shape npm does not define.
+    #[default]
+    None,
+}
+
+impl NpmBin {
+    /// The path `binary` is published at, if the package publishes it.
+    fn path(&self, package: &str, binary: &str) -> Option<&str> {
+        match self {
+            Self::Single(path) => {
+                // `@scope/name` publishes its single binary as `name`.
+                let unscoped = package.rsplit('/').next().unwrap_or(package);
+                (unscoped == binary).then_some(path.as_str())
+            },
+            Self::Named(paths) => paths.get(binary).map(String::as_str),
+            Self::None => None,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -586,9 +620,9 @@ fn discover_npm(
     let npm = npm_metadata(client, package)?;
     let entrypoint = npm
         .bin
-        .get(binary)
+        .path(package, binary)
         .filter(|path| safe_relative_path(path))
-        .cloned()
+        .map(str::to_owned)
         .ok_or_else(|| format!("{package} publishes no safe {binary} executable"))?;
     let companion = companion
         .map(|package| {

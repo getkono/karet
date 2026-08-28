@@ -73,24 +73,54 @@ pub(super) fn builtin_spec(provider: &LanguageServerId, language: &str) -> LspSp
     }
 }
 
+/// Whether `path` is a file this process could actually execute.
+///
+/// The executable bit is part of the question, not a detail: a file that is
+/// present but not runnable was accepted as a resolved server and then failed
+/// at exec, which is a far more confusing failure than simply looking further
+/// along `PATH`. Metadata is followed through symlinks deliberately -- a
+/// `node_modules/.bin` entry is one, and what matters is the target.
+pub(super) fn is_executable_file(path: &Path) -> bool {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
 pub(super) fn executable_exists(command: &OsStr) -> bool {
     let path = Path::new(command);
     if path.components().count() > 1 {
-        return path.is_file();
+        return is_executable_file(path);
     }
     let Some(paths) = std::env::var_os("PATH") else {
         return false;
     };
     std::env::split_paths(&paths).any(|directory| {
         let candidate = directory.join(path);
-        if candidate.is_file() {
+        if is_executable_file(&candidate) {
             return true;
         }
         #[cfg(windows)]
         {
-            ["exe", "cmd", "bat"]
-                .iter()
-                .any(|extension| candidate.with_extension(extension).is_file())
+            // Windows marks executability by extension, so PATHEXT is the
+            // authority rather than the hardcoded three this used to try.
+            let extensions =
+                std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_owned());
+            extensions.split(';').any(|extension| {
+                let extension = extension.trim().trim_start_matches('.');
+                !extension.is_empty() && is_executable_file(&candidate.with_extension(extension))
+            })
         }
         #[cfg(not(windows))]
         {
@@ -102,7 +132,7 @@ pub(super) fn executable_exists(command: &OsStr) -> bool {
 pub(super) fn project_local_spec(root: &Path, spec: &LspSpec) -> Option<LspSpec> {
     let command = Path::new(&spec.command);
     if command.components().count() > 1 {
-        return command.is_file().then(|| spec.clone());
+        return is_executable_file(command).then(|| spec.clone());
     }
     let candidates = [
         root.join("node_modules").join(".bin").join(command),
@@ -115,7 +145,7 @@ pub(super) fn project_local_spec(root: &Path, spec: &LspSpec) -> Option<LspSpec>
     ];
     candidates
         .into_iter()
-        .find(|candidate| candidate.is_file())
+        .find(|candidate| is_executable_file(candidate))
         .map(|command| {
             let mut resolved = spec.clone();
             resolved.command = command.to_string_lossy().into_owned();

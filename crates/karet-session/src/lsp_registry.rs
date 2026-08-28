@@ -674,7 +674,11 @@ fn install_release(
             let mut args = vec![
                 npm.to_string_lossy().into_owned(),
                 "install".into(),
-                "--global-style".into(),
+                // `--global-style` is deprecated in favour of this since npm 9;
+                // the bundled runtime is active LTS, so the newer spelling is
+                // always available. Same layout: dependencies stay unhoisted
+                // under the package, which is what `activation` resolves against.
+                "--install-strategy=shallow".into(),
                 "--ignore-scripts".into(),
                 "--no-audit".into(),
                 "--no-fund".into(),

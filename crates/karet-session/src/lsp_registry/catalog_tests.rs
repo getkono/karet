@@ -56,9 +56,53 @@ fn npm_latest_metadata_exposes_the_published_executable() -> Result<(), serde_js
 
     assert_eq!(metadata.version, "5.3.0");
     assert_eq!(
-        metadata.bin.get("typescript-language-server"),
-        Some(&"lib/cli.mjs".to_owned())
+        metadata
+            .bin
+            .path("typescript-language-server", "typescript-language-server"),
+        Some("lib/cli.mjs")
     );
+    Ok(())
+}
+
+/// npm allows `bin` to be a bare string for a single-executable package. That
+/// shape used to fail the whole document, killing discovery with a parse error.
+#[test]
+fn npm_metadata_accepts_a_single_string_bin() -> Result<(), serde_json::Error> {
+    let metadata: NpmMetadata =
+        serde_json::from_str(r#"{"version": "1.0.0", "bin": "./out/cli.js"}"#)?;
+    assert_eq!(
+        metadata
+            .bin
+            .path("some-language-server", "some-language-server"),
+        Some("./out/cli.js")
+    );
+    // The single binary is named after the package, so nothing else matches it.
+    assert_eq!(
+        metadata.bin.path("some-language-server", "other-binary"),
+        None
+    );
+    Ok(())
+}
+
+/// A scoped package publishes its single binary under the unscoped name.
+#[test]
+fn npm_metadata_unscopes_a_single_string_bin() -> Result<(), serde_json::Error> {
+    let metadata: NpmMetadata =
+        serde_json::from_str(r#"{"version": "2.0.0", "bin": "bin/server.js"}"#)?;
+    assert_eq!(
+        metadata
+            .bin
+            .path("@scope/language-server", "language-server"),
+        Some("bin/server.js")
+    );
+    Ok(())
+}
+
+#[test]
+fn npm_metadata_without_a_bin_resolves_nothing_instead_of_failing() -> Result<(), serde_json::Error>
+{
+    let metadata: NpmMetadata = serde_json::from_str(r#"{"version": "1.0.0"}"#)?;
+    assert_eq!(metadata.bin.path("pkg", "pkg"), None);
     Ok(())
 }
 

@@ -103,8 +103,11 @@ pub(super) fn extract_archive(
                     if let Some(parent) = output.parent() {
                         std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
                     }
-                    let mut file = File::create(output).map_err(|error| error.to_string())?;
+                    let mode = entry.unix_mode();
+                    let mut file = File::create(&output).map_err(|error| error.to_string())?;
                     std::io::copy(&mut entry, &mut file).map_err(|error| error.to_string())?;
+                    drop(file);
+                    restore_mode(&output, mode)?;
                 }
             }
             Ok(())
@@ -134,20 +137,73 @@ fn extract_tar(reader: impl Read, destination: &Path, all_files: bool) -> Result
     Ok(())
 }
 
+/// Find `name` under `root`, shallowest first and then alphabetically.
+///
+/// Both orderings are deliberate. `read_dir` yields entries in whatever order
+/// the filesystem stores them, so a depth-first search returned a different
+/// file on different machines whenever an archive contained the name twice --
+/// and the result becomes the executable karet records and launches. Shallowest
+/// first also picks the real payload over a vendored copy nested inside it.
+///
+/// Symlinked directories are not descended into: an archive that points at
+/// itself would otherwise loop.
 pub(super) fn find_file_named(root: &Path, name: &str) -> Option<PathBuf> {
-    let entries = std::fs::read_dir(root).ok()?;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_file() && path.file_name().is_some_and(|candidate| candidate == name) {
-            return Some(path);
+    let mut frontier = vec![root.to_path_buf()];
+    while !frontier.is_empty() {
+        let mut directories = Vec::new();
+        let mut matches = Vec::new();
+        for directory in frontier.drain(..) {
+            let Ok(entries) = std::fs::read_dir(&directory) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let Ok(kind) = entry.file_type() else {
+                    continue;
+                };
+                if kind.is_dir() {
+                    directories.push(path);
+                } else if path.file_name().is_some_and(|candidate| candidate == name)
+                    && path.is_file()
+                {
+                    matches.push(path);
+                }
+            }
         }
-        if path.is_dir()
-            && let Some(found) = find_file_named(&path, name)
-        {
-            return Some(found);
+        if !matches.is_empty() {
+            matches.sort();
+            return matches.into_iter().next();
         }
+        directories.sort();
+        frontier = directories;
     }
     None
+}
+
+/// Reapply an archived file's unix permissions after extraction.
+///
+/// Zip extraction wrote every entry with the default mode, which silently
+/// stripped the executable bit from bundles extracted whole -- clangd on every
+/// platform, since its release is a zip, and the Windows Node runtime. Only the
+/// single file `activation` later located was ever chmod'd, so a bundle whose
+/// entry point is a wrapper script calling a sibling binary was installed
+/// broken.
+///
+/// Masked to the permission bits: setuid, setgid and the sticky bit are never
+/// honoured from a downloaded archive.
+#[cfg(unix)]
+fn restore_mode(path: &Path, mode: Option<u32>) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    let Some(mode) = mode else {
+        return Ok(());
+    };
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode & 0o777))
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(not(unix))]
+fn restore_mode(_path: &Path, _mode: Option<u32>) -> Result<(), String> {
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -177,3 +233,7 @@ pub(super) fn safe_version(version: &str) -> String {
         })
         .collect()
 }
+
+#[cfg(test)]
+#[path = "archive_tests.rs"]
+mod tests;
