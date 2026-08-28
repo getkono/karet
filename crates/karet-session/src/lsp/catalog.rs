@@ -3,7 +3,9 @@
 //! This is the single source of truth for a provider's argv. It is consulted
 //! both when the executable comes from the project or `PATH` and when it comes
 //! from a karet-managed installation, so the two can no longer disagree. They
-//! previously held independent copies of every provider's argv.
+//! previously held independent copies of every provider's argv, and agreeing
+//! was never proof of being right: both copies said `neocmakelsp` took no
+//! arguments, and both were wrong.
 //!
 //! There is deliberately **no catch-all**. Every row states its `args`, so a
 //! provider that genuinely takes none records that as a decision (`args: &[]`)
@@ -118,7 +120,14 @@ const BUILTIN_PROVIDERS: &[BuiltinProvider] = &[
     ),
     provider("lemminx", "lemminx", &[], &["xml", "svg"], Role::Primary),
     provider("ruby-lsp", "ruby-lsp", &[], &["ruby"], Role::Primary),
-    provider("phpactor", "phpactor", &[], &["php"], Role::Primary),
+    // Bare `phpactor` prints usage; the server is a subcommand.
+    provider(
+        "phpactor",
+        "phpactor",
+        &["language-server"],
+        &["php"],
+        Role::Primary,
+    ),
     provider(
         "sourcekit-lsp",
         "sourcekit-lsp",
@@ -134,15 +143,18 @@ const BUILTIN_PROVIDERS: &[BuiltinProvider] = &[
         &["lua"],
         Role::Primary,
     ),
+    // HLS is launched through its wrapper, which selects the server build
+    // matching the project's GHC.
     provider(
         "haskell-language-server",
-        "haskell-language-server",
-        &[],
+        "haskell-language-server-wrapper",
+        &["--lsp"],
         &["haskell"],
         Role::Primary,
     ),
     provider("ocamllsp", "ocamllsp", &[], &["ocaml"], Role::Primary),
-    provider("elp", "elp", &[], &["erlang"], Role::Primary),
+    // `elp` is a multi-tool CLI; `server` is its language-server mode.
+    provider("elp", "elp", &["server"], &["erlang"], Role::Primary),
     provider(
         "dart-language-server",
         "dart",
@@ -185,7 +197,14 @@ const BUILTIN_PROVIDERS: &[BuiltinProvider] = &[
         &["json"],
         Role::Primary,
     ),
-    provider("taplo", "taplo", &[], &["toml"], Role::Primary),
+    // Bare `taplo` prints usage and exits 2; `lsp stdio` is the server mode.
+    provider(
+        "taplo",
+        "taplo",
+        &["lsp", "stdio"],
+        &["toml"],
+        Role::Primary,
+    ),
     provider("pkl-lsp", "pkl-lsp", &[], &["pkl"], Role::Primary),
     provider("buf", "buf", &["beta", "lsp"], &["protobuf"], Role::Primary),
     provider(
@@ -213,7 +232,15 @@ const BUILTIN_PROVIDERS: &[BuiltinProvider] = &[
         &["powershell"],
         Role::Primary,
     ),
-    provider("marksman", "marksman", &[], &["markdown"], Role::Primary),
+    // `server` is the documented invocation; explicit beats relying on the root
+    // command defaulting to it.
+    provider(
+        "marksman",
+        "marksman",
+        &["server"],
+        &["markdown"],
+        Role::Primary,
+    ),
     provider(
         "esbonio",
         "esbonio",
@@ -228,7 +255,14 @@ const BUILTIN_PROVIDERS: &[BuiltinProvider] = &[
         &["dockerfile"],
         Role::Primary,
     ),
-    provider("neocmakelsp", "neocmakelsp", &[], &["cmake"], Role::Primary),
+    // Bare `neocmakelsp` prints usage; `stdio` is positional, not a flag.
+    provider(
+        "neocmakelsp",
+        "neocmakelsp",
+        &["stdio"],
+        &["cmake"],
+        Role::Primary,
+    ),
     provider("ruff", "ruff", &["server"], &["python"], Role::Companion),
     provider(
         "biome",

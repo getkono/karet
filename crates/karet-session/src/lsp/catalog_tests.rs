@@ -26,19 +26,23 @@ const EXPECTED_LAUNCH: &[(&str, &str, &[&str])] = &[
     ),
     ("dart-language-server", "dart", &["language-server"]),
     ("docker-langserver", "docker-langserver", &["--stdio"]),
-    ("elp", "elp", &[]),
+    ("elp", "elp", &["server"]),
     ("esbonio", "esbonio", &[]),
     ("gopls", "gopls", &[]),
     ("graphql-lsp", "graphql-lsp", &["server", "-m", "stream"]),
-    ("haskell-language-server", "haskell-language-server", &[]),
+    (
+        "haskell-language-server",
+        "haskell-language-server-wrapper",
+        &["--lsp"],
+    ),
     ("jdtls", "jdtls", &[]),
     ("lemminx", "lemminx", &[]),
     ("lua-language-server", "lua-language-server", &[]),
-    ("marksman", "marksman", &[]),
+    ("marksman", "marksman", &["server"]),
     ("metals", "metals", &[]),
-    ("neocmakelsp", "neocmakelsp", &[]),
+    ("neocmakelsp", "neocmakelsp", &["stdio"]),
     ("ocamllsp", "ocamllsp", &[]),
-    ("phpactor", "phpactor", &[]),
+    ("phpactor", "phpactor", &["language-server"]),
     ("pkl-lsp", "pkl-lsp", &[]),
     (
         "powershell-editor-services",
@@ -57,7 +61,7 @@ const EXPECTED_LAUNCH: &[(&str, &str, &[&str])] = &[
     ("rust-analyzer", "rust-analyzer", &[]),
     ("sourcekit-lsp", "sourcekit-lsp", &[]),
     ("svelte-language-server", "svelteserver", &["--stdio"]),
-    ("taplo", "taplo", &[]),
+    ("taplo", "taplo", &["lsp", "stdio"]),
     ("texlab", "texlab", &[]),
     (
         "typescript-language-server",
@@ -166,7 +170,7 @@ fn launches_name_a_real_executable_and_carry_no_empty_arguments() {
 /// managed install and a `PATH` one cannot diverge.
 #[test]
 fn managed_arguments_come_from_the_launch_table() {
-    assert_eq!(managed_arguments("neocmakelsp"), &[] as &[&str]);
+    assert_eq!(managed_arguments("neocmakelsp"), &["stdio"]);
     assert_eq!(managed_arguments("bash-language-server"), &["start"]);
     assert_eq!(managed_arguments("rust-analyzer"), &[] as &[&str]);
     assert_eq!(managed_arguments("not-a-provider"), &[] as &[&str]);

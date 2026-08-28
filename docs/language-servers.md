@@ -1,7 +1,8 @@
 # Language support and language servers
 
 This is the canonical support matrix and precedence policy for karet. Changes to
-the built-in catalog in `karet-session/src/lsp.rs`, the managed catalog in
+the built-in catalog in `karet-session/src/lsp/catalog.rs` (which is also where
+every provider's launch command and arguments live), the release recipes in
 `karet-session/src/lsp_registry/catalog.rs`, or the grammar registry in
 `karet-treesitter/src/registry.rs` must update this document in the same change.
 
@@ -92,6 +93,41 @@ The manual entries are explicit, not an unexplained remainder:
 On an architecture for which a normally managed provider has no verified upstream
 artifact, the manager reports that platform-specific reason and treats the provider
 as manual. Currently this applies to clangd on ARM.
+
+### How providers are launched
+
+Every provider is launched over stdio with a command and arguments recorded once,
+in `karet-session/src/lsp/catalog.rs`. The same row is used whether the executable
+came from the project, from `PATH`, or from a karet-managed install, so those can
+never disagree.
+
+Most servers speak LSP on stdio when run bare. These do not, and are launched as
+shown:
+
+| Provider | Invocation |
+|---|---|
+| taplo | `taplo lsp stdio` |
+| neocmakelsp | `neocmakelsp stdio` |
+| phpactor | `phpactor language-server` |
+| elp | `elp server` |
+| haskell-language-server | `haskell-language-server-wrapper --lsp` |
+| marksman | `marksman server` |
+| ruff | `ruff server` |
+| biome | `biome lsp-proxy` |
+| buf | `buf beta lsp` |
+| graphql-lsp | `graphql-lsp server -m stream` |
+| bash-language-server | `bash-language-server start` |
+| dart | `dart language-server` |
+| R | `R --no-echo -e languageserver::run()` |
+
+Two rows are known-incomplete rather than verified:
+
+- **PowerShell Editor Services** has no standalone executable — it is a module
+  bundle entered through `Start-EditorServices.ps1`. Point `lsp.servers` at your
+  own bundle; the built-in row only keeps the language routed.
+- **esbonio** is launched as the published `esbonio` console script, which suits
+  karet's `.venv/bin` resolution better than hardcoding an interpreter. Its
+  bare-invocation behavior has not been verified against a live install.
 
 ### GraphQL specifics
 
