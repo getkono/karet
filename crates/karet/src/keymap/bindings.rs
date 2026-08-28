@@ -1,4 +1,5 @@
 use super::*;
+use crate::view::View;
 
 /// The single source of truth for key bindings. Within a [`Layer`] the first
 /// matching binding wins (and [`hint_for`] returns the first binding for a command,
@@ -36,6 +37,14 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(Global, true,  false, false, Char('5'), Command::SelectPanel(SidebarPanel::Todos)),
     b(Global, true,  false, false, Char('6'), Command::SelectPanel(SidebarPanel::Debug)),
     b(Global, false, false, false, Tab,       Command::ToggleFocus),
+
+    // The top-level view switcher. A `Ctrl+K` chord rather than `Ctrl+Shift+<digit>`:
+    // terminals report a shifted digit as its shifted *character* (`!`, `@`, `#`), which
+    // varies by keyboard layout, so a shift-digit chord is not portable. The digits
+    // mirror `Ctrl+1..6` one level up.
+    seq(Global, chord(true, false, false, Char('k')), &[chord(false, false, false, Char('1'))], Command::SelectView(View::Editor)),
+    seq(Global, chord(true, false, false, Char('k')), &[chord(false, false, false, Char('2'))], Command::SelectView(View::GitHub)),
+    seq(Global, chord(true, false, false, Char('k')), &[chord(false, false, false, Char('3'))], Command::SelectView(View::Agents)),
 
     // Tab navigation & reordering (global).
     b(Global, true,  false, false, Tab,       Command::NextTab),

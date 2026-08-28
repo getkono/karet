@@ -260,13 +260,19 @@ impl App {
         if self.handle_status_mouse(mouse) {
             return;
         }
-        if self.github_mouse(mouse) {
+        if self.handle_view_chrome_mouse(mouse) {
+            return;
+        }
+        // Both of these read hit regions recorded on the *active tab*, which another
+        // view draws over without re-rendering: without the gate, last frame's rects
+        // would keep claiming clicks aimed at the view on screen.
+        if self.view == View::Editor && self.github_mouse(mouse) {
             return;
         }
         // Ahead of the region match below, and therefore ahead of the editor: the Seam
         // view owns its whole surface, and a press that fell through to `handle_editor_click`
         // would arm a text drag in a view that has no text to drag.
-        if self.seam_mouse(mouse) {
+        if self.view == View::Editor && self.seam_mouse(mouse) {
             return;
         }
         if self.handle_blame_mouse(mouse) {

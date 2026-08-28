@@ -18,7 +18,7 @@ fn anonymous_auth() -> GithubAuth {
         viewer_login: None,
     }
 }
-fn pull_request(number: u64, draft: bool) -> GithubPullRequest {
+pub(super) fn pull_request(number: u64, draft: bool) -> GithubPullRequest {
     GithubPullRequest {
         number,
         title: format!("Pull request {number}"),

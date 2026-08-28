@@ -237,6 +237,7 @@ use crate::tab::TabKind;
 use crate::tab::ViewMode;
 use crate::tab::commit_title;
 use crate::ui;
+use crate::view::View;
 use crate::workspace;
 
 /// The maximum number of matching files the workspace search panel collects.
@@ -313,6 +314,8 @@ pub struct App {
     icon_override: Option<IconStyle>,
     /// What the terminal was confirmed to support at startup.
     pub(crate) caps: TerminalCaps,
+    /// Which top-level view owns the content area.
+    pub(crate) view: View,
     /// Which area has keyboard focus.
     pub(crate) focus: Focus,
     /// The active sidebar panel.
@@ -447,6 +450,10 @@ pub struct App {
     pub(crate) sidebar_header_hover: Option<(u16, u16)>,
     /// The header panel-switcher cells (`1 2 3`) from the last frame.
     pub(crate) panel_hits: Vec<(u16, u16, SidebarPanel)>,
+    /// The chrome row carrying the top-level view switcher.
+    pub(crate) view_chrome_rect: Rect,
+    /// Column spans of the view-switcher buttons on the chrome row.
+    pub(crate) view_hits: Vec<(u16, u16, View)>,
     /// The right-side outline panel.
     pub(crate) outline: OutlinePanel,
     /// The explorer header toolbar-button cells `(start, end, command)` from the last

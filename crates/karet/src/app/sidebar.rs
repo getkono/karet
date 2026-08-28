@@ -5,10 +5,24 @@ impl App {
     pub(super) fn toggle_focus(&mut self) {
         self.focus = match self.focus {
             Focus::Sidebar => Focus::Editor,
-            Focus::Editor => Focus::Sidebar,
+            // A view that owns the full width has no sidebar to toggle into;
+            // focus would otherwise land on a panel that is not on screen.
+            Focus::Editor if self.view.shows_sidebar() => Focus::Sidebar,
+            Focus::Editor => Focus::Editor,
             // Toggling out of the outline returns to the editor it annotates.
             Focus::Outline => Focus::Editor,
         };
+    }
+
+    /// Show `view` in the content area, moving focus onto it.
+    ///
+    /// Focus follows the switch for the same reason selecting a sidebar panel
+    /// focuses it: the user asked for that surface. It is also load-bearing for a
+    /// view that hides the sidebar — leaving focus on a panel that is no longer
+    /// drawn would strand every keystroke somewhere invisible.
+    pub(super) fn select_view(&mut self, view: View) {
+        self.view = view;
+        self.focus = Focus::Editor;
     }
 
     /// The flattened outline rows for the active tab, or empty when it has none.

@@ -8,6 +8,8 @@ use clap::ValueEnum;
 use karet_filetype::IconStyle;
 use karet_session::config::schema::StartupPanel;
 
+use crate::view::View;
+
 /// Full multi-line text shown by `karet -V` / `--version`, assembled at compile
 /// time from the build-script env vars (see `build.rs`). clap prefixes it with the
 /// binary name, so the first line renders as `karet <version>`, followed by the
@@ -61,6 +63,11 @@ pub struct Cli {
     /// Sidebar panel to show at startup, overriding `workbench.startupPanel`.
     #[arg(long, value_enum)]
     pub startup_panel: Option<StartupPanelChoice>,
+
+    /// Top-level view to show at startup. The Agents view owns the full terminal
+    /// width, so it starts with the sidebar hidden whatever `--startup-panel` says.
+    #[arg(long, value_enum)]
+    pub view: Option<ViewChoice>,
 
     /// Area to focus after startup views are opened.
     #[arg(long, value_enum)]
@@ -338,6 +345,17 @@ pub enum StartupPanelChoice {
     None,
 }
 
+/// CLI choices for the startup top-level view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ViewChoice {
+    /// Start in the editor shell (panes and tabs).
+    Editor,
+    /// Start in the GitHub view.
+    Github,
+    /// Start in the Agents view.
+    Agents,
+}
+
 /// CLI choices for startup focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum FocusChoice {
@@ -353,6 +371,16 @@ impl From<IconChoice> for IconStyle {
             IconChoice::Nerd => Self::NerdFont,
             IconChoice::Unicode => Self::Unicode,
             IconChoice::Ascii => Self::Ascii,
+        }
+    }
+}
+
+impl From<ViewChoice> for View {
+    fn from(choice: ViewChoice) -> Self {
+        match choice {
+            ViewChoice::Editor => Self::Editor,
+            ViewChoice::Github => Self::GitHub,
+            ViewChoice::Agents => Self::Agents,
         }
     }
 }

@@ -1,5 +1,22 @@
 use super::*;
 
+/// Drop every rect and hit region the pane shell records for the mouse.
+///
+/// Called at the top of [`draw_panes`], and by the view layer when a view other
+/// than the editor owns the content area: last frame's editor and pane rects
+/// would otherwise still claim clicks aimed at the view drawn over them.
+pub(super) fn clear_pane_render_state(app: &mut App) {
+    app.pane_frames.clear();
+    app.pane_dividers.clear();
+    app.image_area = None;
+    app.editor_rect = Rect::default();
+    app.markdown_preview_rect = Rect::default();
+    app.blame_rect = None;
+    app.markdown_link_hits.clear();
+    app.commit_badge_rect = None;
+    app.find_rects = crate::ui::FindBarRects::default();
+}
+
 /// Draw every pane (tab strip + breadcrumb + content) tiled across `area`, recording
 /// each pane's clickable regions for mouse routing.
 pub(super) fn draw_panes(
@@ -9,14 +26,7 @@ pub(super) fn draw_panes(
     area: Rect,
     hits: &mut ScrollHits,
 ) {
-    app.pane_frames.clear();
-    app.image_area = None;
-    app.editor_rect = Rect::default();
-    app.markdown_preview_rect = Rect::default();
-    app.blame_rect = None;
-    app.markdown_link_hits.clear();
-    app.commit_badge_rect = None;
-    app.find_rects = crate::ui::FindBarRects::default();
+    clear_pane_render_state(app);
     let focused = app.focus_pane();
     // Borrowed straight off the settings field so the reference stays disjoint
     // from the mutable tab borrows below.

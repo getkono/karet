@@ -5,6 +5,8 @@
 //! walked most-specific-first: the first layer holding a matching binding wins.
 //! Precedence is therefore explicit data, not the order of the binding table.
 
+use crate::view::View;
+
 /// Which area currently has keyboard focus.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Focus {
@@ -82,6 +84,8 @@ pub enum FocusTarget {
     Seam,
     /// A GitHub dashboard, detail, or form.
     Github,
+    /// The Agents view — agent sessions across worktrees.
+    Agents,
     /// The language-server inventory and lifecycle manager.
     LanguageServers,
     /// A too-large-file placeholder, which offers an "open anyway" override.
@@ -104,11 +108,19 @@ pub enum FocusTarget {
 
 impl FocusTarget {
     /// Derive the focused pane from the stored focus, the active sidebar panel,
-    /// and the content kind of the active editor tab.
+    /// the content kind of the active editor tab, and the top-level view.
+    ///
+    /// The view is consulted only for [`Focus::Editor`] — the content area is the
+    /// part of the screen a view owns. Sidebar and outline focus resolve the same
+    /// way whatever view is showing, so the stored fields stay orthogonal.
     #[must_use]
-    pub fn from(focus: Focus, panel: SidebarPanel, tab: EditorTab) -> Self {
+    pub fn from(focus: Focus, panel: SidebarPanel, tab: EditorTab, view: View) -> Self {
         match focus {
             Focus::Outline => FocusTarget::Outline,
+            // A non-editor view owns the content area outright: the active tab is
+            // still there, but it is not what the keys are aimed at.
+            Focus::Editor if view == View::GitHub => FocusTarget::Github,
+            Focus::Editor if view == View::Agents => FocusTarget::Agents,
             Focus::Editor => match tab {
                 EditorTab::Diff => FocusTarget::DiffEditor,
                 EditorTab::Pager => FocusTarget::Pager,
@@ -158,6 +170,8 @@ pub enum Layer {
     Seam,
     /// Active on GitHub dashboard, detail, and form tabs.
     Github,
+    /// Active when the Agents view has focus.
+    Agents,
     /// Active on the language-server manager tab.
     LanguageServers,
     /// Active when a too-large-file placeholder has focus (the "open anyway"
@@ -290,6 +304,9 @@ pub fn active_layers(ctx: Context) -> &'static [Layer] {
             // never the editor's motion keys.
             FocusTarget::Seam => &[L::Seam, L::Global],
             FocusTarget::Github => &[L::Github, L::Global],
+            // Self-contained like the graph and seam browsers: a list/detail surface
+            // with navigation keys of its own, never the editor's motion keys.
+            FocusTarget::Agents => &[L::Agents, L::Global],
             FocusTarget::LanguageServers => &[L::LanguageServers, L::Global],
             FocusTarget::Oversize => &[L::Oversize, L::Global],
             FocusTarget::Explorer => &[L::Explorer, L::Sidebar, L::Global],
@@ -342,7 +359,12 @@ mod tests {
             &[Layer::Pager, Layer::Global]
         );
         assert_eq!(
-            FocusTarget::from(Focus::Editor, SidebarPanel::Explorer, EditorTab::Pager),
+            FocusTarget::from(
+                Focus::Editor,
+                SidebarPanel::Explorer,
+                EditorTab::Pager,
+                View::Editor
+            ),
             FocusTarget::Pager
         );
     }
@@ -357,7 +379,12 @@ mod tests {
         );
         // A too-large placeholder tab in the editor resolves to the Oversize target.
         assert_eq!(
-            FocusTarget::from(Focus::Editor, SidebarPanel::Explorer, EditorTab::Oversize),
+            FocusTarget::from(
+                Focus::Editor,
+                SidebarPanel::Explorer,
+                EditorTab::Oversize,
+                View::Editor
+            ),
             FocusTarget::Oversize
         );
     }
@@ -372,7 +399,8 @@ mod tests {
             FocusTarget::from(
                 Focus::Editor,
                 SidebarPanel::Explorer,
-                EditorTab::LanguageServers
+                EditorTab::LanguageServers,
+                View::Editor
             ),
             FocusTarget::LanguageServers
         );

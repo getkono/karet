@@ -39,8 +39,10 @@ fn stacked_sticky_header_and_resize_preserve_the_visible_file() {
         _ => panic!("expected commit tab"),
     };
     let stacked = screen(&mut app, 80, 8);
+    // Row 0 is the top-level view switcher and row 1 the pane's tab strip, so the
+    // content's first row — where the active file header sticks — is row 2.
     assert!(
-        stacked[1].contains("src/second.rs"),
+        stacked[2].contains("src/second.rs"),
         "the active file header sticks to the content's first row"
     );
 
@@ -55,7 +57,7 @@ fn stacked_sticky_header_and_resize_preserve_the_visible_file() {
         "wide layout removes the stacked TOC rows"
     );
     assert!(
-        wide[1].contains("src/second.rs"),
+        wide[2].contains("src/second.rs"),
         "the file header also sticks above the wide diff column"
     );
 }

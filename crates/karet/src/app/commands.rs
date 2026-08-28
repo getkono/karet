@@ -7,6 +7,7 @@ impl App {
             Command::Quit => self.request_quit(),
             Command::ToggleSidebar => self.sidebar_visible = !self.sidebar_visible,
             Command::ToggleFocus => self.toggle_focus(),
+            Command::SelectView(view) => self.select_view(view),
             Command::SelectPanel(panel) => {
                 // Spelling is only a panel while spell check is on; naming it by
                 // key or palette entry while it is off selects nothing.

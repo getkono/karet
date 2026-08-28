@@ -31,6 +31,7 @@ mod seam_query;
 mod tab;
 mod term_caps;
 mod ui;
+mod view;
 mod workspace;
 
 use std::path::Path;
@@ -205,6 +206,9 @@ fn main() -> color_eyre::Result<()> {
     if let Some(spec) = cli.goto.as_deref() {
         let goto = cli::parse_goto_spec(spec);
         app.open_startup_goto(&resolve_under_root(&root, &goto.path), goto.line, goto.col);
+    }
+    if let Some(view) = cli.view {
+        app.apply_startup_view(view);
     }
     if let Some(focus) = cli.focus {
         app.apply_startup_focus(focus);
