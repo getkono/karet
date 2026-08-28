@@ -230,10 +230,16 @@ fn supervise(
     });
 
     loop {
+        // This fires when the copy into the child's stdin ends, which is not
+        // only the parent going away: a child that exits at once breaks that
+        // pipe itself, so a failed launch reaches this arm too and must report
+        // what the child said and how it ended. Killing an already-dead group
+        // is harmless, and its `wait` still yields the child's own status.
         if parent_gone_rx.try_recv().is_ok() {
             let _ = group.kill();
-            let _ = group.wait();
-            return Ok(0);
+            let status = group.wait().ok().and_then(|status| status.code());
+            drain_pumps(&pumps_done_rx);
+            return Ok(status.unwrap_or(0));
         }
         match group
             .try_wait()
