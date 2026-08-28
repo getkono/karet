@@ -30,6 +30,13 @@ pub enum LaunchCause {
     PermissionDenied,
     /// The process started and then exited before or during the handshake.
     Exited,
+    /// The process started, stayed alive, and never answered the handshake
+    /// within the request deadline.
+    ///
+    /// Distinct from [`Self::Exited`] because the server is still there: it
+    /// may simply be a large workspace being indexed, and writing it off for
+    /// the rest of the session is the wrong answer.
+    Timeout,
     /// The process started but exposed no piped standard I/O.
     NoStdio,
     /// The process could not be started for some other I/O reason.
@@ -44,7 +51,8 @@ impl LaunchCause {
     ///
     /// A binary that is absent or unusable, and a server that exits on sight,
     /// will do the same thing on every retry; the caller stops rather than
-    /// respawning forever.
+    /// respawning forever. A server that is merely slow to answer is the
+    /// opposite case -- it is running, so the next attempt may well land.
     #[must_use]
     pub const fn is_permanent(self) -> bool {
         matches!(
@@ -58,6 +66,7 @@ impl LaunchCause {
             Self::NotFound => "was not found",
             Self::PermissionDenied => "is not executable",
             Self::Exited => "exited immediately",
+            Self::Timeout => "did not answer the handshake",
             Self::NoStdio => "exposed no usable standard I/O",
             Self::Io => "could not be started",
             Self::Host => "could not be launched",
@@ -287,9 +296,23 @@ mod tests {
         ] {
             assert!(cause.is_permanent(), "{cause:?}");
         }
-        for cause in [LaunchCause::Io, LaunchCause::Host] {
+        for cause in [LaunchCause::Io, LaunchCause::Host, LaunchCause::Timeout] {
             assert!(!cause.is_permanent(), "{cause:?}");
         }
+    }
+
+    /// A server that is alive but slow to answer `initialize` is described as
+    /// silent, not as dead, and is left a retry.
+    #[test]
+    fn a_handshake_that_timed_out_is_not_a_dead_server() {
+        let failure = LaunchFailure::new("gopls", vec!["serve".to_owned()], LaunchCause::Timeout)
+            .with_stderr(vec!["loading packages".to_owned()]);
+        assert!(!failure.cause.is_permanent());
+        assert_eq!(failure.exit, None);
+        assert_eq!(
+            failure.to_string(),
+            "'gopls serve' did not answer the handshake: loading packages"
+        );
     }
 
     #[test]
