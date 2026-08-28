@@ -758,27 +758,15 @@ async fn a_dying_servers_last_words_are_never_raced_away() -> TestResult {
     Ok(())
 }
 
-/// The same guarantee under the ordinary shape of the bug -- a server that
-/// writes and exits immediately -- repeated, because a race that loses one
-/// launch in five is invisible in a single attempt.
-#[tokio::test]
-async fn a_dying_servers_last_words_survive_every_launch() -> TestResult {
-    for attempt in 1..=30 {
-        let mut command = tokio::process::Command::new("sh");
-        command.args(["-c", "echo 'error: unrecognized subcommand' >&2; exit 2"]);
-        let Err(LspError::Launch(failure)) =
-            LspClient::spawn_command(command, "taplo", Path::new("/tmp")).await
-        else {
-            return Err("a server that exits should be a launch failure".into());
-        };
-        assert_eq!(
-            failure.diagnosis(),
-            "error: unrecognized subcommand",
-            "attempt {attempt} lost the diagnosis: {failure}"
-        );
-    }
-    Ok(())
-}
+// A 30-iteration repeat of the same launch (`echo ... >&2; exit 2`) used to sit
+// here, on the theory that repetition would catch the race a single attempt
+// misses. It was removed rather than kept: it is not a falsifier. Deleting the
+// `STDERR_DRAIN_GRACE` join that the fix added leaves it green through all
+// thirty attempts, because that shape of child has always written and closed
+// its stderr before the reaper looks -- while its deterministic sibling above,
+// which holds the write end open past the exit, fails immediately. A loop that
+// stays green against the unfixed code buys nothing but runtime, and a
+// probabilistic test has no place in the merge gate.
 
 /// How a launch failure is classified when a child running `script` ends its
 /// handshake with `error` — the seam [`LspClient::spawn_command_with`] reaches

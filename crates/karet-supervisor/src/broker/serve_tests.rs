@@ -132,9 +132,23 @@ impl Harness {
         })
     }
 
+    /// An authenticated client, past the broker's acknowledgement.
+    ///
+    /// The acknowledgement is read here rather than left on the wire because it
+    /// is what a real connector does: it precedes every protocol message, and a
+    /// caller that did not consume it would parse it as one.
     async fn client(&self) -> Result<Client, BoxError> {
-        self.raw_client(&format!("{}{}", TestProtocol::PRELUDE, self.token))
-            .await
+        let (mut reader, writer) = self
+            .raw_client(&format!("{}{}", TestProtocol::PRELUDE, self.token))
+            .await?;
+        let mut greeting = String::new();
+        tokio::time::timeout(Duration::from_secs(5), reader.read_line(&mut greeting)).await??;
+        assert_eq!(
+            acknowledged::<TestProtocol>(&greeting),
+            Some(std::process::id()),
+            "an authenticated client must be told which broker it reached"
+        );
+        Ok((reader, writer))
     }
 
     async fn raw_client(&self, prelude: &str) -> Result<Client, BoxError> {
@@ -187,6 +201,26 @@ async fn recv(reader: &mut BufReader<OwnedReadHalf>) -> Result<Value, BoxError> 
     tokio::time::timeout(Duration::from_secs(5), LineFraming::read_message(reader))
         .await??
         .ok_or_else(|| BoxError::from("client stream ended"))
+}
+
+/// The acknowledgement has to be unforgeable by accident, or it proves
+/// nothing. Another protocol's broker greeting, a bare marker with no prelude,
+/// and a broker that answers with anything but a process id are all strangers.
+#[test]
+fn only_a_brokers_own_acknowledgement_names_a_broker() {
+    assert_eq!(
+        acknowledged::<TestProtocol>(&acknowledgement::<TestProtocol>(4242)),
+        Some(4242)
+    );
+    for line in [
+        "",
+        "OK 4242",
+        "KARET-LSP-BROKER OK 4242",
+        "KARET-TEST-BROKER hello",
+        "KARET-TEST-BROKER OK not-a-pid",
+    ] {
+        assert_eq!(acknowledged::<TestProtocol>(line), None, "{line}");
+    }
 }
 
 #[tokio::test]

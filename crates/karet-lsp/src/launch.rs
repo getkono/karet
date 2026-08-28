@@ -44,6 +44,15 @@ pub enum LaunchCause {
     /// The failure happened in the host before the process ran at all -- no
     /// supervisor, or a broker that could not be reached.
     Host,
+    /// This host cannot run language servers at all.
+    ///
+    /// Distinct from [`Self::Host`], which is a host problem that may be over
+    /// by the next attempt. This one is a property of the build: a karet
+    /// without its process supervisor has no way to start a server, and that
+    /// is settled for the life of the manager, so retrying is pure noise --
+    /// which is exactly what it was, a "retrying with backoff" toast repeated
+    /// until the restart circuit opened and then every five minutes after.
+    Unsupported,
 }
 
 impl LaunchCause {
@@ -57,7 +66,11 @@ impl LaunchCause {
     pub const fn is_permanent(self) -> bool {
         matches!(
             self,
-            Self::NotFound | Self::PermissionDenied | Self::NoStdio | Self::Exited
+            Self::NotFound
+                | Self::PermissionDenied
+                | Self::NoStdio
+                | Self::Exited
+                | Self::Unsupported
         )
     }
 
@@ -70,6 +83,7 @@ impl LaunchCause {
             Self::NoStdio => "exposed no usable standard I/O",
             Self::Io => "could not be started",
             Self::Host => "could not be launched",
+            Self::Unsupported => "cannot be launched by this build",
         }
     }
 }
@@ -153,6 +167,18 @@ impl LaunchFailure {
     #[must_use]
     pub fn with_stderr(mut self, stderr: Vec<String>) -> Self {
         self.stderr = stderr;
+        self
+    }
+
+    /// Record host-level detail: what the host itself could not do.
+    ///
+    /// The counterpart to [`Self::with_stderr`] for a failure with no process
+    /// to have said anything -- [`Self::diagnosis`] falls back to it -- so a
+    /// cause that is not [`LaunchCause::Host`] can still carry one line of
+    /// explanation instead of only its classification.
+    #[must_use]
+    pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = Some(detail.into());
         self
     }
 
@@ -299,6 +325,27 @@ mod tests {
         for cause in [LaunchCause::Io, LaunchCause::Host, LaunchCause::Timeout] {
             assert!(!cause.is_permanent(), "{cause:?}");
         }
+    }
+
+    /// A host with no supervisor is not a host that is momentarily unwell: the
+    /// supervisor path is fixed when the manager is built, so every retry runs
+    /// the identical impossible launch. Reported as `Host` it produced
+    /// "Starting, Retrying, Retrying, Retrying, Retrying" and then a five-minute
+    /// circuit repeating for the session.
+    #[test]
+    fn a_host_that_can_never_run_a_server_is_permanent() {
+        let failure = LaunchFailure::new("rust-analyzer", Vec::new(), LaunchCause::Unsupported)
+            .with_detail("this karet build has no process supervisor");
+        assert!(failure.cause.is_permanent());
+        assert_eq!(
+            failure.diagnosis(),
+            "this karet build has no process supervisor"
+        );
+        assert_eq!(
+            failure.to_string(),
+            "'rust-analyzer' cannot be launched by this build: this karet build has no \
+             process supervisor"
+        );
     }
 
     /// A server that is alive but slow to answer `initialize` is described as

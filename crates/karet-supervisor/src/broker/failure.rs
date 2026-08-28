@@ -5,9 +5,12 @@
 //! detached hidden process — so the report travels through a file beside the
 //! endpoint, written with the same atomic-rename discipline.
 
+use std::collections::VecDeque;
 use std::ffi::OsStr;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Duration;
 use std::time::SystemTime;
 
@@ -20,6 +23,13 @@ use serde::Serialize;
 /// can never race a report a client is still waiting for.
 const MAX_REPORT_AGE: Duration = Duration::from_secs(60 * 60);
 
+/// How many trailing stderr lines a report carries.
+///
+/// The same bound `karet_lsp::launch` keeps for the direct fork, so the two
+/// forks describe one failure the same way. It is restated rather than shared
+/// because the broker skeleton may not name `karet-lsp` (see [`super`]).
+const STDERR_TAIL: usize = 20;
+
 /// Why a brokered process never served.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct BrokeredLaunchFailure {
@@ -29,6 +39,19 @@ pub struct BrokeredLaunchFailure {
     pub args: Vec<String>,
     /// The broker's own description of what went wrong.
     pub message: String,
+    /// The last lines the brokered process wrote to stderr, oldest first.
+    ///
+    /// The whole reason a failed launch is diagnosable: "connection closed"
+    /// names no problem, "Cannot find module 'vscode-languageserver'" does.
+    /// The broker's child is a grandchild of the editor and the broker's own
+    /// stderr goes to `/dev/null`, so unless the tail travels in the report it
+    /// is gone -- which is what left the brokered fork, the one the app always
+    /// takes, reporting less than the direct one.
+    ///
+    /// `serde(default)` so a report written by a broker from another karet
+    /// build still parses; a missing tail costs the diagnosis, not the report.
+    #[serde(default)]
+    pub stderr: Vec<String>,
     /// Whether the process ran at all before failing.
     ///
     /// The distinction the connector needs: a server that started and then
@@ -47,7 +70,56 @@ pub struct BrokeredLaunchFailure {
 
 impl std::fmt::Display for BrokeredLaunchFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.message)
+        match self.diagnosis() {
+            Some(line) => write!(f, "{}: {line}", self.message),
+            None => write!(f, "{}", self.message),
+        }
+    }
+}
+
+impl BrokeredLaunchFailure {
+    /// The server's own last words, when it said anything.
+    ///
+    /// The single most useful line about a failed launch, and the one the
+    /// direct fork already leads with; a broker reporting only its own
+    /// "connection closed" tells the user nothing they can act on.
+    #[must_use]
+    pub fn diagnosis(&self) -> Option<&str> {
+        self.stderr
+            .iter()
+            .rev()
+            .map(|line| line.trim())
+            .find(|line| !line.is_empty())
+    }
+}
+
+/// A bounded, shared view of the brokered child's most recent stderr.
+///
+/// Deliberately the same shape as `karet_lsp::launch::StderrTail`, restated
+/// here because the broker skeleton may not name `karet-lsp`: only the lines
+/// still in this window are kept, so a server that logs continuously cannot
+/// grow the report without limit.
+#[derive(Clone, Default)]
+pub(crate) struct StderrTail(Arc<Mutex<VecDeque<String>>>);
+
+impl StderrTail {
+    /// Record one line, dropping the oldest once the window is full.
+    pub(crate) fn push(&self, line: String) {
+        // A poisoned lock costs the diagnosis, never the report.
+        if let Ok(mut lines) = self.0.lock() {
+            if lines.len() == STDERR_TAIL {
+                lines.pop_front();
+            }
+            lines.push_back(line);
+        }
+    }
+
+    /// The retained lines, oldest first.
+    pub(crate) fn lines(&self) -> Vec<String> {
+        self.0
+            .lock()
+            .map(|lines| lines.iter().cloned().collect())
+            .unwrap_or_default()
     }
 }
 
@@ -138,6 +210,7 @@ mod tests {
             command: "rust-analyzer".to_owned(),
             args: vec!["--stdio".to_owned()],
             message: "server stdout ended".to_owned(),
+            stderr: vec!["Error: Cannot find module 'vscode-languageserver'".to_owned()],
             ran: true,
             pid: std::process::id(),
         }
@@ -149,6 +222,56 @@ mod tests {
         let when = SystemTime::now() - by;
         file.set_times(FileTimes::new().set_accessed(when).set_modified(when))?;
         Ok(())
+    }
+
+    /// The report is the only way the child's last words leave the broker, so
+    /// what it carries is what the user is told. Without the tail the brokered
+    /// fork could say no more than "connection closed" about a server that had
+    /// explained itself perfectly well on stderr.
+    #[test]
+    fn a_report_leads_with_the_servers_own_last_words() {
+        let failure = failure();
+        assert_eq!(
+            failure.diagnosis(),
+            Some("Error: Cannot find module 'vscode-languageserver'")
+        );
+        assert_eq!(
+            failure.to_string(),
+            "server stdout ended: Error: Cannot find module 'vscode-languageserver'"
+        );
+    }
+
+    /// A server that said nothing still reports what the broker saw.
+    #[test]
+    fn a_silent_server_leaves_the_brokers_own_description() {
+        let mut failure = failure();
+        failure.stderr = vec!["   ".to_owned(), String::new()];
+        assert_eq!(failure.diagnosis(), None);
+        assert_eq!(failure.to_string(), "server stdout ended");
+    }
+
+    /// A report written by another karet build has no `stderr` key at all.
+    #[test]
+    fn a_report_without_a_tail_still_parses() -> Result<(), BoxError> {
+        let bare = br#"{"command":"gopls","args":[],"message":"gone","ran":true,"pid":7}"#;
+        let parsed: BrokeredLaunchFailure = serde_json::from_slice(bare)?;
+        assert!(parsed.stderr.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn the_stderr_tail_keeps_the_most_recent_lines() {
+        let tail = StderrTail::default();
+        for line in 0..(STDERR_TAIL + 5) {
+            tail.push(line.to_string());
+        }
+        let lines = tail.lines();
+        assert_eq!(lines.len(), STDERR_TAIL);
+        assert_eq!(lines.first().map(String::as_str), Some("5"));
+        assert_eq!(
+            lines.last().map(String::as_str),
+            Some((STDERR_TAIL + 4).to_string().as_str())
+        );
     }
 
     #[test]

@@ -77,11 +77,14 @@ use tokio::sync::broadcast;
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum LspError {
-    /// The language server process could not be spawned.
-    #[deprecated(note = "superseded by LspError::Launch, which carries why the launch failed")]
-    #[error("failed to spawn language server")]
-    Spawn,
     /// The language server could not be launched, with what is known about why.
+    ///
+    /// Replaces the `Spawn` variant this enum used to carry, which nothing
+    /// constructed any more. Deprecating it rather than removing it would have
+    /// left a downstream `match e { LspError::Spawn => ..., _ => ... }`
+    /// compiling with a warning on the pattern alone while its missing-binary
+    /// arm went dead, sending every launch failure to `_`; the removal makes
+    /// that a compile error instead, which is the only way the arm gets moved.
     #[error("{0}")]
     Launch(Box<LaunchFailure>),
     /// The server responded with an error.
