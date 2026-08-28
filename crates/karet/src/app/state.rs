@@ -518,6 +518,12 @@ pub(crate) struct SearchPanel {
     /// Whether a search has ever completed, so an empty list can distinguish
     /// "no matches" from "nothing asked for yet".
     pub(crate) searched: bool,
+    /// Whether the user has folded or unfolded anything during this search, which
+    /// suppresses the adaptive expansion applied when the search finishes.
+    pub(crate) folds_touched: bool,
+    /// A cursor to restore once rows exist again. A re-run empties the list, so
+    /// the position cannot be re-applied until the first batch lands.
+    pub(crate) pending_cursor: Option<usize>,
     /// Whether a field is being edited (vs. browsing results).
     pub(crate) input: bool,
     /// Which field the input edits.
@@ -643,7 +649,10 @@ impl SearchPanel {
                     .extend((0..file.matches.len()).map(|index| SearchRow::Match { hit, index }));
             }
         }
-        let cursor = self.selection.cursor();
+        let cursor = self
+            .pending_cursor
+            .take()
+            .unwrap_or_else(|| self.selection.cursor());
         self.selection = ListSelection::new(self.rows.len());
         self.selection
             .move_to(cursor.min(self.rows.len().saturating_sub(1)));
@@ -678,6 +687,8 @@ impl SearchPanel {
         self.truncated = false;
         self.error = None;
         self.searched = false;
+        self.folds_touched = false;
+        self.pending_cursor = None;
     }
 }
 
@@ -699,6 +710,8 @@ impl Default for SearchPanel {
             truncated: false,
             error: None,
             searched: false,
+            folds_touched: false,
+            pending_cursor: None,
             input: false,
             field: SearchPanelField::Find,
             includes: String::new(),

@@ -332,3 +332,132 @@ async fn an_include_glob_narrows_the_result_set() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// An automatic default may choose the starting fold state, but it must not undo
+/// a fold the user set while results were still streaming in.
+#[test]
+fn finishing_a_search_keeps_folds_the_user_set_while_it_streamed() {
+    let mut app = app();
+    app.search.searching = Some(RequestId(1));
+    app.search_progress(
+        Some(RequestId(1)),
+        vec![
+            search_hit(std::path::Path::new("/w/a.rs"), 2),
+            search_hit(std::path::Path::new("/w/b.rs"), 1),
+        ],
+        2,
+        3,
+    );
+    // The user folds one file mid-stream.
+    app.search.selection.move_to(0);
+    app.dispatch(Command::SearchCollapse);
+    assert!(
+        app.search
+            .collapsed
+            .contains(std::path::Path::new("/w/a.rs"))
+    );
+
+    // A small result set would otherwise expand everything on completion.
+    app.search_finished(Some(RequestId(1)), 2, 3, false, None);
+    assert!(
+        app.search
+            .collapsed
+            .contains(std::path::Path::new("/w/a.rs")),
+        "the user's fold survives the adaptive default"
+    );
+}
+
+/// Any file save re-runs a live search through the watcher. Losing your place in
+/// the results every time a file is written makes the panel unusable alongside
+/// editing, and master's `set_len` clamped the cursor rather than resetting it.
+#[test]
+fn re_running_a_search_keeps_the_cursor() {
+    let mut app = app();
+    app.search.query = "needle".into();
+    app.search.searching = Some(RequestId(1));
+    app.search_progress(
+        Some(RequestId(1)),
+        vec![search_hit(std::path::Path::new("/w/a.rs"), 4)],
+        1,
+        4,
+    );
+    app.search.selection.move_to(3);
+
+    // No backend in this app, so the command goes nowhere — the state handling
+    // around it is what is under test.
+    app.run_global_search();
+    assert!(app.search.rows.is_empty(), "the re-run empties the list");
+
+    // The cursor is restored once rows exist again.
+    app.search.searching = Some(RequestId(2));
+    app.search_progress(
+        Some(RequestId(2)),
+        vec![search_hit(std::path::Path::new("/w/a.rs"), 4)],
+        1,
+        4,
+    );
+    assert_eq!(
+        app.search.selection.cursor(),
+        3,
+        "the reader keeps their place"
+    );
+}
+
+#[test]
+fn re_running_a_search_keeps_the_folds() {
+    let mut app = app();
+    app.search.query = "needle".into();
+    app.search.searching = Some(RequestId(1));
+    app.search_progress(
+        Some(RequestId(1)),
+        vec![
+            search_hit(std::path::Path::new("/w/a.rs"), 2),
+            search_hit(std::path::Path::new("/w/b.rs"), 2),
+        ],
+        2,
+        4,
+    );
+    app.search.selection.move_to(0);
+    app.dispatch(Command::SearchCollapse);
+    let folded = app.search.collapsed.clone();
+    assert!(!folded.is_empty());
+
+    app.run_global_search();
+    assert_eq!(
+        app.search.collapsed, folded,
+        "folds carry across the re-run"
+    );
+    assert!(
+        app.search.folds_touched,
+        "so the adaptive default still does not undo them"
+    );
+}
+
+/// The cursor is clamped, not blindly restored, when the new result set is shorter.
+#[test]
+fn a_restored_cursor_clamps_into_a_shorter_result_set() {
+    let mut app = app();
+    app.search.query = "needle".into();
+    app.search.searching = Some(RequestId(1));
+    app.search_progress(
+        Some(RequestId(1)),
+        vec![search_hit(std::path::Path::new("/w/a.rs"), 8)],
+        1,
+        8,
+    );
+    app.search.selection.move_to(8);
+    app.run_global_search();
+    app.search.searching = Some(RequestId(2));
+    app.search_progress(
+        Some(RequestId(2)),
+        vec![search_hit(std::path::Path::new("/w/a.rs"), 1)],
+        1,
+        1,
+    );
+    assert!(
+        app.search.selection.cursor() < app.search.rows.len(),
+        "cursor {} is inside {} rows",
+        app.search.selection.cursor(),
+        app.search.rows.len()
+    );
+}

@@ -442,7 +442,18 @@ impl App {
         if let Some(previous) = self.search.searching.take() {
             self.send_command(SessionCommand::Cancel { request: previous });
         }
+        // A re-run must not cost the reader their place: any file save re-runs the
+        // live search through the watcher, and `clear` would send the cursor back
+        // to the top and unfold everything. Carried across and re-clamped by
+        // `rebuild_rows`; a genuinely new query's folds are recomputed when it
+        // finishes anyway.
+        let cursor = self.search.selection.cursor();
+        let collapsed = std::mem::take(&mut self.search.collapsed);
+        let folds_touched = self.search.folds_touched;
         self.search.clear();
+        self.search.collapsed = collapsed;
+        self.search.folds_touched = folds_touched;
+        self.search.pending_cursor = Some(cursor);
         if self.search.query.is_empty() {
             self.refresh_search_decorations();
             return;
@@ -500,8 +511,12 @@ impl App {
         self.search.searched = true;
         // Adaptive expansion, applied only now that the size is known — collapsing
         // mid-stream would snap groups shut under the cursor while the user reads.
-        self.search
-            .set_all_collapsed(matches_found > SEARCH_AUTO_EXPAND);
+        // Skipped once the user has folded something themselves: an automatic
+        // default may pick the starting state, but it must not undo a decision.
+        if !self.search.folds_touched {
+            self.search
+                .set_all_collapsed(matches_found > SEARCH_AUTO_EXPAND);
+        }
         self.refresh_search_decorations();
     }
 
@@ -591,6 +606,7 @@ impl App {
         let Some(path) = self.search.hits.get(row.hit()).map(|hit| hit.path.clone()) else {
             return;
         };
+        self.search.folds_touched = true;
         self.search.toggle_file(&path);
     }
 
@@ -641,6 +657,7 @@ impl App {
             .hits
             .iter()
             .any(|hit| !self.search.collapsed.contains(&hit.path));
+        self.search.folds_touched = true;
         self.search.set_all_collapsed(any_open);
     }
 }
