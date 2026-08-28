@@ -1,5 +1,8 @@
 use super::*;
 
+/// The most tab titles the close confirmation spells out before summarizing.
+const NAMED_TABS: usize = 6;
+
 impl App {
     /// The active tab's session document, if it is a registered code tab.
     pub(super) fn active_code_doc(&self) -> Option<DocumentId> {
@@ -96,6 +99,27 @@ impl App {
     ///
     /// Quit additionally honors `files.confirmOnExit`; tab/pane closes are always
     /// guarded — silently discarding unsaved changes is the data-loss bug this fixes.
+    /// Name the documents a close would lose, by the tab titles the user is
+    /// already looking at. "2 unsaved files" says how much is at stake but not
+    /// which, and which is the thing worth checking before discarding.
+    fn at_risk_names(&self, at_risk: &[DocumentId]) -> String {
+        let mut names: Vec<String> = Vec::new();
+        for tab in self.all_tabs() {
+            let Some(doc) = Self::tab_doc(tab) else {
+                continue;
+            };
+            if at_risk.contains(&doc) && !names.contains(&tab.title) {
+                names.push(tab.title.clone());
+            }
+        }
+        let shown = names.len().min(NAMED_TABS);
+        let mut listed = names[..shown].join(", ");
+        if let Some(rest) = names.len().checked_sub(NAMED_TABS).filter(|n| *n > 0) {
+            listed.push_str(&format!(", and {rest} more"));
+        }
+        listed
+    }
+
     pub(super) fn guarded_close(&mut self, request: CloseRequest) {
         if matches!(request, CloseRequest::Quit)
             && let Some(operation) = self.scm.operation.as_ref()
@@ -116,8 +140,22 @@ impl App {
         if at_risk.is_empty() || !honor_setting {
             self.execute_close(request);
         } else {
+            let names = self.at_risk_names(&at_risk);
+            let (title, save, discard) = close_prompt_choices(request, at_risk.len());
+            // Open first, arm second. Opening declines whatever dialog it replaces,
+            // and a close prompt's own decline clears `pending_close` — so arming
+            // before this call would have the outgoing dialog wipe the request the
+            // incoming one depends on, leaving its answers inert.
+            self.confirm(ConfirmDialog::new(
+                title,
+                format!("Unsaved changes in {names} have not been written to disk."),
+                vec![
+                    ConfirmChoice::custom("Cancel", Command::CloseConfirmCancel),
+                    ConfirmChoice::custom(save, Command::CloseConfirmSave),
+                    ConfirmChoice::custom(discard, Command::CloseConfirmDiscard),
+                ],
+            ));
             self.pending_close = Some(request);
-            self.status = Some(close_prompt_message(request, at_risk.len()));
         }
     }
 

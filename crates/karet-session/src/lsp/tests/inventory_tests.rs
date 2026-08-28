@@ -94,6 +94,8 @@ fn inventory_covers_builtins_and_configured_providers() -> TestResult {
 #[test]
 fn language_server_inventory_payload_is_serde_ready() -> TestResult {
     let status = LanguageServerStatus {
+        ever_installed: false,
+        declined: false,
         server: LanguageServerId::Texlab,
         languages: vec!["tex".to_owned()],
         enabled: true,

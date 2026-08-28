@@ -54,18 +54,28 @@ impl App {
                     if error.contains("local changes")
                         || error.contains("would be overwritten") =>
                 {
-                    self.overlay = Some(Overlay::text(
-                        "Switch blocked · type stash to stash changes and retry",
-                        TextPurpose::StashAndSwitch { target },
-                    ));
+                    self.confirm_action(
+                        "Switch blocked by local changes",
+                        "Git refused the switch because uncommitted changes would \
+                         be overwritten. Stashing sets them aside, switches, and \
+                         leaves the stash for you to pop.",
+                        "Stay here",
+                        "Stash and switch",
+                        ConfirmAction::StashAndSwitch(target),
+                    );
                 },
                 VcsAction::UndoCommit {
                     allow_upstream: false,
                 } if error.contains("already present upstream") => {
-                    self.overlay = Some(Overlay::text(
-                        "Commit is upstream · type undo to confirm soft reset",
-                        TextPurpose::ConfirmPublishedUndo,
-                    ));
+                    self.confirm_action(
+                        "Undo a commit that is already pushed?",
+                        "This commit exists on the remote. Undoing it here rewrites \
+                         local history, so the branch will need a force-push and \
+                         anyone who pulled it will diverge.",
+                        "Keep the commit",
+                        "Undo anyway",
+                        ConfirmAction::UndoPublishedCommit,
+                    );
                 },
                 _ => self.notify(Severity::Error, NotificationKind::Vcs, error),
             }

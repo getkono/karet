@@ -80,9 +80,12 @@ impl LspManager {
                     .iter()
                     .map(|root| self.inventory_instance(&server, &languages, root))
                     .collect();
+                let root = self.registry_root.as_deref();
                 LanguageServerStatus {
                     enabled: self.settings.enabled,
                     installed,
+                    ever_installed: crate::lsp_registry::ever_installed(root, &server),
+                    declined: crate::lsp_registry::read_declined(root, &server).is_some(),
                     cleanup_pending: crate::lsp_registry::cleanup_pending(
                         self.registry_root.as_deref(),
                         &server,

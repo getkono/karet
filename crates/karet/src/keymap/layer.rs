@@ -187,17 +187,10 @@ pub enum Layer {
     CommitInput,
     /// Active while the go-to-commit (revision) input is open.
     RevInput,
-    /// Active while the discard-confirmation prompt is up.
-    DiscardConfirm,
-    /// Active while the explorer delete-confirmation prompt is up.
-    ExplorerDeleteConfirm,
     /// Active while a context menu is open.
     ContextMenu,
-    /// Active while the unsaved-changes close-confirmation prompt (quit or tab/pane
-    /// close) is up.
-    CloseConfirm,
-    /// Active while the startup crash-recovery prompt is up.
-    SwapRecover,
+    /// Active while a confirmation dialog is open.
+    Confirm,
     /// Active while the explorer inline name editor is open.
     ExplorerEdit,
 }
@@ -219,17 +212,10 @@ pub enum Modal {
     CommitInput,
     /// The go-to-commit (revision) input.
     RevInput,
-    /// The discard-confirmation prompt.
-    DiscardConfirm,
-    /// The explorer delete-confirmation prompt.
-    ExplorerDeleteConfirm,
     /// A context menu.
     ContextMenu,
-    /// The unsaved-changes confirmation prompt shown before an irreversible close
-    /// (quit or closing a tab/pane).
-    CloseConfirm,
-    /// The startup prompt to recover crash-recovery backups.
-    SwapRecover,
+    /// A confirmation dialog awaiting a choice.
+    Confirm,
     /// The explorer inline name editor (new file/folder or rename).
     ExplorerEdit,
 }
@@ -277,11 +263,8 @@ pub fn active_layers(ctx: Context) -> &'static [Layer] {
         Some(Modal::Find) => &[L::Find],
         Some(Modal::CommitInput) => &[L::CommitInput],
         Some(Modal::RevInput) => &[L::RevInput],
-        Some(Modal::DiscardConfirm) => &[L::DiscardConfirm],
-        Some(Modal::ExplorerDeleteConfirm) => &[L::ExplorerDeleteConfirm],
         Some(Modal::ContextMenu) => &[L::ContextMenu],
-        Some(Modal::CloseConfirm) => &[L::CloseConfirm],
-        Some(Modal::SwapRecover) => &[L::SwapRecover],
+        Some(Modal::Confirm) => &[L::Confirm],
         Some(Modal::ExplorerEdit) => &[L::ExplorerEdit],
         Some(Modal::SearchInput) => &[L::SearchInput, L::Global],
         Some(Modal::SearchList) => &[L::SearchList, L::Global],

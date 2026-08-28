@@ -31,6 +31,27 @@ pub(crate) enum LanguageServerPendingKind {
     Uninstall,
 }
 
+impl LanguageServerPendingKind {
+    /// Whether this operation is worth a notification of its own.
+    ///
+    /// Update *checks* are metadata requests the user asked for and watched
+    /// happen; installs, updates and uninstalls change the machine and can run
+    /// long, so they are the ones that owe an answer wherever the user is.
+    pub(crate) fn is_download(self) -> bool {
+        matches!(self, Self::Install | Self::Update | Self::Uninstall)
+    }
+
+    /// How to say this operation is under way.
+    pub(crate) fn progressive(self) -> &'static str {
+        match self {
+            Self::CheckSelected | Self::CheckAll => "Checking",
+            Self::Install => "Installing",
+            Self::Update => "Updating",
+            Self::Uninstall => "Uninstalling",
+        }
+    }
+}
+
 /// Request correlation and presentation state for a registry operation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct LanguageServerPending {

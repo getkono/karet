@@ -9,8 +9,6 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use karet_core::LineCol;
-use karet_session::LanguageServerId;
-use karet_session::LanguageServerPlanId;
 use karet_session::PullRequestSummary;
 use karet_vcs::BranchTarget;
 use karet_vcs::CreateBranchOptions;
@@ -90,41 +88,14 @@ pub enum StashAction {
 pub enum TextPurpose {
     /// Create a branch from this stash reference.
     StashBranch { reference: String },
-    /// Save every dirty editor, then switch branches.
-    SaveAndSwitch { target: BranchTarget },
-    /// Stash worktree changes and retry a refused branch switch.
-    StashAndSwitch { target: BranchTarget },
-    /// Confirm permanent stash removal by typing `drop`.
-    ConfirmDropStash { reference: String },
-    /// Confirm undoing a commit already present upstream by typing `undo`.
-    ConfirmPublishedUndo,
     /// Rename `old` to the submitted name.
     RenameBranch { old: String },
     /// Tag `rev` with the submitted name (lightweight).
     TagCreate { rev: String },
-    /// Confirm a hard reset to `rev` by typing `reset`.
-    ConfirmResetHard { rev: String },
-    /// Confirm remote deletion by typing the exact branch name.
-    ConfirmDeleteRemoteBranch { remote: String, branch: String },
     /// Evaluate the submitted expression in the debuggee.
     DebugEvaluate,
-    /// Confirm opening a relative file link that escaped the workspace.
-    ConfirmOutsideWorkspaceLink { path: PathBuf },
-    /// Confirm creating the missing project settings file before adding a word.
-    ConfirmCreateProjectSettings { word: String, path: PathBuf },
-    /// Confirm the first network-backed installation by typing `install`.
-    InstallLanguageServer { server: LanguageServerId },
-    /// Approve the exact update plan displayed by the backend.
-    ApplyLanguageServerPlan {
-        plan: LanguageServerPlanId,
-        servers: Vec<LanguageServerId>,
-        /// Whether this plan installs a missing provider rather than updating one.
-        install: bool,
-    },
     /// Replace the language-server manager's filter with the submitted text.
     FilterLanguageServers,
-    /// Confirm deactivation of one Karet-managed provider by typing `uninstall`.
-    UninstallLanguageServer { server: LanguageServerId },
 }
 
 pub(crate) struct BranchForm {

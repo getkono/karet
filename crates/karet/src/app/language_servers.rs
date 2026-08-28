@@ -1,3 +1,6 @@
+mod progress;
+mod prompts;
+
 use super::*;
 use crate::tab::LanguageServerAction;
 use crate::tab::LanguageServerPending;
@@ -186,7 +189,7 @@ impl App {
         Some(view)
     }
 
-    fn selected_language_server(&self) -> Option<LanguageServerStatus> {
+    pub(in crate::app) fn selected_language_server(&self) -> Option<LanguageServerStatus> {
         let tab = self.tabs.get(self.active)?;
         let TabKind::LanguageServers(view) = &tab.kind else {
             return None;
@@ -222,6 +225,7 @@ impl App {
             total: None,
         });
         self.sync_language_server_operations();
+        self.sync_language_server_toast();
     }
 
     fn sync_language_server_operations(&mut self) {
@@ -243,11 +247,21 @@ impl App {
         let failed = self.lsp_runtime.fail_operation(request, message);
         if failed {
             self.sync_language_server_operations();
+            self.sync_language_server_toast();
+            // Untagged on purpose. The progress cards share one tag so they can
+            // update in place, and an outcome that joined them would be erased by
+            // the next tick of any *other* running operation — losing exactly the
+            // report the user most needs, since errors never auto-expire.
+            self.notify(
+                Severity::Error,
+                NotificationKind::Lsp,
+                format!("language server: {message}"),
+            );
         }
         failed
     }
 
-    pub(super) fn refresh_language_servers(&mut self) {
+    pub(in crate::app) fn refresh_language_servers(&mut self) {
         let request = self.send(SessionCommand::LanguageServerStatus);
         if let Some(view) = self.language_servers_mut() {
             view.inventory_request = request;
@@ -380,15 +394,19 @@ impl App {
             ));
             return;
         }
-        self.overlay = Some(Overlay::text(
+        let name = status.server.display_name().to_string();
+        let version = status.installed.clone().unwrap_or_default();
+        self.confirm_action(
+            format!("Uninstall {name}?"),
             format!(
-                "Deactivate {} for future sessions · type uninstall to confirm",
-                status.server.display_name()
+                "Deactivates {name} {version} and retires its files. Documents in \
+                 this language lose completions, diagnostics and go-to-definition \
+                 until it is installed again."
             ),
-            TextPurpose::UninstallLanguageServer {
-                server: status.server,
-            },
-        ));
+            "Keep it installed",
+            format!("Uninstall {name}"),
+            ConfirmAction::UninstallLanguageServer(status.server),
+        );
     }
 
     pub(super) fn prompt_language_server_filter(&mut self) {
@@ -532,27 +550,6 @@ impl App {
         );
     }
 
-    pub(super) fn prompt_language_server_install(&mut self, server: LanguageServerId) {
-        if self.overlay.is_none() {
-            self.overlay = Some(Overlay::text(
-                format!(
-                    "{} is not installed · type install to install the latest stable version",
-                    server.display_name()
-                ),
-                TextPurpose::InstallLanguageServer { server },
-            ));
-        } else {
-            self.notify(
-                Severity::Warning,
-                NotificationKind::Lsp,
-                format!(
-                    "{} is not installed; open Language Servers to install it",
-                    server.display_name()
-                ),
-            );
-        }
-    }
-
     pub(super) fn show_language_server_status(
         &mut self,
         request: Option<RequestId>,
@@ -641,13 +638,33 @@ impl App {
             })
             .collect::<Vec<_>>()
             .join(", ");
-        self.overlay = Some(Overlay::text(
-            format!("{summary} · type update to approve these exact versions"),
-            TextPurpose::ApplyLanguageServerPlan {
-                plan,
-                servers: changes.iter().map(|change| change.server.clone()).collect(),
-                install: false,
+        let bytes: u64 = changes
+            .iter()
+            .filter_map(|change| change.download_bytes)
+            .sum();
+        let size = if bytes > 0 {
+            format!(" Downloads about {}.", human_bytes(bytes))
+        } else {
+            String::new()
+        };
+        let count = changes.len();
+        self.confirm(ConfirmDialog::new(
+            if count == 1 {
+                "Update this language server?".to_string()
+            } else {
+                format!("Update {count} language servers?")
             },
+            format!("Applies exactly these versions: {summary}.{size}"),
+            vec![
+                ConfirmChoice::custom("Keep current versions", ConfirmAction::Cancel),
+                ConfirmChoice::custom(
+                    "Update",
+                    ConfirmAction::ApplyLanguageServerPlan {
+                        plan,
+                        servers: changes.iter().map(|change| change.server.clone()).collect(),
+                    },
+                ),
+            ],
         ));
     }
 
@@ -659,6 +676,7 @@ impl App {
     ) {
         self.lsp_runtime.update_progress(&server, downloaded, total);
         self.sync_language_server_operations();
+        self.sync_language_server_toast();
     }
 
     pub(super) fn finish_language_server_change(
@@ -669,6 +687,14 @@ impl App {
         _restart_required: bool,
     ) {
         self.lsp_runtime.finish_operation(request, Some(&server));
+        self.sync_language_server_toast();
+        // Untagged: an outcome must survive another operation's next progress
+        // tick (see `fail_language_server_operation`).
+        self.notify(
+            Severity::Information,
+            NotificationKind::Lsp,
+            format!("{} {version} is ready", server.display_name()),
+        );
         if let Some(status) = self
             .lsp_runtime
             .servers
@@ -700,6 +726,7 @@ impl App {
         cleanup_pending: bool,
     ) {
         self.lsp_runtime.finish_operation(request, Some(&server));
+        self.sync_language_server_toast();
         for tab in self.all_tabs_mut() {
             if let TabKind::LanguageServers(view) = &mut tab.kind {
                 if let Some(status) = view.servers.iter_mut().find(|item| item.server == server) {

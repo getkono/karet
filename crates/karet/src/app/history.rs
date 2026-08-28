@@ -526,16 +526,20 @@ impl App {
         self.run_vcs_action(action(rev));
     }
 
-    /// Hard reset requires typing `reset` — it discards local changes.
+    /// Hard reset discards local changes, so it always asks first.
     pub(super) fn commit_graph_reset_hard(&mut self) {
         let Some(rev) = self.selected_graph_commit() else {
             return;
         };
         let short: String = rev.chars().take(7).collect();
-        self.overlay = Some(Overlay::text(
-            format!("Type reset to hard-reset to {short} (discards local changes)"),
-            crate::overlay::TextPurpose::ConfirmResetHard { rev },
-        ));
+        self.confirm_action(
+            format!("Hard-reset to {short}?"),
+            "Moves the branch and the worktree to this commit, throwing away every \
+             uncommitted change. This cannot be undone.",
+            "Cancel",
+            format!("Reset --hard to {short}"),
+            ConfirmAction::ResetHard(rev),
+        );
     }
 
     /// Open the interactive-rebase plan editor for the commits between the

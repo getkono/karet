@@ -159,21 +159,16 @@ impl App {
     /// The precedence mirrors how the shell stacks these overlays. Also drives the
     /// context-aware status hints bar ([`crate::ui`]).
     pub(crate) fn input_context(&self) -> Context {
-        let modal = if self.pending_swaps.is_some() {
-            // A startup recovery decision blocks everything else until made.
-            Some(Modal::SwapRecover)
-        } else if self.pending_close.is_some() {
-            Some(Modal::CloseConfirm)
+        let modal = if self.confirm.is_some() {
+            // A question outranks the picker or menu it was raised from: answering
+            // it is what everything under it is waiting on.
+            Some(Modal::Confirm)
         } else if self.overlay.is_some() {
             Some(Modal::Overlay)
         } else if self.commit_input.focused {
             Some(Modal::CommitInput)
         } else if self.rev_input.is_some() {
             Some(Modal::RevInput)
-        } else if self.pending_discard.is_some() {
-            Some(Modal::DiscardConfirm)
-        } else if self.pending_explorer_delete.is_some() {
-            Some(Modal::ExplorerDeleteConfirm)
         } else if self.context_menu.is_some() {
             Some(Modal::ContextMenu)
         } else if self.find_open {
@@ -255,17 +250,10 @@ impl App {
             Modal::ExplorerEdit => self.explorer_edit(key),
             Modal::SearchInput => self.search_edit(key),
             Modal::SearchList => {},
-            Modal::DiscardConfirm => self.resolve_discard(false),
-            Modal::ExplorerDeleteConfirm => self.resolve_explorer_delete(false),
             Modal::ContextMenu => self.close_context_menu(),
-            // An unbound key cancels the close prompt (stay in the editor); the
-            // default for every irreversible close is to abort.
-            Modal::CloseConfirm => self.cancel_close(),
-            // …and dismisses the recovery prompt, keeping the swaps for a later launch.
-            Modal::SwapRecover => {
-                self.pending_swaps = None;
-                self.status = Some("recovery dismissed (backups kept)".to_string());
-            },
+            // An unbound key cancels a confirmation, matching every other confirm
+            // prompt: the default answer to a question the user did not answer is no.
+            Modal::Confirm => self.confirm_cancel(),
         }
     }
 
@@ -317,11 +305,10 @@ impl App {
                 edit.insert(target, text);
             },
             Modal::SearchList
-            | Modal::DiscardConfirm
-            | Modal::ExplorerDeleteConfirm
             | Modal::ContextMenu
-            | Modal::CloseConfirm
-            | Modal::SwapRecover => {},
+            // A confirmation captures no text: pasting into a question is
+            // meaningless, and must not fall through to the editor underneath.
+            | Modal::Confirm => {},
         }
     }
 
@@ -360,6 +347,13 @@ impl App {
             None => return,
         };
         self.overlay = None;
+        self.handle_overlay_event(event);
+    }
+
+    /// Run what one accepted overlay row stands for. Split from
+    /// [`overlay_accept`](Self::overlay_accept) so each follow-up — several of
+    /// which now raise a confirmation rather than acting — is reachable on its own.
+    pub(super) fn handle_overlay_event(&mut self, event: OverlayEvent) {
         match event {
             OverlayEvent::Close => {},
             OverlayEvent::AcceptFile(path) => self.open_path(&path),
@@ -402,10 +396,14 @@ impl App {
                     self.run_vcs_action(VcsAction::StashPop { reference });
                 },
                 StashAction::Drop(reference) => {
-                    self.overlay = Some(Overlay::text(
-                        "Type drop to permanently remove the stash",
-                        TextPurpose::ConfirmDropStash { reference },
-                    ));
+                    self.confirm_action(
+                        format!("Drop stash {reference}?"),
+                        "Permanently removes this stash entry and the changes it \
+                         holds. There is no reflog for a dropped stash.",
+                        "Keep the stash",
+                        "Drop",
+                        ConfirmAction::DropStash(reference),
+                    );
                 },
                 StashAction::Branch(reference) => {
                     self.overlay = Some(Overlay::text(
@@ -423,39 +421,6 @@ impl App {
                             name: text,
                             reference,
                         });
-                    }
-                },
-                TextPurpose::SaveAndSwitch { target } => {
-                    if text == "save" {
-                        self.save_then_switch(target);
-                    } else {
-                        self.status = Some("branch switch cancelled".to_string());
-                    }
-                },
-                TextPurpose::StashAndSwitch { target } => {
-                    if text == "stash" {
-                        self.run_vcs_action(VcsAction::StashPush(
-                            karet_vcs::StashOptions::default(),
-                        ));
-                        self.run_vcs_action(VcsAction::SwitchBranch(target));
-                    } else {
-                        self.status = Some("branch switch cancelled".to_string());
-                    }
-                },
-                TextPurpose::ConfirmDropStash { reference } => {
-                    if text == "drop" {
-                        self.run_vcs_action(VcsAction::StashDrop { reference });
-                    } else {
-                        self.status = Some("stash drop cancelled".to_string());
-                    }
-                },
-                TextPurpose::ConfirmPublishedUndo => {
-                    if text == "undo" {
-                        self.run_vcs_action(VcsAction::UndoCommit {
-                            allow_upstream: true,
-                        });
-                    } else {
-                        self.status = Some("undo commit cancelled".to_string());
                     }
                 },
                 TextPurpose::RenameBranch { old } => {
@@ -476,87 +441,25 @@ impl App {
                         });
                     }
                 },
-                TextPurpose::ConfirmResetHard { rev } => {
-                    if text == "reset" {
-                        self.run_vcs_action(VcsAction::Reset {
-                            mode: karet_vcs::ResetMode::Hard,
-                            rev,
-                        });
-                    } else {
-                        self.status = Some("hard reset cancelled".to_string());
-                    }
-                },
-                TextPurpose::ConfirmDeleteRemoteBranch { remote, branch } => {
-                    if text == branch {
-                        self.run_vcs_action(VcsAction::DeleteRemoteBranch { remote, branch });
-                    } else {
-                        self.status = Some("remote branch deletion cancelled".to_string());
-                    }
-                },
                 TextPurpose::DebugEvaluate => self.debug_evaluate(text),
-                TextPurpose::ConfirmOutsideWorkspaceLink { path } => {
-                    if text == "open" {
-                        self.open_markdown_file_link(&path);
-                    } else {
-                        self.status = Some("opening outside-workspace link cancelled".to_string());
-                    }
-                },
-                TextPurpose::ConfirmCreateProjectSettings { word, path } => {
-                    if text == "create" {
-                        self.create_project_dictionary(&word, &path);
-                    } else {
-                        self.status = Some("project settings creation cancelled".to_string());
-                    }
-                },
-                TextPurpose::InstallLanguageServer { server } => {
-                    if text == "install" {
-                        self.status = Some(format!("installing {}…", server.display_name()));
-                        self.begin_language_server_install(server);
-                    } else {
-                        self.status = Some("language-server installation cancelled".to_string());
-                    }
-                },
-                TextPurpose::ApplyLanguageServerPlan {
-                    plan,
-                    servers,
-                    install,
-                } => {
-                    let confirmation = if install { "install" } else { "update" };
-                    if text == confirmation {
-                        self.apply_language_server_plan(plan, servers, install);
-                        self.status = Some(if install {
-                            "installing language server…".to_string()
-                        } else {
-                            "updating language servers…".to_string()
-                        });
-                    } else {
-                        self.status = Some(if install {
-                            "language-server installation cancelled".to_string()
-                        } else {
-                            "language-server update cancelled".to_string()
-                        });
-                    }
-                },
                 TextPurpose::FilterLanguageServers => {
                     self.set_language_server_filter(text);
-                },
-                TextPurpose::UninstallLanguageServer { server } => {
-                    if text == "uninstall" {
-                        self.status = Some(format!("uninstalling {}…", server.display_name()));
-                        self.begin_language_server_uninstall(server);
-                    } else {
-                        self.status = Some("language-server uninstall cancelled".to_string());
-                    }
                 },
             },
             OverlayEvent::AcceptDeleteLocalBranch(name) => {
                 self.run_vcs_action(VcsAction::DeleteBranch { name });
             },
             OverlayEvent::AcceptDeleteRemoteBranch { remote, branch } => {
-                self.overlay = Some(Overlay::text(
-                    format!("Type {branch} to delete {remote}/{branch}"),
-                    TextPurpose::ConfirmDeleteRemoteBranch { remote, branch },
-                ));
+                self.confirm_action(
+                    format!("Delete {remote}/{branch}?"),
+                    format!(
+                        "Deletes the branch from {remote} for everyone. Anyone \
+                         without a local copy loses access to its commits."
+                    ),
+                    "Keep the branch",
+                    format!("Delete {remote}/{branch}"),
+                    ConfirmAction::DeleteRemoteBranch { remote, branch },
+                );
             },
         }
     }

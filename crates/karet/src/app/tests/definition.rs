@@ -371,6 +371,8 @@ fn attach_running_server(app: &mut App, root: &Path) {
     app.show_language_server_status(
         None,
         vec![LanguageServerStatus {
+            ever_installed: false,
+            declined: false,
             server: LanguageServerId::new("rust-analyzer"),
             languages: vec!["rust".to_owned()],
             enabled: true,

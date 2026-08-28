@@ -417,6 +417,8 @@ pub enum Command {
     LanguageServerUninstall,
     /// Filter the language-server inventory.
     LanguageServerFilter,
+    /// Forget a recorded refusal, so the selected provider is offered again.
+    LanguageServerUndecline,
     /// Begin creating a new file in the explorer (inline name editor).
     ExplorerNewFile,
     /// Begin creating a new folder in the explorer (inline name editor).
@@ -485,10 +487,6 @@ pub enum Command {
     ExplorerEditSubmit,
     /// Cancel the explorer inline name editor.
     ExplorerEditCancel,
-    /// Confirm the pending discard.
-    ConfirmDiscard,
-    /// Confirm the pending explorer delete.
-    ConfirmExplorerDelete,
     /// Move the context menu selection up.
     ContextMenuUp,
     /// Move the context menu selection down.
@@ -497,6 +495,14 @@ pub enum Command {
     ContextMenuAccept,
     /// Dismiss the context menu.
     ContextMenuCancel,
+    /// Move the confirmation dialog's selection up.
+    ConfirmUp,
+    /// Move the confirmation dialog's selection down.
+    ConfirmDown,
+    /// Run the confirmation dialog's selected choice.
+    ConfirmAccept,
+    /// Dismiss the confirmation dialog without acting.
+    ConfirmCancel,
     /// At the close prompt (quit or tab/pane close): save the at-risk documents, then
     /// run the close.
     CloseConfirmSave,
@@ -508,6 +514,10 @@ pub enum Command {
     RecoverSwaps,
     /// At the startup recovery prompt: discard the crash-recovery backups.
     DiscardSwaps,
+    /// At the close prompt: abort the close and leave every tab untouched.
+    CloseConfirmCancel,
+    /// At the startup recovery prompt: leave the backups on disk for a later launch.
+    DismissSwaps,
     /// Open the workspace package-dependency graph visualization.
     ShowDependencyGraph,
     /// Open the full-screen Seam view for the workspace package.
@@ -815,6 +825,7 @@ impl Command {
             Self::LanguageServerRestart => "Language Servers: Restart Selected",
             Self::LanguageServerUninstall => "Language Servers: Uninstall Selected",
             Self::LanguageServerFilter => "Language Servers: Filter…",
+            Self::LanguageServerUndecline => "Language Servers: Offer Selected Again",
             Self::ExplorerNewFile => "Explorer: New File…",
             Self::ExplorerNewFolder => "Explorer: New Folder…",
             Self::ExplorerRename => "Explorer: Rename…",
@@ -847,16 +858,20 @@ impl Command {
             Self::CommitGenerate => "Commit: Generate Message (AI)",
             Self::ExplorerEditSubmit => "Explorer: Confirm Name",
             Self::ExplorerEditCancel => "Explorer: Cancel Edit",
-            Self::ConfirmDiscard => "Source Control: Confirm Discard",
-            Self::ConfirmExplorerDelete => "Explorer: Confirm Delete",
             Self::ContextMenuUp => "Context Menu: Select Previous",
             Self::ContextMenuDown => "Context Menu: Select Next",
             Self::ContextMenuAccept => "Context Menu: Accept",
             Self::ContextMenuCancel => "Context Menu: Cancel",
+            Self::ConfirmUp => "Confirm: Select Previous",
+            Self::ConfirmDown => "Confirm: Select Next",
+            Self::ConfirmAccept => "Confirm: Accept",
+            Self::ConfirmCancel => "Confirm: Cancel",
             Self::CloseConfirmSave => "Confirm Close: Save and Close",
             Self::CloseConfirmDiscard => "Confirm Close: Discard and Close",
             Self::RecoverSwaps => "Recover Unsaved Changes",
             Self::DiscardSwaps => "Discard Unsaved Backups",
+            Self::CloseConfirmCancel => "Confirm Close: Cancel",
+            Self::DismissSwaps => "Recovery: Decide Later",
             Self::ShowDependencyGraph => "Visualize: Dependency Graph",
             // Key-driven navigation inside the view; deliberately absent from the
             // palette, but still named so nothing renders as a blank entry.

@@ -3,6 +3,7 @@
 //! content area (the active tab), and a status bar.
 
 pub(crate) mod commit;
+mod confirm;
 mod content;
 mod github;
 mod language_servers;
@@ -267,6 +268,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         draw_rev_input(f, rev, &theme, area);
     }
     draw_context_menu(f, app, &theme, area);
+    // A confirmation outranks every picker and menu: it is a question the user
+    // must answer before anything under it can matter.
+    confirm::draw_confirm(f, app, &theme, area);
     if let Some(blocker) = &app.operation_blocker {
         draw_operation_blocker(f, blocker, &theme, area);
     }

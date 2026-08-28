@@ -125,6 +125,12 @@ pub enum Event {
     LanguageServerInstallRequired {
         /// Missing provider.
         server: LanguageServerId,
+        /// The language whose document wanted it.
+        language: String,
+        /// Whether this provider is enabled for that language. A disabled one
+        /// has to be turned on as well as installed, which is a different
+        /// question than installing an enabled provider that is simply absent.
+        enabled: bool,
     },
     /// Local managed-language-server status, answering
     /// [`Command::LanguageServerStatus`].

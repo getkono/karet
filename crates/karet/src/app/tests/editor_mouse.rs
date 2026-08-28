@@ -216,7 +216,7 @@ fn markdown_links_require_a_modifier_and_open_workspace_files() {
 }
 
 #[test]
-fn markdown_file_links_outside_the_workspace_require_typed_confirmation() {
+fn markdown_file_links_outside_the_workspace_require_confirmation() {
     let parent = test_dir("markdown-link-boundary");
     let root = parent.join("workspace");
     write_file(&root, "README.md", b"[outside](../outside.md)");
@@ -234,15 +234,28 @@ fn markdown_file_links_outside_the_workspace_require_typed_confirmation() {
         row: 1,
         modifiers: KeyModifiers::SUPER,
     }));
-    assert!(app.overlay.is_some());
+    assert!(app.confirm.is_some(), "the escape raised a confirmation");
+    assert_eq!(
+        app.tabs[app.active].path(),
+        Some(root.join("README.md").as_path()),
+        "still on the file the link came from"
+    );
+
+    // The safe answer is selected, so Enter alone stays inside the workspace.
+    send_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     assert_eq!(
         app.tabs[app.active].path(),
         Some(root.join("README.md").as_path())
     );
-    if let Some(overlay) = app.overlay.as_mut() {
-        overlay.push_str("open");
-    }
-    app.overlay_accept();
+
+    assert!(app.handle_markdown_link_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: 2,
+        row: 1,
+        modifiers: KeyModifiers::SUPER,
+    }));
+    send_key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    send_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     assert_eq!(
         app.tabs[app.active].path(),
         Some(parent.join("outside.md").as_path())

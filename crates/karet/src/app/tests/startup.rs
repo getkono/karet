@@ -29,16 +29,69 @@ fn with_settings_none_panel_collapses_the_sidebar() {
     assert!(!app.sidebar_visible);
 }
 
-#[test]
-fn missing_language_server_requires_typed_install_approval() {
+/// Raise the install prompt for Texlab, enabled or not.
+fn offer_texlab(enabled: bool) -> App {
     let mut app = App::new(PathBuf::from("."), Vec::new(), Vec::new(), false);
     app.on_backend_event(
         None,
         SessionEvent::LanguageServerInstallRequired {
             server: karet_session::LanguageServerId::Texlab,
+            language: "latex".into(),
+            enabled,
         },
     );
-    assert!(matches!(app.overlay, Some(Overlay::Text(_))));
+    app
+}
+
+#[test]
+fn a_missing_language_server_offers_to_install_and_declines_by_default() {
+    let mut app = offer_texlab(true);
+    let painted = screen(&mut app, 100, 20).join("\n");
+    assert!(painted.contains("Install"), "{painted}");
+    assert!(
+        painted.contains("latex"),
+        "the language is named: {painted}"
+    );
+    assert!(painted.contains("Not now"), "{painted}");
+
+    // Installing spends bandwidth the user did not ask to spend, so the answer
+    // Enter takes must be the one that spends none.
+    let selected = app
+        .confirm
+        .as_ref()
+        .and_then(|d| d.selected_choice())
+        .map(|choice| choice.action.clone());
+    assert_eq!(selected, Some(crate::app::confirm::ConfirmAction::Cancel));
+}
+
+#[test]
+fn a_disabled_language_server_is_asked_about_differently() {
+    let mut app = offer_texlab(false);
+    let painted = screen(&mut app, 100, 20).join("\n");
+    assert!(
+        painted.contains("Enable and install"),
+        "turning it on is part of the question: {painted}"
+    );
+}
+
+#[test]
+fn the_install_prompt_offers_a_permanent_refusal() {
+    let app = offer_texlab(true);
+    let labels: Vec<String> = app
+        .confirm
+        .as_ref()
+        .map(|d| {
+            d.choices
+                .entries
+                .iter()
+                .map(|entry| entry.label.clone().unwrap_or_default())
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        labels.iter().any(|label| label.starts_with("Never ask")),
+        "{labels:?}"
+    );
 }
 
 #[test]
@@ -59,6 +112,10 @@ fn update_plan_displays_exact_versions_before_approval() {
     let painted = screen(&mut app, 100, 16).join("\n");
     assert!(painted.contains("5.25.0"), "{painted}");
     assert!(painted.contains("5.26.0"), "{painted}");
+    assert!(
+        painted.contains("Keep current versions"),
+        "the update is declined by default: {painted}"
+    );
 }
 
 #[test]

@@ -344,6 +344,7 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(LanguageServers, false, false, false, Char('R'), Command::LanguageServerRestart),
     b(LanguageServers, false, false, false, Char('x'), Command::LanguageServerUninstall),
     b(LanguageServers, false, false, false, Char('/'), Command::LanguageServerFilter),
+    b(LanguageServers, false, false, false, Char('o'), Command::LanguageServerUndecline),
     b(LanguageServers, false, false, false, Char('q'), Command::CloseTab),
 
     // Modal contexts. Each is exclusive (see `active_layers`); any key with no
@@ -383,14 +384,6 @@ pub(super) static BINDINGS: &[Binding] = &[
     // Go-to-commit (revision) input.
     b(RevInput, false, false, false, Esc,   Command::RevInputCancel),
     b(RevInput, false, false, false, Enter, Command::RevInputSubmit),
-    // Discard confirmation: only the confirm keys are bound; anything else cancels.
-    b(DiscardConfirm, false, false, false, Enter,     Command::ConfirmDiscard),
-    b(DiscardConfirm, false, false, false, Char('y'), Command::ConfirmDiscard),
-    b(DiscardConfirm, false, false, false, Char('Y'), Command::ConfirmDiscard),
-    // Explorer delete confirmation: only confirm keys are bound; anything else cancels.
-    b(ExplorerDeleteConfirm, false, false, false, Enter,     Command::ConfirmExplorerDelete),
-    b(ExplorerDeleteConfirm, false, false, false, Char('y'), Command::ConfirmExplorerDelete),
-    b(ExplorerDeleteConfirm, false, false, false, Char('Y'), Command::ConfirmExplorerDelete),
     // Context menu.
     b(ContextMenu, false, false, false, Esc,       Command::ContextMenuCancel),
     b(ContextMenu, false, false, false, Enter,     Command::ContextMenuAccept),
@@ -398,17 +391,15 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(ContextMenu, false, false, false, Char('k'), Command::ContextMenuUp),
     b(ContextMenu, false, false, false, Down,      Command::ContextMenuDown),
     b(ContextMenu, false, false, false, Char('j'), Command::ContextMenuDown),
-    // Close confirmation (unsaved changes: quit or tab/pane close): save, discard, or
-    // (any other key) cancel — the default is always to abort.
-    b(CloseConfirm, false, false, false, Char('s'), Command::CloseConfirmSave),
-    b(CloseConfirm, false, false, false, Char('S'), Command::CloseConfirmSave),
-    b(CloseConfirm, false, false, false, Char('d'), Command::CloseConfirmDiscard),
-    b(CloseConfirm, false, false, false, Char('D'), Command::CloseConfirmDiscard),
-    // Startup crash-recovery prompt: recover, discard, or (any other key) dismiss.
-    b(SwapRecover, false, false, false, Char('r'), Command::RecoverSwaps),
-    b(SwapRecover, false, false, false, Char('R'), Command::RecoverSwaps),
-    b(SwapRecover, false, false, false, Char('d'), Command::DiscardSwaps),
-    b(SwapRecover, false, false, false, Char('D'), Command::DiscardSwaps),
+    // Confirmation dialog. Navigation mirrors the context menu; every other key
+    // cancels, and the safe choice is always the one selected on open, so neither a
+    // stray Enter nor a stray anything-else can run a destructive action.
+    b(Confirm, false, false, false, Esc,       Command::ConfirmCancel),
+    b(Confirm, false, false, false, Enter,     Command::ConfirmAccept),
+    b(Confirm, false, false, false, Up,        Command::ConfirmUp),
+    b(Confirm, false, false, false, Char('k'), Command::ConfirmUp),
+    b(Confirm, false, false, false, Down,      Command::ConfirmDown),
+    b(Confirm, false, false, false, Char('j'), Command::ConfirmDown),
     // Workspace Search: navigating the results list.
     b(SearchList, false, false, false, Esc,       Command::SearchQuit),
     b(SearchList, false, false, false, Enter,     Command::SearchOpen),

@@ -339,3 +339,116 @@ fn uninstall_rejects_external_providers() -> Result<(), Box<dyn std::error::Erro
     assert!(matches!(result, Err(message) if message.contains("not managed")));
     Ok(())
 }
+
+/// Write an activation record for `server` under `root`, as a completed install
+/// would. The command file must exist for `read_active` to resolve it.
+fn activate(root: &Path, server: &LanguageServerId, version: &str) -> std::io::Result<()> {
+    let provider = provider_root(root, server);
+    std::fs::create_dir_all(&provider)?;
+    let command = provider.join("bin");
+    std::fs::write(&command, b"test")?;
+    let active = ActiveInstallation {
+        version: version.into(),
+        command,
+        args: Vec::new(),
+    };
+    let Ok(encoded) = serde_json::to_string(&active) else {
+        return Ok(());
+    };
+    let mut journal = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(provider.join("active.jsonl"))?;
+    writeln!(journal, "{encoded}")
+}
+
+#[test]
+fn a_provider_never_touched_was_never_installed() {
+    let Ok(dir) = tempfile::tempdir() else {
+        return;
+    };
+    assert!(!ever_installed(Some(dir.path()), &LanguageServerId::Texlab));
+    assert!(!ever_installed(None, &LanguageServerId::Texlab));
+}
+
+#[test]
+fn an_uninstalled_provider_still_counts_as_ever_installed() -> Result<(), Box<dyn std::error::Error>>
+{
+    let dir = tempfile::tempdir()?;
+    let server = LanguageServerId::Texlab;
+    activate(dir.path(), &server, "1.2.3")?;
+    assert!(ever_installed(Some(dir.path()), &server));
+
+    // Deactivating is what `read_active` replays away — and exactly the case that
+    // must not read as "never offered", or the prompt returns after an uninstall.
+    let provider = provider_root(dir.path(), &server);
+    let deactivation = serde_json::json!({ "deactivated": true, "version": "1.2.3" });
+    let mut journal = std::fs::OpenOptions::new()
+        .append(true)
+        .open(provider.join("active.jsonl"))?;
+    writeln!(journal, "{deactivation}")?;
+
+    assert!(
+        read_active(dir.path(), &server).is_none(),
+        "no longer active"
+    );
+    assert!(
+        ever_installed(Some(dir.path()), &server),
+        "but the question has been answered once already"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_declined_install_round_trips_and_can_be_cleared() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let server = LanguageServerId::Texlab;
+    assert!(read_declined(Some(dir.path()), &server).is_none());
+
+    write_declined(dir.path(), &server, &Declined::now())?;
+    assert!(read_declined(Some(dir.path()), &server).is_some());
+
+    clear_declined(dir.path(), &server)?;
+    assert!(read_declined(Some(dir.path()), &server).is_none());
+    // Clearing what is already cleared is the state the caller asked for.
+    clear_declined(dir.path(), &server)?;
+    Ok(())
+}
+
+#[test]
+fn a_refusal_records_when_it_was_made() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let server = LanguageServerId::Texlab;
+    write_declined(dir.path(), &server, &Declined::now())?;
+    let read = read_declined(Some(dir.path()), &server).ok_or("declined record")?;
+    // A human opening the file should be able to tell when they said no.
+    assert!(
+        read.declined_at.parse::<u64>().is_ok_and(|at| at > 0),
+        "{:?}",
+        read.declined_at
+    );
+    Ok(())
+}
+
+#[test]
+fn a_refusal_for_one_provider_does_not_suppress_another() -> Result<(), Box<dyn std::error::Error>>
+{
+    let dir = tempfile::tempdir()?;
+    write_declined(dir.path(), &LanguageServerId::Texlab, &Declined::now())?;
+    assert!(read_declined(Some(dir.path()), &LanguageServerId::Texlab).is_some());
+    assert!(read_declined(Some(dir.path()), &LanguageServerId::Zls).is_none());
+    Ok(())
+}
+
+#[test]
+fn a_corrupt_declined_file_reads_as_no_refusal() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let server = LanguageServerId::Texlab;
+    let provider = provider_root(dir.path(), &server);
+    std::fs::create_dir_all(&provider)?;
+    std::fs::write(provider.join("declined.json"), b"{ not json")?;
+    // Failing open re-asks once; failing closed would silently disable a provider
+    // the user never refused, with no way to discover why.
+    assert!(read_declined(Some(dir.path()), &server).is_none());
+    Ok(())
+}

@@ -291,6 +291,7 @@ impl App {
             Command::LanguageServerRestart => self.restart_selected_language_server(),
             Command::LanguageServerUninstall => self.uninstall_selected_language_server(),
             Command::LanguageServerFilter => self.prompt_language_server_filter(),
+            Command::LanguageServerUndecline => self.undecline_selected_language_server(),
             Command::ExplorerNewFile => self.explorer_begin_new(false),
             Command::ExplorerNewFolder => self.explorer_begin_new(true),
             Command::ExplorerRename => self.explorer_begin_rename(),
@@ -333,12 +334,14 @@ impl App {
             Command::CommitGenerate => self.commit_generate(),
             Command::ExplorerEditSubmit => self.explorer_commit_edit(),
             Command::ExplorerEditCancel => self.explorer.cancel_edit(),
-            Command::ConfirmDiscard => self.resolve_discard(true),
-            Command::ConfirmExplorerDelete => self.resolve_explorer_delete(true),
             Command::ContextMenuUp => self.context_menu_step(-1),
             Command::ContextMenuDown => self.context_menu_step(1),
             Command::ContextMenuAccept => self.accept_context_menu(),
             Command::ContextMenuCancel => self.close_context_menu(),
+            Command::ConfirmUp => self.confirm_step(-1),
+            Command::ConfirmDown => self.confirm_step(1),
+            Command::ConfirmAccept => self.confirm_accept(),
+            Command::ConfirmCancel => self.confirm_cancel(),
             Command::CloseConfirmSave => self.close_save(),
             Command::CloseConfirmDiscard => self.close_discard(),
             Command::RecoverSwaps => {
@@ -355,6 +358,11 @@ impl App {
             Command::DiscardSwaps => {
                 self.pending_swaps = None;
                 self.send_command(SessionCommand::DiscardSwaps);
+            },
+            Command::CloseConfirmCancel => self.cancel_close(),
+            Command::DismissSwaps => {
+                self.pending_swaps = None;
+                self.status = Some("recovery dismissed (backups kept)".to_string());
             },
             Command::ShowDependencyGraph => {
                 self.status = Some("building dependency graph…".to_string());

@@ -13,6 +13,7 @@
 
 mod archive;
 mod catalog;
+mod declined;
 mod lifecycle;
 #[cfg(test)]
 mod tests;
@@ -37,6 +38,7 @@ use catalog::ReleaseKind;
 use catalog::discover;
 use catalog::managed_recipe;
 use catalog::managed_servers;
+pub(crate) use declined::*;
 use karet_lsp::LspSpec;
 use lifecycle::*;
 use reqwest::blocking::Client;

@@ -7,6 +7,7 @@ mod capture;
 mod change_view;
 mod commands;
 mod completion;
+pub(crate) mod confirm;
 mod debugging;
 mod definition;
 mod deps;
@@ -63,6 +64,10 @@ use std::time::Instant;
 
 pub(crate) use capture::capture;
 use color_eyre::eyre::eyre;
+use confirm::ConfirmAction;
+use confirm::ConfirmChoice;
+use confirm::ConfirmDialog;
+use confirm::describe_paths;
 use crossterm::event::DisableBracketedPaste;
 use crossterm::event::DisableFocusChange;
 use crossterm::event::DisableMouseCapture;
@@ -183,9 +188,10 @@ pub(crate) use state::*;
 use tokio::sync::mpsc;
 use util::KeyboardEnhancementGuard;
 use util::canonical;
-use util::close_prompt_message;
+use util::close_prompt_choices;
 use util::copy_path_recursive;
 pub(crate) use util::effective_word_wrap;
+use util::human_bytes;
 use util::load_theme;
 use util::move_path;
 use util::parse_rev_range;
@@ -330,6 +336,9 @@ pub struct App {
     explorer_clipboard: Option<ExplorerFileClipboard>,
     /// The active context menu (explorer or pane), if any.
     pub(crate) context_menu: Option<ContextMenu>,
+    /// The open confirmation dialog, if any. Outranks every other modal but the
+    /// shutdown blocker, so a question is never buried under a picker.
+    pub(crate) confirm: Option<confirm::ConfirmDialog>,
     /// The Source-Control panel state.
     pub(crate) scm: Scm,
     /// Most recent stale-checked live blame result.
@@ -386,11 +395,6 @@ pub struct App {
     pub(crate) commit_input: CommitInput,
     /// The in-progress revision text while the go-to-commit input is open.
     pub(crate) rev_input: Option<String>,
-    /// Paths awaiting a discard confirmation (set after pressing discard; cleared
-    /// when the user confirms or cancels).
-    pub(crate) pending_discard: Option<Vec<PathBuf>>,
-    /// Paths awaiting explorer-delete confirmation.
-    pub(crate) pending_explorer_delete: Option<Vec<PathBuf>>,
     /// The irreversible close awaiting the unsaved-changes confirmation prompt, if
     /// one is armed (unified across quit and tab/pane closes).
     pub(crate) pending_close: Option<CloseRequest>,

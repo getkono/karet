@@ -95,6 +95,7 @@ impl Command {
             Self::LanguageServerRestart => "restart",
             Self::LanguageServerUninstall => "uninstall",
             Self::LanguageServerFilter => "filter",
+            Self::LanguageServerUndecline => "offer again",
             Self::ToggleFold => "fold",
             Self::AddCursorNextOccurrence => "add cursor",
             // Diff.
@@ -160,14 +161,16 @@ impl Command {
             Self::CommitGenerate => "generate",
             Self::ExplorerEditSubmit => "confirm",
             Self::ExplorerEditCancel => "cancel",
-            Self::ConfirmDiscard => "confirm",
-            Self::ConfirmExplorerDelete => "confirm",
             Self::ContextMenuAccept => "accept",
             Self::ContextMenuCancel => "cancel",
+            Self::ConfirmAccept => "accept",
+            Self::ConfirmCancel => "cancel",
             Self::CloseConfirmSave => "save & close",
             Self::CloseConfirmDiscard => "discard & close",
             Self::RecoverSwaps => "recover",
             Self::DiscardSwaps => "discard",
+            Self::CloseConfirmCancel => "cancel",
+            Self::DismissSwaps => "decide later",
             Self::ShowDependencyGraph => "deps",
             Self::ShowCommitGraph => "graph",
             Self::CommitGraphNext => "next",
@@ -306,6 +309,8 @@ impl Command {
             | Self::SearchSelectDown
             | Self::ContextMenuUp
             | Self::ContextMenuDown
+            | Self::ConfirmUp
+            | Self::ConfirmDown
             | Self::OpenCommitByHash
             | Self::ShowFileHistory
             | Self::DiffUnpushed

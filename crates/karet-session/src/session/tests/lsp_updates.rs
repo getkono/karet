@@ -178,3 +178,73 @@
             assert_eq!(first.map(|l| l.range.start), Some(LineCol::new(3, 6)));
         }
     }
+
+    // Asking to install a language server spends the user's bandwidth, so the
+    // prompt is raised at most once per provider. These pin the two facts that
+    // decide it, both of which live outside settings on purpose.
+    mod install_prompt {
+        use crate::api::Event;
+        use crate::api::LanguageServerId;
+        use crate::lsp::LspUpdate;
+        use crate::lsp_registry::Declined;
+        use crate::lsp_registry::write_declined;
+        use crate::session::Session;
+        use crate::session::SessionConfig;
+
+        /// A session whose registry state lives under `root`, with the default
+        /// `managedDownloads: "prompt"` policy.
+        fn session_rooted_at(root: &std::path::Path) -> (Session, crate::session::EventRx) {
+            let (session, events, _snaps) = Session::new(SessionConfig {
+                lsp_registry_dir: Some(root.to_path_buf()),
+                ..SessionConfig::default()
+            });
+            (session, events)
+        }
+
+        /// Whether the session offered to install anything.
+        fn offered(events: &mut crate::session::EventRx) -> bool {
+            let mut offered = false;
+            while let Some((_, event)) = events.try_recv() {
+                if matches!(event, Event::LanguageServerInstallRequired { .. }) {
+                    offered = true;
+                }
+            }
+            offered
+        }
+
+        fn install_required(session: &mut Session) {
+            session.apply_lsp_update(LspUpdate::InstallRequired {
+                generation: 0,
+                server: LanguageServerId::Texlab,
+                language: "latex".into(),
+            });
+        }
+
+        #[test]
+        fn a_provider_never_offered_raises_the_prompt() {
+            let Ok(dir) = tempfile::tempdir() else {
+                return;
+            };
+            let (mut session, mut events) = session_rooted_at(dir.path());
+            install_required(&mut session);
+            assert!(offered(&mut events));
+        }
+
+        #[test]
+        fn a_declined_provider_is_never_offered_again() {
+            let Ok(dir) = tempfile::tempdir() else {
+                return;
+            };
+            let declined = Declined::now();
+            if write_declined(dir.path(), &LanguageServerId::Texlab, &declined).is_err() {
+                return;
+            }
+            let (mut session, mut events) = session_rooted_at(dir.path());
+            install_required(&mut session);
+            assert!(
+                !offered(&mut events),
+                "the user has already answered this question"
+            );
+        }
+    }
+

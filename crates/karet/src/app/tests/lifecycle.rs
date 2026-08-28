@@ -14,7 +14,7 @@ fn quit_with_unsaved_changes_arms_the_prompt() {
     assert!(!app.should_quit);
     assert_eq!(
         app.input_context().modal,
-        Some(crate::keymap::Modal::CloseConfirm)
+        Some(crate::keymap::Modal::Confirm)
     );
 
     // Discarding exits.
@@ -118,7 +118,7 @@ fn close_tab_with_unsaved_changes_arms_the_prompt_and_does_not_close() {
     assert!(app.tabs[0].dirty);
     assert_eq!(
         app.input_context().modal,
-        Some(crate::keymap::Modal::CloseConfirm)
+        Some(crate::keymap::Modal::Confirm)
     );
 }
 
@@ -403,7 +403,7 @@ fn swaps_found_arms_the_recovery_prompt() {
     assert!(app.pending_swaps.is_some());
     assert_eq!(
         app.input_context().modal,
-        Some(crate::keymap::Modal::SwapRecover)
+        Some(crate::keymap::Modal::Confirm)
     );
 }
 

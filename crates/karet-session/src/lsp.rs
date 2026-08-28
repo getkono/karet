@@ -283,6 +283,9 @@ pub(crate) enum LspUpdate {
         generation: u64,
         /// Missing managed provider.
         server: LanguageServerId,
+        /// The language whose document wanted it — the key its per-language
+        /// enable flag is stored under.
+        language: String,
     },
     /// A provider/root connection changed lifecycle state.
     RuntimeState {
@@ -479,6 +482,7 @@ impl LspManager {
                     let _ = self.updates.send(LspUpdate::InstallRequired {
                         generation: self.generation,
                         server: provider,
+                        language: language.clone(),
                     });
                 }
                 return None;
@@ -541,6 +545,7 @@ impl LspManager {
                 let _ = self.updates.send(LspUpdate::InstallRequired {
                     generation: self.generation,
                     server: provider,
+                    language: language.to_owned(),
                 });
             }
             return None;

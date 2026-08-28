@@ -116,6 +116,11 @@ impl App {
         if self.handle_toast_mouse(mouse) {
             return;
         }
+        // A confirmation outranks the overlay it may have opened over, so it is
+        // hit-tested before the overlay's blanket swallow.
+        if self.handle_confirm_mouse(mouse) {
+            return;
+        }
         if self.overlay.is_some() {
             return;
         }
