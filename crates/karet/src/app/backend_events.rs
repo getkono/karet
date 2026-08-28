@@ -12,7 +12,8 @@ impl App {
     pub(super) fn next_wake(&self) -> Option<Duration> {
         let now = Instant::now();
         let notif = self.notifications.next_deadline(now);
-        let spinner = (!self.pending_saves.is_empty()).then_some(Spinner::FRAME_INTERVAL);
+        let spinner = (!self.pending_saves.is_empty() || self.language_server_operation_running())
+            .then_some(Spinner::FRAME_INTERVAL);
         let auto_save = self
             .auto_save_pending
             .iter()

@@ -390,12 +390,14 @@ fn language_server_installs_are_independent_per_provider() {
         &app.tabs[app.active].kind,
         TabKind::LanguageServers(view) if view.pending.len() == 2
     ));
+    // Two provider rows, plus the single shared card: one download at a time is
+    // what the user needs told, not a stack of five.
     assert_eq!(
         screen(&mut app, 120, 24)
             .join("\n")
             .matches("Installing")
             .count(),
-        2
+        3
     );
 }
 
@@ -465,13 +467,22 @@ fn language_server_install_progress_stays_in_manager() {
             restart_required: false,
         },
     );
+    // Success supersedes the progress card under the same tag, and the manager's
+    // own row-level label goes back to idle.
+    let cards: Vec<String> = app
+        .notifications
+        .active()
+        .iter()
+        .map(|notification| notification.title.clone())
+        .collect();
     assert!(
-        app.notifications
-            .active()
-            .iter()
-            .all(|notification| notification.kind != NotificationKind::Lsp)
+        cards.iter().any(|title| title.contains("1.3.0")),
+        "the outcome is reported: {cards:?}"
     );
-    assert!(!screen(&mut app, 100, 18).join("\n").contains("Installing"));
+    assert!(
+        !cards.iter().any(|title| title.contains("Installing")),
+        "the progress card was replaced, not stacked: {cards:?}"
+    );
 }
 
 #[test]
@@ -499,12 +510,17 @@ fn language_server_install_failure_stays_in_manager() {
         },
     );
 
-    assert!(
-        app.notifications
-            .active()
-            .iter()
-            .all(|notification| notification.kind != NotificationKind::Lsp)
-    );
+    // A failure the user never sees is the worst outcome of the three, so it is
+    // reported wherever they are — and errors never auto-expire.
+    let failure = app
+        .notifications
+        .active()
+        .iter()
+        .find(|notification| notification.kind == NotificationKind::Lsp)
+        .map(|notification| (notification.title.clone(), notification.timeout));
+    let (title, timeout) = failure.unwrap_or_default();
+    assert!(title.contains("checksum mismatch"), "{title}");
+    assert!(timeout.is_none(), "an error card waits to be dismissed");
     assert!(
         screen(&mut app, 120, 18)
             .join("\n")
@@ -810,4 +826,15 @@ fn completed_language_server_uninstall_clears_only_its_pending_request() {
     let rendered = screen(&mut app, 100, 18).join("\n");
     assert!(!rendered.contains("Uninstalling"));
     assert!(rendered.contains("Install"));
+    let cards: Vec<String> = app
+        .notifications
+        .active()
+        .iter()
+        .map(|notification| notification.title.clone())
+        .collect();
+    assert!(
+        cards.iter().any(|title| title.starts_with("uninstalled")),
+        "the outcome replaced the progress card: {cards:?}"
+    );
+    assert_eq!(cards.len(), 1, "one card, not one per operation: {cards:?}");
 }

@@ -2,6 +2,8 @@
 //!
 //! Split from `tab.rs` to keep it under the file-size ceiling.
 
+use std::time::Instant;
+
 use karet_session::LanguageServerChange;
 use karet_session::LanguageServerId;
 use karet_session::LanguageServerPlanId;
@@ -31,6 +33,27 @@ pub(crate) enum LanguageServerPendingKind {
     Uninstall,
 }
 
+impl LanguageServerPendingKind {
+    /// Whether this operation is worth a notification of its own.
+    ///
+    /// Update *checks* are metadata requests the user asked for and watched
+    /// happen; installs, updates and uninstalls change the machine and can run
+    /// long, so they are the ones that owe an answer wherever the user is.
+    pub(crate) fn is_download(self) -> bool {
+        matches!(self, Self::Install | Self::Update | Self::Uninstall)
+    }
+
+    /// How to say this operation is under way.
+    pub(crate) fn progressive(self) -> &'static str {
+        match self {
+            Self::CheckSelected | Self::CheckAll => "Checking",
+            Self::Install => "Installing",
+            Self::Update => "Updating",
+            Self::Uninstall => "Uninstalling",
+        }
+    }
+}
+
 /// Request correlation and presentation state for a registry operation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct LanguageServerPending {
@@ -39,6 +62,8 @@ pub(crate) struct LanguageServerPending {
     pub(crate) kind: LanguageServerPendingKind,
     pub(crate) downloaded: Option<u64>,
     pub(crate) total: Option<u64>,
+    /// When the operation started, driving the toast's spinner frame.
+    pub(crate) since: Instant,
 }
 
 /// A clickable manager action from the most recently rendered frame.

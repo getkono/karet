@@ -1,3 +1,6 @@
+mod progress;
+mod prompts;
+
 use super::*;
 use crate::tab::LanguageServerAction;
 use crate::tab::LanguageServerPending;
@@ -220,8 +223,10 @@ impl App {
             kind,
             downloaded: None,
             total: None,
+            since: Instant::now(),
         });
         self.sync_language_server_operations();
+        self.sync_language_server_toast();
     }
 
     fn sync_language_server_operations(&mut self) {
@@ -243,6 +248,16 @@ impl App {
         let failed = self.lsp_runtime.fail_operation(request, message);
         if failed {
             self.sync_language_server_operations();
+            self.sync_language_server_toast();
+            // Errors never auto-expire, so this replaces the progress card and
+            // stays: a download that failed while the user was elsewhere would
+            // otherwise leave only a manager tab they never opened.
+            self.notify_tagged(
+                Severity::Error,
+                NotificationKind::Lsp,
+                format!("language server: {message}"),
+                Some(Self::OPERATION_TAG.to_string()),
+            );
         }
         failed
     }
@@ -536,75 +551,6 @@ impl App {
         );
     }
 
-    /// Offer to install a missing provider.
-    ///
-    /// Installing spends the user's bandwidth on a download they did not ask for,
-    /// so the first row — the one Enter takes and the one every way of backing out
-    /// runs — declines. `Never ask` sits alongside it so a user who does not want
-    /// this provider can say so once, instead of dismissing the same prompt on
-    /// every launch.
-    ///
-    /// A provider *disabled* for the language is a different question: it has to
-    /// be turned on as well as fetched, so saying yes changes more than the disk.
-    pub(super) fn prompt_language_server_install(
-        &mut self,
-        server: LanguageServerId,
-        language: &str,
-        enabled: bool,
-    ) {
-        let name = server.display_name().to_string();
-        let (title, body, proceed) = if enabled {
-            (
-                format!("Install {name}?"),
-                format!(
-                    "Karet has no language server for {language}. Installing \
-                     downloads {name} from its upstream release and activates it \
-                     for this and future sessions."
-                ),
-                format!("Install {name}"),
-            )
-        } else {
-            (
-                format!("Enable and install {name}?"),
-                format!(
-                    "{name} is turned off for {language} in your settings, and is \
-                     not installed. Continuing downloads it and enables it for \
-                     {language}."
-                ),
-                format!("Enable and install {name}"),
-            )
-        };
-        self.confirm(ConfirmDialog::new(
-            title,
-            body,
-            vec![
-                ConfirmChoice::custom("Not now", ConfirmAction::Cancel),
-                ConfirmChoice::custom(
-                    proceed,
-                    ConfirmAction::InstallLanguageServer(server.clone()),
-                ),
-                ConfirmChoice::custom(
-                    format!("Never ask about {name}"),
-                    ConfirmAction::DeclineLanguageServer(server),
-                ),
-            ],
-        ));
-    }
-
-    /// Record that the user does not want this provider offered again.
-    pub(super) fn decline_language_server(&mut self, server: LanguageServerId) {
-        let name = server.display_name().to_string();
-        self.send_command(SessionCommand::DeclineLanguageServer {
-            server,
-            scope: karet_session::DeclineScope::Forever,
-        });
-        self.notify(
-            Severity::Information,
-            NotificationKind::Lsp,
-            format!("{name} will not be offered again · undo it in Language Servers"),
-        );
-    }
-
     pub(super) fn show_language_server_status(
         &mut self,
         request: Option<RequestId>,
@@ -731,6 +677,7 @@ impl App {
     ) {
         self.lsp_runtime.update_progress(&server, downloaded, total);
         self.sync_language_server_operations();
+        self.sync_language_server_toast();
     }
 
     pub(super) fn finish_language_server_change(
@@ -741,6 +688,13 @@ impl App {
         _restart_required: bool,
     ) {
         self.lsp_runtime.finish_operation(request, Some(&server));
+        self.sync_language_server_toast();
+        self.notify_tagged(
+            Severity::Information,
+            NotificationKind::Lsp,
+            format!("{} {version} is ready", server.display_name()),
+            Some(Self::OPERATION_TAG.to_string()),
+        );
         if let Some(status) = self
             .lsp_runtime
             .servers
@@ -772,6 +726,7 @@ impl App {
         cleanup_pending: bool,
     ) {
         self.lsp_runtime.finish_operation(request, Some(&server));
+        self.sync_language_server_toast();
         for tab in self.all_tabs_mut() {
             if let TabKind::LanguageServers(view) = &mut tab.kind {
                 if let Some(status) = view.servers.iter_mut().find(|item| item.server == server) {
@@ -791,10 +746,13 @@ impl App {
         } else {
             ""
         };
-        self.notify(
+        // Tagged, so this outcome supersedes the progress card the uninstall was
+        // showing rather than stacking a second one beside it.
+        self.notify_tagged(
             Severity::Information,
             NotificationKind::Lsp,
             format!("uninstalled {}{suffix}", server.display_name()),
+            Some(Self::OPERATION_TAG.to_string()),
         );
     }
 

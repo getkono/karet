@@ -51,6 +51,37 @@ impl App {
         );
     }
 
+    /// Push or replace the card for a running operation.
+    ///
+    /// Persistent (no timeout) because the work is still going: an auto-expiring
+    /// card would vanish mid-download and leave the user with no sign anything is
+    /// happening. `NotificationCenter::push` replaces any active card sharing this
+    /// `tag`, so progress updates in place rather than stacking, and the eventual
+    /// success or failure supersedes it under the same tag.
+    pub(super) fn notify_progress(
+        &mut self,
+        kind: NotificationKind,
+        tag: String,
+        title: impl Into<String>,
+        body: Option<String>,
+    ) {
+        self.notifications.push(
+            Notification {
+                id: NotificationId(0),
+                severity: Severity::Information,
+                kind,
+                title: title.into(),
+                body,
+                tag: Some(tag),
+                timeout: None,
+                // Dismissable: the user may not care about a background download,
+                // and the manager tab still has the detail.
+                dismissable: true,
+            },
+            Instant::now(),
+        );
+    }
+
     /// Surface a dropped backend-submission error as a persistent notification, so a
     /// closed or wedged backend never fails silently.
     pub(super) fn notify_backend_error(&mut self, error: BackendError) {
