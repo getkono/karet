@@ -98,6 +98,7 @@ static PALETTE: &[Command] = &[
     Command::MoveTabLeft,
     Command::MoveTabRight,
     Command::CloseTab,
+    Command::GithubClosePage,
     Command::CloseOtherTabs,
     Command::CloseTabsToRight,
     Command::CloseAllTabs,

@@ -126,6 +126,15 @@ impl GithubSurface {
         self.active = self.pages.len() - 1;
     }
 
+    /// Focus the page already showing `page`'s resource, if one is open.
+    pub(crate) fn focus_existing(&mut self, page: &GithubViewState) -> bool {
+        if let Some(index) = self.pages.iter().position(|open| open.same_resource(page)) {
+            self.active = index;
+            return true;
+        }
+        false
+    }
+
     /// Focus the page at `index`, if there is one.
     pub(crate) fn select(&mut self, index: usize) {
         if index < self.pages.len() {
@@ -166,8 +175,13 @@ impl GithubSurface {
         self.abandoned.extend(page.pending_requests());
     }
 
-    /// Whether `id` belongs to a page that has since closed. Consumes the record: a
-    /// request is answered once, and the set must not grow without bound.
+    /// Whether `id` belongs to a page that has since closed.
+    ///
+    /// Consumes the record on a hit. A closed page whose request *succeeds* never
+    /// asks, so its id lingers until the surface is reinstalled — bounded by the
+    /// number of pages closed with a request still in flight, and harmless:
+    /// `RequestId` is a monotonic counter, so a stale entry can never match a later
+    /// request and swallow a live error.
     pub(crate) fn was_abandoned(&mut self, id: Option<RequestId>) -> bool {
         id.is_some_and(|id| self.abandoned.remove(&id))
     }
@@ -177,6 +191,11 @@ impl App {
     /// Bring a page to the front of the GitHub surface.
     pub(in crate::app) fn push_github_page(&mut self, page: GithubViewState) {
         self.github.push(page);
+    }
+
+    /// Focus the page already showing this resource, if one is open.
+    pub(super) fn focus_open_github_page(&mut self, page: &GithubViewState) -> bool {
+        self.github.focus_existing(page)
     }
 
     /// Close the GitHub page in front. Reports whether anything closed, so the
@@ -205,6 +224,10 @@ impl App {
 
     /// Route a click on the page strip: close a page, or bring one to the front.
     pub(super) fn github_strip_click(&mut self, point: (u16, u16)) -> bool {
+        // Clicking the surface takes the keyboard, exactly as clicking a tab strip
+        // does. Without it a click from the sidebar moves the dashboard cursor while
+        // `j`/`k` keep driving the Explorer.
+        self.focus = Focus::Editor;
         if let Some(index) = self
             .github
             .close_hits

@@ -747,3 +747,70 @@ fn closing_a_page_behind_the_one_in_front_leaves_the_reader_alone() {
         Some(crate::app::github::GithubViewState::Issue { number: 2, .. })
     ));
 }
+
+#[test]
+fn selecting_an_existing_tab_from_the_github_view_shows_it() {
+    // `select_tab` sets focus without the view, which is what strands a caller from
+    // another view: the tab takes the keyboard while staying invisible, and
+    // `FocusTarget::from` then routes the next keys to the view still on screen.
+    let mut app = github_app();
+    app.push_tab(Tab::welcome());
+    app.dispatch(Command::SelectView(View::GitHub));
+
+    app.select_tab(0);
+
+    assert_eq!(app.view, View::Editor);
+    assert_eq!(app.focus, Focus::Editor);
+}
+
+#[test]
+fn previewing_from_the_sidebar_does_not_yank_you_out_of_the_github_view() {
+    // Selection-follows-preview is passive: arrowing a file tree must not rip the
+    // user out of the view they are reading. Only a focus-stealing open does that.
+    let mut app = github_app();
+    app.focus = Focus::Sidebar;
+
+    app.install_preview_tab(Tab::welcome(), false);
+
+    assert_eq!(app.view, View::GitHub);
+    assert_eq!(app.focus, Focus::Sidebar);
+}
+
+#[test]
+fn reopening_an_issue_focuses_it_without_orphaning_a_request() {
+    // `push` drops the page it is handed when one for the same resource is open, and
+    // with it that page's request id. Sending first would leave a reply nobody owns —
+    // and an error for it would surface as a toast the user never asked for.
+    let backend = Arc::new(RecordingBackend::new());
+    let mut app = app();
+    app.backend = Some(backend.clone());
+    app.view = View::GitHub;
+    app.focus = Focus::Editor;
+    app.apply_github_availability(Some(repository()), anonymous_auth());
+    app.apply_github_issues(
+        None,
+        GithubPage {
+            items: vec![issue(1)],
+            page: 1,
+            next_page: None,
+            total_count: Some(1),
+        },
+    );
+    app.github_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(app.github.pages().len(), 2);
+    if let Ok(mut sent) = backend.sent.lock() {
+        sent.clear();
+    }
+
+    // Back to the dashboard, then open the same row again.
+    app.github.select(0);
+    app.github_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_eq!(app.github.pages().len(), 2, "focused, not stacked");
+    assert_eq!(app.github.active(), 1);
+    let issued = backend.sent.lock().is_ok_and(|sent| {
+        sent.iter()
+            .any(|(_, command)| matches!(command, SessionCommand::GithubIssue { .. }))
+    });
+    assert!(!issued, "no request without a page to own its reply");
+}

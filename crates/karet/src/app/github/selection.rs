@@ -102,12 +102,28 @@ impl App {
         let Some(selection) = selection else {
             return;
         };
+        // Focus an open page *before* sending. `push` drops the page it is handed when
+        // one for the same resource is already open, and with it the request id that
+        // page was carrying — so a request sent first would have no owner to correlate
+        // its reply against, and its error would surface as a toast for something the
+        // user never knowingly asked for. Re-opening therefore shows what is loaded;
+        // `Ctrl+R` refetches it.
         match selection {
             Selection::Issue(_repository, number) => {
+                if self.focus_open_github_page(&github_issue(number, None)) {
+                    return;
+                }
                 let request = self.send(SessionCommand::GithubIssue { number });
                 self.push_github_page(github_issue(number, request));
             },
             Selection::PullRequest(_repository, pull_request, can_write) => {
+                if self.focus_open_github_page(&github_pull_request(
+                    pull_request.clone(),
+                    can_write,
+                    None,
+                )) {
+                    return;
+                }
                 let request = self.send(SessionCommand::GithubPullRequest {
                     number: pull_request.number,
                 });

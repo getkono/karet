@@ -114,10 +114,10 @@ pub enum Command {
     /// Copy a web URL for the active file at the current `HEAD` commit on its
     /// origin remote (GitHub, GitLab, Gitea, or Forgejo).
     CopyRemoteFileUrl,
-    /// Copy a GitHub permalink for the active file: the blob at the `HEAD` commit,
-    /// anchored to the caret line in a code tab.
     /// Close the GitHub page in front, falling back to the one beneath it.
     GithubClosePage,
+    /// Copy a GitHub permalink for the active file: the blob at the `HEAD` commit,
+    /// anchored to the caret line in a code tab.
     CopyGithubPermalink,
     /// Copy a GitHub link to the active file on the current branch.
     CopyGithubHeadLink,

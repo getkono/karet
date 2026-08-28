@@ -191,6 +191,21 @@ fn the_github_hooks_do_not_fire_under_another_view() {
     app.handle_key(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE));
     assert_eq!(section(&app), before, "the hidden surface is untouched");
 
+    // Same for the click path, against a hit region the surface recorded for itself.
+    if let Some(dashboard) = app.github.dashboard_mut() {
+        dashboard.section_hits = vec![(
+            crate::app::github::GithubSection::PullRequests,
+            Rect::new(10, 2, 20, 1),
+        )];
+    }
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: 12,
+        row: 2,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert_eq!(section(&app), before, "a stale rect claims nothing");
+
     // Under its own view the same key reaches it.
     app.dispatch(Command::SelectView(View::GitHub));
     app.handle_key(KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE));

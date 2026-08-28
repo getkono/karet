@@ -104,7 +104,7 @@ impl App {
                 self.set_active(idx);
                 self.find_open = false;
                 if steal_focus {
-                    self.focus = Focus::Editor;
+                    self.show_editor();
                 }
                 self.register_doc(self.active);
                 // The replaced tab's document (if any) is no longer referenced by
@@ -121,7 +121,7 @@ impl App {
                 }
                 self.find_open = false;
                 if steal_focus {
-                    self.focus = Focus::Editor;
+                    self.show_editor();
                 }
                 self.register_doc(self.active);
             },
@@ -171,11 +171,21 @@ impl App {
             self.tabs.push(tab);
             self.set_active(self.tabs.len() - 1);
         }
-        self.view = View::Editor;
-        self.focus = Focus::Editor;
+        self.show_editor();
         // A newly-focused tab never inherits another tab's open find bar.
         self.find_open = false;
         self.register_doc(self.active);
+    }
+
+    /// Bring the editor shell forward and put the keyboard in it.
+    ///
+    /// Every deliberate "open this tab" goes through here. Setting focus without the
+    /// view is what strands a caller from another view: the tab becomes active and
+    /// takes the keyboard while staying invisible, and `FocusTarget::from` then routes
+    /// keys to whatever view is still on screen.
+    fn show_editor(&mut self) {
+        self.view = View::Editor;
+        self.focus = Focus::Editor;
     }
 
     /// Allocate a fresh [`ViewId`] for a newly-opened view.
@@ -443,7 +453,7 @@ impl App {
     pub(super) fn select_tab(&mut self, index: usize) {
         if index < self.tabs.len() {
             self.set_active(index);
-            self.focus = Focus::Editor;
+            self.show_editor();
             // The find bar is keyed to whichever tab it was opened over; switching
             // tabs must not show it over a different file.
             self.find_open = false;

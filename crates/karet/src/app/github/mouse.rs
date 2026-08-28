@@ -6,10 +6,15 @@ impl App {
     /// Handle a click or wheel gesture within the active GitHub dashboard table.
     pub(in crate::app) fn github_mouse(&mut self, mouse: MouseEvent) -> bool {
         let point = (mouse.column, mouse.row);
-        if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
-            && self.github_strip_click(point)
-        {
-            return true;
+        if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+            if self.github_strip_click(point) {
+                return true;
+            }
+            // Any press inside this view's body claims the keyboard too, so a click
+            // that moves the dashboard cursor is followed by keys that drive it.
+            if rect_contains(self.main_rect, point) {
+                self.focus = Focus::Editor;
+            }
         }
         if matches!(
             self.github.active_page(),
