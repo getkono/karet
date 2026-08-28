@@ -210,10 +210,34 @@ pub enum Event {
         /// Non-overlapping edits in buffer coordinates.
         edits: Vec<TextEdit>,
     },
-    /// Workspace search results answering a [`Command::Search`].
-    SearchResults {
-        /// The per-file hits, capped at the request's limit.
-        hits: Vec<karet_search::FileHit>,
+    /// One streamed batch of a workspace search, answering [`Command::Search`].
+    ///
+    /// Batches arrive as the walk proceeds so a client fills its list
+    /// incrementally rather than waiting for the whole tree; `files_scanned` and
+    /// `matches_found` are cumulative across the search.
+    SearchProgress {
+        /// The matching files found since the previous batch.
+        hits: Vec<crate::api::SearchHit>,
+        /// How many files the walk has visited so far.
+        files_scanned: usize,
+        /// How many matches have been found so far.
+        matches_found: usize,
+    },
+    /// A workspace search reached a terminal state. Exactly one arrives per
+    /// [`Command::Search`], including one that was superseded before it started.
+    SearchFinished {
+        /// How many files the walk visited in total.
+        files_scanned: usize,
+        /// The total match count across every visited file.
+        matches_found: usize,
+        /// The walk stopped at a file or match limit; more matches exist.
+        truncated: bool,
+        /// The walk stopped early — a [`Command::Cancel`], or a newer search
+        /// superseding this one on the worker's queue.
+        cancelled: bool,
+        /// Why no usable walk ran: an invalid regex, or an invalid glob. `None`
+        /// on every ordinary outcome, "no matches" included.
+        error: Option<String>,
     },
     /// One streamed batch of a workspace spelling scan, answering
     /// [`Command::ScanWorkspaceSpelling`]. Batches arrive as the walk progresses so

@@ -133,7 +133,7 @@ impl App {
     /// server calls the start, often the `pub`/`fn` before it.
     pub(crate) fn jump_to_location(&mut self, path: &Path, position: LineCol) {
         self.push_jump_origin(path, position);
-        self.focus_by_file_line(path, position);
+        self.focus_by_file_line(path, position, true);
     }
 
     /// Remember where a jump started, unless it goes nowhere.
@@ -179,7 +179,7 @@ impl App {
             self.focus_pane_switch(origin.pane);
             // Deliberately not `jump_to_location`: pushing a new origin here would
             // make Go Back bounce between two positions forever.
-            self.focus_by_file_line(&origin.path, origin.position);
+            self.focus_by_file_line(&origin.path, origin.position, true);
             return;
         }
         self.status = Some("nothing to go back to".to_string());

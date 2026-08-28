@@ -9,17 +9,9 @@ impl App {
                 .edit
                 .selected_text(&self.commit_input.text)
                 .map(str::to_string),
-            Modal::SearchInput => match self.search.field {
-                SearchField::Find => self
-                    .search
-                    .query_edit
-                    .selected_text(&self.search.query)
-                    .map(str::to_string),
-                SearchField::Replace => self
-                    .search
-                    .replace_edit
-                    .selected_text(&self.search.replace)
-                    .map(str::to_string),
+            Modal::SearchInput => {
+                let (text, edit) = self.search.active_field_ref();
+                edit.selected_text(text).map(str::to_string)
             },
             Modal::Find => {
                 let find = self.active_find()?;
@@ -43,9 +35,9 @@ impl App {
     pub(super) fn cut_modal_selection(&mut self) -> Option<String> {
         match self.input_context().modal? {
             Modal::CommitInput => self.commit_input.edit.cut(&mut self.commit_input.text),
-            Modal::SearchInput => match self.search.field {
-                SearchField::Find => self.search.query_edit.cut(&mut self.search.query),
-                SearchField::Replace => self.search.replace_edit.cut(&mut self.search.replace),
+            Modal::SearchInput => {
+                let (text, edit) = self.search.active_field();
+                edit.cut(text)
             },
             Modal::Find => {
                 let find = self.active_find_mut()?;
@@ -63,9 +55,10 @@ impl App {
     pub(super) fn select_all_modal_text(&mut self) -> bool {
         match self.input_context().modal {
             Some(Modal::CommitInput) => self.commit_input.edit.select_all(&self.commit_input.text),
-            Some(Modal::SearchInput) => match self.search.field {
-                SearchField::Find => self.search.query_edit.select_all(&self.search.query),
-                SearchField::Replace => self.search.replace_edit.select_all(&self.search.replace),
+            Some(Modal::SearchInput) => {
+                let (text, edit) = self.search.active_field();
+                let owned = text.clone();
+                edit.select_all(&owned)
             },
             Some(Modal::Find) => {
                 let Some(find) = self.active_find_mut() else {
@@ -296,12 +289,7 @@ impl App {
             },
             Modal::ExplorerEdit => self.explorer.edit_paste(text),
             Modal::SearchInput => {
-                let (target, edit) = match self.search.field {
-                    SearchField::Find => (&mut self.search.query, &mut self.search.query_edit),
-                    SearchField::Replace => {
-                        (&mut self.search.replace, &mut self.search.replace_edit)
-                    },
-                };
+                let (target, edit) = self.search.active_field();
                 edit.insert(target, text);
             },
             Modal::SearchList

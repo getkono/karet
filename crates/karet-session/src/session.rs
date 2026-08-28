@@ -34,6 +34,7 @@ mod mdlint;
 #[cfg(feature = "notebook-kernel")]
 mod notebooks;
 mod persistence;
+mod search;
 mod spelling;
 mod updates;
 mod vcs;
@@ -631,18 +632,11 @@ impl Session {
                 create_project,
             } => self.add_dictionary_word(id, word, scope, create_project),
             Command::SetBlameEnabled { enabled } => self.set_blame_enabled(id, enabled),
-            Command::Search { query, limit } => {
-                if let Some(root) = self.config.roots.first().cloned() {
-                    let _ = self
-                        .search_worker
-                        .send(crate::search_worker::SearchJob::Search {
-                            id,
-                            root,
-                            query,
-                            limit,
-                        });
-                }
-            },
+            Command::Search {
+                query,
+                file_limit,
+                match_limit,
+            } => self.search_workspace(id, query, file_limit, match_limit),
             Command::IndexSeams { root, mode } => {
                 if let Some(root) = root.or_else(|| self.config.roots.first().cloned()) {
                     let _ = self.seam_worker.send(crate::seam_worker::SeamJob::Index {
@@ -681,16 +675,7 @@ impl Session {
             Command::ScanWorkspaceTodos { limit } => self.scan_workspace_todos(id, limit),
             Command::RefreshManifestHints { doc } => self.refresh_manifest_hints(doc),
             Command::SearchReplaceAll { query, replacement } => {
-                if let Some(root) = self.config.roots.first().cloned() {
-                    let _ = self
-                        .search_worker
-                        .send(crate::search_worker::SearchJob::ReplaceAll {
-                            id,
-                            root,
-                            query,
-                            replacement,
-                        });
-                }
+                self.search_replace_all(id, query, replacement);
             },
             // Language-server management commands are consumed by the
             // `handle_lsp_command` pre-dispatch above and never reach this match.

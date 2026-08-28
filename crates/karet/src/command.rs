@@ -604,12 +604,20 @@ pub enum Command {
     SearchBeginInput,
     /// Leave the Search panel (from the results list).
     SearchQuit,
+    /// Expand the selected Search file group, or step into an open one.
+    SearchExpand,
+    /// Collapse the selected Search file group, or step up to its heading.
+    SearchCollapse,
+    /// Collapse every Search file group, or expand them all when none are.
+    SearchToggleAll,
     /// Run the Search query and show its results.
     SearchRun,
     /// Stop editing the Search query without leaving the panel.
     SearchEndInput,
     /// Show or hide the Search replace field.
     SearchToggleReplace,
+    /// Show or hide the Search include/exclude glob fields.
+    SearchToggleFilters,
     /// Switch the edited Search field between find and replace.
     SearchToggleField,
     /// Apply the replacement across every workspace match.
@@ -917,6 +925,10 @@ impl Command {
             Self::SearchOpen => "Search: Open Selected Result",
             Self::SearchBeginInput => "Search: Edit Query",
             Self::SearchQuit => "Search: Leave Panel",
+            Self::SearchExpand => "Search: Expand Group",
+            Self::SearchCollapse => "Search: Collapse Group",
+            Self::SearchToggleAll => "Search: Collapse or Expand All",
+            Self::SearchToggleFilters => "Search: Toggle File Filters",
             Self::SearchRun => "Search: Run Query",
             Self::SearchEndInput => "Search: Stop Editing Query",
             Self::SearchToggleReplace => "Search: Toggle Replace",

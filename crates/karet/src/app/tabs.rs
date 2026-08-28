@@ -63,22 +63,33 @@ impl App {
     /// underlying file, `--goto` at startup, and the Spelling panel.
     ///
     /// A relative `path` resolves against the workspace root, so a VCS-relative
-    /// change path opens and dedups like any explorer open. Focus follows
-    /// [`open_path`](Self::open_path) to the editor. `position` is in the editor's
-    /// 0-based coordinates and [`goto`](karet_editor::EditorState::goto) clamps it
-    /// into the buffer; a non-text tab (image, binary, placeholder) simply has no
-    /// caret to place.
+    /// change path opens and dedups like any explorer open. `position` is in the
+    /// editor's 0-based coordinates and [`goto`](karet_editor::EditorState::goto)
+    /// clamps it into the buffer; a non-text tab (image, binary, placeholder)
+    /// simply has no caret to place.
+    ///
+    /// `steal_focus` says whether the keyboard follows the jump, the same seam
+    /// [`open_path_preview`](Self::open_path_preview) offers: `true` reproduces
+    /// [`open_path`](Self::open_path)'s move to the editor, while `false` leaves
+    /// focus where it was, so a result list keeps it and the user can go on
+    /// arrowing through the rest of the hits.
     ///
     /// Callers keep their own pre-checks: this deliberately does *not* require the
     /// path to exist, because `--goto` on a missing file is how karet opens a new
     /// one.
-    pub(super) fn focus_by_file_line(&mut self, path: &Path, position: LineCol) {
+    pub(super) fn focus_by_file_line(&mut self, path: &Path, position: LineCol, steal_focus: bool) {
         let target = if path.is_absolute() {
             path.to_path_buf()
         } else {
             self.root.join(path)
         };
+        // Restored rather than suppressed: the move to the editor is spread across
+        // `select_tab`/`push_tab`, so the one place that must not keep it is here.
+        let previous = self.focus;
         self.open_path(&target);
+        if !steal_focus {
+            self.focus = previous;
+        }
         // The buffer is cloned out first (an O(1) rope share) so the tab can be
         // borrowed mutably to move its caret.
         let buffer = match self.tabs.get(self.active).map(|t| &t.kind) {

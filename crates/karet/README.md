@@ -144,11 +144,22 @@ all, and `Alt+R`/`Alt+C`/`Alt+W` toggle regex/case/whole-word. The command palet
 shows each command's shortcut on the right.
 
 **Search panel:** the find and replace fields show by default (`Alt+H` collapses the
-replace field). `Tab` switches find/replace; `Enter` runs the search (or, in the
-replace field, replaces all matches across the workspace). Option toggles —
-`Alt+R` regex, `Alt+C` case-sensitive, `Alt+W` whole-word — are also clickable
-`.*` / `Aa` / `\b` buttons on the find row; `r` (browsing results) or the ` ⟳ all`
+replace field); `Alt+F` reveals include/exclude glob fields (comma or space
+separated, e.g. `*.rs, src/**`) for narrowing a search over a large repository.
+`Tab` cycles the visible fields; `Enter` runs the search (or, in the replace
+field, replaces all matches across the workspace). Option toggles — `Alt+R`
+regex, `Alt+C` case-sensitive, `Alt+W` whole-word — are also clickable `.*` /
+`Aa` / `\b` buttons on the find row; `r` (browsing results) or the ` ⟳ all`
 button replaces everywhere.
+
+Results are grouped: a row per matching file over its matches, each showing the
+source line with the match highlighted and its line number in a right-aligned
+column. `→`/`←` (or `l`/`h`) expand and collapse a group, `Alt+A` folds or
+unfolds everything, and `Enter` opens the selected match at its own line and
+column — in the editor behind the panel, which keeps the keyboard, so the next
+arrow reaches the next hit (`Esc` leaves the panel). Results stream in as the walk
+finds them, with a status line reporting matches found, files scanned, and whether
+a result cap was reached.
 
 **Mouse** (every element is interactive): click a tab to switch, its `×` (or
 middle-click) to close, drag to reorder; click explorer rows to open files /

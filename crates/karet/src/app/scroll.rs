@@ -156,7 +156,7 @@ impl App {
             // window is what makes ratatui's minimal scroll land the top of it on
             // `position`.
             ScrollSurface::SearchResults => {
-                let len = self.search.results.len();
+                let len = self.search.rows.len();
                 let cursor = window_bottom(position, viewport, len);
                 self.search.selection.move_to(cursor);
             },

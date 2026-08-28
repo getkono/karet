@@ -403,13 +403,21 @@ pub(super) static BINDINGS: &[Binding] = &[
     // Workspace Search: navigating the results list.
     b(SearchList, false, false, false, Esc,       Command::SearchQuit),
     b(SearchList, false, false, false, Enter,     Command::SearchOpen),
+    // The arrows and `j`/`k` alike stay inside the list: neither walks off its
+    // first row into the fields above it. `Esc` is the way back to the query.
     b(SearchList, false, false, false, Down,      Command::SearchSelectDown),
     b(SearchList, false, false, false, Char('j'), Command::SearchSelectDown),
     b(SearchList, false, false, false, Up,        Command::SearchSelectUp),
     b(SearchList, false, false, false, Char('k'), Command::SearchSelectUp),
+    b(SearchList, false, false, false, Right,     Command::SearchExpand),
+    b(SearchList, false, false, false, Char('l'), Command::SearchExpand),
+    b(SearchList, false, false, false, Left,      Command::SearchCollapse),
+    b(SearchList, false, false, false, Char('h'), Command::SearchCollapse),
+    b(SearchList, false, false, true,  Char('a'), Command::SearchToggleAll),
     b(SearchList, false, false, false, Char('/'), Command::SearchBeginInput),
     b(SearchList, false, false, false, Char('r'), Command::SearchReplaceAll),
     b(SearchList, false, false, true,  Char('h'), Command::SearchToggleReplace),
+    b(SearchList, false, false, true,  Char('f'), Command::SearchToggleFilters),
     b(SearchList, false, false, true,  Char('r'), Command::SearchToggleRegex),
     b(SearchList, false, false, true,  Char('c'), Command::SearchToggleCase),
     b(SearchList, false, false, true,  Char('w'), Command::SearchToggleWord),
@@ -417,11 +425,16 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(SearchInput, false, false, false, Esc,   Command::SearchEndInput),
     b(SearchInput, false, false, false, Enter, Command::SearchRun),
     b(SearchInput, false, false, false, Tab,   Command::SearchToggleField),
+    // Deliberately no plain `Up`/`Down` here: an arrow must never lift the caret
+    // out of the field being typed in. Unbound, they fall through to `search_edit`,
+    // which absorbs them; `Cmd`+arrow still reaches it as a caret motion, because
+    // `KeyChord::from_event` normalizes it to `Ctrl+Home`/`Ctrl+End` first.
     b(SearchInput, true,  false, false, Char('a'), Command::EditorSelectAll),
     b(SearchInput, true,  false, false, Char('c'), Command::Copy),
     b(SearchInput, true,  false, false, Char('x'), Command::Cut),
     b(SearchInput, true,  false, false, Char('v'), Command::Paste),
     b(SearchInput, false, false, true,  Char('h'), Command::SearchToggleReplace),
+    b(SearchInput, false, false, true,  Char('f'), Command::SearchToggleFilters),
     b(SearchInput, false, false, true,  Char('r'), Command::SearchToggleRegex),
     b(SearchInput, false, false, true,  Char('c'), Command::SearchToggleCase),
     b(SearchInput, false, false, true,  Char('w'), Command::SearchToggleWord),

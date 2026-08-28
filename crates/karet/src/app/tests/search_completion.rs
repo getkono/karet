@@ -137,25 +137,25 @@ fn switching_tabs_does_not_show_a_stale_find_bar() {
 #[test]
 fn search_toggle_field_reveals_and_switches_replace() {
     let mut app = App::new(PathBuf::from("."), Vec::new(), Vec::new(), false);
-    assert_eq!(app.search.field, SearchField::Find);
+    assert_eq!(app.search.field, SearchPanelField::Find);
     // Collapse the replace field, then Tab reveals it and moves focus to it.
     app.search_toggle_replace();
     assert!(!app.search.replace_visible);
     app.search_toggle_field();
     assert!(app.search.replace_visible);
-    assert_eq!(app.search.field, SearchField::Replace);
+    assert_eq!(app.search.field, SearchPanelField::Replace);
     assert!(app.search.input);
     // Tab again returns to the find field.
     app.search_toggle_field();
-    assert_eq!(app.search.field, SearchField::Find);
+    assert_eq!(app.search.field, SearchPanelField::Find);
 }
 
 #[test]
 fn search_edit_targets_the_active_field() {
     let mut app = App::new(PathBuf::from("."), Vec::new(), Vec::new(), false);
-    app.search.field = SearchField::Find;
+    app.search.field = SearchPanelField::Find;
     app.search_edit(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
-    app.search.field = SearchField::Replace;
+    app.search.field = SearchPanelField::Replace;
     app.search_edit(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE));
     assert_eq!(app.search.query, "a");
     assert_eq!(app.search.replace, "b");

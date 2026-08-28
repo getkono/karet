@@ -574,7 +574,7 @@ impl App {
                 }
                 // Click a field to edit it.
                 if rect_contains(self.search_ui.query_rect, (col, row_y)) {
-                    self.search.field = SearchField::Find;
+                    self.search.field = SearchPanelField::Find;
                     self.search.input = true;
                     self.place_text_field_cursor(TextFieldTarget::SearchFind, col, row_y, shift);
                     self.text_field_drag = Some(TextFieldTarget::SearchFind);
@@ -585,20 +585,60 @@ impl App {
                     .replace_rect
                     .is_some_and(|rect| rect_contains(rect, (col, row_y)))
                 {
-                    self.search.field = SearchField::Replace;
+                    self.search.field = SearchPanelField::Replace;
                     self.search.replace_visible = true;
                     self.search.input = true;
                     self.place_text_field_cursor(TextFieldTarget::SearchReplace, col, row_y, shift);
                     self.text_field_drag = Some(TextFieldTarget::SearchReplace);
                     return;
                 }
+                for (rect, field, target) in [
+                    (
+                        self.search_ui.includes_rect,
+                        SearchPanelField::Includes,
+                        TextFieldTarget::SearchIncludes,
+                    ),
+                    (
+                        self.search_ui.excludes_rect,
+                        SearchPanelField::Excludes,
+                        TextFieldTarget::SearchExcludes,
+                    ),
+                ] {
+                    if rect.is_some_and(|rect| rect_contains(rect, (col, row_y))) {
+                        self.search.field = field;
+                        self.search.input = true;
+                        self.place_text_field_cursor(target, col, row_y, shift);
+                        self.text_field_drag = Some(target);
+                        return;
+                    }
+                }
                 if !rect_contains(self.search_ui.results_rect, (col, row_y)) {
                     return;
                 }
                 let idx = self.search_ui.offset + (row_y - self.search_ui.results_rect.y) as usize;
-                if idx < self.search.results.len() {
-                    self.search.selection.move_to(idx);
-                    self.open_selected_result();
+                if idx >= self.search.rows.len() {
+                    return;
+                }
+                // Taken once, before the branch: the streak counter is shared with
+                // every other click surface, so reading it twice would advance it.
+                let streak = self.click_streak(col, row_y);
+                self.search.selection.move_to(idx);
+                // The click moves the panel's focus onto the results, so the arrow
+                // keys that follow navigate the list rather than the last field.
+                self.search.input = false;
+                // A click on a file heading's chevron toggles the group; anywhere
+                // else on the row opens the file, so the affordance is the glyph.
+                // The chevron renders as glyph-plus-space, so both cells toggle;
+                // a one-cell target is too fine to hit reliably.
+                let on_chevron = col <= self.search_ui.results_rect.x.saturating_add(1);
+                // Double-clicking a heading is the second fold affordance: the first
+                // click has already opened the file, the second folds the group. A
+                // match row is a leaf, so it just opens again.
+                match self.search.rows.get(idx) {
+                    Some(SearchRow::File { .. }) if on_chevron || streak >= 2 => {
+                        self.search_toggle_row();
+                    },
+                    _ => self.open_selected_result(),
                 }
             },
         }
@@ -686,19 +726,33 @@ impl App {
                 let cursor = karet_widgets::textfield::byte_at_cell(text, cell);
                 edit.set_cursor(text, cursor, extend);
             },
-            TextFieldTarget::SearchReplace => {
-                let Some(rect) = self.search_ui.replace_rect else {
+            TextFieldTarget::SearchReplace
+            | TextFieldTarget::SearchIncludes
+            | TextFieldTarget::SearchExcludes => {
+                let (rect, text, edit) = match target {
+                    TextFieldTarget::SearchIncludes => (
+                        self.search_ui.includes_rect,
+                        &self.search.includes,
+                        &mut self.search.includes_edit,
+                    ),
+                    TextFieldTarget::SearchExcludes => (
+                        self.search_ui.excludes_rect,
+                        &self.search.excludes,
+                        &mut self.search.excludes_edit,
+                    ),
+                    _ => (
+                        self.search_ui.replace_rect,
+                        &self.search.replace,
+                        &mut self.search.replace_edit,
+                    ),
+                };
+                let Some(rect) = rect else {
                     return;
                 };
-                let cell = usize::from(
-                    column
-                        .saturating_sub(rect.x)
-                        .saturating_add(self.search.replace_edit.scroll),
-                );
-                let cursor = karet_widgets::textfield::byte_at_cell(&self.search.replace, cell);
-                self.search
-                    .replace_edit
-                    .set_cursor(&self.search.replace, cursor, extend);
+                let cell = usize::from(column.saturating_sub(rect.x).saturating_add(edit.scroll));
+                let cursor = karet_widgets::textfield::byte_at_cell(text, cell);
+                let owned = text.clone();
+                edit.set_cursor(&owned, cursor, extend);
             },
         }
     }

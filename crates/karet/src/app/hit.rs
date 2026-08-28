@@ -51,6 +51,10 @@ pub(crate) struct MarkdownLinkHit {
 pub(crate) enum TextFieldTarget {
     SearchFind,
     SearchReplace,
+    /// The Search panel's include-glob field.
+    SearchIncludes,
+    /// The Search panel's exclude-glob field.
+    SearchExcludes,
     Commit,
     /// The in-file find bar's query field.
     FindQuery,

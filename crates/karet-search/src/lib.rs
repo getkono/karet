@@ -153,9 +153,30 @@ fn regex_matches(text: &str, re: &Regex) -> Vec<Match> {
     matches
 }
 
-/// A compiled query: a literal needle (fast-path) or a regex. Building it once
-/// lets the workspace walk reuse the same compiled matcher across files.
-enum Matcher {
+/// A compiled query, reusable across many buffers.
+///
+/// Compiling is not free — a regex query pays a full regex build — so a caller
+/// searching a whole tree compiles once and reuses the matcher for every file.
+/// [`search_in_file`] is the one-shot convenience that compiles per call; reach
+/// for this type whenever the same query is run against more than one buffer.
+///
+/// ```
+/// use karet_search::{Matcher, SearchQuery};
+///
+/// let query = SearchQuery {
+///     pattern: "todo".to_string(),
+///     ..Default::default()
+/// };
+/// let matcher = Matcher::new(&query)?;
+/// let first = matcher.find("todo: one");
+/// let second = matcher.find("nothing here");
+/// assert_eq!((first.len(), second.len()), (1, 0));
+/// # Ok::<(), karet_search::SearchError>(())
+/// ```
+pub struct Matcher(MatcherKind);
+
+/// A compiled query: a literal needle (fast-path) or a regex.
+enum MatcherKind {
     /// An exact, case-sensitive substring search.
     Literal(String),
     /// A compiled regular expression.
@@ -163,24 +184,27 @@ enum Matcher {
 }
 
 impl Matcher {
-    /// Compile `query` into a reusable matcher.
+    /// Compile `query` into a matcher that can be reused across buffers.
     ///
     /// # Errors
     /// Returns [`SearchError::InvalidPattern`] for a malformed regex.
-    fn build(query: &SearchQuery) -> Result<Self, SearchError> {
+    pub fn new(query: &SearchQuery) -> Result<Self, SearchError> {
         if !query.regex && query.case_sensitive && !query.whole_word {
-            Ok(Self::Literal(query.pattern.clone()))
+            Ok(Self(MatcherKind::Literal(query.pattern.clone())))
         } else {
-            Ok(Self::Regex(compile(query)?))
+            Ok(Self(MatcherKind::Regex(compile(query)?)))
         }
     }
 
     /// Find every match in `text`.
-    fn find(&self, text: &str) -> Vec<Match> {
-        match self {
-            Self::Literal(needle) if needle.is_empty() => Vec::new(),
-            Self::Literal(needle) => literal_matches(text, needle),
-            Self::Regex(re) => regex_matches(text, re),
+    ///
+    /// An empty pattern never matches, matching [`search_in_file`]'s behavior.
+    #[must_use]
+    pub fn find(&self, text: &str) -> Vec<Match> {
+        match &self.0 {
+            MatcherKind::Literal(needle) if needle.is_empty() => Vec::new(),
+            MatcherKind::Literal(needle) => literal_matches(text, needle),
+            MatcherKind::Regex(re) => regex_matches(text, re),
         }
     }
 
@@ -189,9 +213,9 @@ impl Matcher {
     /// against each match's captures; otherwise `replacement` is inserted literally
     /// (so a literal or whole-word query never mis-reads a `$` in the replacement).
     fn plan(&self, text: &str, replacement: &str, expand: bool) -> Vec<Replacement> {
-        match self {
-            Self::Literal(needle) if needle.is_empty() => Vec::new(),
-            Self::Literal(needle) => literal_matches(text, needle)
+        match &self.0 {
+            MatcherKind::Literal(needle) if needle.is_empty() => Vec::new(),
+            MatcherKind::Literal(needle) => literal_matches(text, needle)
                 .into_iter()
                 .map(|m| Replacement {
                     start: m.start,
@@ -199,7 +223,7 @@ impl Matcher {
                     text: replacement.to_string(),
                 })
                 .collect(),
-            Self::Regex(re) => {
+            MatcherKind::Regex(re) => {
                 let mut out = Vec::new();
                 for caps in re.captures_iter(text) {
                     let Some(whole) = caps.get(0) else {
@@ -232,7 +256,7 @@ pub fn search_in_file(text: &str, query: &SearchQuery) -> Result<Vec<Match>, Sea
     if query.pattern.is_empty() {
         return Ok(Vec::new());
     }
-    Ok(Matcher::build(query)?.find(text))
+    Ok(Matcher::new(query)?.find(text))
 }
 
 /// A file together with its matches, streamed from a workspace search.
@@ -285,7 +309,7 @@ impl WorkspaceSearch {
         if query.pattern.is_empty() {
             return Ok(());
         }
-        let matcher = Matcher::build(query)?;
+        let matcher = Matcher::new(query)?;
         walk_text_files(root, &query.includes, &query.excludes, |path, text| {
             let matches = matcher.find(&text);
             if !matches.is_empty() {
@@ -315,7 +339,7 @@ impl WorkspaceSearch {
         if query.pattern.is_empty() {
             return Ok(ReplaceSummary::default());
         }
-        let matcher = Matcher::build(query)?;
+        let matcher = Matcher::new(query)?;
         let mut summary = ReplaceSummary::default();
         walk_text_files(root, &query.includes, &query.excludes, |path, text| {
             let plan = matcher.plan(&text, replacement, query.regex);
@@ -444,7 +468,7 @@ pub fn plan_replacements(
     if query.pattern.is_empty() {
         return Ok(Vec::new());
     }
-    Ok(Matcher::build(query)?.plan(text, replacement, query.regex))
+    Ok(Matcher::new(query)?.plan(text, replacement, query.regex))
 }
 
 /// Apply `replacements` to `text`, returning the rewritten string. Spans are applied
@@ -555,6 +579,63 @@ mod tests {
             assert_eq!((m[0].line, m[0].col), (1, 0));
             assert_eq!((m[1].line, m[1].col), (2, 0));
         }
+    }
+
+    /// The whole point of the public matcher: compile once, run many. A reused
+    /// matcher must agree with the one-shot `search_in_file` on every buffer.
+    #[test]
+    fn a_reused_matcher_agrees_with_search_in_file() {
+        for query in [
+            literal("foo"),
+            SearchQuery {
+                pattern: "fo+".into(),
+                regex: true,
+                ..Default::default()
+            },
+            SearchQuery {
+                pattern: "foo".into(),
+                whole_word: true,
+                ..Default::default()
+            },
+            SearchQuery {
+                pattern: "FOO".into(),
+                ..Default::default()
+            },
+        ] {
+            let matcher = match Matcher::new(&query) {
+                Ok(matcher) => matcher,
+                Err(_) => continue,
+            };
+            for text in ["foo bar foo", "nothing", "foofoo", "a foo\nfoo b", ""] {
+                assert_eq!(
+                    matcher.find(text),
+                    search_in_file(text, &query).unwrap_or_default(),
+                    "pattern {:?} over {text:?}",
+                    query.pattern,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_matcher_rejects_an_invalid_regex() {
+        let q = SearchQuery {
+            pattern: "(".into(),
+            regex: true,
+            ..Default::default()
+        };
+        assert!(Matcher::new(&q).is_err());
+    }
+
+    /// An empty pattern never matches, so a caller that reuses one matcher over a
+    /// whole tree cannot accidentally report every file as a hit.
+    #[test]
+    fn a_matcher_built_from_an_empty_pattern_never_matches() {
+        let matcher = Matcher::new(&literal(""));
+        assert_eq!(
+            matcher.map(|m| m.find("anything at all").len()).ok(),
+            Some(0)
+        );
     }
 
     #[test]

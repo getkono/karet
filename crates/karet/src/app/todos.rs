@@ -111,7 +111,7 @@ impl App {
             return;
         };
         let (path, line) = (hit.path.clone(), hit.line);
-        self.focus_by_file_line(&path, karet_core::LineCol::new(line, 0));
+        self.focus_by_file_line(&path, karet_core::LineCol::new(line, 0), true);
     }
 
     /// Route a click inside the Todos panel: a header action, or a result row.
