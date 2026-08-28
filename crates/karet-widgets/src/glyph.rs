@@ -63,8 +63,8 @@ pub enum UiIcon {
     ViewEditor,
     /// The GitHub entry in the top-level view switcher.
     ViewGithub,
-    /// The Agents entry in the top-level view switcher.
-    ViewAgents,
+    // #211: /// The Agents entry in the top-level view switcher.
+    // #211: ViewAgents,
 }
 
 impl UiIcon {
@@ -108,7 +108,7 @@ impl UiIcon {
             // The top-level view switcher, read as a group of three on the chrome row.
             Self::ViewEditor => '\u{f044}', // pencil-square (edit)
             Self::ViewGithub => '\u{f09b}', // the GitHub mark
-            Self::ViewAgents => '\u{f086}', // comments (agent conversations)
+                                             // #211: Self::ViewAgents => '\u{f086}', // comments (agent conversations)
         }
     }
 
@@ -144,7 +144,7 @@ impl UiIcon {
             Self::SeamInactive => '\u{2219}',     // ∙ bullet operator
             Self::ViewEditor => '\u{270e}',       // ✎ lower right pencil
             Self::ViewGithub => '\u{2388}',       // ⎈ helm (a hub)
-            Self::ViewAgents => '\u{2042}',       // ⁂ asterism (a cluster)
+                                                   // #211: Self::ViewAgents => '\u{2042}', // ⁂ asterism (a cluster)
         }
     }
 
@@ -178,7 +178,7 @@ impl UiIcon {
             // distinct within the group even where they repeat a mark used elsewhere.
             Self::ViewEditor => 'E',
             Self::ViewGithub => 'H', // hub
-            Self::ViewAgents => 'A',
+                                     // #211: Self::ViewAgents => 'A',
         }
     }
 }
@@ -272,12 +272,14 @@ mod tests {
     ];
 
     /// The top-level view switcher, which is read as a group on the chrome row.
-    const VIEW_ICONS: [UiIcon; 3] = [UiIcon::ViewEditor, UiIcon::ViewGithub, UiIcon::ViewAgents];
+    const VIEW_ICONS: [UiIcon; 2] = [UiIcon::ViewEditor, UiIcon::ViewGithub];
+    // #211: const VIEW_ICONS: [UiIcon; 3] =
+    // #211:     [UiIcon::ViewEditor, UiIcon::ViewGithub, UiIcon::ViewAgents];
 
     #[test]
     fn view_switcher_glyphs_are_distinct_and_fill_one_slot_in_every_style() {
-        // Same contract as the seam legend, and for the same reason: the three sit side
-        // by side on one row, so a shared glyph or an over-wide one breaks the row.
+        // Same contract as the seam legend, and for the same reason: they sit side by
+        // side on one row, so a shared glyph or an over-wide one breaks the row.
         for style in [IconStyle::NerdFont, IconStyle::Unicode, IconStyle::Ascii] {
             let mut seen: Vec<char> = VIEW_ICONS.iter().map(|icon| icon.glyph(style)).collect();
             let total = seen.len();
@@ -382,7 +384,7 @@ mod tests {
         assert_eq!(UiIcon::SeamInactive.glyph(IconStyle::Unicode), '\u{2219}');
         assert_eq!(UiIcon::ViewEditor.glyph(IconStyle::Unicode), '\u{270e}');
         assert_eq!(UiIcon::ViewGithub.glyph(IconStyle::Unicode), '\u{2388}');
-        assert_eq!(UiIcon::ViewAgents.glyph(IconStyle::Unicode), '\u{2042}');
+        // #211: assert_eq!(UiIcon::ViewAgents.glyph(IconStyle::Unicode), '\u{2042}');
     }
 
     #[test]

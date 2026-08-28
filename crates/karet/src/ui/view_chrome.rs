@@ -1,5 +1,4 @@
-//! The top-level view switcher: the one row of chrome above everything else, and
-//! the placeholder body a view renders before its surface exists.
+//! The top-level view switcher: the one row of chrome above everything else.
 //!
 //! Only the Agents view still needs that placeholder. The GitHub view draws its own
 //! surface, and says so itself when the workspace has no GitHub repository behind it.
@@ -64,50 +63,53 @@ pub(super) fn draw_view_chrome(f: &mut Frame, app: &mut App, theme: &Theme, area
     f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-/// Draw the body of a view whose surface is not built yet.
-///
-/// Stable and centred rather than a spinner or an error: nothing is loading and
-/// nothing has failed, so the row must not move or alarm.
-pub(super) fn draw_view_placeholder(
-    f: &mut Frame,
-    theme: &Theme,
-    area: Rect,
-    view: View,
-    icon_style: karet_filetype::IconStyle,
-) {
-    f.render_widget(
-        Block::default().style(Style::default().bg(theme.role(ThemeRole::Background).to_ratatui())),
-        area,
-    );
-    if area.height == 0 {
-        return;
-    }
-    let hint = match view {
-        View::Agents => "Agent sessions will appear here.",
-        // Unreachable in practice — the editor view draws panes and the GitHub view
-        // draws its surface — but a total match keeps the placeholder honest if that
-        // ever changes.
-        View::Editor | View::GitHub => "",
-    };
-    let lines = vec![
-        Line::styled(
-            format!(
-                "{} {} — not available yet",
-                view.icon().glyph(icon_style),
-                view.title()
-            ),
-            theme
-                .style(ThemeRole::LineNumberActive)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Line::styled(hint.to_string(), theme.style(ThemeRole::Muted)),
-    ];
-    let top = area.y + area.height / 3;
-    let rect = Rect::new(
-        area.x,
-        top.min(area.bottom().saturating_sub(1)),
-        area.width,
-        area.height.saturating_sub(top - area.y).min(2),
-    );
-    f.render_widget(Paragraph::new(lines).alignment(Alignment::Center), rect);
-}
+// #211: The placeholder body below returns with the Agents view. Every view that
+// ships today draws a real surface, so nothing calls it in the meantime.
+// #211: /// Draw the body of a view whose surface is not built yet.
+// #211: ///
+// #211: /// Stable and centred rather than a spinner or an error: nothing is loading and
+// #211: /// nothing has failed, so the row must not move or alarm.
+// #211: pub(super) fn draw_view_placeholder(
+// #211:     f: &mut Frame,
+// #211:     theme: &Theme,
+// #211:     area: Rect,
+// #211:     view: View,
+// #211:     icon_style: karet_filetype::IconStyle,
+// #211: ) {
+// #211:     f.render_widget(
+// #211:         Block::default().style(Style::default().bg(theme.role(ThemeRole::Background).to_ratatui())),
+// #211:         area,
+// #211:     );
+// #211:     if area.height == 0 {
+// #211:         return;
+// #211:     }
+// #211:     let hint = match view {
+// #211:         View::Agents => "Agent sessions will appear here.",
+// #211:         // Unreachable in practice — the editor view draws panes and the GitHub view
+// #211:         // draws its surface — but a total match keeps the placeholder honest if that
+// #211:         // ever changes.
+// #211:         View::Editor | View::GitHub => "",
+// #211:     };
+// #211:     let lines = vec![
+// #211:         Line::styled(
+// #211:             format!(
+// #211:                 "{} {} — not available yet",
+// #211:                 view.icon().glyph(icon_style),
+// #211:                 view.title()
+// #211:             ),
+// #211:             theme
+// #211:                 .style(ThemeRole::LineNumberActive)
+// #211:                 .add_modifier(Modifier::BOLD),
+// #211:         ),
+// #211:         Line::styled(hint.to_string(), theme.style(ThemeRole::Muted)),
+// #211:     ];
+// #211:     let top = area.y + area.height / 3;
+// #211:     let rect = Rect::new(
+// #211:         area.x,
+// #211:         top.min(area.bottom().saturating_sub(1)),
+// #211:         area.width,
+// #211:         area.height.saturating_sub(top - area.y).min(2),
+// #211:     );
+// #211:     f.render_widget(Paragraph::new(lines).alignment(Alignment::Center), rect);
+// #211: }
+// #211:

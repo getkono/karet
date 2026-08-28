@@ -352,8 +352,8 @@ pub enum ViewChoice {
     Editor,
     /// Start in the GitHub view.
     Github,
-    /// Start in the Agents view.
-    Agents,
+    // #211: /// Start in the Agents view.
+    // #211: Agents,
 }
 
 /// CLI choices for startup focus.
@@ -380,7 +380,7 @@ impl From<ViewChoice> for View {
         match choice {
             ViewChoice::Editor => Self::Editor,
             ViewChoice::Github => Self::GitHub,
-            ViewChoice::Agents => Self::Agents,
+            // #211: ViewChoice::Agents => Self::Agents,
         }
     }
 }

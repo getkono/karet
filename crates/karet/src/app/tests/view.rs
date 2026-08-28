@@ -23,34 +23,36 @@ fn selecting_a_view_moves_focus_onto_it() {
     assert_eq!(app.view, View::Editor);
     assert_eq!(app.focus, Focus::Sidebar);
 
-    app.dispatch(Command::SelectView(View::Agents));
-    assert_eq!(app.view, View::Agents);
-    // Load-bearing rather than merely tidy: the Agents view hides the sidebar, so
-    // focus left behind would send every keystroke to a panel that is not drawn.
+    app.dispatch(Command::SelectView(View::GitHub));
+    assert_eq!(app.view, View::GitHub);
+    // Load-bearing rather than merely tidy: focus follows the surface that now owns
+    // the content area, so keys land on what the user is looking at.
     assert_eq!(app.focus, Focus::Editor);
 
     app.dispatch(Command::SelectView(View::Editor));
     assert_eq!(app.view, View::Editor);
 }
 
-#[test]
-fn a_view_that_hides_the_sidebar_cannot_be_toggled_into_it() {
-    let mut app = app();
-    app.dispatch(Command::SelectView(View::Agents));
-    app.dispatch(Command::ToggleFocus);
-    assert_eq!(app.focus, Focus::Editor, "no sidebar to toggle into");
-
-    // The GitHub view keeps the sidebar, so Tab still reaches it there.
-    app.dispatch(Command::SelectView(View::GitHub));
-    app.dispatch(Command::ToggleFocus);
-    assert_eq!(app.focus, Focus::Sidebar);
-}
+// #211: the Agents view is the only one that hides the sidebar, so this has nothing
+// to assert against until it exists.
+// #[test]
+// fn a_view_that_hides_the_sidebar_cannot_be_toggled_into_it() {
+//     let mut app = app();
+//     app.dispatch(Command::SelectView(View::Agents));
+//     app.dispatch(Command::ToggleFocus);
+//     assert_eq!(app.focus, Focus::Editor, "no sidebar to toggle into");
+//
+//     // The GitHub view keeps the sidebar, so Tab still reaches it there.
+//     app.dispatch(Command::SelectView(View::GitHub));
+//     app.dispatch(Command::ToggleFocus);
+//     assert_eq!(app.focus, Focus::Sidebar);
+// }
 
 #[test]
 fn the_view_decides_the_active_keymap_layers() {
     let mut app = app();
-    app.dispatch(Command::SelectView(View::Agents));
-    assert_eq!(app.focus_target(), FocusTarget::Agents);
+    app.dispatch(Command::SelectView(View::GitHub));
+    assert_eq!(app.focus_target(), FocusTarget::Github);
     // The sidebar is not the content area, so it keeps its own layers whatever
     // view is showing.
     app.focus = Focus::Sidebar;
@@ -78,8 +80,8 @@ fn every_view_is_reachable_by_palette_title_and_slug() {
 #[test]
 fn the_startup_flag_selects_a_view() {
     let mut app = app();
-    app.apply_startup_view(crate::cli::ViewChoice::Agents);
-    assert_eq!(app.view, View::Agents);
+    app.apply_startup_view(crate::cli::ViewChoice::Github);
+    assert_eq!(app.view, View::GitHub);
 }
 
 #[test]
@@ -108,18 +110,18 @@ fn a_narrow_chrome_row_drops_every_label_at_once() {
     // All names or none: a row showing "Editor" beside two bare icons reads as a
     // rendering fault rather than as a deliberate compaction.
     let mut app = app();
-    let rows = screen(&mut app, 20, 12);
+    let rows = screen(&mut app, 16, 12);
     for view in View::ALL {
         assert!(
             !rows[0].contains(view.title()),
-            "no labels at 20 columns: {:?}",
+            "no labels at 16 columns: {:?}",
             rows[0]
         );
     }
     // Still one button per view, still clickable.
     assert_eq!(app.view_hits.len(), View::ALL.len());
     let (start, end, _) = app.view_hits[View::ALL.len() - 1];
-    assert!(end <= 20, "the last button fits the row: {start}..{end}");
+    assert!(end <= 16, "the last button fits the row: {start}..{end}");
 }
 
 #[test]
@@ -130,8 +132,8 @@ fn clicking_the_chrome_row_switches_view() {
         .view_hits
         .iter()
         .copied()
-        .find(|&(_, _, view)| view == View::Agents)
-        .expect("an Agents button");
+        .find(|&(_, _, view)| view == View::GitHub)
+        .expect("a GitHub button");
 
     assert!(app.handle_view_chrome_mouse(click(start, 0)));
     assert_eq!(app.view, view);
@@ -141,26 +143,28 @@ fn clicking_the_chrome_row_switches_view() {
     assert_eq!(app.view, view);
 }
 
-#[test]
-fn the_agents_view_takes_the_full_width_and_hides_the_sidebar() {
-    let mut app = app();
-    let _ = screen(&mut app, 100, 12);
-    assert!(
-        app.sidebar_rect.width > 0,
-        "the editor view keeps a sidebar"
-    );
-
-    app.dispatch(Command::SelectView(View::Agents));
-    let rows = screen(&mut app, 100, 12);
-    assert_eq!(app.sidebar_rect, Rect::default());
-    assert_eq!(app.main_rect.x, 0);
-    assert_eq!(app.main_rect.width, 100);
-    assert!(
-        rows.iter()
-            .any(|row| row.contains("Agents — not available yet")),
-        "the placeholder body names the view: {rows:?}"
-    );
-}
+// #211: full-width layout and the placeholder body both come back with the Agents
+// view; every view that ships today keeps the sidebar and draws a real surface.
+// #[test]
+// fn the_agents_view_takes_the_full_width_and_hides_the_sidebar() {
+//     let mut app = app();
+//     let _ = screen(&mut app, 100, 12);
+//     assert!(
+//         app.sidebar_rect.width > 0,
+//         "the editor view keeps a sidebar"
+//     );
+//
+//     app.dispatch(Command::SelectView(View::Agents));
+//     let rows = screen(&mut app, 100, 12);
+//     assert_eq!(app.sidebar_rect, Rect::default());
+//     assert_eq!(app.main_rect.x, 0);
+//     assert_eq!(app.main_rect.width, 100);
+//     assert!(
+//         rows.iter()
+//             .any(|row| row.contains("Agents — not available yet")),
+//         "the placeholder body names the view: {rows:?}"
+//     );
+// }
 
 #[test]
 fn the_github_hooks_do_not_fire_under_another_view() {
@@ -196,7 +200,7 @@ fn the_github_hooks_do_not_fire_under_another_view() {
 #[test]
 fn a_view_over_the_editor_drops_the_panes_hit_regions() {
     // The pane shell is not drawn, so its rects from the last editor frame must not
-    // keep claiming clicks — a press in the Agents body would otherwise arm a text
+    // keep claiming clicks — a press in the GitHub body would otherwise arm a text
     // drag in a document that is not on screen.
     let mut app = app();
     app.open_path(std::path::Path::new("Cargo.toml"));
@@ -204,7 +208,7 @@ fn a_view_over_the_editor_drops_the_panes_hit_regions() {
     assert!(!app.pane_frames.is_empty());
     assert_ne!(app.editor_rect, Rect::default());
 
-    app.dispatch(Command::SelectView(View::Agents));
+    app.dispatch(Command::SelectView(View::GitHub));
     let _ = screen(&mut app, 100, 12);
     assert!(app.pane_frames.is_empty());
     assert_eq!(app.editor_rect, Rect::default());
@@ -219,9 +223,9 @@ fn the_status_bar_names_the_showing_view_and_drops_the_tab_strip() {
     let status = editing.len() - 1;
     assert!(editing[status].contains("EDITOR"), "{:?}", editing[status]);
 
-    app.dispatch(Command::SelectView(View::Agents));
+    app.dispatch(Command::SelectView(View::GitHub));
     let rows = screen(&mut app, 100, 12);
-    assert!(rows[status].contains("AGENTS"), "{:?}", rows[status]);
+    assert!(rows[status].contains("GITHUB"), "{:?}", rows[status]);
     // The tab is still open behind the view, but its language describes a document
     // that is not on screen.
     assert!(
@@ -232,11 +236,11 @@ fn the_status_bar_names_the_showing_view_and_drops_the_tab_strip() {
 }
 
 #[test]
-fn the_sidebar_survives_a_round_trip_through_a_full_width_view() {
+fn the_sidebar_survives_a_round_trip_through_another_view() {
     // The view gates *drawing* the sidebar, not the user's preference: coming back
     // to the editor must restore the sidebar rather than leave it collapsed.
     let mut app = app();
-    app.dispatch(Command::SelectView(View::Agents));
+    app.dispatch(Command::SelectView(View::GitHub));
     let _ = screen(&mut app, 100, 12);
     app.dispatch(Command::SelectView(View::Editor));
     let _ = screen(&mut app, 100, 12);

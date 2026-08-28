@@ -242,10 +242,6 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             clear_pane_render_state(app);
             draw_github_view(f, app, &theme, app.main_rect, &mut hits);
         },
-        view => {
-            clear_pane_render_state(app);
-            draw_view_placeholder(f, &theme, app.main_rect, view, app.icon_style);
-        },
     }
     if let Some(divider) = outline_divider {
         draw_sidebar_divider(f, &theme, divider, false);

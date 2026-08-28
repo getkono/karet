@@ -6,7 +6,7 @@ static PALETTE: &[Command] = &[
     Command::OpenQuickOpen,
     Command::SelectView(View::Editor),
     Command::SelectView(View::GitHub),
-    Command::SelectView(View::Agents),
+    // #211: Command::SelectView(View::Agents),
     Command::SelectPanel(SidebarPanel::Explorer),
     Command::SelectPanel(SidebarPanel::Search),
     Command::SelectPanel(SidebarPanel::SourceControl),

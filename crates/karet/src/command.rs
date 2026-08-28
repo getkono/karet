@@ -623,7 +623,7 @@ impl Command {
             Self::ToggleFocus => "View: Toggle Focus (Sidebar / Editor)",
             Self::SelectView(View::Editor) => "View: Editor",
             Self::SelectView(View::GitHub) => "View: GitHub",
-            Self::SelectView(View::Agents) => "View: Agents",
+            // #211: Self::SelectView(View::Agents) => "View: Agents",
             Self::SelectPanel(SidebarPanel::Explorer) => "View: Show Explorer",
             Self::SelectPanel(SidebarPanel::Search) => "View: Show Search",
             Self::SelectPanel(SidebarPanel::SourceControl) => "View: Show Source Control",

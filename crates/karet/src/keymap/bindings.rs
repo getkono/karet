@@ -44,7 +44,7 @@ pub(super) static BINDINGS: &[Binding] = &[
     // mirror `Ctrl+1..6` one level up.
     seq(Global, chord(true, false, false, Char('k')), &[chord(false, false, false, Char('1'))], Command::SelectView(View::Editor)),
     seq(Global, chord(true, false, false, Char('k')), &[chord(false, false, false, Char('2'))], Command::SelectView(View::GitHub)),
-    seq(Global, chord(true, false, false, Char('k')), &[chord(false, false, false, Char('3'))], Command::SelectView(View::Agents)),
+    // #211: seq(Global, chord(true, false, false, Char('k')), &[chord(false, false, false, Char('3'))], Command::SelectView(View::Agents)),
 
     // Tab navigation & reordering (global).
     b(Global, true,  false, false, Tab,       Command::NextTab),
