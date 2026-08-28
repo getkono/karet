@@ -320,3 +320,108 @@ fn a_managed_astro_keeps_the_sdk_its_install_recorded() -> TestResult {
     assert_eq!(spec.initialization_options, Some(options));
     Ok(())
 }
+
+/// A command the user named is theirs, not karet's guess: a wrapper that
+/// supplies its own `tsdk` is precisely why someone configures one, so the
+/// preflight has no standing to refuse it.
+#[tokio::test]
+async fn a_user_configured_astro_command_launches_without_a_project_typescript() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let root = dir.path();
+    std::fs::create_dir_all(root.join(".git"))?;
+    std::fs::create_dir_all(root.join("src"))?;
+    let command = root.join("my-wrapper").to_string_lossy().into_owned();
+    let mut settings = LspSettings::default();
+    settings.servers.insert(
+        "astro-language-server".to_owned(),
+        LspServer {
+            command: command.clone(),
+            args: vec!["--stdio".to_owned()],
+            ..LspServer::default()
+        },
+    );
+    settings.languages.insert(
+        "astro".to_owned(),
+        LspLanguage {
+            servers: vec!["astro-language-server".to_owned()],
+            ..LspLanguage::default()
+        },
+    );
+    let (mut manager, mut updates, mut launched) = manager_with_recorder(settings, root);
+
+    manager.document_opened(
+        Some("astro"),
+        Some("astro"),
+        &root.join("src").join("page.astro"),
+        1,
+        || "---\n---\n".into(),
+    );
+
+    let launches = observed_launches(&mut launched, 1).await;
+    let spec = launches
+        .first()
+        .ok_or("the configured Astro command was never launched")?;
+    assert_eq!(spec.command, command);
+    assert_eq!(spec.args, vec!["--stdio".to_owned()]);
+    let mut refused = None;
+    while let Ok(update) = updates.try_recv() {
+        if let LspUpdate::PreflightFailed { message, .. } = update {
+            refused = Some(message);
+        }
+    }
+    assert!(
+        refused.is_none(),
+        "a configured command was refused a launch: {refused:?}"
+    );
+    Ok(())
+}
+
+/// Switching a server off is a decision, not a missing install. Reporting one
+/// produced "install it yourself so 'gopls' is on PATH" for a user who had just
+/// said they did not want gopls -- and `managedDownloads: off` does not swallow
+/// a manual-install notice the way it swallows an install offer.
+#[tokio::test]
+async fn a_disabled_primary_server_is_not_reported_as_missing() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let root = dir.path();
+    let mut settings = LspSettings::default();
+    settings.servers.insert(
+        "gopls".to_owned(),
+        LspServer {
+            enabled: false,
+            command: "gopls".to_owned(),
+            args: Vec::new(),
+        },
+    );
+    settings.languages.insert(
+        "go".to_owned(),
+        LspLanguage {
+            servers: vec!["gopls".to_owned()],
+            ..LspLanguage::default()
+        },
+    );
+    let (mut manager, mut updates, mut launched) = manager_with_recorder(settings, root);
+
+    manager.document_opened(Some("go"), Some("go"), &root.join("main.go"), 1, || {
+        "package main\n".into()
+    });
+
+    let launches = observed_launches(&mut launched, 0).await;
+    assert!(
+        launches.is_empty(),
+        "`enabled = false` still started the server: {launches:?}"
+    );
+    let mut nagged = Vec::new();
+    while let Ok(update) = updates.try_recv() {
+        match update {
+            LspUpdate::ManualInstallRequired { server, .. }
+            | LspUpdate::InstallRequired { server, .. } => nagged.push(server),
+            _ => {},
+        }
+    }
+    assert!(
+        nagged.is_empty(),
+        "a server the user switched off was reported as missing: {nagged:?}"
+    );
+    Ok(())
+}

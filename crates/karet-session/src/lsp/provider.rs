@@ -228,9 +228,11 @@ pub(super) const ASTRO: &str = "astro-language-server";
 /// Whether this launch is Astro's language server.
 ///
 /// Astro refuses the handshake unless it is told where TypeScript lives, so the
-/// caller has to recognise it whichever way the executable was resolved: by
-/// provider id for a built-in (a managed install runs `node`, not `astro-ls`),
-/// and by command name for a user-configured entry under another id.
+/// caller has to recognise it whichever way karet resolved the executable: by
+/// provider id, since a managed install runs `node` rather than `astro-ls`, and
+/// by command name for anything that resolved to the `astro-ls` script itself.
+/// A command the user configured never reaches here — the caller's preflight
+/// diagnoses karet's own launches only.
 pub(super) fn is_astro(provider: Option<&LanguageServerId>, spec: &LspSpec) -> bool {
     provider.is_some_and(|provider| provider.key() == ASTRO)
         || Path::new(&spec.command)

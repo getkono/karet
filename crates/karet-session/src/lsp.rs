@@ -183,28 +183,40 @@ impl LspManager {
         generation == self.generation
     }
 
-    /// The launch spec for `language`: user config first, then the built-ins.
-    fn spec_for(&self, language: &str, root: &Path) -> Option<(LspSpec, Option<LanguageServerId>)> {
-        if let Some(server_id) = self
+    /// What the user's configuration says about `language`'s primary server:
+    /// the id `lsp.languages.<language>.servers` names, else an entry named
+    /// after the language itself, together with that entry's verdict.
+    ///
+    /// One lookup, three readers. [`Self::spec_for`] turns a verdict into a
+    /// launch; `ensure_server` asks it *why* there was no launch — a provider
+    /// the user switched off is a decision, not a missing install — and whether
+    /// the command about to run is the user's rather than karet's.
+    fn configured_primary(&self, language: &str) -> Option<(LanguageServerId, Configured)> {
+        let named = self
             .settings
             .languages
             .get(language)
             .and_then(|selection| selection.servers.first())
-        {
-            match self.configured_spec(server_id, language) {
-                Configured::Spec(spec) => {
-                    return Some((spec, Some(LanguageServerId::new(server_id.clone()))));
+            .map(String::as_str);
+        named
+            .into_iter()
+            .chain(std::iter::once(language))
+            .find_map(
+                |server_id| match self.configured_spec(server_id, language) {
+                    Configured::Absent => None,
+                    verdict => Some((LanguageServerId::new(server_id.to_owned()), verdict)),
                 },
-                Configured::Suppressed => return None,
-                Configured::Absent => {},
-            }
-        }
-        match self.configured_spec(language, language) {
-            Configured::Spec(spec) => {
-                return Some((spec, Some(LanguageServerId::new(language.to_owned()))));
-            },
-            Configured::Suppressed => return None,
-            Configured::Absent => {},
+            )
+    }
+
+    /// The launch spec for `language`: user config first, then the built-ins.
+    fn spec_for(&self, language: &str, root: &Path) -> Option<(LspSpec, Option<LanguageServerId>)> {
+        match self.configured_primary(language) {
+            Some((server_id, Configured::Spec(spec))) => return Some((spec, Some(server_id))),
+            // An entry that forbids a launch is the whole answer: the built-in
+            // table does not get a second vote on a server switched off.
+            Some((_, Configured::Suppressed)) => return None,
+            Some((_, Configured::Absent)) | None => {},
         }
         let provider = builtin_server(language)?;
         let spec = self.resolve_provider(&provider, language, root);
@@ -276,6 +288,10 @@ impl LspManager {
     /// launched with no `typescript.tsdk` at all, and Astro declined the
     /// handshake. The project's own TypeScript is the right SDK for that
     /// install; a managed one keeps the bundle it was installed with.
+    ///
+    /// Only for a launch karet itself chose — the caller skips it for a command
+    /// out of `lsp.servers`, where refusing would override the user rather than
+    /// diagnose karet.
     ///
     /// Returns whether the launch may proceed.
     fn astro_launch_gate(
@@ -363,10 +379,16 @@ impl LspManager {
         }
         let language = language_key(language)?;
         let root = nearest_repository_root(path, self.root.as_deref());
+        let configured = self.configured_primary(&language);
         let (mut spec, provider) = match self.spec_for(&language, &root) {
             Some(spec) => spec,
             None => {
-                if let Some(provider) = builtin_server(&language) {
+                // A provider the user switched off has nothing to report:
+                // turning a server off is a decision, and answering it with
+                // "install it yourself" is answering a question nobody asked.
+                if !matches!(configured, Some((_, Configured::Suppressed)))
+                    && let Some(provider) = builtin_server(&language)
+                {
                     self.report_unresolved(provider, &language);
                 }
                 return None;
@@ -375,7 +397,12 @@ impl LspManager {
         if !self.jdtls_launch_gate(&mut spec, &root) {
             return None;
         }
-        if !self.astro_launch_gate(&mut spec, provider.as_ref(), &language, &root) {
+        // The preflight diagnoses a command *karet* chose. A user who named
+        // their own is entitled to have it run: a wrapper that supplies its own
+        // `tsdk` is exactly why someone configures one.
+        if !matches!(configured, Some((_, Configured::Spec(_))))
+            && !self.astro_launch_gate(&mut spec, provider.as_ref(), &language, &root)
+        {
             return None;
         }
         // Built-in JavaScript and TypeScript share one provider process. Custom
