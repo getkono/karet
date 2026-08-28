@@ -662,3 +662,15 @@ fn a_detail_page_scrolls_itself_rather_than_the_document_behind_it() {
         "the hidden document did not move"
     );
 }
+
+#[test]
+fn opening_a_tab_from_the_github_view_shows_it() {
+    // A pull request's "Files changed" opens the range diff as an editor tab. Without
+    // the view switch the user presses the button and, from inside the GitHub view,
+    // nothing appears to happen at all.
+    let mut app = github_app();
+    app.push_tab(Tab::welcome());
+
+    assert_eq!(app.view, View::Editor);
+    assert_eq!(app.focus, Focus::Editor);
+}

@@ -152,7 +152,16 @@ impl App {
         self.register_doc(self.active);
     }
 
-    /// Add a tab, replacing a lone Welcome tab, and focus the editor.
+    /// Add a tab, replacing a lone Welcome tab, and show it.
+    ///
+    /// Showing it includes switching to the editor view. `push_tab` already means
+    /// "put this in front" — it sets the active tab and moves focus — and a caller
+    /// from another view is asking for exactly that. The GitHub view's "Files
+    /// changed" is the case that forced it: it opens a range diff as a tab, and
+    /// without the switch the user presses the button and nothing appears to happen.
+    ///
+    /// Startup is unaffected: `apply_startup_view` runs after every `open_*`, so
+    /// `--view github` still wins.
     pub(super) fn push_tab(&mut self, mut tab: Tab) {
         tab.view = self.alloc_view();
         if self.tabs.len() == 1 && matches!(self.tabs[0].kind, TabKind::Welcome) {
@@ -162,6 +171,7 @@ impl App {
             self.tabs.push(tab);
             self.set_active(self.tabs.len() - 1);
         }
+        self.view = View::Editor;
         self.focus = Focus::Editor;
         // A newly-focused tab never inherits another tab's open find bar.
         self.find_open = false;
