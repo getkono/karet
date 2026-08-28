@@ -531,3 +531,70 @@ async fn a_stale_broker_endpoint_does_not_block_a_new_launch() {
         "an unrelated broker's file is not this launch's to remove"
     );
 }
+
+/// Diagnostics are a merged layer, not the primary provider's to grant.
+///
+/// `document_opened` used to return the moment a language's primary provider
+/// could not be resolved, so a Python repository with Ruff present but Pyright
+/// missing got no diagnostics at all — an installed, configured provider that
+/// silently never ran. The live matrix found it, because there every provider
+/// is installed by itself.
+///
+/// This has to be an integration test: `spec_for` carries a `cfg(test)`
+/// fallback that resolves every built-in to its bare launch spec, so under
+/// `cfg(test)` a primary is never unresolved and the branch is unreachable.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_diagnostics_companion_attaches_even_with_no_primary_provider() {
+    let Some(workspace) = tempfile::tempdir().ok() else {
+        return;
+    };
+    let root = workspace.path();
+    // Marks the repository as a Ruff project, which is what selects Ruff as
+    // Python's diagnostics companion.
+    if std::fs::write(root.join("ruff.toml"), "line-length = 88\n").is_err() {
+        return;
+    }
+    // Resolved by `project_local_spec`, exactly as a real virtualenv would be.
+    // Pyright, Python's primary, is deliberately absent.
+    let venv = root.join(".venv").join("bin");
+    if std::fs::create_dir_all(&venv).is_err() || std::fs::copy(TESTBED, venv.join("ruff")).is_err()
+    {
+        return;
+    }
+    let file = root.join("main.py");
+    if std::fs::write(&file, "x = 1\n").is_err() {
+        return;
+    }
+
+    let (backend, _snapshots) = local(SessionConfig {
+        process_supervisor: Some(PathBuf::from(TESTBED)),
+        roots: vec![root.to_path_buf()],
+        ..SessionConfig::default()
+    });
+    let Some(mut events) = backend.take_events() else {
+        return;
+    };
+    let _ = backend.send(
+        backend.next_id(),
+        Command::OpenDocument {
+            path: file,
+            language: Some("python".to_owned()),
+        },
+    );
+
+    let deadline = tokio::time::Instant::now() + DEADLINE;
+    let mut ruff_running = false;
+    while !ruff_running && tokio::time::Instant::now() < deadline {
+        let remaining = deadline - tokio::time::Instant::now();
+        let Ok(Some((_, event))) = tokio::time::timeout(remaining, events.recv()).await else {
+            break;
+        };
+        if let Event::LanguageServerRuntimeChanged { server, state, .. } = event {
+            ruff_running = server.key() == "ruff" && state == LanguageServerRuntimeState::Running;
+        }
+    }
+    assert!(
+        ruff_running,
+        "Ruff must still provide diagnostics when Python's primary provider is missing"
+    );
+}

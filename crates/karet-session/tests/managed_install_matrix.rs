@@ -123,6 +123,24 @@ fn sample_for(server: &str) -> Option<(&'static str, &'static str)> {
         .map(|(_, name, body)| (*name, *body))
 }
 
+/// Repository markers a companion provider needs before karet attaches it.
+///
+/// `ruff` and `biome` are not any language's default provider: they are
+/// selected per document by a marker in the repository, so a workspace without
+/// one legitimately never starts them. Writing the marker is what makes the
+/// launch half of their row mean anything.
+const REPOSITORY_MARKERS: &[(&str, &str, &str)] = &[
+    ("ruff", "ruff.toml", "line-length = 88\n"),
+    ("biome", "biome.json", "{}\n"),
+];
+
+fn markers_for(server: &str) -> Option<(&'static str, &'static str)> {
+    REPOSITORY_MARKERS
+        .iter()
+        .find(|(key, ..)| *key == server)
+        .map(|(_, name, body)| (*name, *body))
+}
+
 /// The providers karet claims it can install on this platform, asked through
 /// the same public seam the Language Servers panel uses.
 async fn managed_servers() -> Vec<LanguageServerId> {
@@ -230,6 +248,9 @@ async fn exercise(server: &LanguageServerId, supervisor: &Path) -> Row {
         row.note = "no sample file for this provider".to_owned();
         return row;
     };
+    if let Some((marker, contents)) = markers_for(server.key()) {
+        let _ = std::fs::write(workspace.path().join(marker), contents);
+    }
     let path = workspace.path().join(name);
     if std::fs::write(&path, body).is_err() {
         row.note = "could not write the sample file".to_owned();

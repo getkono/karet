@@ -401,10 +401,15 @@ impl LspManager {
     ) {
         let path = absolute_path(path);
         let selector = language_key(selector);
-        let Some((tx, key)) = self.ensure_server(selector.as_deref(), &path) else {
-            return;
-        };
-        let mut targets = vec![(tx.clone(), key)];
+        // The primary is optional. Diagnostics are explicitly a merged layer,
+        // not the primary's to grant: a Python repository with Ruff installed
+        // and Pyright missing must still get Ruff's diagnostics, and returning
+        // here meant it got nothing at all -- an installed, configured provider
+        // that silently never ran.
+        let mut targets = self
+            .ensure_server(selector.as_deref(), &path)
+            .map(|(tx, key)| vec![(tx.clone(), key)])
+            .unwrap_or_default();
         let root = nearest_repository_root(&path, self.root.as_deref());
         if let Some(language_key) = selector.as_deref() {
             let configured_diagnostics = self
@@ -439,6 +444,9 @@ impl LspManager {
                     targets.push(target);
                 }
             }
+        }
+        if targets.is_empty() {
+            return;
         }
         let document_language = lsp_language_id
             .map(str::to_owned)
