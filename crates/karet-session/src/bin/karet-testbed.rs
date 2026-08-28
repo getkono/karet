@@ -22,6 +22,11 @@
 //! | `no-content-length` | a peer that frames its output wrongly |
 //! | `garbage-json` | correct framing, unparseable body |
 //! | `slow` | a server that never answers `initialize` |
+//!
+//! `garbage-json` and `slow` both end in the client's 30-second request
+//! timeout, which is correct — a server that is merely slow to answer
+//! `initialize` must not be written off — but too slow to spend in the merge
+//! gate. They are here for reproducing a report by hand.
 //! | `report` | `normal`, plus a record of how it was launched |
 //!
 //! `report` is the argv oracle: it writes its own argv, working directory and

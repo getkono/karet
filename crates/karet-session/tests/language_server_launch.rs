@@ -348,6 +348,62 @@ async fn a_missing_binary_becomes_unavailable_rather_than_retrying_forever() {
     assert!(unavailable, "a missing binary must reach a terminal state");
 }
 
+/// Headers without a `Content-Length`: the frame boundary is unknowable, so the
+/// connection cannot continue and the launch has to surface.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_server_that_frames_its_output_wrongly_is_reported() {
+    let Some(mut harness) = harness("no-content-length", false) else {
+        return;
+    };
+    assert!(harness.open());
+    assert!(
+        harness.wait_for(is_lsp_warning).await.is_some(),
+        "a peer that loses framing must surface a failure"
+    );
+}
+
+/// A server that completes the handshake and then dies is the case the restart
+/// circuit exists for: it has proven it can run, so karet keeps trying.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_server_that_dies_after_connecting_is_retried_not_written_off() {
+    let Some(mut harness) = harness("die-after-handshake", false) else {
+        return;
+    };
+    assert!(harness.open());
+    let mut seen_running = false;
+    // Short on purpose: this waits for something that must *not* happen, so the
+    // whole window is spent every run. Two connect-and-die cycles is ample --
+    // the backoff starts at 250ms -- and being written off would need five.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    let mut wrote_off = false;
+    while tokio::time::Instant::now() < deadline {
+        let remaining = deadline - tokio::time::Instant::now();
+        let Ok(Some((_, event))) = tokio::time::timeout(remaining, harness.events.recv()).await
+        else {
+            break;
+        };
+        if let Event::LanguageServerRuntimeChanged { state, .. } = event {
+            match state {
+                LanguageServerRuntimeState::Running => seen_running = true,
+                LanguageServerRuntimeState::Unavailable => {
+                    wrote_off = true;
+                    break;
+                },
+                _ => {},
+            }
+        }
+    }
+    assert!(
+        seen_running,
+        "the server should have connected at least once"
+    );
+    assert!(
+        !wrote_off,
+        "a server that connected before must keep its retries; only one that has \
+         never started is written off"
+    );
+}
+
 // --- the shared broker -----------------------------------------------------
 
 /// The broker exists so concurrent karet windows share one server process. This
