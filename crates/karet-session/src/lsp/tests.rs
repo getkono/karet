@@ -3,8 +3,10 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use karet_core::Change;
+use karet_core::CompletionItem;
 use karet_core::NotificationKind;
 use karet_core::Range;
+use karet_core::Symbol;
 use karet_core::TextEdit;
 use karet_text::EditCause;
 use serde_json::Value;
