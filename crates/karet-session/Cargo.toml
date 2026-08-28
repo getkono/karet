@@ -45,6 +45,12 @@ toml-format = ["dep:taplo", "dep:toml"]
 # Generate the settings JSON Schema (build/tooling concern — the
 # settings-schema example and its freshness test; never needed at runtime).
 schema = ["dep:schemars"]
+# Build `karet-testbed`, a real language-server process the integration tests
+# spawn. Off by default: it is a test fixture, not part of the backend. The
+# integration tests that need it declare it via `required-features`, since
+# `CARGO_BIN_EXE_*` is only set for integration tests, examples and benches --
+# which is also why they are integration tests rather than in-crate ones.
+testbed = []
 
 [dependencies]
 karet-core = { workspace = true, features = ["serde"] }   # serde-ready seam models
@@ -108,6 +114,15 @@ karet-treesitter = { workspace = true, features = ["lang-rust", "lang-markdown"]
 [[example]]
 name = "settings-schema"
 required-features = ["schema"]
+
+[[bin]]
+name = "karet-testbed"
+path = "src/bin/karet-testbed.rs"
+required-features = ["testbed"]
+
+[[test]]
+name = "language_server_launch"
+required-features = ["testbed"]
 
 [lints]
 workspace = true

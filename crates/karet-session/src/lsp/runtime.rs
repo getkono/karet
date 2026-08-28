@@ -330,10 +330,15 @@ pub(super) async fn server_task(task: ServerTask) {
                             generation,
                             server: provider.clone(),
                             root: root.clone(),
-                            command: launch.map_or_else(
-                                || spec.command.clone(),
-                                karet_lsp::LaunchFailure::command_line,
-                            ),
+                            // The spec, not the failure's own argv: through
+                            // the supervisor and the broker the process karet
+                            // literally ran is a hidden re-exec of the editor
+                            // binary, and the user needs to see the provider
+                            // launch they configured.
+                            command: std::iter::once(spec.command.as_str())
+                                .chain(spec.args.iter().map(String::as_str))
+                                .collect::<Vec<_>>()
+                                .join(" "),
                             reason: launch.map_or_else(
                                 || error.to_string(),
                                 karet_lsp::LaunchFailure::diagnosis,
