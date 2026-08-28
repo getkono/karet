@@ -44,8 +44,14 @@ impl Framing for LineFraming {
 #[derive(Clone, Copy, Debug)]
 struct TestProtocol;
 
+/// Records the teardown the skeleton owes every client that has authenticated.
+#[derive(Debug, Default)]
+struct TestState {
+    gone: AtomicUsize,
+}
+
 impl BrokerProtocol for TestProtocol {
-    type State = ();
+    type State = TestState;
     type RequestTag = ();
     type Framing = LineFraming;
 
@@ -75,6 +81,10 @@ impl BrokerProtocol for TestProtocol {
         } else {
             ServerRoute::AllClients
         }
+    }
+
+    async fn on_client_gone(link: &ClientLink<'_, Self>) {
+        link.state().gone.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -145,6 +155,18 @@ impl Harness {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
         Err(BoxError::from("clients never registered"))
+    }
+
+    /// The decrement is the *last* teardown step, so seeing it settle proves the
+    /// client-map removal and the `on_client_gone` hook ran too.
+    async fn wait_for_active(&self, count: usize) -> Result<(), BoxError> {
+        for _ in 0..500 {
+            if self.core.active_clients.load(Ordering::Acquire) == count {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        Err(BoxError::from("active client count never settled"))
     }
 }
 
@@ -236,5 +258,43 @@ async fn a_stop_flow_ends_the_client_session() -> Result<(), BoxError> {
     let mut line = String::new();
     let read = tokio::time::timeout(Duration::from_secs(5), reader.read_line(&mut line)).await??;
     assert_eq!(read, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_framing_error_still_releases_the_client() -> Result<(), BoxError> {
+    let harness = Harness::start("token").await?;
+    let (_reader, mut writer) = harness.client().await?;
+    harness.wait_for_clients(1).await?;
+
+    // Not a frame this protocol can decode, so the pump fails rather than ending.
+    writer.write_all(b"{ not json\n").await?;
+
+    harness.wait_for_active(0).await?;
+    assert!(harness.core.clients.lock().await.is_empty());
+    assert_eq!(harness.core.state.gone.load(Ordering::Acquire), 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_unterminated_prelude_is_cut_off_at_the_cap() -> Result<(), BoxError> {
+    let harness = Harness::start("token").await?;
+    let stream = TcpStream::connect(harness.address).await?;
+    let (read, mut write) = stream.into_split();
+    let mut reader = BufReader::new(read);
+
+    // Far past any legal prelude and never newline-terminated. Uncapped, the
+    // broker would sit on this read for as long as the connection stayed open;
+    // the write may be reset once the broker gives up, which is the point.
+    let _ = write.write_all(&[b'x'; 4096]).await;
+
+    let mut line = String::new();
+    let closed =
+        tokio::time::timeout(Duration::from_secs(5), reader.read_line(&mut line)).await??;
+    assert_eq!(closed, 0);
+
+    // The rejected connection wedged nothing: the broker still serves.
+    let (_reader, _writer) = harness.client().await?;
+    harness.wait_for_clients(1).await?;
     Ok(())
 }
