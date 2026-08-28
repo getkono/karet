@@ -17,6 +17,7 @@ use std::time::Instant;
 
 use serde_json::Value;
 use serde_json::json;
+use tokio::io::AsyncBufRead;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncWrite;
@@ -190,18 +191,43 @@ async fn serve_client<P: BrokerProtocol>(
     let writer = tokio::spawn(message_writer::<P::Framing, _>(write, rx));
 
     let link = ClientLink::new(&core, client, &tx);
-    while let Some(mut message) = <P::Framing as Framing>::read_message(&mut reader)
+    // The teardown below runs whatever ended the session. Letting the pump's
+    // errors escape past it — as a framing error used to — would leave this
+    // client in the client map with its documents still leased, and
+    // `active_clients` above zero for the broker's whole life, so it could never
+    // idle-retire and would hold its child process open indefinitely.
+    let outcome = client_loop::<P, _>(&mut reader, &link, &core).await;
+
+    core.clients.lock().await.remove(&client);
+    P::on_client_gone(&link).await;
+    core.active_clients.fetch_sub(1, Ordering::AcqRel);
+    touch(&core);
+    writer.abort();
+    outcome
+}
+
+/// Pump one authenticated client until it stops, disconnects, or breaks framing.
+async fn client_loop<P, R>(
+    reader: &mut R,
+    link: &ClientLink<'_, P>,
+    core: &Arc<Core<P>>,
+) -> Result<(), BrokerError>
+where
+    P: BrokerProtocol,
+    R: AsyncBufRead + Unpin + Send,
+{
+    while let Some(mut message) = <P::Framing as Framing>::read_message(reader)
         .await
         .map_err(io_error)?
     {
-        touch(&core);
-        match P::on_client_message(&mut message, &link).await {
+        touch(core);
+        match P::on_client_message(&mut message, link).await {
             ClientFlow::Proxy(tag) => {
                 // Indexing `message["id"]` below is only sound on an object, and
                 // an id being present proves that; a protocol asking to proxy an
                 // id-less message gets it dropped rather than a panic.
                 if let Some(id) = message.get("id").cloned() {
-                    proxy_request(client, id, tag, &mut message, &core).await;
+                    proxy_request(link.client(), id, tag, &mut message, core).await;
                 }
             },
             ClientFlow::Forward => {
@@ -211,12 +237,6 @@ async fn serve_client<P: BrokerProtocol>(
             ClientFlow::Stop => break,
         }
     }
-
-    core.clients.lock().await.remove(&client);
-    P::on_client_gone(&link).await;
-    core.active_clients.fetch_sub(1, Ordering::AcqRel);
-    touch(&core);
-    writer.abort();
     Ok(())
 }
 
