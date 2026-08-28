@@ -214,6 +214,7 @@ fn builtin_install_recipes_are_complete_for_supported_targets() {
         "phpactor",
         "pkl-lsp",
         "powershell-editor-services",
+        "pylsp",
         "r-languageserver",
         "ruby-lsp",
         "sourcekit-lsp",
@@ -230,8 +231,14 @@ fn builtin_install_recipes_are_complete_for_supported_targets() {
             "{server} has no manual-install reason"
         );
     }
-    assert_eq!(actual.len() + manual.len(), 40);
-    assert!(manual_install_reason(&LanguageServerId::new("company-lsp")).is_none());
+    assert_eq!(actual.len() + manual.len(), 41);
+    // A reason is total: an id karet has never heard of is still explained,
+    // because callers use `None` to mean "karet can install this" and must
+    // never read an unknown provider that way.
+    assert!(
+        manual_install_reason(&LanguageServerId::new("company-lsp"))
+            .is_some_and(|reason| reason.contains("company-lsp"))
+    );
 
     let targets = [
         ("linux", "x86_64"),

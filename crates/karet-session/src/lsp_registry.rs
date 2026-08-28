@@ -180,7 +180,16 @@ pub(crate) fn managed_provider(server: &LanguageServerId) -> bool {
     managed_recipe(server).is_some()
 }
 
-/// Why a built-in provider must be supplied by the user on this platform.
+/// Why karet will not install `server` itself, if it will not.
+///
+/// [`None`] means exactly one thing: karet owns this provider's installation on
+/// this platform, so offering to install it is honest. Every other case -- a
+/// provider that must come from a project toolchain, one whose publisher ships
+/// no verified artifact for this `(os, arch)`, and an id karet has never heard
+/// of -- yields a reason the user can act on.
+///
+/// Callers rely on that totality to decide between offering an install and
+/// explaining one, so a new arm must never fall through to [`None`].
 pub(crate) fn manual_install_reason(server: &LanguageServerId) -> Option<String> {
     if managed_provider(server) {
         return None;
@@ -199,10 +208,14 @@ pub(crate) fn manual_install_reason(server: &LanguageServerId) -> Option<String>
         "elp" => "release selection must match the project's Erlang and OTP toolchain",
         "dart-language-server" => "ships with the Dart or Flutter SDK",
         "r-languageserver" => "must be installed into the user's R library",
-        "powershell-editor-services" => "requires and is hosted by the user's PowerShell runtime",
+        "powershell-editor-services" => {
+            "has no standalone executable; it is a PowerShell module bundle entered through \
+             Start-EditorServices.ps1"
+        },
         "esbonio" => "must use the project's Python and Sphinx environment",
         "pkl-lsp" => "requires compatible user-installed Java and Pkl runtimes",
         "taplo" => "current native releases have no publisher-authenticated SHA-256 digest",
+        "pylsp" => "must be installed in the project's Python environment, with its Flake8 plugin",
         key if catalog::managed_recipes()
             .iter()
             .any(|recipe| recipe.server == key) =>
@@ -213,7 +226,11 @@ pub(crate) fn manual_install_reason(server: &LanguageServerId) -> Option<String>
                 std::env::consts::ARCH
             ));
         },
-        _ => return None,
+        // A provider karet has never heard of, which in practice means a user
+        // `lsp.servers` entry. Its installation was always the user's, and
+        // saying so is better than the silence that used to imply karet could
+        // fetch it.
+        _ => return Some(format!("{} is not a provider karet installs", server.key())),
     };
     Some(reason.to_owned())
 }
@@ -253,6 +270,15 @@ fn run(
         plans.retain(|_, plan| plan.created.elapsed() <= PLAN_LIFETIME);
         let result = match job {
             RegistryJob::Install { request, server } => {
+                // Last guard, and the one that decides what the user reads. An
+                // unmanaged provider reaching here used to fail deep in
+                // discovery with "has no managed installer"; the reason it is
+                // manual is more useful and is known up front.
+                if let Some(reason) = manual_install_reason(&server) {
+                    let message = format!("{} {reason}", server.display_name());
+                    send_result(updates, request, Err(message));
+                    continue;
+                }
                 let client = match client.as_ref() {
                     Ok(client) => client,
                     Err(error) => {

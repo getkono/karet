@@ -316,6 +316,13 @@ impl Session {
                         );
                     },
                     crate::config::schema::ManagedDownloads::Auto => {
+                        // Second guard. `report_unresolved` already routes an
+                        // unmanaged provider elsewhere, but this arm queues a
+                        // download with no prompt in front of it, so it does not
+                        // take that on trust.
+                        if !crate::lsp_registry::managed_provider(&server) {
+                            return;
+                        }
                         let request = RequestId(0);
                         self.queue_lsp_registry(
                             request,
@@ -325,6 +332,23 @@ impl Session {
                     crate::config::schema::ManagedDownloads::Off => {},
                 }
             },
+            // Reported whatever `managedDownloads` says, including `off`: it
+            // performs no network I/O and describes something only the user can
+            // do, so suppressing it would just hide why the language has no
+            // server.
+            LspUpdate::ManualInstallRequired {
+                server,
+                command,
+                reason,
+                ..
+            } => self.emit(
+                None,
+                Event::LanguageServerManualInstallRequired {
+                    server,
+                    command,
+                    reason,
+                },
+            ),
         }
     }
 

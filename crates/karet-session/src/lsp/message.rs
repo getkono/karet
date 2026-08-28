@@ -223,7 +223,8 @@ pub(crate) enum LspUpdate {
         /// The language whose server died.
         language: String,
     },
-    /// A built-in provider is locally absent. No network operation was attempted.
+    /// A built-in provider karet can install is locally absent. No network
+    /// operation was attempted.
     InstallRequired {
         /// The manager generation that observed the missing installation.
         generation: u64,
@@ -232,6 +233,24 @@ pub(crate) enum LspUpdate {
         /// The language whose document wanted it — the key its per-language
         /// enable flag is stored under.
         language: String,
+    },
+    /// A built-in provider is locally absent and karet cannot install it.
+    ///
+    /// Separate from [`LspUpdate::InstallRequired`] because the two ask
+    /// completely different things of the user: one offers a download, the
+    /// other explains a toolchain they have to set up themselves. Offering the
+    /// download for these providers produced a prompt whose install always
+    /// failed.
+    ManualInstallRequired {
+        /// The manager generation that observed the missing installation.
+        generation: u64,
+        /// The provider the user must supply.
+        server: LanguageServerId,
+        /// The executable karet looked for.
+        command: String,
+        /// Why karet will not install it, from
+        /// [`manual_install_reason`](crate::lsp_registry::manual_install_reason).
+        reason: String,
     },
     /// A provider/root connection changed lifecycle state.
     RuntimeState {

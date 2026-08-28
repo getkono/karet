@@ -162,6 +162,7 @@ impl LspManager {
             | LspUpdate::PreflightFailed { generation, .. }
             | LspUpdate::ServerDied { generation, .. }
             | LspUpdate::InstallRequired { generation, .. }
+            | LspUpdate::ManualInstallRequired { generation, .. }
             | LspUpdate::RuntimeState { generation, .. } => *generation,
         };
         generation == self.generation
@@ -240,6 +241,35 @@ impl LspManager {
 
     /// The task inbox for `language`, spawning the server task on first use.
     /// `None` when LSP is disabled or no server is configured for the language.
+    /// Report a provider that could not be resolved, at most once per manager
+    /// generation.
+    ///
+    /// The two outcomes are deliberately different events. karet offers to
+    /// install only what it can actually install; for everything else it says
+    /// what the user has to do instead. Sending the offer unconditionally is
+    /// what produced the "taplo is not installed · type install" prompt whose
+    /// install then failed with "taplo has no managed installer" — and, under
+    /// `managedDownloads: "auto"`, queued that doomed job with no prompt at all.
+    fn report_unresolved(&mut self, provider: LanguageServerId, language: &str) {
+        if !self.missing_reported.insert(provider.clone()) {
+            return;
+        }
+        let update = match crate::lsp_registry::manual_install_reason(&provider) {
+            None => LspUpdate::InstallRequired {
+                generation: self.generation,
+                server: provider,
+                language: language.to_owned(),
+            },
+            Some(reason) => LspUpdate::ManualInstallRequired {
+                generation: self.generation,
+                command: builtin_spec(&provider, language).command,
+                server: provider,
+                reason,
+            },
+        };
+        let _ = self.updates.send(update);
+    }
+
     fn ensure_server(
         &mut self,
         language: Option<&str>,
@@ -253,14 +283,8 @@ impl LspManager {
         let (mut spec, provider) = match self.spec_for(&language, &root) {
             Some(spec) => spec,
             None => {
-                if let Some(provider) = builtin_server(&language)
-                    && self.missing_reported.insert(provider.clone())
-                {
-                    let _ = self.updates.send(LspUpdate::InstallRequired {
-                        generation: self.generation,
-                        server: provider,
-                        language: language.clone(),
-                    });
+                if let Some(provider) = builtin_server(&language) {
+                    self.report_unresolved(provider, &language);
                 }
                 return None;
             },
@@ -318,13 +342,7 @@ impl LspManager {
         #[cfg(test)]
         let spec = spec.or_else(|| Some(builtin_spec(&provider, language)));
         let Some(spec) = spec else {
-            if self.missing_reported.insert(provider.clone()) {
-                let _ = self.updates.send(LspUpdate::InstallRequired {
-                    generation: self.generation,
-                    server: provider,
-                    language: language.to_owned(),
-                });
-            }
+            self.report_unresolved(provider, language);
             return None;
         };
         let key = format!("{}@{}", provider.key(), root.to_string_lossy());
