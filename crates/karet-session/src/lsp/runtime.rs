@@ -317,11 +317,24 @@ pub(super) async fn server_task(task: ServerTask) {
                 },
                 Err(error) => {
                     tracing::warn!(language, command = %spec.command, error = %error, "language server failed to start");
+                    let launch = match &error {
+                        LspError::Launch(failure) => Some(failure.as_ref()),
+                        _ => None,
+                    };
                     if !spawn_failure_reported {
                         let _ = updates.send(LspUpdate::SpawnFailed {
                             generation,
-                            language: language.clone(),
-                            command: spec.command.clone(),
+                            server: provider.clone(),
+                            root: root.clone(),
+                            command: launch.map_or_else(
+                                || spec.command.clone(),
+                                karet_lsp::LaunchFailure::command_line,
+                            ),
+                            reason: launch.map_or_else(
+                                || error.to_string(),
+                                karet_lsp::LaunchFailure::diagnosis,
+                            ),
+                            permanent: launch.is_some_and(|failure| failure.cause.is_permanent()),
                         });
                         spawn_failure_reported = true;
                     }

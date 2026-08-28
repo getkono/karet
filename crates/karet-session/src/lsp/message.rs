@@ -203,10 +203,22 @@ pub(crate) enum LspUpdate {
     SpawnFailed {
         /// The manager generation that spawned the server task.
         generation: u64,
-        /// The language the server was for.
-        language: String,
-        /// The executable that failed to start.
+        /// The provider that failed to start.
+        ///
+        /// The provider, not the task's slot key: that key is
+        /// `provider@/absolute/repository/root`, and rendering it put a full
+        /// path into the user's notification.
+        server: LanguageServerId,
+        /// The repository root the launch was rooted at, for the manager's
+        /// per-instance detail. Not for the notification.
+        root: PathBuf,
+        /// The executable and arguments karet ran.
         command: String,
+        /// The most specific one-line reason available, which for a server that
+        /// ran at all is usually its own last line of stderr.
+        reason: String,
+        /// Whether retrying could ever help.
+        permanent: bool,
     },
     /// A launch preflight failed with a specific diagnosis (reported once per
     /// generation); the server is not spawned.

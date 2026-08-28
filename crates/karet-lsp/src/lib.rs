@@ -40,9 +40,13 @@
 /// the implementation now lives; the `karet_lsp::codec` path is kept because it
 /// is this crate's published surface.
 pub use karet_jsonrpc::framing::content_length as codec;
+pub use launch::ExitReport;
+pub use launch::LaunchCause;
+pub use launch::LaunchFailure;
 
 mod conn;
 mod convert;
+mod launch;
 mod snippet;
 mod uri;
 
@@ -74,8 +78,15 @@ use tokio::sync::broadcast;
 #[non_exhaustive]
 pub enum LspError {
     /// The language server process could not be spawned.
+    #[deprecated(
+        since = "0.6.0",
+        note = "superseded by LspError::Launch, which carries why the launch failed"
+    )]
     #[error("failed to spawn language server")]
     Spawn,
+    /// The language server could not be launched, with what is known about why.
+    #[error("{0}")]
+    Launch(Box<LaunchFailure>),
     /// The server responded with an error.
     #[error("language server error: {0}")]
     Server(String),
@@ -90,6 +101,13 @@ pub enum LspError {
     #[error("connection to the language server closed")]
     Closed,
 }
+
+/// How long a failed handshake waits for the child to exit before reporting.
+///
+/// Only spent on a launch that already failed, and only to learn whether the
+/// process died -- a server that is still running is a protocol failure, and
+/// must not be waited on.
+const CHILD_EXIT_GRACE: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// How to launch a language server.
 #[derive(Clone, Debug)]
@@ -162,38 +180,93 @@ impl LspClient {
     /// [`Self::spawn`].
     ///
     /// # Errors
-    /// Returns [`LspError::Spawn`] if the prepared process cannot start or does
-    /// not expose piped standard I/O, plus initialization errors from
-    /// [`Self::connect`].
+    /// Returns [`LspError::Launch`] if the prepared process cannot start, does
+    /// not expose piped standard I/O, or dies during the handshake — carrying
+    /// the argv, the exit status and the tail of the server's stderr. Other
+    /// initialization errors come from [`Self::connect`].
     pub async fn spawn_command(
         mut command: tokio::process::Command,
         display_name: &str,
         root: &Path,
     ) -> Result<Self, LspError> {
+        // Recovered from the prepared command rather than taken as a parameter,
+        // so the reported argv is what was actually run. `display_name` stays
+        // the caller's friendlier label for the executable.
+        let args = command
+            .as_std()
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let fail = |cause, exit, stderr: Vec<String>| {
+            let failure = LaunchFailure::new(display_name, args.clone(), cause)
+                .with_exit(exit)
+                .with_stderr(stderr);
+            tracing::warn!(error = %failure, "language server launch failed");
+            LspError::Launch(Box::new(failure))
+        };
         let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true)
             .spawn()
-            .map_err(|e| {
-                tracing::warn!(command = %display_name, error = %e, "failed to spawn language server");
-                LspError::Spawn
+            .map_err(|error| {
+                let cause = match error.kind() {
+                    std::io::ErrorKind::NotFound => launch::LaunchCause::NotFound,
+                    std::io::ErrorKind::PermissionDenied => launch::LaunchCause::PermissionDenied,
+                    _ => launch::LaunchCause::Io,
+                };
+                fail(cause, None, vec![error.to_string()])
             })?;
-        let stdin = child.stdin.take().ok_or(LspError::Spawn)?;
-        let stdout = child.stdout.take().ok_or(LspError::Spawn)?;
+        let tail = launch::StderrTail::default();
         if let Some(stderr) = child.stderr.take() {
             let command = display_name.to_owned();
+            let tail = tail.clone();
             tokio::spawn(async move {
                 let mut lines = BufReader::new(stderr).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
                     tracing::debug!(target: "karet_lsp::stderr", server = %command, "{line}");
+                    tail.push(line);
                 }
             });
         }
-        let mut client = Self::connect(stdout, stdin, root).await?;
-        client.child = Some(child);
-        Ok(client)
+        let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
+            return Err(fail(launch::LaunchCause::NoStdio, None, tail.lines()));
+        };
+        match Self::connect(stdout, stdin, root).await {
+            Ok(mut client) => {
+                client.child = Some(child);
+                Ok(client)
+            },
+            // A server that dies during the handshake reaches here as a bare
+            // `Closed`, which says nothing. Its exit status and last words do.
+            Err(error) => Err(Self::launch_failure(child, tail, error, fail).await),
+        }
+    }
+
+    /// Turn a handshake failure into a launch failure when the child is the
+    /// reason, leaving a genuine protocol error alone.
+    async fn launch_failure(
+        mut child: tokio::process::Child,
+        tail: launch::StderrTail,
+        error: LspError,
+        fail: impl Fn(launch::LaunchCause, Option<ExitReport>, Vec<String>) -> LspError,
+    ) -> LspError {
+        if !matches!(error, LspError::Closed | LspError::Timeout) {
+            return error;
+        }
+        // Bounded: a server that closed its stdio but is still running is a
+        // protocol failure, not a launch one, and must not stall the report.
+        let exit = tokio::time::timeout(CHILD_EXIT_GRACE, child.wait())
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .and_then(ExitReport::from_status);
+        let stderr = tail.lines();
+        if exit.is_none() && stderr.is_empty() {
+            return error;
+        }
+        fail(launch::LaunchCause::Exited, exit, stderr)
     }
 
     /// Connect over an arbitrary async I/O pair and perform the `initialize`

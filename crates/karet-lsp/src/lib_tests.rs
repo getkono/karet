@@ -593,15 +593,43 @@ async fn shutdown_performs_the_handshake() -> TestResult {
     Ok(())
 }
 
+/// A missing binary is reported as such, with the argv, so the message can say
+/// what has to end up on PATH rather than "failed to spawn language server".
 #[tokio::test]
-async fn spawn_missing_binary_is_a_spawn_error() {
+async fn spawn_missing_binary_names_the_command_and_why_it_failed() -> TestResult {
     let spec = LspSpec {
         command: "karet-lsp-test-no-such-binary".into(),
-        args: vec![],
+        args: vec!["lsp".into(), "stdio".into()],
         languages: vec!["rust".into()],
     };
-    let err = LspClient::spawn(spec, Path::new("/tmp")).await;
-    assert!(matches!(err, Err(LspError::Spawn)));
+    let Err(LspError::Launch(failure)) = LspClient::spawn(spec, Path::new("/tmp")).await else {
+        return Err("a missing binary should be a launch failure".into());
+    };
+    assert_eq!(failure.cause, LaunchCause::NotFound);
+    assert_eq!(
+        failure.command_line(),
+        "karet-lsp-test-no-such-binary lsp stdio"
+    );
+    assert!(failure.cause.is_permanent(), "retrying cannot find it");
+    Ok(())
+}
+
+/// A server that prints usage and exits -- bare `taplo` is exactly this -- used
+/// to surface as a bare `Closed`, indistinguishable from a clean shutdown.
+#[tokio::test]
+async fn a_server_that_exits_during_the_handshake_reports_its_last_words() -> TestResult {
+    let mut command = tokio::process::Command::new("sh");
+    command.args(["-c", "echo 'error: unrecognized subcommand' >&2; exit 2"]);
+    let Err(LspError::Launch(failure)) =
+        LspClient::spawn_command(command, "taplo", Path::new("/tmp")).await
+    else {
+        return Err("a server that exits should be a launch failure".into());
+    };
+    assert_eq!(failure.cause, LaunchCause::Exited);
+    assert_eq!(failure.exit, Some(ExitReport::Code(2)));
+    assert_eq!(failure.diagnosis(), "error: unrecognized subcommand");
+    assert!(failure.to_string().contains("taplo"), "{failure}");
+    Ok(())
 }
 
 #[test]

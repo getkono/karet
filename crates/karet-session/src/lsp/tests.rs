@@ -342,9 +342,14 @@ fn test_connector(
 
 /// A connector that always fails as if the binary were missing.
 fn failing_connector(spawns: Arc<AtomicUsize>) -> Connector {
-    Arc::new(move |_spec, _root| {
+    Arc::new(move |spec, _root| {
         spawns.fetch_add(1, Ordering::SeqCst);
-        Box::pin(async { Err(LspError::Spawn) })
+        let failure = karet_lsp::LaunchFailure::new(
+            spec.command.clone(),
+            spec.args.clone(),
+            karet_lsp::LaunchCause::NotFound,
+        );
+        Box::pin(async move { Err(LspError::Launch(Box::new(failure))) })
     })
 }
 

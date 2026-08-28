@@ -234,25 +234,49 @@ impl Session {
                 self.publish_document_diagnostics(doc_id);
             },
             LspUpdate::SpawnFailed {
-                language, command, ..
-            } => self.emit(
-                None,
-                Event::Notification {
-                    severity: Severity::Warning,
-                    kind: NotificationKind::Lsp,
-                    message: format!(
-                        "no language server for {language}: '{command}' could not be started \
-                         (language features disabled for {language})"
-                    ),
-                },
-            ),
+                server,
+                root,
+                command,
+                reason,
+                permanent,
+                ..
+            } => {
+                // The full evidence goes to the log and, through
+                // `RuntimeState`, to the Language Servers panel, which is where
+                // an absolute path belongs. The toast gets one line.
+                tracing::warn!(
+                    server = %server.key(),
+                    root = %root.display(),
+                    command = %command,
+                    reason = %reason,
+                    "language server launch failed"
+                );
+                let outcome = if permanent {
+                    "will not be retried"
+                } else {
+                    "retrying with backoff"
+                };
+                self.emit(
+                    None,
+                    Event::Notification {
+                        severity: Severity::Warning,
+                        kind: NotificationKind::Lsp,
+                        message: format!(
+                            "{} failed to start ({outcome}): '{command}' — {}",
+                            server.display_name(),
+                            one_line(&reason)
+                        ),
+                    },
+                );
+            },
             LspUpdate::ServerDied { language, .. } => self.emit(
                 None,
                 Event::Notification {
                     severity: Severity::Warning,
                     kind: NotificationKind::Lsp,
                     message: format!(
-                        "the {language} language server stopped; reconnecting with bounded backoff"
+                        "the {} language server stopped; reconnecting with bounded backoff",
+                        provider_of(&language)
                     ),
                 },
             ),
@@ -768,4 +792,66 @@ pub(super) fn utf16_caret(doc: &Document, position: LineCol) -> LineCol {
 impl Session {
     /// Without the `mdlint` feature there is no markdown lint layer.
     pub(crate) fn refresh_markdown_lint(&mut self, _doc: crate::api::DocumentId) {}
+}
+
+/// Reduce arbitrary server output to one short, printable line.
+///
+/// A failing server's last words go straight into a notification, and they are
+/// not written for that: they can be long, multi-line, or carry escapes that
+/// would move the cursor or repaint the terminal. Control characters become
+/// spaces, and the result is capped.
+fn one_line(text: &str) -> String {
+    const LIMIT: usize = 160;
+    let flattened = text
+        .chars()
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect::<String>();
+    let collapsed = flattened.split_whitespace().collect::<Vec<_>>().join(" ");
+    match collapsed.char_indices().nth(LIMIT) {
+        Some((cut, _)) => format!("{}…", &collapsed[..cut]),
+        None => collapsed,
+    }
+}
+
+/// The provider half of a server task's slot key.
+///
+/// Task keys are `provider@/absolute/repository/root`. The path is useful in
+/// the manager and the log, and is only noise in a notification.
+fn provider_of(key: &str) -> &str {
+    key.split_once('@').map_or(key, |(provider, _)| provider)
+}
+
+#[cfg(test)]
+mod update_text_tests {
+    use super::*;
+
+    #[test]
+    fn a_notification_never_carries_a_repository_path() {
+        assert_eq!(
+            provider_of("rust-analyzer@/home/me/work/repo"),
+            "rust-analyzer"
+        );
+        assert_eq!(provider_of("taplo"), "taplo");
+    }
+
+    #[test]
+    fn server_output_is_flattened_and_capped_before_it_is_shown() {
+        assert_eq!(one_line("  hello\n  world  "), "hello world");
+        assert_eq!(one_line("clear\x1b[2Jscreen"), "clear [2Jscreen");
+        let long = "x".repeat(400);
+        let shown = one_line(&long);
+        assert_eq!(shown.chars().count(), 161);
+        assert!(shown.ends_with('…'));
+    }
+
+    #[test]
+    fn a_control_character_cannot_reach_the_terminal() {
+        assert!(!one_line("a\u{7}b\rc").contains(|c: char| c.is_control()));
+    }
 }
