@@ -183,7 +183,15 @@ fn record_launch() {
         .append(true)
         .open(path)
     {
-        let _ = writeln!(file, "{line}");
+        // One record, one `write(2)`. `writeln!` goes through `write_fmt`,
+        // which issues a syscall per formatting fragment, and `Display` for a
+        // `serde_json::Value` emits an object as many small fragments -- so a
+        // reader polling this file could observe a half-written line, and two
+        // testbed processes appending to the same report (the broker's
+        // process-sharing test) could interleave mid-record. `O_APPEND` makes a
+        // single `write` atomic for a record this size, so build the whole line
+        // in memory first.
+        let _ = file.write_all(format!("{line}\n").as_bytes());
     }
 }
 

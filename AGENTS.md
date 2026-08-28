@@ -134,8 +134,9 @@ plain `cargo fmt` uses the wrong toolchain) → `lint` (`cargo clippy --workspac
 --all-targets --all-features -- -D warnings`) → `test` (`cargo test --workspace
 --all-features`) → `build-lean` (app/fileview builds across feature subsets) →
 `coverage` (`cargo llvm-cov`, uploaded, no threshold). `test` also runs the
-real-process language-server suite, which `--all-features` does not reach
-because it is gated on `required-features`. The individual tasks
+real-process language-server suite: that suite is gated on `required-features
+= ["testbed"]`, and `--all-features` turns `testbed` on, so no extra command is
+needed. The individual tasks
 (`mise run test`, `mise run lint`, `mise run format-check`, …) exist for quick
 iteration; CI additionally checks Conventional Commits (`convco`) on pull
 requests and `cargo check`s a few grammar feature subsets.

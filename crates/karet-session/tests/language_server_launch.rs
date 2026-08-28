@@ -132,17 +132,20 @@ impl Harness {
     }
 
     /// How many times the double actually started.
+    ///
+    /// Deliberately a count of *parsed* records rather than of lines. The
+    /// report is appended to by a live process, so a poll loop that waits on a
+    /// line count can be satisfied by a line that is not yet a whole record and
+    /// then assert against nothing -- which is exactly how
+    /// `the_launch_carries_the_intended_argv_and_working_directory` used to
+    /// flake. Waiting on what the assertions actually read makes that
+    /// impossible, whatever the writer does.
     fn launches(&self) -> usize {
-        std::fs::read_to_string(&self.report)
-            .map(|report| {
-                report
-                    .lines()
-                    .filter(|line| !line.trim().is_empty())
-                    .count()
-            })
-            .unwrap_or_default()
+        self.launch_records().len()
     }
 
+    /// Every launch the double has finished recording. A line that does not
+    /// parse is not a record yet, so it is not counted.
     fn launch_records(&self) -> Vec<serde_json::Value> {
         std::fs::read_to_string(&self.report)
             .unwrap_or_default()
@@ -221,11 +224,14 @@ async fn the_launch_carries_the_intended_argv_and_working_directory() -> Result<
         .wait_for(|event| matches!(event, Event::Opened { .. }))
         .await;
 
+    // Waits on parsed records -- see `launches` -- so a line still being
+    // written can never end the wait early.
     let deadline = tokio::time::Instant::now() + DEADLINE;
-    while harness.launches() == 0 && tokio::time::Instant::now() < deadline {
+    let mut records = harness.launch_records();
+    while records.is_empty() && tokio::time::Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(25)).await;
+        records = harness.launch_records();
     }
-    let records = harness.launch_records();
     assert!(!records.is_empty(), "the server never recorded a launch");
     let record = records.first().cloned().unwrap_or_default();
     let argv = record["argv"]

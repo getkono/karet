@@ -101,8 +101,30 @@ in `karet-session/src/lsp/catalog.rs`. The same row is used whether the executab
 came from the project, from `PATH`, or from a karet-managed install, so those can
 never disagree.
 
-Most servers speak LSP on stdio when run bare. These do not, and are launched as
-shown:
+Of the 41 providers, 17 speak LSP on stdio when run bare and are launched with no
+arguments at all. The remaining 24 are launched as shown here — this table is the
+complete set, so a provider absent from it takes no arguments.
+
+Eleven need only the conventional flag that selects stdio over a socket:
+
+| Provider | Invocation |
+|---|---|
+| astro-language-server | `astro-ls --stdio` |
+| csharp | `Microsoft.CodeAnalysis.LanguageServer --stdio` |
+| docker-langserver | `docker-langserver --stdio` |
+| pyright | `pyright-langserver --stdio` |
+| svelte-language-server | `svelteserver --stdio` |
+| typescript-language-server | `typescript-language-server --stdio` |
+| vscode-css-language-server | `vscode-css-language-server --stdio` |
+| vscode-html-language-server | `vscode-html-language-server --stdio` |
+| vscode-json-language-server | `vscode-json-language-server --stdio` |
+| vue-language-server | `vue-language-server --stdio` |
+| yaml-language-server | `yaml-language-server --stdio` |
+
+Thirteen enter their language-server mode some other way — a subcommand, a
+different executable, or an expression. These are the rows worth reading before
+changing anything, because a bare invocation of any of them does something else
+entirely (`taplo` prints usage to *stdout*, which is fatal to the framing):
 
 | Provider | Invocation |
 |---|---|
