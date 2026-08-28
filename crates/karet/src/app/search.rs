@@ -611,6 +611,9 @@ impl App {
     }
 
     /// Expand the selected group, or step into it when it is already open.
+    ///
+    /// A match row is a leaf, so it absorbs the key rather than stepping on: a
+    /// `Right` that quietly acts as a `Down` reads as the list losing the press.
     pub(super) fn search_expand(&mut self) {
         let Some(row) = self
             .search
@@ -624,29 +627,41 @@ impl App {
             SearchRow::File {
                 expanded: false, ..
             } => self.search_toggle_row(),
-            _ => self.search.selection.move_by(1),
+            SearchRow::File { .. } => self.search.selection.move_by(1),
+            SearchRow::Match { .. } => {},
         }
     }
 
-    /// Collapse the selected group, or jump to its heading from a match row.
+    /// Collapse the selected group, or walk up out of it: from a match row to its
+    /// heading, and from an already-collapsed heading to the previous file's.
     pub(super) fn search_collapse(&mut self) {
         let cursor = self.search.selection.cursor();
         let Some(row) = self.search.rows.get(cursor).copied() else {
             return;
         };
-        match row {
-            SearchRow::File { expanded: true, .. } => self.search_toggle_row(),
-            // From a match, collapsing walks up to the file it belongs to, which
-            // is where a second press then collapses.
-            SearchRow::Match { hit, .. } => {
-                if let Some(heading) = self.search.rows[..cursor]
-                    .iter()
-                    .rposition(|row| matches!(row, SearchRow::File { hit: h, .. } if *h == hit))
-                {
-                    self.search.selection.move_to(heading);
-                }
+        // From a match, collapsing walks up to the file it belongs to, which is
+        // where a second press then collapses; from a heading that is already
+        // shut, a third walks back to the file above it, so repeated presses step
+        // through the result set a file at a time.
+        let heading_of = |hit: Option<usize>| {
+            self.search.rows[..cursor]
+                .iter()
+                .rposition(|row| match (row, hit) {
+                    (SearchRow::File { hit: h, .. }, Some(hit)) => *h == hit,
+                    (SearchRow::File { .. }, None) => true,
+                    _ => false,
+                })
+        };
+        let target = match row {
+            SearchRow::File { expanded: true, .. } => {
+                self.search_toggle_row();
+                return;
             },
-            SearchRow::File { .. } => {},
+            SearchRow::File { .. } => heading_of(None),
+            SearchRow::Match { hit, .. } => heading_of(Some(hit)),
+        };
+        if let Some(heading) = target {
+            self.search.selection.move_to(heading);
         }
     }
 

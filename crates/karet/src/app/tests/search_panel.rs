@@ -544,3 +544,64 @@ fn clicking_a_result_moves_focus_out_of_the_fields() {
     app.handle_sidebar_click(3, 5, KeyModifiers::NONE);
     assert!(!app.search.input, "the results hold the focus now");
 }
+
+/// A match has no children, so `Right` has nothing to step into. Falling through
+/// to a plain move made the key read as a stray `Down`.
+#[test]
+fn expand_on_a_match_row_is_a_no_op() {
+    let mut app = app();
+    app.search.hits = vec![search_hit(std::path::Path::new("/w/a.rs"), 3)];
+    app.search.rebuild_rows();
+    app.search.selection.move_to(1);
+    app.dispatch(Command::SearchExpand);
+    assert_eq!(app.search.selection.cursor(), 1, "a leaf absorbs the key");
+}
+
+#[test]
+fn expand_steps_into_an_already_open_group() {
+    let mut app = app();
+    app.search.hits = vec![search_hit(std::path::Path::new("/w/a.rs"), 3)];
+    app.search.rebuild_rows();
+    app.search.selection.move_to(0);
+    app.dispatch(Command::SearchExpand);
+    assert_eq!(app.search.selection.cursor(), 1, "onto the first match");
+}
+
+/// Repeated `Left` walks up out of the tree: match → its heading → the heading
+/// above it, so it steps through the result set a file at a time.
+#[test]
+fn collapse_on_a_shut_heading_walks_to_the_previous_file() {
+    let mut app = app();
+    app.search.hits = vec![
+        search_hit(std::path::Path::new("/w/a.rs"), 2),
+        search_hit(std::path::Path::new("/w/b.rs"), 2),
+    ];
+    app.search.collapsed = [std::path::PathBuf::from("/w/a.rs")].into_iter().collect();
+    app.search.rebuild_rows();
+    // Rows: 0 = a.rs (shut), 1 = b.rs, 2..3 = b's matches.
+    app.search.selection.move_to(1);
+    app.dispatch(Command::SearchCollapse);
+    assert!(
+        app.search
+            .collapsed
+            .contains(std::path::Path::new("/w/b.rs")),
+        "the first press shuts the open group"
+    );
+    app.dispatch(Command::SearchCollapse);
+    assert_eq!(
+        app.search.selection.cursor(),
+        0,
+        "the second walks up to the file above"
+    );
+}
+
+#[test]
+fn collapse_on_the_first_shut_heading_stays_put() {
+    let mut app = app();
+    app.search.hits = vec![search_hit(std::path::Path::new("/w/a.rs"), 2)];
+    app.search.collapsed = [std::path::PathBuf::from("/w/a.rs")].into_iter().collect();
+    app.search.rebuild_rows();
+    app.search.selection.move_to(0);
+    app.dispatch(Command::SearchCollapse);
+    assert_eq!(app.search.selection.cursor(), 0, "nothing above to walk to");
+}
