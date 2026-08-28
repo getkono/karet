@@ -136,18 +136,27 @@ impl BrokerProtocol for LspBroker {
     }
 
     async fn on_response(message: &mut Value, tag: &LspRequest, link: &ServerLink<'_, Self>) {
-        if *tag == LspRequest::Initialize
-            && let Some(result) = message.get("result").cloned()
-        {
-            *link.state().initialize_result.lock().await = Some(result);
+        if *tag != LspRequest::Initialize {
+            return;
+        }
+        let state = link.state();
+        if let Some(result) = message.get("result").cloned() {
+            *state.initialize_result.lock().await = Some(result);
             link.send_upstream(json!({
                 "jsonrpc": "2.0",
                 "method": "initialized",
                 "params": {}
             }))
             .await;
-            link.state().initialize_ready.notify_waiters();
+        } else {
+            // The handshake failed. Release the election so a waiting client
+            // runs its own `initialize` rather than waiting on a result that
+            // will never arrive; the client whose attempt failed still receives
+            // the error reply under its own id.
+            state.initialize_started.store(false, Ordering::Release);
         }
+        // Notified either way: a waiter woken with no result loops and re-elects.
+        state.initialize_ready.notify_waiters();
     }
 
     async fn on_client_gone(link: &ClientLink<'_, Self>) {
@@ -579,6 +588,68 @@ mod tests {
         .await;
         assert_eq!(settled(waiter).await?, ClientFlow::Drop);
         assert_eq!(parts.replies.try_recv()?.get("id"), Some(&json!(9)));
+        Ok(())
+    }
+    /// The reply the tests hand back for an `initialize` the server refused.
+    fn initialize_failure() -> Value {
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "error": {"code": -32603, "message": "no workspace"}
+        })
+    }
+
+    #[tokio::test]
+    async fn a_failed_initialize_releases_the_election() -> Result<(), BoxError> {
+        let parts = link_parts();
+        parts
+            .core
+            .state
+            .initialize_started
+            .store(true, Ordering::Release);
+
+        let mut failed = initialize_failure();
+        LspBroker::on_response(
+            &mut failed,
+            &LspRequest::Initialize,
+            &ServerLink::new(&parts.core),
+        )
+        .await;
+
+        assert!(parts.core.state.initialize_result.lock().await.is_none());
+        let link = ClientLink::new(&parts.core, 3, &parts.sender);
+        let mut retry = json!({"jsonrpc": "2.0", "id": 4, "method": "initialize"});
+        assert_eq!(
+            LspBroker::on_client_message(&mut retry, &link).await,
+            ClientFlow::Proxy(LspRequest::Initialize)
+        );
+        Ok(())
+    }
+
+    /// A client already parked on the shared result must not wait on a handshake
+    /// that will never land: it wakes, wins the freed election, and retries.
+    #[tokio::test]
+    async fn a_waiting_client_retries_when_the_handshake_fails() -> Result<(), BoxError> {
+        let parts = link_parts();
+        parts
+            .core
+            .state
+            .initialize_started
+            .store(true, Ordering::Release);
+        let waiter = spawn_waiter(&parts.core, &parts.sender).await;
+
+        let mut failed = initialize_failure();
+        LspBroker::on_response(
+            &mut failed,
+            &LspRequest::Initialize,
+            &ServerLink::new(&parts.core),
+        )
+        .await;
+
+        assert_eq!(
+            settled(waiter).await?,
+            ClientFlow::Proxy(LspRequest::Initialize)
+        );
         Ok(())
     }
 }
