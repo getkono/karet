@@ -138,6 +138,14 @@ pub enum LanguageServerRuntimeState {
     Retrying,
     /// Repeated failures opened the restart circuit.
     CircuitOpen,
+    /// The provider cannot start here, and karet has stopped trying.
+    ///
+    /// Distinct from [`Self::CircuitOpen`], which is a cooldown a provider
+    /// comes back from. This is reached only for a failure no retry can fix --
+    /// a binary that is absent or not executable, or a server that exits on
+    /// sight and never once connected. Installing the provider, or restarting
+    /// it from the Language Servers panel, clears it.
+    Unavailable,
     /// The provider task stopped without another retry.
     Stopped,
 }

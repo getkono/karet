@@ -99,6 +99,7 @@ impl LanguageServerRuntimeModel {
                     LanguageServerRuntimeState::Retrying => LanguageServerBadge::Retrying,
                     LanguageServerRuntimeState::CircuitOpen
                     | LanguageServerRuntimeState::Stopped => LanguageServerBadge::Crashed,
+                    LanguageServerRuntimeState::Unavailable => LanguageServerBadge::Unavailable,
                     _ => LanguageServerBadge::Unavailable,
                 }
             })
@@ -790,6 +791,7 @@ impl App {
                 state,
                 LanguageServerRuntimeState::Retrying
                     | LanguageServerRuntimeState::CircuitOpen
+                    | LanguageServerRuntimeState::Unavailable
                     | LanguageServerRuntimeState::Stopped
             )
         {
@@ -798,6 +800,7 @@ impl App {
                 LanguageServerRuntimeState::CircuitOpen => {
                     (Severity::Error, "crashed (circuit open)")
                 },
+                LanguageServerRuntimeState::Unavailable => (Severity::Error, "unavailable"),
                 LanguageServerRuntimeState::Stopped => (Severity::Error, "stopped"),
                 _ => return,
             };
