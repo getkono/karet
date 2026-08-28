@@ -75,6 +75,31 @@ fn setuid_and_sticky_bits_are_never_honoured() -> TestResult {
     Ok(())
 }
 
+/// karet execs binaries out of this tree, so an archive that records `0o777`
+/// must not leave one writable by every other local user.
+#[cfg(unix)]
+#[test]
+fn an_archive_cannot_make_an_installed_file_group_or_world_writable() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    extract_archive(
+        &zip_with("bin/server", 0o777)?,
+        Archive::Zip,
+        dir.path(),
+        true,
+    )?;
+    assert_eq!(mode_of(&dir.path().join("bin/server")), 0o755);
+
+    let data = tempfile::tempdir()?;
+    extract_archive(
+        &zip_with("share/data", 0o666)?,
+        Archive::Zip,
+        data.path(),
+        true,
+    )?;
+    assert_eq!(mode_of(&data.path().join("share/data")), 0o644);
+    Ok(())
+}
+
 #[cfg(unix)]
 #[test]
 fn a_tarred_bundle_keeps_its_executable_bit() -> TestResult {
@@ -115,8 +140,13 @@ fn an_archive_missing_the_executable_says_so() -> TestResult {
 fn a_zip_escaping_its_destination_is_refused() -> TestResult {
     let dir = tempfile::tempdir()?;
     let bytes = zip_with("../escaped", 0o755)?;
-    // `enclosed_name` rejects the entry, so nothing is written outside.
-    let _ = extract_archive(&bytes, Archive::Zip, dir.path(), true);
+    let error = extract_archive(&bytes, Archive::Zip, dir.path(), true)
+        .err()
+        .unwrap_or_default();
+    // Asserting the refusal, not merely the absence: a sanitising writer could
+    // have turned the entry into `escaped`, which would land inside the
+    // destination and leave "nothing escaped" true but nothing proven.
+    assert!(error.contains("unsafe"), "{error}");
     assert!(!dir.path().join("../escaped").exists());
     Ok(())
 }

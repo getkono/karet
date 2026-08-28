@@ -40,9 +40,10 @@ jobs:
         id: matrix
         env:
           KARET_LIVE_SERVERS: ${{ inputs.servers }}
-          # Raises the unauthenticated 60/hour GitHub API limit, which a full
-          # run brushes against: one release lookup per provider.
-          GITHUB_TOKEN: ${{ github.token }}
+        # Note: release discovery is unauthenticated, so this run spends against
+        # the 60/hour anonymous GitHub limit — one lookup per GitHub-sourced
+        # provider. Weekly keeps that comfortable; a much shorter schedule would
+        # need the registry to start sending a token.
         run: |
           set -o pipefail
           mise run test-servers-live 2>&1 | tee matrix.log

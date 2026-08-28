@@ -146,7 +146,9 @@ fn extract_tar(reader: impl Read, destination: &Path, all_files: bool) -> Result
 /// first also picks the real payload over a vendored copy nested inside it.
 ///
 /// Symlinked directories are not descended into: an archive that points at
-/// itself would otherwise loop.
+/// itself would otherwise loop. No managed release puts its payload behind one,
+/// and a search that can be made to spin on a downloaded archive is the worse
+/// trade.
 pub(super) fn find_file_named(root: &Path, name: &str) -> Option<PathBuf> {
     let mut frontier = vec![root.to_path_buf()];
     while !frontier.is_empty() {
@@ -189,15 +191,19 @@ pub(super) fn find_file_named(root: &Path, name: &str) -> Option<PathBuf> {
 /// entry point is a wrapper script calling a sibling binary was installed
 /// broken.
 ///
-/// Masked to the permission bits: setuid, setgid and the sticky bit are never
-/// honoured from a downloaded archive.
+/// Only the read and execute bits are taken from the archive. setuid, setgid
+/// and the sticky bit are never honoured from a download, and neither is group
+/// or other **write**: an archive is free to record `0o777`, and karet execs
+/// binaries out of this tree, so honouring that would let any other local user
+/// on a shared machine replace a language server.
 #[cfg(unix)]
 fn restore_mode(path: &Path, mode: Option<u32>) -> Result<(), String> {
     use std::os::unix::fs::PermissionsExt;
     let Some(mode) = mode else {
         return Ok(());
     };
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode & 0o777))
+    let safe = mode & 0o777 & !0o022;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(safe))
         .map_err(|error| error.to_string())
 }
 

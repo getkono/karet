@@ -42,13 +42,11 @@ run = "cargo run --quiet --package xtask -- publish-ready"
 
 [tasks.test]
 description = "Run the test suite"
-run = [
-  "cargo test --workspace --all-features",
-  # The real-process language-server suite. `--all-features` does not reach it:
-  # `testbed` builds a process double that is a test fixture, so it is not in
-  # `default`, and its tests declare `required-features`.
-  "cargo test -p karet-session --features testbed --test language_server_launch",
-]
+# `--all-features` enables `testbed`, which satisfies the `required-features` on
+# the real-process language-server suite, so that runs here too. The live
+# managed-install matrix is in the same target set but is `#[ignore]`d, so this
+# performs no network I/O.
+run = "cargo test --workspace --all-features"
 
 [tasks.test-servers-live]
 description = "Opt-in: really install and start every managed language server (network, minutes)"

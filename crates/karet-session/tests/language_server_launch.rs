@@ -676,13 +676,15 @@ async fn disabling_lsp_stops_companions_and_not_only_primaries() {
     // path is fast enough that a second is ample — the sibling test sees Ruff
     // reach `Running` well inside it.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-    while tokio::time::Instant::now() < deadline {
+    let mut started = None;
+    while started.is_none() && tokio::time::Instant::now() < deadline {
         let remaining = deadline - tokio::time::Instant::now();
         let Ok(Some((_, event))) = tokio::time::timeout(remaining, events.recv()).await else {
             break;
         };
         if let Event::LanguageServerRuntimeChanged { server, .. } = event {
-            panic!("LSP is disabled, yet {} was started", server.key());
+            started = Some(server.key().to_owned());
         }
     }
+    assert_eq!(started, None, "LSP is disabled, yet a server was started");
 }

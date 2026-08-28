@@ -115,6 +115,20 @@ struct ActiveInstallation {
     version: String,
     command: PathBuf,
     args: Vec<String>,
+    /// The part of `args` that belongs to this installation rather than to the
+    /// provider's launch table — the entry script an npm package is run
+    /// through, and nothing for a standalone binary.
+    ///
+    /// Recorded so the launch arguments can be re-derived from the current
+    /// table at read time. Without it, `args` froze at install time: a provider
+    /// installed under a recipe with the wrong argv kept launching wrongly
+    /// until it was reinstalled, which is precisely what a fix to the table is
+    /// supposed to prevent.
+    ///
+    /// Absent in journals written before this existed, and those keep replaying
+    /// `args` verbatim — the behaviour they were written under.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    entry: Option<Vec<String>>,
     /// `initializationOptions` this installation must be launched with.
     ///
     /// Recorded here rather than recomputed at launch because it names paths
@@ -122,6 +136,28 @@ struct ActiveInstallation {
     /// Defaulted so journals written before this existed still replay.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     initialization_options: Option<serde_json::Value>,
+}
+
+impl ActiveInstallation {
+    /// The arguments to launch this installation with.
+    ///
+    /// Composed from the recorded entry point plus the provider's *current*
+    /// launch arguments, so correcting a built-in's argv takes effect on the
+    /// next launch rather than the next reinstall.
+    fn launch_args(&self, server: &LanguageServerId) -> Vec<String> {
+        let Some(entry) = &self.entry else {
+            return self.args.clone();
+        };
+        entry
+            .iter()
+            .cloned()
+            .chain(
+                crate::lsp::managed_arguments(server.key())
+                    .iter()
+                    .map(|argument| (*argument).to_owned()),
+            )
+            .collect()
+    }
 }
 
 #[derive(Clone)]
@@ -156,7 +192,7 @@ pub(crate) fn installed_spec(
     let active = read_active(root?, server)?;
     Some(LspSpec {
         command: active.command.to_string_lossy().into_owned(),
-        args: active.args,
+        args: active.launch_args(server),
         languages: vec![language.to_owned()],
         initialization_options: active.initialization_options,
     })
@@ -238,7 +274,9 @@ pub(crate) fn manual_install_reason(server: &LanguageServerId) -> Option<String>
         // `lsp.servers` entry. Its installation was always the user's, and
         // saying so is better than the silence that used to imply karet could
         // fetch it.
-        _ => return Some(format!("{} is not a provider karet installs", server.key())),
+        // No name here: every caller already prints the provider before the
+        // reason, and repeating it read as "Foo foo is not a provider...".
+        _ => "is not a provider karet knows how to install",
     };
     Some(reason.to_owned())
 }
@@ -736,12 +774,15 @@ fn install_release(
 
 fn activation(release: &Release, destination: &Path) -> Result<ActiveInstallation, String> {
     let mut options = None;
+    // Assigned by both arms; deferred so neither can be forgotten.
+    let entry;
     let (command, args) = match &release.kind {
         ReleaseKind::Standalone {
             executable_name,
             arguments,
             ..
         } => {
+            entry = Some(Vec::new());
             let command = find_file_named(destination, executable_name).ok_or_else(|| {
                 format!(
                     "installed {} executable is missing",
@@ -783,6 +824,7 @@ fn activation(release: &Release, destination: &Path) -> Result<ActiveInstallatio
                     )
                 })?;
             let mut args = vec![cli.to_string_lossy().into_owned()];
+            entry = Some(args.clone());
             args.extend(arguments.iter().map(|argument| (*argument).to_owned()));
             // A server given a TypeScript companion needs to be told where it
             // went. karet installs the pair into an immutable version directory
@@ -816,6 +858,7 @@ fn activation(release: &Release, destination: &Path) -> Result<ActiveInstallatio
         version: release.active_version(),
         command,
         args,
+        entry,
         initialization_options: options,
     })
 }

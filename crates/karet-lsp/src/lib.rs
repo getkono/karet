@@ -78,10 +78,7 @@ use tokio::sync::broadcast;
 #[non_exhaustive]
 pub enum LspError {
     /// The language server process could not be spawned.
-    #[deprecated(
-        since = "0.6.0",
-        note = "superseded by LspError::Launch, which carries why the launch failed"
-    )]
+    #[deprecated(note = "superseded by LspError::Launch, which carries why the launch failed")]
     #[error("failed to spawn language server")]
     Spawn,
     /// The language server could not be launched, with what is known about why.
@@ -171,8 +168,9 @@ impl LspClient {
     /// [`LspClient::connect`] for what is negotiated).
     ///
     /// # Errors
-    /// Returns [`LspError::Spawn`] if the process cannot start, or any handshake
-    /// error from [`LspClient::connect`].
+    /// Returns [`LspError::Launch`] if the process cannot start or dies during
+    /// the handshake, or any other handshake error from
+    /// [`LspClient::connect`].
     pub async fn spawn(spec: LspSpec, root: &Path) -> Result<Self, LspError> {
         let mut command = tokio::process::Command::new(&spec.command);
         command.args(&spec.args).current_dir(root);
