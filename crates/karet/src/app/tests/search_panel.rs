@@ -461,3 +461,86 @@ fn a_restored_cursor_clamps_into_a_shorter_result_set() {
         app.search.rows.len()
     );
 }
+
+/// Seed the layout a render would have produced, so a click can be hit-tested:
+/// the results start at row 5 of a 20-row sidebar with no scroll offset.
+fn seed_result_click_layout(app: &mut App) {
+    app.sidebar_panel = SidebarPanel::Search;
+    app.sidebar_visible = true;
+    app.sidebar_rect = Rect::new(0, 0, 30, 20);
+    app.search_ui.results_rect = Rect::new(0, 5, 30, 10);
+    app.search_ui.offset = 0;
+}
+
+/// The chevron is a two-cell target in a narrow sidebar, which is easy to miss.
+/// Double-clicking anywhere on the heading is the second way to fold a group.
+#[test]
+fn double_clicking_a_file_heading_folds_its_group() {
+    let dir = test_dir("search-double-click-fold");
+    write_file(&dir, "a.rs", b"let needle0 = 1;\nlet needle1 = 1;\n");
+    let mut app = app();
+    app.root = dir.clone();
+    seed_result_click_layout(&mut app);
+    app.search.hits = vec![search_hit(&dir.join("a.rs"), 2)];
+    app.search.rebuild_rows();
+
+    // Column 3 clears the chevron, so the first click is a plain open.
+    app.handle_sidebar_click(3, 5, KeyModifiers::NONE);
+    assert!(
+        app.search.collapsed.is_empty(),
+        "a single click opens, it does not fold"
+    );
+
+    // The second click lands in the same cell inside the streak window.
+    app.handle_sidebar_click(3, 5, KeyModifiers::NONE);
+    assert!(
+        app.search.collapsed.contains(dir.join("a.rs").as_path()),
+        "the double-click folds the group"
+    );
+
+    app.handle_sidebar_click(3, 5, KeyModifiers::NONE);
+    app.handle_sidebar_click(3, 5, KeyModifiers::NONE);
+    assert!(
+        app.search.collapsed.is_empty(),
+        "and folds it back open again"
+    );
+}
+
+/// A match row is a leaf: it has no group of its own, so the second click must
+/// not reach for its parent's fold.
+#[test]
+fn double_clicking_a_match_row_folds_nothing() {
+    let dir = test_dir("search-double-click-match");
+    write_file(&dir, "a.rs", b"let needle0 = 1;\nlet needle1 = 1;\n");
+    let mut app = app();
+    app.root = dir.clone();
+    seed_result_click_layout(&mut app);
+    app.search.hits = vec![search_hit(&dir.join("a.rs"), 2)];
+    app.search.rebuild_rows();
+
+    // Row 6 is the first match under the heading at row 5.
+    app.handle_sidebar_click(6, 6, KeyModifiers::NONE);
+    app.handle_sidebar_click(6, 6, KeyModifiers::NONE);
+    assert!(
+        app.search.collapsed.is_empty(),
+        "a leaf has nothing to fold"
+    );
+    assert_eq!(app.search.selection.cursor(), 1);
+}
+
+/// Clicking a result moves the panel's focus onto the list, so the arrow keys
+/// that follow navigate rows instead of editing whichever field was last active.
+#[test]
+fn clicking_a_result_moves_focus_out_of_the_fields() {
+    let dir = test_dir("search-click-focus");
+    write_file(&dir, "a.rs", b"let needle0 = 1;\n");
+    let mut app = app();
+    app.root = dir.clone();
+    seed_result_click_layout(&mut app);
+    app.search.hits = vec![search_hit(&dir.join("a.rs"), 1)];
+    app.search.rebuild_rows();
+    app.search.input = true;
+
+    app.handle_sidebar_click(3, 5, KeyModifiers::NONE);
+    assert!(!app.search.input, "the results hold the focus now");
+}

@@ -614,14 +614,25 @@ impl App {
                 if idx >= self.search.rows.len() {
                     return;
                 }
+                // Taken once, before the branch: the streak counter is shared with
+                // every other click surface, so reading it twice would advance it.
+                let streak = self.click_streak(col, row_y);
                 self.search.selection.move_to(idx);
+                // The click moves the panel's focus onto the results, so the arrow
+                // keys that follow navigate the list rather than the last field.
+                self.search.input = false;
                 // A click on a file heading's chevron toggles the group; anywhere
                 // else on the row opens the file, so the affordance is the glyph.
                 // The chevron renders as glyph-plus-space, so both cells toggle;
                 // a one-cell target is too fine to hit reliably.
                 let on_chevron = col <= self.search_ui.results_rect.x.saturating_add(1);
+                // Double-clicking a heading is the second fold affordance: the first
+                // click has already opened the file, the second folds the group. A
+                // match row is a leaf, so it just opens again.
                 match self.search.rows.get(idx) {
-                    Some(SearchRow::File { .. }) if on_chevron => self.search_toggle_row(),
+                    Some(SearchRow::File { .. }) if on_chevron || streak >= 2 => {
+                        self.search_toggle_row();
+                    },
                     _ => self.open_selected_result(),
                 }
             },
