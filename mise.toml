@@ -50,6 +50,10 @@ run = [
   "cargo test -p karet-session --features testbed --test language_server_launch",
 ]
 
+[tasks.test-servers-live]
+description = "Opt-in: really install and start every managed language server (network, minutes)"
+run = "cargo test -p karet-session --features testbed --test managed_install_matrix -- --ignored --nocapture --test-threads=1"
+
 [tasks.build-lean]
 description = "Build without the heavy media deps (issue #23): app + karet-fileview across the optional feature combos"
 run = [

@@ -124,5 +124,9 @@ required-features = ["testbed"]
 name = "language_server_launch"
 required-features = ["testbed"]
 
+[[test]]
+name = "managed_install_matrix"
+required-features = ["testbed"]
+
 [lints]
 workspace = true

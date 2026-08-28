@@ -133,10 +133,16 @@ dep sources) → `format-check` (**nightly** rustfmt, pinned in `rust-nightly.tx
 plain `cargo fmt` uses the wrong toolchain) → `lint` (`cargo clippy --workspace
 --all-targets --all-features -- -D warnings`) → `test` (`cargo test --workspace
 --all-features`) → `build-lean` (app/fileview builds across feature subsets) →
-`coverage` (`cargo llvm-cov`, uploaded, no threshold). The individual tasks
+`coverage` (`cargo llvm-cov`, uploaded, no threshold). `test` also runs the
+real-process language-server suite, which `--all-features` does not reach
+because it is gated on `required-features`. The individual tasks
 (`mise run test`, `mise run lint`, `mise run format-check`, …) exist for quick
 iteration; CI additionally checks Conventional Commits (`convco`) on pull
 requests and `cargo check`s a few grammar feature subsets.
+
+One task is deliberately **not** in `verify`: `mise run test-servers-live`
+really installs and starts every managed language server from upstream. It
+needs network and takes minutes, so it is opt-in — see the testing policy.
 
 ## Conventions
 
@@ -198,5 +204,17 @@ correctness and stay light where it would only tax velocity.
   events/state out — since that seam is the API everything downstream depends on.
 - **App (`karet`):** module-level unit tests (already dense) are the norm; a
   black-box binary smoke test is a **known gap** — welcome, not required.
+- **Process doubles:** where the thing under test *is* a process boundary — the
+  language-server supervisor and broker — an in-memory double proves nothing, so
+  `karet-session` builds `karet-testbed` behind its off-by-default `testbed`
+  feature and spawns it. Those tests live in `crates/karet-session/tests/`
+  because `CARGO_BIN_EXE_*` is set only for integration targets.
+- **Live-service tests** are `#[ignore]`d and never run by `mise run verify`, so
+  the merge gate provably makes no network request. They exist only where an
+  offline double cannot observe upstream drift — today just the managed
+  language-server catalogue, where a renamed release asset or a withdrawn
+  publisher digest is invisible to any fixture. Run them deliberately with
+  `mise run test-servers-live`, and keep them reporting a table of every case
+  rather than aborting on the first failure.
 - **Coverage** (`mise run coverage`) is a **signal, not a gate** — no numeric
   threshold blocks a merge. Judgment over a percentage.

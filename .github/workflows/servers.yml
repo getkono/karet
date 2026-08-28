@@ -1,0 +1,60 @@
+# Do the managed language servers still install and start?
+#
+# Deliberately separate from `ci.yml` and deliberately non-blocking. It tests
+# karet against upstream rather than against fixtures, so it fails for reasons
+# no pull request caused -- a renamed release asset, a withdrawn publisher
+# digest, an npm flag removed. That is exactly the signal worth having, and
+# exactly why it must never gate a merge.
+name: language servers
+
+on:
+  schedule:
+    # Weekly. Upstream drift is measured in weeks, and every run downloads a
+    # Node runtime plus twenty-odd releases.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      servers:
+        description: "Comma-separated provider keys, or empty for all"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  install-and-start:
+    runs-on: ubuntu-latest
+    # Reports; never blocks.
+    continue-on-error: true
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: jdx/mise-action@v2
+        with:
+          install: true
+          cache: true
+
+      - name: Install and start every managed language server
+        id: matrix
+        env:
+          KARET_LIVE_SERVERS: ${{ inputs.servers }}
+          # Raises the unauthenticated 60/hour GitHub API limit, which a full
+          # run brushes against: one release lookup per provider.
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -o pipefail
+          mise run test-servers-live 2>&1 | tee matrix.log
+
+      - name: Publish the table
+        if: always()
+        run: |
+          {
+            echo "## Managed language servers"
+            echo
+            # The test prints one markdown table; everything else is cargo noise.
+            sed -n '/^| provider/,/^$/p' matrix.log || true
+            echo
+            echo "Full log in the job output."
+          } >> "$GITHUB_STEP_SUMMARY"

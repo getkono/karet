@@ -154,6 +154,28 @@ spawn failure; karet never downloads a JDK. During the initial import — which
 can take a minute or two on a large build — jdtls's `language/status`
 notifications are forwarded to the status line so the server never looks hung.
 
+### Checking the catalogue against upstream
+
+The support matrix above is a claim about other people's release processes, so
+it can go stale without anything in this repository changing: an asset gets
+renamed, a publisher stops attaching a SHA-256 digest, an npm flag is removed.
+No offline test can see that.
+
+`mise run test-servers-live` checks it for real. For every managed provider it
+installs into a throwaway registry, opens a file of that provider's language,
+waits for the connection to reach `running`, and prints a table:
+
+```text
+| provider | version | install | launch | secs | note |
+```
+
+It needs network and takes minutes, so it is `#[ignore]`d and never runs as part
+of `mise run verify`. `KARET_LIVE_SERVERS=taplo,bash-language-server` narrows it
+to a subset. A weekly non-blocking workflow (`.github/workflows/servers.yml`)
+runs it so drift surfaces before a user hits it.
+
+Run it whenever this matrix, the launch table, or the release recipes change.
+
 ## Capability ownership and overlap
 
 Only one provider owns a capability that produces edits or navigation results.
