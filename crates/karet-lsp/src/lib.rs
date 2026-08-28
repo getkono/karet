@@ -120,6 +120,7 @@ const STDERR_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_millis
 /// `initialization_options` -- can be given one without breaking every consumer
 /// that builds a spec. The fields stay public and assignable.
 #[derive(Clone, Debug, Default)]
+#[non_exhaustive]
 pub struct LspSpec {
     /// The server executable.
     pub command: String,
