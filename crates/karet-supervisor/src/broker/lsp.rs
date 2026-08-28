@@ -230,6 +230,13 @@ async fn handle_initialize(
     link: &ClientLink<'_, LspBroker>,
 ) -> ClientFlow<LspRequest> {
     let state = link.state();
+    // Only a request can carry the handshake. An id-less `initialize` would win
+    // the election below and then be dropped by the pump for having no id to
+    // rewrite, so nothing would ever answer it, release the election or notify
+    // — and every later client would wait on a result nobody was producing.
+    let Some(id) = message.get("id").cloned() else {
+        return ClientFlow::Drop;
+    };
     loop {
         let mut ready = pin!(state.initialize_ready.notified());
         ready.as_mut().enable();
@@ -240,10 +247,8 @@ async fn handle_initialize(
         // `initialize` on `initialize_result` — the same wedge by another lock.
         let cached = state.initialize_result.lock().await.clone();
         if let Some(result) = cached {
-            if let Some(id) = message.get("id").cloned() {
-                link.reply(json!({"jsonrpc": "2.0", "id": id, "result": result}))
-                    .await;
-            }
+            link.reply(json!({"jsonrpc": "2.0", "id": id, "result": result}))
+                .await;
             return ClientFlow::Drop;
         }
         if state
@@ -653,6 +658,26 @@ mod tests {
 
         assert_eq!(
             settled(waiter).await?,
+            ClientFlow::Proxy(LspRequest::Initialize)
+        );
+        Ok(())
+    }
+    /// `initialize` is a request. One arriving without an id can never be
+    /// answered or proxied, so it must not claim the election either.
+    #[tokio::test]
+    async fn an_initialize_without_an_id_does_not_claim_the_election() -> Result<(), BoxError> {
+        let parts = link_parts();
+        let link = ClientLink::new(&parts.core, 1, &parts.sender);
+
+        let mut headless = json!({"jsonrpc": "2.0", "method": "initialize"});
+        assert_eq!(
+            LspBroker::on_client_message(&mut headless, &link).await,
+            ClientFlow::Drop
+        );
+
+        let mut proper = json!({"jsonrpc": "2.0", "id": 7, "method": "initialize"});
+        assert_eq!(
+            LspBroker::on_client_message(&mut proper, &link).await,
             ClientFlow::Proxy(LspRequest::Initialize)
         );
         Ok(())
