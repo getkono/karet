@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/getkono/karet/compare/karet-vcs-v0.5.0...karet-vcs-v0.6.0) - 2026-08-29
+
+### Added
+
+- *(vcs)* tags, cherry-pick, revert, rebase, reset, detached checkout
+- *(vcs)* distinguish a copied file from a renamed one
+
+### Other
+
+- *(vcs)* pin interactive rebase against a shell-hostile repository path
+- Merge remote-tracking branch 'origin/feat/git-graph-ui' into feat/git-graph-extras
+- *(vcs)* pin that hostile revisions and tag names cannot reach git
+
 ## [0.4.0](https://github.com/getkono/karet/compare/karet-vcs-v0.2.2...karet-vcs-v0.4.0) - 2026-08-06
 
 ### Added

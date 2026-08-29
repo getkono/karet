@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/getkono/karet/compare/karet-syntax-v0.5.0...karet-syntax-v0.6.0) - 2026-08-29
+
+### Added
+
+- *(syntax)* detect color literals for inline swatches
+- *(syntax)* expose codetag occurrences, not just their tint
+
+### Other
+
+- point shadowed crate readmes at their local files
+
 ## [0.4.0](https://github.com/getkono/karet/compare/karet-syntax-v0.3.0...karet-syntax-v0.4.0) - 2026-08-06
 
 ### Added

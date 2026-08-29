@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/getkono/karet/compare/karet-fileview-v0.5.0...karet-fileview-v0.6.0) - 2026-08-29
+
+### Added
+
+- *(karet-fileview)* drag to select and copy in the hex dump
+- preview notebooks through the document-conversion seam
+
+### Other
+
+- point shadowed crate readmes at their local files
+
 ## [0.3.0](https://github.com/getkono/karet/compare/karet-fileview-v0.2.2...karet-fileview-v0.3.0) - 2026-07-19
 
 ### Fixed
