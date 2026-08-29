@@ -64,7 +64,12 @@ karet-github     = { path = "crates/karet-github" }
 # The dependable pair: `-core` (pure lockfile→graph, the `viz` lens) and
 # `-fetch` (async registry + OSV checking for Cargo.toml hints). Same author,
 # alpha line — pinned to the exact published version karet was built against.
-dependable-fetch = "=0.1.2"
+# The pin only binds `-fetch`; its own `-core` requirement is a caret, so a
+# resolve that ignores Cargo.lock is free to pair them across an alpha-line
+# break. 0.1.2 + core 0.1.3 is exactly that pairing and does not compile
+# (`ManifestKind::lockfile_name` became `lockfiles`), which is why the
+# `install` task resolves `--locked`.
+dependable-fetch = "=0.1.3"
 # TOML formatting for the built-in fallback (taplo the library, not the LSP:
 # lossless CST + the ~20 even-better-toml options; pure Rust, no network).
 taplo = "0.14.0"
