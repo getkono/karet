@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/getkono/karet/compare/karet-text-v0.5.0...karet-text-v0.6.0) - 2026-08-29
+
+### Fixed
+
+- *(text)* fingerprint content with a fixed algorithm
+
+### Other
+
+- point shadowed crate readmes at their local files
+
 ## [0.4.0](https://github.com/getkono/karet/compare/karet-text-v0.3.0...karet-text-v0.4.0) - 2026-08-06
 
 ### Added
