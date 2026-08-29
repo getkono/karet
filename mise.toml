@@ -93,7 +93,11 @@ run = [
 
 [tasks.install]
 description = "Install `karet` binary to user path."
-run = "cargo install --path crates/karet"
+# `--locked`, as the release workflow builds: without it `cargo install`
+# re-resolves from scratch and ignores Cargo.lock, so it can pick a dependency
+# set no gate has ever compiled — the lock is what `verify` proves, so it is
+# what we install.
+run = "cargo install --path crates/karet --locked"
 
 [tasks.svg]
 description = "Regenerate the deterministic README hero SVG"

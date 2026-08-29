@@ -39,7 +39,7 @@ attaches a tarball per target:
 compile vendored C):
 
 ```bash
-cargo install --path crates/karet    # what `mise run install` runs
+cargo install --path crates/karet --locked    # what `mise run install` runs
 ```
 
 The app is not published to crates.io — only the `karet-*` libraries are — so there
