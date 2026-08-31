@@ -349,6 +349,50 @@ activity to the configured WakaTime-compatible service.
 while retaining comments and unrelated settings. Files without committed Git history
 show no attribution and do not report an error.
 
+#### `git.aiCommit`
+
+Drafts a commit message from the **staged** diff by running a local agent CLI —
+karet never talks to a model provider itself, so authentication is whatever the
+agent already has. Nothing is sent anywhere until you ask for a message.
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `enabled` | bool | `true` | Allow generating commit messages. When off, the action reports that it is disabled rather than running. |
+| `agent` | `"claude"`\|`"codex"` | `"claude"` | Which CLI drafts the message. `codex` needs `codex` 0.146.0 or newer. |
+| `model` | string | `"auto"` | `"auto"` picks a cheap model for small diffs and a stronger one for large or many-file ones; any other value pins that model name (`"haiku"`, `"sonnet"`, a full model id). |
+| `effort` | string\|null | `null` | Thinking effort: `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. `null` leaves the model's default, and it is ignored when `model` is `"auto"` (which chooses its own). |
+| `instructions` | string[] | `[]` | Extra prompt guidance, one line each (e.g. "mention the user-visible effect"). |
+| `binary` | string\|null | `null` | Path to the selected agent's executable; `null` searches `PATH`. It overrides whichever agent is selected, so changing agent clears it. |
+| `timeoutMs` | number | `60000` | How long one generation may run before it is abandoned. |
+
+Not every effort is legal on every agent: `claude` rejects `minimal` and `codex`
+rejects `max`. A file naming one its agent refuses still loads — the generation
+runs at the model's default effort and karet reports the discrepancy rather than
+failing.
+
+##### Using it
+
+The commit box in Source Control carries a chip showing what will run, or why
+nothing will — a missing CLI is visible before you press anything, not after
+waiting for it.
+
+| Key | Action |
+|---|---|
+| `Ctrl+G` | Generate a message from the staged diff (also: click the chip). |
+| `Esc` | Cancel a running generation, killing the agent process. A second `Esc` leaves the field. |
+| `Ctrl+Z` | Restore the draft a generated message replaced. |
+| `Ctrl+Shift+G` | Open the options form, which re-probes the agents and writes back to the user JSONC layer. |
+
+A generated message replaces the draft. If you typed while waiting, the previous
+draft is kept and `Ctrl+Z` brings it back.
+
+Binary files are named in the diff but their contents are never included, so a
+staged image costs neither prompt budget nor a distorted model choice.
+
+Generation is compiled into the default build. `cargo build
+--no-default-features` (or dropping the app's `aicommit` feature) removes the
+generator and both agent adapters entirely — see [binary size](binary-size.md).
+
 > An explicit `--icons` flag (or the `KARET_ICONS` environment variable) overrides
 > `workbench.iconStyle`.
 

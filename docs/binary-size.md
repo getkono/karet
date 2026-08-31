@@ -18,6 +18,12 @@ Cargo features so a build can drop their dependency trees (issue #23):
   serde/serde_json (gated for consistency; nearly weightless).
 - **`notebook-kernels`** adds the Jupyter wire stack: pure-Rust `zeromq`
   (ZMTP), `jupyter-protocol`, and `hmac` over the workspace `sha2`.
+- **`aicommit`** enables `karet-session/aicommit`, pulling `aicommit-core` and
+  `agent-text`'s `claude-code`/`codex` adapters — prompt building and two
+  process drivers, over the already-present tokio/serde (light, and pure-Rust:
+  the adapters drive local executables over pipes, with no network stack). Off,
+  the commit box reports that the build has no AI support rather than offering a
+  key that cannot work.
 
 All are **on by default**, so the shipped binary is unchanged. A
 `--no-default-features` build compiles them all out; a disabled file type falls
