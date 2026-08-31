@@ -267,7 +267,7 @@ fn apply_markdown_osc8(
         let Ok(target) = crate::links::resolve(&hit.target, source, root) else {
             continue;
         };
-        let Some(uri) = target.osc8_uri() else {
+        let Some(uri) = target.osc8_uri().and_then(crate::links::safe_external) else {
             continue;
         };
         super::osc8::link_row(
