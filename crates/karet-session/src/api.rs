@@ -33,6 +33,7 @@ use karet_vcs::RepositorySummary;
 use karet_vcs::StashEntry;
 use karet_vcs::StashOptions;
 
+mod aicommit;
 mod debug;
 mod event;
 mod github;
@@ -41,6 +42,7 @@ mod seam;
 mod search;
 mod vcs;
 
+pub use aicommit::*;
 pub use debug::*;
 pub use event::Event;
 pub use github::*;
@@ -645,11 +647,33 @@ pub enum Command {
         /// The commit message.
         message: String,
     },
-    /// Generate a commit message from the staged diff (answered asynchronously by
-    /// [`Event::CommitMessageGenerated`], or an [`Event::Notification`] when nothing
-    /// is staged, generation fails, or the `aicommit` feature / `git.aiCommit`
-    /// setting is disabled). Honours the `git.aiCommit.*` settings.
+    /// Generate a commit message from the staged diff, under the
+    /// `git.aiCommit.*` settings.
+    ///
+    /// Answered by [`Event::CommitMessageGenerated`] on success and
+    /// [`Event::CommitMessageFailed`] otherwise — including the cases where
+    /// nothing is staged or generation is unavailable, so a client can render
+    /// the outcome where it asked rather than as a detached notification.
+    ///
+    /// The round-trip takes seconds. It is cancellable through
+    /// [`Command::Cancel`], which kills the agent process, and a newer request
+    /// supersedes an older one. Whether it can run at all is knowable in advance
+    /// from [`Event::AiCommitAvailability`].
     GenerateCommitMessage,
+    /// Re-probe the configured agent CLIs and re-emit
+    /// [`Event::AiCommitAvailability`].
+    ///
+    /// Availability is already pushed at startup and whenever settings reload;
+    /// this is for the moments a client wants a fresh answer, such as opening a
+    /// configuration surface or retrying after the user installed something.
+    ProbeAiCommit,
+    /// Persist `git.aiCommit.*` to the user settings layer, retaining JSONC
+    /// comments and unrelated keys, then re-probe and re-emit
+    /// [`Event::AiCommitAvailability`].
+    SetAiCommitOptions {
+        /// The settings to write.
+        options: Box<crate::config::schema::AiCommit>,
+    },
     /// Recompute and re-emit the source-control status.
     RefreshVcs,
     /// Load the current and incoming index stages for an unresolved merge conflict.

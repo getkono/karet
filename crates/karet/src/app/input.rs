@@ -156,6 +156,10 @@ impl App {
             // A question outranks the picker or menu it was raised from: answering
             // it is what everything under it is waiting on.
             Some(Modal::Confirm)
+        } else if self.commit_console.open {
+            // A commit's console is what the user is waiting on; it outranks the
+            // pickers, but not a question raised from it.
+            Some(Modal::CommitConsole)
         } else if self.overlay.is_some() {
             Some(Modal::Overlay)
         } else if self.commit_input.focused {
@@ -244,6 +248,9 @@ impl App {
             Modal::SearchInput => self.search_edit(key),
             Modal::SearchList => {},
             Modal::ContextMenu => self.close_context_menu(),
+            // The console is read, not typed into: only the keys that move it
+            // through a long log do anything.
+            Modal::CommitConsole => self.commit_console_key(key),
             // An unbound key cancels a confirmation, matching every other confirm
             // prompt: the default answer to a question the user did not answer is no.
             Modal::Confirm => self.confirm_cancel(),
@@ -294,8 +301,10 @@ impl App {
             },
             Modal::SearchList
             | Modal::ContextMenu
-            // A confirmation captures no text: pasting into a question is
-            // meaningless, and must not fall through to the editor underneath.
+            // Neither a console nor a confirmation captures text: pasting into
+            // something you only read is meaningless, and must not fall through
+            // to the editor underneath.
+            | Modal::CommitConsole
             | Modal::Confirm => {},
         }
     }
@@ -373,6 +382,7 @@ impl App {
             OverlayEvent::AcceptStash(options) => {
                 self.run_vcs_action(VcsAction::StashPush(options));
             },
+            OverlayEvent::AcceptAiCommit(options) => self.save_ai_commit_options(*options),
             OverlayEvent::AcceptStashAction(action) => match action {
                 StashAction::Preview(reference) => {
                     self.run_vcs_action(VcsAction::StashPreview { reference });

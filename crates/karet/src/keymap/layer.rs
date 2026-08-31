@@ -185,6 +185,8 @@ pub enum Layer {
     SearchList,
     /// Active while the commit-message input is open.
     CommitInput,
+    /// Active while the commit console is open.
+    CommitConsole,
     /// Active while the go-to-commit (revision) input is open.
     RevInput,
     /// Active while a context menu is open.
@@ -216,6 +218,8 @@ pub enum Modal {
     ContextMenu,
     /// A confirmation dialog awaiting a choice.
     Confirm,
+    /// The commit console showing a running or finished commit's hook output.
+    CommitConsole,
     /// The explorer inline name editor (new file/folder or rename).
     ExplorerEdit,
 }
@@ -262,6 +266,7 @@ pub fn active_layers(ctx: Context) -> &'static [Layer] {
         Some(Modal::Overlay) => &[L::Overlay],
         Some(Modal::Find) => &[L::Find],
         Some(Modal::CommitInput) => &[L::CommitInput],
+        Some(Modal::CommitConsole) => &[L::CommitConsole],
         Some(Modal::RevInput) => &[L::RevInput],
         Some(Modal::ContextMenu) => &[L::ContextMenu],
         Some(Modal::Confirm) => &[L::Confirm],

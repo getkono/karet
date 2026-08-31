@@ -12,11 +12,28 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::process::Output;
 
+mod commit;
+
+pub use commit::CommitCancel;
+pub use commit::CommitOutcome;
+pub use commit::CommitOutputLine;
+pub use commit::OutputStream;
+
 use crate::Repository;
 use crate::StagedDiff;
 use crate::VcsError;
 
 impl Repository {
+    /// The worktree root, for the streaming commit runner in [`commit`].
+    pub(crate) fn commit_workdir(&self) -> Result<&Path, VcsError> {
+        self.workdir()
+    }
+
+    /// The `.git` directory, for the streaming commit runner's lock check.
+    pub(crate) fn commit_git_dir(&self) -> &Path {
+        self.inner.path()
+    }
+
     fn workdir(&self) -> Result<&Path, VcsError> {
         self.inner
             .workdir()
@@ -177,18 +194,23 @@ impl Repository {
     }
 
     pub(crate) fn git_commit(&self, message: &str) -> Result<String, VcsError> {
-        self.git_checked([
-            OsStr::new("commit"),
-            OsStr::new("--quiet"),
-            OsStr::new("-m"),
-            OsStr::new(message),
-        ])?;
-        let output = self.git_checked(["rev-parse", "HEAD"])?;
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        // One commit path, so hooks behave identically whether or not the caller
+        // wants their output. Nothing holds the token, so nothing can cancel it.
+        match self.commit_streaming(message, &CommitCancel::new(), &mut |_| {})? {
+            CommitOutcome::Created(oid) => Ok(oid),
+            CommitOutcome::Cancelled => Err(VcsError::Git(
+                "commit was cancelled without a canceller".to_string(),
+            )),
+        }
     }
 
     pub(crate) fn git_staged_diff(&self) -> Result<StagedDiff, VcsError> {
-        let patch = self.git_checked(["diff", "--cached", "--binary", "--no-ext-diff"])?;
+        // Deliberately *not* `--binary`: this diff describes a change to a reader
+        // (see `Repository::staged_diff`), and an embedded binary payload is both
+        // unreadable and unbounded. Without the flag git still records that the
+        // file changed ("Binary files a/x and b/x differ"), which is the whole
+        // signal a summary needs.
+        let patch = self.git_checked(["diff", "--cached", "--no-ext-diff"])?;
         let stat = self.git_checked(["diff", "--cached", "--stat", "--no-ext-diff"])?;
         let names = self.git_checked(["diff", "--cached", "--name-only", "--no-ext-diff"])?;
         Ok(StagedDiff {
@@ -416,6 +438,52 @@ mod tests {
         assert!(staged.patch.is_empty(), "reverse apply un-staged it");
         // A garbage patch is a clean error, not a panic.
         assert!(r.apply_index_patch("not a patch", false).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn staged_diff_names_binary_files_without_embedding_them() -> Result<(), VcsError> {
+        let repo = init_repo()?;
+        // A NUL byte is what makes git treat the blob as binary, and 0xff bytes
+        // are not valid UTF-8 — so if the payload ever leaked into the patch,
+        // the lossy decode would leave replacement characters behind.
+        let blob: Vec<u8> = [0u8, 1, 2, 0xff, 0xfe].repeat(512);
+        write(&repo.0, "logo.bin", &blob)?;
+        write(&repo.0, "a.txt", b"hello\n")?;
+        let r = Repository::discover(&repo.0)?;
+        r.stage(&[PathBuf::from("logo.bin"), PathBuf::from("a.txt")])?;
+
+        let diff = r.staged_diff()?;
+        assert_eq!(diff.file_count, 2);
+        // The change is reported...
+        assert!(
+            diff.patch.contains("logo.bin"),
+            "the binary file is still named: {}",
+            diff.patch
+        );
+        assert!(
+            diff.patch.contains("Binary files"),
+            "git marks it as binary: {}",
+            diff.patch
+        );
+        // ...but its contents are not, so the patch stays readable and bounded.
+        assert!(
+            !diff.patch.contains("GIT binary patch"),
+            "no binary payload: {}",
+            diff.patch
+        );
+        assert!(
+            !diff.patch.contains('\u{fffd}'),
+            "no lossily-decoded binary bytes: {}",
+            diff.patch
+        );
+        assert!(
+            diff.patch.len() < blob.len(),
+            "the patch is far smaller than the blob it describes: {} bytes",
+            diff.patch.len()
+        );
+        // The text file alongside it is unaffected.
+        assert!(diff.patch.contains("+hello"), "patch: {}", diff.patch);
         Ok(())
     }
 

@@ -323,6 +323,16 @@ pub struct Session {
     /// Cancellation registry for safely-droppable background reads: repository
     /// reads, LaTeX builds, and the workspace spelling scan.
     cancellations: crate::cancellation::CancellationHub,
+    /// The most recent AI commit-message request, so a newer one supersedes it
+    /// rather than racing it. Generation drives an external process, and two of
+    /// them answering the same input box is never what the user asked for.
+    ///
+    /// It is not cleared when a request finishes: cancelling a completed id is a
+    /// no-op (its registration is dropped with the task), and ids never repeat,
+    /// so holding the last one costs nothing and keeps this a plain assignment
+    /// on the actor thread rather than something the task has to reach back into.
+    #[cfg(feature = "aicommit")]
+    ai_commit_request: Option<RequestId>,
     /// Serialized external LaTeX builds.
     latex_worker: std::sync::mpsc::Sender<crate::latex::LatexJob>,
     /// Whether prepared diffs carry syntax token runs (the client's choice; see
@@ -404,8 +414,16 @@ impl Session {
             Command::Discard { paths } => self.vcs_write(id, |repo| repo.discard(&paths)),
             Command::StageAll => self.vcs_write(id, Repository::stage_all),
             Command::UnstageAll => self.vcs_write(id, Repository::unstage_all),
-            Command::Commit { message } => self.commit(id, &message),
+            Command::Commit { message } => {
+                self.submit_vcs(id, |id, cancel| crate::vcs_worker::VcsJob::Commit {
+                    id,
+                    message,
+                    cancel,
+                });
+            },
             Command::GenerateCommitMessage => self.generate_commit_message(id),
+            Command::ProbeAiCommit => self.emit_ai_commit_availability(Some(id)),
+            Command::SetAiCommitOptions { options } => self.set_ai_commit_options(id, *options),
             Command::RefreshVcs => self.emit_vcs_status(Some(id)),
             Command::RepositorySnapshot => {
                 self.submit_vcs(id, |id, cancel| crate::vcs_worker::VcsJob::Snapshot {

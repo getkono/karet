@@ -1,3 +1,6 @@
+pub(crate) mod aicommit;
+pub(crate) mod commit_box;
+
 use super::*;
 
 impl App {
@@ -617,6 +620,12 @@ impl App {
 
     /// Blur the commit editor while preserving its draft.
     pub(super) fn commit_cancel(&mut self) {
+        // Esc stops a running generation before it blurs the field: while an
+        // agent is working, "stop that" is what the key is reaching for, and the
+        // draft is not going anywhere.
+        if self.commit_generate_cancel() {
+            return;
+        }
         self.commit_input.focused = false;
         self.status = Some("commit message kept as a draft".to_string());
     }
@@ -639,16 +648,10 @@ impl App {
         if let Some(id) = self.send(SessionCommand::Commit { message }) {
             self.commit_input.pending = Some(id);
             self.status = Some("committing…".to_string());
+            // A fresh log per commit. The console itself stays shut until there
+            // is something in it — see `app::commit_console`.
+            self.commit_console_reset();
         }
-    }
-
-    /// Ask the backend to draft a commit message from the staged diff. The result
-    /// arrives asynchronously as [`SessionEvent::CommitMessageGenerated`] and replaces
-    /// the input; problems (nothing staged, disabled, generator error) come back as a
-    /// notification.
-    pub(super) fn commit_generate(&mut self) {
-        self.status = Some("generating commit message…".to_string());
-        self.send_command(SessionCommand::GenerateCommitMessage);
     }
 
     /// Edit the multiline commit message with an unbound text-field key.
@@ -657,6 +660,9 @@ impl App {
             self.commit_submit();
             return;
         }
+        // Any key that moves the caret re-engages caret-following, ending a
+        // deliberate scroll away from it.
+        self.commit_input.scrolled_away = false;
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
@@ -693,6 +699,7 @@ impl App {
 
     /// Insert pasted text at the commit editor's caret, normalizing line endings.
     pub(super) fn commit_paste(&mut self, text: &str) {
+        self.commit_input.scrolled_away = false;
         self.commit_input
             .insert_text(&text.replace("\r\n", "\n").replace('\r', "\n"));
     }
@@ -887,6 +894,7 @@ impl CommitInput {
     }
 
     pub(super) fn place_cursor(&mut self, column: u16, row: u16, width: u16, extend: bool) {
+        self.scrolled_away = false;
         self.edit
             .place_cursor(&self.text, column, row, width, extend);
     }

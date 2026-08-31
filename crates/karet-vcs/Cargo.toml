@@ -30,6 +30,7 @@ serde = { workspace = true, optional = true }
 gix.workspace = true
 imara-diff.workspace = true
 thiserror.workspace = true
+command-group.workspace = true        # process groups, so cancelling a commit reaches its hooks
 ssh-key = { workspace = true, optional = true }
 
 [lints]

@@ -18,6 +18,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
+name = "agent-text"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9f432625494ad4c9ecf8afa619254a212434aa311547c61ba05cab380264a6c5"
+dependencies = [
+ "async-trait",
+ "semver",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -41,12 +56,11 @@ dependencies = [
 
 [[package]]
 name = "aicommit-core"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4792e674ea500c7030f52ae2dd4a054023b2c1b81adb8c26859273147ee3dd83"
+checksum = "863d22693dc68e95ff102d6d01d4fca3a15bced3da22ade4e8449ac0304a2c69"
 dependencies = [
- "serde",
- "serde_json",
+ "agent-text",
  "thiserror 2.0.19",
 ]
 
@@ -3542,6 +3556,7 @@ dependencies = [
 name = "karet-session"
 version = "0.6.0"
 dependencies = [
+ "agent-text",
  "aicommit-core",
  "base64",
  "blameline",
@@ -3709,6 +3724,7 @@ dependencies = [
 name = "karet-vcs"
 version = "0.6.0"
 dependencies = [
+ "command-group",
  "gix",
  "imara-diff",
  "karet-core",

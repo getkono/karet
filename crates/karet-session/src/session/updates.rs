@@ -653,6 +653,7 @@ impl Session {
     pub(super) fn apply_config_report(&mut self, report: crate::config::LoadedConfig) {
         self.debug.reconfigure(report.settings.debug.clone());
         let lsp_changed = self.lsp.reconfigure(report.settings.lsp.clone());
+        let ai_commit_changed = self.config.settings.git.ai_commit != report.settings.git.ai_commit;
         self.config.settings = report.settings.clone();
         self.config.loaded_config = report.clone();
         let docs: Vec<DocumentId> = self.store.docs.keys().copied().collect();
@@ -683,6 +684,14 @@ impl Session {
                     || doc.buffer.text(),
                 );
             }
+        }
+
+        // Re-probe when the agent, its binary, or the on/off switch moved. A
+        // client refuses locally on the last blocker it was told about, so
+        // without this a user who fixes their configuration in the settings file
+        // would find the action still refusing until the next restart.
+        if ai_commit_changed {
+            self.emit_ai_commit_availability(None);
         }
 
         self.emit(

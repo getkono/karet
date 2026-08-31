@@ -69,6 +69,93 @@ pub fn set_user_blame(enabled: bool) -> Result<PathBuf, ConfigWriteError> {
     Ok(path)
 }
 
+/// Persist `git.aiCommit.*` in the user layer while retaining JSONC comments and
+/// unrelated formatting. Returns the updated file path.
+///
+/// Only the keys that differ from the defaults are written: a settings file
+/// should record what the user chose, not restate the whole schema back at them.
+/// A key that returns to its default is removed rather than pinned, so a later
+/// change of default is still inherited.
+///
+/// # Errors
+/// Returns [`ConfigWriteError`] when the user path is unavailable, the existing file
+/// is invalid JSONC, or the atomic write fails.
+pub fn set_user_ai_commit(options: &schema::AiCommit) -> Result<PathBuf, ConfigWriteError> {
+    let path = load::user_config_path().ok_or(ConfigWriteError::NoUserDirectory)?;
+    let current = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => "{}\n".to_string(),
+        Err(error) => return Err(ConfigWriteError::Io(error.to_string())),
+    };
+    let updated = update_ai_commit_jsonc(&current, options)?;
+    atomic_write(&path, updated.as_bytes())?;
+    Ok(path)
+}
+
+fn update_ai_commit_jsonc(
+    text: &str,
+    options: &schema::AiCommit,
+) -> Result<String, ConfigWriteError> {
+    let defaults = schema::AiCommit::default();
+    let root = CstRootNode::parse(text, &Default::default())
+        .map_err(|error| ConfigWriteError::Parse(error.to_string()))?;
+    let object = root.object_value_or_set();
+    let git = object.object_value_or_set("git");
+    let ai = git.object_value_or_set("aiCommit");
+
+    // `set` writes a key, or removes it when the value is back to its default.
+    let set =
+        |key: &str, value: Option<jsonc_parser::cst::CstInputValue>| match (ai.get(key), value) {
+            (Some(property), Some(value)) => property.set_value(value),
+            (Some(property), None) => property.remove(),
+            (None, Some(value)) => {
+                ai.append(key, value);
+            },
+            (None, None) => {},
+        };
+    set(
+        "enabled",
+        (options.enabled != defaults.enabled).then(|| json!(options.enabled)),
+    );
+    set(
+        "agent",
+        (options.agent != defaults.agent).then(|| json!(options.agent.as_str())),
+    );
+    set(
+        "model",
+        (options.model != defaults.model).then(|| json!(options.model.clone())),
+    );
+    set(
+        "effort",
+        options.effort.map(|effort| json!(effort.as_str())),
+    );
+    set(
+        "timeoutMs",
+        (options.timeout_ms != defaults.timeout_ms).then(|| json!(options.timeout_ms as f64)),
+    );
+    set(
+        "binary",
+        options
+            .binary
+            .as_ref()
+            .filter(|path| !path.trim().is_empty())
+            .map(|path| json!(path.clone())),
+    );
+    set(
+        "instructions",
+        (options.instructions != defaults.instructions).then(|| {
+            jsonc_parser::cst::CstInputValue::Array(
+                options
+                    .instructions
+                    .iter()
+                    .map(|line| json!(line.clone()))
+                    .collect(),
+            )
+        }),
+    );
+    Ok(root.to_string())
+}
+
 /// Add `word` to the user-layer spell-check dictionary while preserving JSONC
 /// comments and unrelated settings. A missing user settings file is created.
 ///
@@ -300,6 +387,79 @@ mod tests {
         assert!(text.contains("// personal words"));
         assert!(text.contains("\"tabSize\": 2"));
         assert!(text.contains("\"Karet\""));
+        Ok(())
+    }
+
+    #[test]
+    fn ai_commit_writer_records_only_what_differs_from_the_defaults() -> Result<(), ConfigWriteError>
+    {
+        let source = "{\n  // keep me\n  \"editor\": { \"tabSize\": 2 },\n}\n";
+        let options = schema::AiCommit {
+            agent: schema::AiCommitAgent::Codex,
+            effort: Some(schema::AiCommitEffort::High),
+            ..schema::AiCommit::default()
+        };
+
+        let updated = update_ai_commit_jsonc(source, &options)?;
+        assert!(
+            updated.contains("// keep me"),
+            "comments survive: {updated}"
+        );
+        assert!(updated.contains("\"tabSize\""), "unrelated keys survive");
+        assert!(updated.contains("\"agent\""), "the changed key is written");
+        assert!(updated.contains("codex"), "{updated}");
+        assert!(updated.contains("\"effort\""), "{updated}");
+        // Defaults are not restated back at the user, so a later change of
+        // default is still inherited rather than silently pinned.
+        assert!(
+            !updated.contains("\"enabled\""),
+            "default omitted: {updated}"
+        );
+        assert!(!updated.contains("\"model\""), "default omitted: {updated}");
+        assert!(!updated.contains("timeoutMs"), "default omitted: {updated}");
+        assert!(!updated.contains("\"binary\""), "unset omitted: {updated}");
+        Ok(())
+    }
+
+    #[test]
+    fn ai_commit_writer_removes_a_key_that_returns_to_its_default() -> Result<(), ConfigWriteError>
+    {
+        let source =
+            "{ \"git\": { \"aiCommit\": { \"agent\": \"codex\", \"effort\": \"high\" } } }";
+        // Back to stock: both keys must disappear rather than be pinned.
+        let updated = update_ai_commit_jsonc(source, &schema::AiCommit::default())?;
+        assert!(!updated.contains("codex"), "{updated}");
+        assert!(!updated.contains("\"effort\""), "{updated}");
+        Ok(())
+    }
+
+    #[test]
+    fn ai_commit_writer_round_trips_through_the_settings_parser() -> Result<(), ConfigWriteError> {
+        let options = schema::AiCommit {
+            agent: schema::AiCommitAgent::Codex,
+            effort: Some(schema::AiCommitEffort::XHigh),
+            model: "gpt-5".to_string(),
+            instructions: vec!["be terse".to_string()],
+            binary: Some("/opt/bin/codex".to_string()),
+            timeout_ms: 30_000,
+            ..schema::AiCommit::default()
+        };
+
+        // What we write must be what we read back — the property that keeps the
+        // form's saved state and the running configuration from diverging.
+        let updated = update_ai_commit_jsonc("{}", &options)?;
+        let value: Option<serde_json::Value> =
+            jsonc_parser::parse_to_serde_value(&updated, &Default::default())
+                .map_err(|e| ConfigWriteError::Parse(e.to_string()))?;
+        let section = value
+            .as_ref()
+            .and_then(|root| root.get("git"))
+            .and_then(|git| git.get("aiCommit"))
+            .cloned()
+            .unwrap_or_default();
+        let parsed: schema::AiCommit =
+            serde_json::from_value(section).map_err(|e| ConfigWriteError::Parse(e.to_string()))?;
+        assert_eq!(parsed, options);
         Ok(())
     }
 

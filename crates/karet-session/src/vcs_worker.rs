@@ -22,6 +22,7 @@ use crate::api::VcsOutcome;
 use crate::cancellation::Cancellation;
 
 mod blame;
+mod commit;
 mod conflict;
 mod history;
 mod prepare;
@@ -30,6 +31,7 @@ use blame::BlameCache;
 use blame::blame;
 #[cfg(test)]
 use blame::map_attribution;
+use commit::run_commit;
 use conflict::run_merge_conflict;
 use history::run_commit_detail;
 use history::run_file_history;
@@ -84,6 +86,24 @@ pub(crate) enum VcsJob {
     },
     /// Run one repository action.
     Action { id: RequestId, action: VcsAction },
+    /// Commit the staged changes, streaming the hooks' console output.
+    ///
+    /// Deliberately on this worker rather than the session actor: a pre-commit
+    /// hook can run for a minute, and blocking the actor would freeze editing
+    /// with it. Other repository jobs queue behind it, which is both unavoidable
+    /// (they would race the index it is writing) and a strict improvement.
+    ///
+    /// Unlike every other job here, cancelling this one is not a matter of
+    /// dropping an unwanted answer: there is a `git` process and a tree of hooks
+    /// to stop, and this thread is blocked inside them, so nothing ever comes
+    /// back to read a flag. The token carries the request across that boundary —
+    /// see [`Cancellation::on_cancel`] and `karet_vcs::CommitCancel`, which owns
+    /// the signalling and the question of whether a commit was created anyway.
+    Commit {
+        id: RequestId,
+        message: String,
+        cancel: Cancellation,
+    },
     /// Query open GitHub pull requests.
     PullRequests {
         id: RequestId,
@@ -280,6 +300,11 @@ fn run(
                 },
             }
         },
+        VcsJob::Commit {
+            id,
+            message,
+            cancel,
+        } => run_commit(root, events, last_status, id, &message, &cancel),
         VcsJob::Action { id, action } => {
             let result = repository(root).and_then(|repo| {
                 let outcome = execute(&repo, &action)?;

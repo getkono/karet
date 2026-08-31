@@ -159,6 +159,13 @@ impl Command {
             Self::CommitSubmit => "submit",
             Self::CommitCancel => "keep draft",
             Self::CommitGenerate => "generate",
+            Self::CommitGenerateUndo => "undo generated",
+            Self::CommitConfigureAi => "ai options",
+            Self::CommitConsoleClose => "close",
+            Self::CommitConsoleCancel => "cancel commit",
+            // Reached from the palette, not advertised in a bar: it applies only
+            // after a commit whose console has already been dismissed.
+            Self::CommitConsoleShow => return None,
             Self::ExplorerEditSubmit => "confirm",
             Self::ExplorerEditCancel => "cancel",
             Self::ContextMenuAccept => "accept",

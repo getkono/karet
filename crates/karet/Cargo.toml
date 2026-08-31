@@ -23,7 +23,7 @@ path = "src/main.rs"
 # `--no-default-features` build compiles without the Gamut codec tree, `hayro`,
 # or the DOCX reader.
 [features]
-default = ["images", "pdf", "docx", "notebook", "notebook-kernels", "mermaid"]
+default = ["images", "pdf", "docx", "notebook", "notebook-kernels", "mermaid", "aicommit"]
 # Decode & render raster image files (pulls the Gamut codec stack via
 # karet-fileview's `images` feature, which implies its shared `raster` primitives).
 images = ["karet-fileview/images"]
@@ -41,6 +41,11 @@ notebook-kernels = ["notebook", "karet-session/notebook-kernel"]
 # Render ```mermaid fences in the markdown preview as Unicode diagrams (pulls
 # the pure-Rust merman engine via karet-markdown's `mermaid` feature).
 mermaid = ["karet-markdown/mermaid"]
+# Draft commit messages from the staged diff with a local agent CLI. On here
+# rather than in the backend: a library crate must not force an AI CLI on its
+# embedders, but the shipped editor is exactly the embedder that wants one.
+# `git.aiCommit.enabled` still gates it at runtime, without a rebuild.
+aicommit = ["karet-session/aicommit"]
 
 [dependencies]
 # Presentation/client half + the headless backend it drives through the Command/Event seam.

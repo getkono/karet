@@ -47,6 +47,10 @@ pub use selection::Selection;
 pub use stash::StashEntry;
 pub use stash::StashOptions;
 pub use summary::RepositorySummary;
+pub use write::CommitCancel;
+pub use write::CommitOutcome;
+pub use write::CommitOutputLine;
+pub use write::OutputStream;
 
 /// Errors produced by the VCS engine.
 #[derive(Debug, thiserror::Error)]
@@ -222,10 +226,41 @@ impl Repository {
         self.git_commit(message)
     }
 
+    /// Commit the staged changes, streaming the hooks' console output, and stop
+    /// on request.
+    ///
+    /// [`commit`](Self::commit) with a sink: `on_line` is called for every line
+    /// `git` and its hooks print, as they print it, and every line arrives before
+    /// the result is decided — so a hook that fails after explaining itself still
+    /// delivers the explanation.
+    ///
+    /// `cancel` stops the commit and its hooks from any thread. It reports
+    /// [`CommitOutcome::Cancelled`] only when no commit was created; a request
+    /// that arrives too late to prevent one says so — see [`CommitOutcome`].
+    ///
+    /// # Errors
+    /// Returns [`VcsError::GitUnavailable`] when `git` cannot be launched, or
+    /// [`VcsError::Git`] when the commit is refused, carrying the last thing
+    /// written to stderr as the reason.
+    pub fn commit_with_output(
+        &self,
+        message: &str,
+        cancel: &CommitCancel,
+        on_line: &mut dyn FnMut(CommitOutputLine),
+    ) -> Result<CommitOutcome, VcsError> {
+        self.commit_streaming(message, cancel, on_line)
+    }
+
     /// The staged changes as a unified diff plus a `--stat` summary and file count.
     ///
     /// This is the input an external commit-message generator needs; the diff is
     /// taken between `HEAD` (or the empty tree on an unborn branch) and the index.
+    ///
+    /// Binary files are reported as changed but their contents are **not**
+    /// included: the patch is meant to be read, and an embedded blob is
+    /// unreadable, unbounded, and distorts any size-based decision made from
+    /// [`StagedDiff::patch`]. This diff is therefore for describing a change,
+    /// not for reapplying one — nothing here reproduces it.
     ///
     /// # Errors
     /// Returns [`VcsError::GitUnavailable`] when `git` cannot be launched, or

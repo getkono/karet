@@ -544,16 +544,58 @@ pub enum Event {
         /// committed history available.
         attribution: Option<BlameAttribution>,
     },
+    /// Console output from a commit that is still running, in arrival order.
+    ///
+    /// Emitted repeatedly between [`Command::Commit`] and its outcome, batched so
+    /// a chatty hook does not cost one event per line. A commit with no hooks
+    /// emits at most git's own summary, so a client that opens a console on the
+    /// first of these never opens one for an ordinary commit.
+    ///
+    /// [`CommitOutputLine::stream`](karet_vcs::CommitOutputLine) is not a
+    /// severity: git routes a hook's own stdout to its stderr, so painting that
+    /// stream as an error paints every successful hook red.
+    CommitOutput {
+        /// The lines produced since the last batch.
+        lines: Vec<karet_vcs::CommitOutputLine>,
+    },
     /// A commit was created.
     Committed {
         /// The new commit's hex object id.
         oid: String,
     },
+    /// A commit was stopped by [`Command::Cancel`] before it created anything.
+    ///
+    /// A cancellation that arrives too late to prevent a commit reports
+    /// [`Committed`](Self::Committed) instead: what happened outranks what was
+    /// asked for. The client keeps the draft message either way — a cancelled
+    /// commit is one the user still means to make.
+    CommitCancelled,
     /// A commit message was generated from the staged diff, answering
     /// [`Command::GenerateCommitMessage`]. The client fills its commit input with it.
     CommitMessageGenerated {
         /// The generated commit message.
         message: String,
+    },
+    /// Generating a commit message did not produce one, answering
+    /// [`Command::GenerateCommitMessage`].
+    ///
+    /// Covers every non-success outcome the client should show — nothing
+    /// staged, generation unavailable or disabled, the agent failing or timing
+    /// out. It is paired with the request that asked, so a client can render it
+    /// against the commit input rather than as a detached notification. A
+    /// cancelled request is silent: it emits nothing.
+    CommitMessageFailed {
+        /// Why no message was produced, phrased for display.
+        message: String,
+    },
+    /// Whether AI commit-message generation can run, and with what.
+    ///
+    /// Pushed at startup, whenever settings reload, and in answer to
+    /// [`Command::ProbeAiCommit`] — so a client can show a resolved,
+    /// verified configuration before the user asks for a generation.
+    AiCommitAvailability {
+        /// The resolved configuration and per-agent probe results.
+        status: Box<crate::api::AiCommitAvailability>,
     },
     /// A page of the commit-history log, answering a [`Command::VcsLog`].
     VcsLog {

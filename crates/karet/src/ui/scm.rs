@@ -1,6 +1,7 @@
+mod aicommit;
+mod commit_box;
+
 use karet_session::ChangeSummary;
-use karet_widgets::textarea::TextArea;
-use karet_widgets::textarea::TextAreaStyle;
 
 use super::*;
 
@@ -14,11 +15,12 @@ pub(super) fn draw_scm(
     let header_rows = Layout::vertical([Constraint::Length(2), Constraint::Min(0)]).split(area);
     draw_repository_header(f, app, theme, header_rows[0]);
     let area = header_rows[1];
-    // The commit editor is a permanent part of Source Control. Keep it layout-stable
-    // while focus moves between the draft and the file lists.
-    let input_height = area.height.min(5);
+    // The commit editor is a permanent part of Source Control. It grows with its
+    // draft and then scrolls, so focus moving between the draft and the file
+    // lists never changes its size.
+    let input_height = crate::app::scm::commit_box::commit_box_height(area, &app.commit_input.text);
     let rows = Layout::vertical([Constraint::Length(input_height), Constraint::Min(0)]).split(area);
-    draw_commit_input(f, app, theme, rows[0]);
+    commit_box::draw_commit_input(f, app, theme, rows[0], hits);
     let list_area = rows[1];
 
     // A scrollable changes region on top; when there is commit history and room for
@@ -351,48 +353,30 @@ pub(super) fn draw_scm_commits(
     );
 }
 
-/// Draw the permanent multiline commit-message editor above the change list.
-pub(super) fn draw_commit_input(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
-    if area.width == 0 || area.height == 0 {
-        app.scm_ui.commit_rect = Rect::default();
+/// Paint the AI affordance into the commit box's top border, and record where it
+/// landed so a click can reach it.
+///
+/// The rect is cleared every frame before it is recomputed: a chip that fails to
+/// fit, or a state with nothing to say, must not leave a stale click target
+/// behind where the user would hit something they can no longer see.
+pub(super) fn draw_ai_chip(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect, title: &str) {
+    app.scm_ui.ai_chip_rect = Rect::default();
+    let now = std::time::Instant::now();
+    let Some(chip) = aicommit::chip(app, now, app.icon_style) else {
         return;
-    }
-    let accent = theme.role(ThemeRole::LineNumberActive).to_ratatui();
-    let muted = theme.role(ThemeRole::LineNumber).to_ratatui();
-    let title = if app.commit_input.pending.is_some() {
-        " Commit message · committing… "
-    } else {
-        " Commit message · Ctrl+Enter commit "
     };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(title)
-        .border_style(Style::default().fg(if app.commit_input.focused {
-            accent
-        } else {
-            muted
-        }));
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-    app.scm_ui.commit_rect = inner;
-    if inner.width == 0 || inner.height == 0 {
+    let title_width = karet_widgets::text::width(title) as u16;
+    // Longest phrasing that fits; a squeezed sidebar still gets the mark.
+    let Some((label, rect)) = chip.fit(area, title_width) else {
         return;
-    }
-
-    app.commit_input
-        .edit
-        .ensure_cursor_visible(&app.commit_input.text, inner.width, inner.height);
-    let foreground = theme.role(ThemeRole::Foreground).to_ratatui();
-    let selection = theme.role(ThemeRole::Selection).to_ratatui();
+    };
     f.render_widget(
-        TextArea::new(&app.commit_input.text, &app.commit_input.edit)
-            .focused(app.commit_input.focused)
-            .style(TextAreaStyle::new(
-                Style::default().fg(foreground),
-                Style::default().fg(foreground).bg(selection),
-                Style::default().fg(accent),
-            ))
-            .placeholder("Type a commit message", Style::default().fg(muted)),
-        inner,
+        Paragraph::new(Line::from(vec![
+            Span::raw(" "),
+            Span::styled(label.to_string(), aicommit::chip_style(theme, chip.role)),
+            Span::raw(" "),
+        ])),
+        rect,
     );
+    app.scm_ui.ai_chip_rect = rect;
 }

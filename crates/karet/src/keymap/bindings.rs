@@ -377,10 +377,18 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(CommitInput, false, false, false, Esc,   Command::CommitCancel),
     b(CommitInput, true,  false, false, Enter, Command::CommitSubmit),
     b(CommitInput, true,  false, false, Char('g'), Command::CommitGenerate),
+    b(CommitInput, true,  true,  false, Char('g'), Command::CommitConfigureAi),
+    b(CommitInput, true,  false, false, Char('z'), Command::CommitGenerateUndo),
     b(CommitInput, true,  false, false, Char('a'), Command::EditorSelectAll),
     b(CommitInput, true,  false, false, Char('c'), Command::Copy),
     b(CommitInput, true,  false, false, Char('x'), Command::Cut),
     b(CommitInput, true,  false, false, Char('v'), Command::Paste),
+    // Commit console.
+    b(CommitConsole, false, false, false, Esc, Command::CommitConsoleClose),
+    // A plain letter, not ^C: the console is read-only so letters are free, and
+    // ^C is Copy everywhere else — reaching for a hook's error text must not
+    // kill the commit.
+    b(CommitConsole, false, false, false, Char('c'), Command::CommitConsoleCancel),
     // Go-to-commit (revision) input.
     b(RevInput, false, false, false, Esc,   Command::RevInputCancel),
     b(RevInput, false, false, false, Enter, Command::RevInputSubmit),

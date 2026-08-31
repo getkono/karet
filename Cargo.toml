@@ -231,7 +231,9 @@ palette     = "0.7.6"
 ec4rs       = "1.2.0"
 spellbook   = "0.4.2"
 directories = "6.0.0"
-command-group = { version = "5.0.1", features = ["with-tokio"] }
+# Base entry stays synchronous so a lean consumer (karet-vcs) does not inherit
+# tokio; the crates that need the async API add `features = ["with-tokio"]`.
+command-group = { version = "5.0.1" }
 # Configuration file (karet-session): JSONC parsing (pure-Rust, byte-span errors)
 # and JSON Schema generation from the typed `Settings` for editor autocomplete.
 jsonc-parser = { version = "0.32.4", features = ["serde", "cst"] }
@@ -239,10 +241,15 @@ schemars     = "1.2.1"
 # Package dependency-graph backend (karet-session viz): the pure-Rust core of
 # `dependable` parses a Cargo.lock into a resolved graph offline (no network stack).
 dependable-core = "0.1.2"
-# AI commit-message generation (karet-session `aicommit` feature): builds the prompt,
-# picks the model, and shells out to the `claude` CLI. Frontend-agnostic and
-# git-agnostic (we hand it the staged diff), pure-Rust, no network stack of its own.
-aicommit-core = "0.1.0"
+# AI commit-message generation (karet-session `aicommit` feature): builds the
+# prompt and picks the model. Frontend-agnostic and git-agnostic (we hand it the
+# staged diff), pure-Rust, no network stack of its own.
+aicommit-core = "0.2.0"
+# The agent transport `aicommit-core` generates over. It declares agent-text with
+# `default-features = false`, so it carries no adapter itself — the concrete CLI
+# harnesses are ours to choose, and we take both. Pure-Rust: the adapters drive
+# the local `claude`/`codex` executables over pipes, with no network stack.
+agent-text = { version = "0.1.1", default-features = false, features = ["claude-code", "codex"] }
 # GitHub REST client (karet-github). Pure-Rust TLS via rustls (ring), no OpenSSL /
 # native-tls system dependency. Blocking API so callers need no async runtime.
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }

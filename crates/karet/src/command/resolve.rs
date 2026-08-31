@@ -118,6 +118,7 @@ static PALETTE: &[Command] = &[
     Command::ScmStageAll,
     Command::ScmUnstageAll,
     Command::ScmCommit,
+    Command::CommitConsoleShow,
     Command::ScmRefresh,
     Command::MarkdownPreviewSide,
     Command::SplitRight,

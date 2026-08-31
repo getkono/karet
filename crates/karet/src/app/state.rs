@@ -81,6 +81,9 @@ pub(crate) struct ScmChrome {
     pub(crate) changes_rect: Rect,
     /// The editable inner rect of the permanent commit-message field.
     pub(crate) commit_rect: Rect,
+    /// The commit box's AI chip from the last frame, for hit-testing. Empty when
+    /// the chip was not painted, so a click cannot reach an invisible target.
+    pub(crate) ai_chip_rect: Rect,
     /// The total number of changes display rows from the last frame.
     pub(crate) total_rows: usize,
     /// The commit-log region scroll offset (bottom pinned region).
@@ -113,6 +116,7 @@ impl Default for ScmChrome {
             offset: 0,
             changes_rect: Rect::default(),
             commit_rect: Rect::default(),
+            ai_chip_rect: Rect::default(),
             total_rows: 0,
             commits_offset: 0,
             commits_rect: Rect::default(),
@@ -774,6 +778,11 @@ pub(crate) struct CommitInput {
     pub(crate) focused: bool,
     /// Commit request in flight; prevents accidental duplicate submissions.
     pub(crate) pending: Option<RequestId>,
+    /// Whether the viewport was deliberately scrolled off the caret. The box
+    /// follows the caret by default; a wheel notch or a scrollbar drag suspends
+    /// that until the caret next moves, so scrolling back through a long draft is
+    /// not undone by the next frame.
+    pub(crate) scrolled_away: bool,
 }
 
 /// A quit request waiting for a repository mutation that must not be interrupted.

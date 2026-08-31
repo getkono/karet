@@ -49,6 +49,8 @@ pub enum OverlayEvent {
     AcceptPullRequest { remote: String, number: u64 },
     /// Submit the stash-creation form.
     AcceptStash(StashOptions),
+    /// Persist the AI commit-message options.
+    AcceptAiCommit(Box<karet_session::AiCommit>),
     /// Run an action for one stash entry.
     AcceptStashAction(StashAction),
     /// Submit a free-text prompt for a follow-up action.
@@ -246,6 +248,9 @@ pub struct DiffTarget {
     pub label: String,
 }
 
+mod aicommit;
+
+pub(crate) use aicommit::AiCommitForm;
 pub use karet_widgets::picker::Picker;
 
 /// A modal overlay.
@@ -258,6 +263,8 @@ pub enum Overlay {
     CreateBranch(BranchForm),
     /// Stash creation form.
     StashForm(StashForm),
+    /// AI commit-message options, settled before a generation is asked for.
+    AiCommit(aicommit::AiCommitForm),
     /// Single-value follow-up prompt.
     Text(TextPrompt),
 }
@@ -528,6 +535,7 @@ impl Overlay {
             },
             Self::CreateBranch(_) => "Create branch · ↑↓ fields · Space toggles",
             Self::StashForm(_) => "Stash changes · ↑↓ fields · Space toggles",
+            Self::AiCommit(_) => "AI commit options · ↑↓ fields · Space cycles · Enter saves",
             Self::Text(prompt) => &prompt.title,
         }
     }
@@ -538,7 +546,7 @@ impl Overlay {
         match self {
             Self::Picker(p) => p.query(),
             Self::RebaseTodo(_) => "oldest first, as git applies them",
-            Self::CreateBranch(_) | Self::StashForm(_) => "Edit selected field",
+            Self::CreateBranch(_) | Self::StashForm(_) | Self::AiCommit(_) => "Edit selected field",
             Self::Text(prompt) => &prompt.text,
         }
     }
@@ -551,6 +559,7 @@ impl Overlay {
             Self::RebaseTodo(form) => form.rows.iter().map(String::as_str).collect(),
             Self::CreateBranch(form) => form.rows.iter().map(String::as_str).collect(),
             Self::StashForm(form) => form.rows.iter().map(String::as_str).collect(),
+            Self::AiCommit(form) => form.rows().iter().map(String::as_str).collect(),
             Self::Text(_) => Vec::new(),
         }
     }
@@ -573,6 +582,7 @@ impl Overlay {
                 .collect(),
             Self::CreateBranch(form) => form.rows.iter().map(|_| None).collect(),
             Self::StashForm(form) => form.rows.iter().map(|_| None).collect(),
+            Self::AiCommit(form) => form.rows().iter().map(|_| None).collect(),
             Self::Text(_) => Vec::new(),
         }
     }
@@ -585,6 +595,7 @@ impl Overlay {
             Self::RebaseTodo(form) => form.selected,
             Self::CreateBranch(form) => form.selected,
             Self::StashForm(form) => form.selected,
+            Self::AiCommit(form) => form.selected(),
             Self::Text(_) => 0,
         }
     }
@@ -601,6 +612,7 @@ impl Overlay {
             },
             Self::CreateBranch(form) => form.selected = form.selected.saturating_sub(1),
             Self::StashForm(form) => form.selected = form.selected.saturating_sub(1),
+            Self::AiCommit(form) => form.select_up(),
             Self::Text(_) => {},
         }
     }
@@ -617,6 +629,7 @@ impl Overlay {
             },
             Self::CreateBranch(form) => form.selected = (form.selected + 1).min(4),
             Self::StashForm(form) => form.selected = (form.selected + 1).min(2),
+            Self::AiCommit(form) => form.select_down(),
             Self::Text(_) => {},
         }
     }
@@ -641,6 +654,7 @@ impl Overlay {
             },
             Self::CreateBranch(form) => form.push_char(c),
             Self::StashForm(form) => form.push_char(c),
+            Self::AiCommit(form) => form.push_char(c),
             Self::Text(prompt) => prompt.text.push(c),
         }
     }
@@ -657,6 +671,7 @@ impl Overlay {
                     form.refresh();
                 }
             },
+            Self::AiCommit(form) => form.pop_char(),
             Self::Text(prompt) => {
                 prompt.text.pop();
             },
@@ -677,6 +692,11 @@ impl Overlay {
                 if form.selected == 0 {
                     form.message.push_str(text);
                     form.refresh();
+                }
+            },
+            Self::AiCommit(form) => {
+                for character in text.chars() {
+                    form.push_char(character);
                 }
             },
             Self::Text(prompt) => prompt.text.push_str(text),
@@ -703,6 +723,7 @@ impl Overlay {
             },
             Self::CreateBranch(form) => OverlayEvent::AcceptCreateBranch(form.options()),
             Self::StashForm(form) => OverlayEvent::AcceptStash(form.options()),
+            Self::AiCommit(form) => OverlayEvent::AcceptAiCommit(Box::new(form.options())),
             Self::Text(prompt) => OverlayEvent::AcceptText {
                 purpose: prompt.purpose.clone(),
                 text: prompt.text.clone(),

@@ -295,7 +295,13 @@ impl App {
         if in_editor && !in_outline && !matches!(mouse.kind, MouseEventKind::Moved) {
             self.dismiss_outline_overlay();
         }
+        // The console floats over everything it overlaps, so its wheel is claimed
+        // before any pane's — otherwise a notch over it would scroll the editor
+        // behind it.
+        let in_console = self.commit_console.open && rect_contains(self.commit_console.rect, point);
         match mouse.kind {
+            MouseEventKind::ScrollDown if in_console => self.commit_console_scroll(3),
+            MouseEventKind::ScrollUp if in_console => self.commit_console_scroll(-3),
             MouseEventKind::ScrollDown if in_outline => self.outline_step(1),
             MouseEventKind::ScrollUp if in_outline => self.outline_step(-1),
             MouseEventKind::ScrollDown if in_sidebar => self.sidebar_wheel(3, mouse.row),
@@ -427,6 +433,20 @@ impl App {
     /// (neither activates).
     pub(super) fn handle_sidebar_click(&mut self, col: u16, row_y: u16, modifiers: KeyModifiers) {
         self.focus = Focus::Sidebar;
+        // The AI chip sits on the commit box's border, so it is tested before the
+        // box itself — and only when it was actually painted, since the rect is
+        // cleared each frame.
+        if self.sidebar_panel == SidebarPanel::SourceControl
+            && rect_contains(self.scm_ui.ai_chip_rect, (col, row_y))
+        {
+            self.commit_input.focused = true;
+            if self.ai_commit.generating().is_some() {
+                self.commit_generate_cancel();
+            } else {
+                self.commit_generate();
+            }
+            return;
+        }
         if self.sidebar_panel == SidebarPanel::SourceControl
             && rect_contains(self.scm_ui.commit_rect, (col, row_y))
         {

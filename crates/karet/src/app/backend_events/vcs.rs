@@ -211,26 +211,23 @@ impl App {
     }
 
     /// Reset the commit editor and report a completed commit.
-    pub(super) fn on_committed(&mut self, oid: &str) {
+    pub(crate) fn on_committed(&mut self, oid: &str) {
         self.commit_input = CommitInput::default();
+        // The commit landed, so the box is empty and the draft that a generated
+        // message once replaced belongs to a message that is now history.
+        // Leaving the undo armed would let Ctrl+Z resurrect it into the *next*
+        // commit's box.
+        self.ai_commit.undo = None;
+        self.ai_commit.state = crate::app::scm::aicommit::AiCommitState::Idle;
         let short: String = oid.chars().take(7).collect();
+        self.commit_console_finished(crate::app::commit_console::ConsoleOutcome::Committed(
+            short.clone(),
+        ));
         self.notify(
             Severity::Information,
             NotificationKind::Vcs,
             format!("committed {short}"),
         );
-    }
-
-    /// Fill the commit editor with a generated message.
-    pub(super) fn on_commit_message_generated(&mut self, message: String) {
-        self.commit_input.text = message;
-        self.commit_input.edit.set_cursor(
-            &self.commit_input.text,
-            self.commit_input.text.len(),
-            false,
-        );
-        self.commit_input.edit.scroll = 0;
-        self.status = Some("commit message generated".to_string());
     }
 
     /// Route resolved commit metadata to the surface that asked for it.

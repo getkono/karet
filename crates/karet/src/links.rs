@@ -97,6 +97,25 @@ pub(crate) fn resolve(raw: &str, source: &Path, root: &Path) -> Result<LinkTarge
     })
 }
 
+/// Accept `url` as a target safe to hand a terminal through OSC 8.
+///
+/// Two hazards, one guard. A control character in the target would close the
+/// escape sequence early and let the rest of the string reach the terminal as
+/// commands, so any control character is refused outright. And a scheme outside
+/// the allowlist (`javascript:`, `data:`, …) has no business in a hyperlink the
+/// user may activate, so only the schemes this application itself constructs are
+/// admitted.
+///
+/// Every URI that reaches [`osc8`](crate::ui) passes through here, whether it was
+/// resolved from Markdown or built from a commit-message reference.
+pub(crate) fn safe_external(url: &str) -> Option<&str> {
+    if url.chars().any(char::is_control) {
+        return None;
+    }
+    let scheme = explicit_scheme(url)?;
+    matches!(scheme.as_str(), "http" | "https" | "mailto" | "file").then_some(url)
+}
+
 /// Ask the platform desktop to activate a validated URL.
 pub(crate) fn open_external(target: &str) -> std::io::Result<()> {
     let (program, args) = opener(target);
@@ -204,6 +223,27 @@ mod tests {
             Err(LinkError::AbsoluteFile)
         );
         Ok(())
+    }
+
+    #[test]
+    fn only_constructed_schemes_survive_the_osc8_guard() {
+        assert_eq!(
+            safe_external("https://example.com/a"),
+            Some("https://example.com/a")
+        );
+        assert_eq!(safe_external("file:///tmp/x.md"), Some("file:///tmp/x.md"));
+        assert_eq!(
+            safe_external("mailto:a@example.com"),
+            Some("mailto:a@example.com")
+        );
+        assert_eq!(safe_external("javascript:alert(1)"), None);
+        assert_eq!(safe_external("data:text/html,x"), None);
+        assert_eq!(safe_external("example.com/a"), None, "no scheme");
+        assert_eq!(
+            safe_external("https://example.com/\u{1b}]8;;bad"),
+            None,
+            "a control character could close the escape early"
+        );
     }
 
     #[test]
