@@ -13,6 +13,13 @@
 //! a commit turns out to be slow. That is the shared "avoid flashing a loading
 //! state on a fast path" rule, met without needing a timer.
 //!
+//! # Why dismissing and cancelling are separate
+//!
+//! `Esc` hides the console; `c` stops the commit. Conflating them would make
+//! looking away from a log destroy work, and there is a real difference between
+//! the two: hiding is instant and local, while cancelling is a request whose
+//! answer comes from the backend and may be that the commit landed first.
+//!
 //! # Why the log is not inside the overlay
 //!
 //! Lines keep arriving from the worker whether or not anyone is looking. Keeping

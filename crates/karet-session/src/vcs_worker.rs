@@ -95,8 +95,10 @@ pub(crate) enum VcsJob {
     ///
     /// Unlike every other job here, cancelling this one is not a matter of
     /// dropping an unwanted answer: there is a `git` process and a tree of hooks
-    /// to stop. The token carries that through — see
-    /// [`Cancellation::on_cancel`] and `karet_vcs::CommitCancel`.
+    /// to stop, and this thread is blocked inside them, so nothing ever comes
+    /// back to read a flag. The token carries the request across that boundary —
+    /// see [`Cancellation::on_cancel`] and `karet_vcs::CommitCancel`, which owns
+    /// the signalling and the question of whether a commit was created anyway.
     Commit {
         id: RequestId,
         message: String,
