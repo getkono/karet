@@ -90,6 +90,13 @@ pub(crate) enum VcsJob {
     /// hook can run for a minute, and blocking the actor would freeze editing
     /// with it. Other repository jobs queue behind it, which is both unavoidable
     /// (they would race the index it is writing) and a strict improvement.
+    ///
+    /// It carries no [`Cancellation`], deliberately. Cancellation in this worker
+    /// is cooperative: it suppresses an emission the caller no longer wants, it
+    /// does not kill a running child. A commit's child is `git commit` itself,
+    /// and killing that partway through its hooks risks leaving an index lock
+    /// behind for the user to clear by hand. So a commit is seen through to its
+    /// outcome, and the console says as much when it is dismissed.
     Commit { id: RequestId, message: String },
     /// Query open GitHub pull requests.
     PullRequests {
