@@ -14,6 +14,8 @@ use std::process::Output;
 
 mod commit;
 
+pub use commit::CommitCancel;
+pub use commit::CommitOutcome;
 pub use commit::CommitOutputLine;
 pub use commit::OutputStream;
 
@@ -25,6 +27,11 @@ impl Repository {
     /// The worktree root, for the streaming commit runner in [`commit`].
     pub(crate) fn commit_workdir(&self) -> Result<&Path, VcsError> {
         self.workdir()
+    }
+
+    /// The `.git` directory, for the streaming commit runner's lock check.
+    pub(crate) fn commit_git_dir(&self) -> &Path {
+        self.inner.path()
     }
 
     fn workdir(&self) -> Result<&Path, VcsError> {
@@ -188,8 +195,13 @@ impl Repository {
 
     pub(crate) fn git_commit(&self, message: &str) -> Result<String, VcsError> {
         // One commit path, so hooks behave identically whether or not the caller
-        // wants their output.
-        self.commit_streaming(message, &mut |_| {})
+        // wants their output. Nothing holds the token, so nothing can cancel it.
+        match self.commit_streaming(message, &CommitCancel::new(), &mut |_| {})? {
+            CommitOutcome::Created(oid) => Ok(oid),
+            CommitOutcome::Cancelled => Err(VcsError::Git(
+                "commit was cancelled without a canceller".to_string(),
+            )),
+        }
     }
 
     pub(crate) fn git_staged_diff(&self) -> Result<StagedDiff, VcsError> {
