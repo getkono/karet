@@ -4,7 +4,7 @@
   <img src="assets/karet.svg" alt="A karet window: the view switcher along the top, the file explorer on the left, a Rust source file with syntax highlighting in the editor, and the status bar along the bottom" width="100%">
 </p>
 
-> **Status: beta (v0.5.0).** The editor is usable for day-to-day terminal coding.
+> **Status: beta (v0.6.0).** The editor is usable for day-to-day terminal coding.
 > Pre-1.0: the `karet-*` library APIs may still change on a minor bump.
 
 `karet` is a terminal IDE: a keyboard-first code editor that behaves less like a
@@ -211,8 +211,7 @@ just surface area — a crate must **earn its existence** through real standalon
 one best backend** (tree-sitter for syntax), and the quality floor is
 **non-negotiable**.
 
-Fourteen `karet-*` crates carry a published API — thirteen are on crates.io today,
-and `karet-jsonrpc`, the newest, lands with the next release:
+Fourteen `karet-*` crates carry a published API, all of them on crates.io today:
 
 | Crate | Scope |
 | --- | --- |
