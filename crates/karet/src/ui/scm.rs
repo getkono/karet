@@ -361,10 +361,15 @@ pub(super) fn draw_commit_input(f: &mut Frame, app: &mut App, theme: &Theme, are
     }
     let accent = theme.role(ThemeRole::LineNumberActive).to_ratatui();
     let muted = theme.role(ThemeRole::LineNumber).to_ratatui();
+    // Short on purpose. The sidebar defaults to 30 columns, and the old
+    // "· Ctrl+Enter commit" tail was wider than the whole panel — ratatui
+    // truncated it away unseen, while still costing the border room the AI chip
+    // needs. The commit chord lives in the status hints bar, which is where the
+    // rest of the context-sensitive keys are advertised.
     let title = if app.commit_input.pending.is_some() {
         " Commit message · committing… "
     } else {
-        " Commit message · Ctrl+Enter commit "
+        " Commit message "
     };
     let block = Block::default()
         .borders(Borders::ALL)
@@ -412,15 +417,15 @@ fn draw_ai_chip(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect, title: 
     let Some(chip) = aicommit::chip(app, now, app.icon_style) else {
         return;
     };
-    let width = karet_widgets::text::width(&chip.label) as u16;
     let title_width = karet_widgets::text::width(title) as u16;
-    let Some(rect) = aicommit::chip_rect(area, title_width, width) else {
+    // Longest phrasing that fits; a squeezed sidebar still gets the mark.
+    let Some((label, rect)) = chip.fit(area, title_width) else {
         return;
     };
     f.render_widget(
         Paragraph::new(Line::from(vec![
             Span::raw(" "),
-            Span::styled(chip.label, aicommit::chip_style(theme, chip.role)),
+            Span::styled(label.to_string(), aicommit::chip_style(theme, chip.role)),
             Span::raw(" "),
         ])),
         rect,

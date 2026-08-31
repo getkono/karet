@@ -323,9 +323,14 @@ pub struct Session {
     /// Cancellation registry for safely-droppable background reads: repository
     /// reads, LaTeX builds, and the workspace spelling scan.
     cancellations: crate::cancellation::CancellationHub,
-    /// The in-flight AI commit-message request, so a newer one supersedes it
+    /// The most recent AI commit-message request, so a newer one supersedes it
     /// rather than racing it. Generation drives an external process, and two of
     /// them answering the same input box is never what the user asked for.
+    ///
+    /// It is not cleared when a request finishes: cancelling a completed id is a
+    /// no-op (its registration is dropped with the task), and ids never repeat,
+    /// so holding the last one costs nothing and keeps this a plain assignment
+    /// on the actor thread rather than something the task has to reach back into.
     #[cfg(feature = "aicommit")]
     ai_commit_request: Option<RequestId>,
     /// Serialized external LaTeX builds.

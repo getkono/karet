@@ -210,6 +210,13 @@ impl Session {
                 fail(&events, id, &cancel, "stage changes first".to_string());
                 return;
             }
+            // Reading the diff shells out to `git`, which is long enough to be
+            // cancelled during. Check before launching the agent rather than
+            // relying on `select!` to drop it: that would spawn the process only
+            // to kill it a moment later.
+            if cancel.is_cancelled() {
+                return;
+            }
 
             tokio::select! {
                 // Dropping the generation future kills the agent process with it.

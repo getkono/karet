@@ -52,6 +52,14 @@ pub(crate) enum AiCommitState {
         /// The draft as it was when the run began, so the answer can tell
         /// whether the user has typed since.
         draft: String,
+        /// Text the user wrote that a *previous* generation already replaced,
+        /// carried through this run so it stays the undo target.
+        ///
+        /// Asking for another message is common — the second answer replaces
+        /// the first, which was never the user's words. Snapshotting the box
+        /// again would make the undo point at generated text and lose the
+        /// original for good.
+        undo: Option<String>,
     },
     /// A message was applied over a draft the user had changed, and that draft
     /// is still recoverable.
@@ -122,6 +130,13 @@ impl App {
         if let Some((previous, _)) = self.ai_commit.generating() {
             self.send_command(SessionCommand::Cancel { request: previous });
         }
+        // Whatever the user last wrote stays the undo target across repeated
+        // generations; only their own text is worth restoring.
+        let undo = match &self.ai_commit.state {
+            AiCommitState::Applied { undo } => Some(undo.clone()),
+            AiCommitState::Generating { undo, .. } => undo.clone(),
+            _ => None,
+        };
         let draft = self.commit_input.text.clone();
         match self.send(SessionCommand::GenerateCommitMessage) {
             Some(request) => {
@@ -129,6 +144,7 @@ impl App {
                     request,
                     since: Pending::start(),
                     draft,
+                    undo,
                 };
             },
             None => self.ai_commit.state = AiCommitState::Idle,
@@ -181,6 +197,7 @@ impl App {
         let AiCommitState::Generating {
             request: expected,
             draft,
+            undo,
             ..
         } = &self.ai_commit.state
         else {
@@ -189,14 +206,20 @@ impl App {
         if request != Some(*expected) {
             return;
         }
-        // Whether the user typed while waiting decides only whether the previous
-        // draft stays recoverable — the message lands either way, because having
-        // asked for it and then having to ask again is the worse outcome.
+        // The message lands either way — having asked for it and then having to
+        // ask again is the worse outcome. What the user typed decides only what
+        // stays recoverable: their newest words if they typed while waiting,
+        // otherwise whatever an earlier generation already displaced.
+        let carried = undo.clone();
         let previous = std::mem::take(&mut self.commit_input.text);
-        self.ai_commit.state = if previous == *draft {
-            AiCommitState::Idle
+        let undo = if previous == *draft {
+            carried
         } else {
-            AiCommitState::Applied { undo: previous }
+            Some(previous)
+        };
+        self.ai_commit.state = match undo {
+            Some(undo) => AiCommitState::Applied { undo },
+            None => AiCommitState::Idle,
         };
         self.set_commit_text(message);
         self.status = Some("commit message generated".to_string());

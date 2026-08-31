@@ -33,6 +33,7 @@ fn generating(app: &mut App, draft: &str) -> RequestId {
         request,
         since: Pending::start(),
         draft: draft.to_string(),
+        undo: None,
     };
     request
 }
@@ -72,6 +73,41 @@ fn a_draft_typed_during_the_run_stays_recoverable() {
     assert_eq!(app.ai_commit.state, AiCommitState::Idle);
     // Undo is spent: a second press has nothing to restore.
     assert!(!app.commit_generate_undo());
+}
+
+#[test]
+fn asking_for_another_message_still_undoes_to_the_users_own_words() {
+    let mut app = app();
+    // A real backend, since the second run is started through `commit_generate`
+    // and needs a request id back.
+    app.backend = Some(std::sync::Arc::new(RecordingBackend::new()));
+    app.on_ai_commit_availability(ready());
+
+    // Type, generate, and take the first message over that draft.
+    let first = generating(&mut app, "");
+    app.commit_input.text = "fix the parser thing".to_string();
+    app.on_commit_message_generated(Some(first), "fix: first attempt".to_string());
+    assert_eq!(
+        app.ai_commit.state,
+        AiCommitState::Applied {
+            undo: "fix the parser thing".to_string()
+        }
+    );
+
+    // Not happy with it — ask again. The second run starts over generated text.
+    app.commit_generate();
+    let second = app
+        .ai_commit
+        .generating()
+        .expect("a second run is in flight")
+        .0;
+    app.on_commit_message_generated(Some(second), "fix: second attempt".to_string());
+
+    assert_eq!(app.commit_input.text, "fix: second attempt");
+    // Undo must still reach the user's words, not the first generated message —
+    // regenerating is not consent to lose what they wrote.
+    assert!(app.commit_generate_undo());
+    assert_eq!(app.commit_input.text, "fix the parser thing");
 }
 
 #[test]
@@ -203,6 +239,7 @@ fn a_running_generation_schedules_its_own_repaints() {
         request: RequestId(1),
         since: Pending::at(now),
         draft: String::new(),
+        undo: None,
     };
     let wake = app.ai_commit_next_wake(now).expect("a pending run wakes");
     assert!(wake <= LOADING_REVEAL_DELAY && !wake.is_zero(), "{wake:?}");
@@ -213,6 +250,7 @@ fn a_running_generation_schedules_its_own_repaints() {
         request: RequestId(1),
         since: Pending::at(revealed),
         draft: String::new(),
+        undo: None,
     };
     assert_eq!(
         app.ai_commit_next_wake(now),

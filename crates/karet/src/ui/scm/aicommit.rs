@@ -14,6 +14,7 @@ use std::time::Instant;
 use karet_core::ThemeRole;
 use karet_filetype::IconStyle;
 use karet_theme::Theme;
+use karet_widgets::Spinner;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 
@@ -23,10 +24,32 @@ use crate::app::scm::aicommit::generating_label;
 
 /// The chip's text and the role it is painted in.
 pub(super) struct Chip {
-    /// What the chip reads.
-    pub(super) label: String,
+    /// What the chip reads, longest first.
+    ///
+    /// The sidebar defaults to 30 columns, which is narrower than a comfortable
+    /// sentence, so a single fixed label would simply never render there. Each
+    /// state therefore offers progressively shorter phrasings down to the bare
+    /// mark — colour still carries the meaning when the words cannot.
+    pub(super) labels: Vec<String>,
     /// The colour role carrying its meaning.
     pub(super) role: ThemeRole,
+}
+
+impl Chip {
+    fn new(role: ThemeRole, labels: impl IntoIterator<Item = String>) -> Self {
+        Self {
+            labels: labels.into_iter().collect(),
+            role,
+        }
+    }
+
+    /// The longest phrasing that fits beside a title of `title_width`.
+    pub(super) fn fit(&self, area: Rect, title_width: u16) -> Option<(&str, Rect)> {
+        self.labels.iter().find_map(|label| {
+            let width = karet_widgets::text::width(label) as u16;
+            chip_rect(area, title_width, width).map(|rect| (label.as_str(), rect))
+        })
+    }
 }
 
 /// The mark that introduces the chip.
@@ -53,19 +76,35 @@ pub(super) fn chip(app: &App, now: Instant, style: IconStyle) -> Option<Chip> {
             if !since.visible() {
                 return idle_chip(app, mark);
             }
-            Some(Chip {
-                label: format!("{} · Esc", generating_label(*since, now, style)),
-                role: ThemeRole::LineNumberActive,
-            })
+            let spinner = Spinner::new(style).frame(since.elapsed_since(now));
+            let seconds = since.elapsed_since(now).as_secs();
+            Some(Chip::new(
+                ThemeRole::LineNumberActive,
+                [
+                    format!("{} · Esc", generating_label(*since, now, style)),
+                    generating_label(*since, now, style),
+                    format!("{spinner} {seconds}s"),
+                    spinner.to_string(),
+                ],
+            ))
         },
-        AiCommitState::Applied { .. } => Some(Chip {
-            label: format!("{mark} applied · Ctrl+Z undo"),
-            role: ThemeRole::LineNumberActive,
-        }),
-        AiCommitState::Failed { reason } => Some(Chip {
-            label: format!("{mark} {reason}"),
-            role: ThemeRole::DiagnosticError,
-        }),
+        AiCommitState::Applied { .. } => Some(Chip::new(
+            ThemeRole::LineNumberActive,
+            [
+                format!("{mark} applied · Ctrl+Z undo"),
+                format!("{mark} undo: Ctrl+Z"),
+                format!("{mark} applied"),
+                mark.to_string(),
+            ],
+        )),
+        AiCommitState::Failed { reason } => Some(Chip::new(
+            ThemeRole::DiagnosticError,
+            [
+                format!("{mark} {reason}"),
+                format!("{mark} failed"),
+                mark.to_string(),
+            ],
+        )),
         AiCommitState::Idle => idle_chip(app, mark),
     }
 }
@@ -74,16 +113,25 @@ pub(super) fn chip(app: &App, now: Instant, style: IconStyle) -> Option<Chip> {
 fn idle_chip(app: &App, mark: &str) -> Option<Chip> {
     let availability = app.ai_commit.availability.as_ref()?;
     match availability.blocker() {
-        Some(blocker) => Some(Chip {
-            label: format!("{mark} {blocker}"),
-            role: ThemeRole::LineNumber,
-        }),
+        Some(blocker) => Some(Chip::new(
+            ThemeRole::LineNumber,
+            [
+                format!("{mark} {blocker}"),
+                format!("{mark} unavailable"),
+                format!("{mark} off"),
+                mark.to_string(),
+            ],
+        )),
         None => {
             let model = app.ai_commit.model_label().unwrap_or("auto");
-            Some(Chip {
-                label: format!("{mark} {model} · Ctrl+G"),
-                role: ThemeRole::LineNumber,
-            })
+            Some(Chip::new(
+                ThemeRole::LineNumber,
+                [
+                    format!("{mark} {model} · Ctrl+G"),
+                    format!("{mark} {model}"),
+                    mark.to_string(),
+                ],
+            ))
         },
     }
 }
@@ -174,8 +222,8 @@ mod tests {
     fn the_resting_chip_names_the_model_and_the_key() {
         let app = app_with(AiCommitState::Idle, Some(ready()));
         let chip = chip(&app, Instant::now(), IconStyle::Unicode).expect("a ready chip");
-        assert!(chip.label.contains("auto"), "{}", chip.label);
-        assert!(chip.label.contains("Ctrl+G"), "{}", chip.label);
+        assert!(chip.labels[0].contains("auto"), "{}", chip.labels[0]);
+        assert!(chip.labels[0].contains("Ctrl+G"), "{}", chip.labels[0]);
         assert_eq!(chip.role, ThemeRole::LineNumber, "resting is muted");
     }
 
@@ -196,13 +244,14 @@ mod tests {
                 request: karet_session::RequestId(1),
                 since: crate::app::Pending::at(now),
                 draft: String::new(),
+                undo: None,
             },
             Some(ready()),
         );
         let chip = chip(&app, now, IconStyle::Unicode).expect("the resting chip persists");
         // Below the reveal delay the chip still reads as it did at rest.
-        assert!(chip.label.contains("Ctrl+G"), "{}", chip.label);
-        assert!(!chip.label.contains("generating"), "{}", chip.label);
+        assert!(chip.labels[0].contains("Ctrl+G"), "{}", chip.labels[0]);
+        assert!(!chip.labels[0].contains("generating"), "{}", chip.labels[0]);
     }
 
     #[test]
@@ -214,15 +263,16 @@ mod tests {
                 request: karet_session::RequestId(1),
                 since: crate::app::Pending::at(since),
                 draft: String::new(),
+                undo: None,
             },
             Some(ready()),
         );
         let chip = chip(&app, now, IconStyle::Unicode).expect("a revealed chip");
-        assert!(chip.label.contains("generating"), "{}", chip.label);
+        assert!(chip.labels[0].contains("generating"), "{}", chip.labels[0]);
         assert!(
-            chip.label.contains("Esc"),
+            chip.labels[0].contains("Esc"),
             "cancelling is offered: {}",
-            chip.label
+            chip.labels[0]
         );
     }
 
@@ -235,7 +285,11 @@ mod tests {
             Some(ready()),
         );
         let chip = chip(&app, Instant::now(), IconStyle::Unicode).expect("a failed chip");
-        assert!(chip.label.contains("not found on PATH"), "{}", chip.label);
+        assert!(
+            chip.labels[0].contains("not found on PATH"),
+            "{}",
+            chip.labels[0]
+        );
         assert_eq!(chip.role, ThemeRole::DiagnosticError);
     }
 
@@ -248,7 +302,85 @@ mod tests {
             Some(ready()),
         );
         let chip = chip(&app, Instant::now(), IconStyle::Unicode).expect("an applied chip");
-        assert!(chip.label.contains("Ctrl+Z"), "{}", chip.label);
+        assert!(chip.labels[0].contains("Ctrl+Z"), "{}", chip.labels[0]);
+    }
+
+    /// The real title the commit box paints, and the app's default sidebar.
+    const TITLE: &str = " Commit message ";
+    const DEFAULT_SIDEBAR: u16 = crate::app::DEFAULT_SIDEBAR_WIDTH;
+
+    #[test]
+    fn every_state_still_says_something_at_the_default_sidebar_width() {
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: DEFAULT_SIDEBAR,
+            height: 5,
+        };
+        let title = karet_widgets::text::width(TITLE) as u16;
+        let now = Instant::now();
+        let revealed = now - crate::app::LOADING_REVEAL_DELAY - std::time::Duration::from_millis(1);
+
+        let states = [
+            AiCommitState::Idle,
+            AiCommitState::Generating {
+                request: karet_session::RequestId(1),
+                since: crate::app::Pending::at(revealed),
+                draft: String::new(),
+                undo: None,
+            },
+            AiCommitState::Applied {
+                undo: "x".to_string(),
+            },
+            AiCommitState::Failed {
+                reason: "`claude` was not found on PATH".to_string(),
+            },
+        ];
+        for state in states {
+            let app = app_with(state.clone(), Some(ready()));
+            let chip = chip(&app, now, IconStyle::Unicode).expect("a chip for every state");
+            let (label, rect) = chip
+                .fit(area, title)
+                .unwrap_or_else(|| panic!("{state:?} must still fit 30 columns"));
+            assert!(!label.is_empty());
+            assert!(
+                rect.right() < area.right(),
+                "{state:?} overran the border: {rect:?}"
+            );
+            assert!(rect.x >= title, "{state:?} overlapped the title: {rect:?}");
+        }
+    }
+
+    #[test]
+    fn a_wide_sidebar_gets_the_fullest_phrasing_a_narrow_one_shortens() {
+        let title = karet_widgets::text::width(TITLE) as u16;
+        let app = app_with(AiCommitState::Idle, Some(ready()));
+        let chip = chip(&app, Instant::now(), IconStyle::Unicode).expect("a chip");
+
+        let wide = Rect {
+            x: 0,
+            y: 0,
+            width: 60,
+            height: 5,
+        };
+        let (label, _) = chip.fit(wide, title).expect("fits");
+        assert!(label.contains("Ctrl+G"), "room for the key: {label}");
+
+        let narrow = Rect {
+            width: DEFAULT_SIDEBAR,
+            ..wide
+        };
+        let (label, _) = chip.fit(narrow, title).expect("fits");
+        assert!(
+            !label.contains("Ctrl+G"),
+            "the key is dropped first: {label}"
+        );
+        assert!(label.contains("auto"), "the model survives longer: {label}");
+
+        // Squeezed to nothing but the mark, which colour still gives meaning to.
+        let tiny = Rect { width: 22, ..wide };
+        let (label, _) = chip.fit(tiny, title).expect("the mark always fits");
+        assert_eq!(label, mark(IconStyle::Unicode));
     }
 
     #[test]
