@@ -415,9 +415,10 @@ impl Session {
             Command::StageAll => self.vcs_write(id, Repository::stage_all),
             Command::UnstageAll => self.vcs_write(id, Repository::unstage_all),
             Command::Commit { message } => {
-                self.submit_vcs(id, |id, _| crate::vcs_worker::VcsJob::Commit {
+                self.submit_vcs(id, |id, cancel| crate::vcs_worker::VcsJob::Commit {
                     id,
                     message,
+                    cancel,
                 });
             },
             Command::GenerateCommitMessage => self.generate_commit_message(id),

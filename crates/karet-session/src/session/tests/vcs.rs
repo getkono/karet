@@ -318,7 +318,8 @@
                     Event::VcsStatus { .. } => committed,
                     _ => false,
                 };
-                committed |= matches!(ev, Event::Committed { .. });
+                committed |=
+                    matches!(ev, Event::Committed { .. } | Event::CommitCancelled);
                 seen.push(ev);
                 if done {
                     return seen;
@@ -445,3 +446,98 @@
         );
     }
 
+
+    #[cfg(unix)]
+    #[test]
+    fn cancelling_a_running_commit_stops_it_without_creating_one() {
+        let Some((_dir, root, file)) = init_temp_repo() else {
+            return;
+        };
+        if hook(&root, "echo working\nsleep 30").is_none() {
+            return;
+        }
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig {
+            roots: vec![root.clone()],
+            ..SessionConfig::default()
+        });
+        session.start();
+        if wait_vcs_status(&mut events).is_none() {
+            return;
+        }
+        session.handle(RequestId(1), Command::Stage { paths: vec![file] });
+        if wait_vcs_status(&mut events).is_none() {
+            return;
+        }
+
+        session.handle(RequestId(2), Command::Commit {
+            message: "subject".to_string(),
+        });
+        // The worker is blocked inside git by now; the actor is not, which is the
+        // whole point of routing cancellation through the token's hook.
+        std::thread::sleep(std::time::Duration::from_millis(700));
+        session.handle(RequestId(3), Command::Cancel {
+            request: RequestId(2),
+        });
+
+        let seen = drain_commit(&mut events);
+        assert!(
+            seen.iter().any(|ev| matches!(ev, Event::CommitCancelled)),
+            "the seam reported the cancellation: {seen:?}"
+        );
+        assert!(
+            !seen
+                .iter()
+                .any(|ev| matches!(ev, Event::Committed { .. })),
+            "and no commit was created: {seen:?}"
+        );
+        let commits = std::process::Command::new("git")
+            .args(["rev-list", "--count", "--all"])
+            .current_dir(&root)
+            .output()
+            .ok()
+            .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string());
+        assert_eq!(commits.as_deref(), Some("0"), "the repository has no commit");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_cancel_arriving_before_the_job_starts_is_still_honoured() {
+        let Some((_dir, root, file)) = init_temp_repo() else {
+            return;
+        };
+        // The hook would leave a trace if the commit ever reached it.
+        if hook(&root, "touch .git/hook-ran\nsleep 5").is_none() {
+            return;
+        }
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig {
+            roots: vec![root.clone()],
+            ..SessionConfig::default()
+        });
+        session.start();
+        if wait_vcs_status(&mut events).is_none() {
+            return;
+        }
+        session.handle(RequestId(1), Command::Stage { paths: vec![file] });
+        if wait_vcs_status(&mut events).is_none() {
+            return;
+        }
+
+        // Cancel in the same breath as the commit: the job is still queued, so
+        // the hook is registered against a token that is already cancelled.
+        session.handle(RequestId(2), Command::Commit {
+            message: "subject".to_string(),
+        });
+        session.handle(RequestId(3), Command::Cancel {
+            request: RequestId(2),
+        });
+
+        let seen = drain_commit(&mut events);
+        assert!(
+            seen.iter().any(|ev| matches!(ev, Event::CommitCancelled)),
+            "a cancellation that beats the job is not lost: {seen:?}"
+        );
+        assert!(
+            !root.join(".git/hook-ran").exists(),
+            "git never ran, so neither did its hooks"
+        );
+    }

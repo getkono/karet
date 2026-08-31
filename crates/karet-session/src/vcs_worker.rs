@@ -93,13 +93,15 @@ pub(crate) enum VcsJob {
     /// with it. Other repository jobs queue behind it, which is both unavoidable
     /// (they would race the index it is writing) and a strict improvement.
     ///
-    /// It carries no [`Cancellation`], deliberately. Cancellation in this worker
-    /// is cooperative: it suppresses an emission the caller no longer wants, it
-    /// does not kill a running child. A commit's child is `git commit` itself,
-    /// and killing that partway through its hooks risks leaving an index lock
-    /// behind for the user to clear by hand. So a commit is seen through to its
-    /// outcome, and the console says as much when it is dismissed.
-    Commit { id: RequestId, message: String },
+    /// Unlike every other job here, cancelling this one is not a matter of
+    /// dropping an unwanted answer: there is a `git` process and a tree of hooks
+    /// to stop. The token carries that through — see
+    /// [`Cancellation::on_cancel`] and `karet_vcs::CommitCancel`.
+    Commit {
+        id: RequestId,
+        message: String,
+        cancel: Cancellation,
+    },
     /// Query open GitHub pull requests.
     PullRequests {
         id: RequestId,
@@ -296,7 +298,11 @@ fn run(
                 },
             }
         },
-        VcsJob::Commit { id, message } => run_commit(root, events, last_status, id, &message),
+        VcsJob::Commit {
+            id,
+            message,
+            cancel,
+        } => run_commit(root, events, last_status, id, &message, &cancel),
         VcsJob::Action { id, action } => {
             let result = repository(root).and_then(|repo| {
                 let outcome = execute(&repo, &action)?;

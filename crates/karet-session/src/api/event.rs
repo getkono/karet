@@ -563,6 +563,13 @@ pub enum Event {
         /// The new commit's hex object id.
         oid: String,
     },
+    /// A commit was stopped by [`Command::Cancel`] before it created anything.
+    ///
+    /// A cancellation that arrives too late to prevent a commit reports
+    /// [`Committed`](Self::Committed) instead: what happened outranks what was
+    /// asked for. The client keeps the draft message either way — a cancelled
+    /// commit is one the user still means to make.
+    CommitCancelled,
     /// A commit message was generated from the staged diff, answering
     /// [`Command::GenerateCommitMessage`]. The client fills its commit input with it.
     CommitMessageGenerated {

@@ -16,6 +16,7 @@ pub(super) fn run_commit(
     last_status: &mut Option<Status>,
     id: RequestId,
     message: &str,
+    cancel: &Cancellation,
 ) {
     /// Lines to gather before sending a batch.
     const BATCH: usize = 32;
@@ -26,9 +27,18 @@ pub(super) fn run_commit(
         Ok(repo) => repo,
         Err(error) => return notify(events, id, error),
     };
+    // Cancelling this job means stopping a process tree, not dropping an answer.
+    // Registering the token's action is what carries the request across the
+    // thread boundary: the actor calls it, this thread is blocked inside git.
+    let stop = karet_vcs::CommitCancel::new();
+    cancel.on_cancel({
+        let stop = stop.clone();
+        move || stop.cancel()
+    });
+
     let mut batch: Vec<karet_vcs::CommitOutputLine> = Vec::new();
     let mut sent_at = std::time::Instant::now();
-    let result = repo.commit_with_output(message, &mut |line| {
+    let result = repo.commit_with_output(message, &stop, &mut |line| {
         batch.push(line);
         if batch.len() >= BATCH || sent_at.elapsed() >= LINGER {
             emit(
@@ -44,11 +54,14 @@ pub(super) fn run_commit(
     if !batch.is_empty() {
         emit(events, id, Event::CommitOutput { lines: batch });
     }
-    let oid = match result {
-        Ok(oid) => oid,
+    match result {
+        Ok(karet_vcs::CommitOutcome::Created(oid)) => emit(events, id, Event::Committed { oid }),
+        // No commit, but the working tree may still have moved: a formatter hook
+        // that rewrote files before it was killed leaves those edits behind, and
+        // a stale status panel would hide them.
+        Ok(karet_vcs::CommitOutcome::Cancelled) => emit(events, id, Event::CommitCancelled),
         Err(error) => return notify(events, id, error.to_string()),
-    };
-    emit(events, id, Event::Committed { oid });
+    }
     // The same republication `VcsJob::Action` does, including updating the cached
     // status: without it the next spontaneous refresh re-emits what just changed.
     if let Ok(snapshot) = snapshot(&repo) {
