@@ -323,6 +323,11 @@ pub struct Session {
     /// Cancellation registry for safely-droppable background reads: repository
     /// reads, LaTeX builds, and the workspace spelling scan.
     cancellations: crate::cancellation::CancellationHub,
+    /// The in-flight AI commit-message request, so a newer one supersedes it
+    /// rather than racing it. Generation drives an external process, and two of
+    /// them answering the same input box is never what the user asked for.
+    #[cfg(feature = "aicommit")]
+    ai_commit_request: Option<RequestId>,
     /// Serialized external LaTeX builds.
     latex_worker: std::sync::mpsc::Sender<crate::latex::LatexJob>,
     /// Whether prepared diffs carry syntax token runs (the client's choice; see
@@ -406,6 +411,8 @@ impl Session {
             Command::UnstageAll => self.vcs_write(id, Repository::unstage_all),
             Command::Commit { message } => self.commit(id, &message),
             Command::GenerateCommitMessage => self.generate_commit_message(id),
+            Command::ProbeAiCommit => self.emit_ai_commit_availability(Some(id)),
+            Command::SetAiCommitOptions { options } => self.set_ai_commit_options(id, *options),
             Command::RefreshVcs => self.emit_vcs_status(Some(id)),
             Command::RepositorySnapshot => {
                 self.submit_vcs(id, |id, cancel| crate::vcs_worker::VcsJob::Snapshot {

@@ -555,6 +555,27 @@ pub enum Event {
         /// The generated commit message.
         message: String,
     },
+    /// Generating a commit message did not produce one, answering
+    /// [`Command::GenerateCommitMessage`].
+    ///
+    /// Covers every non-success outcome the client should show — nothing
+    /// staged, generation unavailable or disabled, the agent failing or timing
+    /// out. It is paired with the request that asked, so a client can render it
+    /// against the commit input rather than as a detached notification. A
+    /// cancelled request is silent: it emits nothing.
+    CommitMessageFailed {
+        /// Why no message was produced, phrased for display.
+        message: String,
+    },
+    /// Whether AI commit-message generation can run, and with what.
+    ///
+    /// Pushed at startup, whenever settings reload, and in answer to
+    /// [`Command::ProbeAiCommit`] — so a client can show a resolved,
+    /// verified configuration before the user asks for a generation.
+    AiCommitAvailability {
+        /// The resolved configuration and per-agent probe results.
+        status: Box<crate::api::AiCommitAvailability>,
+    },
     /// A page of the commit-history log, answering a [`Command::VcsLog`].
     VcsLog {
         /// How many commits were skipped from `HEAD` (the page offset).

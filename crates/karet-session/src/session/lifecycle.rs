@@ -108,6 +108,8 @@ impl Session {
             watcher,
             fs_rx,
             vcs,
+            #[cfg(feature = "aicommit")]
+            ai_commit_request: None,
             vcs_worker,
             search_worker,
             seam_worker,
@@ -150,6 +152,9 @@ impl Session {
     pub(crate) fn start(&mut self) {
         // Seed the client with the initial status; it buffers until the UI reads it.
         self.emit_vcs_status(None);
+        // Probe the commit-message agent now, so the client can show a resolved,
+        // verified configuration before anyone asks for a generation.
+        self.emit_ai_commit_availability(None);
         #[cfg(feature = "github")]
         self.start_github();
         #[cfg(not(feature = "github"))]
