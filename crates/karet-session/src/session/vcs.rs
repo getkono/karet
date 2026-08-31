@@ -143,6 +143,31 @@ impl Session {
         }
     }
 
+    /// The AI-commit settings a run may actually use.
+    ///
+    /// Every field is the merged configuration except `binary`, which is dropped
+    /// when it came from the project layer — `$GIT_ROOT/.karet/setting.jsonc`, a
+    /// file that arrives with the repository. A repository may reasonably say
+    /// which *model* to summarise its diffs with; letting it also name the
+    /// *executable* would turn cloning it into running it, since the agents are
+    /// probed and driven without further confirmation.
+    ///
+    /// The user and system layers keep the override: those are the machine
+    /// owner's own files.
+    pub(super) fn ai_commit_options(&self) -> crate::config::schema::AiCommit {
+        let mut options = self.config.settings.git.ai_commit.clone();
+        let from_project = self
+            .config
+            .loaded_config
+            .explicit
+            .get("git.aiCommit.binary")
+            .is_some_and(|layer| *layer == crate::config::ConfigLayer::Project);
+        if from_project {
+            options.binary = None;
+        }
+        options
+    }
+
     /// Generate a commit message from the staged diff, answering with
     /// [`Event::CommitMessageGenerated`] or [`Event::CommitMessageFailed`].
     ///
@@ -156,7 +181,7 @@ impl Session {
     /// and a cancelled request answers with nothing at all.
     #[cfg(feature = "aicommit")]
     pub(super) fn generate_commit_message(&mut self, id: RequestId) {
-        let cfg = self.config.settings.git.ai_commit.clone();
+        let cfg = self.ai_commit_options();
         if !cfg.enabled {
             self.emit(
                 Some(id),
@@ -175,6 +200,17 @@ impl Session {
             );
             return;
         };
+        // Same reason the availability probe checks: without a reactor there is
+        // nothing to run the agent on, and answering is better than panicking.
+        if tokio::runtime::Handle::try_current().is_err() {
+            self.emit(
+                Some(id),
+                Event::CommitMessageFailed {
+                    message: "this session has no async runtime to generate on".to_string(),
+                },
+            );
+            return;
+        }
 
         // A newer request supersedes an older one: one agent process per session,
         // never a pile of them racing to fill the same box.
@@ -255,11 +291,17 @@ impl Session {
     /// Without a reactor there is nothing to launch a process with, so the
     /// configuration is reported unprobed rather than panicking — a session
     /// driven outside a runtime still gets a truthful answer.
+    ///
+    /// A probe *executes* the configured binary, and `binary` can be set by the
+    /// project settings layer — a file inside the repository being opened. So it
+    /// is not run for a workspace whose settings turn the feature off: opening a
+    /// repository must never be enough, on its own, to run a program that
+    /// repository named.
     #[cfg(feature = "aicommit")]
     pub(super) fn emit_ai_commit_availability(&mut self, id: Option<RequestId>) {
-        let options = self.config.settings.git.ai_commit.clone();
+        let options = self.ai_commit_options();
         let events = self.events.clone();
-        if tokio::runtime::Handle::try_current().is_err() {
+        if !options.enabled || tokio::runtime::Handle::try_current().is_err() {
             self.emit_unprobed_ai_commit_availability(id);
             return;
         }

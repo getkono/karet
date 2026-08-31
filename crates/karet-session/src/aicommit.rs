@@ -58,18 +58,16 @@ pub(crate) struct ProbeResult {
 
 /// Build the configured agent, boxed so the choice stays a runtime one —
 /// `generate_commit_message` accepts `&(impl Agent + ?Sized)`.
-fn agent_for(cfg: &AiCommit, model: Option<&str>) -> Box<dyn Agent> {
+fn agent_for(cfg: &AiCommit, run: &Run) -> Box<dyn Agent> {
     let binary = cfg.resolved_binary();
     let timeout = Duration::from_millis(cfg.timeout_ms);
     match cfg.agent {
         AiCommitAgent::Claude => {
             let mut agent = ClaudeCode::new()
                 .with_binary(binary)
-                .with_default_timeout(timeout);
-            if let Some(model) = model {
-                agent = agent.with_default_model(model);
-            }
-            if let Some(effort) = cfg.effective_effort() {
+                .with_default_timeout(timeout)
+                .with_default_model(&run.model);
+            if let Some(effort) = run.effort {
                 agent = agent.with_default_effort(to_effort(effort));
             }
             Box::new(agent)
@@ -77,11 +75,9 @@ fn agent_for(cfg: &AiCommit, model: Option<&str>) -> Box<dyn Agent> {
         AiCommitAgent::Codex => {
             let mut agent = Codex::new()
                 .with_binary(binary)
-                .with_default_timeout(timeout);
-            if let Some(model) = model {
-                agent = agent.with_default_model(model);
-            }
-            if let Some(effort) = cfg.effective_effort() {
+                .with_default_timeout(timeout)
+                .with_default_model(&run.model);
+            if let Some(effort) = run.effort {
                 agent = agent.with_default_effort(to_effort(effort));
             }
             Box::new(agent)
@@ -175,16 +171,53 @@ async fn probe_launchable(binary: &str) -> Result<String, String> {
     })
 }
 
-/// The model this configuration will actually run for a diff of `diff_len`
-/// bytes across `file_count` files.
+/// The model and effort one generation will actually run with.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Run {
+    /// The model name handed to the agent.
+    pub(crate) model: String,
+    /// The effort, or `None` for the model's own default.
+    pub(crate) effort: Option<AiCommitEffort>,
+}
+
+/// Resolve what a diff of `diff_len` bytes across `file_count` files will run.
 ///
-/// Resolving it here rather than inside the generator is what lets the client
-/// name the model before the user commits to a round-trip.
-pub(crate) fn resolved_model(cfg: &AiCommit, diff_len: usize, file_count: usize) -> String {
+/// `"auto"` defers to the size heuristic, which picks an effort *alongside* its
+/// model — a large diff is escalated to a stronger model precisely so it can
+/// think harder, and taking the model while dropping the effort would deliver
+/// half of that. An explicitly configured effort still wins over the
+/// heuristic's, so pinning one remains meaningful with `"auto"`.
+pub(crate) fn resolve_run(cfg: &AiCommit, diff_len: usize, file_count: usize) -> Run {
     if cfg.is_auto_model() {
-        auto_select(diff_len, file_count).model
+        let choice = auto_select(diff_len, file_count);
+        Run {
+            model: choice.model,
+            effort: cfg
+                .effective_effort()
+                .or_else(|| from_effort(choice.effort)),
+        }
     } else {
-        cfg.model.clone()
+        Run {
+            model: cfg.model.clone(),
+            effort: cfg.effective_effort(),
+        }
+    }
+}
+
+/// Map the generator's effort back onto the settings vocabulary.
+///
+/// The heuristic only ever emits `None` or `Medium`, but `ReasoningEffort` is
+/// `#[non_exhaustive]`, so an unrecognized value degrades to the model default
+/// rather than being guessed at.
+fn from_effort(effort: Option<ReasoningEffort>) -> Option<AiCommitEffort> {
+    match effort? {
+        ReasoningEffort::Minimal => Some(AiCommitEffort::Minimal),
+        ReasoningEffort::Low => Some(AiCommitEffort::Low),
+        ReasoningEffort::Medium => Some(AiCommitEffort::Medium),
+        ReasoningEffort::High => Some(AiCommitEffort::High),
+        ReasoningEffort::XHigh => Some(AiCommitEffort::XHigh),
+        ReasoningEffort::Max => Some(AiCommitEffort::Max),
+        _ => None,
     }
 }
 
@@ -202,12 +235,12 @@ pub(crate) async fn generate(diff: &StagedDiff, cfg: &AiCommit) -> Result<String
         ..CommitRequest::default()
     };
 
-    // `"auto"` defers the model to the diff-size heuristic, which wants the
-    // *untruncated* diff length — the generator truncates afterwards, for the
-    // prompt, and choosing from the truncated size would under-serve big diffs.
-    let model = resolved_model(cfg, diff.patch.len(), diff.file_count);
+    // The heuristic wants the *untruncated* diff length — the generator
+    // truncates afterwards, for the prompt, and choosing from the truncated size
+    // would under-serve exactly the big diffs the escalation exists for.
+    let run = resolve_run(cfg, diff.patch.len(), diff.file_count);
     let binary = cfg.resolved_binary().to_string();
-    let agent = agent_for(cfg, Some(&model));
+    let agent = agent_for(cfg, &run);
 
     generate_commit_message(&request, agent.as_ref())
         .await
@@ -237,23 +270,48 @@ mod tests {
     #[test]
     fn auto_resolves_a_model_by_diff_size_and_a_pin_wins() {
         let auto = AiCommit::default();
-        assert_eq!(
-            resolved_model(&auto, 10, 1),
-            "haiku",
-            "small diff stays cheap"
-        );
-        assert_eq!(
-            resolved_model(&auto, 100_000, 40),
-            "sonnet",
-            "a large diff escalates"
-        );
+        let small = resolve_run(&auto, 10, 1);
+        assert_eq!(small.model, "haiku", "small diff stays cheap");
+        assert_eq!(small.effort, None, "at the model's own default");
+
+        let large = resolve_run(&auto, 100_000, 40);
+        assert_eq!(large.model, "sonnet", "a large diff escalates");
+        // The escalation is the point: a stronger model *and* more thinking.
+        // Taking the model and dropping the effort would deliver half of it.
+        assert_eq!(large.effort, Some(AiCommitEffort::Medium));
 
         let pinned = AiCommit {
             model: "opus".to_string(),
             ..AiCommit::default()
         };
-        assert_eq!(resolved_model(&pinned, 10, 1), "opus");
-        assert_eq!(resolved_model(&pinned, 100_000, 40), "opus");
+        assert_eq!(resolve_run(&pinned, 10, 1).model, "opus");
+        assert_eq!(resolve_run(&pinned, 100_000, 40).model, "opus");
+    }
+
+    #[test]
+    fn a_configured_effort_outranks_the_heuristics_own() {
+        let cfg = AiCommit {
+            effort: Some(AiCommitEffort::High),
+            ..AiCommit::default()
+        };
+        // "auto" picks the model, but an explicit effort still means something.
+        let run = resolve_run(&cfg, 100_000, 40);
+        assert_eq!(run.model, "sonnet");
+        assert_eq!(run.effort, Some(AiCommitEffort::High));
+
+        // One the agent rejects is dropped rather than passed through, and the
+        // heuristic's choice is not resurrected in its place.
+        let refused = AiCommit {
+            agent: AiCommitAgent::Claude,
+            effort: Some(AiCommitEffort::Minimal),
+            ..AiCommit::default()
+        };
+        assert_eq!(
+            resolve_run(&refused, 100_000, 40).effort,
+            Some(AiCommitEffort::Medium),
+            "falls back to what the heuristic asked for"
+        );
+        assert_eq!(resolve_run(&refused, 10, 1).effort, None);
     }
 
     #[test]
@@ -284,15 +342,34 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn probing_finds_a_binary_that_exists() {
-        // `env` is on PATH anywhere this test runs and answers `--version`, so
-        // it stands in for an installed agent without needing one.
+        // A stand-in agent written for the test rather than borrowed from the
+        // system: `env --version` is a GNU coreutils extension that BSD/macOS
+        // `env` rejects, so reaching for a real binary would make this pass or
+        // fail on which platform ran it rather than on the code.
+        let Ok(directory) = tempfile::tempdir() else {
+            return;
+        };
+        let script = directory.path().join("fake-agent");
+        if std::fs::write(&script, "#!/bin/sh\necho 'fake-agent 9.9.9'\n").is_err() {
+            return;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).is_err() {
+                return;
+            }
+        }
         let cfg = AiCommit {
-            binary: Some("env".to_string()),
+            binary: Some(script.to_string_lossy().into_owned()),
             ..AiCommit::default()
         };
         let result = probe(&cfg).await;
         assert!(result.available, "{result:?}");
-        assert!(!result.detail.is_empty());
+        // The probe reports the version line the agent printed, which is what a
+        // picker shows beside it.
+        assert_eq!(result.detail, "fake-agent 9.9.9");
     }
 }

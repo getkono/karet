@@ -88,7 +88,7 @@ pub(super) fn chip(app: &App, now: Instant, style: IconStyle) -> Option<Chip> {
                 ],
             ))
         },
-        AiCommitState::Applied { .. } => Some(Chip::new(
+        AiCommitState::Applied => Some(Chip::new(
             ThemeRole::LineNumberActive,
             [
                 format!("{mark} applied · Ctrl+Z undo"),
@@ -244,7 +244,6 @@ mod tests {
                 request: karet_session::RequestId(1),
                 since: crate::app::Pending::at(now),
                 draft: String::new(),
-                undo: None,
             },
             Some(ready()),
         );
@@ -263,7 +262,6 @@ mod tests {
                 request: karet_session::RequestId(1),
                 since: crate::app::Pending::at(since),
                 draft: String::new(),
-                undo: None,
             },
             Some(ready()),
         );
@@ -295,12 +293,7 @@ mod tests {
 
     #[test]
     fn an_applied_message_advertises_its_undo() {
-        let app = app_with(
-            AiCommitState::Applied {
-                undo: "my draft".to_string(),
-            },
-            Some(ready()),
-        );
+        let app = app_with(AiCommitState::Applied {}, Some(ready()));
         let chip = chip(&app, Instant::now(), IconStyle::Unicode).expect("an applied chip");
         assert!(chip.labels[0].contains("Ctrl+Z"), "{}", chip.labels[0]);
     }
@@ -327,11 +320,8 @@ mod tests {
                 request: karet_session::RequestId(1),
                 since: crate::app::Pending::at(revealed),
                 draft: String::new(),
-                undo: None,
             },
-            AiCommitState::Applied {
-                undo: "x".to_string(),
-            },
+            AiCommitState::Applied,
             AiCommitState::Failed {
                 reason: "`claude` was not found on PATH".to_string(),
             },

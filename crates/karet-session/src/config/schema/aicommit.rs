@@ -145,8 +145,11 @@ pub struct AiCommit {
     /// stronger one for large or many-file diffs; any other value pins that
     /// model name (e.g. `"haiku"`, `"sonnet"`, or a full model id).
     pub model: String,
-    /// Thinking effort for the model. `null` leaves the model's default;
-    /// ignored when `model` is `"auto"` (which chooses its own effort).
+    /// Thinking effort for the model.
+    ///
+    /// `null` defers: to the model's own default for a pinned model, and to the
+    /// size heuristic's choice under `"auto"` (which escalates effort alongside
+    /// the model for a large diff). A value set here outranks both.
     pub effort: Option<AiCommitEffort>,
     /// Extra natural-language instructions appended to the prompt (e.g. "mention
     /// the user-visible effect", "reference the ticket in the branch name").

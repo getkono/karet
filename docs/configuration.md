@@ -360,7 +360,7 @@ agent already has. Nothing is sent anywhere until you ask for a message.
 | `enabled` | bool | `true` | Allow generating commit messages. When off, the action reports that it is disabled rather than running. |
 | `agent` | `"claude"`\|`"codex"` | `"claude"` | Which CLI drafts the message. `codex` needs `codex` 0.146.0 or newer. |
 | `model` | string | `"auto"` | `"auto"` picks a cheap model for small diffs and a stronger one for large or many-file ones; any other value pins that model name (`"haiku"`, `"sonnet"`, a full model id). |
-| `effort` | string\|null | `null` | Thinking effort: `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. `null` leaves the model's default, and it is ignored when `model` is `"auto"` (which chooses its own). |
+| `effort` | string\|null | `null` | Thinking effort: `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. `null` defers — to the model's default for a pinned model, and to the size heuristic under `"auto"`, which raises effort alongside the model for a large diff. A value here outranks both. |
 | `instructions` | string[] | `[]` | Extra prompt guidance, one line each (e.g. "mention the user-visible effect"). |
 | `binary` | string\|null | `null` | Path to the selected agent's executable; `null` searches `PATH`. It overrides whichever agent is selected, so changing agent clears it. |
 | `timeoutMs` | number | `60000` | How long one generation may run before it is abandoned. |
@@ -388,6 +388,20 @@ draft is kept and `Ctrl+Z` brings it back.
 
 Binary files are named in the diff but their contents are never included, so a
 staged image costs neither prompt budget nor a distorted model choice.
+
+##### What a repository may configure
+
+`binary` names a program karet launches — to check the agent's version, and to
+generate — so it is the one key a **project** layer cannot set. A
+`.karet/setting.jsonc` arrives with a clone, and honouring an executable path
+from it would make opening a repository enough to run code it chose. That key is
+read from the user and system layers only; a project layer setting it is ignored.
+
+Every other key is honoured from any layer, so a repository can still ask for a
+particular model, effort, or set of instructions.
+
+Agents are probed only when `enabled` is `true`, so turning the feature off in a
+workspace means nothing is launched there at all.
 
 Generation is compiled into the default build. `cargo build
 --no-default-features` (or dropping the app's `aicommit` feature) removes the

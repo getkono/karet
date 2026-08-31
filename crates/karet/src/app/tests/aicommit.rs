@@ -33,7 +33,6 @@ fn generating(app: &mut App, draft: &str) -> RequestId {
         request,
         since: Pending::start(),
         draft: draft.to_string(),
-        undo: None,
     };
     request
 }
@@ -62,9 +61,7 @@ fn a_draft_typed_during_the_run_stays_recoverable() {
     assert_eq!(app.commit_input.text, "feat: generated", "the answer lands");
     assert_eq!(
         app.ai_commit.state,
-        AiCommitState::Applied {
-            undo: "wip: my own words".to_string()
-        },
+        AiCommitState::Applied,
         "and what it replaced is held, not discarded"
     );
 
@@ -87,12 +84,7 @@ fn asking_for_another_message_still_undoes_to_the_users_own_words() {
     let first = generating(&mut app, "");
     app.commit_input.text = "fix the parser thing".to_string();
     app.on_commit_message_generated(Some(first), "fix: first attempt".to_string());
-    assert_eq!(
-        app.ai_commit.state,
-        AiCommitState::Applied {
-            undo: "fix the parser thing".to_string()
-        }
-    );
+    assert_eq!(app.ai_commit.state, AiCommitState::Applied);
 
     // Not happy with it — ask again. The second run starts over generated text.
     app.commit_generate();
@@ -108,6 +100,99 @@ fn asking_for_another_message_still_undoes_to_the_users_own_words() {
     // regenerating is not consent to lose what they wrote.
     assert!(app.commit_generate_undo());
     assert_eq!(app.commit_input.text, "fix the parser thing");
+}
+
+/// Drive `app` to the state after one generation replaced the user's words.
+fn applied_over(app: &mut App, words: &str) {
+    app.backend = Some(std::sync::Arc::new(RecordingBackend::new()));
+    app.on_ai_commit_availability(ready());
+    let first = generating(app, "");
+    app.commit_input.text = words.to_string();
+    app.on_commit_message_generated(Some(first), "fix: generated".to_string());
+    assert_eq!(app.ai_commit.state, AiCommitState::Applied);
+}
+
+#[test]
+fn cancelling_a_second_run_keeps_the_undo() {
+    let mut app = app();
+    applied_over(&mut app, "my words");
+    app.commit_generate();
+    assert!(app.commit_generate_cancel());
+    assert!(
+        app.commit_generate_undo(),
+        "cancelling a re-run must not spend the undo"
+    );
+    assert_eq!(app.commit_input.text, "my words");
+}
+
+#[test]
+fn a_failed_second_run_keeps_the_undo() {
+    let mut app = app();
+    applied_over(&mut app, "my words");
+    app.commit_generate();
+    let second = app.ai_commit.generating().expect("in flight").0;
+    app.on_commit_message_failed(Some(second), "the agent timed out".to_string());
+    assert!(
+        app.commit_generate_undo(),
+        "a failed re-run must not spend the undo"
+    );
+    assert_eq!(app.commit_input.text, "my words");
+}
+
+#[test]
+fn a_refused_second_run_keeps_the_undo() {
+    let mut app = app();
+    applied_over(&mut app, "my words");
+    // The agent disappears between the two presses.
+    let mut gone = ready();
+    gone.agents = vec![AiCommitAgentStatus {
+        agent: AiCommitAgent::Claude,
+        available: false,
+        detail: "`claude` was not found on PATH".to_string(),
+    }];
+    app.on_ai_commit_availability(gone);
+    app.commit_generate();
+    assert!(
+        app.commit_generate_undo(),
+        "a refusal must not spend the undo"
+    );
+    assert_eq!(app.commit_input.text, "my words");
+}
+
+#[test]
+fn committing_disarms_the_undo() {
+    let mut app = app();
+    applied_over(&mut app, "my words");
+    app.on_committed("0123456789abcdef");
+    assert_eq!(app.commit_input.text, "", "the box is cleared to commit");
+    assert!(
+        !app.commit_generate_undo(),
+        "the draft belonged to a commit that has already landed"
+    );
+    assert_eq!(app.commit_input.text, "");
+}
+
+#[test]
+fn a_failure_reaches_the_status_line_as_well_as_the_chip() {
+    let mut app = app();
+    let request = generating(&mut app, "wip");
+    // git reports failures as multi-line stderr; the chip is one row in a
+    // border, so the detail has to survive somewhere it can actually be read.
+    app.on_commit_message_failed(
+        Some(request),
+        "fatal: bad object HEAD\n\nfix it".to_string(),
+    );
+
+    let status = app
+        .status
+        .clone()
+        .expect("a failure reaches the status line");
+    assert!(status.contains("bad object HEAD"), "{status}");
+    assert!(!status.contains('\n'), "collapsed to one line: {status:?}");
+    let AiCommitState::Failed { reason } = &app.ai_commit.state else {
+        panic!("expected a failed state");
+    };
+    assert!(!reason.contains('\n'), "collapsed to one line: {reason:?}");
 }
 
 #[test]
@@ -239,7 +324,6 @@ fn a_running_generation_schedules_its_own_repaints() {
         request: RequestId(1),
         since: Pending::at(now),
         draft: String::new(),
-        undo: None,
     };
     let wake = app.ai_commit_next_wake(now).expect("a pending run wakes");
     assert!(wake <= LOADING_REVEAL_DELAY && !wake.is_zero(), "{wake:?}");
@@ -250,7 +334,6 @@ fn a_running_generation_schedules_its_own_repaints() {
         request: RequestId(1),
         since: Pending::at(revealed),
         draft: String::new(),
-        undo: None,
     };
     assert_eq!(
         app.ai_commit_next_wake(now),

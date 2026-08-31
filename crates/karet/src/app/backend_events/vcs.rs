@@ -211,8 +211,14 @@ impl App {
     }
 
     /// Reset the commit editor and report a completed commit.
-    pub(super) fn on_committed(&mut self, oid: &str) {
+    pub(crate) fn on_committed(&mut self, oid: &str) {
         self.commit_input = CommitInput::default();
+        // The commit landed, so the box is empty and the draft that a generated
+        // message once replaced belongs to a message that is now history.
+        // Leaving the undo armed would let Ctrl+Z resurrect it into the *next*
+        // commit's box.
+        self.ai_commit.undo = None;
+        self.ai_commit.state = crate::app::scm::aicommit::AiCommitState::Idle;
         let short: String = oid.chars().take(7).collect();
         self.notify(
             Severity::Information,

@@ -17,7 +17,9 @@
 //! **The answer must not destroy a draft.** The draft is snapshotted when the
 //! run starts. If it is untouched on arrival the message simply replaces it; if
 //! the user typed while waiting, the message still lands but the previous draft
-//! is kept so a single undo brings it back.
+//! is kept so a single undo brings it back. That undo target lives on
+//! [`AiCommitUi`] rather than inside a state variant, so cancelling, failing, or
+//! regenerating cannot quietly throw away the user's own words.
 
 use std::time::Duration;
 use std::time::Instant;
@@ -52,21 +54,9 @@ pub(crate) enum AiCommitState {
         /// The draft as it was when the run began, so the answer can tell
         /// whether the user has typed since.
         draft: String,
-        /// Text the user wrote that a *previous* generation already replaced,
-        /// carried through this run so it stays the undo target.
-        ///
-        /// Asking for another message is common — the second answer replaces
-        /// the first, which was never the user's words. Snapshotting the box
-        /// again would make the undo point at generated text and lose the
-        /// original for good.
-        undo: Option<String>,
     },
-    /// A message was applied over a draft the user had changed, and that draft
-    /// is still recoverable.
-    Applied {
-        /// The draft the generated message replaced.
-        undo: String,
-    },
+    /// A generated message was applied over a draft that is still recoverable.
+    Applied,
     /// The last run produced no message.
     Failed {
         /// Why, phrased for display.
@@ -81,6 +71,15 @@ pub(crate) struct AiCommitUi {
     pub(crate) availability: Option<AiCommitAvailability>,
     /// What the affordance is doing right now.
     pub(crate) state: AiCommitState,
+    /// Text the user wrote that a generated message replaced, still restorable.
+    ///
+    /// Deliberately *outside* [`AiCommitState`]: the undo target belongs to the
+    /// box, not to whatever the affordance happens to be doing. Hanging it off
+    /// one variant meant every transition away from that variant — cancelling a
+    /// second run, a second run failing, a refusal before one even started —
+    /// silently discarded the user's own words. It survives until it is used or
+    /// the commit lands.
+    pub(crate) undo: Option<String>,
 }
 
 impl AiCommitUi {
@@ -130,13 +129,6 @@ impl App {
         if let Some((previous, _)) = self.ai_commit.generating() {
             self.send_command(SessionCommand::Cancel { request: previous });
         }
-        // Whatever the user last wrote stays the undo target across repeated
-        // generations; only their own text is worth restoring.
-        let undo = match &self.ai_commit.state {
-            AiCommitState::Applied { undo } => Some(undo.clone()),
-            AiCommitState::Generating { undo, .. } => undo.clone(),
-            _ => None,
-        };
         let draft = self.commit_input.text.clone();
         match self.send(SessionCommand::GenerateCommitMessage) {
             Some(request) => {
@@ -144,7 +136,6 @@ impl App {
                     request,
                     since: Pending::start(),
                     draft,
-                    undo,
                 };
             },
             None => self.ai_commit.state = AiCommitState::Idle,
@@ -166,13 +157,17 @@ impl App {
     }
 
     /// Restore the draft a generated message replaced.
+    ///
+    /// Available whatever the affordance is doing, because the undo target
+    /// outlives the run that created it.
     pub(crate) fn commit_generate_undo(&mut self) -> bool {
-        let AiCommitState::Applied { undo } = &self.ai_commit.state else {
+        let Some(restored) = self.ai_commit.undo.take() else {
             return false;
         };
-        let restored = undo.clone();
         self.set_commit_text(restored);
-        self.ai_commit.state = AiCommitState::Idle;
+        if matches!(self.ai_commit.state, AiCommitState::Applied) {
+            self.ai_commit.state = AiCommitState::Idle;
+        }
         self.status = Some("restored the previous commit message".to_string());
         true
     }
@@ -197,7 +192,6 @@ impl App {
         let AiCommitState::Generating {
             request: expected,
             draft,
-            undo,
             ..
         } = &self.ai_commit.state
         else {
@@ -210,22 +204,27 @@ impl App {
         // ask again is the worse outcome. What the user typed decides only what
         // stays recoverable: their newest words if they typed while waiting,
         // otherwise whatever an earlier generation already displaced.
-        let carried = undo.clone();
+        let touched = self.commit_input.text != *draft;
         let previous = std::mem::take(&mut self.commit_input.text);
-        let undo = if previous == *draft {
-            carried
+        if touched {
+            self.ai_commit.undo = Some(previous);
+        }
+        self.ai_commit.state = if self.ai_commit.undo.is_some() {
+            AiCommitState::Applied
         } else {
-            Some(previous)
-        };
-        self.ai_commit.state = match undo {
-            Some(undo) => AiCommitState::Applied { undo },
-            None => AiCommitState::Idle,
+            AiCommitState::Idle
         };
         self.set_commit_text(message);
         self.status = Some("commit message generated".to_string());
     }
 
     /// Report that a generation produced no message.
+    ///
+    /// The reason goes to two places on purpose. The chip is the surface the
+    /// user is already looking at, but it lives in a border a few cells wide and
+    /// has to shorten to fit; a git error carrying multiple lines of stderr
+    /// would be reduced to the word "failed" there. The status line takes the
+    /// full text, so the detail is never only in the place that cannot show it.
     pub(crate) fn on_commit_message_failed(&mut self, request: Option<RequestId>, reason: String) {
         // A failure with no request is an unsolicited one (a backend that could
         // not attribute it); show it rather than dropping it on the floor.
@@ -234,7 +233,10 @@ impl App {
         {
             return;
         }
-        self.ai_commit.state = AiCommitState::Failed { reason };
+        self.status = Some(format!("commit message: {}", one_line(&reason)));
+        self.ai_commit.state = AiCommitState::Failed {
+            reason: one_line(&reason),
+        };
     }
 
     /// Replace the commit draft, putting the caret at the end.
@@ -256,6 +258,15 @@ impl App {
         let (_, since) = self.ai_commit.generating()?;
         Some(since.wake(now).unwrap_or(Spinner::FRAME_INTERVAL))
     }
+}
+
+/// Collapse `text` onto one line, for anywhere a width is measured.
+///
+/// `git` reports failures as multi-line stderr, and both the chip and the status
+/// line are single-row surfaces — a newline there measures as width but paints
+/// as nothing, so a two-line reason silently overflows its slot and disappears.
+pub(crate) fn one_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// The label for a running generation: a spinner, and the elapsed seconds once

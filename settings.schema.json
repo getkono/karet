@@ -101,7 +101,7 @@
           "default": null
         },
         "effort": {
-          "description": "Thinking effort for the model. `null` leaves the model's default;\nignored when `model` is `\"auto\"` (which chooses its own effort).",
+          "description": "Thinking effort for the model.\n\n`null` defers: to the model's own default for a pinned model, and to the\nsize heuristic's choice under `\"auto\"` (which escalates effort alongside\nthe model for a large diff). A value set here outranks both.",
           "anyOf": [
             {
               "$ref": "#/$defs/AiCommitEffort"
