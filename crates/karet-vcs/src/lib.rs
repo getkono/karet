@@ -227,6 +227,12 @@ impl Repository {
     /// This is the input an external commit-message generator needs; the diff is
     /// taken between `HEAD` (or the empty tree on an unborn branch) and the index.
     ///
+    /// Binary files are reported as changed but their contents are **not**
+    /// included: the patch is meant to be read, and an embedded blob is
+    /// unreadable, unbounded, and distorts any size-based model choice made from
+    /// [`StagedDiff::patch`]. Use [`Repository::apply_index_patch`] for a patch
+    /// that must round-trip binary content.
+    ///
     /// # Errors
     /// Returns [`VcsError::GitUnavailable`] when `git` cannot be launched, or
     /// [`VcsError::Git`] if the diff cannot be computed.
