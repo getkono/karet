@@ -231,7 +231,9 @@ palette     = "0.7.6"
 ec4rs       = "1.2.0"
 spellbook   = "0.4.2"
 directories = "6.0.0"
-command-group = { version = "5.0.1", features = ["with-tokio"] }
+# Base entry stays synchronous so a lean consumer (karet-vcs) does not inherit
+# tokio; the crates that need the async API add `features = ["with-tokio"]`.
+command-group = { version = "5.0.1" }
 # Configuration file (karet-session): JSONC parsing (pure-Rust, byte-span errors)
 # and JSON Schema generation from the typed `Settings` for editor autocomplete.
 jsonc-parser = { version = "0.32.4", features = ["serde", "cst"] }
