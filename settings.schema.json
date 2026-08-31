@@ -87,8 +87,13 @@
       "description": "`git.aiCommit.*` — generate a commit message from the staged diff.",
       "type": "object",
       "properties": {
+        "agent": {
+          "description": "Which agent CLI drafts the message.",
+          "$ref": "#/$defs/AiCommitAgent",
+          "default": "claude"
+        },
         "binary": {
-          "description": "Path to the `claude` binary. `null` searches `PATH`.",
+          "description": "Path to the selected agent's executable. `null` searches `PATH` for\n[`AiCommitAgent::default_binary`]. This overrides whichever agent is\nselected, so it is cleared when the agent changes.",
           "type": [
             "string",
             "null"
@@ -96,7 +101,7 @@
           "default": null
         },
         "effort": {
-          "description": "Thinking effort for the model. `null` leaves the model's default; ignored when\n`model` is `\"auto\"` (which chooses its own effort).",
+          "description": "Thinking effort for the model. `null` leaves the model's default;\nignored when `model` is `\"auto\"` (which chooses its own effort).",
           "anyOf": [
             {
               "$ref": "#/$defs/AiCommitEffort"
@@ -108,12 +113,12 @@
           "default": null
         },
         "enabled": {
-          "description": "Allow generating commit messages from the staged diff (needs the `claude`\nCLI on `PATH`). When off, the generate action reports that it is disabled.",
+          "description": "Allow generating commit messages from the staged diff. When off, the\ngenerate action reports that it is disabled rather than running.",
           "type": "boolean",
           "default": true
         },
         "instructions": {
-          "description": "Extra natural-language instructions appended to the prompt (e.g. \"mention the\nuser-visible effect\", \"reference the ticket in the branch name\").",
+          "description": "Extra natural-language instructions appended to the prompt (e.g. \"mention\nthe user-visible effect\", \"reference the ticket in the branch name\").",
           "type": "array",
           "default": [],
           "items": {
@@ -121,16 +126,43 @@
           }
         },
         "model": {
-          "description": "The model to run: `\"auto\"` picks a cheap model for small diffs and a stronger\none for large or many-file diffs; any other value pins that model name\n(e.g. `\"haiku\"`, `\"sonnet\"`, or a full model id).",
+          "description": "The model to run: `\"auto\"` picks a cheap model for small diffs and a\nstronger one for large or many-file diffs; any other value pins that\nmodel name (e.g. `\"haiku\"`, `\"sonnet\"`, or a full model id).",
           "type": "string",
           "default": "auto"
+        },
+        "timeoutMs": {
+          "description": "How long one generation may run, in milliseconds.",
+          "type": "integer",
+          "format": "uint64",
+          "default": 60000,
+          "minimum": 0
         }
       },
       "additionalProperties": false
     },
-    "AiCommitEffort": {
-      "description": "How much thinking the commit-message model spends (`git.aiCommit.effort`).",
+    "AiCommitAgent": {
+      "description": "The local agent CLI that drafts the message.\n\nEach is driven through `agent-text`'s adapter for it, over pipes to the\ninstalled executable — karet never talks to a model provider directly.",
       "oneOf": [
+        {
+          "description": "Anthropic's `claude` CLI (Claude Code).",
+          "type": "string",
+          "const": "claude"
+        },
+        {
+          "description": "OpenAI's `codex` CLI. Requires `codex` 0.146.0 or newer.",
+          "type": "string",
+          "const": "codex"
+        }
+      ]
+    },
+    "AiCommitEffort": {
+      "description": "How much thinking the commit-message model spends (`git.aiCommit.effort`).\n\nMirrors `agent_text::ReasoningEffort`. Not every value is legal on every\nagent — see [`AiCommitAgent::supports_effort`].",
+      "oneOf": [
+        {
+          "description": "The least the model will do. Not supported by `claude`.",
+          "type": "string",
+          "const": "minimal"
+        },
         {
           "description": "Fastest, cheapest.",
           "type": "string",
@@ -142,9 +174,19 @@
           "const": "medium"
         },
         {
-          "description": "Slowest, most thorough.",
+          "description": "Slower, more thorough.",
           "type": "string",
           "const": "high"
+        },
+        {
+          "description": "Slower still. Spelled `xhigh`, matching the agents' own vocabulary —\n`camelCase` would render this variant `xHigh`, which no agent accepts.",
+          "type": "string",
+          "const": "xhigh"
+        },
+        {
+          "description": "The most the model will do. Not supported by `codex`.",
+          "type": "string",
+          "const": "max"
         }
       ]
     },
@@ -683,11 +725,13 @@
           "description": "AI-generated commit messages from the staged diff.",
           "$ref": "#/$defs/AiCommit",
           "default": {
+            "agent": "claude",
             "binary": null,
             "effort": null,
             "enabled": true,
             "instructions": [],
-            "model": "auto"
+            "model": "auto",
+            "timeoutMs": 60000
           }
         },
         "blame": {

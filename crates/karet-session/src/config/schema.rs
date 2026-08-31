@@ -379,6 +379,11 @@ impl Editor {
     }
 }
 
+pub use aicommit::AUTO_MODEL;
+pub use aicommit::AiCommit;
+pub use aicommit::AiCommitAgent;
+pub use aicommit::AiCommitEffort;
+pub use aicommit::DEFAULT_TIMEOUT_MS as AI_COMMIT_DEFAULT_TIMEOUT_MS;
 pub use overrides::EditorOverride;
 pub use overrides::LanguageSelector;
 pub use overrides::NullableOverride;
@@ -386,6 +391,7 @@ pub use overrides::ResolvedCompletion;
 pub use overrides::ResolvedEditor;
 pub use overrides::ResolvedSemanticComments;
 
+mod aicommit;
 mod overrides;
 
 /// `editor.completion.*` — LSP-powered code completion.
@@ -905,54 +911,6 @@ impl Default for Git {
             ai_commit: AiCommit::default(),
         }
     }
-}
-
-/// `git.aiCommit.*` — generate a commit message from the staged diff.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
-pub struct AiCommit {
-    /// Allow generating commit messages from the staged diff (needs the `claude`
-    /// CLI on `PATH`). When off, the generate action reports that it is disabled.
-    pub enabled: bool,
-    /// The model to run: `"auto"` picks a cheap model for small diffs and a stronger
-    /// one for large or many-file diffs; any other value pins that model name
-    /// (e.g. `"haiku"`, `"sonnet"`, or a full model id).
-    pub model: String,
-    /// Thinking effort for the model. `null` leaves the model's default; ignored when
-    /// `model` is `"auto"` (which chooses its own effort).
-    pub effort: Option<AiCommitEffort>,
-    /// Extra natural-language instructions appended to the prompt (e.g. "mention the
-    /// user-visible effect", "reference the ticket in the branch name").
-    pub instructions: Vec<String>,
-    /// Path to the `claude` binary. `null` searches `PATH`.
-    pub binary: Option<String>,
-}
-
-impl Default for AiCommit {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            model: "auto".to_string(),
-            effort: None,
-            instructions: Vec::new(),
-            binary: None,
-        }
-    }
-}
-
-/// How much thinking the commit-message model spends (`git.aiCommit.effort`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(rename_all = "camelCase")]
-pub enum AiCommitEffort {
-    /// Fastest, cheapest.
-    #[default]
-    Low,
-    /// A balance of speed and quality.
-    Medium,
-    /// Slowest, most thorough.
-    High,
 }
 
 #[cfg(test)]
