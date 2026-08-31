@@ -6,6 +6,7 @@ mod backend_events;
 mod capture;
 mod change_view;
 mod commands;
+pub(crate) mod commit_console;
 mod completion;
 pub(crate) mod confirm;
 mod debugging;
@@ -400,6 +401,8 @@ pub struct App {
     pub(crate) find_open: bool,
     /// The permanent multiline Source-Control commit-message editor.
     pub(crate) commit_input: CommitInput,
+    /// The live console a running commit's hooks print into.
+    pub(crate) commit_console: commit_console::CommitConsole,
     /// The commit box's AI affordance: what the backend says can run, and what
     /// the last (or current) generation is doing.
     pub(crate) ai_commit: crate::app::scm::aicommit::AiCommitUi,

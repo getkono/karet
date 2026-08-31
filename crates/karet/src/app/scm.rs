@@ -648,6 +648,9 @@ impl App {
         if let Some(id) = self.send(SessionCommand::Commit { message }) {
             self.commit_input.pending = Some(id);
             self.status = Some("committing…".to_string());
+            // A fresh log per commit. The console itself stays shut until there
+            // is something in it — see `app::commit_console`.
+            self.commit_console_reset();
         }
     }
 

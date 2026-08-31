@@ -488,6 +488,10 @@ pub enum Command {
     /// Open the AI commit-message options, so the agent, model, and effort are
     /// settled before a generation is asked for.
     CommitConfigureAi,
+    /// Dismiss the commit console, keeping its log for a later reopen.
+    CommitConsoleClose,
+    /// Show the last commit's console log again.
+    CommitConsoleShow,
     /// Commit the explorer inline name editor (create / rename).
     ExplorerEditSubmit,
     /// Cancel the explorer inline name editor.
@@ -871,6 +875,8 @@ impl Command {
             Self::CommitGenerate => "Commit: Generate Message (AI)",
             Self::CommitGenerateUndo => "Commit: Undo Generated Message",
             Self::CommitConfigureAi => "Commit: AI Message Options…",
+            Self::CommitConsoleClose => "Commit: Close Console",
+            Self::CommitConsoleShow => "Commit: Show Last Console Log",
             Self::ExplorerEditSubmit => "Explorer: Confirm Name",
             Self::ExplorerEditCancel => "Explorer: Cancel Edit",
             Self::ContextMenuUp => "Context Menu: Select Previous",

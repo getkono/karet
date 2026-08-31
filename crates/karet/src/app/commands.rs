@@ -331,6 +331,8 @@ impl App {
             Command::FindToggleWord => self.find_toggle_option(SearchOption::Word),
             Command::CommitSubmit => self.commit_submit(),
             Command::CommitCancel => self.commit_cancel(),
+            Command::CommitConsoleClose => self.commit_console_dismiss(),
+            Command::CommitConsoleShow => self.commit_console_reopen(),
             Command::CommitGenerate => self.commit_generate(),
             Command::CommitGenerateUndo => {
                 self.commit_generate_undo();

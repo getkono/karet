@@ -295,7 +295,13 @@ impl App {
         if in_editor && !in_outline && !matches!(mouse.kind, MouseEventKind::Moved) {
             self.dismiss_outline_overlay();
         }
+        // The console floats over everything it overlaps, so its wheel is claimed
+        // before any pane's — otherwise a notch over it would scroll the editor
+        // behind it.
+        let in_console = self.commit_console.open && rect_contains(self.commit_console.rect, point);
         match mouse.kind {
+            MouseEventKind::ScrollDown if in_console => self.commit_console_scroll(3),
+            MouseEventKind::ScrollUp if in_console => self.commit_console_scroll(-3),
             MouseEventKind::ScrollDown if in_outline => self.outline_step(1),
             MouseEventKind::ScrollUp if in_outline => self.outline_step(-1),
             MouseEventKind::ScrollDown if in_sidebar => self.sidebar_wheel(3, mouse.row),

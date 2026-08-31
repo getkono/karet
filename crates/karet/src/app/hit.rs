@@ -148,6 +148,10 @@ pub(crate) enum ScrollSurface {
     ScmCommits,
     /// The Source-Control commit-message box.
     ScmCommitInput,
+    /// The running commit's console log.
+    CommitConsole,
+    /// The running commit's console log, horizontally.
+    CommitConsoleColumns,
     /// The completion popup.
     Completion,
 }

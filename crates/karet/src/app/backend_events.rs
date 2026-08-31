@@ -279,6 +279,7 @@ impl App {
             SessionEvent::VcsCommitsPrepended { commits } => {
                 self.apply_vcs_commits_prepended(commits);
             },
+            SessionEvent::CommitOutput { lines } => self.on_commit_output(lines),
             SessionEvent::Committed { oid } => self.on_committed(&oid),
             SessionEvent::CommitMessageGenerated { message } => {
                 self.on_commit_message_generated(id, message);

@@ -3,6 +3,7 @@
 //! content area (the active tab), and a status bar.
 
 pub(crate) mod commit;
+mod commit_console;
 mod confirm;
 mod content;
 mod github;
@@ -275,6 +276,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if let Some(blocker) = &app.operation_blocker {
         draw_operation_blocker(f, blocker, &theme, area);
     }
+
+    // The commit console sits above the pickers but below a confirmation and the
+    // toasts: it is a log to read, not a question to answer.
+    commit_console::draw_commit_console(f, app, &theme, area, &mut hits);
 
     // Toasts float above everything, including the modal overlay.
     draw_toasts(f, app, &theme, area);

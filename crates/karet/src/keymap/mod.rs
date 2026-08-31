@@ -99,6 +99,7 @@ use KeyCode::PageUp;
 use KeyCode::Right;
 use KeyCode::Tab;
 use KeyCode::Up;
+use Layer::CommitConsole;
 use Layer::CommitGraph;
 use Layer::CommitInput;
 use Layer::Confirm;

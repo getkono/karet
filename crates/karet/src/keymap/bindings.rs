@@ -383,6 +383,8 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(CommitInput, true,  false, false, Char('c'), Command::Copy),
     b(CommitInput, true,  false, false, Char('x'), Command::Cut),
     b(CommitInput, true,  false, false, Char('v'), Command::Paste),
+    // Commit console.
+    b(CommitConsole, false, false, false, Esc, Command::CommitConsoleClose),
     // Go-to-commit (revision) input.
     b(RevInput, false, false, false, Esc,   Command::RevInputCancel),
     b(RevInput, false, false, false, Enter, Command::RevInputSubmit),

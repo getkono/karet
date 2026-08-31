@@ -98,6 +98,11 @@ impl App {
             id.is_some_and(|request| self.fail_language_server_operation(request, &message));
         if id.is_some() && id == self.commit_input.pending {
             self.commit_input.pending = None;
+            // A refusal always shows its log: the reason is the whole point, and
+            // a toast is too small to carry a hook's output.
+            self.commit_console_finished(crate::app::commit_console::CommitOutcome::Failed(
+                crate::app::scm::aicommit::one_line(&message),
+            ));
         }
         if id.is_some() && id == self.scm.repository_request {
             self.scm.repository_request = None;
