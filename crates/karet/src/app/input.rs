@@ -79,7 +79,6 @@ impl App {
     /// [input context](Self::input_context) and dispatch, or fall through to the
     /// active modal's text input when nothing is bound.
     pub(super) fn handle_key(&mut self, key: KeyEvent) {
-        self.status = None;
         // Typing means the pointer is no longer the subject; a Ctrl release that
         // produces no mouse event would otherwise leave the underline behind.
         self.definition_hover = None;
@@ -89,8 +88,11 @@ impl App {
         if self.operation_blocker.is_some() {
             if key.code == KeyCode::Esc && key.modifiers.is_empty() {
                 self.operation_blocker = None;
-                self.status =
-                    Some("quit cancelled; source control operation continues".to_string());
+                self.notify(
+                    Report::Outcome,
+                    NotificationKind::Vcs,
+                    "quit cancelled; source control operation continues",
+                );
             }
             return;
         }
@@ -370,8 +372,11 @@ impl App {
             },
             OverlayEvent::AcceptCreateBranch(options) => {
                 if options.name.trim().is_empty() || options.start_point.trim().is_empty() {
-                    self.status =
-                        Some("create branch: name and start point are required".to_string());
+                    self.notify(
+                        Report::Refusal,
+                        NotificationKind::Vcs,
+                        "create branch: name and start point are required",
+                    );
                 } else {
                     self.run_vcs_action(VcsAction::CreateBranch(options));
                 }
@@ -413,7 +418,11 @@ impl App {
             OverlayEvent::AcceptText { purpose, text } => match purpose {
                 TextPurpose::StashBranch { reference } => {
                     if text.trim().is_empty() {
-                        self.status = Some("stash branch: enter a branch name".to_string());
+                        self.notify(
+                            Report::Refusal,
+                            NotificationKind::Vcs,
+                            "stash branch: enter a branch name",
+                        );
                     } else {
                         self.run_vcs_action(VcsAction::StashBranch {
                             name: text,
@@ -423,14 +432,18 @@ impl App {
                 },
                 TextPurpose::RenameBranch { old } => {
                     if text.trim().is_empty() {
-                        self.status = Some("rename branch: enter a new name".to_string());
+                        self.notify(
+                            Report::Refusal,
+                            NotificationKind::Vcs,
+                            "rename branch: enter a new name",
+                        );
                     } else {
                         self.run_vcs_action(VcsAction::RenameBranch { old, new: text });
                     }
                 },
                 TextPurpose::TagCreate { rev } => {
                     if text.trim().is_empty() {
-                        self.status = Some("tag: enter a name".to_string());
+                        self.notify(Report::Refusal, NotificationKind::Vcs, "tag: enter a name");
                     } else {
                         self.run_vcs_action(VcsAction::TagCreate {
                             name: text.trim().to_string(),

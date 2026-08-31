@@ -97,7 +97,7 @@ fn dragging_a_unified_diff_selects_rows_without_their_gutters() {
         "the gutter and the `+` marker are chrome, not content"
     );
     app.dispatch(Command::Copy);
-    assert_eq!(app.status.as_deref(), Some("copied selection"));
+    assert_eq!(last_message(&app).as_deref(), Some("copied selection"));
 }
 
 #[test]
@@ -520,7 +520,7 @@ fn the_find_bar_supports_keyboard_and_mouse_selection() {
 
     // Ctrl+C copies the field, not the editor beneath it.
     app.dispatch(Command::Copy);
-    assert_eq!(app.status.as_deref(), Some("copied selection"));
+    assert_eq!(last_message(&app).as_deref(), Some("copied selection"));
 
     // Ctrl+A selects the whole field; Ctrl+X takes it away.
     app.dispatch(Command::EditorSelectAll);
@@ -602,5 +602,5 @@ fn dragging_the_explorer_rename_field_selects_within_the_name() {
 
     // Ctrl+C reaches the field rather than the editor behind the sidebar.
     app.dispatch(Command::Copy);
-    assert_eq!(app.status.as_deref(), Some("copied selection"));
+    assert_eq!(last_message(&app).as_deref(), Some("copied selection"));
 }

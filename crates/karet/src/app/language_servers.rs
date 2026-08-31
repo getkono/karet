@@ -254,7 +254,7 @@ impl App {
             // the next tick of any *other* running operation — losing exactly the
             // report the user most needs, since errors never auto-expire.
             self.notify(
-                Severity::Error,
+                Report::Failure,
                 NotificationKind::Lsp,
                 format!("language server: {message}"),
             );
@@ -289,10 +289,14 @@ impl App {
             return;
         };
         if !status.managed {
-            self.status = Some(format!(
-                "{} is supplied externally and has no Karet update channel",
-                status.server.display_name()
-            ));
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Lsp,
+                format!(
+                    "{} is supplied externally and has no Karet update channel",
+                    status.server.display_name()
+                ),
+            );
             return;
         }
         let request = self.send(SessionCommand::CheckLanguageServerUpdates {
@@ -308,7 +312,9 @@ impl App {
     pub(super) fn check_all_language_servers(&mut self) {
         let request = self.send(SessionCommand::CheckLanguageServerUpdates { server: None });
         self.set_language_server_pending(request, None, LanguageServerPendingKind::CheckAll);
-        self.status = Some("checking managed language servers for updates…".to_string());
+        // Deliberately silent: the check answers with "up to date" or "N updates
+        // available" a moment later, and that outcome is the announcement. A card
+        // for the request as well would say the same thing twice.
     }
 
     pub(super) fn language_server_primary_action(&mut self) {
@@ -323,10 +329,14 @@ impl App {
             return;
         };
         if !status.managed {
-            self.status = Some(format!(
-                "{} is resolved from configuration or PATH",
-                status.server.display_name()
-            ));
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Lsp,
+                format!(
+                    "{} is resolved from configuration or PATH",
+                    status.server.display_name()
+                ),
+            );
             return;
         }
         let planned = self.language_servers_mut().and_then(|view| {
@@ -365,16 +375,27 @@ impl App {
                         | karet_session::LanguageServerRuntimeState::Stopped
                 )
         }) {
-            self.status = Some(format!(
-                "{} has no process in this session",
-                status.server.display_name()
-            ));
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Lsp,
+                format!(
+                    "{} has no process in this session",
+                    status.server.display_name()
+                ),
+            );
             return;
         }
         self.send_command(SessionCommand::RestartLanguageServer {
             server: status.server.clone(),
         });
-        self.status = Some(format!("restarting {}…", status.server.display_name()));
+        // `Activity`, not a tracked progress card: a restart registers no pending
+        // operation, so nothing would ever retire a persistent card — and reusing
+        // the download tag would clobber an install running alongside it.
+        self.notify(
+            Report::Activity,
+            NotificationKind::Lsp,
+            format!("restarting {}…", status.server.display_name()),
+        );
     }
 
     pub(super) fn uninstall_selected_language_server(&mut self) {
@@ -389,10 +410,11 @@ impl App {
             return;
         };
         if !status.managed || status.installed.is_none() {
-            self.status = Some(format!(
-                "{} is not installed by Karet",
-                status.server.display_name()
-            ));
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Lsp,
+                format!("{} is not installed by Karet", status.server.display_name()),
+            );
             return;
         }
         let name = status.server.display_name().to_string();
@@ -556,17 +578,9 @@ impl App {
         request: Option<RequestId>,
         servers: Vec<LanguageServerStatus>,
     ) {
-        let total = servers.len();
-        let available = servers
-            .iter()
-            .filter(|server| {
-                server
-                    .instances
-                    .iter()
-                    .any(|instance| instance.command.is_some())
-            })
-            .count();
         self.lsp_runtime.replace(request, servers.clone());
+        // No card for the count: this only ever fills the Language Servers tab,
+        // whose table already lists every server and whether it is available.
         for tab in self.all_tabs_mut() {
             if let TabKind::LanguageServers(view) = &mut tab.kind
                 && (request.is_none() || view.inventory_request == request)
@@ -574,7 +588,6 @@ impl App {
                 view.set_servers(servers.clone());
             }
         }
-        self.status = Some(format!("{available}/{total} language servers available"));
     }
 
     pub(super) fn prompt_language_server_updates(
@@ -614,17 +627,18 @@ impl App {
         }
         if changes.is_empty() {
             self.notify(
-                Severity::Information,
+                Report::Outcome,
                 NotificationKind::Lsp,
                 "language servers are up to date",
             );
             return;
         }
         if manager_open {
-            self.status = Some(format!(
-                "{} language-server update(s) available",
-                changes.len()
-            ));
+            self.notify(
+                Report::Outcome,
+                NotificationKind::Lsp,
+                format!("{} language-server update(s) available", changes.len()),
+            );
             return;
         }
         let summary = changes
@@ -692,7 +706,7 @@ impl App {
         // Untagged: an outcome must survive another operation's next progress
         // tick (see `fail_language_server_operation`).
         self.notify(
-            Severity::Information,
+            Report::Outcome,
             NotificationKind::Lsp,
             format!("{} {version} is ready", server.display_name()),
         );
@@ -748,7 +762,7 @@ impl App {
             ""
         };
         self.notify(
-            Severity::Information,
+            Report::Outcome,
             NotificationKind::Lsp,
             format!("uninstalled {}{suffix}", server.display_name()),
         );
@@ -805,7 +819,7 @@ impl App {
                 _ => return,
             };
             self.notify_tagged(
-                severity,
+                Report::from_severity(severity),
                 NotificationKind::Lsp,
                 format!("{} {state_label}: {error}", server.display_name()),
                 Some(format!("lsp.runtime.{}.{}", server.key(), root.display())),

@@ -13,6 +13,11 @@ impl App {
         // Commits and branch switches change every cached repository
         // fact (head, tracked-ness); drop them and re-resolve on demand.
         self.remote_facts.clear();
+        // A fresh status is how a write with no outcome event of its own (a
+        // discard) reports that it finished. Only the discard tag: this also fires
+        // for unrelated worktree changes, and a fetch or a rebase still running
+        // must keep its card.
+        self.notifications.dismiss_tagged(Self::VCS_DISCARD_TAG);
 
         self.live_blame = None;
         self.pending_blame = None;
@@ -48,6 +53,10 @@ impl App {
     ) {
         self.scm.operation = None;
         let resume_quit = self.operation_blocker.take().is_some();
+        // The operation is over however it ended, so its progress card goes now.
+        // Clearing here rather than in each arm is what keeps a silent outcome
+        // (a preview tab, an unhandled variant) from orphaning the card forever.
+        self.notifications.dismiss_tagged(Self::VCS_OPERATION_TAG);
         if let Some(error) = error {
             match action {
                 VcsAction::SwitchBranch(target)
@@ -77,7 +86,7 @@ impl App {
                         ConfirmAction::UndoPublishedCommit,
                     );
                 },
-                _ => self.notify(Severity::Error, NotificationKind::Vcs, error),
+                _ => self.notify(Report::Failure, NotificationKind::Vcs, error),
             }
         } else if let Some(outcome) = outcome {
             match outcome {
@@ -85,26 +94,48 @@ impl App {
                     self.publish_current_branch();
                 },
                 VcsOutcome::PullRequestUpdated => {
-                    self.status = Some("pull request branch updated".to_string());
+                    self.notify(
+                        Report::Outcome,
+                        NotificationKind::Vcs,
+                        "pull request branch updated",
+                    );
                 },
                 VcsOutcome::PullRequestCheckedOut { branch } => {
-                    self.status = Some(format!("switched to {branch}"));
+                    self.notify(
+                        Report::Outcome,
+                        NotificationKind::Vcs,
+                        format!("switched to {branch}"),
+                    );
                 },
                 VcsOutcome::CommitUndone { commit, .. } => {
                     let short: String = commit.chars().take(7).collect();
-                    self.status = Some(format!("undid commit {short}"));
+                    self.notify(
+                        Report::Outcome,
+                        NotificationKind::Vcs,
+                        format!("undid commit {short}"),
+                    );
                 },
                 VcsOutcome::StashCreated(true) => {
-                    self.status = Some("stashed local changes".to_string());
+                    self.notify(
+                        Report::Outcome,
+                        NotificationKind::Vcs,
+                        "stashed local changes",
+                    );
                 },
+                // Nothing was stashed: the command was understood and declined, so
+                // it is a refusal rather than a stash that happened.
                 VcsOutcome::StashCreated(false) => {
-                    self.status = Some("stash: no local changes".to_string());
+                    self.notify(Report::Refusal, NotificationKind::Vcs, "no local changes");
                 },
                 VcsOutcome::StashPreview { reference, patch } => {
                     self.push_tab(Tab::stash_preview(&reference, patch));
                 },
                 VcsOutcome::Completed => {
-                    self.status = Some("source control operation completed".to_string());
+                    self.notify(
+                        Report::Outcome,
+                        NotificationKind::Vcs,
+                        "source control operation completed",
+                    );
                 },
                 _ => {},
             }
@@ -166,8 +197,16 @@ impl App {
                 });
             } else if self.pull_request_items.is_empty() {
                 self.pull_request_remote = None;
-                self.status = Some(format!("{remote}: no open pull requests"));
+                self.notify_tagged(
+                    Report::Refusal,
+                    NotificationKind::Vcs,
+                    format!("{remote}: no open pull requests"),
+                    Some(Self::PULL_REQUESTS_TAG.to_string()),
+                );
             } else {
+                // The picker opening is the answer, so the "loading…" card goes
+                // with it rather than sitting behind the overlay.
+                self.notifications.dismiss_tagged(Self::PULL_REQUESTS_TAG);
                 let items = std::mem::take(&mut self.pull_request_items);
                 let remote = self.pull_request_remote.take().unwrap_or(remote);
                 self.overlay = Some(Overlay::pull_requests(remote, items));
@@ -223,10 +262,13 @@ impl App {
         self.commit_console_finished(crate::app::commit_console::ConsoleOutcome::Committed(
             short.clone(),
         ));
-        self.notify(
-            Severity::Information,
+        // Tagged to match `commit_submit`'s progress card, so the commit that was
+        // running is rewritten into the commit that landed.
+        self.notify_tagged(
+            Report::Outcome,
             NotificationKind::Vcs,
             format!("committed {short}"),
+            Some(Self::VCS_COMMIT_TAG.to_string()),
         );
     }
 

@@ -25,7 +25,11 @@ impl App {
             .send(SessionCommand::PrepareChange { path, staged })
             .is_none()
         {
-            self.status = Some("diff backend is unavailable".to_string());
+            self.notify(
+                Report::Failure,
+                NotificationKind::Vcs,
+                "diff backend is unavailable",
+            );
         }
     }
 
@@ -43,18 +47,26 @@ impl App {
             ..
         }) = self.tabs.get(self.active).map(|tab| &tab.kind)
         else {
-            self.status = Some("stage hunk: open a diff first".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Vcs,
+                "stage hunk: open a diff first",
+            );
             return;
         };
         // Staged-side diffs un-stage; working-side diffs stage. Mismatched
         // verbs are a no-op with a hint rather than a surprising inversion.
         let staged_side = *section == Section::Staged;
         if reverse != staged_side {
-            self.status = Some(if reverse {
-                "unstage hunk: this diff shows unstaged changes (press s)".to_string()
-            } else {
-                "stage hunk: this diff shows staged changes (press u)".to_string()
-            });
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Vcs,
+                if reverse {
+                    "unstage hunk: this diff shows unstaged changes (press s)"
+                } else {
+                    "stage hunk: this diff shows staged changes (press u)"
+                },
+            );
             return;
         }
         let prepared = &file.change.diff;
@@ -64,7 +76,11 @@ impl App {
             ViewMode::SideBySide => karet_diff::side_by_side_hunk_at_row(prepared, row),
         };
         let Some(hunk) = hunk_index.and_then(|index| prepared.diff.hunks.get(index)) else {
-            self.status = Some("stage hunk: no hunk here".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Vcs,
+                "stage hunk: no hunk here",
+            );
             return;
         };
         let patch = karet_diff::format_hunk_patch(&prepared.diff, hunk);
@@ -73,14 +89,22 @@ impl App {
             .send(SessionCommand::ApplyIndexPatch { patch, reverse })
             .is_none()
         {
-            self.status = Some("stage hunk: backend is unavailable".to_string());
+            self.notify(
+                Report::Failure,
+                NotificationKind::Vcs,
+                "stage hunk: backend is unavailable",
+            );
             return;
         }
-        self.status = Some(if reverse {
-            "hunk unstaged".to_string()
-        } else {
-            "hunk staged".to_string()
-        });
+        self.notify(
+            Report::Outcome,
+            NotificationKind::Vcs,
+            if reverse {
+                "hunk unstaged"
+            } else {
+                "hunk staged"
+            },
+        );
         // Reserve the tab's loading state and ask for the now-current diff.
         if let Some(TabKind::Diff {
             file,
@@ -139,9 +163,9 @@ impl App {
     }
 
     /// Fill the reserved ad-hoc diff tab (revision or two-file diff) owned by the
-    /// request. A failure closes the reserved tab and reports through the status
-    /// line instead — a diff that could not even be computed should not linger as
-    /// a dead tab. A closed tab drops the answer.
+    /// request. A failure closes the reserved tab and reports the reason as a
+    /// notification instead — a diff that could not even be computed should not
+    /// linger as a dead tab. A closed tab drops the answer.
     pub(super) fn apply_diff_prepared(
         &mut self,
         id: Option<RequestId>,
@@ -176,7 +200,7 @@ impl App {
                 }) {
                     self.close_tab_at(index);
                 }
-                self.status = Some(message);
+                self.notify(Report::Failure, NotificationKind::Vcs, message);
             },
         }
     }

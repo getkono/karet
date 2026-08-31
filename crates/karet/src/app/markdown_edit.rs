@@ -30,7 +30,11 @@ impl App {
             match fallback {
                 Some(command) => self.dispatch(command),
                 None => {
-                    self.status = Some("markdown formatting applies to Markdown files".to_owned());
+                    self.notify(
+                        Report::Refusal,
+                        NotificationKind::System,
+                        "markdown formatting applies to Markdown files",
+                    );
                 },
             }
             return;
@@ -44,7 +48,11 @@ impl App {
         let caret = tab.editor.cursor();
         let selection = tab.editor.selection_range().filter(|r| !r.is_empty());
         if selection.is_some_and(|r| r.start.line != r.end.line) {
-            self.status = Some("select within one line to toggle formatting".to_owned());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "select within one line to toggle formatting",
+            );
             return;
         }
         let line = caret.line;
@@ -71,7 +79,11 @@ impl App {
     /// Toggle the `[ ]`/`[x]` checkbox on the caret's line (Alt+C).
     pub(super) fn toggle_task_checkbox(&mut self) {
         if !self.active_is_markdown() {
-            self.status = Some("task checkboxes apply to Markdown files".to_owned());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "task checkboxes apply to Markdown files",
+            );
             return;
         }
         let Some(tab) = self.tabs.get(self.active) else {
@@ -86,7 +98,11 @@ impl App {
             return;
         };
         let Some(new_text) = karet_markdown::edit::toggle_task(&text) else {
-            self.status = Some("no task checkbox on this line".to_owned());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "no task checkbox on this line",
+            );
             return;
         };
         let line_range = line_span(line, text.chars().count());
@@ -211,7 +227,11 @@ impl App {
     /// only rewrites an existing region.
     pub(super) fn markdown_toc(&mut self, create: bool) {
         if !self.active_is_markdown() {
-            self.status = Some("the table of contents applies to Markdown files".to_owned());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "the table of contents applies to Markdown files",
+            );
             return;
         }
         let Some(tab) = self.tabs.get(self.active) else {
@@ -228,7 +248,11 @@ impl App {
             levels: min..=max.max(min),
         };
         let Some(rendered) = karet_markdown::toc::render_toc(&text, &options) else {
-            self.status = Some("no headings in the table's level range".to_owned());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "no headings in the table's level range",
+            );
             return;
         };
         match karet_markdown::toc::toc_region(&text) {
@@ -246,7 +270,11 @@ impl App {
                     (c == caret)
                         .then(|| editing::insert(range.start, Some(range), base, &replacement))
                 });
-                self.status = Some("table of contents updated".to_owned());
+                self.notify(
+                    Report::Outcome,
+                    NotificationKind::System,
+                    "table of contents updated",
+                );
             },
             None if create => {
                 let at = LineCol::new(caret.line, 0);
@@ -254,11 +282,17 @@ impl App {
                 self.submit_edit(move |c, _s, _b, base| {
                     (c == caret).then(|| editing::insert(at, None, base, &block))
                 });
-                self.status = Some("table of contents inserted".to_owned());
+                self.notify(
+                    Report::Outcome,
+                    NotificationKind::System,
+                    "table of contents inserted",
+                );
             },
             None => {
-                self.status = Some(
-                    "no <!-- toc --> markers — use Markdown: Create Table of Contents".to_owned(),
+                self.notify(
+                    Report::Refusal,
+                    NotificationKind::System,
+                    "no <!-- toc --> markers — use Markdown: Create Table of Contents",
                 );
             },
         }
@@ -267,7 +301,11 @@ impl App {
     /// Shift the caret line's heading level by `delta` (Ctrl+Shift+] / [).
     pub(super) fn markdown_heading_shift(&mut self, delta: i8) {
         if !self.active_is_markdown() {
-            self.status = Some("heading levels apply to Markdown files".to_owned());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "heading levels apply to Markdown files",
+            );
             return;
         }
         let Some(tab) = self.tabs.get(self.active) else {
@@ -303,7 +341,11 @@ impl App {
     /// workspace's `.markdownlint.json` when present.
     pub(super) fn markdown_lint_fix_all(&mut self) {
         if !self.active_is_markdown() {
-            self.status = Some("lint fixes apply to Markdown files".to_owned());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "lint fixes apply to Markdown files",
+            );
             return;
         }
         let Some(tab) = self.tabs.get(self.active) else {
@@ -324,7 +366,11 @@ impl App {
         let fixable = issues.iter().filter(|i| i.fix.is_some()).count();
         let fixed = karet_markdown::lint::apply_fixes(&original, &issues);
         if fixable == 0 || fixed == original {
-            self.status = Some("no fixable lint issues".to_owned());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "no fixable lint issues",
+            );
             return;
         }
         let primary = tab.editor.cursor();
@@ -340,10 +386,14 @@ impl App {
         {
             editor.set_cursor_state(buffer, cursors);
         }
-        self.status = Some(format!(
-            "fixed {fixable} lint issue{}",
-            if fixable == 1 { "" } else { "s" }
-        ));
+        self.notify(
+            Report::Outcome,
+            NotificationKind::System,
+            format!(
+                "fixed {fixable} lint issue{}",
+                if fixable == 1 { "" } else { "s" }
+            ),
+        );
     }
 
     /// Replace the primary cursor with a `start..end` selection on `line`.

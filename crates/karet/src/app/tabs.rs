@@ -711,7 +711,7 @@ impl App {
             break;
         }
         if let Some(message) = failure {
-            self.notify(Severity::Error, NotificationKind::Io, message);
+            self.notify(Report::Failure, NotificationKind::Io, message);
         }
     }
 }

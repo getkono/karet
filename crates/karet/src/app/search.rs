@@ -24,7 +24,11 @@ impl App {
             // blank query, necessary to refresh a restored non-empty one.
             self.run_find();
         } else {
-            self.status = Some("find: open a text file first".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Search,
+                "find: open a text file first",
+            );
         }
     }
 

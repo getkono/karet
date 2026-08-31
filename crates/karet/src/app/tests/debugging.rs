@@ -322,3 +322,102 @@ fn rebuild_rows_sections_and_console_tail() {
     assert_eq!(outputs.first(), Some(&150));
     assert_eq!(outputs.last(), Some(&249));
 }
+
+#[test]
+fn ending_a_debug_session_the_user_asked_to_end_is_not_an_error() {
+    // `stop` and a debuggee exiting are the two normal ends, and the backend
+    // words them exactly this way. Tiering them as failures left a permanent red
+    // card behind every ordinary debug run.
+    for detail in ["stopped", "session ended"] {
+        let mut ended = app();
+        ended.on_debug_state(DebugSessionState::Idle, detail.to_string());
+        let (severity, title) = last_report(&ended).expect("the end is reported");
+        assert_eq!(severity, Severity::Hint, "{title}");
+        assert!(
+            ended
+                .notifications
+                .active()
+                .iter()
+                .all(|note| note.timeout.is_some()),
+            "an ordinary end leaves nothing to dismiss"
+        );
+    }
+
+    // A session that could not start still reports as a failure that waits.
+    let mut failed = app();
+    failed.on_debug_state(
+        DebugSessionState::Idle,
+        "no adapter for this language".to_string(),
+    );
+    let (severity, title) = last_report(&failed).expect("the failure is reported");
+    assert_eq!(severity, Severity::Error, "{title}");
+    assert!(failed.notifications.active()[0].timeout.is_none());
+}
+
+#[test]
+fn stepping_through_a_debuggee_keeps_one_card_rather_than_one_per_line() {
+    // `DebugStopped` fires with reason "step" for every stepped line, so an
+    // untagged card would stack one per keypress and saturate the stack.
+    let mut app = app();
+    for _ in 0..6 {
+        app.on_debug_stopped("step", None, None);
+    }
+    let stops = app
+        .notifications
+        .active()
+        .iter()
+        .filter(|note| note.title == "stopped: step")
+        .count();
+    assert_eq!(stops, 1, "the card is rewritten in place, not restacked");
+}
+
+#[test]
+fn saving_many_documents_leaves_one_card_rather_than_one_per_file() {
+    // Save-all writes one document per event, and auto-save fires on a timer
+    // while the user types; both would otherwise stack identical cards.
+    let mut app = app();
+    for _ in 0..5 {
+        app.notify_tagged(
+            Report::Outcome,
+            NotificationKind::Io,
+            "saved",
+            Some(App::SAVED_TAG.to_string()),
+        );
+    }
+    let saved = app
+        .notifications
+        .active()
+        .iter()
+        .filter(|note| note.title == "saved")
+        .count();
+    assert_eq!(saved, 1);
+}
+
+#[test]
+fn a_notebook_cell_failure_is_not_painted_as_a_success() {
+    // The event carries no severity, so the tier is read off the producer's
+    // wording — a run that failed must not come out teal like one that worked.
+    let mut failed = app();
+    failed.on_backend_event(
+        None,
+        SessionEvent::NotebookKernelStatus {
+            path: PathBuf::from("nb.ipynb"),
+            text: "cell failed: boom".to_string(),
+        },
+    );
+    let (severity, title) = last_report(&failed).expect("the failure is reported");
+    assert_eq!(severity, Severity::Error, "{title}");
+
+    // Progress under the same feed stays transient and collapses to one card.
+    let mut running = app();
+    for n in 1..=4 {
+        running.on_backend_event(
+            None,
+            SessionEvent::NotebookKernelStatus {
+                path: PathBuf::from("nb.ipynb"),
+                text: format!("running cell {n}/4"),
+            },
+        );
+    }
+    assert_eq!(running.notifications.active().len(), 1);
+}

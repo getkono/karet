@@ -16,7 +16,11 @@ impl App {
                 (*doc, path.clone())
             },
             _ => {
-                self.status = Some("LaTeX preview requires an open editable .tex file".to_owned());
+                self.notify(
+                    Report::Refusal,
+                    NotificationKind::System,
+                    "LaTeX preview requires an open editable .tex file",
+                );
                 return;
             },
         };
@@ -59,7 +63,11 @@ impl App {
                 tab.view = view;
                 self.tabs[index] = tab;
                 self.set_active(index);
-                self.status = Some("LaTeX preview built".to_owned());
+                self.notify(
+                    Report::Outcome,
+                    NotificationKind::System,
+                    "LaTeX preview built",
+                );
             } else if let TabKind::LatexPreview {
                 error: preview_error,
                 ..
@@ -73,7 +81,7 @@ impl App {
             }
         }
         if let Some(error) = error {
-            self.notify(Severity::Error, NotificationKind::System, error);
+            self.notify(Report::Failure, NotificationKind::System, error);
         }
         self.maybe_auto_complete_spelling(doc);
     }
@@ -88,7 +96,11 @@ impl App {
             TabKind::Code { path, .. }
                 if karet_filetype::file_type_for_path(path).name() == "Markdown"
         ) {
-            self.status = Some("Table formatting is available for Markdown files".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "Table formatting is available for Markdown files",
+            );
             return;
         }
         let TabKind::Code { buffer, .. } = &tab.kind else {
@@ -97,12 +109,20 @@ impl App {
         let original = buffer.text();
         let ranges = karet_markdown::table_line_ranges(&original);
         if ranges.is_empty() {
-            self.status = Some("No Markdown tables found".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "No Markdown tables found",
+            );
             return;
         }
         let formatted = karet_markdown::format_tables(&original);
         if formatted == original {
-            self.status = Some("Markdown tables are already formatted".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "Markdown tables are already formatted",
+            );
             return;
         }
         let primary = tab.editor.cursor();
@@ -118,11 +138,15 @@ impl App {
         {
             editor.set_cursor_state(buffer, cursors);
         }
-        self.status = Some(format!(
-            "Formatted {} Markdown table{}",
-            ranges.len(),
-            if ranges.len() == 1 { "" } else { "s" }
-        ));
+        self.notify(
+            Report::Outcome,
+            NotificationKind::System,
+            format!(
+                "Formatted {} Markdown table{}",
+                ranges.len(),
+                if ranges.len() == 1 { "" } else { "s" }
+            ),
+        );
     }
 
     /// The display width of hard tabs in `tab`, after per-document EditorConfig and
@@ -330,7 +354,7 @@ impl App {
     /// first changed line. Routes through [`open_path`](Self::open_path), so an
     /// already-open tab for the file is focused rather than duplicated. Degrades
     /// gracefully when the file is gone from the working tree (a deleted change):
-    /// a status message, never a dead tab.
+    /// a refusal, never a dead tab.
     pub(super) fn open_diff_file(&mut self) {
         let Some(TabKind::Diff { path, file, .. }) = self.tabs.get(self.active).map(|t| &t.kind)
         else {
@@ -343,7 +367,7 @@ impl App {
         let path = path.clone();
         // Change paths come from the VCS repo-relative; `focus_by_file_line` resolves
         // them against the workspace root, but the working-tree check has to happen
-        // here — a deleted change must produce a status message, not a new empty file.
+        // here — a deleted change must produce a refusal, not a new empty file.
         let abs = if path.is_absolute() {
             path
         } else {
@@ -351,7 +375,11 @@ impl App {
         };
         if !abs.is_file() {
             let name = abs.file_name().and_then(|n| n.to_str()).unwrap_or("file");
-            self.status = Some(format!("open file: {name} is not in the working tree"));
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Io,
+                format!("open file: {name} is not in the working tree"),
+            );
             return;
         }
         // Land the caret on the diff's first changed line (1-based from the VCS).

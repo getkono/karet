@@ -260,7 +260,10 @@ async fn copy_github_permalink_reports_success_on_a_github_repo() {
     app.dispatch(Command::CopyGithubPermalink);
     pump(&mut app, &mut events).await;
     app.dispatch(Command::CopyGithubPermalink);
-    assert_eq!(app.status.as_deref(), Some("copied GitHub permalink"));
+    assert_eq!(
+        last_message(&app).as_deref(),
+        Some("copied GitHub permalink")
+    );
 }
 
 /// A git repo whose `new.rs` is committed (no remote), or `None` when `git`
@@ -481,11 +484,11 @@ async fn open_changes_reports_a_file_absent_at_the_revision() {
     pump(&mut app, &mut events).await;
     assert_eq!(app.tabs.len(), before, "no diff tab is opened");
     assert!(
-        app.status
+        last_message(&app)
             .as_deref()
             .is_some_and(|status| status.contains("file does not exist at HEAD~1")),
         "the refusal names the revision: {:?}",
-        app.status
+        last_message(&app)
     );
 }
 
@@ -509,7 +512,7 @@ fn context_menu_refuses_a_disabled_entry_and_surfaces_its_note() {
     // The command did not run, the menu stays open, and the note is surfaced.
     assert!(!app.explorer.is_editing(), "disabled command must not run");
     assert!(app.context_menu.is_some(), "menu stays open on refusal");
-    assert_eq!(app.status.as_deref(), Some("not available here"));
+    assert_eq!(last_message(&app).as_deref(), Some("not available here"));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -529,7 +532,7 @@ fn explorer_paste_rejects_directory_into_its_descendant() {
     app.dispatch(Command::Paste);
 
     assert!(!dir.join("src/child/src").exists());
-    assert_eq!(app.status.as_deref(), Some("paste failed"));
+    assert_eq!(last_message(&app).as_deref(), Some("paste failed"));
     let _ = std::fs::remove_dir_all(&dir);
 }
 

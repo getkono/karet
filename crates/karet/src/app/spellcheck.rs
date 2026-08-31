@@ -243,7 +243,11 @@ impl App {
         // Drop the word from the Spelling panel on this keystroke rather than
         // waiting for the settings write to come back through the watcher.
         self.invalidate_spelling();
-        self.status = Some(format!("Added “{word}” to {}", path.display()));
+        self.notify(
+            Report::Outcome,
+            NotificationKind::System,
+            format!("Added “{word}” to {}", path.display()),
+        );
     }
 }
 

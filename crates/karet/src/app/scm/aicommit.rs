@@ -24,6 +24,7 @@
 use std::time::Duration;
 use std::time::Instant;
 
+use karet_core::NotificationKind;
 use karet_session::AiCommitAvailability;
 use karet_session::Command as SessionCommand;
 use karet_session::RequestId;
@@ -31,6 +32,7 @@ use karet_widgets::Spinner;
 
 use crate::app::App;
 use crate::app::Pending;
+use crate::app::Report;
 
 /// How long a generation runs before the elapsed seconds join the spinner.
 ///
@@ -152,7 +154,11 @@ impl App {
         };
         self.send_command(SessionCommand::Cancel { request });
         self.ai_commit.state = AiCommitState::Idle;
-        self.status = Some("commit message generation cancelled".to_string());
+        self.notify(
+            Report::Outcome,
+            NotificationKind::Vcs,
+            "commit message generation cancelled",
+        );
         true
     }
 
@@ -168,7 +174,11 @@ impl App {
         if matches!(self.ai_commit.state, AiCommitState::Applied) {
             self.ai_commit.state = AiCommitState::Idle;
         }
-        self.status = Some("restored the previous commit message".to_string());
+        self.notify(
+            Report::Outcome,
+            NotificationKind::Vcs,
+            "restored the previous commit message",
+        );
         true
     }
 
@@ -215,7 +225,11 @@ impl App {
             AiCommitState::Idle
         };
         self.set_commit_text(message);
-        self.status = Some("commit message generated".to_string());
+        self.notify(
+            Report::Outcome,
+            NotificationKind::Vcs,
+            "commit message generated",
+        );
     }
 
     /// Report that a generation produced no message.
@@ -223,7 +237,7 @@ impl App {
     /// The reason goes to two places on purpose. The chip is the surface the
     /// user is already looking at, but it lives in a border a few cells wide and
     /// has to shorten to fit; a git error carrying multiple lines of stderr
-    /// would be reduced to the word "failed" there. The status line takes the
+    /// would be reduced to the word "failed" there. The notification takes the
     /// full text, so the detail is never only in the place that cannot show it.
     pub(crate) fn on_commit_message_failed(&mut self, request: Option<RequestId>, reason: String) {
         // A failure with no request is an unsolicited one (a backend that could
@@ -233,7 +247,11 @@ impl App {
         {
             return;
         }
-        self.status = Some(format!("commit message: {}", one_line(&reason)));
+        self.notify(
+            Report::Failure,
+            NotificationKind::Vcs,
+            format!("commit message: {}", one_line(&reason)),
+        );
         self.ai_commit.state = AiCommitState::Failed {
             reason: one_line(&reason),
         };
@@ -262,7 +280,7 @@ impl App {
 
 /// Collapse `text` onto one line, for anywhere a width is measured.
 ///
-/// `git` reports failures as multi-line stderr, and both the chip and the status
+/// `git` reports failures as multi-line stderr, and both the chip and the card
 /// line are single-row surfaces — a newline there measures as width but paints
 /// as nothing, so a two-line reason silently overflows its slot and disappears.
 pub(crate) fn one_line(text: &str) -> String {

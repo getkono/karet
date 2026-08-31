@@ -134,7 +134,11 @@ impl App {
             _ => false,
         };
         if !is_markdown {
-            self.status = Some("markdown preview: not a Markdown file".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "markdown preview: not a Markdown file",
+            );
             return;
         }
         tab.markdown_preview = tab

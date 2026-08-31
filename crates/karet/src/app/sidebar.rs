@@ -449,7 +449,11 @@ impl App {
     pub(crate) fn reveal_in_explorer(&mut self, path: &Path) {
         if !path_under(&self.root, path) {
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("path");
-            self.status = Some(format!("reveal: {name} is outside the workspace"));
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Io,
+                format!("reveal: {name} is outside the workspace"),
+            );
             return;
         }
         // The workspace root itself has no row (the tree lists its children): just
@@ -482,7 +486,11 @@ impl App {
         self.explorer.ensure_built(&root);
         let Some(idx) = self.explorer_row_index(path) else {
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("path");
-            self.status = Some(format!("reveal: {name} is not in the explorer"));
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Io,
+                format!("reveal: {name} is not in the explorer"),
+            );
             return;
         };
         self.explorer.select_index(idx);

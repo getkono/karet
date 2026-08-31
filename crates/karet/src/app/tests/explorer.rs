@@ -221,9 +221,11 @@ fn reveal_in_explorer_outside_root_is_noop_with_status() {
     assert!(!app.sidebar_visible);
     assert_eq!(app.focus, Focus::Editor);
     assert!(
-        app.status.as_deref().is_some_and(|s| s.contains("outside")),
+        last_message(&app)
+            .as_deref()
+            .is_some_and(|s| s.contains("outside")),
         "status: {:?}",
-        app.status
+        last_message(&app)
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -242,11 +244,11 @@ fn reveal_in_explorer_missing_path_reports_status() {
     assert!(!app.sidebar_visible);
     assert_eq!(app.focus, Focus::Editor);
     assert!(
-        app.status
+        last_message(&app)
             .as_deref()
             .is_some_and(|s| s.contains("not in the explorer")),
         "status: {:?}",
-        app.status
+        last_message(&app)
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -76,14 +76,29 @@ impl App {
             return;
         };
         let doc = *doc;
-        self.send(SessionCommand::RefreshManifestHints { doc });
-        self.status = Some("re-checking dependencies".to_owned());
+        // Only once the request is actually out: a card raised for a command a
+        // closed backend never took has nothing left to retire it.
+        if self
+            .send(SessionCommand::RefreshManifestHints { doc })
+            .is_some()
+        {
+            self.notify_progress(
+                NotificationKind::System,
+                Self::DEPS_CHECK_TAG.to_string(),
+                "re-checking dependencies",
+                None,
+            );
+        }
     }
 
     /// Bump the dependency under the caret to its newest version.
     pub(super) fn deps_update_at_caret(&mut self) {
         let Some((tab, hints)) = self.active_manifest_hints() else {
-            self.status = Some("no dependency hints for this tab".to_owned());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "no dependency hints for this tab",
+            );
             return;
         };
         let caret = tab.editor.cursor();
@@ -92,7 +107,11 @@ impl App {
             .find(|hint| hint.line == caret.line)
             .and_then(hint_edit)
         else {
-            self.status = Some("no update available on this line".to_owned());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "no update available on this line",
+            );
             return;
         };
         let (range, text, name) = edit;
@@ -100,13 +119,17 @@ impl App {
         self.submit_edit(move |c, _s, _b, base| {
             (c == caret).then(|| editing::insert(range.start, Some(range), base, &text))
         });
-        self.status = Some(status);
+        self.notify(Report::Outcome, NotificationKind::System, status);
     }
 
     /// Bump every outdated dependency in the active manifest in one edit.
     pub(super) fn deps_update_all(&mut self) {
         let Some((tab, hints)) = self.active_manifest_hints() else {
-            self.status = Some("no dependency hints for this tab".to_owned());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "no dependency hints for this tab",
+            );
             return;
         };
         let caret = tab.editor.cursor();
@@ -116,7 +139,11 @@ impl App {
             .map(|(range, text, _)| (range, text))
             .collect();
         if edits.is_empty() {
-            self.status = Some("every dependency is current".to_owned());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "every dependency is current",
+            );
             return;
         }
         let count = edits.len();
@@ -136,10 +163,14 @@ impl App {
             edit.caret = c;
             Some(edit)
         });
-        self.status = Some(format!(
-            "updated {count} dependenc{}",
-            if count == 1 { "y" } else { "ies" }
-        ));
+        self.notify(
+            Report::Outcome,
+            NotificationKind::System,
+            format!(
+                "updated {count} dependenc{}",
+                if count == 1 { "y" } else { "ies" }
+            ),
+        );
     }
 }
 

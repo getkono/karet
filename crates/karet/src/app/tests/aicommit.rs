@@ -173,7 +173,7 @@ fn committing_disarms_the_undo() {
 }
 
 #[test]
-fn a_failure_reaches_the_status_line_as_well_as_the_chip() {
+fn a_failure_reaches_the_notification_stack_as_well_as_the_chip() {
     let mut app = app();
     let request = generating(&mut app, "wip");
     // git reports failures as multi-line stderr; the chip is one row in a
@@ -183,10 +183,8 @@ fn a_failure_reaches_the_status_line_as_well_as_the_chip() {
         "fatal: bad object HEAD\n\nfix it".to_string(),
     );
 
-    let status = app
-        .status
-        .clone()
-        .expect("a failure reaches the status line");
+    let (severity, status) = last_report(&app).expect("a failure reaches the notification stack");
+    assert_eq!(severity, Severity::Error, "{status}");
     assert!(status.contains("bad object HEAD"), "{status}");
     assert!(!status.contains('\n'), "collapsed to one line: {status:?}");
     let AiCommitState::Failed { reason } = &app.ai_commit.state else {

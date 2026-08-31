@@ -1,4 +1,5 @@
 pub(crate) mod aicommit;
+mod branches;
 pub(crate) mod commit_box;
 
 use super::*;
@@ -57,7 +58,12 @@ impl App {
             self.run_vcs_action(action);
         } else {
             self.vcs_after_save = Some(action);
-            self.status = Some(format!("saving {} editor(s) before switching…", docs.len()));
+            self.notify_progress(
+                NotificationKind::Vcs,
+                Self::SAVE_BATCH_TAG.to_string(),
+                format!("saving {} editor(s) before switching…", docs.len()),
+                None,
+            );
         }
     }
 
@@ -91,197 +97,6 @@ impl App {
             }
         }
         self.overlay = Some(Overlay::commands("Source Control", commands));
-    }
-
-    /// Open a combined local/remote branch picker.
-    pub(super) fn open_branch_picker(&mut self) {
-        let Some(snapshot) = self.scm.repository.as_ref() else {
-            self.request_repository_snapshot();
-            self.status = Some("branches: loading repository state".to_string());
-            return;
-        };
-        let mut items = Vec::new();
-        for branch in &snapshot.branches {
-            let head = if branch.is_head { "✓ " } else { "  " };
-            items.push((
-                format!("{head}{}", branch.name),
-                karet_vcs::BranchTarget::Local(branch.name.clone()),
-            ));
-        }
-        for branch in &snapshot.remote_branches {
-            let local_name = branch.name.clone();
-            items.push((
-                format!("  {}/{}", branch.remote, branch.name),
-                karet_vcs::BranchTarget::Remote {
-                    remote: branch.remote.clone(),
-                    branch: branch.name.clone(),
-                    local_name,
-                },
-            ));
-        }
-        self.overlay = Some(Overlay::branches(items));
-    }
-
-    /// Open the full branch-creation form with every configured remote available.
-    pub(super) fn open_create_branch_form(&mut self) {
-        let remotes = self
-            .scm
-            .repository
-            .as_ref()
-            .map(|snapshot| {
-                snapshot
-                    .remotes
-                    .iter()
-                    .map(|remote| remote.name.clone())
-                    .collect()
-            })
-            .unwrap_or_default();
-        self.overlay = Some(Overlay::create_branch(remotes));
-    }
-
-    /// Query open pull requests for the upstream-aware primary remote.
-    pub(super) fn open_pull_request_picker(&mut self) {
-        let Some(snapshot) = self.scm.repository.as_ref() else {
-            self.request_repository_snapshot();
-            self.status = Some("pull requests: loading repository state".to_string());
-            return;
-        };
-        let preferred = snapshot
-            .state
-            .upstream
-            .as_deref()
-            .and_then(|upstream| upstream.split_once('/').map(|(remote, _)| remote));
-        let remote = preferred
-            .and_then(|name| snapshot.remotes.iter().find(|remote| remote.name == name))
-            .or_else(|| {
-                snapshot
-                    .remotes
-                    .iter()
-                    .find(|remote| remote.name == "origin")
-            })
-            .or_else(|| snapshot.remotes.first())
-            .map(|remote| remote.name.clone());
-        let Some(remote) = remote else {
-            self.status = Some("pull requests: no remote is configured".to_string());
-            return;
-        };
-        self.status = Some(format!("loading open pull requests from {remote}"));
-        self.pull_request_items.clear();
-        self.pull_request_remote = Some(remote.clone());
-        self.pending_pull_requests = self.send(SessionCommand::PullRequests {
-            remote,
-            page: 1,
-            per_page: 100,
-        });
-    }
-
-    /// Open stash creation controls.
-    pub(super) fn open_stash_form(&mut self) {
-        self.overlay = Some(Overlay::stash_form());
-    }
-
-    /// Open actions for every current stash entry.
-    pub(super) fn open_stash_manager(&mut self) {
-        let Some(snapshot) = self.scm.repository.as_ref() else {
-            self.request_repository_snapshot();
-            return;
-        };
-        if snapshot.stashes.is_empty() {
-            self.status = Some("stashes: none".to_string());
-            return;
-        }
-        self.overlay = Some(Overlay::stashes(&snapshot.stashes));
-    }
-
-    /// Publish the current branch to its upstream remote, `origin`, or first remote.
-    pub(super) fn publish_current_branch(&mut self) {
-        let Some(snapshot) = self.scm.repository.as_ref() else {
-            self.request_repository_snapshot();
-            return;
-        };
-        let Some(branch) = snapshot.state.branch.clone() else {
-            self.status = Some("publish: HEAD is detached".to_string());
-            return;
-        };
-        let preferred = snapshot
-            .state
-            .upstream
-            .as_deref()
-            .and_then(|upstream| upstream.split_once('/').map(|(remote, _)| remote));
-        let remote = preferred
-            .and_then(|name| snapshot.remotes.iter().find(|remote| remote.name == name))
-            .or_else(|| {
-                snapshot
-                    .remotes
-                    .iter()
-                    .find(|remote| remote.name == "origin")
-            })
-            .or_else(|| snapshot.remotes.first())
-            .map(|remote| remote.name.clone());
-        let Some(remote) = remote else {
-            self.status = Some("publish: no remote is configured".to_string());
-            return;
-        };
-        self.run_vcs_action(VcsAction::PublishBranch {
-            remote,
-            branch,
-            set_upstream: true,
-        });
-    }
-
-    /// Prompt for a replacement name for the current local branch.
-    pub(super) fn prompt_rename_current_branch(&mut self) {
-        let current = self
-            .scm
-            .repository
-            .as_ref()
-            .and_then(|snapshot| snapshot.state.branch.clone());
-        let Some(old) = current else {
-            self.status = Some("rename branch: HEAD is detached".to_string());
-            return;
-        };
-        self.overlay = Some(Overlay::text(
-            format!("Rename {old}"),
-            TextPurpose::RenameBranch { old },
-        ));
-    }
-
-    /// Pick a non-current local branch for safe (`git branch -d`) deletion.
-    pub(super) fn open_delete_branch_picker(&mut self) {
-        let Some(snapshot) = self.scm.repository.as_ref() else {
-            self.request_repository_snapshot();
-            return;
-        };
-        let items: Vec<String> = snapshot
-            .branches
-            .iter()
-            .filter(|branch| !branch.is_head)
-            .map(|branch| branch.name.clone())
-            .collect();
-        if items.is_empty() {
-            self.status = Some("delete branch: no eligible local branches".to_string());
-        } else {
-            self.overlay = Some(Overlay::delete_local_branches(items));
-        }
-    }
-
-    /// Pick a non-default remote branch, then require its exact name as confirmation.
-    pub(super) fn open_delete_remote_branch_picker(&mut self) {
-        let Some(snapshot) = self.scm.repository.as_ref() else {
-            self.request_repository_snapshot();
-            return;
-        };
-        let items: Vec<(String, String)> = snapshot
-            .remote_branches
-            .iter()
-            .filter(|branch| !branch.is_default)
-            .map(|branch| (branch.remote.clone(), branch.name.clone()))
-            .collect();
-        if items.is_empty() {
-            self.status = Some("delete remote branch: no eligible branches".to_string());
-        } else {
-            self.overlay = Some(Overlay::delete_remote_branches(items));
-        }
     }
 
     /// Request live blame when its document/version/cursor anchor changed.
@@ -357,7 +172,11 @@ impl App {
         self.live_blame = None;
         self.request_live_blame();
         let label = if enabled { "on" } else { "off" };
-        self.status = Some(format!("inline blame: {label}"));
+        self.notify(
+            Report::Outcome,
+            NotificationKind::Vcs,
+            format!("inline blame: {label}"),
+        );
     }
 
     // --- source control ---------------------------------------------------
@@ -417,7 +236,11 @@ impl App {
             .and_then(Tab::path)
             .map(Path::to_path_buf)
         else {
-            self.status = Some("file history: open a file first".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Vcs,
+                "file history: open a file first",
+            );
             return;
         };
         let name = path
@@ -445,7 +268,11 @@ impl App {
     /// Cancel the go-to-commit input.
     pub(super) fn rev_cancel(&mut self) {
         self.rev_input = None;
-        self.status = Some("go to commit cancelled".to_string());
+        self.notify(
+            Report::Outcome,
+            NotificationKind::Vcs,
+            "go to commit cancelled",
+        );
     }
 
     /// Submit the typed revision: open a range when it contains `..`/`...`, otherwise the
@@ -454,8 +281,11 @@ impl App {
         let rev = self.rev_input.take().unwrap_or_default().trim().to_string();
         if rev.is_empty() {
             self.rev_input = Some(String::new());
-            self.status =
-                Some("go to commit: enter a hash, ref, or range (a..b, a...b)".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Vcs,
+                "go to commit: enter a hash, ref, or range (a..b, a...b)",
+            );
         } else if let Some((base, head, merge_base)) = parse_rev_range(&rev) {
             self.open_range(SessionCommand::RangeChanges {
                 spec: RangeSpec::Between {
@@ -627,27 +457,48 @@ impl App {
             return;
         }
         self.commit_input.focused = false;
-        self.status = Some("commit message kept as a draft".to_string());
+        self.notify(
+            Report::Outcome,
+            NotificationKind::Vcs,
+            "commit message kept as a draft",
+        );
     }
 
     /// Submit the commit message (or report that one is required).
     pub(super) fn commit_submit(&mut self) {
         if self.commit_input.pending.is_some() {
-            self.status = Some("commit already in progress".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Vcs,
+                "commit already in progress",
+            );
             return;
         }
         if self.scm.staged_count == 0 {
-            self.status = Some("commit: stage changes first".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Vcs,
+                "commit: stage changes first",
+            );
             return;
         }
         let message = self.commit_input.text.trim().to_string();
         if message.is_empty() {
-            self.status = Some("commit: message required".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Vcs,
+                "commit: message required",
+            );
             return;
         }
         if let Some(id) = self.send(SessionCommand::Commit { message }) {
             self.commit_input.pending = Some(id);
-            self.status = Some("committing…".to_string());
+            self.notify_progress(
+                NotificationKind::Vcs,
+                Self::VCS_COMMIT_TAG.to_string(),
+                "committing…",
+                None,
+            );
             // A fresh log per commit. The console itself stays shut until there
             // is something in it — see `app::commit_console`.
             self.commit_console_reset();
@@ -711,10 +562,15 @@ impl App {
         }
         let count = paths.len();
         self.send_command(SessionCommand::Discard { paths });
-        self.notify(
-            Severity::Information,
+        // Its own tag, not the shared operation one: a discard answers with a
+        // status refresh rather than an operation-finished event, so it is retired
+        // from `on_vcs_status` — and that fires for unrelated worktree changes too,
+        // which must not take a running fetch's card with it.
+        self.notify_progress(
             NotificationKind::Vcs,
+            Self::VCS_DISCARD_TAG.to_string(),
             format!("discarding changes to {count} file(s)…"),
+            None,
         );
     }
 

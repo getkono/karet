@@ -178,6 +178,7 @@ use karet_widgets::scroll::TrackHit;
 pub(crate) use karet_widgets::textarea::TextAreaState;
 pub(crate) use karet_widgets::textfield::TextFieldState;
 pub(crate) use language_servers::LanguageServerBadge;
+pub(crate) use notifications::Report;
 pub(crate) use pending::Pending;
 use ratatui::layout::Rect;
 pub(crate) use runtime::run;
@@ -425,8 +426,6 @@ pub struct App {
     pub(crate) search: SearchPanel,
     /// The workspace-spelling panel state.
     pub(crate) spelling: SpellingPanel,
-    /// A transient status message.
-    pub(crate) status: Option<String>,
     /// The centralized notification stack (errors, out-of-band conditions).
     pub(crate) notifications: NotificationCenter,
     /// Clickable toast cards from the last frame (mouse hit-testing).

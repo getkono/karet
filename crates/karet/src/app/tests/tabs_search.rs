@@ -566,7 +566,7 @@ fn file_history_requires_an_open_file() {
     // The Welcome tab has no path — file history has nothing to show.
     app.dispatch(Command::ShowFileHistory);
     assert_eq!(
-        app.status.as_deref(),
+        last_message(&app).as_deref(),
         Some("file history: open a file first")
     );
     assert!(matches!(app.tabs[app.active].kind, TabKind::Welcome));
@@ -709,7 +709,7 @@ fn graph_compare_requires_a_marked_base() {
     // Comparing before marking a base only reports a status hint.
     app.dispatch(Command::CommitGraphCompare);
     assert!(
-        app.status
+        last_message(&app)
             .as_deref()
             .is_some_and(|s| s.contains("mark a compare base")),
         "compare without a base nudges the user"

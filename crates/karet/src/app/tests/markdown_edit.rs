@@ -117,7 +117,7 @@ fn italic_outside_markdown_explains_itself_instead_of_editing() {
 
     assert_eq!(code_tab_text(&app), "fn main() {}\n");
     assert_eq!(
-        app.status.as_deref(),
+        last_message(&app).as_deref(),
         Some("markdown formatting applies to Markdown files")
     );
 }
@@ -144,7 +144,7 @@ fn a_multi_line_selection_refuses_rather_than_mangling_it() {
 
     assert_eq!(code_tab_text(&app), "one\ntwo\n");
     assert_eq!(
-        app.status.as_deref(),
+        last_message(&app).as_deref(),
         Some("select within one line to toggle formatting")
     );
 }
@@ -165,7 +165,10 @@ fn a_line_without_a_checkbox_says_so() {
     let mut app = markdown_app("just prose\n", LineCol::new(0, 3));
     app.dispatch(Command::ToggleTaskCheckbox);
     assert_eq!(code_tab_text(&app), "just prose\n");
-    assert_eq!(app.status.as_deref(), Some("no task checkbox on this line"));
+    assert_eq!(
+        last_message(&app).as_deref(),
+        Some("no task checkbox on this line")
+    );
 }
 
 #[test]
@@ -250,7 +253,10 @@ fn create_inserts_a_toc_block_at_the_caret() {
         code_tab_text(&app),
         "# Title\n<!-- toc -->\n- [Alpha](#alpha)\n- [Beta](#beta)\n<!-- /toc -->\n\n\n## Alpha\n\n## Beta\n"
     );
-    assert_eq!(app.status.as_deref(), Some("table of contents inserted"));
+    assert_eq!(
+        last_message(&app).as_deref(),
+        Some("table of contents inserted")
+    );
 }
 
 #[test]
@@ -278,7 +284,10 @@ fn update_rewrites_an_existing_region_in_place() {
          \n\
          ## Beta\n"
     );
-    assert_eq!(app.status.as_deref(), Some("table of contents updated"));
+    assert_eq!(
+        last_message(&app).as_deref(),
+        Some("table of contents updated")
+    );
 }
 
 #[test]
@@ -288,7 +297,7 @@ fn update_without_markers_points_at_the_create_command() {
 
     assert_eq!(code_tab_text(&app), "# Title\n\n## Alpha\n");
     assert_eq!(
-        app.status.as_deref(),
+        last_message(&app).as_deref(),
         Some("no <!-- toc --> markers — use Markdown: Create Table of Contents")
     );
 }
@@ -300,7 +309,7 @@ fn a_document_with_no_headings_in_range_says_so() {
     // The default range is 2..=6, so a lone h1 yields nothing to list.
     assert_eq!(code_tab_text(&app), "# Only an h1\n\nprose\n");
     assert_eq!(
-        app.status.as_deref(),
+        last_message(&app).as_deref(),
         Some("no headings in the table's level range")
     );
 }
@@ -348,14 +357,14 @@ fn the_toc_commands_stay_out_of_non_markdown_files() {
     app.dispatch(Command::MarkdownTocCreate);
     assert_eq!(code_tab_text(&app), "fn main() {}\n");
     assert_eq!(
-        app.status.as_deref(),
+        last_message(&app).as_deref(),
         Some("the table of contents applies to Markdown files")
     );
 
     app.dispatch(Command::MarkdownHeadingUp);
     assert_eq!(code_tab_text(&app), "fn main() {}\n");
     assert_eq!(
-        app.status.as_deref(),
+        last_message(&app).as_deref(),
         Some("heading levels apply to Markdown files")
     );
 }

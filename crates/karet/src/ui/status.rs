@@ -88,8 +88,11 @@ pub(super) fn draw_status(f: &mut Frame, app: &mut App, theme: &Theme, area: Rec
     x += cell_width(gutter);
     let avail = left.width.saturating_sub(x - left.x);
 
-    // Priority for the remaining space: an in-progress chord's completions, then any
-    // transient message, then the active context's key hints — all keymap-derived.
+    // The remaining space belongs to the keymap: an in-progress chord's completions,
+    // else the active context's key hints. Messages never land here — they are
+    // notifications, which carry a severity colour and a lifetime of their own. A
+    // message rendered in the bar's own style read as invisible, and covering the
+    // hints also took their click targets with it.
     if !app.pending.is_empty() {
         let ctx = Context::focus(app.focus_target());
         let prefix = app
@@ -112,8 +115,6 @@ pub(super) fn draw_status(f: &mut Frame, app: &mut App, theme: &Theme, area: Rec
             bar,
             key,
         );
-    } else if let Some(msg) = app.status.clone() {
-        spans.push(Span::styled(format!("{msg} "), bar));
     } else {
         let hints = keymap::hints_for(app.input_context(), ChordStyle::Caret);
         render_hints(

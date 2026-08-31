@@ -22,7 +22,11 @@ impl App {
                 });
             },
             DebugSessionState::Starting | DebugSessionState::Running => {
-                self.status = Some("debug session already running (Shift+F5 stops)".to_owned());
+                self.notify(
+                    Report::Refusal,
+                    NotificationKind::System,
+                    "debug session already running (Shift+F5 stops)",
+                );
             },
             // Non-exhaustive: anything newer behaves like running.
             _ => {},
@@ -34,7 +38,11 @@ impl App {
         if self.debug_state == DebugSessionState::Stopped {
             self.debug_send(command);
         } else {
-            self.status = Some("the debuggee is not stopped".to_owned());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "the debuggee is not stopped",
+            );
         }
     }
 
@@ -53,7 +61,11 @@ impl App {
             let path = tab.path()?.to_path_buf();
             Some((path, tab.editor.cursor().line))
         }) else {
-            self.status = Some("breakpoints need a file tab".to_owned());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "breakpoints need a file tab",
+            );
             return;
         };
         self.debug_toggle_breakpoint_at(path, line);
@@ -83,11 +95,32 @@ impl App {
             self.debug_panel.clear_inspection(self.debug_output.len());
         }
         match state {
+            // Going idle carrying detail is usually just the session ending: the
+            // backend sends these two details for a Shift+F5 stop and for the
+            // debuggee exiting (`karet_session::dap`), and free text only when a
+            // session could not be started. Only the last of those is a failure —
+            // tiering all three that way would leave a permanent red card behind
+            // every ordinary debug run.
             DebugSessionState::Idle if !detail.is_empty() => {
-                self.status = Some(format!("debug: {detail}"));
+                let ended_normally = matches!(detail.as_str(), "stopped" | "session ended");
+                self.notify_tagged(
+                    if ended_normally {
+                        Report::Outcome
+                    } else {
+                        Report::Failure
+                    },
+                    NotificationKind::System,
+                    format!("debug: {detail}"),
+                    Some(Self::DEBUG_SESSION_TAG.to_string()),
+                );
             },
             DebugSessionState::Running if was == DebugSessionState::Starting => {
-                self.status = Some(format!("debugging {detail}"));
+                self.notify_tagged(
+                    Report::Outcome,
+                    NotificationKind::System,
+                    format!("debugging {detail}"),
+                    Some(Self::DEBUG_SESSION_TAG.to_string()),
+                );
             },
             _ => {},
         }
@@ -102,7 +135,14 @@ impl App {
         path: Option<PathBuf>,
         line: Option<u32>,
     ) {
-        self.status = Some(format!("stopped: {reason}"));
+        // Tagged: `reason` is "step" for every stepped line, so an untagged card
+        // would stack one per keypress while the user walks through a function.
+        self.notify_tagged(
+            Report::Outcome,
+            NotificationKind::System,
+            format!("stopped: {reason}"),
+            Some(Self::DEBUG_SESSION_TAG.to_string()),
+        );
         self.debug_panel.clear_inspection(self.debug_output.len());
         self.debug_stopped = path.clone().zip(line);
         if let (Some(path), Some(line)) = (path, line) {
@@ -237,7 +277,11 @@ impl App {
     /// Open the evaluate prompt (palette: Debug: Evaluate Expression).
     pub(super) fn debug_evaluate_prompt(&mut self) {
         if self.debug_state == DebugSessionState::Idle {
-            self.status = Some("no debug session".to_owned());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "no debug session",
+            );
             return;
         }
         self.overlay = Some(crate::overlay::Overlay::text(
@@ -335,7 +379,11 @@ impl App {
                 })
                 .map(std::path::Path::to_path_buf)
         }) else {
-            self.status = Some("open a notebook (.ipynb) first".to_owned());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "open a notebook (.ipynb) first",
+            );
             return;
         };
         self.debug_send(SessionCommand::NotebookRunAll { path });

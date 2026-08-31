@@ -93,7 +93,9 @@ fn enter_on_a_deleted_files_diff_reports_instead_of_opening() {
     assert_eq!(app.tabs.len(), 1, "nothing new opens for a deleted file");
     assert!(app.active_is_diff(), "the diff stays active");
     assert!(
-        app.status.as_deref().is_some_and(|s| s.contains("gone.rs")),
+        last_message(&app)
+            .as_deref()
+            .is_some_and(|s| s.contains("gone.rs")),
         "a status message names the missing file"
     );
 

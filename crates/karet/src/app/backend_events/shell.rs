@@ -53,7 +53,7 @@ impl App {
         }
         for diag in std::mem::take(&mut self.config_diagnostics) {
             self.notify(
-                diag.severity,
+                Report::from_severity(diag.severity),
                 NotificationKind::System,
                 format!("config: {}", diag.message),
             );
@@ -67,7 +67,7 @@ impl App {
         });
         if graphical_cursor_requested && !self.graphical_cursor_compatible() {
             self.notify(
-                Severity::Error,
+                Report::Failure,
                 NotificationKind::System,
                 "graphical cursor is not compatible with this terminal",
             );
@@ -96,8 +96,19 @@ impl App {
     ) {
         let language_server_operation_failed =
             id.is_some_and(|request| self.fail_language_server_operation(request, &message));
+        // A range diff has no failure event of its own — it answers with a backend
+        // notification — so its card is retired here. Clearing it on an unrelated
+        // notification only drops a "computing…" hint early, which is the harmless
+        // way to be wrong; leaving it up forever is the other one.
+        self.notifications.dismiss_tagged(Self::DIFF_COMPUTE_TAG);
+        // Likewise for a discard, the one repository write that answers with a
+        // reason instead of an outcome event: the message below carries it, so the
+        // card has done its job. Every other write ends at
+        // `on_vcs_operation_finished`, which retires its own card.
+        self.notifications.dismiss_tagged(Self::VCS_DISCARD_TAG);
         if id.is_some() && id == self.commit_input.pending {
             self.commit_input.pending = None;
+            self.notifications.dismiss_tagged(Self::VCS_COMMIT_TAG);
             // A refusal always shows its log: the reason is the whole point, and
             // a toast is too small to carry a hook's output.
             self.commit_console_finished(crate::app::commit_console::ConsoleOutcome::Failed(
@@ -110,6 +121,7 @@ impl App {
         }
         if id.is_some() && id == self.pending_pull_requests {
             self.pending_pull_requests = None;
+            self.notifications.dismiss_tagged(Self::PULL_REQUESTS_TAG);
             self.pull_request_items.clear();
             self.pull_request_remote = None;
         }
@@ -139,7 +151,7 @@ impl App {
             }
         }
         if !language_server_operation_failed {
-            self.notify(severity, kind, message);
+            self.notify(Report::from_severity(severity), kind, message);
         }
     }
 }

@@ -79,7 +79,7 @@ impl App {
     ) {
         let name = server.display_name();
         self.notify_tagged(
-            Severity::Warning,
+            Report::Alert,
             NotificationKind::Lsp,
             format!(
                 "No language server for {name}: it {reason}. Install it yourself so \
@@ -100,14 +100,18 @@ impl App {
         };
         let name = status.server.display_name().to_string();
         if !status.declined {
-            self.status = Some(format!("{name} was not declined"));
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Lsp,
+                format!("{name} was not declined"),
+            );
             return;
         }
         self.send_command(SessionCommand::UndeclineLanguageServer {
             server: status.server,
         });
         self.notify(
-            Severity::Information,
+            Report::Outcome,
             NotificationKind::Lsp,
             format!("{name} will be offered again when a file needs it"),
         );
@@ -119,7 +123,7 @@ impl App {
         let name = server.display_name().to_string();
         self.send_command(SessionCommand::DeclineLanguageServer { server });
         self.notify(
-            Severity::Information,
+            Report::Outcome,
             NotificationKind::Lsp,
             format!("{name} will not be offered again · press o in Language Servers to undo"),
         );

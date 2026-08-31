@@ -184,7 +184,12 @@ impl App {
     /// Request a range diff; the answering [`SessionEvent::RangeReady`] opens the compare
     /// tab, and an unresolvable range answers with a VCS notification instead.
     pub(super) fn open_range(&mut self, command: SessionCommand) {
-        self.status = Some("computing diff…".to_string());
+        self.notify_progress(
+            NotificationKind::Vcs,
+            Self::DIFF_COMPUTE_TAG.to_string(),
+            "computing diff…",
+            None,
+        );
         self.send_command(command);
     }
 
@@ -200,14 +205,16 @@ impl App {
         {
             let short = commit.short_hash.clone();
             *compare_base = Some(commit.hash.clone());
-            self.status = Some(format!(
-                "compare base marked: {short} (select another, then compare)"
-            ));
+            self.notify(
+                Report::Outcome,
+                NotificationKind::Vcs,
+                format!("compare base marked: {short} (select another, then compare)"),
+            );
         }
     }
 
     /// Compare the browser's marked base commit against the current selection (a two-dot
-    /// `base..selected` diff). Reports a status when no base has been marked yet.
+    /// `base..selected` diff). Refuses when no base has been marked yet.
     pub(super) fn graph_compare(&mut self) {
         let Some(TabKind::CommitGraph {
             commits,
@@ -219,8 +226,11 @@ impl App {
             return;
         };
         let Some(base) = compare_base.clone() else {
-            self.status =
-                Some("mark a compare base first (Commit Graph: Mark Compare Base)".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Vcs,
+                "mark a compare base first (Commit Graph: Mark Compare Base)",
+            );
             return;
         };
         let Some(head) = commits.get(*selected).map(|c| c.hash.clone()) else {
@@ -444,8 +454,17 @@ impl App {
         merge_base: bool,
         changes: Vec<PreparedChange>,
     ) {
+        // The compare tab is the answer to "computing diff…", so it retires that
+        // card whether or not the range turned out to be empty.
         if changes.is_empty() {
-            self.status = Some(format!("no changes between {base_label} and {head_label}"));
+            self.notify_tagged(
+                Report::Refusal,
+                NotificationKind::Vcs,
+                format!("no changes between {base_label} and {head_label}"),
+                Some(Self::DIFF_COMPUTE_TAG.to_string()),
+            );
+        } else {
+            self.notifications.dismiss_tagged(Self::DIFF_COMPUTE_TAG);
         }
         let files = CommitFiles::ready(commit_file_views(changes));
         self.push_tab(Tab::compare(base_label, head_label, merge_base, files));
@@ -522,7 +541,12 @@ impl App {
             return;
         };
         let short: String = rev.chars().take(7).collect();
-        self.status = Some(format!("{verb}: {short}"));
+        self.notify_progress(
+            NotificationKind::Vcs,
+            Self::VCS_OPERATION_TAG.to_string(),
+            format!("{verb}: {short}"),
+            None,
+        );
         self.run_vcs_action(action(rev));
     }
 
@@ -555,7 +579,11 @@ impl App {
             return;
         };
         if *selected == 0 {
-            self.status = Some("select the commit to rebase onto (below HEAD)".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Vcs,
+                "select the commit to rebase onto (below HEAD)",
+            );
             return;
         }
         let Some(onto) = commits.get(*selected).map(|commit| commit.hash.clone()) else {
@@ -606,8 +634,11 @@ impl App {
                 .then(|| format!("https://{}/{}/issues/$1", remote.host, remote.repo_path))
         });
         let Some(template) = template else {
-            self.status =
-                Some("no issue URL template (set git.issueUrl or use a GitHub origin)".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Vcs,
+                "no issue URL template (set git.issueUrl or use a GitHub origin)",
+            );
             return;
         };
         let urls: Vec<String> = issue_refs(&summary)
@@ -615,15 +646,23 @@ impl App {
             .map(|number| template.replace("$1", &number))
             .collect();
         if urls.is_empty() {
-            self.status = Some("no #123 issue references in this commit".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Vcs,
+                "no #123 issue references in this commit",
+            );
             return;
         }
         let count = urls.len();
         let _ = self.clipboard.set(&urls.join("\n"));
-        self.status = Some(format!(
-            "copied {count} issue URL{}",
-            if count == 1 { "" } else { "s" }
-        ));
+        self.notify(
+            Report::Outcome,
+            NotificationKind::Vcs,
+            format!(
+                "copied {count} issue URL{}",
+                if count == 1 { "" } else { "s" }
+            ),
+        );
     }
 
     /// Fetch (and prune) every remote the snapshot knows.
@@ -641,15 +680,27 @@ impl App {
             })
             .unwrap_or_default();
         if remotes.is_empty() {
-            self.status = Some("fetch: no remotes".to_string());
+            self.notify(Report::Refusal, NotificationKind::Vcs, "fetch: no remotes");
             return;
         }
+        let mut sent = false;
         for remote in remotes {
-            self.send(SessionCommand::VcsAction {
-                action: VcsAction::Fetch { remote },
-            });
+            sent |= self
+                .send(SessionCommand::VcsAction {
+                    action: VcsAction::Fetch { remote },
+                })
+                .is_some();
         }
-        self.status = Some("fetching…".to_string());
+        // Only once at least one fetch is actually out: the card is retired by the
+        // answering operation, which a closed backend will never send.
+        if sent {
+            self.notify_progress(
+                NotificationKind::Vcs,
+                Self::VCS_OPERATION_TAG.to_string(),
+                "fetching…",
+                None,
+            );
+        }
     }
 }
 

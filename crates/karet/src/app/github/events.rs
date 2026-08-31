@@ -290,7 +290,7 @@ impl App {
             if operation == VERIFICATION_OPERATION {
                 return;
             }
-            self.notify(Severity::Error, NotificationKind::System, full);
+            self.notify(Report::Failure, NotificationKind::System, full);
         }
     }
 }

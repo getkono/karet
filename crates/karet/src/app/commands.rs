@@ -358,7 +358,11 @@ impl App {
                     for info in &swaps {
                         self.open_path(&info.original);
                     }
-                    self.status = Some(format!("recovering {} file(s)…", swaps.len()));
+                    self.notify(
+                        Report::Outcome,
+                        NotificationKind::Io,
+                        format!("recovering {} file(s)…", swaps.len()),
+                    );
                 }
                 self.send_command(SessionCommand::RecoverSwaps);
             },
@@ -369,10 +373,18 @@ impl App {
             Command::CloseConfirmCancel => self.cancel_close(),
             Command::DismissSwaps => {
                 self.pending_swaps = None;
-                self.status = Some("recovery dismissed (backups kept)".to_string());
+                self.notify(
+                    Report::Outcome,
+                    NotificationKind::Io,
+                    "recovery dismissed (backups kept)",
+                );
             },
             Command::ShowDependencyGraph => {
-                self.status = Some("building dependency graph…".to_string());
+                self.notify(
+                    Report::Activity,
+                    NotificationKind::System,
+                    "building dependency graph…",
+                );
                 self.send_command(SessionCommand::DependencyGraph);
             },
             Command::SeamNextRow => self.seam_move_row(1),

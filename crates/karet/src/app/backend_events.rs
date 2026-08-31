@@ -95,10 +95,20 @@ impl App {
             } else {
                 "close"
             };
-            self.status = Some(format!("{verb} cancelled: save failed"));
+            // Untagged, so the batch's own card being retired below cannot take
+            // the reason the batch was abandoned down with it.
+            self.notify(
+                Report::Failure,
+                NotificationKind::Io,
+                format!("{verb} cancelled: save failed"),
+            );
         }
         if save_failed && self.vcs_after_save.take().is_some() {
-            self.status = Some("branch switch cancelled: save failed".to_string());
+            self.notify(
+                Report::Failure,
+                NotificationKind::Io,
+                "branch switch cancelled: save failed",
+            );
         }
         match event {
             SessionEvent::Opened { doc, .. } => self.on_opened(id, doc),
@@ -143,8 +153,27 @@ impl App {
                 variables,
             } => self.on_debug_variables(id, reference, variables),
             SessionEvent::DebugEvaluated { result, .. } => self.on_debug_evaluated(id, result),
+            // The event carries no severity, so the tier is read off the
+            // producer's own vocabulary: `karet_session::notebook_kernel` words
+            // every bad outcome as "… failed" and everything else as progress
+            // ("running cell 3/30"). Progress is tagged and self-expiring so a
+            // thirty-cell run rewrites one card instead of stacking thirty; a
+            // failure is untagged so the next cell's progress cannot bury it.
             SessionEvent::NotebookKernelStatus { text, .. } => {
-                self.status = Some(format!("notebook: {text}"));
+                if text.contains("failed") {
+                    self.notify(
+                        Report::Failure,
+                        NotificationKind::System,
+                        format!("notebook: {text}"),
+                    );
+                } else {
+                    self.notify_tagged(
+                        Report::Activity,
+                        NotificationKind::System,
+                        format!("notebook: {text}"),
+                        Some(Self::NOTEBOOK_KERNEL_TAG.to_string()),
+                    );
+                }
             },
             SessionEvent::NotebookCellDone { .. } => {},
             SessionEvent::ManifestHints {
@@ -153,6 +182,10 @@ impl App {
                 hints,
             } => {
                 self.docs.manifest_hints.insert(doc, (version, hints));
+                // The hints landing is the answer to an explicit re-check, so its
+                // card goes with them. Unconditional: hints also arrive unasked
+                // for, and dismissing a tag nobody raised is a no-op.
+                self.notifications.dismiss_tagged(Self::DEPS_CHECK_TAG);
             },
             SessionEvent::Definitions { locations } => self.on_definitions(id, locations),
             SessionEvent::LanguageServerInstallRequired {
@@ -205,17 +238,13 @@ impl App {
             },
             // The fresh content arrives via the snapshot stream; just note it.
             SessionEvent::Reloaded { .. } => {
-                self.notify(
-                    Severity::Information,
-                    NotificationKind::Io,
-                    "reloaded from disk",
-                );
+                self.notify(Report::Outcome, NotificationKind::Io, "reloaded from disk");
             },
-            // A persistent warning: a transient status hint would vanish on the next
-            // keystroke, but an unsaved-vs-disk conflict must not be missed.
+            // An alert, not a refusal: nothing the user just did caused it, and an
+            // unsaved-vs-disk conflict must wait to be read rather than expire.
             SessionEvent::ExternalConflict { .. } => {
                 self.notify(
-                    Severity::Warning,
+                    Report::Alert,
                     NotificationKind::Io,
                     "file changed on disk — you have unsaved changes",
                 );
@@ -223,7 +252,16 @@ impl App {
             SessionEvent::NotUtf8 { path } => self.on_not_utf8(id, path),
             SessionEvent::FsChanged { paths } => self.on_fs_changed(&paths),
             SessionEvent::ConfigChanged { report } => self.on_config_changed(*report),
-            SessionEvent::Progress { message, .. } => self.status = Some(message),
+            // Language-server chatter (jdtls-style `language/status` during a long
+            // first import). Tagged so successive ticks rewrite one card instead of
+            // stacking, and on the self-expiring `Activity` tier because the stream
+            // just stops — there is no event that says the import finished.
+            SessionEvent::Progress { message, .. } => self.notify_tagged(
+                Report::Activity,
+                NotificationKind::Lsp,
+                message,
+                Some(Self::LSP_STATUS_TAG.to_string()),
+            ),
             // The single high-up funnel: every backend-reported condition becomes a
             // notification, so nothing is silently dropped.
             SessionEvent::Notification {
@@ -347,7 +385,11 @@ impl App {
             SessionEvent::GraphReady { title, view, .. } => {
                 let count = view.nodes.len();
                 self.push_tab(Tab::graph(title, view));
-                self.status = Some(format!("dependency graph: {count} package(s)"));
+                self.notify(
+                    Report::Outcome,
+                    NotificationKind::System,
+                    format!("dependency graph: {count} package(s)"),
+                );
             },
             SessionEvent::LoadedConfig { report } => self.open_loaded_config(*report),
             SessionEvent::SeamIndexed { summary, nodes } => {
@@ -438,7 +480,7 @@ impl App {
                 replacements,
             } => {
                 self.notify(
-                    Severity::Information,
+                    Report::Outcome,
                     NotificationKind::System,
                     format!("replaced {replacements} occurrence(s) in {files_changed} file(s)"),
                 );
@@ -452,6 +494,11 @@ impl App {
             _ => {},
         }
         // A "save & close" runs the parked request once every issued save succeeds.
+        // Either way the batch is over once nothing is pending, so its card goes —
+        // the failure arms above already replaced it with their reason.
+        if self.pending_saves.is_empty() {
+            self.notifications.dismiss_tagged(Self::SAVE_BATCH_TAG);
+        }
         if self.saving_close.is_some()
             && self.pending_saves.is_empty()
             && let Some(request) = self.saving_close.take()
@@ -468,7 +515,11 @@ impl App {
 
     pub(super) fn open_loaded_config(&mut self, report: LoadedConfig) {
         self.push_tab(Tab::loaded_config(report));
-        self.status = Some("loaded settings opened".to_string());
+        self.notify(
+            Report::Outcome,
+            NotificationKind::System,
+            "loaded settings opened",
+        );
     }
 
     /// Arm the startup crash-recovery prompt for `swaps` left by a previous session.

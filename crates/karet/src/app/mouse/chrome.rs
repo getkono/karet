@@ -219,7 +219,7 @@ impl App {
             Ok(crate::links::LinkTarget::ExternalUrl(url)) => {
                 if let Err(error) = crate::links::open_external(&url) {
                     self.notify(
-                        Severity::Error,
+                        Report::Failure,
                         NotificationKind::System,
                         format!("could not open link: {error}"),
                     );
@@ -243,7 +243,7 @@ impl App {
                 );
             },
             Err(error) => self.notify(
-                Severity::Warning,
+                Report::Refusal,
                 NotificationKind::System,
                 format!("link blocked: {error}"),
             ),
@@ -256,7 +256,7 @@ impl App {
             self.open_path(path);
         } else {
             self.notify(
-                Severity::Warning,
+                Report::Refusal,
                 NotificationKind::Io,
                 format!("linked file does not exist: {}", path.display()),
             );

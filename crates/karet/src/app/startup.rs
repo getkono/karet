@@ -80,7 +80,6 @@ impl App {
             wakatime_status: None,
             review: review::ReviewStore::default(),
             todos_ui: TodosChrome::default(),
-            status: None,
             notifications: NotificationCenter::default(),
             toast_hits: Vec::new(),
             sidebar_rect: Rect::default(),
@@ -286,7 +285,7 @@ impl App {
                 .unwrap_or("file")
                 .to_string();
             self.notify(
-                Severity::Warning,
+                Report::Refusal,
                 NotificationKind::System,
                 format!("--split: no room for another pane; opened {name} in the current pane"),
             );
