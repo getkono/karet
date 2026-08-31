@@ -47,6 +47,8 @@ pub use selection::Selection;
 pub use stash::StashEntry;
 pub use stash::StashOptions;
 pub use summary::RepositorySummary;
+pub use write::CommitOutputLine;
+pub use write::OutputStream;
 
 /// Errors produced by the VCS engine.
 #[derive(Debug, thiserror::Error)]
@@ -220,6 +222,20 @@ impl Repository {
     /// `user.name`/`user.email` identity).
     pub fn commit(&self, message: &str) -> Result<String, VcsError> {
         self.git_commit(message)
+    }
+
+    /// Commit the staged changes, streaming the hooks' console output.
+    ///
+    /// [`commit`](Self::commit) with a sink: `on_line` is called for every line
+    /// `git` and its hooks print, as they print it, and every line arrives before
+    /// the result is decided — so a hook that fails after explaining itself still
+    /// delivers the explanation.
+    pub fn commit_with_output(
+        &self,
+        message: &str,
+        on_line: &mut dyn FnMut(CommitOutputLine),
+    ) -> Result<String, VcsError> {
+        self.commit_streaming(message, on_line)
     }
 
     /// The staged changes as a unified diff plus a `--stat` summary and file count.

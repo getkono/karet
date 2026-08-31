@@ -12,11 +12,21 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::process::Output;
 
+mod commit;
+
+pub use commit::CommitOutputLine;
+pub use commit::OutputStream;
+
 use crate::Repository;
 use crate::StagedDiff;
 use crate::VcsError;
 
 impl Repository {
+    /// The worktree root, for the streaming commit runner in [`commit`].
+    pub(crate) fn commit_workdir(&self) -> Result<&Path, VcsError> {
+        self.workdir()
+    }
+
     fn workdir(&self) -> Result<&Path, VcsError> {
         self.inner
             .workdir()
@@ -177,14 +187,9 @@ impl Repository {
     }
 
     pub(crate) fn git_commit(&self, message: &str) -> Result<String, VcsError> {
-        self.git_checked([
-            OsStr::new("commit"),
-            OsStr::new("--quiet"),
-            OsStr::new("-m"),
-            OsStr::new(message),
-        ])?;
-        let output = self.git_checked(["rev-parse", "HEAD"])?;
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        // One commit path, so hooks behave identically whether or not the caller
+        // wants their output.
+        self.commit_streaming(message, &mut |_| {})
     }
 
     pub(crate) fn git_staged_diff(&self) -> Result<StagedDiff, VcsError> {
