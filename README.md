@@ -19,14 +19,30 @@ dependency footprint, and none of them drags an editor in with it.
 
 ## Install
 
-**Homebrew** — the formula lands with the next release:
+**mise** ([mise-en-place](https://mise.jdx.dev)) — the released binary: no clone, no Rust
+toolchain, no C compiler. karet is not in mise's registry, so name the `ubi` backend:
+
+```bash
+mise use -g ubi:getkono/karet            # latest release, on PATH
+mise use -g ubi:getkono/karet@0.6.0      # or pin a version
+```
+
+`mise use -g ubi:getkono/karet@latest` moves a pinned install up again. To pin karet for
+one project rather than globally, put it in that repository's `mise.toml`:
+
+```toml
+[tools]
+"ubi:getkono/karet" = "0.6.0"
+```
+
+**Homebrew**
 
 ```bash
 brew install getkono/tap/karet
 ```
 
 **Prebuilt binaries** — every [release](https://github.com/getkono/karet/releases)
-attaches a tarball per target:
+attaches a tarball per target, each holding a single `karet` executable:
 
 | Platform | Asset |
 | --- | --- |
@@ -35,15 +51,20 @@ attaches a tarball per target:
 | Linux (aarch64, musl) | `karet-aarch64-unknown-linux-musl.tar.gz` |
 | Linux (x86_64, musl) | `karet-x86_64-unknown-linux-musl.tar.gz` |
 
-**From source** — needs Rust 1.92+ and a C compiler (tree-sitter and its grammars
-compile vendored C):
+The Linux builds are static musl binaries and run on glibc distributions too. No Windows
+binary is prebuilt — build from source there.
+
+**From source** — no clone needed for this either; needs Rust 1.92+ and a C compiler
+(tree-sitter and its grammars compile vendored C):
 
 ```bash
-cargo install --path crates/karet --locked    # what `mise run install` runs
+cargo install --git https://github.com/getkono/karet --locked karet
 ```
 
-The app is not published to crates.io — only the `karet-*` libraries are — so there
-is no `cargo install karet`.
+The app is not published to crates.io — only the `karet-*` libraries are — so there is no
+`cargo install karet`; the `--git` form above is its equivalent. Name the `karet` package
+explicitly, because the workspace holds three binary targets, and keep `--locked` so the
+build uses the committed `Cargo.lock` — the exact dependency set `mise run verify` gates.
 
 karet expects a modern terminal (the kitty keyboard protocol, and kitty graphics for
 inline images). Check yours, and see what degrades:
@@ -239,6 +260,11 @@ cargo build
 cargo run -- .      # run karet against this repo
 ```
 
+Three commands share the word *install* and mean different things: `mise install`
+provisions the tools above, `mise run install` builds *this checkout* into your path
+(`cargo install --path crates/karet --locked`), and `mise use -g ubi:getkono/karet` — the
+one in [Install](#install) — fetches a released binary and needs no checkout at all.
+
 **Tasks**
 
 | Command | Description |
@@ -250,6 +276,7 @@ cargo run -- .      # run karet against this repo
 | `mise run build-lean` | Build the app and `karet-fileview` across feature subsets |
 | `mise run coverage` | Generate `lcov.info` and print the summary |
 | `mise run verify` | **The merge gate** — the whole chain below, in order |
+| `mise run install` | `cargo install --path crates/karet --locked` — this checkout onto your path |
 | `mise run svg` | Recapture the README hero image |
 
 `mise run verify` is one composite task, run identically by CI and the pre-push hook
