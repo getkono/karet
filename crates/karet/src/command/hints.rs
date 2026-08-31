@@ -162,6 +162,7 @@ impl Command {
             Self::CommitGenerateUndo => "undo generated",
             Self::CommitConfigureAi => "ai options",
             Self::CommitConsoleClose => "close",
+            Self::CommitConsoleCancel => "cancel commit",
             // Reached from the palette, not advertised in a bar: it applies only
             // after a commit whose console has already been dismissed.
             Self::CommitConsoleShow => return None,

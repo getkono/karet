@@ -490,6 +490,8 @@ pub enum Command {
     CommitConfigureAi,
     /// Dismiss the commit console, keeping its log for a later reopen.
     CommitConsoleClose,
+    /// Stop the running commit and the hooks it started.
+    CommitConsoleCancel,
     /// Show the last commit's console log again.
     CommitConsoleShow,
     /// Commit the explorer inline name editor (create / rename).
@@ -876,6 +878,7 @@ impl Command {
             Self::CommitGenerateUndo => "Commit: Undo Generated Message",
             Self::CommitConfigureAi => "Commit: AI Message Options…",
             Self::CommitConsoleClose => "Commit: Close Console",
+            Self::CommitConsoleCancel => "Commit: Cancel Running Commit",
             Self::CommitConsoleShow => "Commit: Show Last Console Log",
             Self::ExplorerEditSubmit => "Explorer: Confirm Name",
             Self::ExplorerEditCancel => "Explorer: Cancel Edit",

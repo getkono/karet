@@ -220,7 +220,7 @@ impl App {
         self.ai_commit.undo = None;
         self.ai_commit.state = crate::app::scm::aicommit::AiCommitState::Idle;
         let short: String = oid.chars().take(7).collect();
-        self.commit_console_finished(crate::app::commit_console::CommitOutcome::Committed(
+        self.commit_console_finished(crate::app::commit_console::ConsoleOutcome::Committed(
             short.clone(),
         ));
         self.notify(

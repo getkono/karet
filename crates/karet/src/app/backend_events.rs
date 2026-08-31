@@ -281,6 +281,7 @@ impl App {
             },
             SessionEvent::CommitOutput { lines } => self.on_commit_output(lines),
             SessionEvent::Committed { oid } => self.on_committed(&oid),
+            SessionEvent::CommitCancelled => self.commit_console_cancelled(),
             SessionEvent::CommitMessageGenerated { message } => {
                 self.on_commit_message_generated(id, message);
             },

@@ -8,7 +8,7 @@
 use karet_widgets::scroll::draw_scrollable_lines;
 
 use super::*;
-use crate::app::commit_console::CommitOutcome;
+use crate::app::commit_console::ConsoleOutcome;
 
 /// Draw the console over `area`, when it is open.
 pub(super) fn draw_commit_console(
@@ -28,14 +28,20 @@ pub(super) fn draw_commit_console(
     f.render_widget(Clear, rect);
 
     let (title, title_role) = match &app.commit_console.outcome {
+        None if app.commit_console.cancelling => {
+            (" Cancelling… ".to_string(), ThemeRole::LineNumberActive)
+        },
         None => (" Committing… ".to_string(), ThemeRole::LineNumberActive),
-        Some(CommitOutcome::Committed(short)) => {
+        Some(ConsoleOutcome::Committed(short)) => {
             (format!(" Committed {short} "), ThemeRole::LineNumberActive)
         },
-        Some(CommitOutcome::Failed(reason)) => (
+        Some(ConsoleOutcome::Failed(reason)) => (
             format!(" Commit refused — {reason} "),
             ThemeRole::DiagnosticError,
         ),
+        // Not an error: the user asked for this, and painting it red would
+        // read as something having gone wrong.
+        Some(ConsoleOutcome::Cancelled) => (" Commit cancelled ".to_string(), ThemeRole::Muted),
     };
     let block = Block::default()
         .borders(Borders::ALL)
@@ -76,10 +82,15 @@ pub(super) fn draw_commit_console(
         ScrollSurface::CommitConsoleColumns,
     );
 
+    // Hiding the console and stopping the commit are different things, and the
+    // hint has to say which is which — dismissing a console that kept running
+    // used to be the only option, and was easy to misread as a cancel.
     let hint = if app.commit_console.outcome.is_some() {
         "Esc close"
+    } else if app.commit_console.cancelling {
+        "Esc hide · stopping the commit…"
     } else {
-        "Esc hide · the commit keeps running"
+        "Esc hide · c cancel the commit"
     };
     f.render_widget(
         Paragraph::new(Line::styled(hint, theme.style(ThemeRole::Muted)))
@@ -98,7 +109,7 @@ mod tests {
     use super::*;
 
     /// Draw the console for `lines` and return the painted rows.
-    fn draw(lines: &[&str], outcome: Option<CommitOutcome>) -> Vec<String> {
+    fn draw(lines: &[&str], outcome: Option<ConsoleOutcome>) -> Vec<String> {
         let mut app = crate::app::tests::support::app();
         app.commit_console_reset();
         app.on_commit_output(
@@ -139,8 +150,8 @@ mod tests {
         assert!(painted.contains("running checks"), "{painted}");
         assert!(painted.contains("all good"), "{painted}");
         assert!(
-            painted.contains("the commit keeps running"),
-            "hiding it does not cancel it: {painted}"
+            painted.contains("c cancel the commit"),
+            "and says how to stop it: {painted}"
         );
     }
 
@@ -148,7 +159,7 @@ mod tests {
     fn a_refusal_names_its_reason_in_the_title() {
         let rows = draw(
             &["why it refused"],
-            Some(CommitOutcome::Failed("hook failed".to_string())),
+            Some(ConsoleOutcome::Failed("hook failed".to_string())),
         );
         let painted = rows.join("\n");
         assert!(painted.contains("Commit refused"), "{painted}");
@@ -188,5 +199,50 @@ mod tests {
             draw_commit_console(frame, &mut app, &theme, area, &mut hits);
         });
         assert_eq!(app.commit_console.rect, Rect::default());
+    }
+
+    #[test]
+    fn a_cancelling_commit_says_it_is_stopping_rather_than_that_it_stopped() {
+        let mut app = crate::app::tests::support::app();
+        app.commit_console_reset();
+        app.on_commit_output(vec![CommitOutputLine {
+            stream: OutputStream::Stderr,
+            text: "working".to_string(),
+        }]);
+        app.commit_console.cancelling = true;
+        let theme = app.theme.clone();
+        let mut terminal = Terminal::new(TestBackend::new(60, 20))
+            .unwrap_or_else(|_| unreachable!("the test backend is infallible"));
+        let mut hits = ScrollHits::default();
+        let _ = terminal.draw(|frame| {
+            let area = frame.area();
+            draw_commit_console(frame, &mut app, &theme, area, &mut hits);
+        });
+        let buffer = terminal.backend().buffer().clone();
+        let painted: String = (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .filter_map(|x| buffer.cell((x, y)).map(|cell| cell.symbol().to_owned()))
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(painted.contains("Cancelling…"), "{painted}");
+        assert!(
+            !painted.contains("c cancel the commit"),
+            "asking twice does nothing, so it is not offered twice: {painted}"
+        );
+    }
+
+    #[test]
+    fn a_cancelled_commit_titles_itself_without_calling_it_a_failure() {
+        let rows = draw(&["working"], Some(ConsoleOutcome::Cancelled));
+        let painted = rows.join("\n");
+        assert!(painted.contains("Commit cancelled"), "{painted}");
+        assert!(
+            !painted.contains("refused"),
+            "a cancellation the user asked for is not a refusal: {painted}"
+        );
+        assert!(painted.contains("Esc close"), "{painted}");
     }
 }

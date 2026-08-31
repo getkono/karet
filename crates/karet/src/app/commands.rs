@@ -332,6 +332,7 @@ impl App {
             Command::CommitSubmit => self.commit_submit(),
             Command::CommitCancel => self.commit_cancel(),
             Command::CommitConsoleClose => self.commit_console_dismiss(),
+            Command::CommitConsoleCancel => self.commit_console_cancel(),
             Command::CommitConsoleShow => self.commit_console_reopen(),
             Command::CommitGenerate => self.commit_generate(),
             Command::CommitGenerateUndo => {

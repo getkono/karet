@@ -100,7 +100,7 @@ impl App {
             self.commit_input.pending = None;
             // A refusal always shows its log: the reason is the whole point, and
             // a toast is too small to carry a hook's output.
-            self.commit_console_finished(crate::app::commit_console::CommitOutcome::Failed(
+            self.commit_console_finished(crate::app::commit_console::ConsoleOutcome::Failed(
                 crate::app::scm::aicommit::one_line(&message),
             ));
         }

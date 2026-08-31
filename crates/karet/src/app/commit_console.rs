@@ -38,11 +38,13 @@ const MAX_LINES: usize = 5_000;
 
 /// How a commit that produced output ended.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum CommitOutcome {
+pub(crate) enum ConsoleOutcome {
     /// The commit landed, with its short hash.
     Committed(String),
     /// The commit was refused, with the reason reported alongside it.
     Failed(String),
+    /// The commit was stopped before it created anything.
+    Cancelled,
 }
 
 /// The console's log, viewport, and outcome.
@@ -64,7 +66,13 @@ pub(crate) struct CommitConsole {
     /// Whether the view follows the tail as lines arrive.
     pub(crate) following: bool,
     /// How the commit ended, once it has.
-    pub(crate) outcome: Option<CommitOutcome>,
+    pub(crate) outcome: Option<ConsoleOutcome>,
+    /// Whether stopping this commit has been asked for but not yet answered.
+    ///
+    /// Separate from `outcome`: the request is sent from here, and what it
+    /// achieved is not known until the backend says so — a commit can finish
+    /// while the cancellation is still in flight.
+    pub(crate) cancelling: bool,
     /// Where the console was last painted, for hit-testing the wheel.
     pub(crate) rect: ratatui::layout::Rect,
 }
@@ -145,14 +153,36 @@ impl App {
     /// A commit that printed nothing never opened a console and does not open one
     /// now: there is nothing in it to read. A failure always shows, because the
     /// reason is the whole point.
-    pub(crate) fn commit_console_finished(&mut self, outcome: CommitOutcome) {
-        let failed = matches!(outcome, CommitOutcome::Failed(_));
+    pub(crate) fn commit_console_finished(&mut self, outcome: ConsoleOutcome) {
+        let failed = matches!(outcome, ConsoleOutcome::Failed(_));
         self.commit_console.outcome = Some(outcome);
         // A refusal overrides a dismissal: a commit that did not happen, and the
         // reason it did not, is not something to have quietly missed.
         if failed && self.commit_console.has_log() {
             self.commit_console.open = true;
         }
+    }
+
+    /// Ask the backend to stop the running commit.
+    ///
+    /// The draft is left alone: a cancelled commit is one the user still means
+    /// to make. Nothing is decided here — the backend answers with what actually
+    /// happened, which may be that the commit landed first.
+    pub(crate) fn commit_console_cancel(&mut self) {
+        if self.commit_console.outcome.is_some() || self.commit_console.cancelling {
+            return;
+        }
+        let Some(request) = self.commit_input.pending else {
+            return;
+        };
+        self.commit_console.cancelling = true;
+        self.send_command(karet_session::Command::Cancel { request });
+    }
+
+    /// Record that a commit was stopped before it created anything.
+    pub(crate) fn commit_console_cancelled(&mut self) {
+        self.commit_input.pending = None;
+        self.commit_console_finished(ConsoleOutcome::Cancelled);
     }
 
     /// Show the last commit's console again, if there is one.
@@ -234,7 +264,7 @@ mod tests {
         app.commit_console_reset();
         assert!(!app.commit_console.open, "not on dispatch");
         // A hookless commit prints nothing worth showing.
-        app.commit_console_finished(CommitOutcome::Committed("abc1234".to_string()));
+        app.commit_console_finished(ConsoleOutcome::Committed("abc1234".to_string()));
         assert!(!app.commit_console.open);
         assert!(!app.commit_console.has_log());
     }
@@ -250,11 +280,11 @@ mod tests {
         assert!(app.commit_console.following, "and it follows the tail");
 
         // It stays after the commit lands, with its outcome named.
-        app.commit_console_finished(CommitOutcome::Committed("abc1234".to_string()));
+        app.commit_console_finished(ConsoleOutcome::Committed("abc1234".to_string()));
         assert!(app.commit_console.open);
         assert_eq!(
             app.commit_console.outcome,
-            Some(CommitOutcome::Committed("abc1234".to_string()))
+            Some(ConsoleOutcome::Committed("abc1234".to_string()))
         );
     }
 
@@ -265,7 +295,7 @@ mod tests {
         app.on_commit_output(vec![line(OutputStream::Stderr, "why it refused")]);
         app.commit_console_dismiss();
         assert!(!app.commit_console.open);
-        app.commit_console_finished(CommitOutcome::Failed("hook failed".to_string()));
+        app.commit_console_finished(ConsoleOutcome::Failed("hook failed".to_string()));
         assert!(app.commit_console.open, "the reason is the whole point");
     }
 
@@ -345,6 +375,57 @@ mod tests {
         assert!(
             styled[1].spans.iter().all(|span| span.style != error),
             "git's own summary is not an error either"
+        );
+    }
+
+    #[test]
+    fn cancelling_asks_the_backend_and_keeps_the_draft() {
+        let mut app = crate::app::tests::support::app();
+        app.commit_console_reset();
+        app.commit_input.text = "a message worth keeping".to_string();
+        app.commit_input.pending = Some(karet_session::RequestId(7));
+
+        app.commit_console_cancel();
+
+        assert!(app.commit_console.cancelling, "the request is in flight");
+        assert_eq!(
+            app.commit_input.text, "a message worth keeping",
+            "a cancelled commit is one the user still means to make"
+        );
+        assert!(
+            app.commit_console.outcome.is_none(),
+            "nothing is decided until the backend answers"
+        );
+    }
+
+    #[test]
+    fn cancelling_a_commit_that_already_finished_does_nothing() {
+        let mut app = crate::app::tests::support::app();
+        app.commit_console_reset();
+        app.commit_input.pending = Some(karet_session::RequestId(7));
+        app.commit_console_finished(ConsoleOutcome::Committed("abc1234".to_string()));
+
+        app.commit_console_cancel();
+
+        assert!(
+            !app.commit_console.cancelling,
+            "there is nothing left to stop"
+        );
+    }
+
+    #[test]
+    fn a_cancelled_commit_clears_the_pending_request_and_says_so() {
+        let mut app = crate::app::tests::support::app();
+        app.commit_console_reset();
+        app.commit_input.pending = Some(karet_session::RequestId(7));
+        app.commit_console_cancel();
+
+        app.commit_console_cancelled();
+
+        assert_eq!(app.commit_console.outcome, Some(ConsoleOutcome::Cancelled));
+        assert!(
+            app.commit_input.pending.is_none(),
+            "the box accepts a new commit again"
         );
     }
 }
