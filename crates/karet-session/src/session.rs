@@ -414,7 +414,12 @@ impl Session {
             Command::Discard { paths } => self.vcs_write(id, |repo| repo.discard(&paths)),
             Command::StageAll => self.vcs_write(id, Repository::stage_all),
             Command::UnstageAll => self.vcs_write(id, Repository::unstage_all),
-            Command::Commit { message } => self.commit(id, &message),
+            Command::Commit { message } => {
+                self.submit_vcs(id, |id, _| crate::vcs_worker::VcsJob::Commit {
+                    id,
+                    message,
+                });
+            },
             Command::GenerateCommitMessage => self.generate_commit_message(id),
             Command::ProbeAiCommit => self.emit_ai_commit_availability(Some(id)),
             Command::SetAiCommitOptions { options } => self.set_ai_commit_options(id, *options),

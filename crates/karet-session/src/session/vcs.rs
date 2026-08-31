@@ -121,28 +121,6 @@ impl Session {
         }
     }
 
-    /// Commit the staged changes, emitting [`Event::Committed`] then a fresh status,
-    /// or a [`Event::Notification`] on failure (e.g. conflicts or no identity).
-    pub(super) fn commit(&mut self, id: RequestId, message: &str) {
-        let Some(repo) = self.vcs.as_ref() else {
-            return;
-        };
-        match repo.commit(message) {
-            Ok(oid) => {
-                self.emit(Some(id), Event::Committed { oid });
-                self.emit_vcs_status(Some(id));
-            },
-            Err(e) => self.emit(
-                Some(id),
-                Event::Notification {
-                    severity: Severity::Error,
-                    kind: NotificationKind::Vcs,
-                    message: e.to_string(),
-                },
-            ),
-        }
-    }
-
     /// The AI-commit settings a run may actually use.
     ///
     /// Every field is the merged configuration except `binary`, which is dropped

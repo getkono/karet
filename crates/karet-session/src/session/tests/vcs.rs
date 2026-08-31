@@ -294,3 +294,154 @@
         }
         assert_eq!(seen, Some(vec![path]));
     }
+
+    /// Install an executable `pre-commit` hook running `body`.
+    #[cfg(unix)]
+    fn hook(root: &std::path::Path, body: &str) -> Option<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+        let path = root.join(".git/hooks/pre-commit");
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).ok()?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).ok()
+    }
+
+    /// Collect every event a commit produces, in order, until it settles: a
+    /// success ends with the fresh status that follows it, a failure with the
+    /// notification that reports it.
+    fn drain_commit(events: &mut EventRx) -> Vec<Event> {
+        let mut seen = Vec::new();
+        let mut committed = false;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            while let Some((_, ev)) = events.try_recv() {
+                let done = match &ev {
+                    Event::Notification { .. } => true,
+                    Event::VcsStatus { .. } => committed,
+                    _ => false,
+                };
+                committed |= matches!(ev, Event::Committed { .. });
+                seen.push(ev);
+                if done {
+                    return seen;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        seen
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_commit_streams_its_hooks_output_before_it_reports_success() {
+        let Some((_dir, root, file)) = init_temp_repo() else {
+            return;
+        };
+        if hook(&root, "echo hook says hello").is_none() {
+            return;
+        }
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig {
+            roots: vec![root],
+            ..SessionConfig::default()
+        });
+        session.start();
+        if wait_vcs_status(&mut events).is_none() {
+            return;
+        }
+        session.handle(RequestId(1), Command::Stage { paths: vec![file] });
+        if wait_vcs_status(&mut events).is_none() {
+            return;
+        }
+
+        session.handle(RequestId(2), Command::Commit {
+            message: "subject".to_string(),
+        });
+        let seen = drain_commit(&mut events);
+        let output: Vec<String> = seen
+            .iter()
+            .filter_map(|ev| match ev {
+                Event::CommitOutput { lines } => Some(lines),
+                _ => None,
+            })
+            .flatten()
+            .map(|line| line.text.clone())
+            .collect();
+        assert!(
+            output.iter().any(|line| line.contains("hook says hello")),
+            "the hook's console output reached the seam: {output:?}"
+        );
+
+        // Ordering is the contract: every line, then the outcome, then the state.
+        let committed = seen
+            .iter()
+            .position(|ev| matches!(ev, Event::Committed { .. }))
+            .unwrap_or(usize::MAX);
+        let last_output = seen
+            .iter()
+            .rposition(|ev| matches!(ev, Event::CommitOutput { .. }))
+            .unwrap_or(0);
+        assert!(last_output < committed, "output precedes the outcome: {seen:?}");
+        assert!(
+            seen.iter()
+                .skip(committed)
+                .any(|ev| matches!(ev, Event::VcsStatus { .. })),
+            "a fresh status follows the commit: {seen:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_refused_commit_reports_the_failure_and_keeps_what_the_hook_printed() {
+        let Some((_dir, root, file)) = init_temp_repo() else {
+            return;
+        };
+        // The diagnosis goes to the hook's stdout, which git routes to its stderr.
+        if hook(&root, "echo why it refused\nexit 1").is_none() {
+            return;
+        }
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig {
+            roots: vec![root],
+            ..SessionConfig::default()
+        });
+        session.start();
+        if wait_vcs_status(&mut events).is_none() {
+            return;
+        }
+        session.handle(RequestId(1), Command::Stage { paths: vec![file] });
+        if wait_vcs_status(&mut events).is_none() {
+            return;
+        }
+
+        session.handle(RequestId(2), Command::Commit {
+            message: "subject".to_string(),
+        });
+        let seen = drain_commit(&mut events);
+        assert!(
+            !seen
+                .iter()
+                .any(|ev| matches!(ev, Event::Committed { .. })),
+            "a refused commit reports no oid: {seen:?}"
+        );
+        assert!(
+            seen.iter().any(|ev| matches!(
+                ev,
+                Event::Notification {
+                    kind: karet_core::NotificationKind::Vcs,
+                    ..
+                }
+            )),
+            "and does report the failure: {seen:?}"
+        );
+        let output: Vec<String> = seen
+            .iter()
+            .filter_map(|ev| match ev {
+                Event::CommitOutput { lines } => Some(lines),
+                _ => None,
+            })
+            .flatten()
+            .map(|line| line.text.clone())
+            .collect();
+        assert!(
+            output.iter().any(|line| line.contains("why it refused")),
+            "the reason survives the failure: {output:?}"
+        );
+    }
+

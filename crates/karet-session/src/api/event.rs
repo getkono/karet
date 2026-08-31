@@ -544,6 +544,20 @@ pub enum Event {
         /// committed history available.
         attribution: Option<BlameAttribution>,
     },
+    /// Console output from a commit that is still running, in arrival order.
+    ///
+    /// Emitted repeatedly between [`Command::Commit`] and its outcome, batched so
+    /// a chatty hook does not cost one event per line. A commit with no hooks
+    /// emits at most git's own summary, so a client that opens a console on the
+    /// first of these never opens one for an ordinary commit.
+    ///
+    /// [`CommitOutputLine::stream`](karet_vcs::CommitOutputLine) is not a
+    /// severity: git routes a hook's own stdout to its stderr, so painting that
+    /// stream as an error paints every successful hook red.
+    CommitOutput {
+        /// The lines produced since the last batch.
+        lines: Vec<karet_vcs::CommitOutputLine>,
+    },
     /// A commit was created.
     Committed {
         /// The new commit's hex object id.
