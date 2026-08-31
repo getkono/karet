@@ -3724,6 +3724,7 @@ dependencies = [
 name = "karet-vcs"
 version = "0.6.0"
 dependencies = [
+ "command-group",
  "gix",
  "imara-diff",
  "karet-core",
