@@ -210,14 +210,17 @@ impl App {
     }
 
     /// Route a mouse-wheel notch over the sidebar: the Source-Control panel scrolls
-    /// its list (so the commit log is reachable), while the explorer and search move
-    /// their selection one step per notch.
+    /// whichever of its three regions the pointer is over, while the explorer and
+    /// search move their selection one step per notch.
     pub(super) fn sidebar_wheel(&mut self, delta: i32, at_row: u16) {
         match self.sidebar_panel {
-            // Route to whichever Source-Control region the pointer is over: the pinned
-            // commit-log at the bottom, or the changes list above it.
+            // Route to whichever Source-Control region the pointer is over: the
+            // commit box at the top, the pinned commit-log at the bottom, or the
+            // changes list between them.
             SidebarPanel::SourceControl => {
-                if row_in_rect(self.scm_ui.commits_rect, at_row) {
+                if row_in_rect(self.scm_ui.commit_rect, at_row) {
+                    self.scm_scroll_commit_input(delta.signum());
+                } else if row_in_rect(self.scm_ui.commits_rect, at_row) {
                     self.scm_scroll_commits(delta);
                 } else {
                     self.scm_scroll_changes(delta);

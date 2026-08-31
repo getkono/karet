@@ -182,6 +182,7 @@ impl App {
             ScrollSurface::ScmCommits => {
                 self.scm_scroll_commits(delta_to(self.scm_ui.commits_offset, position));
             },
+            ScrollSurface::ScmCommitInput => self.scroll_commit_input_to(position),
             ScrollSurface::Completion => {
                 if let Some(ui) = self.completion.as_mut() {
                     ui.list.scroll_to(position, viewport);

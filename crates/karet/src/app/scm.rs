@@ -1,4 +1,5 @@
 pub(crate) mod aicommit;
+pub(crate) mod commit_box;
 
 use super::*;
 
@@ -656,6 +657,9 @@ impl App {
             self.commit_submit();
             return;
         }
+        // Any key that moves the caret re-engages caret-following, ending a
+        // deliberate scroll away from it.
+        self.commit_input.scrolled_away = false;
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
@@ -692,6 +696,7 @@ impl App {
 
     /// Insert pasted text at the commit editor's caret, normalizing line endings.
     pub(super) fn commit_paste(&mut self, text: &str) {
+        self.commit_input.scrolled_away = false;
         self.commit_input
             .insert_text(&text.replace("\r\n", "\n").replace('\r', "\n"));
     }
@@ -886,6 +891,7 @@ impl CommitInput {
     }
 
     pub(super) fn place_cursor(&mut self, column: u16, row: u16, width: u16, extend: bool) {
+        self.scrolled_away = false;
         self.edit
             .place_cursor(&self.text, column, row, width, extend);
     }

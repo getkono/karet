@@ -778,6 +778,11 @@ pub(crate) struct CommitInput {
     pub(crate) focused: bool,
     /// Commit request in flight; prevents accidental duplicate submissions.
     pub(crate) pending: Option<RequestId>,
+    /// Whether the viewport was deliberately scrolled off the caret. The box
+    /// follows the caret by default; a wheel notch or a scrollbar drag suspends
+    /// that until the caret next moves, so scrolling back through a long draft is
+    /// not undone by the next frame.
+    pub(crate) scrolled_away: bool,
 }
 
 /// A quit request waiting for a repository mutation that must not be interrupted.
