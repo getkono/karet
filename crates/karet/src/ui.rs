@@ -7,6 +7,7 @@ mod confirm;
 mod content;
 mod github;
 mod language_servers;
+mod osc8;
 mod panes;
 mod scm;
 mod seam;
