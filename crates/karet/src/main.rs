@@ -11,6 +11,7 @@
 //! workspace search, remote-URL reads) are being migrated behind the same seam.
 
 mod app;
+mod autolink;
 mod cli;
 mod clipboard;
 mod command;
