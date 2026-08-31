@@ -32,7 +32,7 @@ mod pending;
 mod remote_actions;
 mod review;
 mod runtime;
-mod scm;
+pub(crate) mod scm;
 mod scroll;
 pub(crate) mod seam;
 mod search;
@@ -48,7 +48,7 @@ mod todos;
 mod util;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 use std::collections::BTreeSet;
 use std::collections::HashMap;
@@ -400,6 +400,9 @@ pub struct App {
     pub(crate) find_open: bool,
     /// The permanent multiline Source-Control commit-message editor.
     pub(crate) commit_input: CommitInput,
+    /// The commit box's AI affordance: what the backend says can run, and what
+    /// the last (or current) generation is doing.
+    pub(crate) ai_commit: crate::app::scm::aicommit::AiCommitUi,
     /// The in-progress revision text while the go-to-commit input is open.
     pub(crate) rev_input: Option<String>,
     /// The irreversible close awaiting the unsaved-changes confirmation prompt, if

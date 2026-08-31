@@ -27,6 +27,9 @@ impl App {
             .filter_map(|pending| pending.wake(now))
             .min();
         let nested_repositories = self.nested_repository_next_wake(now);
+        // Generation runs for seconds with no output to stream, so its spinner is
+        // the only progress there is — it has to keep animating without input.
+        let ai_commit = self.ai_commit_next_wake(now);
         let operation = self
             .operation_blocker
             .as_ref()
@@ -46,6 +49,7 @@ impl App {
             caret,
             loading,
             nested_repositories,
+            ai_commit,
             operation,
             reveal,
             self.drag_autoscroll_wake(),
@@ -277,7 +281,13 @@ impl App {
             },
             SessionEvent::Committed { oid } => self.on_committed(&oid),
             SessionEvent::CommitMessageGenerated { message } => {
-                self.on_commit_message_generated(message);
+                self.on_commit_message_generated(id, message);
+            },
+            SessionEvent::CommitMessageFailed { message } => {
+                self.on_commit_message_failed(id, message);
+            },
+            SessionEvent::AiCommitAvailability { status } => {
+                self.on_ai_commit_availability(*status);
             },
             SessionEvent::SwapsFound { swaps } => self.arm_swap_recovery(swaps),
             SessionEvent::CommitDetailReady { detail } => self.on_commit_detail_ready(id, detail),

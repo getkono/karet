@@ -1,3 +1,5 @@
+mod aicommit;
+
 use karet_session::ChangeSummary;
 use karet_widgets::textarea::TextArea;
 use karet_widgets::textarea::TextAreaStyle;
@@ -375,6 +377,7 @@ pub(super) fn draw_commit_input(f: &mut Frame, app: &mut App, theme: &Theme, are
     let inner = block.inner(area);
     f.render_widget(block, area);
     app.scm_ui.commit_rect = inner;
+    draw_ai_chip(f, app, theme, area, title);
     if inner.width == 0 || inner.height == 0 {
         return;
     }
@@ -395,4 +398,32 @@ pub(super) fn draw_commit_input(f: &mut Frame, app: &mut App, theme: &Theme, are
             .placeholder("Type a commit message", Style::default().fg(muted)),
         inner,
     );
+}
+
+/// Paint the AI affordance into the commit box's top border, and record where it
+/// landed so a click can reach it.
+///
+/// The rect is cleared every frame before it is recomputed: a chip that fails to
+/// fit, or a state with nothing to say, must not leave a stale click target
+/// behind where the user would hit something they can no longer see.
+fn draw_ai_chip(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect, title: &str) {
+    app.scm_ui.ai_chip_rect = Rect::default();
+    let now = std::time::Instant::now();
+    let Some(chip) = aicommit::chip(app, now, app.icon_style) else {
+        return;
+    };
+    let width = karet_widgets::text::width(&chip.label) as u16;
+    let title_width = karet_widgets::text::width(title) as u16;
+    let Some(rect) = aicommit::chip_rect(area, title_width, width) else {
+        return;
+    };
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::raw(" "),
+            Span::styled(chip.label, aicommit::chip_style(theme, chip.role)),
+            Span::raw(" "),
+        ])),
+        rect,
+    );
+    app.scm_ui.ai_chip_rect = rect;
 }

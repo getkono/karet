@@ -2,7 +2,8 @@
 //! RecordingBackend live in [`support`]; every sibling starts with the same
 //! two-glob prelude (the app scope plus the support helpers).
 
-mod support;
+mod aicommit;
+pub(crate) mod support;
 
 mod blame;
 mod commit_graph;

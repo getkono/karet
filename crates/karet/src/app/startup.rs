@@ -65,6 +65,7 @@ impl App {
             overlay: None,
             find_open: false,
             commit_input: CommitInput::default(),
+            ai_commit: crate::app::scm::aicommit::AiCommitUi::default(),
             rev_input: None,
             confirm: None,
             pending_close: None,

@@ -221,18 +221,6 @@ impl App {
         );
     }
 
-    /// Fill the commit editor with a generated message.
-    pub(super) fn on_commit_message_generated(&mut self, message: String) {
-        self.commit_input.text = message;
-        self.commit_input.edit.set_cursor(
-            &self.commit_input.text,
-            self.commit_input.text.len(),
-            false,
-        );
-        self.commit_input.edit.scroll = 0;
-        self.status = Some("commit message generated".to_string());
-    }
-
     /// Route resolved commit metadata to the surface that asked for it.
     pub(super) fn on_commit_detail_ready(
         &mut self,
