@@ -159,6 +159,8 @@ impl Command {
             Self::CommitSubmit => "submit",
             Self::CommitCancel => "keep draft",
             Self::CommitGenerate => "generate",
+            Self::CommitGenerateUndo => "undo generated",
+            Self::CommitConfigureAi => "ai options",
             Self::ExplorerEditSubmit => "confirm",
             Self::ExplorerEditCancel => "cancel",
             Self::ContextMenuAccept => "accept",

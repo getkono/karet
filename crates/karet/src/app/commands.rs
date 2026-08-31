@@ -332,6 +332,10 @@ impl App {
             Command::CommitSubmit => self.commit_submit(),
             Command::CommitCancel => self.commit_cancel(),
             Command::CommitGenerate => self.commit_generate(),
+            Command::CommitGenerateUndo => {
+                self.commit_generate_undo();
+            },
+            Command::CommitConfigureAi => self.open_ai_commit_form(),
             Command::ExplorerEditSubmit => self.explorer_commit_edit(),
             Command::ExplorerEditCancel => self.explorer.cancel_edit(),
             Command::ContextMenuUp => self.context_menu_step(-1),

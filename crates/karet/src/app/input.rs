@@ -373,6 +373,7 @@ impl App {
             OverlayEvent::AcceptStash(options) => {
                 self.run_vcs_action(VcsAction::StashPush(options));
             },
+            OverlayEvent::AcceptAiCommit(options) => self.save_ai_commit_options(*options),
             OverlayEvent::AcceptStashAction(action) => match action {
                 StashAction::Preview(reference) => {
                     self.run_vcs_action(VcsAction::StashPreview { reference });

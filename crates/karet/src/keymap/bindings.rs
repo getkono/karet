@@ -377,6 +377,8 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(CommitInput, false, false, false, Esc,   Command::CommitCancel),
     b(CommitInput, true,  false, false, Enter, Command::CommitSubmit),
     b(CommitInput, true,  false, false, Char('g'), Command::CommitGenerate),
+    b(CommitInput, true,  false, true,  Char('g'), Command::CommitConfigureAi),
+    b(CommitInput, true,  false, false, Char('z'), Command::CommitGenerateUndo),
     b(CommitInput, true,  false, false, Char('a'), Command::EditorSelectAll),
     b(CommitInput, true,  false, false, Char('c'), Command::Copy),
     b(CommitInput, true,  false, false, Char('x'), Command::Cut),
