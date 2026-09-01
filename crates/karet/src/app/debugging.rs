@@ -86,7 +86,12 @@ impl App {
     }
 
     /// `Event::DebugState`: mirror the lifecycle and surface transitions.
-    pub(super) fn on_debug_state(&mut self, state: DebugSessionState, detail: String) {
+    pub(super) fn on_debug_state(
+        &mut self,
+        state: DebugSessionState,
+        severity: Severity,
+        detail: String,
+    ) {
         let was = self.debug_state;
         self.debug_state = state;
         // Leaving the stopped state invalidates every inspection artifact.
@@ -94,29 +99,29 @@ impl App {
             self.debug_stopped = None;
             self.debug_panel.clear_inspection(self.debug_output.len());
         }
+        // The backend states how loud each transition is, so a failed start is a
+        // failure and every ordinary end is an outcome without anyone reading the
+        // detail's wording. Idle with no detail is the resting state, not an
+        // event, so it stays silent; a step within a running session reports
+        // through `DebugStopped` instead.
         match state {
-            // Going idle carrying detail is usually just the session ending: the
-            // backend sends these two details for a Shift+F5 stop and for the
-            // debuggee exiting (`karet_session::dap`), and free text only when a
-            // session could not be started. Only the last of those is a failure —
-            // tiering all three that way would leave a permanent red card behind
-            // every ordinary debug run.
             DebugSessionState::Idle if !detail.is_empty() => {
-                let ended_normally = matches!(detail.as_str(), "stopped" | "session ended");
                 self.notify_tagged(
-                    if ended_normally {
-                        Report::Outcome
-                    } else {
-                        Report::Failure
-                    },
+                    Report::from_severity(severity),
                     NotificationKind::System,
                     format!("debug: {detail}"),
                     Some(Self::DEBUG_SESSION_TAG.to_string()),
                 );
             },
-            DebugSessionState::Running if was == DebugSessionState::Starting => {
+            // The adapter can also report `Running` with no detail (it resumed),
+            // and `forward_events` is live before `start` returns, so that can
+            // land while the session is still starting. Naming the configuration
+            // is the point of this card, so an empty detail is not one.
+            DebugSessionState::Running
+                if was == DebugSessionState::Starting && !detail.is_empty() =>
+            {
                 self.notify_tagged(
-                    Report::Outcome,
+                    Report::from_severity(severity),
                     NotificationKind::System,
                     format!("debugging {detail}"),
                     Some(Self::DEBUG_SESSION_TAG.to_string()),

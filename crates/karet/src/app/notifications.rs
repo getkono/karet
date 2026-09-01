@@ -111,6 +111,14 @@ impl App {
     pub(in crate::app) const DEBUG_SESSION_TAG: &'static str = "debug.session";
     /// The notification tag a running notebook kernel shares.
     pub(in crate::app) const NOTEBOOK_KERNEL_TAG: &'static str = "notebook.kernel";
+    /// The notification tag a notebook kernel's failures share.
+    ///
+    /// Separate from [`Self::NOTEBOOK_KERNEL_TAG`] so the two never displace each
+    /// other: progress must not bury a failure, and a failure must not be erased
+    /// by the next tick. Sharing one tag among failures still collapses a cell
+    /// re-run that keeps raising, which would otherwise stack a permanent card
+    /// per attempt and push the older ones off the visible stack.
+    pub(in crate::app) const NOTEBOOK_KERNEL_FAILURE_TAG: &'static str = "notebook.kernel.failure";
     /// The notification tag a document save reports under.
     pub(in crate::app) const SAVED_TAG: &'static str = "io.saved";
     /// The notification tag a clipboard copy reports under.

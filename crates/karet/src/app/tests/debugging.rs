@@ -130,11 +130,19 @@ fn acknowledgements_replace_and_late_verifications_merge() {
 fn the_status_segment_tracks_the_lifecycle() {
     let mut app = app();
     assert_eq!(app.debug_status_segment(), None);
-    app.on_debug_state(DebugSessionState::Starting, "Run".to_owned());
+    app.on_debug_state(
+        DebugSessionState::Starting,
+        Severity::Information,
+        "Run".to_owned(),
+    );
     assert_eq!(app.debug_status_segment(), Some("⏳ debug".to_owned()));
-    app.on_debug_state(DebugSessionState::Stopped, "breakpoint".to_owned());
+    app.on_debug_state(
+        DebugSessionState::Stopped,
+        Severity::Information,
+        "breakpoint".to_owned(),
+    );
     assert_eq!(app.debug_status_segment(), Some("⏸ breakpoint".to_owned()));
-    app.on_debug_state(DebugSessionState::Idle, String::new());
+    app.on_debug_state(DebugSessionState::Idle, Severity::Hint, String::new());
     assert_eq!(app.debug_status_segment(), None);
 }
 
@@ -165,7 +173,11 @@ fn the_inspection_waterfall_is_lazy_and_stale_answers_drop() {
     let mut app = app();
     app.backend = Some(backend.clone());
     // A stop populates: the panel clears and the stack is requested.
-    app.on_debug_state(DebugSessionState::Stopped, "breakpoint".to_owned());
+    app.on_debug_state(
+        DebugSessionState::Stopped,
+        Severity::Information,
+        "breakpoint".to_owned(),
+    );
     app.on_debug_stopped("breakpoint", Some(PathBuf::from("/w/main.rs")), Some(3));
     let stack_id = backend
         .sent
@@ -257,7 +269,11 @@ fn the_inspection_waterfall_is_lazy_and_stale_answers_drop() {
         }
     )));
     // Resuming clears every per-stop artifact.
-    app.on_debug_state(DebugSessionState::Running, String::new());
+    app.on_debug_state(
+        DebugSessionState::Running,
+        Severity::Information,
+        String::new(),
+    );
     assert!(app.debug_panel.stack.is_empty());
     assert!(app.debug_panel.variables.is_empty());
     assert!(app.debug_panel.pending.is_empty());
@@ -325,12 +341,11 @@ fn rebuild_rows_sections_and_console_tail() {
 
 #[test]
 fn ending_a_debug_session_the_user_asked_to_end_is_not_an_error() {
-    // `stop` and a debuggee exiting are the two normal ends, and the backend
-    // words them exactly this way. Tiering them as failures left a permanent red
-    // card behind every ordinary debug run.
+    // `stop` and a debuggee exiting are the two normal ends. Tiering them as
+    // failures left a permanent red card behind every ordinary debug run.
     for detail in ["stopped", "session ended"] {
         let mut ended = app();
-        ended.on_debug_state(DebugSessionState::Idle, detail.to_string());
+        ended.on_debug_state(DebugSessionState::Idle, Severity::Hint, detail.to_string());
         let (severity, title) = last_report(&ended).expect("the end is reported");
         assert_eq!(severity, Severity::Hint, "{title}");
         assert!(
@@ -347,11 +362,49 @@ fn ending_a_debug_session_the_user_asked_to_end_is_not_an_error() {
     let mut failed = app();
     failed.on_debug_state(
         DebugSessionState::Idle,
+        Severity::Error,
         "no adapter for this language".to_string(),
     );
     let (severity, title) = last_report(&failed).expect("the failure is reported");
     assert_eq!(severity, Severity::Error, "{title}");
     assert!(failed.notifications.active()[0].timeout.is_none());
+}
+
+#[test]
+fn the_debug_tier_follows_the_severity_rather_than_the_detail_text() {
+    // Both directions of the inverse, which is what the old rule could not
+    // express: it read the detail and treated exactly "stopped" and
+    // "session ended" as normal, so any reworded end became a permanent red card
+    // and any failure worded "stopped" became a teal success.
+    let mut worded_freely = app();
+    worded_freely.on_debug_state(
+        DebugSessionState::Idle,
+        Severity::Hint,
+        "detached from the debuggee".to_string(),
+    );
+    let (severity, title) = last_report(&worded_freely).expect("the end is reported");
+    assert_eq!(
+        severity,
+        Severity::Hint,
+        "an end the backend words differently is still an end: {title}"
+    );
+
+    let mut failed = app();
+    failed.on_debug_state(
+        DebugSessionState::Idle,
+        Severity::Error,
+        "stopped".to_string(),
+    );
+    let (severity, title) = last_report(&failed).expect("the failure is reported");
+    assert_eq!(
+        severity,
+        Severity::Error,
+        "a failure is a failure however it is worded: {title}"
+    );
+    assert!(
+        failed.notifications.active()[0].timeout.is_none(),
+        "and it waits to be dismissed"
+    );
 }
 
 #[test]
@@ -393,31 +446,113 @@ fn saving_many_documents_leaves_one_card_rather_than_one_per_file() {
     assert_eq!(saved, 1);
 }
 
-#[test]
-fn a_notebook_cell_failure_is_not_painted_as_a_success() {
-    // The event carries no severity, so the tier is read off the producer's
-    // wording — a run that failed must not come out teal like one that worked.
-    let mut failed = app();
-    failed.on_backend_event(
+fn kernel_status(app: &mut App, severity: Severity, text: &str) {
+    app.on_backend_event(
         None,
         SessionEvent::NotebookKernelStatus {
             path: PathBuf::from("nb.ipynb"),
-            text: "cell failed: boom".to_string(),
+            severity,
+            text: text.to_string(),
         },
     );
+}
+
+#[test]
+fn a_notebook_cell_failure_is_not_painted_as_a_success() {
+    // A run that failed must not come out teal like one that worked.
+    let mut failed = app();
+    kernel_status(&mut failed, Severity::Error, "cell failed: boom");
     let (severity, title) = last_report(&failed).expect("the failure is reported");
     assert_eq!(severity, Severity::Error, "{title}");
 
     // Progress under the same feed stays transient and collapses to one card.
     let mut running = app();
     for n in 1..=4 {
-        running.on_backend_event(
-            None,
-            SessionEvent::NotebookKernelStatus {
-                path: PathBuf::from("nb.ipynb"),
-                text: format!("running cell {n}/4"),
-            },
+        kernel_status(
+            &mut running,
+            Severity::Information,
+            &format!("running cell {n}/4"),
         );
     }
     assert_eq!(running.notifications.active().len(), 1);
+}
+
+#[test]
+fn a_cell_that_raised_survives_the_progress_that_follows_it() {
+    // The ordinary failure — a cell raising — is worded "stopped at cell 3
+    // (error)", which contains no "failed". Under the old rule that read the
+    // producer's prose it came out as blue progress *sharing the progress tag*,
+    // so the next cell's card silently replaced the only report that the run
+    // broke. The severity now separates them, and only progress is tagged.
+    let mut app = app();
+    kernel_status(&mut app, Severity::Information, "running cell 3/4");
+    kernel_status(&mut app, Severity::Error, "stopped at cell 3 (error)");
+
+    let (severity, title) = last_report(&app).expect("the failure is reported");
+    assert_eq!(severity, Severity::Error, "{title}");
+    assert!(
+        app.notifications.active()[0].timeout.is_none(),
+        "a broken run waits to be dismissed"
+    );
+
+    // The run is over, so the progress card it was running under goes with it.
+    assert!(
+        !app.notifications
+            .active()
+            .iter()
+            .any(|note| note.title.contains("running cell")),
+        "a stale progress card outlived the run it belonged to"
+    );
+
+    // A later tick on the same feed must not bury it.
+    kernel_status(&mut app, Severity::Information, "running cell 4/4");
+    let failure = app
+        .notifications
+        .active()
+        .iter()
+        .find(|note| note.title.contains("stopped at cell 3"))
+        .map(|note| note.severity);
+    assert_eq!(
+        failure,
+        Some(Severity::Error),
+        "progress replaced the failure: {:?}",
+        app.notifications
+            .active()
+            .iter()
+            .map(|note| note.title.clone())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn re_running_a_cell_that_keeps_raising_keeps_one_failure_card() {
+    // Failures wait to be dismissed, so an untagged one would stack a permanent
+    // card per attempt. The center holds five and evicts only *transient* cards,
+    // so past five the older failures fall off the rendered stack while staying
+    // in the list — visible nowhere, dismissable only by clearing everything.
+    let mut app = app();
+    for _ in 0..6 {
+        kernel_status(&mut app, Severity::Information, "running cell 3/4");
+        kernel_status(&mut app, Severity::Error, "stopped at cell 3 (error)");
+    }
+    let failures = app
+        .notifications
+        .active()
+        .iter()
+        .filter(|note| note.title.contains("stopped at cell 3"))
+        .count();
+    assert_eq!(
+        failures, 1,
+        "one card per failing cell, not one per attempt"
+    );
+    assert_eq!(
+        app.notifications.active().len(),
+        1,
+        "and nothing else is left over: {:?}",
+        app.notifications
+            .active()
+            .iter()
+            .map(|note| note.title.clone())
+            .collect::<Vec<_>>()
+    );
 }

@@ -134,7 +134,11 @@ impl App {
             } => self.on_completions(id, doc, version, items),
             SessionEvent::HoverResult { hover } => self.on_hover_result(id, hover),
             SessionEvent::WakatimeStatus { text } => self.wakatime_status = Some(text),
-            SessionEvent::DebugState { state, detail } => self.on_debug_state(state, detail),
+            SessionEvent::DebugState {
+                state,
+                severity,
+                detail,
+            } => self.on_debug_state(state, severity, detail),
             SessionEvent::DebugStopped {
                 reason,
                 thread: _,
@@ -153,27 +157,28 @@ impl App {
                 variables,
             } => self.on_debug_variables(id, reference, variables),
             SessionEvent::DebugEvaluated { result, .. } => self.on_debug_evaluated(id, result),
-            // The event carries no severity, so the tier is read off the
-            // producer's own vocabulary: `karet_session::notebook_kernel` words
-            // every bad outcome as "… failed" and everything else as progress
-            // ("running cell 3/30"). Progress is tagged and self-expiring so a
-            // thirty-cell run rewrites one card instead of stacking thirty; a
-            // failure is untagged so the next cell's progress cannot bury it.
-            SessionEvent::NotebookKernelStatus { text, .. } => {
-                if text.contains("failed") {
-                    self.notify(
-                        Report::Failure,
-                        NotificationKind::System,
-                        format!("notebook: {text}"),
-                    );
+            SessionEvent::NotebookKernelStatus { severity, text, .. } => {
+                let tier = Report::from_severity(severity);
+                // Two feeds, two tags. Progress shares one so a thirty-cell run
+                // rewrites a single card instead of stacking thirty; anything
+                // that waits to be dismissed gets the other, so the next tick
+                // cannot erase it and a re-run that keeps raising still collapses
+                // to one card. The split is on whether the card expires, not on
+                // the tier, because an alert is persistent too.
+                let ends_the_run = tier.timeout().is_none();
+                let tag = if ends_the_run {
+                    // The run is over; a "running cell 3/4" left beside it is stale.
+                    self.notifications.dismiss_tagged(Self::NOTEBOOK_KERNEL_TAG);
+                    Self::NOTEBOOK_KERNEL_FAILURE_TAG
                 } else {
-                    self.notify_tagged(
-                        Report::Activity,
-                        NotificationKind::System,
-                        format!("notebook: {text}"),
-                        Some(Self::NOTEBOOK_KERNEL_TAG.to_string()),
-                    );
-                }
+                    Self::NOTEBOOK_KERNEL_TAG
+                };
+                self.notify_tagged(
+                    tier,
+                    NotificationKind::System,
+                    format!("notebook: {text}"),
+                    Some(tag.to_string()),
+                );
             },
             SessionEvent::NotebookCellDone { .. } => {},
             SessionEvent::ManifestHints {

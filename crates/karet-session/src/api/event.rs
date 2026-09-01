@@ -746,8 +746,18 @@ pub enum Event {
     DebugState {
         /// The new state.
         state: DebugSessionState,
+        /// How the transition should be reported: [`Severity::Error`] for a
+        /// session that could not start, [`Severity::Hint`] for a session that
+        /// began running or ended normally, and [`Severity::Information`] for the
+        /// movements in between — launching, stopping at a breakpoint, resuming.
+        ///
+        /// The presentation tiers off this rather than off the wording of
+        /// `detail`, so rewording a message cannot silently change how loud it is.
+        /// [`Severity::Warning`] is unused here on purpose — a consumer is free to
+        /// treat it as something that waits to be dismissed.
+        severity: Severity,
         /// A short human-readable detail (configuration name, stop reason,
-        /// error text) for the status line.
+        /// error text), for the status segment and the transition's own report.
         detail: String,
     },
     /// The debuggee stopped; inspection is now valid (unsolicited).
@@ -799,11 +809,18 @@ pub enum Event {
         /// Non-zero when the result has fetchable children.
         reference: i64,
     },
-    /// The notebook kernel's state, for the status line (unsolicited:
-    /// starting/ready/running/interrupted/failed text).
+    /// The notebook kernel's state (unsolicited: starting, ready, running,
+    /// interrupted, or failed).
     NotebookKernelStatus {
         /// The notebook whose kernel this is.
         path: std::path::PathBuf,
+        /// How the state should be reported: [`Severity::Error`] for a kernel or
+        /// cell that failed, [`Severity::Information`] for progress.
+        ///
+        /// The presentation tiers off this rather than off the wording of `text`:
+        /// a failing cell is worded `stopped at cell 3 (error)`, which no rule
+        /// over the prose reliably separates from progress.
+        severity: Severity,
         /// A short human-readable status.
         text: String,
     },
