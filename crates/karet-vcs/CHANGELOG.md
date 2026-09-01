@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1](https://github.com/getkono/karet/compare/karet-vcs-v0.6.0...karet-vcs-v0.6.1) - 2026-09-01
+
+### Added
+
+- *(vcs)* let a running commit be cancelled
+- *(vcs)* stream a commit's hook output line by line
+- *(vcs)* keep binary payloads out of the staged diff
+
+### Fixed
+
+- *(scm)* close the defects an independent review of the branch found
+
 ## [0.6.0](https://github.com/getkono/karet/compare/karet-vcs-v0.5.0...karet-vcs-v0.6.0) - 2026-08-29
 
 ### Added
