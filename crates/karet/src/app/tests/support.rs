@@ -53,6 +53,26 @@ pub(crate) fn app() -> App {
     )
 }
 
+/// The newest active notification's title, the successor to the old status line.
+///
+/// `NotificationCenter::active` is newest-first, so this is whatever the action
+/// under test just said.
+pub(crate) fn last_message(app: &App) -> Option<String> {
+    app.notifications
+        .active()
+        .first()
+        .map(|note| note.title.clone())
+}
+
+/// The newest active notification's severity and title together, for the tests
+/// that care that a refusal is not reported as a success.
+pub(crate) fn last_report(app: &App) -> Option<(Severity, String)> {
+    app.notifications
+        .active()
+        .first()
+        .map(|note| (note.severity, note.title.clone()))
+}
+
 pub(crate) fn test_dir(name: &str) -> PathBuf {
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

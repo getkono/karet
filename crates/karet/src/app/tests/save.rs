@@ -52,7 +52,7 @@ fn duplicate_save_command_is_debounced_while_in_flight() {
         .unwrap_or_default();
     assert_eq!(sent_saves, 1, "only one save may be in flight per document");
     assert_eq!(
-        app.status.as_deref(),
+        last_message(&app).as_deref(),
         Some("save already in progress"),
         "the second shortcut is ignored because the first save is still pending"
     );
@@ -337,8 +337,8 @@ fn sidebar_header_hover_tracks_header_only() {
 #[test]
 fn notify_makes_errors_persistent_and_info_transient() {
     let mut app = app();
-    app.notify(Severity::Error, NotificationKind::Io, "save failed");
-    app.notify(Severity::Information, NotificationKind::Vcs, "committed");
+    app.notify(Report::Failure, NotificationKind::Io, "save failed");
+    app.notify(Report::Outcome, NotificationKind::Vcs, "committed");
     let active = app.notifications.active();
     assert_eq!(active.len(), 2);
     // Newest (info) is first; it auto-expires. The error persists.
@@ -349,7 +349,7 @@ fn notify_makes_errors_persistent_and_info_transient() {
 #[test]
 fn esc_dismisses_a_toast_before_normal_handling() {
     let mut app = app();
-    app.notify(Severity::Error, NotificationKind::Io, "boom");
+    app.notify(Report::Failure, NotificationKind::Io, "boom");
     assert!(!app.notifications.is_empty());
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()));
     assert!(app.notifications.is_empty());
@@ -423,4 +423,153 @@ fn open_anyway_bypasses_the_guard_and_decodes_in_place() {
     assert!(matches!(app.tabs[0].kind, TabKind::Code { .. }));
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_message_no_longer_takes_the_hint_bar_or_its_click_targets() {
+    // The defect this replaced: a message rendered into the hint region, which
+    // skipped the pass that records `status_hits` — so while one showed, the bar
+    // named no shortcuts and every shortcut on it stopped answering clicks.
+    let mut app = app();
+    let _ = frame(&mut app, 120, 8);
+    let hints_before = app.status_hits.len();
+    assert!(hints_before > 0, "the bar starts with clickable hints");
+
+    app.notify(Report::Failure, NotificationKind::Io, "save failed");
+    let rows = screen(&mut app, 120, 8).join("\n");
+
+    assert_eq!(
+        app.status_hits.len(),
+        hints_before,
+        "the hints and their click targets survive an active notification"
+    );
+    assert!(
+        rows.contains("save failed"),
+        "the message is on screen:\n{rows}"
+    );
+}
+
+#[test]
+fn a_failure_is_painted_in_the_error_role_rather_than_the_status_bar_style() {
+    // The other half of the defect: the status line drew every message in the
+    // bar's own style, so an error was exactly the colour of ordinary chrome.
+    let mut app = app();
+    app.notify(Report::Failure, NotificationKind::Io, "save failed");
+    let error = app.theme.role(ThemeRole::DiagnosticError).to_ratatui();
+    let chrome = app.theme.role(ThemeRole::StatusBarForeground).to_ratatui();
+    assert_ne!(
+        error, chrome,
+        "the roles must differ for this to prove anything"
+    );
+
+    let buffer = frame(&mut app, 120, 8);
+    assert!(
+        buffer.content().iter().any(|cell| cell.fg == error),
+        "the card is painted in the error role"
+    );
+}
+
+#[test]
+fn a_refusal_clears_itself_while_a_failure_waits_to_be_read() {
+    // Lifetime is the axis that separates them: a refusal the user provoked goes
+    // away on its own, a failure stays until it is dismissed.
+    let mut app = app();
+    app.notify(
+        Report::Refusal,
+        NotificationKind::Io,
+        "save: open a text file",
+    );
+    app.notify(Report::Failure, NotificationKind::Io, "save failed");
+
+    let active = app.notifications.active();
+    let refusal = active
+        .iter()
+        .find(|note| note.title.starts_with("save: open"))
+        .expect("the refusal is active");
+    let failure = active
+        .iter()
+        .find(|note| note.title == "save failed")
+        .expect("the failure is active");
+    assert!(refusal.timeout.is_some(), "a refusal expires");
+    assert!(failure.timeout.is_none(), "a failure waits");
+    assert_eq!(refusal.severity, Severity::Warning);
+    assert_eq!(failure.severity, Severity::Error);
+}
+
+#[test]
+fn a_save_batch_card_is_retired_when_the_batch_finishes() {
+    // A progress card carries no timeout, so whatever raises one owes it a
+    // retirement on *every* exit. This is the success exit: the saves land, the
+    // parked close runs, and the card must not outlive the batch.
+    let dir = test_dir("save-batch-card");
+    write_file(&dir, "a.rs", b"fn main() {}\n");
+    let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+    app.backend = Some(Arc::new(RecordingBackend::new()));
+    app.notify_progress(
+        NotificationKind::Io,
+        App::SAVE_BATCH_TAG.to_string(),
+        "saving 1 file(s) before quitting…",
+        None,
+    );
+    assert!(
+        app.notifications
+            .active()
+            .iter()
+            .any(|note| note.tag.as_deref() == Some("save.batch")),
+        "the batch card is up"
+    );
+
+    // Nothing is pending, so the next backend event settles the batch.
+    app.on_backend_event(
+        None,
+        SessionEvent::VcsStatus {
+            staged: Vec::new(),
+            working: Vec::new(),
+        },
+    );
+
+    assert!(
+        !app.notifications
+            .active()
+            .iter()
+            .any(|note| note.tag.as_deref() == Some("save.batch")),
+        "the card is retired once no save is pending"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_dependency_check_card_is_retired_when_the_hints_arrive() {
+    // The hints are the answer to an explicit re-check, so they retire its card.
+    let mut app = app();
+    app.notify_progress(
+        NotificationKind::System,
+        App::DEPS_CHECK_TAG.to_string(),
+        "re-checking dependencies",
+        None,
+    );
+    assert!(
+        app.notifications
+            .active()
+            .iter()
+            .any(|note| note.tag.as_deref() == Some("deps.check")),
+        "the check card is up"
+    );
+
+    app.on_backend_event(
+        None,
+        SessionEvent::ManifestHints {
+            doc: DocumentId(1),
+            version: 1,
+            hints: Vec::new(),
+        },
+    );
+
+    assert!(
+        !app.notifications
+            .active()
+            .iter()
+            .any(|note| note.tag.as_deref() == Some("deps.check")),
+        "the card does not outlive the check it describes"
+    );
 }

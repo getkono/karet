@@ -167,11 +167,14 @@ impl App {
         let reviewed = self.review.toggle(&root, &detail.hash, &path);
         file.reviewed = reviewed;
         let done = files.files.iter().filter(|f| f.reviewed).count();
-        self.status = Some(format!(
+        // Built while the tab is still borrowed, reported once it is not: the
+        // notification needs all of `self`, which the borrow above still holds.
+        let message = format!(
             "{path}: {} ({done}/{} reviewed)",
             if reviewed { "reviewed" } else { "unreviewed" },
             files.files.len()
-        ));
+        );
+        self.notify(Report::Outcome, NotificationKind::Vcs, message);
     }
 }
 

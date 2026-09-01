@@ -98,7 +98,15 @@ impl App {
                 tab.dirty = false;
             }
         }
-        self.status = Some("saved".to_string());
+        // Tagged: a save-all writes one document per event, and auto-save fires
+        // on a timer while the user types. Untagged, either would stack a column
+        // of identical cards over the editor.
+        self.notify_tagged(
+            Report::Outcome,
+            NotificationKind::Io,
+            "saved",
+            Some(Self::SAVED_TAG.to_string()),
+        );
     }
 
     /// Full non-UTF-8 editing isn't supported: the tab requested a document
@@ -123,7 +131,7 @@ impl App {
             }
         }
         self.notify(
-            Severity::Warning,
+            Report::Alert,
             NotificationKind::Io,
             format!("opened {} read-only: not valid UTF-8", path.display()),
         );

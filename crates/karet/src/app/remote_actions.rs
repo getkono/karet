@@ -1,12 +1,24 @@
 use super::*;
 
 impl App {
-    /// Copy `text` to the clipboard, reporting the outcome in the status bar.
+    /// Copy `text` to the clipboard, reporting the outcome either way.
     pub(super) fn copy_to_clipboard(&mut self, text: String, what: &str) {
-        self.status = Some(match self.clipboard.set(&text) {
-            Ok(()) => format!("copied {what}"),
-            Err(e) => format!("copy failed: {e}"),
-        });
+        // Tagged: copying is a reflex, and a second Ctrl+C should update the one
+        // card rather than stack another beneath it.
+        match self.clipboard.set(&text) {
+            Ok(()) => self.notify_tagged(
+                Report::Outcome,
+                NotificationKind::System,
+                format!("copied {what}"),
+                Some(Self::CLIPBOARD_TAG.to_string()),
+            ),
+            Err(e) => self.notify_tagged(
+                Report::Failure,
+                NotificationKind::System,
+                format!("copy failed: {e}"),
+                Some(Self::CLIPBOARD_TAG.to_string()),
+            ),
+        }
     }
 
     /// Copy the active code tab's selection, or its cursor line when nothing is
@@ -19,7 +31,11 @@ impl App {
             if let Some(text) = self.modal_selection_text() {
                 self.copy_to_clipboard(text, "selection");
             } else {
-                self.status = Some("copy: no text selected".to_string());
+                self.notify(
+                    Report::Refusal,
+                    NotificationKind::System,
+                    "copy: no text selected",
+                );
             }
             return;
         }
@@ -51,14 +67,22 @@ impl App {
         };
         match text {
             Some(text) => self.copy_to_clipboard(text, "selection"),
-            None => self.status = Some("copy: open a text file".to_string()),
+            None => self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "copy: open a text file",
+            ),
         }
     }
 
     /// Copy the active file's path (absolute or workspace-relative) to the clipboard.
     pub(super) fn copy_path(&mut self, relative: bool) {
         let Some(path) = self.tabs.get(self.active).and_then(Tab::path) else {
-            self.status = Some("copy path: no file".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "copy path: no file",
+            );
             return;
         };
         let path = if relative {
@@ -78,7 +102,7 @@ impl App {
             .and_then(Tab::path)
             .map(Path::to_path_buf)
         else {
-            self.status = Some("reveal: no file".to_string());
+            self.notify(Report::Refusal, NotificationKind::System, "reveal: no file");
             return;
         };
         self.reveal_in_explorer(&path);
@@ -121,6 +145,9 @@ impl App {
         facts: Result<karet_session::RemoteFacts, String>,
     ) {
         self.remote_facts_pending.remove(&path);
+        // The facts arriving end the "resolving repository remote…" wait, whether
+        // they resolved or failed — the parked actions below report either way.
+        self.notifications.dismiss_tagged(Self::REMOTE_FACTS_TAG);
         let adopted = facts.and_then(|facts| {
             let remote = remote::parse_remote(&facts.origin_url)
                 .ok_or_else(|| format!("unrecognized origin remote URL: {}", facts.origin_url))?;
@@ -161,7 +188,11 @@ impl App {
             .and_then(Tab::path)
             .map(Path::to_path_buf)
         else {
-            self.status = Some("copy link: no file".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "copy link: no file",
+            );
             return;
         };
         // The caret line only anchors a permalink over a code tab (1-based).
@@ -193,13 +224,21 @@ impl App {
                     path: abs,
                     line,
                 });
-            self.status = Some("resolving repository remote…".to_string());
+            self.notify_progress(
+                NotificationKind::Vcs,
+                Self::REMOTE_FACTS_TAG.to_string(),
+                "resolving repository remote…",
+                None,
+            );
             return;
         };
         let facts = match facts {
             Ok(facts) => facts,
             Err(reason) => {
-                self.status = Some(reason.clone());
+                // Copied out before reporting: the notification needs `&mut self`,
+                // which the borrow behind `reason` would otherwise still hold.
+                let reason = reason.clone();
+                self.notify(Report::Failure, NotificationKind::Vcs, reason);
                 return;
             },
         };
@@ -212,7 +251,7 @@ impl App {
                 };
                 self.copy_to_clipboard(url, what);
             },
-            Err(reason) => self.status = Some(reason.clone()),
+            Err(reason) => self.notify(Report::Failure, NotificationKind::Vcs, reason.clone()),
         }
     }
 
@@ -246,7 +285,11 @@ impl App {
     /// tab. `label` names the old side in the tab title.
     pub(super) fn open_changes_with(&mut self, rev: &str, label: &str) {
         let Some((path, live)) = self.active_file_and_text() else {
-            self.status = Some("open changes: no file".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Vcs,
+                "open changes: no file",
+            );
             return;
         };
         let abs = std::path::absolute(&path).unwrap_or_else(|_| path.clone());
@@ -283,7 +326,11 @@ impl App {
     /// diff-target picker, for "Open Changes: With Revision…".
     pub(super) fn open_changes_pick_revision(&mut self) {
         let Some((path, _)) = self.active_file_and_text() else {
-            self.status = Some("open changes: no file".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Vcs,
+                "open changes: no file",
+            );
             return;
         };
         let abs = std::path::absolute(&path).unwrap_or_else(|_| path.clone());
@@ -293,14 +340,22 @@ impl App {
             limit: Self::OPEN_CHANGES_HISTORY_CAP,
         });
         if self.pending_history_picker.is_none() {
-            self.status = Some("open changes: backend is unavailable".to_string());
+            self.notify(
+                Report::Failure,
+                NotificationKind::Vcs,
+                "open changes: backend is unavailable",
+            );
         }
     }
 
     /// Open the With Revision diff-target picker from the backend's file history.
     pub(super) fn apply_history_picker(&mut self, commits: Vec<karet_vcs::Commit>) {
         if commits.is_empty() {
-            self.status = Some("open changes: no commits touch this file".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Vcs,
+                "open changes: no commits touch this file",
+            );
             return;
         }
         let items = commits
@@ -329,11 +384,19 @@ impl App {
         let Some(snapshot) = self.scm.repository.as_ref() else {
             // Fetch the snapshot so a retry (or the SCM panel) has it.
             self.request_repository_snapshot();
-            self.status = Some("open changes: loading branches, try again".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Vcs,
+                "open changes: loading branches, try again",
+            );
             return;
         };
         if snapshot.branches.is_empty() {
-            self.status = Some("open changes: no branches".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Vcs,
+                "open changes: no branches",
+            );
             return;
         }
         let items = snapshot

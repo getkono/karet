@@ -127,11 +127,18 @@ impl NotebookKernels {
                 control.interrupt().await
             }
             .await;
-            let text = match outcome {
-                Ok(()) => "interrupted".to_owned(),
-                Err(error) => format!("interrupt failed: {error}"),
+            let (severity, text) = match outcome {
+                Ok(()) => (Severity::Information, "interrupted".to_owned()),
+                Err(error) => (Severity::Error, format!("interrupt failed: {error}")),
             };
-            let _ = events.send((None, Event::NotebookKernelStatus { path, text }));
+            let _ = events.send((
+                None,
+                Event::NotebookKernelStatus {
+                    path,
+                    severity,
+                    text,
+                },
+            ));
         });
     }
 
@@ -175,11 +182,12 @@ struct KernelTask {
 
 /// The per-kernel task: boot, then drain the job queue sequentially.
 async fn kernel_task(ctx: KernelTask, mut jobs: mpsc::UnboundedReceiver<Job>) {
-    let status = |text: &str| {
+    let status = |severity: Severity, text: &str| {
         let _ = ctx.events.send((
             None,
             Event::NotebookKernelStatus {
                 path: ctx.path.clone(),
+                severity,
                 text: text.to_owned(),
             },
         ));
@@ -223,14 +231,14 @@ async fn kernel_task(ctx: KernelTask, mut jobs: mpsc::UnboundedReceiver<Job>) {
         return;
     };
 
-    status(&format!("starting {}", spec.name));
+    status(Severity::Information, &format!("starting {}", spec.name));
     let Some((mut client, _child, connection_file)) =
         boot(&ctx, spec, &ctx.connection, &notify).await
     else {
-        status("kernel failed to start");
+        status(Severity::Error, "kernel failed to start");
         return;
     };
-    status("ready");
+    status(Severity::Information, "ready");
 
     while let Some(job) = jobs.recv().await {
         match job {
@@ -244,15 +252,15 @@ async fn kernel_task(ctx: KernelTask, mut jobs: mpsc::UnboundedReceiver<Job>) {
                 let _ = client.shutdown().await;
                 mark_stale(&mut notebook);
                 rerender(&ctx, &notebook);
-                status("restarting");
+                status(Severity::Information, "restarting");
                 let Some((fresh, child, file)) = boot(&ctx, spec, &ctx.connection, &notify).await
                 else {
-                    status("kernel failed to restart");
+                    status(Severity::Error, "kernel failed to restart");
                     return;
                 };
                 client = fresh;
                 let _ = (child, file);
-                status("ready");
+                status(Severity::Information, "ready");
             },
         }
     }
@@ -330,6 +338,51 @@ async fn boot(
     Some((client, child, connection_file))
 }
 
+/// A step of a cell run, and how it reports itself.
+///
+/// The severity is the part that matters and the part no wording rule recovers:
+/// a raised cell is worded `stopped at cell 3 (error)`, which contains no
+/// "failed", so a consumer reading the prose tiers the ordinary notebook failure
+/// as progress. Pairing the two here keeps that decision in one place and, since
+/// `run_cells` needs a live kernel, is the only place it can be tested.
+#[derive(Debug, PartialEq, Eq)]
+enum RunStep<'a> {
+    /// About to execute the `nth` of `total` selected cells (both 0-based).
+    Running {
+        /// The 0-based position within this run.
+        nth: usize,
+        /// How many cells this run selected.
+        total: usize,
+    },
+    /// The kernel connection broke; the run cannot continue.
+    Broke(&'a str),
+    /// The cell ran and raised. The ordinary failure.
+    Raised {
+        /// The 0-based position within this run.
+        nth: usize,
+    },
+    /// Every selected cell ran without raising.
+    Finished,
+}
+
+impl RunStep<'_> {
+    /// The severity and text this step reports.
+    fn report(&self) -> (Severity, String) {
+        match *self {
+            Self::Running { nth, total } => (
+                Severity::Information,
+                format!("running cell {}/{total}", nth + 1),
+            ),
+            Self::Broke(error) => (Severity::Error, format!("cell failed: {error}")),
+            Self::Raised { nth } => (
+                Severity::Error,
+                format!("stopped at cell {} (error)", nth + 1),
+            ),
+            Self::Finished => (Severity::Information, "idle".to_owned()),
+        }
+    }
+}
+
 /// Run one cell (`only`) or every code cell, stopping at the first error.
 async fn run_cells(
     client: &mut KernelClient<ZmqTransport>,
@@ -347,25 +400,24 @@ async fn run_cells(
         .map(|(index, _)| index)
         .collect();
     let total = indices.len();
-    for (nth, index) in indices.into_iter().enumerate() {
+    let step = |step: &RunStep| {
+        let (severity, text) = step.report();
         let _ = ctx.events.send((
             None,
             Event::NotebookKernelStatus {
                 path: ctx.path.clone(),
-                text: format!("running cell {}/{total}", nth + 1),
+                severity,
+                text,
             },
         ));
+    };
+    for (nth, index) in indices.into_iter().enumerate() {
+        step(&RunStep::Running { nth, total });
         let source = notebook.cells[index].source.text();
         let outcome = match client.execute(&source).await {
             Ok(outcome) => outcome,
             Err(error) => {
-                let _ = ctx.events.send((
-                    None,
-                    Event::NotebookKernelStatus {
-                        path: ctx.path.clone(),
-                        text: format!("cell failed: {error}"),
-                    },
-                ));
+                step(&RunStep::Broke(&error.to_string()));
                 return;
             },
         };
@@ -383,23 +435,11 @@ async fn run_cells(
             },
         ));
         if errored {
-            let _ = ctx.events.send((
-                None,
-                Event::NotebookKernelStatus {
-                    path: ctx.path.clone(),
-                    text: format!("stopped at cell {} (error)", nth + 1),
-                },
-            ));
+            step(&RunStep::Raised { nth });
             return;
         }
     }
-    let _ = ctx.events.send((
-        None,
-        Event::NotebookKernelStatus {
-            path: ctx.path.clone(),
-            text: "idle".to_owned(),
-        },
-    ));
+    step(&RunStep::Finished);
 }
 
 /// Clear every code cell's outputs and counter (a restarted kernel makes
@@ -429,6 +469,36 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+
+    #[test]
+    fn a_raised_cell_reports_as_an_error_though_its_wording_says_nothing_of_it() {
+        // The regression this pairing exists for. `run_cells` needs a live
+        // kernel, so without lifting the decision out there is nowhere to assert
+        // it: the app-side test supplies the severity it then checks, and would
+        // pass just as happily if this site reported progress.
+        let (severity, text) = RunStep::Raised { nth: 2 }.report();
+        assert_eq!(severity, Severity::Error);
+        assert_eq!(text, "stopped at cell 3 (error)");
+        assert!(
+            !text.contains("failed"),
+            "the wording carries no failure word, which is the whole point: {text}"
+        );
+
+        // The rarer failure -- a broken connection rather than a raise.
+        let (severity, text) = RunStep::Broke("kernel transport error: eof").report();
+        assert_eq!(severity, Severity::Error);
+        assert_eq!(text, "cell failed: kernel transport error: eof");
+
+        // Progress and a clean end are not failures, so they expire on their own.
+        assert_eq!(
+            RunStep::Running { nth: 0, total: 30 }.report(),
+            (Severity::Information, "running cell 1/30".to_owned())
+        );
+        assert_eq!(
+            RunStep::Finished.report(),
+            (Severity::Information, "idle".to_owned())
+        );
+    }
 
     #[tokio::test]
     async fn run_without_an_installed_kernel_diagnoses() {

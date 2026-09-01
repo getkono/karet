@@ -246,7 +246,11 @@ impl App {
         let submission = match self.github.active_page() {
             Some(GithubViewState::NewIssue { form, .. }) => {
                 if form.title.trim().is_empty() {
-                    self.status = Some("issue title is required".to_string());
+                    self.notify(
+                        Report::Refusal,
+                        NotificationKind::System,
+                        "issue title is required",
+                    );
                     return;
                 }
                 Submission::Issue(GithubNewIssue {
@@ -263,8 +267,11 @@ impl App {
                     || form.head.trim().is_empty()
                     || form.base.trim().is_empty()
                 {
-                    self.status =
-                        Some("pull request title, head, and base are required".to_string());
+                    self.notify(
+                        Report::Refusal,
+                        NotificationKind::System,
+                        "pull request title, head, and base are required",
+                    );
                     return;
                 }
                 Submission::PullRequest(GithubNewPullRequest {

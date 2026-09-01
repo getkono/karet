@@ -61,7 +61,7 @@ fn the_command_without_a_code_file_explains_itself_and_sends_nothing() {
 
     assert!(definition_requests(&backend).is_empty());
     assert_eq!(
-        app.status.as_deref(),
+        last_message(&app).as_deref(),
         Some("go to definition: open a code file first")
     );
 }
@@ -100,10 +100,10 @@ fn an_empty_answer_reports_why_and_leaves_the_caret_alone() {
     app.on_backend_event(Some(id), SessionEvent::Definitions { locations: vec![] });
 
     assert_eq!(app.tabs[app.active].editor.cursor(), LineCol::new(0, 2));
-    // No server is attached in a test app, so the status says so rather than
+    // No server is attached in a test app, so the refusal says so rather than
     // claiming the symbol has no definition.
     assert_eq!(
-        app.status.as_deref(),
+        last_message(&app).as_deref(),
         Some("no language server for this file")
     );
 }
@@ -261,7 +261,7 @@ fn going_back_returns_to_the_position_the_jump_started_from() {
     assert_eq!(app.tabs[app.active].editor.cursor(), LineCol::new(0, 1));
     // The stack is spent, so a second Go Back says so rather than bouncing.
     app.dispatch(Command::JumpBack);
-    assert_eq!(app.status.as_deref(), Some("nothing to go back to"));
+    assert_eq!(last_message(&app).as_deref(), Some("nothing to go back to"));
 }
 
 #[test]
@@ -274,7 +274,7 @@ fn going_back_skips_an_origin_whose_file_is_gone() {
     let _ = std::fs::remove_file(&origin);
 
     app.dispatch(Command::JumpBack);
-    assert_eq!(app.status.as_deref(), Some("nothing to go back to"));
+    assert_eq!(last_message(&app).as_deref(), Some("nothing to go back to"));
 }
 
 #[test]

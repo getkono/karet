@@ -474,7 +474,7 @@ fn permanent_commit_input_focuses_even_before_changes_are_staged() {
         .edit
         .set_cursor(&app.commit_input.text, app.commit_input.text.len(), false);
     app.commit_submit();
-    assert!(app.status.is_some());
+    assert!(last_message(&app).is_some());
     assert_eq!(app.commit_input.text, "draft");
 }
 

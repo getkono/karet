@@ -85,13 +85,13 @@ fn copy_reports_status() {
     app.focus = Focus::Editor;
     app.dispatch(Command::SelectRight);
     app.dispatch(Command::Copy);
-    assert_eq!(app.status.as_deref(), Some("copied selection"));
+    assert_eq!(last_message(&app).as_deref(), Some("copied selection"));
 }
 
 #[test]
 fn right_clicking_an_error_toast_copies_it_without_dismissing() {
     let mut app = app();
-    app.notify(Severity::Error, NotificationKind::Lsp, "server failed");
+    app.notify(Report::Failure, NotificationKind::Lsp, "server failed");
     let id = app.notifications.active()[0].id;
     app.toast_hits = vec![ToastHit {
         rect: Rect::new(5, 3, 20, 4),
@@ -104,8 +104,13 @@ fn right_clicking_an_error_toast_copies_it_without_dismissing() {
         row: 4,
         modifiers: KeyModifiers::NONE,
     }));
-    assert_eq!(app.status.as_deref(), Some("copied error"));
-    assert_eq!(app.notifications.active()[0].id, id);
+    assert_eq!(last_message(&app).as_deref(), Some("copied error"));
+    // The copy confirms with a card of its own, so the error is no longer newest
+    // — but it is still there, which is what "without dismissing" means.
+    assert!(
+        app.notifications.active().iter().any(|note| note.id == id),
+        "the error survives the copy"
+    );
 }
 
 #[test]

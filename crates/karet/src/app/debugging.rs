@@ -22,7 +22,11 @@ impl App {
                 });
             },
             DebugSessionState::Starting | DebugSessionState::Running => {
-                self.status = Some("debug session already running (Shift+F5 stops)".to_owned());
+                self.notify(
+                    Report::Refusal,
+                    NotificationKind::System,
+                    "debug session already running (Shift+F5 stops)",
+                );
             },
             // Non-exhaustive: anything newer behaves like running.
             _ => {},
@@ -34,7 +38,11 @@ impl App {
         if self.debug_state == DebugSessionState::Stopped {
             self.debug_send(command);
         } else {
-            self.status = Some("the debuggee is not stopped".to_owned());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "the debuggee is not stopped",
+            );
         }
     }
 
@@ -53,7 +61,11 @@ impl App {
             let path = tab.path()?.to_path_buf();
             Some((path, tab.editor.cursor().line))
         }) else {
-            self.status = Some("breakpoints need a file tab".to_owned());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "breakpoints need a file tab",
+            );
             return;
         };
         self.debug_toggle_breakpoint_at(path, line);
@@ -74,7 +86,12 @@ impl App {
     }
 
     /// `Event::DebugState`: mirror the lifecycle and surface transitions.
-    pub(super) fn on_debug_state(&mut self, state: DebugSessionState, detail: String) {
+    pub(super) fn on_debug_state(
+        &mut self,
+        state: DebugSessionState,
+        severity: Severity,
+        detail: String,
+    ) {
         let was = self.debug_state;
         self.debug_state = state;
         // Leaving the stopped state invalidates every inspection artifact.
@@ -82,12 +99,33 @@ impl App {
             self.debug_stopped = None;
             self.debug_panel.clear_inspection(self.debug_output.len());
         }
+        // The backend states how loud each transition is, so a failed start is a
+        // failure and every ordinary end is an outcome without anyone reading the
+        // detail's wording. Idle with no detail is the resting state, not an
+        // event, so it stays silent; a step within a running session reports
+        // through `DebugStopped` instead.
         match state {
             DebugSessionState::Idle if !detail.is_empty() => {
-                self.status = Some(format!("debug: {detail}"));
+                self.notify_tagged(
+                    Report::from_severity(severity),
+                    NotificationKind::System,
+                    format!("debug: {detail}"),
+                    Some(Self::DEBUG_SESSION_TAG.to_string()),
+                );
             },
-            DebugSessionState::Running if was == DebugSessionState::Starting => {
-                self.status = Some(format!("debugging {detail}"));
+            // The adapter can also report `Running` with no detail (it resumed),
+            // and `forward_events` is live before `start` returns, so that can
+            // land while the session is still starting. Naming the configuration
+            // is the point of this card, so an empty detail is not one.
+            DebugSessionState::Running
+                if was == DebugSessionState::Starting && !detail.is_empty() =>
+            {
+                self.notify_tagged(
+                    Report::from_severity(severity),
+                    NotificationKind::System,
+                    format!("debugging {detail}"),
+                    Some(Self::DEBUG_SESSION_TAG.to_string()),
+                );
             },
             _ => {},
         }
@@ -102,7 +140,14 @@ impl App {
         path: Option<PathBuf>,
         line: Option<u32>,
     ) {
-        self.status = Some(format!("stopped: {reason}"));
+        // Tagged: `reason` is "step" for every stepped line, so an untagged card
+        // would stack one per keypress while the user walks through a function.
+        self.notify_tagged(
+            Report::Outcome,
+            NotificationKind::System,
+            format!("stopped: {reason}"),
+            Some(Self::DEBUG_SESSION_TAG.to_string()),
+        );
         self.debug_panel.clear_inspection(self.debug_output.len());
         self.debug_stopped = path.clone().zip(line);
         if let (Some(path), Some(line)) = (path, line) {
@@ -237,7 +282,11 @@ impl App {
     /// Open the evaluate prompt (palette: Debug: Evaluate Expression).
     pub(super) fn debug_evaluate_prompt(&mut self) {
         if self.debug_state == DebugSessionState::Idle {
-            self.status = Some("no debug session".to_owned());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "no debug session",
+            );
             return;
         }
         self.overlay = Some(crate::overlay::Overlay::text(
@@ -335,7 +384,11 @@ impl App {
                 })
                 .map(std::path::Path::to_path_buf)
         }) else {
-            self.status = Some("open a notebook (.ipynb) first".to_owned());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "open a notebook (.ipynb) first",
+            );
             return;
         };
         self.debug_send(SessionCommand::NotebookRunAll { path });

@@ -148,7 +148,7 @@ impl App {
                     Err(e) => {
                         self.explorer.restore_edit(&pending);
                         self.notify(
-                            Severity::Error,
+                            Report::Failure,
                             NotificationKind::Io,
                             format!("create failed: {e}"),
                         );
@@ -164,7 +164,7 @@ impl App {
                 Err(e) => {
                     self.explorer.restore_edit(&pending);
                     self.notify(
-                        Severity::Error,
+                        Report::Failure,
                         NotificationKind::Io,
                         format!("rename failed: {e}"),
                     );
@@ -190,7 +190,11 @@ impl App {
         self.explorer.ensure_built(&self.root);
         let paths = self.explorer_selected_paths();
         if paths.is_empty() {
-            self.status = Some("explorer: select a file first".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Io,
+                "explorer: select a file first",
+            );
             return;
         }
         let count = paths.len();
@@ -199,19 +203,27 @@ impl App {
             ExplorerFileOp::Copy => "copied",
             ExplorerFileOp::Cut => "cut",
         };
-        self.status = Some(format!("{verb} {count} explorer item(s)"));
+        self.notify(
+            Report::Outcome,
+            NotificationKind::Io,
+            format!("{verb} {count} explorer item(s)"),
+        );
     }
 
     /// Paste the internal explorer file clipboard into the selected destination.
     pub(super) fn explorer_paste_files(&mut self) {
         let Some(clipboard) = self.explorer_clipboard.clone() else {
-            self.status = Some("paste: no explorer files".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Io,
+                "paste: no explorer files",
+            );
             return;
         };
         let dest_dir = self.explorer_paste_destination();
         if let Err(e) = std::fs::create_dir_all(&dest_dir) {
             self.notify(
-                Severity::Error,
+                Report::Failure,
                 NotificationKind::Io,
                 format!("paste failed: {e}"),
             );
@@ -281,19 +293,29 @@ impl App {
             }
         }
 
-        if let Some(message) = first_error {
-            self.notify(Severity::Error, NotificationKind::Io, message);
-        }
-
-        self.status = if pasted > 0 && failed > 0 {
-            Some(format!("pasted {pasted} item(s), {failed} failed"))
+        // A partial paste is a failure the user has to look at — some of what they
+        // asked for is not there — so only a clean paste reports as an outcome.
+        let (tier, message) = if pasted > 0 && failed > 0 {
+            (
+                Report::Failure,
+                format!("pasted {pasted} item(s), {failed} failed"),
+            )
         } else if pasted > 0 {
-            Some(format!("pasted {pasted} item(s)"))
+            (Report::Outcome, format!("pasted {pasted} item(s)"))
         } else if skipped > 0 && failed == 0 {
-            Some("paste: already in target folder".to_string())
+            (
+                Report::Refusal,
+                "paste: already in target folder".to_string(),
+            )
         } else {
-            Some("paste failed".to_string())
+            (Report::Failure, "paste failed".to_string())
         };
+        // One card, not two: the count is the summary and the first error is the
+        // reason, and making the reader dismiss them separately helps nobody.
+        match first_error {
+            Some(reason) => self.notify_detailed(tier, NotificationKind::Io, message, reason),
+            None => self.notify(tier, NotificationKind::Io, message),
+        }
     }
 
     /// The explorer paste target: selected directory, selected file's parent, or root.
@@ -328,7 +350,11 @@ impl App {
     pub(super) fn explorer_duplicate_files(&mut self) {
         let paths = self.explorer_selected_paths();
         if paths.is_empty() {
-            self.status = Some("duplicate: select a file first".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Io,
+                "duplicate: select a file first",
+            );
             return;
         }
         let mut copied = 0usize;
@@ -348,10 +374,14 @@ impl App {
         if copied > 0 {
             self.explorer.rebuild(&self.root);
             self.send_command(SessionCommand::RefreshVcs);
-            self.status = Some(format!("duplicated {copied} item(s)"));
+            self.notify(
+                Report::Outcome,
+                NotificationKind::Io,
+                format!("duplicated {copied} item(s)"),
+            );
         }
         if let Some(message) = first_error {
-            self.notify(Severity::Error, NotificationKind::Io, message);
+            self.notify(Report::Failure, NotificationKind::Io, message);
         }
     }
 
@@ -359,7 +389,11 @@ impl App {
     pub(super) fn explorer_copy_path(&mut self, relative: bool) {
         let paths = self.explorer_selected_paths();
         if paths.is_empty() {
-            self.status = Some("copy path: select a file first".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Io,
+                "copy path: select a file first",
+            );
             return;
         }
         let text = paths
@@ -381,12 +415,16 @@ impl App {
     pub(super) fn explorer_arm_delete(&mut self) {
         let paths = self.explorer_selected_paths();
         if paths.is_empty() {
-            self.status = Some("delete: select a file first".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Io,
+                "delete: select a file first",
+            );
             return;
         }
         if self.has_dirty_tabs_under(&paths) {
             self.notify(
-                Severity::Warning,
+                Report::Refusal,
                 NotificationKind::Io,
                 "delete blocked: save or close dirty files first",
             );
@@ -436,10 +474,14 @@ impl App {
         if deleted > 0 {
             self.explorer.rebuild(&self.root);
             self.send_command(SessionCommand::RefreshVcs);
-            self.status = Some(format!("deleted {deleted} item(s)"));
+            self.notify(
+                Report::Outcome,
+                NotificationKind::Io,
+                format!("deleted {deleted} item(s)"),
+            );
         }
         if let Some(message) = first_error {
-            self.notify(Severity::Error, NotificationKind::Io, message);
+            self.notify(Report::Failure, NotificationKind::Io, message);
         }
     }
 
@@ -596,7 +638,7 @@ impl App {
             // Refuse a disabled row: surface its explanatory note (when it has one)
             // and keep the menu open so another row can be chosen.
             if let Some(note) = entry.note.clone() {
-                self.status = Some(note);
+                self.notify(Report::Refusal, NotificationKind::System, note);
             }
             return;
         }

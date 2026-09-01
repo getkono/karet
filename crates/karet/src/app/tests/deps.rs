@@ -85,7 +85,7 @@ fn update_at_caret_rewrites_only_that_line_s_version() {
         code_tab_text(&app),
         "[dependencies]\nserde = \"1.0.100\"\ntime = \"0.3.55\"\nregex = \"1\"\n"
     );
-    assert_eq!(app.status.as_deref(), Some("time → 0.3.55"));
+    assert_eq!(last_message(&app).as_deref(), Some("time → 0.3.55"));
 }
 
 #[test]
@@ -98,7 +98,7 @@ fn update_at_caret_on_a_current_dependency_says_so() {
 
     assert_eq!(code_tab_text(&app), MANIFEST);
     assert_eq!(
-        app.status.as_deref(),
+        last_message(&app).as_deref(),
         Some("no update available on this line")
     );
 }
@@ -119,7 +119,10 @@ fn update_all_rewrites_every_stale_version_in_one_edit() {
         "[dependencies]\nserde = \"1.0.219\"\ntime = \"0.3.55\"\nregex = \"1\"\n",
         "both spans move, and the later one is not shifted by the earlier"
     );
-    assert_eq!(app.status.as_deref(), Some("updated 2 dependencies"));
+    assert_eq!(
+        last_message(&app).as_deref(),
+        Some("updated 2 dependencies")
+    );
 }
 
 #[test]
@@ -131,7 +134,10 @@ fn update_all_with_nothing_stale_leaves_the_manifest_alone() {
     app.dispatch(Command::DepsUpdateAll);
 
     assert_eq!(code_tab_text(&app), MANIFEST);
-    assert_eq!(app.status.as_deref(), Some("every dependency is current"));
+    assert_eq!(
+        last_message(&app).as_deref(),
+        Some("every dependency is current")
+    );
 }
 
 #[test]
@@ -141,7 +147,7 @@ fn one_stale_dependency_reads_as_singular() {
         LineCol::new(0, 0),
     );
     app.dispatch(Command::DepsUpdateAll);
-    assert_eq!(app.status.as_deref(), Some("updated 1 dependency"));
+    assert_eq!(last_message(&app).as_deref(), Some("updated 1 dependency"));
 }
 
 #[test]
@@ -161,7 +167,7 @@ fn hints_from_a_stale_buffer_version_are_refused() {
 
     assert_eq!(code_tab_text(&app), MANIFEST);
     assert_eq!(
-        app.status.as_deref(),
+        last_message(&app).as_deref(),
         Some("no dependency hints for this tab")
     );
 }

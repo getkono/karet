@@ -6,6 +6,7 @@
 
 use std::collections::HashSet;
 
+use karet_core::NotificationKind;
 use karet_session::api::Command as SessionCommand;
 use karet_session::api::RequestId;
 use karet_session::api::SeamEdgeView;
@@ -19,6 +20,7 @@ use super::Reroot;
 use super::SeamFocus;
 use super::SeamViewState;
 use crate::app::App;
+use crate::app::Report;
 use crate::app::pending::Pending;
 use crate::tab::Tab;
 use crate::tab::TabKind;
@@ -183,17 +185,30 @@ impl App {
     /// Start a sync of the open Seam view.
     fn start_seam_sync(&mut self, mode: SeamSync) {
         let Some(root) = self.seam_view().map(|state| state.root.clone()) else {
-            self.status = Some("seam: open the Seam view first".to_owned());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "seam: open the Seam view first",
+            );
             return;
         };
         if let Some(state) = self.seam_view() {
             state.begin_sync();
         }
-        self.status = Some(match mode {
-            SeamSync::Incremental => "seam: syncing…".to_owned(),
-            SeamSync::Forced => "seam: rebuilding from source…".to_owned(),
-        });
         self.request_seam_index(root, mode);
+        // Only once the request is actually out: the card is retired by the
+        // answering index, which a closed backend will never send.
+        if self.seam_index_req.is_some() {
+            self.notify_progress(
+                NotificationKind::System,
+                Self::SEAM_SYNC_TAG.to_string(),
+                match mode {
+                    SeamSync::Incremental => "seam: syncing…",
+                    SeamSync::Forced => "seam: rebuilding from source…",
+                },
+                None,
+            );
+        }
     }
 
     /// Send the index request and record what the view is waiting on.
@@ -264,11 +279,19 @@ impl App {
     /// reader can hand an agent exactly what they are looking at.
     pub(crate) fn seam_copy_query(&mut self) {
         let Some(query) = self.active_seam().map(|state| state.as_query()) else {
-            self.status = Some("seam: open the Seam view first".to_owned());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "seam: open the Seam view first",
+            );
             return;
         };
         if query.is_empty() {
-            self.status = Some("seam: nothing is narrowed — the query would be empty".to_owned());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "seam: nothing is narrowed — the query would be empty",
+            );
             return;
         }
         self.copy_to_clipboard(query, "seam query");
@@ -277,13 +300,21 @@ impl App {
     /// Offer the configurations this package can be read under.
     pub(crate) fn seam_configuration(&mut self) {
         let Some(state) = self.active_seam() else {
-            self.status = Some("seam: open the Seam view first".to_owned());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "seam: open the Seam view first",
+            );
             return;
         };
         let available = state.summary.available_configurations.clone();
         let active = state.summary.configuration.clone();
         let Some(next) = next_configuration(&available, &active) else {
-            self.status = Some("seam: only one configuration is available".to_owned());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "seam: only one configuration is available",
+            );
             return;
         };
         self.seam_index_req = self.send(SessionCommand::SetSeamConfiguration { name: next });
@@ -295,7 +326,11 @@ impl App {
             .active_seam()
             .and_then(|state| state.selected_id().map(str::to_owned))
         else {
-            self.status = Some("seam: nothing selected".to_owned());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "seam: nothing selected",
+            );
             return;
         };
         self.copy_to_clipboard(id, "node identity");
@@ -377,11 +412,19 @@ impl App {
         // report about what changed, and announcing "0 of 524 files" on open would be
         // noise about work nobody requested.
         if syncing {
-            self.status = Some(match parsed {
-                0 => format!("seam: up to date ({files} files)"),
-                1 => format!("seam: re-read 1 of {files} files"),
-                _ => format!("seam: re-read {parsed} of {files} files"),
-            });
+            self.notify_tagged(
+                Report::Outcome,
+                NotificationKind::System,
+                match parsed {
+                    0 => format!("seam: up to date ({files} files)"),
+                    1 => format!("seam: re-read 1 of {files} files"),
+                    _ => format!("seam: re-read {parsed} of {files} files"),
+                },
+                Some(Self::SEAM_SYNC_TAG.to_string()),
+            );
+        } else {
+            // A first index reports nothing, but it still raised a progress card.
+            self.notifications.dismiss_tagged(Self::SEAM_SYNC_TAG);
         }
     }
 
@@ -390,6 +433,9 @@ impl App {
         if !self.awaiting_seam_index(id) {
             return;
         }
+        // The view owns the failure text; the card only has to stop claiming the
+        // index is still running.
+        self.notifications.dismiss_tagged(Self::SEAM_SYNC_TAG);
         if let Some(state) = self.seam_view() {
             state.fail(message);
         }
@@ -646,7 +692,11 @@ impl App {
         let Some(target) = edge.target.clone() else {
             // An external or unresolved endpoint has nothing in this tree to reroot on,
             // and saying so beats a view that silently does nothing.
-            self.status = Some(format!("seam: {} points outside this package", edge.kind));
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                format!("seam: {} points outside this package", edge.kind),
+            );
             return;
         };
         let from = state.selected_id().unwrap_or_default().to_owned();
@@ -655,7 +705,11 @@ impl App {
         } else {
             // Refusing silently would look like a dropped keypress; the reader is already
             // looking at what the pivot would have shown them.
-            self.status = Some(format!("seam: already scoped to {target}"));
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                format!("seam: already scoped to {target}"),
+            );
         }
     }
 }

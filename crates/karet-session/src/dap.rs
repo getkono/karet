@@ -139,7 +139,11 @@ impl DebugManager {
             );
             return;
         };
-        self.emit_state(DebugSessionState::Starting, &config.name);
+        self.emit_state(
+            DebugSessionState::Starting,
+            Severity::Information,
+            &config.name,
+        );
         let launch = AdapterLaunch {
             spec,
             supervisor: self.supervisor.clone(),
@@ -187,6 +191,7 @@ impl DebugManager {
                         None,
                         Event::DebugState {
                             state: DebugSessionState::Running,
+                            severity: Severity::Hint,
                             detail: config.name.clone(),
                         },
                     ));
@@ -215,6 +220,7 @@ impl DebugManager {
                 None,
                 Event::DebugState {
                     state: DebugSessionState::Idle,
+                    severity: Severity::Hint,
                     detail: "stopped".to_owned(),
                 },
             ));
@@ -423,11 +429,12 @@ impl DebugManager {
         });
     }
 
-    fn emit_state(&self, state: DebugSessionState, detail: &str) {
+    fn emit_state(&self, state: DebugSessionState, severity: Severity, detail: &str) {
         let _ = self.events.send((
             None,
             Event::DebugState {
                 state,
+                severity,
                 detail: detail.to_owned(),
             },
         ));
@@ -461,11 +468,16 @@ pub(crate) enum RunControl {
 }
 
 /// A failed start: back to idle with the error as the detail.
+///
+/// The one debug transition that is a failure. Every other route to `Idle` is an
+/// ordinary end, which is why the severity travels with the event rather than
+/// being inferred downstream from how the detail happens to read.
 fn fail_start(events: &Events, error: &DapError) {
     let _ = events.send((
         None,
         Event::DebugState {
             state: DebugSessionState::Idle,
+            severity: Severity::Error,
             detail: error.to_string(),
         },
     ));
@@ -540,6 +552,7 @@ async fn forward_events(client: Arc<DapClient>, shared: Arc<Shared>, events: Eve
                     None,
                     Event::DebugState {
                         state: DebugSessionState::Stopped,
+                        severity: Severity::Information,
                         detail: reason,
                     },
                 ));
@@ -551,6 +564,7 @@ async fn forward_events(client: Arc<DapClient>, shared: Arc<Shared>, events: Eve
                     None,
                     Event::DebugState {
                         state: DebugSessionState::Running,
+                        severity: Severity::Information,
                         detail: String::new(),
                     },
                 ));
@@ -598,6 +612,7 @@ async fn forward_events(client: Arc<DapClient>, shared: Arc<Shared>, events: Eve
                         None,
                         Event::DebugState {
                             state: DebugSessionState::Idle,
+                            severity: Severity::Hint,
                             detail: "session ended".to_owned(),
                         },
                     ));

@@ -70,7 +70,11 @@ impl App {
     /// spinner for a sub-second round trip is the flicker the UI guidelines warn off.
     pub(crate) fn request_definition(&mut self) {
         let Some((doc, position)) = self.completion_target() else {
-            self.status = Some("go to definition: open a code file first".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Lsp,
+                "go to definition: open a code file first",
+            );
             return;
         };
         let Some(view) = self.tabs.get(self.active).map(|tab| tab.view) else {
@@ -101,7 +105,10 @@ impl App {
             return;
         }
         match locations.split_first() {
-            None => self.status = Some(self.no_definition_reason().to_string()),
+            None => {
+                let reason = self.no_definition_reason().to_string();
+                self.notify(Report::Refusal, NotificationKind::Lsp, reason);
+            },
             // One answer never costs a keystroke to accept.
             Some((only, [])) => {
                 let (path, position) = (only.path.clone(), only.range.start);
@@ -111,7 +118,7 @@ impl App {
         }
     }
 
-    /// Why an empty answer came back, phrased for the status line.
+    /// Why an empty answer came back, phrased for the refusal it becomes.
     ///
     /// A server that is still starting answers instantly with nothing, which would
     /// otherwise read as "this symbol has no definition".
@@ -182,7 +189,11 @@ impl App {
             self.focus_by_file_line(&origin.path, origin.position, true);
             return;
         }
-        self.status = Some("nothing to go back to".to_string());
+        self.notify(
+            Report::Refusal,
+            NotificationKind::Lsp,
+            "nothing to go back to",
+        );
     }
 }
 

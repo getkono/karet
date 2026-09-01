@@ -189,6 +189,9 @@ impl App {
     /// Record that a commit was stopped before it created anything.
     pub(crate) fn commit_console_cancelled(&mut self) {
         self.commit_input.pending = None;
+        // The commit is over, so its card stops claiming one is running. The
+        // console's own title carries "Commit cancelled" from here.
+        self.notifications.dismiss_tagged(Self::VCS_COMMIT_TAG);
         self.commit_console_finished(ConsoleOutcome::Cancelled);
     }
 

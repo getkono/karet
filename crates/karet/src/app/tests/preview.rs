@@ -192,7 +192,10 @@ fn markdown_preview_is_a_no_op_on_a_non_markdown_tab() {
     app.dispatch(Command::MarkdownPreviewSide);
 
     assert!(app.tabs[app.active].markdown_preview.is_none());
-    assert!(app.status.is_some(), "the refusal is surfaced, not silent");
+    assert!(
+        last_message(&app).is_some(),
+        "the refusal is surfaced, not silent"
+    );
 }
 
 #[test]
@@ -319,7 +322,10 @@ fn preview_side_is_a_no_op_on_a_focused_docx_preview() {
     app.dispatch(Command::MarkdownPreviewSide);
 
     assert_eq!(app.layout.pane_count(), 1, "no pane was opened");
-    assert!(app.status.is_some(), "the refusal is surfaced, not silent");
+    assert!(
+        last_message(&app).is_some(),
+        "the refusal is surfaced, not silent"
+    );
 }
 
 /// The unified close guard (#51) protects dirty *documents*; a docx preview has

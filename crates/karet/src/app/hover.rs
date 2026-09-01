@@ -13,7 +13,11 @@ impl App {
     /// composed with the diagnostics under the caret when it arrives.
     pub(super) fn request_hover(&mut self) {
         if !self.settings.editor.hover.enabled {
-            self.status = Some("hover is disabled (editor.hover.enabled)".to_owned());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Lsp,
+                "hover is disabled (editor.hover.enabled)",
+            );
             return;
         }
         let Some((doc, at)) = self.completion_target() else {
@@ -58,7 +62,11 @@ impl App {
                     at: pending.at,
                 });
             },
-            None => self.status = Some("no hover information".to_owned()),
+            None => self.notify(
+                Report::Refusal,
+                NotificationKind::Lsp,
+                "no hover information",
+            ),
         }
     }
 
@@ -97,7 +105,11 @@ impl App {
         let diagnostics = self.docs.diagnostics.get(&doc).unwrap_or(&empty);
         let at_caret = crate::hover::diagnostics_at(diagnostics, at);
         if at_caret.is_empty() {
-            self.status = Some("no diagnostic under the caret".to_owned());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Lsp,
+                "no diagnostic under the caret",
+            );
             return;
         }
         let pretty = self.settings.editor.pretty_errors;

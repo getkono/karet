@@ -52,7 +52,7 @@ pub(super) fn attach_backend(
     // the notification center will render on the first frame.
     for diag in std::mem::take(&mut app.config_diagnostics) {
         app.notify(
-            diag.severity,
+            Report::from_severity(diag.severity),
             NotificationKind::System,
             format!("config: {}", diag.message),
         );
@@ -126,7 +126,7 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
         });
         if graphical_cursor_requested && !app.graphical_cursor_compatible() {
             app.notify(
-                Severity::Error,
+                Report::Failure,
                 NotificationKind::System,
                 "graphical cursor is not compatible with this terminal",
             );

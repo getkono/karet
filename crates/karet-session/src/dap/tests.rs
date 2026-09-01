@@ -186,6 +186,18 @@ async fn the_command_event_contract_round_trips() {
     })
     .await;
     assert_eq!(starting, Some(DebugSessionState::Starting));
+    // A session that reached Running is a start that worked, and the app tiers
+    // that card straight off this severity — nothing downstream re-decides it.
+    let running = wait_for(&mut events_rx, |event| match event {
+        Event::DebugState {
+            state: DebugSessionState::Running,
+            severity,
+            detail,
+        } => Some((*severity, detail.clone())),
+        _ => None,
+    })
+    .await;
+    assert_eq!(running, Some((Severity::Hint, "Run".to_owned())));
     // The fake stops at a breakpoint right after configuration; the stop
     // carries the top frame's location, 0-based.
     let stopped = wait_for(&mut events_rx, |event| match event {
@@ -229,12 +241,46 @@ async fn the_command_event_contract_round_trips() {
     let idle = wait_for(&mut events_rx, |event| match event {
         Event::DebugState {
             state: DebugSessionState::Idle,
+            severity,
             detail,
-        } => Some(detail.clone()),
+        } => Some((*severity, detail.clone())),
         _ => None,
     })
     .await;
-    assert_eq!(idle, Some("stopped".to_owned()));
+    // An end the user asked for is an ordinary outcome, and says so itself. A
+    // consumer that had to read "stopped" to know that would re-tier the moment
+    // this wording changed.
+    assert_eq!(idle, Some((Severity::Hint, "stopped".to_owned())));
+}
+
+/// A connector that never yields a client, so `start` takes the `fail_start` path.
+fn failing_connector() -> Connector {
+    Arc::new(|_launch| Box::pin(async move { Err(DapError::Launch("no such adapter".to_owned())) }))
+}
+
+#[tokio::test]
+async fn a_start_that_fails_is_the_only_debug_transition_reported_as_an_error() {
+    let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+    let mut manager = DebugManager::new(settings_with_config(), None, None, events_tx);
+    manager.set_connector(failing_connector());
+    manager.start(None);
+
+    // Idle is reached by three routes — a failed start, a Shift+F5 stop, and the
+    // debuggee exiting — and only this one is a failure. The severity is what
+    // separates them, since all three land on the same state.
+    let failed = wait_for(&mut events_rx, |event| match event {
+        Event::DebugState {
+            state: DebugSessionState::Idle,
+            severity,
+            detail,
+        } => Some((*severity, detail.clone())),
+        _ => None,
+    })
+    .await;
+    // `Unknown` stands in for "nothing was reported", which fails the assert below.
+    let (severity, detail) = failed.unwrap_or((Severity::Unknown, String::new()));
+    assert_eq!(severity, Severity::Error, "{detail}");
+    assert!(detail.contains("no such adapter"), "{detail}");
 }
 
 #[tokio::test]

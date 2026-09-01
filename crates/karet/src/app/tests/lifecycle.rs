@@ -164,7 +164,7 @@ fn close_tab_unbound_key_cancels_and_keeps_the_tab() {
     assert!(app.pending_close.is_none());
     assert_eq!(app.tabs.len(), 1);
     assert!(matches!(app.tabs[0].kind, TabKind::Code { .. }));
-    assert_eq!(app.status.as_deref(), Some("close cancelled"));
+    assert_eq!(last_message(&app).as_deref(), Some("close cancelled"));
 }
 
 #[test]

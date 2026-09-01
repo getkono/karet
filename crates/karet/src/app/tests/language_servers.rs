@@ -435,7 +435,8 @@ fn language_server_install_progress_stays_in_manager() {
     let mut missing = language_server_status(LanguageServerId::Texlab, "tex", true);
     missing.installed = None;
     app.show_language_server_status(None, vec![missing]);
-    app.status = None;
+    // Drop the cards the setup raised, so what survives below is the install's.
+    app.notifications.dismiss_all();
     app.begin_language_server_install(LanguageServerId::Texlab);
     let request = backend
         .sent
@@ -452,7 +453,16 @@ fn language_server_install_progress_stays_in_manager() {
         },
     );
 
-    assert_eq!(app.status, None);
+    // The bytes reach the manager tab and the one tagged operation card. The
+    // progress event raises no second notification of its own — a card per tick
+    // would bury whatever else the editor is trying to say.
+    let tags: Vec<Option<&str>> = app
+        .notifications
+        .active()
+        .iter()
+        .map(|note| note.tag.as_deref())
+        .collect();
+    assert_eq!(tags, vec![Some("lsp.operation")]);
     assert!(
         screen(&mut app, 100, 18)
             .join("\n")

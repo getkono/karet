@@ -106,7 +106,11 @@ impl App {
         });
         if let Some((base, head)) = range {
             if base.is_empty() || head.is_empty() {
-                self.status = Some("pull request revisions are still loading".to_string());
+                self.notify(
+                    Report::Refusal,
+                    NotificationKind::System,
+                    "pull request revisions are still loading",
+                );
                 return;
             }
             self.open_range(SessionCommand::RangeChanges {
@@ -134,7 +138,11 @@ impl App {
             return;
         };
         if editor == GithubPullRequestEditor::Comment && body.trim().is_empty() {
-            self.status = Some("comment cannot be empty".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "comment cannot be empty",
+            );
             return;
         }
         let command = match editor {
@@ -167,7 +175,11 @@ impl App {
             _ => None,
         });
         let Some((number, head_sha)) = values else {
-            self.status = Some("this pull request is not ready to merge".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "this pull request is not ready to merge",
+            );
             return;
         };
         let request = self.send(SessionCommand::GithubMergePullRequest { number, head_sha });
@@ -191,7 +203,11 @@ impl App {
             _ => None,
         });
         let Some((node_id, number, draft)) = values else {
-            self.status = Some("pull request readiness cannot be changed".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "pull request readiness cannot be changed",
+            );
             return;
         };
         let request = self.send(SessionCommand::GithubSetPullRequestDraft {
@@ -338,9 +354,11 @@ impl App {
         };
         if let Err(error) = result {
             self.copy_to_clipboard(url.to_string(), "check link");
-            self.status = Some(format!(
-                "could not open the check link ({error}); copied it instead"
-            ));
+            self.notify(
+                Report::Failure,
+                NotificationKind::System,
+                format!("could not open the check link ({error}); copied it instead"),
+            );
         }
     }
 }

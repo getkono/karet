@@ -143,7 +143,11 @@ impl App {
             return;
         };
         if !can_write {
-            self.status = Some("GitHub sign-in is required to create items".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "GitHub sign-in is required to create items",
+            );
             return;
         }
         match section {
@@ -155,7 +159,11 @@ impl App {
                 self.push_github_page(github_new_pull_request(repository));
             },
             GithubSection::Actions => {
-                self.status = Some("workflow dispatch is not available in this build".to_string());
+                self.notify(
+                    Report::Refusal,
+                    NotificationKind::System,
+                    "workflow dispatch is not available in this build",
+                );
             },
         }
     }

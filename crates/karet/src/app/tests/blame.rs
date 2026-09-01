@@ -8,7 +8,7 @@ fn blame_without_a_code_tab_reports_status() {
     app.dispatch(Command::ToggleInlineBlame);
     assert!(matches!(app.tabs[app.active].kind, TabKind::Welcome));
     assert!(app.settings.git.blame);
-    assert_eq!(app.status.as_deref(), Some("inline blame: on"));
+    assert_eq!(last_message(&app).as_deref(), Some("inline blame: on"));
 }
 
 #[test]

@@ -191,8 +191,9 @@ impl Session {
             LspUpdate::ServerStatus {
                 server, message, ..
             } => {
-                // The transient status line is the right surface: it clears on
-                // the next keystroke and never queues like a notification.
+                // Progress rather than a notification: the client shows these under
+                // one tag, so a stream of ticks rewrites a single card instead of
+                // queueing one per tick.
                 self.emit(
                     None,
                     Event::Progress {

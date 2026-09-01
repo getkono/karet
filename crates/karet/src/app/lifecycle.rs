@@ -124,14 +124,12 @@ impl App {
         if matches!(request, CloseRequest::Quit)
             && let Some(operation) = self.scm.operation.as_ref()
         {
-            let label = format!("{operation:?}");
+            // No notification here: `operation_blocker` is a modal that already
+            // renders this label and the wait it implies.
             self.operation_blocker = Some(OperationBlocker {
-                label: label.clone(),
+                label: format!("{operation:?}"),
                 deadline: Instant::now() + OPERATION_SHUTDOWN_TIMEOUT,
             });
-            self.status = Some(format!(
-                "quit waiting for source control operation {label} (maximum 60s)"
-            ));
             return;
         }
         let at_risk = self.docs_at_risk(request);
@@ -252,7 +250,12 @@ impl App {
             } else {
                 "closing"
             };
-            self.status = Some(format!("saving {saved} file(s) before {verb}…"));
+            self.notify_progress(
+                NotificationKind::Io,
+                Self::SAVE_BATCH_TAG.to_string(),
+                format!("saving {saved} file(s) before {verb}…"),
+                None,
+            );
         }
     }
 
@@ -267,11 +270,15 @@ impl App {
     pub(super) fn cancel_close(&mut self) {
         let quitting = matches!(self.pending_close, Some(CloseRequest::Quit));
         self.pending_close = None;
-        self.status = Some(if quitting {
-            "quit cancelled".to_string()
-        } else {
-            "close cancelled".to_string()
-        });
+        self.notify(
+            Report::Outcome,
+            NotificationKind::System,
+            if quitting {
+                "quit cancelled"
+            } else {
+                "close cancelled"
+            },
+        );
     }
 
     /// Finish a timed graceful-shutdown wait. Once the global ceiling is reached,
@@ -358,7 +365,11 @@ impl App {
     /// in-flight save so a slow write shows a spinner in the tab.
     pub(super) fn save_active(&mut self) {
         let Some(doc) = self.active_code_doc() else {
-            self.status = Some("save: open a text file".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Io,
+                "save: open a text file",
+            );
             return;
         };
         if self
@@ -366,7 +377,11 @@ impl App {
             .values()
             .any(|pending| pending.doc == doc)
         {
-            self.status = Some("save already in progress".to_string());
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Io,
+                "save already in progress",
+            );
             return;
         }
         self.send_save(doc);
@@ -516,7 +531,11 @@ impl App {
         }
         match self.clipboard.get() {
             Ok(text) => self.handle_paste(text),
-            Err(_) => self.status = Some("paste: clipboard unavailable".to_string()),
+            Err(_) => self.notify(
+                Report::Failure,
+                NotificationKind::System,
+                "paste: clipboard unavailable",
+            ),
         }
     }
 

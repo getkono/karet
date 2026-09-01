@@ -131,7 +131,7 @@ fn an_empty_answer_with_no_diagnostics_says_so_instead_of_opening() {
 
     app.on_hover_result(Some(id), None);
     assert!(app.hover_ui.is_none());
-    assert_eq!(app.status.as_deref(), Some("no hover information"));
+    assert_eq!(last_message(&app).as_deref(), Some("no hover information"));
 }
 
 #[test]
@@ -142,7 +142,7 @@ fn the_disabled_setting_explains_itself_and_sends_nothing() {
 
     assert!(hover_requests(&backend).is_empty());
     assert_eq!(
-        app.status.as_deref(),
+        last_message(&app).as_deref(),
         Some("hover is disabled (editor.hover.enabled)")
     );
 }
