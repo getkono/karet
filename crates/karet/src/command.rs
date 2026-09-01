@@ -307,6 +307,10 @@ pub enum Command {
     ScmFetch,
     /// Toggle the current file's reviewed mark in a commit view.
     CommitToggleFileReviewed,
+    /// Fold every directory in a commit view's changed-file index.
+    CommitFoldFileTree,
+    /// Unfold every directory in a commit view's changed-file index.
+    CommitUnfoldFileTree,
     /// Copy the issue URLs referenced by the selected graph commit.
     CommitGraphCopyIssueUrls,
     /// Jump to the definition of the symbol at the caret (F12).
@@ -790,6 +794,8 @@ impl Command {
             Self::CommitGraphInteractiveRebase => "Commit Graph: Interactive Rebase from Here",
             Self::ScmFetch => "Git: Fetch",
             Self::CommitToggleFileReviewed => "Commit: Toggle File Reviewed",
+            Self::CommitFoldFileTree => "Commit: Fold All Directories",
+            Self::CommitUnfoldFileTree => "Commit: Unfold All Directories",
             Self::CommitGraphCopyIssueUrls => "Commit Graph: Copy Issue URLs",
             Self::GoToDefinition => "Go to Definition",
             Self::JumpBack => "Go Back",

@@ -195,6 +195,8 @@ impl App {
             },
             Command::ScmFetch => self.scm_fetch(),
             Command::CommitToggleFileReviewed => self.commit_toggle_reviewed(),
+            Command::CommitFoldFileTree => self.set_commit_dirs_collapsed(true),
+            Command::CommitUnfoldFileTree => self.set_commit_dirs_collapsed(false),
             Command::CommitGraphCopyIssueUrls => self.commit_graph_copy_issue_urls(),
             Command::TodoToggleGrouping => self.todos_toggle_grouping(),
             Command::GoToDefinition => self.request_definition(),

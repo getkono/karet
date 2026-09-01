@@ -43,10 +43,13 @@ use crate::render::FileView;
 use crate::render::Section;
 
 mod commit;
+mod file_tree;
 mod merge_conflict;
 pub(crate) use commit::CommitLayoutMode;
 pub(crate) use commit::CommitViewState;
 pub(crate) use commit::commit_title;
+pub(crate) use file_tree::ChangedFileRow;
+pub(crate) use file_tree::changed_file_rows;
 pub(crate) use merge_conflict::MergeConflictState;
 
 /// The find-in-file bar state: the query, the match cursor, and the replace field

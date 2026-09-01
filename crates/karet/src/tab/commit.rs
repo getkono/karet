@@ -28,6 +28,33 @@ pub(crate) struct CommitViewState {
     /// files arriving after the tab exists need no seeding pass, and a refresh
     /// cannot silently re-fold a card the user just opened.
     pub(crate) toggled_files: BTreeSet<usize>,
+    /// Directories folded in the changed-file tree.
+    ///
+    /// Keyed by path rather than by row index, for the reason the Search panel's
+    /// fold set is: a re-fetched file list renumbers the rows, and an index key
+    /// would silently transfer one directory's fold to whatever landed in its
+    /// place. The key is a compacted chain's *deepest* directory — the path the
+    /// row reports (`tab::changed_file_rows`).
+    pub(crate) collapsed_dirs: BTreeSet<PathBuf>,
+    /// The wide layout's file-rail offset.
+    ///
+    /// Independent of [`scroll`](Self::scroll): the wheel and the rail's scrollbar
+    /// pan the index without moving the diff beside it, so a long commit's file
+    /// list can be read ahead of the card on screen.
+    pub(crate) rail_scroll: u16,
+    /// The active file the rail last revealed.
+    ///
+    /// Revealing is what keeps the rail useful as the diff moves, but doing it
+    /// every frame would undo the manual scroll the rail now has. Recording the
+    /// file it was last done for makes it fire on a *change* of active file only.
+    pub(crate) rail_revealed: Option<usize>,
+    /// Rows the previous frame's document spent before its first file card.
+    ///
+    /// Folding a directory in the stacked layout shortens the table of contents,
+    /// which moves every card anchor up by the same amount. Carrying the previous
+    /// length is what lets the next frame shift `scroll` to match, instead of
+    /// sliding the diff out from under the reader.
+    pub(crate) prefix_rows: u16,
 }
 
 /// Human-readable title for standalone commit tabs.

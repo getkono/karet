@@ -330,6 +330,8 @@ fn breadcrumb_frame(app: &App, segment: PathBuf) -> PaneFrame {
         },
         editor_rect: Rect::default(),
         commit_file_hits: Vec::new(),
+        commit_dir_hits: Vec::new(),
+        commit_rail_rect: Rect::default(),
         commit_collapse_hits: Vec::new(),
         select_regions: Vec::new(),
     }

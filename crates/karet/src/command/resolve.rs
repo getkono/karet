@@ -90,6 +90,8 @@ static PALETTE: &[Command] = &[
     Command::CopyRemoteFileUrl,
     Command::CopyGithubPermalink,
     Command::CopyGithubHeadLink,
+    Command::CommitFoldFileTree,
+    Command::CommitUnfoldFileTree,
     Command::OpenChangesWithPrevious,
     Command::OpenChangesWithRevision,
     Command::OpenChangesWithBranch,

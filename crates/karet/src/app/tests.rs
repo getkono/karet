@@ -6,6 +6,7 @@ mod aicommit;
 pub(crate) mod support;
 
 mod blame;
+mod commit_file_tree;
 mod commit_graph;
 mod commit_navigation;
 mod commit_view;

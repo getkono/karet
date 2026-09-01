@@ -28,6 +28,19 @@ pub(crate) struct CommitFileHit {
     pub(crate) scroll: u16,
 }
 
+/// A clickable directory row of a commit or compare view's changed-file index.
+///
+/// Carries the path rather than a row index because the fold it toggles outlives
+/// the frame: the rows are rebuilt every paint, and an index would name a
+/// different directory the moment anything above it folds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CommitDirHit {
+    /// The rendered row in screen coordinates.
+    pub(crate) rect: Rect,
+    /// The directory the row folds — a compacted chain's deepest directory.
+    pub(crate) path: PathBuf,
+}
+
 /// A clickable disclosure control in a commit or compare file-card header.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct CommitCollapseHit {
@@ -86,6 +99,11 @@ pub(crate) struct PaneFrame {
     pub(crate) editor_rect: Rect,
     /// Changed-file rows clickable within the pane's commit-like view.
     pub(crate) commit_file_hits: Vec<CommitFileHit>,
+    /// Directory rows of that view's changed-file index, and the folds they toggle.
+    pub(crate) commit_dir_hits: Vec<CommitDirHit>,
+    /// The wide commit layout's file rail, so a wheel notch over it scrolls the rail
+    /// rather than the document behind it. Zero-sized when no rail is on screen.
+    pub(crate) commit_rail_rect: Rect,
     /// File-card disclosure controls clickable within the pane's commit-like view.
     pub(crate) commit_collapse_hits: Vec<CommitCollapseHit>,
     /// Read-only surfaces in this pane whose rows the pointer can select.
@@ -142,6 +160,9 @@ pub(crate) enum ScrollSurface {
     TodoResults,
     /// The Debug panel's section list.
     DebugResults,
+    /// A commit or compare view's changed-file rail, which scrolls independently of
+    /// the diff beside it so a long file list can be read ahead of the card on screen.
+    CommitFileRail,
     /// The Source-Control changes list.
     ScmChanges,
     /// The Source-Control commit log.

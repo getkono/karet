@@ -517,6 +517,8 @@ fn dragging_moves_the_active_tab() {
         content_rect: Rect::default(),
         editor_rect: Rect::default(),
         commit_file_hits: Vec::new(),
+        commit_dir_hits: Vec::new(),
+        commit_rail_rect: Rect::default(),
         commit_collapse_hits: Vec::new(),
         select_regions: Vec::new(),
     }];
@@ -549,6 +551,8 @@ fn pane_action_click_wins_over_the_underlying_tab_hit() {
         content_rect: Rect::default(),
         editor_rect: Rect::default(),
         commit_file_hits: Vec::new(),
+        commit_dir_hits: Vec::new(),
+        commit_rail_rect: Rect::default(),
         commit_collapse_hits: Vec::new(),
         select_regions: Vec::new(),
     }];

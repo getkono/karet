@@ -175,6 +175,7 @@ impl App {
                 let cursor = window_bottom(position, viewport, len);
                 self.debug_panel.selection.move_to(cursor);
             },
+            ScrollSurface::CommitFileRail => self.commit_rail_scroll_to(position),
             // Routed as a delta so the commit log keeps its lazy-loading trigger.
             ScrollSurface::ScmChanges => {
                 self.scm_scroll_changes(delta_to(self.scm_ui.offset, position));
@@ -232,6 +233,26 @@ impl App {
                 page, page_count, ..
             } => *page = position.min(page_count.saturating_sub(1)),
             _ => {},
+        }
+    }
+
+    /// Pan the commit view's changed-file rail by `delta` rows.
+    ///
+    /// The rail owns an offset the renderer honours rather than deriving one from a
+    /// cursor, so the wheel writes it directly. The upper bound belongs to the paint
+    /// — only it knows how many rows the current folds leave and how tall the rail
+    /// came out — so this only has to keep the offset non-negative.
+    pub(super) fn commit_rail_scroll(&mut self, delta: i32) {
+        let Some(view) = self.active_commit_view() else {
+            return;
+        };
+        adjust(&mut view.rail_scroll, delta);
+    }
+
+    /// Land the changed-file rail on an absolute offset, for its scrollbar.
+    fn commit_rail_scroll_to(&mut self, position: usize) {
+        if let Some(view) = self.active_commit_view() {
+            view.rail_scroll = clamp_u16(position);
         }
     }
 

@@ -193,6 +193,8 @@ pub(crate) fn content_frame(app: &App, rect: Rect) -> PaneFrame {
         content_rect: rect,
         editor_rect: rect,
         commit_file_hits: Vec::new(),
+        commit_dir_hits: Vec::new(),
+        commit_rail_rect: Rect::default(),
         commit_collapse_hits: Vec::new(),
         select_regions: Vec::new(),
     }

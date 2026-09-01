@@ -172,6 +172,8 @@ pub(super) fn draw_panes(
             content_rect: rendered.content_rect,
             editor_rect: rendered.editor_rect,
             commit_file_hits: rendered.commit_file_hits,
+            commit_dir_hits: rendered.commit_dir_hits,
+            commit_rail_rect: rendered.commit_rail_rect,
             commit_collapse_hits: rendered.commit_collapse_hits,
             select_regions: rendered.select_regions,
         });
@@ -278,6 +280,8 @@ pub(super) fn render_pane(
         image_area: painted.image_area,
         commit_badge_rect: painted.badge_rect,
         commit_file_hits: painted.file_hits,
+        commit_dir_hits: painted.dir_hits,
+        commit_rail_rect: painted.rail_rect.unwrap_or_default(),
         commit_collapse_hits: painted.collapse_hits,
         blame_rect: painted.blame_rect,
         markdown_link_hits: painted.markdown_link_hits,
