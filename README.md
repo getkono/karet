@@ -148,6 +148,10 @@ collects codetags across the tree.
 the branch lifecycle (create, switch, publish, sync), rebase, cherry-pick, revert,
 reset, and blame — both inline and as a detail view. The commit log renders as a
 lane-based DAG rather than a flat list; see [`docs/visualizations.md`](docs/visualizations.md).
+A commit's changed files are indexed as a foldable directory tree — compacted the
+way the Explorer compacts single-child chains, and, in the wide layout, scrolling
+independently of the diff beside it (**Commit: Fold All Directories** and its
+unfold counterpart are in the palette).
 
 **Language intelligence.** Tree-sitter highlighting with 60+ bundled grammars,
 including injected languages, folds, and outlines — the per-extension table is in

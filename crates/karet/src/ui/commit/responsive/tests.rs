@@ -4,6 +4,28 @@ fn file(path: &str, old: &str, new: &str) -> render::FileView {
     crate::render::test_file_view(path, old, new)
 }
 
+/// Build a file document the way a paint does, with the tree derived from the same
+/// files and nothing folded.
+fn document(
+    theme: &Theme,
+    files: &[render::FileView],
+    width: u16,
+    stacked: bool,
+    toggled: &BTreeSet<usize>,
+) -> FileDocument {
+    let tree = changed_file_rows(files, &BTreeSet::new());
+    build_files(
+        theme,
+        files,
+        &tree,
+        width,
+        stacked,
+        CommitFileStatus::Ready,
+        toggled,
+        IconStyle::Ascii,
+    )
+}
+
 #[test]
 fn file_document_windows_match_the_complete_document() {
     let theme = Theme::dark();
@@ -13,14 +35,7 @@ fn file_document_windows_match_the_complete_document() {
     ];
     let width = 72;
     let collapsed = BTreeSet::new();
-    let doc = build_files(
-        &theme,
-        &files,
-        width,
-        true,
-        CommitFileStatus::Ready,
-        &collapsed,
-    );
+    let doc = document(&theme, &files, width, true, &collapsed);
     let mut complete = doc.prefix.clone();
     for file in &files {
         complete.push(Line::raw(""));
@@ -54,23 +69,9 @@ fn collapsed_file_document_keeps_only_its_disclosure_header() {
     let theme = Theme::dark();
     let files = vec![file("src/a.rs", "one\ntwo\n", "one\nchanged\n")];
     let width = 72;
-    let expanded = build_files(
-        &theme,
-        &files,
-        width,
-        true,
-        CommitFileStatus::Ready,
-        &BTreeSet::new(),
-    );
+    let expanded = document(&theme, &files, width, true, &BTreeSet::new());
     let toggled_files = BTreeSet::from([0]);
-    let collapsed = build_files(
-        &theme,
-        &files,
-        width,
-        true,
-        CommitFileStatus::Ready,
-        &toggled_files,
-    );
+    let collapsed = document(&theme, &files, width, true, &toggled_files);
     assert!(collapsed.rows < expanded.rows);
     let lines = visible_file_lines(
         &theme,
@@ -93,14 +94,7 @@ fn a_generated_file_starts_collapsed_and_a_source_file_does_not() {
         file("src/a.rs", "one\ntwo\n", "one\nchanged\n"),
     ];
     // Nothing toggled: the lockfile still folds, the source file does not.
-    let doc = build_files(
-        &theme,
-        &files,
-        72,
-        true,
-        CommitFileStatus::Ready,
-        &BTreeSet::new(),
-    );
+    let doc = document(&theme, &files, 72, true, &BTreeSet::new());
     let lockfile = visible_file_lines(
         &theme,
         &files,
@@ -136,18 +130,11 @@ fn a_generated_file_starts_collapsed_and_a_source_file_does_not() {
 fn toggling_a_generated_file_expands_it() {
     let theme = Theme::dark();
     let files = [file("Cargo.lock", "a = 1\n", "a = 2\n")];
-    let collapsed = build_files(
-        &theme,
-        &files,
-        72,
-        true,
-        CommitFileStatus::Ready,
-        &BTreeSet::new(),
-    );
+    let collapsed = document(&theme, &files, 72, true, &BTreeSet::new());
     // The override set flips the default rather than naming the collapsed set,
     // so the same entry that collapses a source file expands a lockfile.
     let toggled = BTreeSet::from([0]);
-    let expanded = build_files(&theme, &files, 72, true, CommitFileStatus::Ready, &toggled);
+    let expanded = document(&theme, &files, 72, true, &toggled);
     assert!(expanded.rows > collapsed.rows);
     let lines = visible_file_lines(
         &theme,
@@ -167,11 +154,6 @@ fn a_generated_card_names_its_reason() {
     let files = [file("Cargo.lock", "a = 1\n", "a = 2\n")];
     let header = file_card_header(&theme, &files[0], 72, true).to_string();
     assert!(header.contains("(lockfile)"), "{header}");
-    assert!(
-        file_index_line(&theme, &files[0], 72, false)
-            .to_string()
-            .contains("(lockfile)")
-    );
 }
 
 #[test]

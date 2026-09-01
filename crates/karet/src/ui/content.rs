@@ -27,6 +27,8 @@ pub(super) fn draw_pane_content(
     let image_area: Option<Rect> = None;
     let mut badge_rect = None;
     let mut file_hits = Vec::new();
+    let mut dir_hits = Vec::new();
+    let mut rail_rect = None;
     let mut collapse_hits = Vec::new();
     let mut blame_rect = None;
     let mut markdown_link_hits = Vec::new();
@@ -358,9 +360,21 @@ pub(super) fn draw_pane_content(
             explain_since,
             view,
         } => {
-            let painted = draw_commit(f, theme, area, detail, files, *explain_since, view, hits);
+            let painted = draw_commit(
+                f,
+                theme,
+                area,
+                detail,
+                files,
+                *explain_since,
+                view,
+                ctx.icon_style,
+                hits,
+            );
             badge_rect = painted.badge_rect;
             file_hits = painted.file_hits;
+            dir_hits = painted.dir_hits;
+            rail_rect = painted.rail_rect;
             collapse_hits = painted.collapse_hits;
             select_regions = painted.select_regions;
             select::commit_cards(
@@ -404,9 +418,12 @@ pub(super) fn draw_pane_content(
                 *merge_base,
                 files,
                 view,
+                ctx.icon_style,
                 hits,
             );
             file_hits = painted.file_hits;
+            dir_hits = painted.dir_hits;
+            rail_rect = painted.rail_rect;
             collapse_hits = painted.collapse_hits;
             select_regions = painted.select_regions;
             select::commit_cards(
@@ -605,6 +622,8 @@ pub(super) fn draw_pane_content(
         image_area,
         badge_rect,
         file_hits,
+        dir_hits,
+        rail_rect,
         collapse_hits,
         blame_rect,
         markdown_link_hits,

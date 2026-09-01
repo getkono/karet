@@ -222,12 +222,37 @@ impl App {
         RowPos::new(index, geometry.byte_at(&painted.text, col))
     }
 
+    /// Whether `(col, row)` is on a commit view's changed-file index row.
+    ///
+    /// In the stacked layout the index is painted *inside* the card region, so
+    /// without this the region would swallow every press on it — the rows are
+    /// chrome carrying an action (fold a directory, jump to a file), not text to
+    /// select. The wide layout's rail sits outside the region entirely, so this
+    /// only ever answers for the stacked one.
+    fn on_commit_index_row(&self, col: u16, row: u16) -> bool {
+        let point = (col, row);
+        self.pane_frames.iter().any(|frame| {
+            frame
+                .commit_file_hits
+                .iter()
+                .any(|hit| rect_contains(hit.rect, point))
+                || frame
+                    .commit_dir_hits
+                    .iter()
+                    .any(|hit| rect_contains(hit.rect, point))
+        })
+    }
+
     /// Begin a pointer selection at `(col, row)`; whether one started there.
     pub(super) fn begin_surface_selection(&mut self, col: u16, row: u16) -> bool {
         let Some((pane, region)) = self.select_region_at(col, row) else {
             self.surface_selection = None;
             return false;
         };
+        if self.on_commit_index_row(col, row) {
+            self.surface_selection = None;
+            return false;
+        }
         self.focus_pane_switch(pane);
         self.focus = super::Focus::Editor;
         let at = self.surface_pos_at(&region, col, row);

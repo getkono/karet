@@ -1,10 +1,17 @@
 use std::collections::BTreeSet;
 
+use karet_filetype::IconStyle;
+
+use super::rail::file_summary_line;
+use super::rail::tree_line;
 use super::*;
 use crate::app::CommitCollapseHit;
+use crate::app::CommitDirHit;
 use crate::app::CommitFileHit;
+use crate::tab::ChangedFileRow;
 use crate::tab::CommitLayoutMode;
 use crate::tab::CommitViewState;
+use crate::tab::changed_file_rows;
 
 mod wide;
 use wide::draw_wide;
@@ -19,10 +26,16 @@ pub(in crate::ui) struct CommitPaint {
     pub(in crate::ui) badge_rect: Option<Rect>,
     /// Visible file-index rows and their jump destinations.
     pub(in crate::ui) file_hits: Vec<CommitFileHit>,
+    /// Visible directory rows of the file index, and the fold each one toggles.
+    pub(in crate::ui) dir_hits: Vec<CommitDirHit>,
     /// Visible file-card disclosure controls.
     pub(in crate::ui) collapse_hits: Vec<CommitCollapseHit>,
     /// Where the file cards painted their rows, for pointer selection.
     pub(in crate::ui) select_regions: Vec<crate::app::SelectRegion>,
+    /// The wide layout's file rail, for routing a wheel notch over it to the rail's
+    /// own offset rather than the document's. `None` in the stacked layout, whose
+    /// index scrolls with the document by construction.
+    pub(in crate::ui) rail_rect: Option<Rect>,
 }
 
 #[allow(clippy::too_many_arguments)] // metadata, progressive file state, and view state are independent
@@ -34,6 +47,7 @@ pub(in crate::ui) fn draw_commit(
     files: &CommitFiles,
     explain_since: Option<Instant>,
     view: &mut CommitViewState,
+    icons: IconStyle,
     hits: &mut ScrollHits,
 ) -> CommitPaint {
     let reveal = explain_since.is_some_and(|t| t.elapsed() < crate::app::COMMIT_REVEAL);
@@ -47,6 +61,7 @@ pub(in crate::ui) fn draw_commit(
         &files.files,
         file_load_status(files),
         view,
+        icons,
         hits,
     )
 }
@@ -61,6 +76,7 @@ pub(in crate::ui) fn draw_compare(
     merge_base: bool,
     files: &CommitFiles,
     view: &mut CommitViewState,
+    icons: IconStyle,
     hits: &mut ScrollHits,
 ) -> CommitPaint {
     let header = compare_header_lines(theme, base_label, head_label, merge_base);
@@ -73,6 +89,7 @@ pub(in crate::ui) fn draw_compare(
         &files.files,
         file_load_status(files),
         view,
+        icons,
         hits,
     )
 }
@@ -87,6 +104,7 @@ fn draw_responsive(
     files: &[render::FileView],
     file_status: CommitFileStatus<'_>,
     view: &mut CommitViewState,
+    icons: IconStyle,
     hits: &mut ScrollHits,
 ) -> CommitPaint {
     let mode = if area.width >= WIDE_COMMIT_WIDTH {
@@ -94,6 +112,9 @@ fn draw_responsive(
     } else {
         CommitLayoutMode::Stacked
     };
+    // Built once here rather than per layout: both paint the same index, and a
+    // second construction site is a second place for the two to disagree.
+    let tree = changed_file_rows(files, &view.collapsed_dirs);
     match mode {
         CommitLayoutMode::Wide => draw_wide(
             f,
@@ -102,8 +123,10 @@ fn draw_responsive(
             header,
             badge,
             files,
+            &tree,
             file_status,
             view,
+            icons,
             hits,
         ),
         CommitLayoutMode::Stacked => draw_stacked(
@@ -113,8 +136,10 @@ fn draw_responsive(
             header,
             badge,
             files,
+            &tree,
             file_status,
             view,
+            icons,
             hits,
         ),
     }
@@ -124,9 +149,27 @@ fn draw_responsive(
 struct FileDocument {
     prefix: Vec<Line<'static>>,
     anchors: Vec<u16>,
-    toc_rows: Vec<u16>,
+    toc: Vec<TocEntry>,
     rows: u16,
     columns: usize,
+}
+
+/// A table-of-contents row in the stacked layout's document, and what clicking it
+/// does. Directory rows fold; file rows jump to that file's card.
+struct TocEntry {
+    /// The row's index within the *file* document, i.e. before the metadata header
+    /// above it is added — the same frame [`FileDocument::anchors`] uses.
+    row: u16,
+    /// What the row addresses.
+    target: TocTarget,
+}
+
+/// What a table-of-contents row addresses.
+enum TocTarget {
+    /// A changed file, by its index into the view's `files`.
+    File(usize),
+    /// A directory to fold, by the path its row reports.
+    Dir(PathBuf),
 }
 
 /// Whether file `index` renders collapsed: its machine-maintained default,
@@ -138,13 +181,16 @@ fn card_collapsed(file: &render::FileView, index: usize, toggled_files: &BTreeSe
     auto_collapse_reason(file).is_some() ^ toggled_files.contains(&index)
 }
 
+#[allow(clippy::too_many_arguments)] // the tree, the card state and the load state are independent
 fn build_files(
     theme: &Theme,
     files: &[render::FileView],
+    tree: &[ChangedFileRow],
     width: u16,
     stacked: bool,
     file_status: CommitFileStatus<'_>,
     toggled_files: &BTreeSet<usize>,
+    icons: IconStyle,
 ) -> FileDocument {
     let muted = theme.style(ThemeRole::Muted);
     let label = theme.style(ThemeRole::LineNumberActive);
@@ -175,10 +221,17 @@ fn build_files(
     if stacked {
         doc.prefix.push(Line::raw(""));
         doc.prefix.push(file_summary_line(theme, files));
-        for file in files {
-            doc.toc_rows
-                .push(u16::try_from(doc.prefix.len()).unwrap_or(u16::MAX));
-            doc.prefix.push(file_index_line(theme, file, width, false));
+        for row in tree {
+            let target = match row {
+                ChangedFileRow::Dir { path, .. } => TocTarget::Dir(path.clone()),
+                ChangedFileRow::File { file, .. } => TocTarget::File(*file),
+            };
+            doc.toc.push(TocEntry {
+                row: u16::try_from(doc.prefix.len()).unwrap_or(u16::MAX),
+                target,
+            });
+            doc.prefix
+                .push(tree_line(theme, files, row, width, icons, false));
         }
     }
 
@@ -339,8 +392,10 @@ fn draw_stacked(
     header: Vec<Line<'static>>,
     badge: Option<BadgeHit>,
     files: &[render::FileView],
+    tree: &[ChangedFileRow],
     file_status: CommitFileStatus<'_>,
     view: &mut CommitViewState,
+    icons: IconStyle,
     hits: &mut ScrollHits,
 ) -> CommitPaint {
     // Reserve the tracks first so the file cards below are built to the width they
@@ -351,10 +406,12 @@ fn draw_stacked(
     let file_doc = build_files(
         theme,
         files,
+        tree,
         area.width,
         true,
         file_status,
         &view.toggled_files,
+        icons,
     );
     let content_width = file_doc
         .columns
@@ -365,6 +422,11 @@ fn draw_stacked(
         .min(u16::try_from(max_column).unwrap_or(u16::MAX));
     let file_start = header_len;
     let anchors = offset_rows(&file_doc.anchors, file_start);
+    // Before the layout remap, which owns the other reason the anchors can move.
+    remap_prefix(
+        view,
+        file_start.saturating_add(u16::try_from(file_doc.prefix.len()).unwrap_or(u16::MAX)),
+    );
     remap_layout(view, CommitLayoutMode::Stacked, &anchors, header_len);
     let total = header_len.saturating_add(file_doc.rows);
 
@@ -450,23 +512,35 @@ fn draw_stacked(
     );
 
     let row_shift = u16::from(sticky.is_some());
-    let toc_rows = offset_rows(&file_doc.toc_rows, file_start);
-    let file_hits = toc_rows
-        .iter()
-        .enumerate()
-        .filter_map(|(file, row)| {
-            let screen = row.checked_sub(view.scroll)?.saturating_add(row_shift);
-            (screen < area.height).then_some(CommitFileHit {
-                rect: Rect {
-                    y: area.y.saturating_add(screen),
-                    height: 1,
-                    ..area
-                },
-                file,
-                scroll: anchors[file],
-            })
-        })
-        .collect();
+    let mut file_hits = Vec::new();
+    let mut dir_hits = Vec::new();
+    for entry in &file_doc.toc {
+        let Some(screen) = entry
+            .row
+            .saturating_add(file_start)
+            .checked_sub(view.scroll)
+            .map(|screen| screen.saturating_add(row_shift))
+            .filter(|screen| *screen < area.height)
+        else {
+            continue;
+        };
+        let rect = Rect {
+            y: area.y.saturating_add(screen),
+            height: 1,
+            ..area
+        };
+        match &entry.target {
+            TocTarget::File(file) => file_hits.push(CommitFileHit {
+                rect,
+                file: *file,
+                scroll: anchors.get(*file).copied().unwrap_or(file_start),
+            }),
+            TocTarget::Dir(path) => dir_hits.push(CommitDirHit {
+                rect,
+                path: path.clone(),
+            }),
+        }
+    }
     let mut collapse_hits =
         visible_collapse_hits(area, &anchors, view.scroll, row_shift, view.column);
     if let Some(hit) = sticky.and_then(|file| collapse_hit(area, file, area.y, view.column)) {
@@ -478,8 +552,10 @@ fn draw_stacked(
     CommitPaint {
         badge_rect,
         file_hits,
+        dir_hits,
         collapse_hits,
         select_regions,
+        rail_rect: None,
     }
 }
 
@@ -495,6 +571,9 @@ fn remap_layout(
     if previous == next {
         return;
     }
+    // The rail is not on screen in the stacked layout and its offset means nothing
+    // there, so the next wide frame must reveal the active file afresh.
+    view.rail_revealed = None;
     if let Some(file) = active_file(&view.file_anchors, view.scroll) {
         let within = view.scroll.saturating_sub(view.file_anchors[file]);
         if let Some(anchor) = next_anchors.get(file) {
@@ -503,6 +582,33 @@ fn remap_layout(
     } else {
         view.scroll = view.scroll.min(header_len);
     }
+}
+
+/// Absorb a change in how many rows precede the first file card.
+///
+/// Folding a directory in the stacked layout shortens the table of contents, which
+/// moves every card anchor up by the same amount. Without this the offset stays
+/// where it was and the diff slides out from under the reader; with it, whatever
+/// was on screen stays there. Rows still inside the prefix are left alone — the
+/// index is what the reader is looking at, and it does not move.
+fn remap_prefix(view: &mut CommitViewState, prefix_rows: u16) {
+    let previous = std::mem::replace(&mut view.prefix_rows, prefix_rows);
+    // A *layout* change moves the prefix too, but `remap_layout` already remaps
+    // that by card anchor; correcting it twice would double the shift.
+    // `<`, not `<=`: `previous` is the first row *after* the index (the blank
+    // separator above card 0), so a reader parked exactly there is looking at the
+    // cards and has to be carried along with them.
+    if view.layout != Some(CommitLayoutMode::Stacked)
+        || previous == prefix_rows
+        || view.scroll < previous
+    {
+        return;
+    }
+    view.scroll = if prefix_rows > previous {
+        view.scroll.saturating_add(prefix_rows - previous)
+    } else {
+        view.scroll.saturating_sub(previous - prefix_rows)
+    };
 }
 
 fn active_file(anchors: &[u16], scroll: u16) -> Option<usize> {
@@ -545,15 +651,6 @@ fn visible_collapse_hits(
         .collect()
 }
 
-fn rail_offset(active: usize, len: usize, height: usize) -> usize {
-    if height == 0 || len == 0 {
-        return 0;
-    }
-    active
-        .saturating_sub(height.saturating_sub(1))
-        .min(len.saturating_sub(height))
-}
-
 fn visible_badge(
     area: Rect,
     badge: Option<BadgeHit>,
@@ -571,90 +668,6 @@ fn visible_badge(
             height: 1,
         })
     })
-}
-
-fn file_summary_line(theme: &Theme, files: &[render::FileView]) -> Line<'static> {
-    let label = theme.style(ThemeRole::LineNumberActive);
-    let add = theme.style(ThemeRole::DiagnosticHint);
-    let remove = theme.style(ThemeRole::DiagnosticError);
-    let (added, removed) = files.iter().fold((0usize, 0usize), |(a, r), file| {
-        let (next_a, next_r) = file.line_stats();
-        (a + next_a, r + next_r)
-    });
-    Line::from(vec![
-        Span::styled(
-            format!(
-                " {} file{} changed",
-                files.len(),
-                if files.len() == 1 { "" } else { "s" }
-            ),
-            label,
-        ),
-        Span::raw("   "),
-        Span::styled(format!("+{added}"), add),
-        Span::raw(" "),
-        Span::styled(format!("\u{2212}{removed}"), remove),
-    ])
-}
-
-fn file_index_line(
-    theme: &Theme,
-    file: &render::FileView,
-    width: u16,
-    selected: bool,
-) -> Line<'static> {
-    let fg = theme.style(ThemeRole::Foreground);
-    let add = theme.style(ThemeRole::DiagnosticHint);
-    let remove = theme.style(ThemeRole::DiagnosticError);
-    let (glyph, role) = status_glyph(file.change.status);
-    let (added, removed) = file.line_stats();
-    let stats = format!("+{added} \u{2212}{removed}");
-    let stats_width = UnicodeWidthStr::width(stats.as_str());
-    let show_stats = usize::from(width) >= 4 + stats_width + 4;
-    let fixed = if show_stats { 4 + stats_width } else { 3 };
-
-    // Same precedence as the card header: the generated reason yields to the path.
-    let reason = auto_collapse_label(file).map(|label| format!(" {label}"));
-    let reason_width = reason.as_deref().map_or(0, UnicodeWidthStr::width);
-    let show_reason =
-        reason_width > 0 && usize::from(width) >= fixed + reason_width + REASON_MIN_PATH;
-    let reason_width = if show_reason { reason_width } else { 0 };
-
-    let path_width = usize::from(width)
-        .saturating_sub(fixed + reason_width)
-        .max(1);
-    let path = truncate_start(&file.change.path.to_string_lossy(), path_width);
-    let padding = if show_stats {
-        usize::from(width)
-            .saturating_sub(3 + UnicodeWidthStr::width(path.as_str()) + reason_width + stats_width)
-    } else {
-        0
-    };
-    let mut spans = vec![
-        Span::styled(format!(" {glyph} "), theme.style(role)),
-        Span::styled(
-            path,
-            if selected {
-                fg.add_modifier(Modifier::BOLD)
-            } else {
-                fg
-            },
-        ),
-    ];
-    if let Some(reason) = reason.filter(|_| show_reason) {
-        spans.push(Span::styled(reason, theme.style(ThemeRole::Muted)));
-    }
-    if show_stats {
-        spans.push(Span::raw(" ".repeat(padding)));
-        spans.push(Span::styled(format!("+{added}"), add));
-        spans.push(Span::raw(" "));
-        spans.push(Span::styled(format!("\u{2212}{removed}"), remove));
-    }
-    let mut line = Line::from(spans);
-    if selected {
-        line = line.style(Style::default().bg(theme.role(ThemeRole::Selection).to_ratatui()));
-    }
-    line
 }
 
 fn compare_header_lines(

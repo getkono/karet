@@ -16,6 +16,47 @@ impl App {
         true
     }
 
+    /// Show or hide one directory's rows in the active commit view's file index.
+    pub(super) fn toggle_commit_dir(&mut self, path: &Path) -> bool {
+        let Some(view) = self.active_commit_view() else {
+            return false;
+        };
+        if !view.collapsed_dirs.remove(path) {
+            view.collapsed_dirs.insert(path.to_path_buf());
+        }
+        true
+    }
+
+    /// Fold every directory in the active commit view's file index, or unfold them all.
+    pub(super) fn set_commit_dirs_collapsed(&mut self, collapsed: bool) {
+        let Some(TabKind::Commit { files, view, .. } | TabKind::Compare { files, view, .. }) =
+            self.tabs.get_mut(self.active).map(|tab| &mut tab.kind)
+        else {
+            return;
+        };
+        if !collapsed {
+            view.collapsed_dirs.clear();
+            return;
+        }
+        // Derived from the *fully expanded* tree, so one pass reaches every directory:
+        // walking the current rows would stop at the first row it folded.
+        view.collapsed_dirs = crate::tab::changed_file_rows(&files.files, &BTreeSet::new())
+            .iter()
+            .filter_map(|row| row.dir().map(Path::to_path_buf))
+            .collect();
+    }
+
+    /// The active tab's commit-family view state, if it has one.
+    ///
+    /// Shared with the rail's scroll setters in [`super::scroll`], which address the
+    /// same two tab kinds.
+    pub(super) fn active_commit_view(&mut self) -> Option<&mut CommitViewState> {
+        match self.tabs.get_mut(self.active).map(|tab| &mut tab.kind) {
+            Some(TabKind::Commit { view, .. } | TabKind::Compare { view, .. }) => Some(view),
+            _ => None,
+        }
+    }
+
     /// The active tab's commit graph browser, if it is one.
     pub(super) fn active_commit_graph(&mut self) -> Option<&mut TabKind> {
         let tab = self.tabs.get_mut(self.active)?;

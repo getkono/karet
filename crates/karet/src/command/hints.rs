@@ -306,6 +306,8 @@ impl Command {
             | Self::CommitGraphInteractiveRebase
             | Self::ScmFetch
             | Self::CommitToggleFileReviewed
+            | Self::CommitFoldFileTree
+            | Self::CommitUnfoldFileTree
             | Self::CommitGraphCopyIssueUrls
             | Self::InsertNewline
             | Self::DeleteBackward

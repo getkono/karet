@@ -299,6 +299,18 @@ impl App {
         // before any pane's — otherwise a notch over it would scroll the editor
         // behind it.
         let in_console = self.commit_console.open && rect_contains(self.commit_console.rect, point);
+        // The commit view's file rail scrolls independently of the diff beside it, so
+        // it claims the wheel inside its own column. It refines the pane rather than
+        // floating over it, so it is claimed after every surface that does float.
+        //
+        // The *focused* pane's rail only: the wheel writes the active tab's offset, so
+        // a notch over some other pane's rail has to keep falling through to the
+        // document scroll rather than landing on a view it does not address.
+        let focused = self.focus_pane();
+        let in_rail = self
+            .pane_frames
+            .iter()
+            .any(|frame| frame.pane == focused && rect_contains(frame.commit_rail_rect, point));
         match mouse.kind {
             MouseEventKind::ScrollDown if in_console => self.commit_console_scroll(3),
             MouseEventKind::ScrollUp if in_console => self.commit_console_scroll(-3),
@@ -312,6 +324,8 @@ impl App {
             MouseEventKind::ScrollUp if in_markdown_preview => {
                 self.scroll_markdown_preview(-3);
             },
+            MouseEventKind::ScrollDown if in_rail => self.commit_rail_scroll(3),
+            MouseEventKind::ScrollUp if in_rail => self.commit_rail_scroll(-3),
             MouseEventKind::ScrollRight if in_editor => self.scroll_columns(3),
             MouseEventKind::ScrollLeft if in_editor => self.scroll_columns(-3),
             MouseEventKind::ScrollDown if in_editor && shift => self.scroll_columns(3),

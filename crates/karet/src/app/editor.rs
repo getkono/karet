@@ -501,7 +501,7 @@ impl App {
     pub(super) fn handle_editor_click(&mut self, mouse: MouseEvent) {
         let point = (mouse.column, mouse.row);
         // Route the click to the pane whose content it landed in, focusing it.
-        let Some((pane, area, file_hit, collapse_hit)) = self
+        let Some((pane, area, file_hit, dir_hit, collapse_hit)) = self
             .pane_frames
             .iter()
             .find(|f| rect_contains(f.content_rect, point))
@@ -513,6 +513,10 @@ impl App {
                         .iter()
                         .find(|hit| rect_contains(hit.rect, point))
                         .copied(),
+                    f.commit_dir_hits
+                        .iter()
+                        .find(|hit| rect_contains(hit.rect, point))
+                        .cloned(),
                     f.commit_collapse_hits
                         .iter()
                         .find(|hit| rect_contains(hit.rect, point))
@@ -529,6 +533,11 @@ impl App {
             return;
         }
         if collapse_hit.is_some_and(|hit| self.toggle_commit_file(hit.file)) {
+            self.editor_drag = None;
+            return;
+        }
+        // Ahead of the file rows: a directory row folds rather than jumping the diff.
+        if dir_hit.is_some_and(|hit| self.toggle_commit_dir(&hit.path)) {
             self.editor_drag = None;
             return;
         }
