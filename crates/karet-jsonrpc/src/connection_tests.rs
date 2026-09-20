@@ -435,3 +435,52 @@ async fn handler_exposes_the_handler_it_was_started_with() -> TestResult {
     assert_eq!(connection.handler().notifications.load(Ordering::SeqCst), 1);
     Ok(())
 }
+
+#[tokio::test]
+async fn closed_resolves_when_the_peer_hangs_up_with_nothing_in_flight() -> TestResult {
+    // The defect this covers: loss detection used to be demand-driven. A consumer
+    // parked on its own input, with no request outstanding, never learned the peer
+    // had gone -- it found out only when it next tried to talk.
+    let ((read, write), peer) = wire();
+    let connection = Connection::start(TestHandler, read, write);
+
+    // Nothing has been sent, and nothing is pending.
+    drop(peer);
+
+    tokio::time::timeout(Duration::from_secs(5), connection.closed())
+        .await
+        .map_err(|_| "closed() did not resolve after the peer hung up")?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn closed_resolves_immediately_for_an_already_dead_connection() -> TestResult {
+    // A caller that arrives after the death must not wait for a transition it
+    // already missed.
+    let ((read, write), peer) = wire();
+    let connection = Connection::start(TestHandler, read, write);
+    drop(peer);
+    connection.closed().await;
+
+    // Second call, long after the fact, on a fresh subscription.
+    tokio::time::timeout(Duration::from_secs(5), connection.closed())
+        .await
+        .map_err(|_| "closed() blocked on a connection that was already gone")?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn closed_resolves_when_framing_is_lost_rather_than_at_eof() -> TestResult {
+    // A truncated frame is a lost connection, not a clean end; the liveness
+    // signal has to fire for it too, or a corrupt stream reads as healthy.
+    let ((read, write), mut peer) = wire();
+    let connection = Connection::start(TestHandler, read, write);
+    peer.writer
+        .write_all(b"Content-Length: oops\r\n\r\n")
+        .await?;
+
+    tokio::time::timeout(Duration::from_secs(5), connection.closed())
+        .await
+        .map_err(|_| "closed() did not resolve after the stream lost framing")?;
+    Ok(())
+}
