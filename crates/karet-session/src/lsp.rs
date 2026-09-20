@@ -15,6 +15,8 @@
 
 mod catalog;
 mod connector;
+mod forward;
+mod health;
 mod inventory;
 mod jdtls;
 mod lifecycle;
@@ -35,6 +37,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 pub(crate) use catalog::managed_arguments;
+pub(crate) use catalog::serves_language;
 pub(crate) use connector::Connector;
 use connector::spawn_connector;
 use karet_core::LineCol;
@@ -73,6 +76,14 @@ const RESTART_MAX_DELAY: Duration = Duration::from_secs(30);
 const RESTART_WINDOW: Duration = Duration::from_secs(60);
 const RESTART_LIMIT: usize = 5;
 const CIRCUIT_COOLDOWN: Duration = Duration::from_secs(300);
+/// How long a dead provider's diagnostics stay on screen before being dropped.
+///
+/// Not zero, because the common death is followed by a reconnect at 250ms and
+/// another at 500ms; clearing immediately would flicker every marker off and back
+/// on for an outage the user would otherwise never have noticed. Long enough to
+/// outlast both, short enough that a server which is really gone does not leave
+/// its squiggles pointing at lines the user has since edited away.
+const DIAGNOSTIC_GRACE: Duration = Duration::from_secs(1);
 
 /// Lazy per-language language-server orchestration (see the module docs).
 pub(crate) struct LspManager {
@@ -172,6 +183,7 @@ impl LspManager {
             | LspUpdate::WorkspaceEdit { generation, .. }
             | LspUpdate::Formatting { generation, .. }
             | LspUpdate::Diagnostics { generation, .. }
+            | LspUpdate::DiagnosticsCleared { generation, .. }
             | LspUpdate::ServerStatus { generation, .. }
             | LspUpdate::SpawnFailed { generation, .. }
             | LspUpdate::PreflightFailed { generation, .. }
@@ -581,6 +593,7 @@ impl LspManager {
             .unwrap_or_else(|| selector.unwrap_or_default());
         let document_text = text();
         let mut seen_targets = HashSet::new();
+        let mut undelivered = Vec::new();
         for (tx, key) in targets {
             if !seen_targets.insert(key.clone()) {
                 continue;
@@ -588,12 +601,54 @@ impl LspManager {
             if let Some(slot) = self.servers.get_mut(&key) {
                 slot.documents.insert(path.clone());
             }
-            let _ = tx.try_send(ServerCmd::DidOpen {
-                path: path.clone(),
-                language: document_language.clone(),
-                version: version_i32(version),
-                text: document_text.clone(),
+            if tx
+                .try_send(ServerCmd::DidOpen {
+                    path: path.clone(),
+                    language: document_language.clone(),
+                    version: version_i32(version),
+                    text: document_text.clone(),
+                })
+                .is_err()
+            {
+                undelivered.push(key);
+            }
+        }
+        // A dropped `didOpen` used to be silent, and was the worst of the silent
+        // drops: the server never learns the document exists, the task never adds
+        // it to its replay set, and no later restart fixes it. The file simply has
+        // no language support, with nothing anywhere saying why.
+        for key in undelivered {
+            self.report_undelivered(&key, "the server's command queue is full");
+        }
+    }
+
+    /// Report that a document-sync command never reached its server, and retire
+    /// the slot if the task behind it is gone.
+    ///
+    /// Both `try_send` failures leave the server's copy of the document out of
+    /// step with the buffer, which is exactly the state that reads to a user as
+    /// "the LSP stopped working for this file". A closed channel additionally
+    /// means the task has exited, so the slot is dropped and the next open builds
+    /// a fresh one rather than writing into a sender nobody reads.
+    fn report_undelivered(&mut self, key: &str, reason: &str) {
+        let Some(slot) = self.servers.get(key) else {
+            return;
+        };
+        let closed = slot.tx.is_closed();
+        if let Some(server) = slot.provider.clone() {
+            // Sent as a normal runtime transition so it lands wherever every
+            // other one does: recorded by the session, badged in the editor, and
+            // listed against this provider's row in the manager.
+            let _ = self.updates.send(LspUpdate::RuntimeState {
+                generation: self.generation,
+                server,
+                root: slot.root.clone(),
+                state: LanguageServerRuntimeState::Retrying,
+                error: Some(format!("document sync failed: {reason}")),
             });
+        }
+        if closed {
+            self.servers.remove(key);
         }
     }
 
@@ -612,20 +667,33 @@ impl LspManager {
         let path = absolute_path(path);
         let senders: Vec<_> = self
             .servers
-            .values()
-            .filter(|slot| slot.documents.contains(&path))
-            .map(|slot| slot.tx.clone())
+            .iter()
+            .filter(|(_, slot)| slot.documents.contains(&path))
+            .map(|(key, slot)| (key.clone(), slot.tx.clone()))
             .collect();
         if senders.is_empty() {
             return;
         }
         let text = text();
-        for tx in senders {
-            let _ = tx.try_send(ServerCmd::DidChange {
-                path: path.clone(),
-                version: version_i32(version),
-                text: text.clone(),
-            });
+        let mut undelivered = Vec::new();
+        for (key, tx) in senders {
+            if tx
+                .try_send(ServerCmd::DidChange {
+                    path: path.clone(),
+                    version: version_i32(version),
+                    text: text.clone(),
+                })
+                .is_err()
+            {
+                undelivered.push(key);
+            }
+        }
+        // A dropped `didChange` leaves the server's copy of the file behind the
+        // buffer, so every answer it gives is about text the user no longer has.
+        // Sync is full-text, so the next edit that *does* land repairs it -- but
+        // until then the condition is real and was previously invisible.
+        for key in undelivered {
+            self.report_undelivered(&key, "the server's command queue is full");
         }
     }
 
