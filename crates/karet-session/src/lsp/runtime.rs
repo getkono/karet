@@ -150,45 +150,6 @@ fn remember_document(documents: &mut HashMap<PathBuf, OpenDocument>, cmd: &Serve
     }
 }
 
-/// Charge one lost connection against the restart budget, returning how long to
-/// wait and what state to report.
-///
-/// A connection that lasted long enough to count as real earns a fresh budget and
-/// the minimum delay: it worked once, and whatever killed it may well be
-/// transient. A connection that died on arrival is charged, because a server that
-/// completes its handshake and then exits would otherwise loop forever -- it never
-/// fails to *connect*, so nothing in the launch-failure accounting ever sees it.
-fn charge_disconnect(
-    connected_at: Option<Instant>,
-    failures: &mut VecDeque<Instant>,
-    restart_delay: &mut Duration,
-    language: &str,
-) -> (Duration, LanguageServerRuntimeState) {
-    if health::was_stable(connected_at) {
-        failures.clear();
-        *restart_delay = RESTART_MIN_DELAY;
-        return (*restart_delay, LanguageServerRuntimeState::Retrying);
-    }
-    let now = Instant::now();
-    while failures
-        .front()
-        .is_some_and(|failure| now.duration_since(*failure) > RESTART_WINDOW)
-    {
-        failures.pop_front();
-    }
-    failures.push_back(now);
-    if failures.len() >= RESTART_LIMIT {
-        tracing::warn!(
-            language,
-            "language server keeps dying on startup; restart circuit opened"
-        );
-        return (CIRCUIT_COOLDOWN, LanguageServerRuntimeState::CircuitOpen);
-    }
-    let delay = *restart_delay;
-    *restart_delay = (*restart_delay * 2).min(RESTART_MAX_DELAY);
-    (delay, LanguageServerRuntimeState::Retrying)
-}
-
 pub(super) struct ServerTask {
     pub(super) spec: LspSpec,
     pub(super) root: PathBuf,
@@ -254,7 +215,6 @@ pub(super) async fn server_task(task: ServerTask) {
                 // `language` is the slot key the forwarder publishes under, not a
                 // bare provider id -- reconstructing one here cleared nothing.
                 let _ = updates.send(LspUpdate::DiagnosticsCleared {
-                    generation,
                     server: language.clone(),
                 });
             }
@@ -433,8 +393,9 @@ pub(super) async fn server_task(task: ServerTask) {
                     // The replay set holds the document's whole text, so the reconnect
                     // re-opens it entire rather than applying a stale delta.
                     pending = None;
-                    let (delay, state) = charge_disconnect(
+                    let (delay, state) = health::charge_disconnect(
                         connected_at,
+                        tally.hung(),
                         &mut failures,
                         &mut restart_delay,
                         &language,
@@ -465,8 +426,9 @@ pub(super) async fn server_task(task: ServerTask) {
                         if let Some(task) = diagnostic_task.take() {
                             task.abort();
                         }
-                        let (delay, state) = charge_disconnect(
+                        let (delay, state) = health::charge_disconnect(
                             connected_at,
+                            tally.hung(),
                             &mut failures,
                             &mut restart_delay,
                             &language,
@@ -835,8 +797,13 @@ pub(super) async fn server_task(task: ServerTask) {
                 task.abort();
             }
             pending = None;
-            let (delay, state) =
-                charge_disconnect(connected_at, &mut failures, &mut restart_delay, &language);
+            let (delay, state) = health::charge_disconnect(
+                connected_at,
+                tally.hung(),
+                &mut failures,
+                &mut restart_delay,
+                &language,
+            );
             connected_at = None;
             next_restart = Instant::now() + delay;
             clear_diagnostics_at = Some(Instant::now() + DIAGNOSTIC_GRACE);
@@ -849,6 +816,17 @@ pub(super) async fn server_task(task: ServerTask) {
     if let Some(task) = diagnostic_task {
         task.abort();
     }
+    // Retirement is the other way a provider's diagnostics become stale, and the
+    // grace timer cannot cover it: `reconfigure`, `restart` and the last
+    // `didClose` all retire a slot by dropping its sender, so the task leaves
+    // through the channel-closed `break` above without ever reaching the
+    // disconnected branch where the grace fires. Cleared here with no grace,
+    // because there is no reconnect coming to make the markers true again -- and
+    // after a generation bump the key can change, so nothing would ever replace
+    // them.
+    let _ = updates.send(LspUpdate::DiagnosticsCleared {
+        server: language.clone(),
+    });
     report_state(LanguageServerRuntimeState::Stopped, None);
 }
 

@@ -14,6 +14,7 @@
 //! timed out, each timeout was logged and discarded, and nothing ever concluded
 //! the connection was dead. [`FailureTally`] gives repeated timeouts a verdict.
 
+use std::collections::VecDeque;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -21,8 +22,14 @@ use karet_lsp::LspClient;
 use karet_lsp::LspError;
 use tokio::sync::mpsc;
 
+use super::CIRCUIT_COOLDOWN;
+use super::RESTART_LIMIT;
+use super::RESTART_MAX_DELAY;
+use super::RESTART_MIN_DELAY;
+use super::RESTART_WINDOW;
 use super::message::LspUpdate;
 use super::message::ServerCmd;
+use crate::api::LanguageServerRuntimeState;
 
 /// How long a connection must last before it counts as having worked.
 ///
@@ -94,11 +101,70 @@ pub(super) fn was_stable(connected_at: Option<Instant>) -> bool {
     connected_at.is_some_and(|since| since.elapsed() >= STABLE_CONNECTION)
 }
 
+/// Charge one lost connection against the restart budget, returning how long to
+/// wait and what state to report.
+///
+/// A connection that lasted long enough to count as real earns a fresh budget and
+/// the minimum delay: it worked once, and whatever killed it may well be
+/// transient. A connection that died on arrival is charged, because a server that
+/// completes its handshake and then exits would otherwise loop forever -- it never
+/// fails to *connect*, so nothing in the launch-failure accounting ever sees it.
+pub(super) fn charge_disconnect(
+    connected_at: Option<Instant>,
+    hung: bool,
+    failures: &mut VecDeque<Instant>,
+    restart_delay: &mut Duration,
+    language: &str,
+) -> (Duration, LanguageServerRuntimeState) {
+    // A connection condemned for silence is never treated as proven, however long
+    // it lasted: condemning one takes three request timeouts, so it always looks
+    // old enough to be stable, and reading that as proof would hand a silent
+    // server a fresh budget on every cycle and keep the circuit shut forever.
+    if !hung && was_stable(connected_at) {
+        failures.clear();
+        *restart_delay = RESTART_MIN_DELAY;
+        return (*restart_delay, LanguageServerRuntimeState::Retrying);
+    }
+    let now = Instant::now();
+    while failures
+        .front()
+        .is_some_and(|failure| now.duration_since(*failure) > RESTART_WINDOW)
+    {
+        failures.pop_front();
+    }
+    failures.push_back(now);
+    if failures.len() >= RESTART_LIMIT {
+        tracing::warn!(
+            language,
+            "language server keeps dying on startup; restart circuit opened"
+        );
+        return (CIRCUIT_COOLDOWN, LanguageServerRuntimeState::CircuitOpen);
+    }
+    let delay = *restart_delay;
+    *restart_delay = (*restart_delay * 2).min(RESTART_MAX_DELAY);
+    (delay, LanguageServerRuntimeState::Retrying)
+}
+
 /// Running verdict on a connection, from the calls made over it.
 #[derive(Default)]
 pub(super) struct FailureTally {
     /// Timeouts since the last answered call.
     consecutive_timeouts: u32,
+    /// Whether this connection has ever answered anything.
+    ///
+    /// The gate on condemning a connection for timing out. "Stopped answering"
+    /// presupposes having answered: a server that has not yet answered its first
+    /// request is far more likely to be starting up than hung, and jdtls or
+    /// rust-analyzer on a large repository can spend minutes there. Killing one
+    /// mid-import restarts the import, which guarantees the next requests time out
+    /// too -- an unbounded kill-and-reindex loop that never reaches a usable state.
+    answered: bool,
+    /// Whether the connection was condemned for silence rather than closure.
+    ///
+    /// Read by the restart accounting: such a connection necessarily lived long
+    /// enough to look stable, so without this it would earn a fresh failure budget
+    /// every time and could never open the circuit.
+    hung: bool,
 }
 
 impl FailureTally {
@@ -118,21 +184,26 @@ impl FailureTally {
         generation: u64,
     ) {
         match result {
-            Ok(_) => self.consecutive_timeouts = 0,
+            Ok(_) => {
+                self.consecutive_timeouts = 0;
+                self.answered = true;
+            },
             Err(LspError::Closed) => self.die(dead, updates, language, generation),
             Err(LspError::Timeout) => {
                 self.consecutive_timeouts = self.consecutive_timeouts.saturating_add(1);
-                if self.consecutive_timeouts >= TIMEOUT_DEATH_LIMIT {
+                if self.consecutive_timeouts >= TIMEOUT_DEATH_LIMIT && self.answered {
                     tracing::warn!(
                         language,
                         timeouts = self.consecutive_timeouts,
                         "language server stopped answering; treating it as dead"
                     );
+                    self.hung = true;
                     self.die(dead, updates, language, generation);
                 } else {
                     tracing::warn!(
                         language,
                         timeouts = self.consecutive_timeouts,
+                        answered = self.answered,
                         "language server request timed out"
                     );
                 }
@@ -163,6 +234,15 @@ impl FailureTally {
     ) {
         let mut unreported = false;
         self.die(&mut unreported, updates, language, generation);
+    }
+
+    /// Whether this connection was condemned for going silent.
+    ///
+    /// Such a connection outlived [`STABLE_CONNECTION`] by construction -- it took
+    /// at least three request timeouts to condemn it -- so the restart accounting
+    /// must not read its age as proof that it worked.
+    pub(super) fn hung(&self) -> bool {
+        self.hung
     }
 
     /// Record that the connection is gone, reporting it at most once.
@@ -197,6 +277,110 @@ mod tests {
         (FailureTally::default(), tx, rx)
     }
 
+    /// A connect-then-die loop must be bounded.
+    ///
+    /// The hazard: the failure budget used to be cleared on every successful
+    /// connect, and a server that exits as soon as it has read `didOpen` connects
+    /// perfectly every time -- so nothing in the launch accounting ever saw it and
+    /// the circuit could never open. That loop was capped only by accident, because
+    /// an idle death went unnoticed until the user typed. Noticing deaths promptly
+    /// removes the accident, so the bound has to be real.
+    #[test]
+    fn a_server_that_dies_on_arrival_eventually_opens_the_circuit() {
+        let mut failures = VecDeque::new();
+        let mut delay = RESTART_MIN_DELAY;
+        // Each cycle connects, then dies well inside the stability threshold.
+        let cycles: Vec<_> = (0..RESTART_LIMIT)
+            .map(|_| {
+                charge_disconnect(
+                    Some(Instant::now()),
+                    false,
+                    &mut failures,
+                    &mut delay,
+                    "rust",
+                )
+            })
+            .collect();
+        let opened = cycles
+            .iter()
+            .filter(|(_, state)| *state == LanguageServerRuntimeState::CircuitOpen)
+            .count();
+        assert_eq!(
+            opened, 1,
+            "a connect-then-die loop never opened the circuit"
+        );
+        assert_eq!(
+            cycles.last().map(|(waited, state)| (*waited, *state)),
+            Some((CIRCUIT_COOLDOWN, LanguageServerRuntimeState::CircuitOpen)),
+            "the circuit opened somewhere other than the budget's last cycle"
+        );
+    }
+
+    /// The counterpart: a connection that worked must not be punished for it.
+    #[test]
+    fn a_proven_connection_earns_a_fresh_budget() {
+        let mut failures = VecDeque::new();
+        let mut delay = RESTART_MIN_DELAY;
+        // Spend most of the budget on quick deaths.
+        for _ in 0..RESTART_LIMIT.saturating_sub(1) {
+            charge_disconnect(
+                Some(Instant::now()),
+                false,
+                &mut failures,
+                &mut delay,
+                "rust",
+            );
+        }
+        assert!(delay > RESTART_MIN_DELAY, "the backoff never advanced");
+
+        let proven = Instant::now().checked_sub(STABLE_CONNECTION);
+        let (waited, state) = charge_disconnect(proven, false, &mut failures, &mut delay, "rust");
+        assert_eq!(state, LanguageServerRuntimeState::Retrying);
+        assert_eq!(waited, RESTART_MIN_DELAY, "the backoff was not reset");
+        assert!(failures.is_empty(), "the budget was not cleared");
+    }
+
+    /// A silent server is charged however long it stayed connected.
+    ///
+    /// Condemning one takes three request timeouts, so it always *looks* proven;
+    /// reading that age as proof would hand it a fresh budget every cycle.
+    #[test]
+    fn a_hung_connection_is_charged_despite_its_age() {
+        let mut failures = VecDeque::new();
+        let mut delay = RESTART_MIN_DELAY;
+        let proven = Instant::now().checked_sub(STABLE_CONNECTION);
+        charge_disconnect(proven, true, &mut failures, &mut delay, "java");
+        assert_eq!(failures.len(), 1, "a hung connection was read as proven");
+        assert!(delay > RESTART_MIN_DELAY, "the backoff did not advance");
+    }
+
+    /// Failures older than the window stop counting, so a provider that misbehaves
+    /// twice an hour never accumulates its way into a circuit.
+    #[test]
+    fn failures_outside_the_window_are_forgotten() {
+        let mut failures = VecDeque::new();
+        let mut delay = RESTART_MIN_DELAY;
+        for _ in 0..RESTART_LIMIT.saturating_sub(1) {
+            let stale = Instant::now()
+                .checked_sub(RESTART_WINDOW * 2)
+                .unwrap_or_else(Instant::now);
+            failures.push_back(stale);
+        }
+        let (_, state) = charge_disconnect(
+            Some(Instant::now()),
+            false,
+            &mut failures,
+            &mut delay,
+            "rust",
+        );
+        assert_eq!(
+            state,
+            LanguageServerRuntimeState::Retrying,
+            "stale failures opened the circuit"
+        );
+        assert_eq!(failures.len(), 1, "stale failures were not expired");
+    }
+
     #[test]
     fn a_closed_connection_dies_at_once() {
         let (mut tally, tx, mut rx) = tally();
@@ -226,12 +410,73 @@ mod tests {
     }
 
     #[test]
+    fn timeouts_never_condemn_a_server_that_has_not_answered_yet() {
+        // The hazard this closes: "stopped answering" presupposes having answered.
+        // jdtls importing a large build answers nothing for a minute or two; three
+        // 30-second timeouts would condemn it, and killing it restarts the import,
+        // which guarantees the next three time out too -- an unbounded
+        // kill-and-reindex loop that never reaches a usable state.
+        let (mut tally, tx, mut rx) = tally();
+        let mut dead = false;
+        for _ in 0..TIMEOUT_DEATH_LIMIT.saturating_mul(10) {
+            tally.note::<()>(Err(LspError::Timeout), &mut dead, &tx, "java", 1);
+        }
+        assert!(
+            !dead,
+            "a server that never answered was condemned for silence"
+        );
+        assert!(!tally.hung());
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn a_hung_connection_is_never_read_as_proven() {
+        // A connection condemned for silence always looks old enough to be stable,
+        // because condemning one takes three request timeouts. If the restart
+        // accounting read that age as proof it worked, it would hand the server a
+        // fresh budget every cycle and the circuit could never open.
+        let (mut tally, tx, _rx) = tally();
+        let mut dead = false;
+        tally.note(Ok(()), &mut dead, &tx, "rust", 1);
+        for _ in 0..TIMEOUT_DEATH_LIMIT {
+            tally.note::<()>(Err(LspError::Timeout), &mut dead, &tx, "rust", 1);
+        }
+        assert!(dead);
+        assert!(tally.hung(), "a silent death was not flagged as hung");
+    }
+
+    #[test]
+    fn a_closed_connection_is_not_flagged_as_hung() {
+        let (mut tally, tx, _rx) = tally();
+        let mut dead = false;
+        tally.note::<()>(Err(LspError::Closed), &mut dead, &tx, "rust", 1);
+        assert!(!tally.hung());
+    }
+
+    #[test]
+    fn stability_is_measured_from_when_the_connection_opened() {
+        assert!(!was_stable(None), "never connected is not stable");
+        assert!(
+            !was_stable(Some(Instant::now())),
+            "a connection that just opened is not yet proven"
+        );
+        assert!(
+            was_stable(Instant::now().checked_sub(STABLE_CONNECTION)),
+            "a connection older than the threshold is proven"
+        );
+    }
+
+    #[test]
     fn a_run_of_timeouts_is_a_death() {
         // The defect this covers: a server holding its pipe open but answering
         // nothing produced one timeout per request forever, each logged and
         // discarded, while the badge read healthy.
         let (mut tally, tx, mut rx) = tally();
         let mut dead = false;
+        // It has to have answered something first, or silence is indistinguishable
+        // from a server that is still starting up.
+        tally.note(Ok(()), &mut dead, &tx, "rust", 1);
+        let _answered = rx.try_recv();
         for _ in 0..TIMEOUT_DEATH_LIMIT {
             tally.note::<()>(Err(LspError::Timeout), &mut dead, &tx, "rust", 1);
         }
@@ -243,6 +488,7 @@ mod tests {
     fn an_answered_call_clears_the_timeout_run() {
         let (mut tally, tx, mut rx) = tally();
         let mut dead = false;
+        tally.note(Ok(()), &mut dead, &tx, "rust", 1);
         for _ in 0..TIMEOUT_DEATH_LIMIT.saturating_sub(1) {
             tally.note::<()>(Err(LspError::Timeout), &mut dead, &tx, "rust", 1);
         }
