@@ -1,3 +1,6 @@
+use super::forward::forward_diagnostics;
+use super::health::FailureTally;
+use super::health::{self};
 use super::*;
 
 /// Answer a request command with an empty set (used whenever no live server can
@@ -147,66 +150,43 @@ fn remember_document(documents: &mut HashMap<PathBuf, OpenDocument>, cmd: &Serve
     }
 }
 
-fn forward_diagnostics(
-    client: &LspClient,
-    updates: mpsc::UnboundedSender<LspUpdate>,
-    language: String,
-    server: String,
-    generation: u64,
-) -> tokio::task::JoinHandle<()> {
-    let mut diagnostic_rx = client.diagnostics();
-    let mut raw_rx = client.raw_notifications();
-    let status_updates = updates.clone();
-    // jdtls-style `language/status` notifications carry the only feedback a
-    // user gets during a 30–120 s first import; forward them for the status
-    // bar rather than leaving the server looking hung.
-    tokio::spawn(async move {
-        loop {
-            match raw_rx.recv().await {
-                Ok(notification) if notification.method == "language/status" => {
-                    let message = notification
-                        .params
-                        .get("message")
-                        .and_then(|value| value.as_str())
-                        .unwrap_or_default()
-                        .to_owned();
-                    if !message.is_empty()
-                        && status_updates
-                            .send(LspUpdate::ServerStatus {
-                                generation,
-                                server: server.clone(),
-                                message,
-                            })
-                            .is_err()
-                    {
-                        return;
-                    }
-                },
-                Ok(_) => {},
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {},
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
-            }
-        }
-    });
-    tokio::spawn(async move {
-        loop {
-            match diagnostic_rx.recv().await {
-                Ok(publication) => {
-                    let _ = updates.send(LspUpdate::Diagnostics {
-                        generation,
-                        server: language.clone(),
-                        path: publication.path,
-                        version: publication.version,
-                        diagnostics: publication.diagnostics,
-                    });
-                },
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                    tracing::warn!(skipped, "language-server diagnostic subscriber lagged");
-                },
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-            }
-        }
-    })
+/// Charge one lost connection against the restart budget, returning how long to
+/// wait and what state to report.
+///
+/// A connection that lasted long enough to count as real earns a fresh budget and
+/// the minimum delay: it worked once, and whatever killed it may well be
+/// transient. A connection that died on arrival is charged, because a server that
+/// completes its handshake and then exits would otherwise loop forever -- it never
+/// fails to *connect*, so nothing in the launch-failure accounting ever sees it.
+fn charge_disconnect(
+    connected_at: Option<Instant>,
+    failures: &mut VecDeque<Instant>,
+    restart_delay: &mut Duration,
+    language: &str,
+) -> (Duration, LanguageServerRuntimeState) {
+    if health::was_stable(connected_at) {
+        failures.clear();
+        *restart_delay = RESTART_MIN_DELAY;
+        return (*restart_delay, LanguageServerRuntimeState::Retrying);
+    }
+    let now = Instant::now();
+    while failures
+        .front()
+        .is_some_and(|failure| now.duration_since(*failure) > RESTART_WINDOW)
+    {
+        failures.pop_front();
+    }
+    failures.push_back(now);
+    if failures.len() >= RESTART_LIMIT {
+        tracing::warn!(
+            language,
+            "language server keeps dying on startup; restart circuit opened"
+        );
+        return (CIRCUIT_COOLDOWN, LanguageServerRuntimeState::CircuitOpen);
+    }
+    let delay = *restart_delay;
+    *restart_delay = (*restart_delay * 2).min(RESTART_MAX_DELAY);
+    (delay, LanguageServerRuntimeState::Retrying)
 }
 
 pub(super) struct ServerTask {
@@ -254,11 +234,37 @@ pub(super) async fn server_task(task: ServerTask) {
     // Whether this task ever reached a working connection. A server that has
     // worked here before is worth retrying; one that has never started is not.
     let mut ever_connected = false;
+    // The verdict on the *current* connection, reset with every new one: a run of
+    // timeouts on a server that has since been replaced says nothing about its
+    // successor.
+    let mut tally = FailureTally::default();
+    // When the current connection was established, so a disconnect can tell a
+    // server that worked from one that died on arrival.
+    let mut connected_at: Option<Instant> = None;
+    // When this provider's published diagnostics stop being worth trusting. Armed
+    // on every disconnect, disarmed by a reconnect inside the window.
+    let mut clear_diagnostics_at: Option<Instant> = None;
 
     loop {
         if client.is_none() {
-            if Instant::now() < next_restart {
-                let sleep = tokio::time::sleep_until(tokio::time::Instant::from_std(next_restart));
+            if let Some(deadline) = clear_diagnostics_at
+                && Instant::now() >= deadline
+            {
+                clear_diagnostics_at = None;
+                // `language` is the slot key the forwarder publishes under, not a
+                // bare provider id -- reconstructing one here cleared nothing.
+                let _ = updates.send(LspUpdate::DiagnosticsCleared {
+                    generation,
+                    server: language.clone(),
+                });
+            }
+            // Sleep to whichever deadline comes first. The grace window usually
+            // outlasts the first two reconnect attempts, so it is normally the
+            // reconnect that wakes us and the grace never fires at all.
+            let wake_at =
+                clear_diagnostics_at.map_or(next_restart, |grace| next_restart.min(grace));
+            if Instant::now() < wake_at {
+                let sleep = tokio::time::sleep_until(tokio::time::Instant::from_std(wake_at));
                 tokio::pin!(sleep);
                 tokio::select! {
                     cmd = rx.recv() => {
@@ -271,6 +277,11 @@ pub(super) async fn server_task(task: ServerTask) {
                     },
                     () = &mut sleep => {},
                 }
+            }
+            // Woken by the grace deadline rather than the retry clock: go round so
+            // the block above fires it, then sleep out the rest of the backoff.
+            if Instant::now() < next_restart {
+                continue;
             }
 
             let now = Instant::now();
@@ -312,7 +323,20 @@ pub(super) async fn server_task(task: ServerTask) {
                     ));
                     client = Some(candidate);
                     ever_connected = true;
-                    failures.clear();
+                    connected_at = Some(Instant::now());
+                    tally = FailureTally::default();
+                    // Back inside the window: the markers on screen are about to
+                    // be republished, so they were never stale.
+                    clear_diagnostics_at = None;
+                    // The failure budget is *not* cleared here. Connecting is not
+                    // the same as working: a server that exits the moment it has
+                    // read `didOpen` connects perfectly every time, so clearing
+                    // the budget on connect meant such a loop could never open the
+                    // circuit. It used to be gated by the user typing, which hid
+                    // the cost; now that a death is noticed immediately, an
+                    // uncounted loop would respawn forever. The budget is cleared
+                    // on disconnect instead, and only for a connection that lasted
+                    // long enough to count as real.
                     restart_delay = RESTART_MIN_DELAY;
                     spawn_failure_reported = false;
                     tracing::info!(language, "language server connected");
@@ -389,10 +413,39 @@ pub(super) async fn server_task(task: ServerTask) {
             }
         }
 
-        let cmd = if pending.is_some() {
-            match tokio::time::timeout(CHANGE_DEBOUNCE, rx.recv()).await {
-                Ok(cmd) => cmd,
-                Err(_quiet) => {
+        // Three things can wake the connected loop, and the third is the one that
+        // was missing: the connection dying on its own. Without that arm a server
+        // that exits while the user reads rather than types stays `Running` until
+        // the next request happens to fail.
+        let cmd =
+            match health::next_wake(&mut rx, client.as_ref(), CHANGE_DEBOUNCE, pending.is_some())
+                .await
+            {
+                health::Wake::Lost => {
+                    let _ = client.take();
+                    if let Some(task) = diagnostic_task.take() {
+                        task.abort();
+                    }
+                    // Reported exactly as a death found by a failing call is, so
+                    // catching the exit sooner does not make it quieter.
+                    tally.note_lost(&updates, &language, generation);
+                    // The buffered edit dies with the connection it was headed for.
+                    // The replay set holds the document's whole text, so the reconnect
+                    // re-opens it entire rather than applying a stale delta.
+                    pending = None;
+                    let (delay, state) = charge_disconnect(
+                        connected_at,
+                        &mut failures,
+                        &mut restart_delay,
+                        &language,
+                    );
+                    connected_at = None;
+                    next_restart = Instant::now() + delay;
+                    clear_diagnostics_at = Some(Instant::now() + DIAGNOSTIC_GRACE);
+                    report_state(state, None);
+                    continue;
+                },
+                health::Wake::Quiet => {
                     let Some(active) = client.as_ref() else {
                         continue;
                     };
@@ -401,6 +454,7 @@ pub(super) async fn server_task(task: ServerTask) {
                         active,
                         &mut pending,
                         &mut dead,
+                        &mut tally,
                         &updates,
                         &language,
                         generation,
@@ -411,15 +465,21 @@ pub(super) async fn server_task(task: ServerTask) {
                         if let Some(task) = diagnostic_task.take() {
                             task.abort();
                         }
-                        next_restart = Instant::now() + restart_delay;
-                        report_state(LanguageServerRuntimeState::Retrying, None);
+                        let (delay, state) = charge_disconnect(
+                            connected_at,
+                            &mut failures,
+                            &mut restart_delay,
+                            &language,
+                        );
+                        connected_at = None;
+                        next_restart = Instant::now() + delay;
+                        clear_diagnostics_at = Some(Instant::now() + DIAGNOSTIC_GRACE);
+                        report_state(state, None);
                     }
                     continue;
                 },
-            }
-        } else {
-            rx.recv().await
-        };
+                health::Wake::Command(cmd) => cmd,
+            };
         let Some(cmd) = cmd else {
             break; // the session dropped the manager
         };
@@ -442,6 +502,7 @@ pub(super) async fn server_task(task: ServerTask) {
                         active,
                         &mut pending,
                         &mut dead,
+                        &mut tally,
                         &updates,
                         &language,
                         generation,
@@ -462,6 +523,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     active,
                     &mut pending,
                     &mut dead,
+                    &mut tally,
                     &updates,
                     &language,
                     generation,
@@ -471,7 +533,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     let result = active
                         .did_open(&path, &document_language, version, &text)
                         .await;
-                    note_failure(result, &mut dead, &updates, &language, generation);
+                    tally.note(result, &mut dead, &updates, &language, generation);
                 }
             },
             ServerCmd::DidClose { path } => {
@@ -479,6 +541,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     active,
                     &mut pending,
                     &mut dead,
+                    &mut tally,
                     &updates,
                     &language,
                     generation,
@@ -486,7 +549,7 @@ pub(super) async fn server_task(task: ServerTask) {
                 .await;
                 if !dead {
                     let result = active.did_close(&path).await;
-                    note_failure(result, &mut dead, &updates, &language, generation);
+                    tally.note(result, &mut dead, &updates, &language, generation);
                 }
             },
             ServerCmd::DidSave { path, text } => {
@@ -494,6 +557,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     active,
                     &mut pending,
                     &mut dead,
+                    &mut tally,
                     &updates,
                     &language,
                     generation,
@@ -501,7 +565,7 @@ pub(super) async fn server_task(task: ServerTask) {
                 .await;
                 if !dead {
                     let result = active.did_save(&path, Some(&text)).await;
-                    note_failure(result, &mut dead, &updates, &language, generation);
+                    tally.note(result, &mut dead, &updates, &language, generation);
                 }
             },
             ServerCmd::Completion {
@@ -516,6 +580,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     active,
                     &mut pending,
                     &mut dead,
+                    &mut tally,
                     &updates,
                     &language,
                     generation,
@@ -527,7 +592,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     match active.completion(&path, position).await {
                         Ok(items) => items,
                         Err(e) => {
-                            note_failure::<()>(Err(e), &mut dead, &updates, &language, generation);
+                            tally.note::<()>(Err(e), &mut dead, &updates, &language, generation);
                             Vec::new()
                         },
                     }
@@ -551,6 +616,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     active,
                     &mut pending,
                     &mut dead,
+                    &mut tally,
                     &updates,
                     &language,
                     generation,
@@ -562,7 +628,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     match active.document_symbols(&path).await {
                         Ok(symbols) => symbols,
                         Err(error) => {
-                            note_failure::<()>(
+                            tally.note::<()>(
                                 Err(error),
                                 &mut dead,
                                 &updates,
@@ -592,6 +658,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     active,
                     &mut pending,
                     &mut dead,
+                    &mut tally,
                     &updates,
                     &language,
                     generation,
@@ -601,7 +668,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     None
                 } else {
                     active.hover(&path, position).await.unwrap_or_else(|error| {
-                        note_failure::<()>(Err(error), &mut dead, &updates, &language, generation);
+                        tally.note::<()>(Err(error), &mut dead, &updates, &language, generation);
                         None
                     })
                 };
@@ -624,6 +691,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     active,
                     &mut pending,
                     &mut dead,
+                    &mut tally,
                     &updates,
                     &language,
                     generation,
@@ -636,7 +704,7 @@ pub(super) async fn server_task(task: ServerTask) {
                         .definition(&path, position)
                         .await
                         .unwrap_or_else(|error| {
-                            note_failure::<()>(
+                            tally.note::<()>(
                                 Err(error),
                                 &mut dead,
                                 &updates,
@@ -659,6 +727,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     active,
                     &mut pending,
                     &mut dead,
+                    &mut tally,
                     &updates,
                     &language,
                     generation,
@@ -671,7 +740,7 @@ pub(super) async fn server_task(task: ServerTask) {
                         .workspace_symbols(&query)
                         .await
                         .unwrap_or_else(|error| {
-                            note_failure::<()>(
+                            tally.note::<()>(
                                 Err(error),
                                 &mut dead,
                                 &updates,
@@ -698,6 +767,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     active,
                     &mut pending,
                     &mut dead,
+                    &mut tally,
                     &updates,
                     &language,
                     generation,
@@ -710,7 +780,7 @@ pub(super) async fn server_task(task: ServerTask) {
                         .rename(&path, position, &new_name)
                         .await
                         .unwrap_or_else(|error| {
-                            note_failure::<()>(
+                            tally.note::<()>(
                                 Err(error),
                                 &mut dead,
                                 &updates,
@@ -736,6 +806,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     active,
                     &mut pending,
                     &mut dead,
+                    &mut tally,
                     &updates,
                     &language,
                     generation,
@@ -745,7 +816,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     Vec::new()
                 } else {
                     active.formatting(&path).await.unwrap_or_else(|error| {
-                        note_failure::<()>(Err(error), &mut dead, &updates, &language, generation);
+                        tally.note::<()>(Err(error), &mut dead, &updates, &language, generation);
                         Vec::new()
                     })
                 };
@@ -764,8 +835,12 @@ pub(super) async fn server_task(task: ServerTask) {
                 task.abort();
             }
             pending = None;
-            next_restart = Instant::now() + restart_delay;
-            report_state(LanguageServerRuntimeState::Retrying, None);
+            let (delay, state) =
+                charge_disconnect(connected_at, &mut failures, &mut restart_delay, &language);
+            connected_at = None;
+            next_restart = Instant::now() + delay;
+            clear_diagnostics_at = Some(Instant::now() + DIAGNOSTIC_GRACE);
+            report_state(state, None);
         }
     }
     if let Some(client) = client {
@@ -782,6 +857,7 @@ async fn flush_pending(
     client: &LspClient,
     pending: &mut Option<(PathBuf, i32, String)>,
     dead: &mut bool,
+    tally: &mut FailureTally,
     updates: &mpsc::UnboundedSender<LspUpdate>,
     language: &str,
     generation: u64,
@@ -792,32 +868,6 @@ async fn flush_pending(
     }
     if let Some((path, version, text)) = pending.take() {
         let result = client.did_change(&path, version, &text).await;
-        note_failure(result, dead, updates, language, generation);
-    }
-}
-
-/// Record a client-call failure: a closed connection kills the server slot
-/// (reported once); other errors are logged and the task keeps going.
-fn note_failure<T>(
-    result: Result<T, LspError>,
-    dead: &mut bool,
-    updates: &mpsc::UnboundedSender<LspUpdate>,
-    language: &str,
-    generation: u64,
-) {
-    match result {
-        Ok(_) => {},
-        Err(LspError::Closed) => {
-            if !*dead {
-                *dead = true;
-                let _ = updates.send(LspUpdate::ServerDied {
-                    generation,
-                    language: language.to_owned(),
-                });
-            }
-        },
-        Err(e) => {
-            tracing::warn!(language, error = %e, "language server call failed");
-        },
+        tally.note(result, dead, updates, language, generation);
     }
 }

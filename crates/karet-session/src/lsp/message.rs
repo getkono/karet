@@ -235,6 +235,24 @@ pub(crate) enum LspUpdate {
         /// The language whose server died.
         language: String,
     },
+    /// A provider stayed down past the grace period: drop what it published.
+    ///
+    /// Diagnostics used to be inserted and never removed, so a crashed server's
+    /// squiggles outlived it -- and after a generation bump, which can change the
+    /// key they were filed under, they could outlive the session. Sent only after
+    /// the grace window, so a reconnect inside it does not make every marker
+    /// flicker off and back on.
+    DiagnosticsCleared {
+        /// The manager generation that spawned the server task.
+        generation: u64,
+        /// The diagnostic layer to drop, keyed exactly as it was published.
+        ///
+        /// That key is the slot's -- `{provider}@{root}` -- so it already scopes
+        /// the clear to the one instance that died. A provider running at two
+        /// repository roots keeps the markers published by the root that is still
+        /// healthy.
+        server: String,
+    },
     /// A built-in provider karet can install is locally absent. No network
     /// operation was attempted.
     InstallRequired {
