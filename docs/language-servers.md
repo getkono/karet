@@ -290,16 +290,26 @@ A lost connection is noticed the moment it happens, not the next time karet has
 something to ask: each server task waits on the connection's liveness alongside its
 own command queue, so a server that exits while you are reading rather than typing
 starts reconnecting immediately. A server that keeps its pipe open but stops
-answering is also treated as dead, after three consecutive request timeouts -- one
-slow answer is ordinary for a cold rust-analyzer or a jdtls mid-import, a run of
-them is not.
+answering is also treated as dead, after three consecutive request timeouts --
+but only once it has answered something. "Stopped answering" presupposes having
+answered: a cold rust-analyzer or a jdtls mid-import can go minutes without
+answering its first request, and killing one there restarts the import, which
+guarantees the next requests time out too.
+
+A connection that dies without having lasted ten seconds is charged against the
+restart budget, so five such cycles in a minute open the circuit. Connecting is
+not the same as working: a server that exits as soon as it has read `didOpen`
+connects perfectly every time, and would otherwise respawn without bound.
 
 A dead provider's diagnostics are dropped one second after it goes down, and only
-its own: other servers' markers, spell-check and lint results are untouched, and
-only documents under the root that died lose theirs. The delay is deliberate --
-the usual death is followed by a reconnect at 250 ms, and clearing immediately
-would flicker every marker off and back on for an outage nobody would otherwise
-have noticed.
+its own: they are keyed by the exact provider-and-root that published them, so
+other servers' markers, the same provider's markers at another repository root,
+spell-check and lint results are all untouched. The delay is deliberate -- the
+usual death is followed by a reconnect at 250 ms, and clearing immediately would
+flicker every marker off and back on for an outage nobody would otherwise have
+noticed. Retiring a provider outright -- turning LSP off, editing its settings,
+closing the last document that needed it -- clears its markers with no delay,
+since no reconnect is coming to make them true again.
 Requests made during an outage receive an empty response rather than hanging.
 Both protocol and per-server command queues are bounded at 256 messages.
 
@@ -328,7 +338,7 @@ The eight states separate by *cause*, because what the user should do differs:
 
 | Badge | Condition | Whose move |
 |---|---|---|
-| `off` | a provider covers the language but is disabled in settings | yours, if you want it |
+| `off` | a provider covers the language but is disabled -- by `lsp.enabled` or by its own `lsp.servers.<id>.enabled` | yours, if you want it |
 | `idle` | resolvable and healthy; nothing has needed it yet | nobody's |
 | `ready` | connected and synchronized | nobody's |
 | `starting` | connecting | nobody's |
@@ -345,7 +355,9 @@ five times in a minute and will not be retried for five more.
 
 Where several providers cover one file -- Python is Pyright *and* Ruff -- the worst
 state wins so a problem is never hidden, and a `healthy/total` count rides along so
-a partial failure reads as partial. A file whose Pyright is answering normally and
+a partial failure reads as partial. A provider you switched off is not counted: a
+running Pyright beside a deliberately disabled Ruff is working completely, and
+reporting `1/2` would invite you to go and fix your own decision. A file whose Pyright is answering normally and
 whose Ruff is missing shows `not installed 1/2`, not a blanket failure.
 
 **Clicking a badge opens the Language Servers tab, and does nothing else.** It
@@ -449,14 +461,21 @@ converge rather than fight.
 
 A provider that karet gives up on -- a binary that is absent, not executable, or
 that exits on sight and never once connected -- reports `failed`/`not installed`
-*and* retires its slot. Resolution short-circuits on a live slot, so leaving one
-behind was what made that verdict permanent: installing the binary, fixing its
-permissions, or putting it on `PATH` changed nothing for the rest of the session.
-Now the next time a document of that language opens, resolution runs again from
-the top -- settings, project, `PATH`, install journal -- and either finds an
-executable or reports the same absence. Re-probing performs no network I/O, and the
-install prompt is still raised at most once, so re-resolution never re-asks a
-question you have answered.
+and stops being retried. Resolution short-circuits on a live provider, so that
+verdict used to be permanent: installing the binary, or fixing its permissions,
+changed nothing for the rest of the session.
+
+The verdict is now lifted on evidence. Each time a document of that language
+opens, karet checks whether the executable is actually there; if it is, the
+provider is re-resolved from the top -- settings, project, `PATH`, install
+journal -- and started. If it is not, the verdict stands and karet says nothing.
+That asymmetry matters: re-attempting the launch unconditionally would re-run a
+missing binary on every file you open and report the same failure each time.
+
+The check is a `stat`, never a spawn, and performs no network I/O. It reads the
+same install journal every karet process writes through the same per-provider
+lock, so instances converge rather than fight. The install prompt is still raised
+at most once, so re-resolution never re-asks a question you have answered.
 
 A completed install starts the provider immediately, for every open document whose
 language it serves -- including a companion like Ruff or Biome, which is no
