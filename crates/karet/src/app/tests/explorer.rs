@@ -319,6 +319,7 @@ fn breadcrumb_frame(app: &App, segment: PathBuf) -> PaneFrame {
             width: 40,
             height: 1,
         },
+        lsp_badge_hit: None,
         breadcrumb_hits: vec![BreadcrumbHit {
             start: 12,
             end: 15,

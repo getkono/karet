@@ -801,12 +801,14 @@ fn runtime_role(state: LanguageServerRuntimeState) -> ThemeRole {
         LanguageServerRuntimeState::Starting => ThemeRole::DiagnosticInfo,
         LanguageServerRuntimeState::Running => ThemeRole::DiagnosticHint,
         LanguageServerRuntimeState::Retrying => ThemeRole::DiagnosticWarning,
-        // The breaker being open is a successful protective state; its associated
-        // runtime failure remains separately rendered in the error color.
-        LanguageServerRuntimeState::CircuitOpen => ThemeRole::DiagnosticHint,
-        LanguageServerRuntimeState::Unavailable | LanguageServerRuntimeState::Stopped => {
-            ThemeRole::DiagnosticError
-        },
+        // An open breaker reads as an error here, not as the protective success it
+        // also is. The breaker is karet's own mechanism; what the user has is a
+        // provider that crashed five times in a minute and will not be retried for
+        // the next five. Colouring that as a hint made this table disagree with the
+        // editor's own badge about the same condition.
+        LanguageServerRuntimeState::CircuitOpen
+        | LanguageServerRuntimeState::Unavailable
+        | LanguageServerRuntimeState::Stopped => ThemeRole::DiagnosticError,
         _ => ThemeRole::Muted,
     }
 }

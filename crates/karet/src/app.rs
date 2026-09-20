@@ -178,6 +178,7 @@ use karet_widgets::scroll::TrackHit;
 pub(crate) use karet_widgets::textarea::TextAreaState;
 pub(crate) use karet_widgets::textfield::TextFieldState;
 pub(crate) use language_servers::LanguageServerBadge;
+pub(crate) use language_servers::LanguageServerBadgeSummary;
 pub(crate) use notifications::Report;
 pub(crate) use pending::Pending;
 use ratatui::layout::Rect;

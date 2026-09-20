@@ -123,8 +123,14 @@ impl App {
     /// A server that is still starting answers instantly with nothing, which would
     /// otherwise read as "this symbol has no definition".
     fn no_definition_reason(&self) -> &'static str {
-        match self.active_language_server_badge() {
-            None | Some(LanguageServerBadge::Unavailable) => "no language server for this file",
+        match self.active_language_server_badge().map(|badge| badge.state) {
+            None
+            | Some(
+                LanguageServerBadge::Off
+                | LanguageServerBadge::NotInstalled
+                | LanguageServerBadge::NeedsSetup,
+            ) => "no language server for this file",
+            Some(LanguageServerBadge::Failed) => "the language server for this file is not running",
             Some(LanguageServerBadge::Starting | LanguageServerBadge::Retrying) => {
                 "language server is still starting"
             },
@@ -224,7 +230,9 @@ impl App {
         }
         // Promise only what a click can deliver: this is the same condition under
         // which the backend finds a server to ask, so no probe request is needed.
-        if self.active_language_server_badge() != Some(LanguageServerBadge::InSync) {
+        if self.active_language_server_badge().map(|badge| badge.state)
+            != Some(LanguageServerBadge::Ready)
+        {
             return None;
         }
         let point = (mouse.column, mouse.row);

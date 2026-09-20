@@ -82,6 +82,20 @@ impl App {
             return false;
         }
         let point = (mouse.column, mouse.row);
+        // The badge is checked before the path segments because it is painted over
+        // the row's right edge, which the breadcrumb no longer occupies.
+        if self.pane_frames.iter().any(|f| {
+            rect_contains(f.breadcrumb_rect, point)
+                && f.lsp_badge_hit
+                    .is_some_and(|(start, end)| mouse.column >= start && mouse.column < end)
+        }) {
+            // Opening the manager is the whole of it: the badge reports a condition
+            // and offers a place to act on it, but never acts by itself. An install
+            // or a restart spends the user's bandwidth or kills a running process,
+            // and neither is something a single click on a status glyph should do.
+            self.dispatch(Command::ManageLanguageServers);
+            return true;
+        }
         let Some(hit) = self.pane_frames.iter().find_map(|f| {
             rect_contains(f.breadcrumb_rect, point).then(|| {
                 f.breadcrumb_hits
