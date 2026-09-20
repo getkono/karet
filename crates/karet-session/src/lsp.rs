@@ -172,9 +172,53 @@ impl LspManager {
         true
     }
 
+    /// Retire a slot karet gave up on, but only once its executable is there.
+    ///
+    /// `Unavailable` means the launch failed in a way no retry fixes, and the task
+    /// stopped rather than respawning forever. Resolution short-circuits on a live
+    /// slot, so leaving the slot alone made that verdict permanent: installing the
+    /// binary, or fixing its permissions, changed nothing for the rest of the
+    /// session. Retiring it unconditionally is worse -- every later document open
+    /// re-execs the same missing binary and reports the same failure again, which
+    /// for a configured command that never existed is an unbounded stream of
+    /// identical notifications.
+    ///
+    /// So the verdict is lifted on evidence. The check is a `stat`, not a spawn; it
+    /// reads the same install journal every other karet process writes through its
+    /// per-provider lock, so instances converge; and it is idempotent, because an
+    /// absent binary leaves the verdict standing and says nothing.
+    fn lift_verdict_if_runnable(
+        &mut self,
+        provider: Option<&LanguageServerId>,
+        root: &Path,
+        key: &str,
+        command: &OsStr,
+    ) {
+        let Some(provider) = provider else {
+            return;
+        };
+        let entry = (provider.clone(), root.to_path_buf());
+        let gave_up = self
+            .runtime_states
+            .get(&entry)
+            .is_some_and(|(state, _)| *state == LanguageServerRuntimeState::Unavailable);
+        if gave_up && executable_exists(command) {
+            self.servers.remove(key);
+            self.runtime_states.remove(&entry);
+        }
+    }
+
     /// Whether an asynchronous update belongs to the current server generation.
     pub(crate) fn accepts(&self, update: &LspUpdate) -> bool {
+        // Exempt: a retiring task's parting instruction to drop what it published.
+        // `reconfigure` and `restart` bump the generation *before* the task they
+        // retire gets to exit, so fencing this would discard the one message that
+        // removes the markers of the generation being retired -- and after a bump
+        // the layer key can change, so nothing else would ever replace them.
+        // Dropping a layer is idempotent and cannot corrupt a newer generation:
+        // the key names the exact slot that published it.
         let generation = match update {
+            LspUpdate::DiagnosticsCleared { .. } => return true,
             LspUpdate::Completions { generation, .. }
             | LspUpdate::Symbols { generation, .. }
             | LspUpdate::Hover { generation, .. }
@@ -183,7 +227,7 @@ impl LspManager {
             | LspUpdate::WorkspaceEdit { generation, .. }
             | LspUpdate::Formatting { generation, .. }
             | LspUpdate::Diagnostics { generation, .. }
-            | LspUpdate::DiagnosticsCleared { generation, .. }
+            | LspUpdate::SyncFailed { generation, .. }
             | LspUpdate::ServerStatus { generation, .. }
             | LspUpdate::SpawnFailed { generation, .. }
             | LspUpdate::PreflightFailed { generation, .. }
@@ -424,6 +468,7 @@ impl LspManager {
             .as_ref()
             .map_or_else(|| language.clone(), |server| server.key().to_owned());
         let key = format!("{provider_key}@{}", root.to_string_lossy());
+        self.lift_verdict_if_runnable(provider.as_ref(), &root, &key, OsStr::new(&spec.command));
         if !self.servers.contains_key(&key) {
             // Server tasks need an async runtime; a session driven synchronously
             // (unit tests, bare library use) simply runs without LSP.
@@ -480,6 +525,7 @@ impl LspManager {
             return None;
         };
         let key = format!("{}@{}", provider.key(), root.to_string_lossy());
+        self.lift_verdict_if_runnable(Some(&provider), &root, &key, OsStr::new(&spec.command));
         if !self.servers.contains_key(&key) {
             let handle = tokio::runtime::Handle::try_current().ok()?;
             let (tx, rx) = mpsc::channel(SERVER_COMMAND_CAPACITY);
@@ -636,15 +682,10 @@ impl LspManager {
         };
         let closed = slot.tx.is_closed();
         if let Some(server) = slot.provider.clone() {
-            // Sent as a normal runtime transition so it lands wherever every
-            // other one does: recorded by the session, badged in the editor, and
-            // listed against this provider's row in the manager.
-            let _ = self.updates.send(LspUpdate::RuntimeState {
+            let _ = self.updates.send(LspUpdate::SyncFailed {
                 generation: self.generation,
                 server,
-                root: slot.root.clone(),
-                state: LanguageServerRuntimeState::Retrying,
-                error: Some(format!("document sync failed: {reason}")),
+                reason: reason.to_owned(),
             });
         }
         if closed {

@@ -94,3 +94,88 @@ async fn a_transient_failure_is_retried_rather_than_giving_up() -> TestResult {
     );
     Ok(())
 }
+
+/// A provider karet gave up on is re-resolved only once its executable exists.
+///
+/// Two failure modes bracket this. Keeping the slot made the verdict permanent:
+/// resolution short-circuits on a live slot, so installing the binary changed
+/// nothing until the user found the manager and pressed Restart. Retiring it
+/// unconditionally was worse: every later document open re-execs the same missing
+/// binary and reports the same failure again -- an unbounded stream of identical
+/// notifications for a command that never existed.
+///
+/// Observed through `runtime_states` rather than a spawn count, because lifting
+/// the verdict is exactly what clears that entry, and it is synchronous.
+#[tokio::test]
+async fn a_provider_given_up_on_is_retried_only_once_its_binary_appears() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let binary = dir.path().join("pretend-analyzer");
+    // Declared through `lsp.languages`, which is how a configured primary is
+    // actually selected: `lsp.servers` is looked up by the language's named
+    // provider or by the language itself, never by a built-in provider id. Naming
+    // the entry `rust-analyzer` would leave resolution falling through to whatever
+    // real rust-analyzer happens to be on this machine's PATH.
+    let mut settings = LspSettings::default();
+    settings.languages.insert(
+        "rust".to_owned(),
+        crate::config::schema::LspLanguage {
+            servers: vec!["pretend-analyzer".to_owned()],
+            ..crate::config::schema::LspLanguage::default()
+        },
+    );
+    settings.servers.insert(
+        "pretend-analyzer".to_owned(),
+        crate::config::schema::LspServer {
+            command: binary.to_string_lossy().into_owned(),
+            ..crate::config::schema::LspServer::default()
+        },
+    );
+    let (mut manager, _updates) =
+        LspManager::new(settings, Some(dir.path().to_path_buf()), None, None);
+    manager.set_connector(test_connector(
+        Behavior::Normal,
+        None,
+        Arc::new(AtomicUsize::new(0)),
+    ));
+    let path = dir.path().join("main.rs");
+    std::fs::write(&path, "fn main() {}\n")?;
+    let verdict = (
+        LanguageServerId::new("pretend-analyzer"),
+        crate::lsp::absolute_path(dir.path()),
+    );
+
+    manager.document_opened(Some("rust"), Some("rust"), &path, 1, || {
+        "fn main() {}".into()
+    });
+    manager.note_runtime(
+        verdict.0.clone(),
+        verdict.1.clone(),
+        LanguageServerRuntimeState::Unavailable,
+        Some("no such file".to_owned()),
+    );
+
+    // Still absent: the verdict stands, and nothing is re-attempted.
+    manager.document_opened(Some("rust"), Some("rust"), &path, 2, || {
+        "fn main() {}".into()
+    });
+    assert!(
+        manager.runtime_states.contains_key(&verdict),
+        "an absent binary lifted the verdict, which is where the notification storm came from"
+    );
+
+    // Now it is there. The next open lifts the verdict and re-resolves.
+    std::fs::write(&binary, "#!/bin/sh\n")?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755))?;
+    }
+    manager.document_opened(Some("rust"), Some("rust"), &path, 3, || {
+        "fn main() {}".into()
+    });
+    assert!(
+        !manager.runtime_states.contains_key(&verdict),
+        "installing the binary did not bring the provider back"
+    );
+    Ok(())
+}

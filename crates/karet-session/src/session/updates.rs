@@ -238,6 +238,14 @@ impl Session {
             LspUpdate::DiagnosticsCleared { server, .. } => {
                 self.clear_lsp_diagnostic_layer(&server);
             },
+            LspUpdate::SyncFailed { server, reason, .. } => self.emit(
+                None,
+                Event::Notification {
+                    severity: Severity::Warning,
+                    kind: NotificationKind::Lsp,
+                    message: format!("{} is behind on this file: {reason}", server.display_name()),
+                },
+            ),
             LspUpdate::SpawnFailed {
                 server,
                 root,

@@ -235,6 +235,21 @@ pub(crate) enum LspUpdate {
         /// The language whose server died.
         language: String,
     },
+    /// A document-sync command never reached its server.
+    ///
+    /// Deliberately not a [`Self::RuntimeState`]: the server is running fine, it
+    /// is merely behind, and publishing `Retrying` for it wrote a wrong state into
+    /// the manager that nothing ever corrected -- the task had not transitioned, so
+    /// it never re-reported `Running`, and the badge stayed a warning for the rest
+    /// of the session while every request was answered normally.
+    SyncFailed {
+        /// The manager generation that spawned the server task.
+        generation: u64,
+        /// The provider whose copy of the document is now behind.
+        server: LanguageServerId,
+        /// What went wrong, phrased for the user.
+        reason: String,
+    },
     /// A provider stayed down past the grace period: drop what it published.
     ///
     /// Diagnostics used to be inserted and never removed, so a crashed server's
@@ -243,8 +258,6 @@ pub(crate) enum LspUpdate {
     /// the grace window, so a reconnect inside it does not make every marker
     /// flicker off and back on.
     DiagnosticsCleared {
-        /// The manager generation that spawned the server task.
-        generation: u64,
         /// The diagnostic layer to drop, keyed exactly as it was published.
         ///
         /// That key is the slot's -- `{provider}@{root}` -- so it already scopes
