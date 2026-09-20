@@ -82,7 +82,13 @@ impl LspManager {
                     .collect();
                 let root = self.registry_root.as_deref();
                 LanguageServerStatus {
-                    enabled: self.settings.enabled,
+                    // Both switches, not just the global one. A provider turned off
+                    // by its own `lsp.servers.<id>.enabled = false` is never
+                    // launched, so reporting it as enabled made the editor badge it
+                    // as healthy-but-idle: a state indistinguishable from a working
+                    // provider that simply has not been needed yet, for something
+                    // the user had explicitly switched off.
+                    enabled: self.settings.enabled && !self.provider_disabled(&server),
                     installed,
                     ever_installed: crate::lsp_registry::ever_installed(root, &server),
                     declined: crate::lsp_registry::read_declined(root, &server).is_some(),
@@ -100,6 +106,18 @@ impl LspManager {
             .collect()
     }
 
+    /// Whether this provider's own `lsp.servers` entry forbids launching it.
+    ///
+    /// The same verdict `spec_for` acts on -- an entry with `enabled = false`, or
+    /// with an empty command -- read here so the inventory agrees with what the
+    /// launch path will actually do.
+    fn provider_disabled(&self, server: &LanguageServerId) -> bool {
+        self.settings
+            .servers
+            .get(server.key())
+            .is_some_and(|setting| !setting.enabled || setting.command.is_empty())
+    }
+
     fn inventory_instance(
         &self,
         server: &LanguageServerId,
@@ -108,6 +126,20 @@ impl LspManager {
     ) -> LanguageServerInstanceStatus {
         let configured = self.settings.servers.get(server.key());
         let language = languages.iter().next().map_or(server.key(), String::as_str);
+        // A provider its own entry disables resolves to nothing at all. Falling
+        // through to the built-in table here reported a command that would never be
+        // run, which read as an available provider.
+        if self.provider_disabled(server) {
+            return LanguageServerInstanceStatus {
+                root: root.to_path_buf(),
+                source: LanguageServerSource::Unavailable,
+                command: None,
+                args: Vec::new(),
+                runtime: LanguageServerRuntimeState::Idle,
+                open_documents: 0,
+                error: None,
+            };
+        }
         let resolved = configured
             .filter(|setting| setting.enabled && !setting.command.is_empty())
             .map(|setting| {

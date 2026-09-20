@@ -143,9 +143,16 @@ pub(crate) fn badge_for(
         let Some(badge) = provider_badge(status, path) else {
             continue;
         };
-        total = total.saturating_add(1);
-        if badge.is_healthy() {
-            healthy = healthy.saturating_add(1);
+        // A provider the user switched off is not a provider that is missing, so it
+        // is not counted: a running Pyright beside a deliberately disabled Ruff is
+        // working completely, and reporting it as `1/2` would invite the user to go
+        // and fix a decision they made. It still sets the state when it is the only
+        // thing covering the file, which is how `off` is ever seen.
+        if badge != LanguageServerBadge::Off {
+            total = total.saturating_add(1);
+            if badge.is_healthy() {
+                healthy = healthy.saturating_add(1);
+            }
         }
         state = Some(state.map_or(badge, |current| current.max(badge)));
     }
