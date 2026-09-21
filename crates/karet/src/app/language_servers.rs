@@ -23,7 +23,10 @@ pub(crate) use badge::LanguageServerBadgeSummary;
 impl LanguageServerRuntimeModel {
     fn replace(&mut self, request: Option<RequestId>, servers: Vec<LanguageServerStatus>) {
         self.servers = servers;
-        if request.is_none() || self.inventory_request == request {
+        // An untagged push answers nobody. Taking its rows is right; clearing a
+        // request that is still out is not -- the reply would then land with
+        // nothing waiting for it, and this cache would keep the older push.
+        if request.is_some() && self.inventory_request == request {
             self.inventory_request = None;
         }
     }
@@ -559,9 +562,12 @@ impl App {
         // No card for the count: this only ever fills the Language Servers tab,
         // whose table already lists every server and whether it is available.
         for tab in self.all_tabs_mut() {
-            if let TabKind::LanguageServers(view) = &mut tab.kind
-                && (request.is_none() || view.inventory_request == request)
-            {
+            let TabKind::LanguageServers(view) = &mut tab.kind else {
+                continue;
+            };
+            if request.is_none() {
+                view.adopt_pushed_servers(servers.clone());
+            } else if view.inventory_request == request {
                 view.set_servers(servers.clone());
             }
         }

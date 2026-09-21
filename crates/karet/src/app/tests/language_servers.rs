@@ -133,8 +133,17 @@ fn language_server_manager_mouse_selects_rows_and_runs_toolbar_actions() {
     let mut app = app();
     app.backend = Some(backend.clone());
     app.open_language_servers();
+    // Answered the way the session answers: tagged with the request the view is
+    // waiting on. An untagged payload is a *push*, which deliberately leaves the
+    // outstanding request pending -- so the strip would still read "Refreshing…"
+    // and offer no Refresh action, which is correct and not what this test is
+    // about.
+    let pending = match &app.tabs[app.active].kind {
+        TabKind::LanguageServers(view) => view.inventory_request,
+        _ => panic!("expected language-server manager"),
+    };
     app.show_language_server_status(
-        None,
+        pending,
         vec![
             language_server_status(LanguageServerId::RustAnalyzer, "rust", true),
             language_server_status(LanguageServerId::Clangd, "c", false),

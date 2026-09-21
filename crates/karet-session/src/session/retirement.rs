@@ -62,10 +62,18 @@ impl Session {
     /// authoritative for every field at once, so it is sent whole.
     ///
     /// Sent once per retirement rather than once per slot, and only on
-    /// retirement: the count only falls when a slot goes, and building this
-    /// reads the managed-install registry for every provider. `replace` on the
-    /// client already accepts an untagged snapshot, so this needs no new
-    /// vocabulary.
+    /// retirement: the document count only falls when a slot goes, and this is
+    /// not cheap to build. Per provider it reads the managed-install registry
+    /// four times, and per provider *and root* it re-resolves the executable --
+    /// probing the project directory and scanning `PATH`. Nothing memoises any
+    /// of it. If that ever shows up in a profile, the fix is to split
+    /// `inventory` into a settings-and-registry half (which changes only on
+    /// config reload, install, uninstall and decline, each of which already has
+    /// an event) and a live half that is pure over the slot map -- not to add a
+    /// second cache, which is the thing this change exists to remove.
+    ///
+    /// `replace` on the client already accepts an untagged snapshot, so this
+    /// needs no new vocabulary.
     fn publish_language_server_inventory(&mut self) {
         let paths = self
             .store

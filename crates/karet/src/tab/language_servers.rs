@@ -149,6 +149,21 @@ impl LanguageServersViewState {
             (self.selected as i64 + i64::from(delta)).clamp(0, (count - 1) as i64) as usize;
     }
 
+    /// Adopt an inventory the session pushed rather than one this view asked
+    /// for.
+    ///
+    /// The rows are as good as any, so they are taken, and the loading
+    /// placeholder stops -- there is something to draw. But a request this view
+    /// has out stays pending: clearing it would leave the answer to that request
+    /// arriving with nothing waiting for it, so the view would keep the push and
+    /// discard the *fresher* reply, and the guard that keeps one inventory
+    /// request in flight at a time would be gone too.
+    pub(crate) fn adopt_pushed_servers(&mut self, servers: Vec<LanguageServerStatus>) {
+        let pending = self.inventory_request;
+        self.set_servers(servers);
+        self.inventory_request = pending;
+    }
+
     pub(crate) fn set_servers(&mut self, mut servers: Vec<LanguageServerStatus>) {
         let selected = self.selected_id();
         servers.sort_by_key(|status| status.server.display_name().to_lowercase());

@@ -203,12 +203,15 @@ pub struct LanguageServerStatus {
 impl LanguageServerInstanceStatus {
     /// Whether this session holds a process worth restarting.
     ///
-    /// The one definition. Presentation used to carry two byte-identical copies
-    /// of this predicate -- one deciding whether to paint the button, one
-    /// deciding whether the click did anything -- and both read
-    /// [`open_documents`](Self::open_documents), which no event ever corrected.
-    /// A retired provider therefore kept offering a Restart for a process that
-    /// no longer existed.
+    /// Meant to become the one definition. Presentation carries two
+    /// byte-identical copies of this predicate today -- one deciding whether to
+    /// paint the button, one deciding whether the click does anything -- and
+    /// both read [`open_documents`](Self::open_documents), which no event ever
+    /// corrected, so a retired provider kept offering a Restart for a process
+    /// that no longer existed. The session-side half of that is fixed: the
+    /// pushed inventory now corrects both fields together. Deleting the two
+    /// copies in favour of this one is the client-side follow-up, which is why
+    /// nothing outside tests calls this yet.
     #[must_use]
     pub fn restartable(&self) -> bool {
         self.open_documents > 0
