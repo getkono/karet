@@ -618,8 +618,18 @@ impl LspManager {
             if !seen_targets.insert(key.clone()) {
                 continue;
             }
-            if let Some(slot) = self.servers.get_mut(&key) {
-                slot.documents.insert(path.clone());
+            // A slot that already holds this document has already been told
+            // about it, and `didOpen` for an open document is a protocol error.
+            // This is reachable whenever a reopen fans out to a provider that
+            // was not retired: scoping a restart to one provider leaves its
+            // language's companions running, and installing a provider reopens
+            // documents whose other providers never went anywhere.
+            let newly_attached = self
+                .servers
+                .get_mut(&key)
+                .is_none_or(|slot| slot.documents.insert(path.clone()));
+            if !newly_attached {
+                continue;
             }
             if tx
                 .try_send(ServerCmd::DidOpen {

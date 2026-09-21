@@ -201,9 +201,13 @@ async fn a_provider_that_cannot_start_keeps_reporting_why() -> TestResult {
 /// It stays alive after publishing. A server that *dies* arms the one-second
 /// grace clear, and then a passing test could not tell markers cleared because
 /// the provider was retired from markers cleared because it died.
-fn marking_connector(target: PathBuf) -> Connector {
+pub(super) fn marking_connector(
+    target: PathBuf,
+    opened: Option<mpsc::UnboundedSender<String>>,
+) -> Connector {
     Arc::new(move |spec, root| {
         let target = target.clone();
+        let opened = opened.clone();
         let source = PathBuf::from(&spec.command).file_name().map_or_else(
             || spec.command.clone(),
             |name| name.to_string_lossy().into(),
@@ -224,6 +228,11 @@ fn marking_connector(target: PathBuf) -> Connector {
                 let _initialized = read_msg(&mut reader).await;
                 let mut marked = false;
                 while let Some(msg) = read_msg(&mut reader).await {
+                    if msg["method"] == "textDocument/didOpen"
+                        && let Some(opened) = &opened
+                    {
+                        let _ = opened.send(source.clone());
+                    }
                     if msg["method"] == "textDocument/didOpen" && !marked {
                         marked = true;
                         write_msg(
@@ -287,7 +296,11 @@ async fn await_sources(
 }
 
 /// Open one document and return its id.
-async fn open(backend: &impl Backend, events: &mut EventRx, path: &Path) -> Option<DocumentId> {
+pub(super) async fn open(
+    backend: &impl Backend,
+    events: &mut EventRx,
+    path: &Path,
+) -> Option<DocumentId> {
     backend
         .send(
             backend.next_id(),
@@ -346,7 +359,7 @@ async fn retiring_one_provider_leaves_another_providers_markers_alone() -> TestR
         },
         ..SessionConfig::default()
     });
-    session.set_lsp_connector(marking_connector(crate::lsp::absolute_path(&notes)));
+    session.set_lsp_connector(marking_connector(crate::lsp::absolute_path(&notes), None));
     let backend = local_session(session, None);
 
     // `notes.txt` selects no provider of its own; it is only ever marked *by*
@@ -433,7 +446,7 @@ async fn restarting_one_provider_leaves_the_others_running() -> TestResult {
         },
         ..SessionConfig::default()
     });
-    session.set_lsp_connector(marking_connector(crate::lsp::absolute_path(&notes)));
+    session.set_lsp_connector(marking_connector(crate::lsp::absolute_path(&notes), None));
     let backend = local_session(session, None);
 
     let notes_doc = open(&backend, &mut events, &notes)

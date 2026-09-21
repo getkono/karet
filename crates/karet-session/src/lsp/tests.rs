@@ -868,5 +868,6 @@ mod jdtls_tests;
 mod launch_tests;
 mod liveness_tests;
 mod manual_provider_tests;
+mod reopen_tests;
 mod restart_tests;
 mod retirement_tests;
