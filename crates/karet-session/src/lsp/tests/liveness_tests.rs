@@ -556,3 +556,88 @@ async fn a_task_that_outlived_its_slot_cannot_report_a_launch_failure() -> TestR
     );
     Ok(())
 }
+
+/// Retiring a slot must *tell* somebody, not just forget.
+///
+/// The gap this closes: dropping the recorded state made the manager's own answer
+/// correct, but nothing reads that map except an inventory query, and a client
+/// caches the last state it was told. With no report on retirement the panel kept
+/// rendering `running` -- and offering a Restart that silently did nothing -- for a
+/// provider whose process was dead. The task's own parting report cannot do this
+/// job: by then its slot is gone, which is what its ownership fence refuses.
+#[tokio::test]
+async fn retiring_a_slot_reports_that_nothing_is_serving() -> TestResult {
+    let (mut manager, mut updates) = LspManager::new(LspSettings::default(), None, None, None);
+    manager.set_connector(test_connector(
+        Behavior::Normal,
+        None,
+        Arc::new(AtomicUsize::new(0)),
+    ));
+    let path = PathBuf::from("/tmp/retire-report.rs");
+    manager.document_opened(Some("rust"), Some("rust"), &path, 1, || {
+        "fn main() {}".into()
+    });
+    // Drain whatever the open produced, so the assertion below is about the close.
+    while let Ok(update) = updates.try_recv() {
+        assert!(
+            !matches!(update, LspUpdate::SlotRetired { .. }),
+            "opening a document retired a slot"
+        );
+    }
+
+    manager.document_closed(Some("rust"), &path);
+    let mut retired = None;
+    while let Ok(update) = updates.try_recv() {
+        if let LspUpdate::SlotRetired { server, root, .. } = update {
+            retired = Some((server, root));
+        }
+    }
+    let (server, root) = retired.ok_or("closing the last document reported nothing")?;
+    assert_eq!(server, LanguageServerId::RustAnalyzer);
+    assert!(
+        manager.accepts(&LspUpdate::SlotRetired {
+            generation: manager.generation,
+            server,
+            root,
+        }),
+        "the retirement report was refused, so no client would ever hear it"
+    );
+    Ok(())
+}
+
+/// Zero is never a live slot's token.
+///
+/// `FailureTally` derives `Default`, so a tally built that way carries token zero.
+/// Had slots started numbering there, such a tally's reports would be believed and
+/// attributed to the session's first server rather than refused.
+#[tokio::test]
+async fn the_first_slot_does_not_take_the_default_token() -> TestResult {
+    let (mut manager, _updates) = LspManager::new(LspSettings::default(), None, None, None);
+    manager.set_connector(test_connector(
+        Behavior::Normal,
+        None,
+        Arc::new(AtomicUsize::new(0)),
+    ));
+    manager.document_opened(
+        Some("rust"),
+        Some("rust"),
+        &PathBuf::from("/tmp/first-token.rs"),
+        1,
+        || "fn main() {}".into(),
+    );
+    let first = manager
+        .servers
+        .values()
+        .next()
+        .map(|slot| slot.token)
+        .ok_or("the open produced no server slot")?;
+    assert_ne!(first, 0, "the first slot took the default token");
+    assert!(
+        !manager.accepts(&LspUpdate::ServerDied {
+            token: 0,
+            language: "rust".to_owned(),
+        }),
+        "a report carrying the default token was believed"
+    );
+    Ok(())
+}

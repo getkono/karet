@@ -116,6 +116,12 @@ pub(crate) struct LspManager {
     runtime_states:
         HashMap<(LanguageServerId, PathBuf), (LanguageServerRuntimeState, Option<String>)>,
     /// Source of [`ServerSlot::token`]s. Monotonic for the manager's lifetime.
+    ///
+    /// Starts at 1 so that zero is never a live slot's token. `FailureTally`
+    /// derives `Default`, and a tally built that way would otherwise carry a token
+    /// that matches the session's *first* slot -- so a stray `default()` would have
+    /// its reports believed and attributed to someone else's server, rather than
+    /// refused.
     next_slot_token: u64,
 }
 
@@ -179,7 +185,7 @@ impl LspManager {
                 updates,
                 connector: spawn_connector(supervisor, registry_root),
                 runtime_states: HashMap::new(),
-                next_slot_token: 0,
+                next_slot_token: 1,
             },
             rx,
         )
@@ -218,8 +224,20 @@ impl LspManager {
         let Some(slot) = self.servers.remove(key) else {
             return;
         };
-        self.runtime_states.remove(&(slot.runtime_id, slot.root));
+        self.runtime_states
+            .remove(&(slot.runtime_id.clone(), slot.root.clone()));
         self.sync_failure_reported.remove(key);
+        // Dropping the entry is not the same as telling anyone. Nothing reads
+        // `runtime_states` except an inventory query, and a presentation client
+        // caches the last state it was told -- so without this it keeps rendering
+        // `running`, and offering a Restart, for a process that is dead. The task's
+        // own parting report cannot do this job: by now its slot is gone, which is
+        // exactly what its ownership fence refuses.
+        let _ = self.updates.send(LspUpdate::SlotRetired {
+            generation: self.generation,
+            server: slot.runtime_id,
+            root: slot.root,
+        });
     }
 
     /// Whether an asynchronous update is still one this manager wants.
@@ -283,6 +301,7 @@ impl LspManager {
             | LspUpdate::WorkspaceEdit { generation, .. }
             | LspUpdate::Formatting { generation, .. }
             | LspUpdate::SyncFailed { generation, .. }
+            | LspUpdate::SlotRetired { generation, .. }
             | LspUpdate::PreflightFailed { generation, .. }
             | LspUpdate::InstallRequired { generation, .. }
             | LspUpdate::ManualInstallRequired { generation, .. } => *generation,

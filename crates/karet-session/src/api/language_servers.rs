@@ -144,7 +144,9 @@ pub enum LanguageServerRuntimeState {
     /// comes back from. This is reached only for a failure no retry can fix --
     /// a binary that is absent or not executable, or a server that exits on
     /// sight and never once connected. Installing the provider, or restarting
-    /// it from the Language Servers panel, clears it.
+    /// it from the Language Servers panel, clears it -- and so does closing the
+    /// last document of its language, which retires the provider's slot and with
+    /// it every state recorded about it.
     Unavailable,
     /// The provider task stopped without another retry.
     ///
