@@ -230,7 +230,6 @@ async fn only_the_task_that_owns_a_layer_may_write_it() -> TestResult {
         .ok_or("the reopen produced no server slot")?;
 
     let publish = |token| LspUpdate::Diagnostics {
-        generation: manager.generation,
         token,
         server: key.clone(),
         path: path.clone(),
@@ -357,6 +356,122 @@ async fn a_replacement_that_never_connects_still_clears_what_it_inherited() -> T
     assert!(
         asked_to_clear,
         "a replacement that never connected left its inherited markers in place"
+    );
+    Ok(())
+}
+
+/// A task shutting down must not overwrite the lifecycle state of the task that
+/// replaced it under the same key.
+///
+/// Reproduced by review as `[Starting, Running, Stopped]`: the last accepted state
+/// for a *serving* provider was `Stopped`, which the badge renders as `failed`.
+/// `RuntimeState` is identified by `(provider, root)` -- exactly the identity that
+/// is retired and re-taken with no generation bump when the last document of a
+/// language closes and another opens -- and the retiring task emits its parting
+/// `Stopped` only after `client.shutdown()`, which waits up to five seconds on a
+/// busy server.
+#[tokio::test]
+async fn a_retiring_task_cannot_overwrite_its_replacements_state() -> TestResult {
+    let (mut manager, _updates) = LspManager::new(LspSettings::default(), None, None, None);
+    manager.set_connector(test_connector(
+        Behavior::Normal,
+        None,
+        Arc::new(AtomicUsize::new(0)),
+    ));
+    let first = PathBuf::from("/tmp/clobber-a.rs");
+    manager.document_opened(Some("rust"), Some("rust"), &first, 1, || {
+        "fn main() {}".into()
+    });
+    let key = manager
+        .servers
+        .keys()
+        .next()
+        .cloned()
+        .ok_or("the open produced no server slot")?;
+    let retiring = manager
+        .servers
+        .get(&key)
+        .map(|slot| slot.token)
+        .ok_or("the slot has no token")?;
+
+    // The last document of the language closes, then another opens: same key, same
+    // generation, new owner.
+    manager.document_closed(Some("rust"), &first);
+    let second = PathBuf::from("/tmp/clobber-b.rs");
+    manager.document_opened(Some("rust"), Some("rust"), &second, 1, || {
+        "fn main() {}".into()
+    });
+    let serving = manager
+        .servers
+        .get(&key)
+        .map(|slot| slot.token)
+        .ok_or("the reopen produced no server slot")?;
+    assert_ne!(
+        retiring, serving,
+        "the replacement reused the retired token"
+    );
+
+    let stopped = |token| LspUpdate::RuntimeState {
+        token,
+        server: LanguageServerId::RustAnalyzer,
+        root: PathBuf::from("/tmp"),
+        state: LanguageServerRuntimeState::Stopped,
+        error: None,
+    };
+    assert!(
+        !manager.accepts(&stopped(retiring)),
+        "a retiring task was allowed to report a serving provider as stopped"
+    );
+    assert!(
+        manager.accepts(&stopped(serving)),
+        "the task that owns the slot was refused its own state report"
+    );
+    Ok(())
+}
+
+/// Retiring a slot drops the state recorded for it.
+///
+/// Necessary because the fence above refuses updates from a task with no slot: a
+/// leftover `Running` could no longer be corrected, and the inventory prefers a
+/// recorded state over slot presence, so it would keep describing a task that no
+/// longer exists. With no entry it falls back to `Idle`, which is the truth.
+#[tokio::test]
+async fn retiring_a_slot_drops_the_state_recorded_for_it() -> TestResult {
+    let (mut manager, _updates) = LspManager::new(LspSettings::default(), None, None, None);
+    manager.set_connector(test_connector(
+        Behavior::Normal,
+        None,
+        Arc::new(AtomicUsize::new(0)),
+    ));
+    let path = PathBuf::from("/tmp/retired-state.rs");
+    manager.document_opened(Some("rust"), Some("rust"), &path, 1, || {
+        "fn main() {}".into()
+    });
+    let root = manager
+        .servers
+        .values()
+        .next()
+        .map(|slot| slot.root.clone())
+        .ok_or("the open produced no server slot")?;
+    manager.note_runtime(
+        LanguageServerId::RustAnalyzer,
+        root.clone(),
+        LanguageServerRuntimeState::Running,
+        None,
+    );
+    assert!(
+        manager
+            .runtime_states
+            .contains_key(&(LanguageServerId::RustAnalyzer, root.clone())),
+        "the reported state was not recorded"
+    );
+
+    manager.document_closed(Some("rust"), &path);
+    assert!(
+        !manager
+            .runtime_states
+            .contains_key(&(LanguageServerId::RustAnalyzer, root)),
+        "a retired slot left its state behind, where nothing can ever correct it"
     );
     Ok(())
 }

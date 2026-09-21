@@ -36,7 +36,7 @@ pub(super) async fn server_task(task: ServerTask) {
     } = task;
     let report_state = |state, error: Option<String>| {
         let _ = updates.send(LspUpdate::RuntimeState {
-            generation,
+            token,
             server: provider.clone(),
             root: root.clone(),
             state,

@@ -130,6 +130,12 @@ enum Configured {
 }
 
 struct ServerSlot {
+    /// The provider id this slot's task reports runtime state under.
+    ///
+    /// Not always `provider`: a language-keyed slot has no provider of its own and
+    /// its task reports under the language name. Kept so retiring the slot can drop
+    /// the recorded state with it, rather than leaving a state nobody owns.
+    runtime_id: LanguageServerId,
     /// Which task owns this slot, distinct from every slot that held the key
     /// before it.
     ///
@@ -196,6 +202,21 @@ impl LspManager {
         true
     }
 
+    /// Retire one slot, dropping everything recorded about it.
+    ///
+    /// The recorded runtime state goes with the slot because nothing owns it any
+    /// more, and a state the fence will now refuse to update is worse than none:
+    /// the inventory prefers a recorded state over slot presence, so a leftover
+    /// `Running` would keep describing a task that no longer exists. With no entry
+    /// it falls back to `Idle`, which is the truth -- nothing needs the provider.
+    fn retire_slot(&mut self, key: &str) {
+        let Some(slot) = self.servers.remove(key) else {
+            return;
+        };
+        self.runtime_states.remove(&(slot.runtime_id, slot.root));
+        self.sync_failure_reported.remove(key);
+    }
+
     /// Whether an asynchronous update is still one this manager wants.
     ///
     /// Generation for everything a *request* produced: a reconfigure or restart
@@ -203,22 +224,21 @@ impl LspManager {
     /// Slot ownership for the two diagnostic updates, which outlive request/response
     /// pairing -- see the arm below for why generation is the wrong fence there.
     pub(crate) fn accepts(&self, update: &LspUpdate) -> bool {
-        // Diagnostics are fenced on slot ownership; everything else on generation.
+        // What a task says about the layer or the lifecycle of *its own slot* is
+        // fenced on owning that slot; everything else on generation.
+        //
+        // Ownership subsumes generation for these, so neither needs a second
+        // conjunct: every generation bump clears every slot, so a slot that exists
+        // was inserted after the last bump and its task's generation is necessarily
+        // current. What ownership adds is the case generation cannot see -- a key
+        // retired and re-taken with no bump at all, which is what the last
+        // `didClose` of a language followed by the next open does.
         let generation = match update {
-            // A publish takes ownership *and* a current generation; see the field
-            // docs on `LspUpdate::Diagnostics::generation` for why the extra
-            // conjunct costs nothing and closes the unowned-key window.
-            LspUpdate::Diagnostics {
-                generation,
-                token,
-                server,
-                ..
-            } => {
-                return *generation == self.generation
-                    && self
-                        .servers
-                        .get(server)
-                        .is_some_and(|slot| slot.token == *token);
+            LspUpdate::Diagnostics { token, server, .. } => {
+                return self
+                    .servers
+                    .get(server)
+                    .is_some_and(|slot| slot.token == *token);
             },
             LspUpdate::DiagnosticsCleared { token, server, .. } => {
                 // Accepted from the task that owns the key, or when nobody does.
@@ -249,8 +269,16 @@ impl LspManager {
             | LspUpdate::PreflightFailed { generation, .. }
             | LspUpdate::ServerDied { generation, .. }
             | LspUpdate::InstallRequired { generation, .. }
-            | LspUpdate::ManualInstallRequired { generation, .. }
-            | LspUpdate::RuntimeState { generation, .. } => *generation,
+            | LspUpdate::ManualInstallRequired { generation, .. } => *generation,
+            // Lifecycle state is the report the editor badge actually reads, and it
+            // is identified by `(provider, root)` -- exactly the identity that can
+            // be re-owned without a bump. A task inside `shutdown`, up to five
+            // seconds against a busy server, could otherwise land its parting
+            // `Stopped` on top of its replacement's `Running` and badge a serving
+            // provider as failed for the rest of the session.
+            LspUpdate::RuntimeState { token, .. } => {
+                return self.servers.values().any(|slot| slot.token == *token);
+            },
         };
         generation == self.generation
     }
@@ -494,6 +522,22 @@ impl LspManager {
             let runtime_provider = provider
                 .clone()
                 .unwrap_or_else(|| LanguageServerId::new(provider_key.clone()));
+            // Inserted before the spawn, not after: the task reports `Starting`
+            // as its first act, and runtime state is fenced on this slot existing.
+            // On a multi-threaded runtime the report could otherwise race ahead of
+            // its own slot and be refused as coming from a retired task.
+            self.servers.insert(
+                key.clone(),
+                ServerSlot {
+                    runtime_id: runtime_provider.clone(),
+                    token,
+                    tx,
+                    documents: HashSet::new(),
+                    provider,
+                    primary: true,
+                    root: nearest_repository_root(path, self.root.as_deref()),
+                },
+            );
             handle.spawn(runtime::server_task(runtime::ServerTask {
                 spec: spec.clone(),
                 root,
@@ -505,17 +549,6 @@ impl LspManager {
                 generation: self.generation,
                 token,
             }));
-            self.servers.insert(
-                key.clone(),
-                ServerSlot {
-                    token,
-                    tx,
-                    documents: HashSet::new(),
-                    provider,
-                    primary: true,
-                    root: nearest_repository_root(path, self.root.as_deref()),
-                },
-            );
         }
         self.servers.get(&key).map(|slot| (&slot.tx, key))
     }
@@ -549,28 +582,30 @@ impl LspManager {
             let (tx, rx) = mpsc::channel(SERVER_COMMAND_CAPACITY);
             let token = self.next_slot_token;
             self.next_slot_token = self.next_slot_token.wrapping_add(1);
+            // Inserted before the spawn, for the reason given on the primary path.
+            self.servers.insert(
+                key.clone(),
+                ServerSlot {
+                    runtime_id: provider.clone(),
+                    token,
+                    tx,
+                    documents: HashSet::new(),
+                    provider: Some(provider.clone()),
+                    primary: false,
+                    root: nearest_repository_root(path, self.root.as_deref()),
+                },
+            );
             handle.spawn(runtime::server_task(runtime::ServerTask {
                 spec: spec.clone(),
                 root,
                 language: key.clone(),
-                provider: provider.clone(),
+                provider,
                 rx,
                 updates: self.updates.clone(),
                 connector: Arc::clone(&self.connector),
                 generation: self.generation,
                 token,
             }));
-            self.servers.insert(
-                key.clone(),
-                ServerSlot {
-                    token,
-                    tx,
-                    documents: HashSet::new(),
-                    provider: Some(provider),
-                    primary: false,
-                    root: nearest_repository_root(path, self.root.as_deref()),
-                },
-            );
         }
         self.servers.get(&key).map(|slot| (slot.tx.clone(), key))
     }
@@ -718,8 +753,7 @@ impl LspManager {
             });
         }
         if closed {
-            self.servers.remove(key);
-            self.sync_failure_reported.remove(key);
+            self.retire_slot(key);
         }
     }
 
@@ -789,7 +823,7 @@ impl LspManager {
                 slot.documents.is_empty()
             });
             if remove {
-                self.servers.remove(&key);
+                self.retire_slot(&key);
             }
         }
     }

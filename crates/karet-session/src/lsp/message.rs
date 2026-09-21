@@ -188,16 +188,6 @@ pub(crate) enum LspUpdate {
     },
     /// A complete server diagnostic layer for one file.
     Diagnostics {
-        /// The manager generation that spawned the publishing task.
-        ///
-        /// Required *in addition to* the token, unlike a clear. An owning task's
-        /// generation is always current -- every bump clears every slot, so
-        /// re-owning a key takes a new token -- so this rejects nothing legitimate.
-        /// What it excludes is a publish relayed into a key nobody owns, which a
-        /// task can still do for the several seconds it spends in `shutdown`: a
-        /// provider the user has just switched off would otherwise repaint its
-        /// markers. A clear in that position is welcome; a publish never is.
-        generation: u64,
         /// The publishing task's slot token.
         ///
         /// Fenced on the same ownership as [`Self::DiagnosticsCleared`], because a
@@ -317,7 +307,12 @@ pub(crate) enum LspUpdate {
     },
     /// A provider/root connection changed lifecycle state.
     RuntimeState {
-        generation: u64,
+        /// The reporting task's slot token, so a task shutting down cannot
+        /// overwrite the state of the task that replaced it under the same key.
+        ///
+        /// Carries no generation: ownership subsumes it, because every generation
+        /// bump clears every slot.
+        token: u64,
         server: LanguageServerId,
         root: PathBuf,
         state: LanguageServerRuntimeState,

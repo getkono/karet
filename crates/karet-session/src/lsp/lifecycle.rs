@@ -18,6 +18,10 @@ impl LspManager {
         if running {
             self.generation = self.generation.wrapping_add(1);
             self.servers.clear();
+            // Cleared with them, as `reconfigure` does: runtime state is fenced on
+            // a slot existing, so an entry whose slot is gone can no longer be
+            // updated and would keep describing a task that does not exist.
+            self.runtime_states.clear();
         }
         running
     }
