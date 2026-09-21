@@ -111,3 +111,77 @@ async fn a_dead_servers_diagnostics_are_cleared() -> TestResult {
     );
     Ok(())
 }
+
+/// A task shutting down must not clear the markers of the task that replaced it
+/// under the same key.
+///
+/// Generation cannot fence this. `document_closed` retires a slot with no
+/// generation bump when the last document of a language closes, and the next open
+/// recreates the identical `{provider}@{root}` key at the same generation -- so a
+/// task still running `shutdown` (up to ten seconds) looked exactly like the one
+/// now serving, and its parting clear wiped live diagnostics.
+#[tokio::test]
+async fn a_retiring_task_cannot_clear_its_replacements_diagnostics() -> TestResult {
+    let (mut manager, _updates) = LspManager::new(LspSettings::default(), None, None, None);
+    manager.set_connector(test_connector(
+        Behavior::Normal,
+        None,
+        Arc::new(AtomicUsize::new(0)),
+    ));
+    let path = PathBuf::from("/tmp/reopened.rs");
+    manager.document_opened(Some("rust"), Some("rust"), &path, 1, || {
+        "fn main() {}".into()
+    });
+    let key = manager
+        .servers
+        .keys()
+        .next()
+        .cloned()
+        .ok_or("the open produced no server slot")?;
+    let retiring = manager
+        .servers
+        .get(&key)
+        .map(|slot| slot.token)
+        .ok_or("the slot has no token")?;
+
+    // The last document closes, then another opens: same key, same generation.
+    manager.document_closed(Some("rust"), &path);
+    manager.document_opened(Some("rust"), Some("rust"), &path, 2, || {
+        "fn main() {}".into()
+    });
+    let serving = manager
+        .servers
+        .get(&key)
+        .map(|slot| slot.token)
+        .ok_or("the reopen produced no server slot")?;
+    assert_ne!(
+        retiring, serving,
+        "the replacement reused the retired token"
+    );
+
+    assert!(
+        !manager.accepts(&LspUpdate::DiagnosticsCleared {
+            token: retiring,
+            server: key.clone(),
+        }),
+        "a retiring task was allowed to clear its replacement's diagnostics"
+    );
+    assert!(
+        manager.accepts(&LspUpdate::DiagnosticsCleared {
+            token: serving,
+            server: key.clone(),
+        }),
+        "the task that owns the key was refused its own clear"
+    );
+
+    // Once nobody owns the key, the orphaned markers must still be clearable.
+    manager.document_closed(Some("rust"), &path);
+    assert!(
+        manager.accepts(&LspUpdate::DiagnosticsCleared {
+            token: retiring,
+            server: key,
+        }),
+        "markers with no live owner were left stranded"
+    );
+    Ok(())
+}

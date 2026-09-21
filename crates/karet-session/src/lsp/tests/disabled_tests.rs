@@ -84,6 +84,43 @@ fn an_entry_the_launch_path_never_reads_does_not_disable_anything() -> TestResul
     Ok(())
 }
 
+/// An entry keyed by the *language's own name* suppresses the built-in provider
+/// without ever naming it, and the inventory has to notice.
+///
+/// `lsp.servers.rust = { enabled = false }` with no `lsp.languages.rust` stops
+/// rust-analyzer launching -- `configured_primary` falls back to the language name
+/// -- so comparing the suppressed id against the provider id alone left a language
+/// with no server at all reporting as healthy and idle.
+#[test]
+fn a_language_keyed_entry_disables_the_builtin_it_suppresses() -> TestResult {
+    let mut settings = LspSettings::default();
+    settings.servers.insert(
+        "rust".to_owned(),
+        crate::config::schema::LspServer {
+            command: "whatever".to_owned(),
+            enabled: false,
+            ..crate::config::schema::LspServer::default()
+        },
+    );
+    let (manager, _updates) = LspManager::new(settings, None, None, None);
+    let inventory = manager.inventory([PathBuf::from("/workspace/main.rs")]);
+    let status = inventory
+        .iter()
+        .find(|status| status.server == LanguageServerId::RustAnalyzer)
+        .ok_or("rust-analyzer is missing from the inventory")?;
+    assert!(
+        !status.enabled,
+        "a language whose only provider is suppressed reported as having one"
+    );
+    for instance in &status.instances {
+        assert!(
+            instance.command.is_none(),
+            "a suppressed provider advertised a command it will never run"
+        );
+    }
+    Ok(())
+}
+
 /// The global switch keeps working, and does not depend on any per-provider entry.
 #[test]
 fn the_global_switch_disables_every_provider() {

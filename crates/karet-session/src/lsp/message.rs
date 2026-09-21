@@ -258,8 +258,9 @@ pub(crate) enum LspUpdate {
     /// the grace window, so a reconnect inside it does not make every marker
     /// flicker off and back on.
     DiagnosticsCleared {
-        /// The manager generation of the task sending it.
-        generation: u64,
+        /// The sending task's slot token, so a task shutting down cannot clear
+        /// the markers of the task that replaced it under the same key.
+        token: u64,
         /// The diagnostic layer to drop, keyed exactly as it was published.
         ///
         /// That key is the slot's -- `{provider}@{root}` -- so it already scopes

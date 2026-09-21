@@ -42,12 +42,23 @@ use crate::api::LanguageServerRuntimeState;
 /// budget; a longer one earns a fresh start.
 pub(super) const STABLE_CONNECTION: Duration = Duration::from_secs(10);
 
-/// Consecutive silent deaths before a provider is put behind the circuit.
+/// Silent deaths within [`HANG_WINDOW`] before a provider goes behind the circuit.
 ///
 /// Two, not five, because each one costs at least [`TIMEOUT_DEATH_LIMIT`] request
 /// timeouts to establish -- a minute and a half of a server answering nothing.
 /// Waiting for five would spend seven minutes proving what two already show.
-pub(super) const HANG_LIMIT: u32 = 2;
+pub(super) const HANG_LIMIT: usize = 2;
+
+/// How long a silent death counts against a provider.
+///
+/// Windowed rather than counted outright, and the window is its own because the
+/// 60-second failure window is too short to hold even one hang cycle. Without a
+/// window the count only ever rises: a provider that goes silent once, reconnects,
+/// serves perfectly for an hour and then goes silent again would be circuit-broken
+/// on the second -- and would stay one hang away from a five-minute outage for the
+/// rest of the session. Ten minutes comfortably spans consecutive hangs, which
+/// land 90 to 200 seconds apart, while forgiving an hourly one.
+pub(super) const HANG_WINDOW: Duration = Duration::from_secs(600);
 
 /// Consecutive timeouts that together mean the connection is dead.
 ///
@@ -118,7 +129,7 @@ pub(super) fn was_stable(connected_at: Option<Instant>) -> bool {
 /// fails to *connect*, so nothing in the launch-failure accounting ever sees it.
 pub(super) fn charge_disconnect(
     connected_at: Option<Instant>,
-    hangs: &mut u32,
+    hangs: &mut VecDeque<Instant>,
     hung: bool,
     failures: &mut VecDeque<Instant>,
     restart_delay: &mut Duration,
@@ -132,20 +143,28 @@ pub(super) fn charge_disconnect(
     // forever at one cycle per 90 seconds. A straight count of consecutive silent
     // deaths has no such hole.
     if hung {
-        *hangs = hangs.saturating_add(1);
-        if *hangs >= HANG_LIMIT {
+        let now = Instant::now();
+        while hangs
+            .front()
+            .is_some_and(|hang| now.duration_since(*hang) > HANG_WINDOW)
+        {
+            hangs.pop_front();
+        }
+        hangs.push_back(now);
+        if hangs.len() >= HANG_LIMIT {
             tracing::warn!(
-                hangs = *hangs,
+                hangs = hangs.len(),
                 language,
                 "language server keeps going silent; restart circuit opened"
             );
+            hangs.clear();
             return (CIRCUIT_COOLDOWN, LanguageServerRuntimeState::CircuitOpen);
         }
         let delay = *restart_delay;
         *restart_delay = (*restart_delay * 2).min(RESTART_MAX_DELAY);
         return (delay, LanguageServerRuntimeState::Retrying);
     }
-    *hangs = 0;
+    hangs.clear();
     if was_stable(connected_at) {
         failures.clear();
         *restart_delay = RESTART_MIN_DELAY;
@@ -334,7 +353,7 @@ mod tests {
     fn a_server_that_dies_on_arrival_eventually_opens_the_circuit() {
         let mut failures = VecDeque::new();
         let mut delay = RESTART_MIN_DELAY;
-        let mut hangs = 0_u32;
+        let mut hangs = VecDeque::new();
         // Each cycle connects, then dies well inside the stability threshold.
         let cycles: Vec<_> = (0..RESTART_LIMIT)
             .map(|_| {
@@ -368,7 +387,7 @@ mod tests {
     fn a_proven_connection_earns_a_fresh_budget() {
         let mut failures = VecDeque::new();
         let mut delay = RESTART_MIN_DELAY;
-        let mut hangs = 0_u32;
+        let mut hangs = VecDeque::new();
         // Spend most of the budget on quick deaths.
         for _ in 0..RESTART_LIMIT.saturating_sub(1) {
             charge_disconnect(
@@ -403,7 +422,7 @@ mod tests {
     fn repeated_silent_deaths_open_the_circuit() {
         let mut failures = VecDeque::new();
         let mut delay = RESTART_MIN_DELAY;
-        let mut hangs = 0_u32;
+        let mut hangs = VecDeque::new();
         // Each one looks perfectly stable by age, and the window is emptied between
         // them -- the two properties that defeated window-based counting.
         let proven = Instant::now().checked_sub(STABLE_CONNECTION);
@@ -420,18 +439,50 @@ mod tests {
         );
     }
 
+    /// A hang the user has long since recovered from must not count towards the
+    /// next one.
+    ///
+    /// Without a window the count only rises: a provider that goes silent once,
+    /// reconnects, serves perfectly for an hour and goes silent again would be
+    /// circuit-broken on the second -- and would stay one hang away from a
+    /// five-minute outage for the rest of the session.
+    #[test]
+    fn a_hang_outside_the_window_is_forgiven() {
+        let mut failures = VecDeque::new();
+        let mut delay = RESTART_MIN_DELAY;
+        let mut hangs = VecDeque::new();
+        // One hang, long ago.
+        hangs.push_back(
+            Instant::now()
+                .checked_sub(HANG_WINDOW * 2)
+                .unwrap_or_else(Instant::now),
+        );
+        let proven = Instant::now().checked_sub(STABLE_CONNECTION);
+        let (_, state) =
+            charge_disconnect(proven, &mut hangs, true, &mut failures, &mut delay, "rust");
+        assert_eq!(
+            state,
+            LanguageServerRuntimeState::Retrying,
+            "a stale hang opened the circuit"
+        );
+        assert_eq!(hangs.len(), 1, "the stale hang was not expired");
+    }
+
     /// A death for any reason other than silence resets the count, so occasional
     /// hangs spread across a session never accumulate into a circuit.
     #[test]
     fn a_non_silent_death_resets_the_hang_count() {
         let mut failures = VecDeque::new();
         let mut delay = RESTART_MIN_DELAY;
-        let mut hangs = 0_u32;
+        let mut hangs = VecDeque::new();
         let proven = Instant::now().checked_sub(STABLE_CONNECTION);
         charge_disconnect(proven, &mut hangs, true, &mut failures, &mut delay, "java");
-        assert_eq!(hangs, 1);
+        assert_eq!(hangs.len(), 1);
         charge_disconnect(proven, &mut hangs, false, &mut failures, &mut delay, "java");
-        assert_eq!(hangs, 0, "a clean death did not reset the hang count");
+        assert!(
+            hangs.is_empty(),
+            "a clean death did not reset the hang count"
+        );
     }
 
     /// Failures older than the window stop counting, so a provider that misbehaves
@@ -440,7 +491,7 @@ mod tests {
     fn failures_outside_the_window_are_forgotten() {
         let mut failures = VecDeque::new();
         let mut delay = RESTART_MIN_DELAY;
-        let mut hangs = 0_u32;
+        let mut hangs = VecDeque::new();
         for _ in 0..RESTART_LIMIT.saturating_sub(1) {
             let stale = Instant::now()
                 .checked_sub(RESTART_WINDOW * 2)

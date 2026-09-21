@@ -1,154 +1,10 @@
+use super::commands::OpenDocument;
+use super::commands::answer_empty;
+use super::commands::remember_document;
 use super::forward::forward_diagnostics;
 use super::health::FailureTally;
 use super::health::{self};
 use super::*;
-
-/// Answer a request command with an empty set (used whenever no live server can
-/// answer, so the client is never left waiting).
-fn answer_empty(updates: &mpsc::UnboundedSender<LspUpdate>, cmd: ServerCmd, generation: u64) {
-    match cmd {
-        ServerCmd::Completion {
-            request,
-            doc,
-            version,
-            ..
-        } => {
-            let _ = updates.send(LspUpdate::Completions {
-                generation,
-                request,
-                doc,
-                version,
-                items: Vec::new(),
-            });
-        },
-        ServerCmd::DocumentSymbols {
-            request,
-            doc,
-            version,
-            ..
-        } => {
-            let _ = updates.send(LspUpdate::Symbols {
-                generation,
-                request,
-                doc,
-                version,
-                symbols: Vec::new(),
-            });
-        },
-        ServerCmd::Hover {
-            request,
-            doc,
-            version,
-            ..
-        } => {
-            let _ = updates.send(LspUpdate::Hover {
-                generation,
-                request,
-                doc,
-                version,
-                hover: None,
-            });
-        },
-        ServerCmd::Definition {
-            request,
-            doc,
-            version,
-            ..
-        } => {
-            let _ = updates.send(LspUpdate::Definitions {
-                generation,
-                request,
-                doc,
-                version,
-                locations: Vec::new(),
-            });
-        },
-        ServerCmd::WorkspaceSymbols { request, .. } => {
-            let _ = updates.send(LspUpdate::WorkspaceSymbols {
-                generation,
-                request,
-                symbols: Vec::new(),
-            });
-        },
-        ServerCmd::Rename { request, .. } => {
-            let _ = updates.send(LspUpdate::WorkspaceEdit {
-                generation,
-                request,
-                edit: WorkspaceEdit::default(),
-            });
-        },
-        ServerCmd::Formatting {
-            request,
-            doc,
-            version,
-            ..
-        } => {
-            let _ = updates.send(LspUpdate::Formatting {
-                generation,
-                request,
-                doc,
-                version,
-                edits: Vec::new(),
-            });
-        },
-        ServerCmd::DidOpen { .. }
-        | ServerCmd::DidChange { .. }
-        | ServerCmd::DidClose { .. }
-        | ServerCmd::DidSave { .. } => {},
-    }
-}
-
-#[derive(Clone)]
-struct OpenDocument {
-    language: String,
-    version: i32,
-    text: String,
-}
-
-fn remember_document(documents: &mut HashMap<PathBuf, OpenDocument>, cmd: &ServerCmd) {
-    match cmd {
-        ServerCmd::DidOpen {
-            path,
-            language,
-            version,
-            text,
-        } => {
-            documents.insert(
-                path.clone(),
-                OpenDocument {
-                    language: language.clone(),
-                    version: *version,
-                    text: text.clone(),
-                },
-            );
-        },
-        ServerCmd::DidChange {
-            path,
-            version,
-            text,
-        } => {
-            if let Some(document) = documents.get_mut(path) {
-                document.version = *version;
-                document.text.clone_from(text);
-            }
-        },
-        ServerCmd::DidSave { path, text } => {
-            if let Some(document) = documents.get_mut(path) {
-                document.text.clone_from(text);
-            }
-        },
-        ServerCmd::DidClose { path } => {
-            documents.remove(path);
-        },
-        ServerCmd::Completion { .. }
-        | ServerCmd::DocumentSymbols { .. }
-        | ServerCmd::Hover { .. }
-        | ServerCmd::Definition { .. }
-        | ServerCmd::WorkspaceSymbols { .. }
-        | ServerCmd::Rename { .. }
-        | ServerCmd::Formatting { .. } => {},
-    }
-}
 
 pub(super) struct ServerTask {
     pub(super) spec: LspSpec,
@@ -159,6 +15,9 @@ pub(super) struct ServerTask {
     pub(super) updates: mpsc::UnboundedSender<LspUpdate>,
     pub(super) connector: Connector,
     pub(super) generation: u64,
+    /// Identifies this task as the owner of its slot, so a clear it sends while
+    /// shutting down cannot be mistaken for one from its replacement.
+    pub(super) token: u64,
 }
 
 /// The per-language server task: serialize document sync and requests, restart
@@ -173,6 +32,7 @@ pub(super) async fn server_task(task: ServerTask) {
         updates,
         connector,
         generation,
+        token,
     } = task;
     let report_state = |state, error: Option<String>| {
         let _ = updates.send(LspUpdate::RuntimeState {
@@ -199,8 +59,9 @@ pub(super) async fn server_task(task: ServerTask) {
     // timeouts on a server that has since been replaced says nothing about its
     // successor.
     let mut tally = FailureTally::default();
-    // Consecutive silent deaths, which the sliding failure window cannot count.
-    let mut hangs = 0_u32;
+    // Silent deaths, windowed separately: the failure window is too short to hold
+    // even one hang cycle, and an unwindowed count never forgives.
+    let mut hangs = VecDeque::<Instant>::new();
     // When the current connection was established, so a disconnect can tell a
     // server that worked from one that died on arrival.
     let mut connected_at: Option<Instant> = None;
@@ -217,7 +78,7 @@ pub(super) async fn server_task(task: ServerTask) {
                 // `language` is the slot key the forwarder publishes under, not a
                 // bare provider id -- reconstructing one here cleared nothing.
                 let _ = updates.send(LspUpdate::DiagnosticsCleared {
-                    generation,
+                    token,
                     server: language.clone(),
                 });
             }
@@ -346,6 +207,16 @@ pub(super) async fn server_task(task: ServerTask) {
                             LanguageServerRuntimeState::Unavailable,
                             Some(error.to_string()),
                         );
+                        // This task owns the key and will never publish anything,
+                        // so whatever is on screen under it belongs to a previous
+                        // task and nothing else will ever replace it. Cleared here
+                        // because the exit below is unreachable from this branch --
+                        // it drains instead of breaking, so the parting clear at
+                        // the end of the task never runs.
+                        let _ = updates.send(LspUpdate::DiagnosticsCleared {
+                            token,
+                            server: language.clone(),
+                        });
                         // Drain rather than return: callers must keep getting
                         // empty answers instead of waiting on a dead channel.
                         while let Some(cmd) = rx.recv().await {
@@ -844,7 +715,7 @@ pub(super) async fn server_task(task: ServerTask) {
     // after a generation bump the key can change, so nothing would ever replace
     // them.
     let _ = updates.send(LspUpdate::DiagnosticsCleared {
-        generation,
+        token,
         server: language.clone(),
     });
     report_state(LanguageServerRuntimeState::Stopped, None);

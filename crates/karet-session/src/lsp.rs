@@ -14,6 +14,7 @@
 //! after repeated failures instead of creating a respawn storm.
 
 mod catalog;
+mod commands;
 mod connector;
 mod forward;
 mod health;
@@ -22,6 +23,7 @@ mod jdtls;
 mod lifecycle;
 mod message;
 mod provider;
+mod requests;
 mod runtime;
 #[cfg(test)]
 mod tests;
@@ -113,6 +115,8 @@ pub(crate) struct LspManager {
     connector: Connector,
     runtime_states:
         HashMap<(LanguageServerId, PathBuf), (LanguageServerRuntimeState, Option<String>)>,
+    /// Source of [`ServerSlot::token`]s. Monotonic for the manager's lifetime.
+    next_slot_token: u64,
 }
 
 /// What the user's `lsp.servers` table says about one provider id.
@@ -126,6 +130,14 @@ enum Configured {
 }
 
 struct ServerSlot {
+    /// Which task owns this slot, distinct from every slot that held the key
+    /// before it.
+    ///
+    /// Generation cannot stand in for this. A slot is retired with no bump at all
+    /// when the last document of its language closes, and the next open recreates
+    /// the identical `{provider}@{root}` key at the same generation -- so a task
+    /// still shutting down would be indistinguishable from the one now serving.
+    token: u64,
     tx: mpsc::Sender<ServerCmd>,
     documents: HashSet<PathBuf>,
     provider: Option<LanguageServerId>,
@@ -156,6 +168,7 @@ impl LspManager {
                 updates,
                 connector: spawn_connector(supervisor, registry_root),
                 runtime_states: HashMap::new(),
+                next_slot_token: 0,
             },
             rx,
         )
@@ -205,10 +218,21 @@ impl LspManager {
         // only when no live slot claims the key -- which is precisely when its
         // markers are orphaned rather than superseded.
         let generation = match update {
-            LspUpdate::DiagnosticsCleared {
-                generation, server, ..
-            } => {
-                return *generation == self.generation || !self.servers.contains_key(server);
+            LspUpdate::DiagnosticsCleared { token, server, .. } => {
+                // Accepted from the task that owns the key, or when nobody does.
+                //
+                // Ownership, not generation, because the two come apart. A slot is
+                // retired with no generation bump when the last document of its
+                // language closes, and the next open recreates the identical key at
+                // the same generation -- so a task still running `shutdown` could
+                // clear the markers of the task now serving. Conversely, fencing on
+                // generation alone would discard the parting clear after a
+                // `reconfigure`, which is the one message that removes the markers
+                // of a provider the new settings no longer select.
+                return self
+                    .servers
+                    .get(server)
+                    .is_none_or(|slot| slot.token == *token);
             },
             LspUpdate::Completions { generation, .. }
             | LspUpdate::Symbols { generation, .. }
@@ -464,6 +488,8 @@ impl LspManager {
             // (unit tests, bare library use) simply runs without LSP.
             let handle = tokio::runtime::Handle::try_current().ok()?;
             let (tx, rx) = mpsc::channel(SERVER_COMMAND_CAPACITY);
+            let token = self.next_slot_token;
+            self.next_slot_token = self.next_slot_token.wrapping_add(1);
             let runtime_provider = provider
                 .clone()
                 .unwrap_or_else(|| LanguageServerId::new(provider_key.clone()));
@@ -476,10 +502,12 @@ impl LspManager {
                 updates: self.updates.clone(),
                 connector: Arc::clone(&self.connector),
                 generation: self.generation,
+                token,
             }));
             self.servers.insert(
                 key.clone(),
                 ServerSlot {
+                    token,
                     tx,
                     documents: HashSet::new(),
                     provider,
@@ -518,6 +546,8 @@ impl LspManager {
         if !self.servers.contains_key(&key) {
             let handle = tokio::runtime::Handle::try_current().ok()?;
             let (tx, rx) = mpsc::channel(SERVER_COMMAND_CAPACITY);
+            let token = self.next_slot_token;
+            self.next_slot_token = self.next_slot_token.wrapping_add(1);
             handle.spawn(runtime::server_task(runtime::ServerTask {
                 spec: spec.clone(),
                 root,
@@ -527,10 +557,12 @@ impl LspManager {
                 updates: self.updates.clone(),
                 connector: Arc::clone(&self.connector),
                 generation: self.generation,
+                token,
             }));
             self.servers.insert(
                 key.clone(),
                 ServerSlot {
+                    token,
                     tx,
                     documents: HashSet::new(),
                     provider: Some(provider),
@@ -788,198 +820,5 @@ impl LspManager {
                 text: text.clone(),
             });
         }
-    }
-
-    /// Forward a completion request (`position` already in UTF-16 columns).
-    /// Returns whether it was forwarded — when `false`, no server serves this
-    /// language and the caller must answer the request itself (empty set).
-    pub(crate) fn completion(
-        &mut self,
-        language: Option<&str>,
-        request: RequestId,
-        doc: DocumentId,
-        version: u64,
-        path: &Path,
-        position: LineCol,
-    ) -> bool {
-        let path = absolute_path(path);
-        let Some(tx) = self.existing_server(language, &path) else {
-            return false;
-        };
-        tx.try_send(ServerCmd::Completion {
-            request,
-            doc,
-            version,
-            path,
-            position,
-        })
-        .is_ok()
-    }
-
-    /// Forward a document-symbol request. Returns whether a live server accepted it.
-    pub(crate) fn document_symbols(
-        &mut self,
-        language: Option<&str>,
-        request: RequestId,
-        doc: DocumentId,
-        version: u64,
-        path: &Path,
-    ) -> bool {
-        let path = absolute_path(path);
-        let Some(tx) = self.existing_server(language, &path) else {
-            return false;
-        };
-        tx.try_send(ServerCmd::DocumentSymbols {
-            request,
-            doc,
-            version,
-            path,
-        })
-        .is_ok()
-    }
-
-    pub(crate) fn hover(
-        &self,
-        language: Option<&str>,
-        request: RequestId,
-        doc: DocumentId,
-        version: u64,
-        path: &Path,
-        position: LineCol,
-    ) -> bool {
-        let path = absolute_path(path);
-        let Some(tx) = self.existing_server(language, &path) else {
-            return false;
-        };
-        tx.try_send(ServerCmd::Hover {
-            request,
-            doc,
-            version,
-            path,
-            position,
-        })
-        .is_ok()
-    }
-
-    pub(crate) fn definition(
-        &self,
-        language: Option<&str>,
-        request: RequestId,
-        doc: DocumentId,
-        version: u64,
-        path: &Path,
-        position: LineCol,
-    ) -> bool {
-        let path = absolute_path(path);
-        let Some(tx) = self.existing_server(language, &path) else {
-            return false;
-        };
-        tx.try_send(ServerCmd::Definition {
-            request,
-            doc,
-            version,
-            path,
-            position,
-        })
-        .is_ok()
-    }
-
-    pub(crate) fn workspace_symbols(&self, request: RequestId, query: String) -> bool {
-        let Some(tx) = self
-            .servers
-            .values()
-            .find(|slot| slot.primary)
-            .map(|slot| &slot.tx)
-        else {
-            return false;
-        };
-        tx.try_send(ServerCmd::WorkspaceSymbols { request, query })
-            .is_ok()
-    }
-
-    pub(crate) fn rename(
-        &self,
-        language: Option<&str>,
-        request: RequestId,
-        path: &Path,
-        position: LineCol,
-        new_name: String,
-    ) -> bool {
-        let path = absolute_path(path);
-        let Some(tx) = self.existing_server(language, &path) else {
-            return false;
-        };
-        tx.try_send(ServerCmd::Rename {
-            request,
-            path,
-            position,
-            new_name,
-        })
-        .is_ok()
-    }
-
-    pub(crate) fn formatting(
-        &self,
-        language: Option<&str>,
-        request: RequestId,
-        doc: DocumentId,
-        version: u64,
-        path: &Path,
-    ) -> bool {
-        let Some(language_key) = language_key(language) else {
-            return false;
-        };
-        let path = absolute_path(path);
-        let preferred = self
-            .settings
-            .languages
-            .get(&language_key)
-            .and_then(|selection| selection.formatter.as_deref());
-        let repository_default = if preferred.is_none() && language_key == "python" {
-            Some(python_diagnostic_provider(&nearest_repository_root(
-                &path,
-                self.root.as_deref(),
-            )))
-        } else if preferred.is_none()
-            && matches!(
-                language_key.as_str(),
-                "javascript" | "typescript" | "jsx" | "tsx"
-            )
-            && uses_biome(&nearest_repository_root(&path, self.root.as_deref()))
-        {
-            Some(LanguageServerId::Biome)
-        } else {
-            None
-        };
-        let selected = preferred
-            .map(str::to_owned)
-            .or_else(|| repository_default.map(|provider| provider.key().to_owned()));
-        let tx = selected
-            .as_deref()
-            .and_then(|provider| {
-                self.servers.values().find(|slot| {
-                    slot.documents.contains(&path)
-                        && slot
-                            .provider
-                            .as_ref()
-                            .is_some_and(|id| id.key() == provider)
-                })
-            })
-            .or_else(|| {
-                self.servers
-                    .values()
-                    .find(|slot| slot.primary && slot.documents.contains(&path))
-            })
-            .map(|slot| &slot.tx);
-        let Some(tx) = tx else {
-            return false;
-        };
-        tx.try_send(ServerCmd::Formatting {
-            request,
-            doc,
-            version,
-            path,
-        })
-        .is_ok()
     }
 }

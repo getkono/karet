@@ -122,10 +122,17 @@ impl LspManager {
     fn provider_disabled(&self, server: &LanguageServerId, languages: &BTreeSet<String>) -> bool {
         !languages.is_empty()
             && languages.iter().all(|language| {
-                matches!(
-                    self.configured_primary(&language.to_ascii_lowercase()),
-                    Some((id, Configured::Suppressed)) if id == *server
-                )
+                let language = language.to_ascii_lowercase();
+                let Some((id, Configured::Suppressed)) = self.configured_primary(&language) else {
+                    return false;
+                };
+                // Suppressed under this provider's own id, or under the language's
+                // name -- which is the case the first attempt at this missed.
+                // `lsp.servers.rust = { enabled = false }` stops rust-analyzer from
+                // launching without ever naming it, so a comparison against the id
+                // alone left the inventory reporting a language with no server at
+                // all as healthy and idle.
+                id == *server || builtin_server(&language).as_ref() == Some(server)
             })
     }
 
