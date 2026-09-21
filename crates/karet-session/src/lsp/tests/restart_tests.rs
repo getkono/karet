@@ -95,26 +95,23 @@ async fn a_transient_failure_is_retried_rather_than_giving_up() -> TestResult {
     Ok(())
 }
 
-/// A provider karet gave up on is re-resolved only once its executable exists.
+/// Repeatedly opening files of a language whose configured command does not exist
+/// must not re-attempt the launch each time.
 ///
-/// Two failure modes bracket this. Keeping the slot made the verdict permanent:
-/// resolution short-circuits on a live slot, so installing the binary changed
-/// nothing until the user found the manager and pressed Restart. Retiring it
-/// unconditionally was worse: every later document open re-execs the same missing
-/// binary and reports the same failure again -- an unbounded stream of identical
-/// notifications for a command that never existed.
+/// An earlier attempt at recovery retired the slot whenever the task reported
+/// `Unavailable`, so that installing a binary would be picked up. But
+/// `Unavailable` is reached only when a spec *was* resolved and its launch failed
+/// permanently, and `configured_spec` performs no existence check -- so pointing
+/// `lsp.servers` at a path that does not exist produced a fresh task, a fresh
+/// exec, and a fresh persistent failure notification for every file opened.
 ///
-/// Observed through `runtime_states` rather than a spawn count, because lifting
-/// the verdict is exactly what clears that entry, and it is synchronous.
+/// Recovery for the case users actually hit needs no mechanism at all: a built-in
+/// provider that resolves to nothing gets no slot, and resolution short-circuits
+/// only on a slot, so installing it by hand is picked up on the next open.
 #[tokio::test]
-async fn a_provider_given_up_on_is_retried_only_once_its_binary_appears() -> TestResult {
+async fn a_configured_command_that_is_missing_is_attempted_once_not_per_open() -> TestResult {
     let dir = tempfile::tempdir()?;
-    let binary = dir.path().join("pretend-analyzer");
-    // Declared through `lsp.languages`, which is how a configured primary is
-    // actually selected: `lsp.servers` is looked up by the language's named
-    // provider or by the language itself, never by a built-in provider id. Naming
-    // the entry `rust-analyzer` would leave resolution falling through to whatever
-    // real rust-analyzer happens to be on this machine's PATH.
+    let binary = dir.path().join("does-not-exist");
     let mut settings = LspSettings::default();
     settings.languages.insert(
         "rust".to_owned(),
@@ -154,28 +151,19 @@ async fn a_provider_given_up_on_is_retried_only_once_its_binary_appears() -> Tes
         Some("no such file".to_owned()),
     );
 
-    // Still absent: the verdict stands, and nothing is re-attempted.
-    manager.document_opened(Some("rust"), Some("rust"), &path, 2, || {
-        "fn main() {}".into()
-    });
+    for version in 2..8 {
+        manager.document_opened(Some("rust"), Some("rust"), &path, version, || {
+            "fn main() {}".into()
+        });
+    }
+    assert_eq!(
+        manager.servers.len(),
+        1,
+        "each open built another server task for a command that cannot run"
+    );
     assert!(
         manager.runtime_states.contains_key(&verdict),
-        "an absent binary lifted the verdict, which is where the notification storm came from"
-    );
-
-    // Now it is there. The next open lifts the verdict and re-resolves.
-    std::fs::write(&binary, "#!/bin/sh\n")?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755))?;
-    }
-    manager.document_opened(Some("rust"), Some("rust"), &path, 3, || {
-        "fn main() {}".into()
-    });
-    assert!(
-        !manager.runtime_states.contains_key(&verdict),
-        "installing the binary did not bring the provider back"
+        "the verdict was discarded, so the next open would re-attempt the launch"
     );
     Ok(())
 }

@@ -97,6 +97,15 @@ pub(crate) struct LspManager {
     /// diagnosis (`None` = a usable JDK was found). Reset on reconfigure so a
     /// settings reload re-probes a fixed PATH.
     jdtls_preflight: Option<Option<String>>,
+    /// Slots whose document sync has already been reported as failing.
+    ///
+    /// A full queue is not a one-off: the task is blocked, so *every* subsequent
+    /// keystroke fails to enqueue. The resulting notification is a persistent
+    /// card -- warnings never auto-dismiss, and only transient cards are evicted --
+    /// so reporting per failure grew an unbounded stack the user had to clear by
+    /// hand. Reported once per outage instead, and cleared by the first delivery
+    /// that succeeds.
+    sync_failure_reported: HashSet<String>,
     /// Providers whose launch preflight has already been reported in this
     /// generation, so a failed one is explained once rather than per document.
     preflight_reported: HashSet<LanguageServerId>,
@@ -141,6 +150,7 @@ impl LspManager {
                 registry_root: registry_root.clone(),
                 servers: HashMap::new(),
                 missing_reported: HashSet::new(),
+                sync_failure_reported: HashSet::new(),
                 jdtls_preflight: None,
                 preflight_reported: HashSet::new(),
                 updates,
@@ -169,56 +179,37 @@ impl LspManager {
         self.runtime_states.clear();
         self.jdtls_preflight = None;
         self.preflight_reported.clear();
+        self.sync_failure_reported.clear();
         true
-    }
-
-    /// Retire a slot karet gave up on, but only once its executable is there.
-    ///
-    /// `Unavailable` means the launch failed in a way no retry fixes, and the task
-    /// stopped rather than respawning forever. Resolution short-circuits on a live
-    /// slot, so leaving the slot alone made that verdict permanent: installing the
-    /// binary, or fixing its permissions, changed nothing for the rest of the
-    /// session. Retiring it unconditionally is worse -- every later document open
-    /// re-execs the same missing binary and reports the same failure again, which
-    /// for a configured command that never existed is an unbounded stream of
-    /// identical notifications.
-    ///
-    /// So the verdict is lifted on evidence. The check is a `stat`, not a spawn; it
-    /// reads the same install journal every other karet process writes through its
-    /// per-provider lock, so instances converge; and it is idempotent, because an
-    /// absent binary leaves the verdict standing and says nothing.
-    fn lift_verdict_if_runnable(
-        &mut self,
-        provider: Option<&LanguageServerId>,
-        root: &Path,
-        key: &str,
-        command: &OsStr,
-    ) {
-        let Some(provider) = provider else {
-            return;
-        };
-        let entry = (provider.clone(), root.to_path_buf());
-        let gave_up = self
-            .runtime_states
-            .get(&entry)
-            .is_some_and(|(state, _)| *state == LanguageServerRuntimeState::Unavailable);
-        if gave_up && executable_exists(command) {
-            self.servers.remove(key);
-            self.runtime_states.remove(&entry);
-        }
     }
 
     /// Whether an asynchronous update belongs to the current server generation.
     pub(crate) fn accepts(&self, update: &LspUpdate) -> bool {
-        // Exempt: a retiring task's parting instruction to drop what it published.
-        // `reconfigure` and `restart` bump the generation *before* the task they
-        // retire gets to exit, so fencing this would discard the one message that
-        // removes the markers of the generation being retired -- and after a bump
-        // the layer key can change, so nothing else would ever replace them.
-        // Dropping a layer is idempotent and cannot corrupt a newer generation:
-        // the key names the exact slot that published it.
+        // Clearing a diagnostic layer takes generation *or* ownership, because
+        // neither fence alone is right.
+        //
+        // Generation alone is too strict: `reconfigure` and `restart` bump it
+        // before the task they retire gets to exit, so the parting clear that
+        // removes the retired generation's markers would be discarded -- and for a
+        // provider the new settings no longer select, nothing would ever replace
+        // them.
+        //
+        // Exemption alone is too loose: the layer key is the slot key, which is
+        // *identical* across a generation bump for the same provider and root. A
+        // task still parked on a 30-second request can send its clear long after
+        // its replacement has connected and published, wiping a live server's
+        // markers until the file next changes.
+        //
+        // Together they are exact. A live task clearing after its grace window
+        // matches on generation. A retired task's parting clear is let through
+        // only when no live slot claims the key -- which is precisely when its
+        // markers are orphaned rather than superseded.
         let generation = match update {
-            LspUpdate::DiagnosticsCleared { .. } => return true,
+            LspUpdate::DiagnosticsCleared {
+                generation, server, ..
+            } => {
+                return *generation == self.generation || !self.servers.contains_key(server);
+            },
             LspUpdate::Completions { generation, .. }
             | LspUpdate::Symbols { generation, .. }
             | LspUpdate::Hover { generation, .. }
@@ -468,7 +459,6 @@ impl LspManager {
             .as_ref()
             .map_or_else(|| language.clone(), |server| server.key().to_owned());
         let key = format!("{provider_key}@{}", root.to_string_lossy());
-        self.lift_verdict_if_runnable(provider.as_ref(), &root, &key, OsStr::new(&spec.command));
         if !self.servers.contains_key(&key) {
             // Server tasks need an async runtime; a session driven synchronously
             // (unit tests, bare library use) simply runs without LSP.
@@ -525,7 +515,6 @@ impl LspManager {
             return None;
         };
         let key = format!("{}@{}", provider.key(), root.to_string_lossy());
-        self.lift_verdict_if_runnable(Some(&provider), &root, &key, OsStr::new(&spec.command));
         if !self.servers.contains_key(&key) {
             let handle = tokio::runtime::Handle::try_current().ok()?;
             let (tx, rx) = mpsc::channel(SERVER_COMMAND_CAPACITY);
@@ -657,6 +646,10 @@ impl LspManager {
                 .is_err()
             {
                 undelivered.push(key);
+            } else {
+                // Delivery works again: forget the suppression so a *later* outage
+                // is reported rather than silenced by one that has since cleared.
+                self.sync_failure_reported.remove(&key);
             }
         }
         // A dropped `didOpen` used to be silent, and was the worst of the silent
@@ -681,7 +674,10 @@ impl LspManager {
             return;
         };
         let closed = slot.tx.is_closed();
-        if let Some(server) = slot.provider.clone() {
+        let provider = slot.provider.clone();
+        if let Some(server) = provider
+            && self.sync_failure_reported.insert(key.to_owned())
+        {
             let _ = self.updates.send(LspUpdate::SyncFailed {
                 generation: self.generation,
                 server,
@@ -690,6 +686,7 @@ impl LspManager {
         }
         if closed {
             self.servers.remove(key);
+            self.sync_failure_reported.remove(key);
         }
     }
 
@@ -727,6 +724,8 @@ impl LspManager {
                 .is_err()
             {
                 undelivered.push(key);
+            } else {
+                self.sync_failure_reported.remove(&key);
             }
         }
         // A dropped `didChange` leaves the server's copy of the file behind the
