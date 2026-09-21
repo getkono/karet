@@ -280,11 +280,11 @@ impl Session {
         }
     }
 
-    pub(super) fn save(&mut self, id: RequestId, doc_id: DocumentId) {
+    pub(super) fn save(&mut self, id: RequestId, doc_id: DocumentId, cause: SaveCause) {
         if self.apply_save_cleanup(doc_id) {
             self.publish(doc_id, None);
         }
-        if self.begin_format_on_save(id, doc_id) {
+        if cause.may_format() && self.begin_format_on_save(id, doc_id) {
             return;
         }
         self.commit_save(id, doc_id);

@@ -201,7 +201,10 @@
         assert_eq!(settings.tab_width, 4);
         assert!(!settings.insert_spaces);
 
-        session.handle(RequestId(2), Command::Save { doc });
+        session.handle(RequestId(2), Command::Save {
+                doc,
+                cause: SaveCause::Manual,
+            });
 
         let bytes = std::fs::read(&path).unwrap_or_default();
         assert_eq!(bytes, b"\xef\xbb\xbflet x = 1;\r\n");
@@ -271,7 +274,10 @@
             return;
         };
 
-        session.handle(RequestId(2), Command::Save { doc });
+        session.handle(RequestId(2), Command::Save {
+                doc,
+                cause: SaveCause::Manual,
+            });
 
         assert_eq!(std::fs::read(&path).unwrap_or_default(), b"");
     }
@@ -301,7 +307,10 @@
             return;
         };
 
-        session.handle(RequestId(2), Command::Save { doc });
+        session.handle(RequestId(2), Command::Save {
+                doc,
+                cause: SaveCause::Manual,
+            });
 
         assert_eq!(std::fs::read(&path).unwrap_or_default(), b"kept\n");
     }
@@ -418,7 +427,10 @@
         assert_eq!(snap.buffer.line_count(), 3);
 
         // Save: the file on disk reflects the edit and the doc goes clean.
-        session.handle(RequestId(3), Command::Save { doc });
+        session.handle(RequestId(3), Command::Save {
+                doc,
+                cause: SaveCause::Manual,
+            });
         let mut saved = false;
         while let Some((_, ev)) = events.try_recv() {
             if let Event::Saved { .. } = ev {
@@ -507,7 +519,10 @@
             },
         );
         while events.try_recv().is_some() {}
-        session.handle(RequestId(4), Command::Save { doc });
+        session.handle(RequestId(4), Command::Save {
+                doc,
+                cause: SaveCause::Manual,
+            });
 
         assert_eq!(
             std::fs::read_to_string(&new_path).unwrap_or_default(),
@@ -561,7 +576,10 @@
             return;
         }
 
-        session.handle(RequestId(3), Command::Save { doc });
+        session.handle(RequestId(3), Command::Save {
+                doc,
+                cause: SaveCause::Manual,
+            });
         let mut conflict = false;
         let mut saved = false;
         while let Some((_, ev)) = events.try_recv() {

@@ -23,7 +23,10 @@
         );
         assert!(!path.exists());
 
-        session.handle(RequestId(2), Command::Save { doc });
+        session.handle(RequestId(2), Command::Save {
+                doc,
+                cause: SaveCause::Manual,
+            });
 
         let mut saved = false;
         while let Some((_, event)) = events.try_recv() {
@@ -67,7 +70,10 @@
         while events.try_recv().is_some() {}
         assert!(std::fs::write(&path, "external\n").is_ok());
 
-        session.handle(RequestId(3), Command::Save { doc });
+        session.handle(RequestId(3), Command::Save {
+                doc,
+                cause: SaveCause::Manual,
+            });
 
         let mut conflict = false;
         while let Some((_, event)) = events.try_recv() {

@@ -93,6 +93,7 @@ use crate::api::Event;
 #[cfg(test)]
 use crate::api::RangeSpec;
 use crate::api::RequestId;
+use crate::api::SaveCause;
 use crate::api::SwapInfo;
 use crate::backup::SwapRecord;
 use crate::backup::SwapStore;
@@ -402,7 +403,7 @@ impl Session {
             Command::ApplyChange { doc, change, cause } => self.apply(id, doc, &change, cause),
             Command::Undo { doc } => self.undo_redo(id, doc, true),
             Command::Redo { doc } => self.undo_redo(id, doc, false),
-            Command::Save { doc } => self.save(id, doc),
+            Command::Save { doc, cause } => self.save(id, doc, cause),
             Command::RetargetDocument { doc, path } => self.retarget(id, doc, path),
             Command::BuildLatex { doc } => self.request_latex_build(id, doc),
             // The caret is UI-local; `SetCursor` becomes meaningful when producers

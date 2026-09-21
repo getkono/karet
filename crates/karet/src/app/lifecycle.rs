@@ -240,7 +240,7 @@ impl App {
             return;
         };
         let at_risk = self.docs_at_risk(request);
-        let saved = self.save_docs(&at_risk);
+        let saved = self.save_docs(&at_risk, SaveCause::Manual);
         if saved == 0 {
             self.execute_close(request);
         } else {
@@ -296,10 +296,10 @@ impl App {
 
     /// Issue a save for each of `docs` (skipping any already in flight), tracking it
     /// in `pending_saves` and marking its tabs as saving. Returns the number issued.
-    pub(super) fn save_docs(&mut self, docs: &[DocumentId]) -> usize {
+    pub(super) fn save_docs(&mut self, docs: &[DocumentId], cause: SaveCause) -> usize {
         let mut issued = 0;
         for &doc in docs {
-            if self.send_save(doc) {
+            if self.send_save(doc, cause) {
                 issued += 1;
             }
         }
@@ -309,7 +309,7 @@ impl App {
     /// Send one save through the same backend path used by manual, close-guard, and
     /// automatic saves. The session owns the last-read fingerprint check, so every
     /// caller gets identical external-change protection.
-    fn send_save(&mut self, doc: DocumentId) -> bool {
+    fn send_save(&mut self, doc: DocumentId, cause: SaveCause) -> bool {
         let Some(backend) = self.backend.clone() else {
             return false;
         };
@@ -322,7 +322,7 @@ impl App {
         }
         let version = self.document_version(doc);
         let id = backend.next_id();
-        match backend.send(id, SessionCommand::Save { doc }) {
+        match backend.send(id, SessionCommand::Save { doc, cause }) {
             Ok(()) => {
                 self.pending_saves.insert(id, PendingSave { doc });
                 if self
@@ -384,7 +384,7 @@ impl App {
             );
             return;
         }
-        self.send_save(doc);
+        self.send_save(doc, SaveCause::Manual);
     }
 
     /// Record a new dirty version for the configured automatic-save trigger. A
@@ -415,7 +415,7 @@ impl App {
             .then(|| self.active_code_doc())
             .flatten();
         if mode == AutoSave::OnFocusChange && focused != Some(doc) {
-            self.save_docs(&[doc]);
+            self.save_docs(&[doc], SaveCause::FocusChange);
         }
     }
 
@@ -434,7 +434,7 @@ impl App {
         for doc in &due {
             self.auto_save_pending.remove(doc);
         }
-        self.save_docs(&due);
+        self.save_docs(&due, SaveCause::AutoDelay);
     }
 
     /// Save the previously-focused editor document when a user action moves focus
@@ -450,7 +450,7 @@ impl App {
             && let Some(doc) = previous
             && self.auto_save_pending.contains_key(&doc)
         {
-            self.save_docs(&[doc]);
+            self.save_docs(&[doc], SaveCause::FocusChange);
         }
     }
 
@@ -461,7 +461,7 @@ impl App {
             && let Some(doc) = self.active_code_doc()
             && self.auto_save_pending.contains_key(&doc)
         {
-            self.save_docs(&[doc]);
+            self.save_docs(&[doc], SaveCause::FocusChange);
         }
     }
 

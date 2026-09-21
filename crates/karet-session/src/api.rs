@@ -239,6 +239,39 @@ pub enum DictionaryScope {
     Project,
 }
 
+/// What prompted a save, for the decisions that depend on it.
+///
+/// Only format-on-save reads this today, and only to stay off the autosave
+/// timer: reformatting the whole buffer a second after every typing pause moves
+/// text under the user's cursor while they are still working in it. VS Code
+/// draws the same line, and for the same reason.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+#[derive(serde::Serialize, serde::Deserialize)]
+pub enum SaveCause {
+    /// The user asked, explicitly — a keybinding, a command, or a close prompt.
+    #[default]
+    Manual,
+    /// Autosave, triggered by focus leaving the document.
+    FocusChange,
+    /// Autosave, triggered by the inactivity timer while the document is still
+    /// the one being edited.
+    AutoDelay,
+    /// Forward-compatibility fallback: an unrecognized cause from a newer peer.
+    /// Treated as [`SaveCause::Manual`], the conservative reading — a save that
+    /// formats is recoverable, one that silently does not is surprising.
+    #[serde(other)]
+    Unknown,
+}
+
+impl SaveCause {
+    /// Whether a save from this cause may run the formatter first.
+    #[must_use]
+    pub fn may_format(self) -> bool {
+        !matches!(self, Self::AutoDelay)
+    }
+}
+
 /// A request submitted by the presentation layer to the backend.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
@@ -277,6 +310,8 @@ pub enum Command {
     Save {
         /// The document to save.
         doc: DocumentId,
+        /// What prompted the save; see [`SaveCause`].
+        cause: SaveCause,
     },
     /// Retarget an open document to a new path after a filesystem rename/move.
     RetargetDocument {
@@ -971,7 +1006,10 @@ mod tests {
     fn ids_and_payloads_construct() {
         assert_eq!(DocumentId(1), DocumentId(1));
         assert_ne!(RequestId(1), RequestId(2));
-        let _cmd = Command::Save { doc: DocumentId(7) };
+        let _cmd = Command::Save {
+            doc: DocumentId(7),
+            cause: SaveCause::Manual,
+        };
         let _cmd = Command::RetargetDocument {
             doc: DocumentId(7),
             path: PathBuf::from("new.txt"),

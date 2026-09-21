@@ -130,7 +130,10 @@
         while events.try_recv().is_some() {}
 
         // Save re-encodes to CBOR; the file on disk decodes to the edited value.
-        session.handle(RequestId(3), Command::Save { doc });
+        session.handle(RequestId(3), Command::Save {
+                doc,
+                cause: SaveCause::Manual,
+            });
         let mut saved = false;
         while let Some((_, ev)) = events.try_recv() {
             if let Event::Saved { .. } = ev {
@@ -197,7 +200,10 @@
         while events.try_recv().is_some() {}
 
         // Save fails to encode; no Saved event, and the file is unchanged.
-        session.handle(RequestId(3), Command::Save { doc });
+        session.handle(RequestId(3), Command::Save {
+                doc,
+                cause: SaveCause::Manual,
+            });
         let mut saved = false;
         let mut failed = false;
         while let Some((_, ev)) = events.try_recv() {

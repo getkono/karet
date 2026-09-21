@@ -34,7 +34,10 @@
         let Some(doc) = opened_doc(&mut events) else {
             return;
         };
-        session.handle(RequestId(2), Command::Save { doc });
+        session.handle(RequestId(2), Command::Save {
+                doc,
+                cause: SaveCause::Manual,
+            });
         assert!(saved(&mut events), "save must complete without a formatter");
         assert_eq!(
             std::fs::read_to_string(&path).unwrap_or_default(),
@@ -68,7 +71,10 @@
         let Some(doc) = opened_doc(&mut events) else {
             return;
         };
-        session.handle(RequestId(2), Command::Save { doc });
+        session.handle(RequestId(2), Command::Save {
+                doc,
+                cause: SaveCause::Manual,
+            });
         assert!(saved(&mut events));
         assert_eq!(
             std::fs::read_to_string(&path).unwrap_or_default(),
@@ -112,7 +118,10 @@
         let Some(doc) = opened_doc(&mut events) else {
             return;
         };
-        session.handle(RequestId(2), Command::Save { doc });
+        session.handle(RequestId(2), Command::Save {
+                doc,
+                cause: SaveCause::Manual,
+            });
         assert!(saved(&mut events));
         assert_eq!(std::fs::read_to_string(&path).unwrap_or_default(), messy);
     }
@@ -529,4 +538,60 @@
         assert!(saved(&mut events));
         assert_eq!(std::fs::read_to_string(&path).unwrap_or_default(), "edited\n");
         assert!(session.pending_format_saves.is_empty());
+    }
+
+    /// Reformatting the whole buffer a second after every typing pause moves
+    /// text under a cursor that is still in it. The inactivity timer therefore
+    /// saves without formatting; every other cause still formats.
+    #[cfg(feature = "toml-format")]
+    #[test]
+    fn the_autosave_timer_saves_without_formatting() {
+        let formatted_after = |cause| {
+            let dir = tempfile::tempdir().ok()?;
+            let path = dir.path().join("Cargo.toml");
+            std::fs::write(&path, "[package]\nname=\"x\"\n").ok()?;
+            let mut settings = crate::config::Settings::default();
+            settings.editor.format_on_save = true;
+            let (mut session, mut events, _snaps) = Session::new(SessionConfig {
+                settings,
+                ..SessionConfig::default()
+            });
+            session.handle(
+                RequestId(1),
+                Command::OpenDocument {
+                    path: path.clone(),
+                    language: None,
+                },
+            );
+            let doc = opened_doc(&mut events)?;
+            session.handle(RequestId(2), Command::Save { doc, cause });
+            assert!(saved(&mut events));
+            std::fs::read_to_string(&path).ok()
+        };
+
+        let messy = "[package]\nname=\"x\"\n".to_string();
+        let tidy = "[package]\nname = \"x\"\n".to_string();
+
+        assert_eq!(
+            formatted_after(SaveCause::AutoDelay),
+            Some(messy),
+            "the inactivity timer must not reformat under the caret"
+        );
+        assert_eq!(formatted_after(SaveCause::Manual), Some(tidy.clone()));
+        assert_eq!(
+            formatted_after(SaveCause::FocusChange),
+            Some(tidy),
+            "leaving the document is a safe moment to reformat it"
+        );
+    }
+
+    /// An unrecognized cause from a newer peer formats rather than silently
+    /// skipping: a save that formats when it need not have is recoverable, one
+    /// that quietly did not is the surprise.
+    #[test]
+    fn an_unknown_save_cause_still_formats() {
+        assert!(SaveCause::Unknown.may_format());
+        assert!(SaveCause::Manual.may_format());
+        assert!(SaveCause::FocusChange.may_format());
+        assert!(!SaveCause::AutoDelay.may_format());
     }

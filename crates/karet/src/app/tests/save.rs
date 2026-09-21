@@ -573,3 +573,60 @@ fn a_dependency_check_card_is_retired_when_the_hints_arrive() {
         "the card does not outlive the check it describes"
     );
 }
+
+/// The session decides whether to run the formatter from the cause the client
+/// reports, so the client has to report it honestly. An inactivity save that
+/// claimed to be manual would reformat the buffer under the caret.
+#[test]
+fn each_save_trigger_reports_the_cause_the_session_judges_it_by() {
+    let causes = |drive: fn(&mut App, DocumentId)| {
+        let backend = Arc::new(RecordingBackend::new());
+        let mut app = app();
+        app.backend = Some(backend.clone());
+        app.push_tab(text_tab("t.rs", "x"));
+        if let TabKind::Code { doc, .. } = &mut app.tabs[app.active].kind {
+            *doc = Some(DocumentId(2));
+        }
+        drive(&mut app, DocumentId(2));
+        backend
+            .sent
+            .lock()
+            .map(|sent| {
+                sent.iter()
+                    .filter_map(|(_, command)| match command {
+                        SessionCommand::Save { cause, .. } => Some(*cause),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
+
+    assert_eq!(
+        causes(|app, _| app.save_active()),
+        vec![SaveCause::Manual],
+        "the keybinding is the user asking"
+    );
+
+    assert_eq!(
+        causes(|app, doc| {
+            app.settings.files.auto_save = AutoSave::AfterDelay;
+            app.settings.files.auto_save_delay = 0;
+            app.schedule_auto_save(doc, 1, Instant::now());
+            app.fire_auto_save(Instant::now() + Duration::from_millis(1));
+        }),
+        vec![SaveCause::AutoDelay],
+        "the inactivity timer must not be mistaken for a manual save"
+    );
+
+    assert_eq!(
+        causes(|app, doc| {
+            app.settings.files.auto_save = AutoSave::OnFocusChange;
+            app.focus = Focus::Editor;
+            app.schedule_auto_save(doc, 1, Instant::now());
+            app.auto_save_focus_lost();
+        }),
+        vec![SaveCause::FocusChange],
+        "leaving the document is a safe moment to reformat it"
+    );
+}
