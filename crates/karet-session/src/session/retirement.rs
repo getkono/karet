@@ -48,41 +48,31 @@ impl Session {
                 },
             );
         }
-        self.publish_language_server_inventory();
+        // Recorded, not emitted. A retirement is very often the first half of an
+        // operation -- a restart retires a slot and then starts its replacement --
+        // and an inventory read here would describe the gap in the middle, where
+        // the provider has no process and no documents. `settle_lsp_inventory`
+        // sends the signal once the actor has finished the whole unit of work.
+        self.lsp_inventory_stale = true;
     }
 
-    /// Push the whole provider inventory, unsolicited.
+    /// Tell the client its inventory is stale, if anything this unit of work did
+    /// made it so.
     ///
-    /// The per-transition event above carries a provider's *state*, which is all
-    /// the badge needs and all a client can usefully be given at that latency.
-    /// It is not enough to keep a client's cached row right: `open_documents`
-    /// has no event of its own, so a client patching state field by field
-    /// finishes with a row that says idle and still has documents attached --
-    /// and offers a Restart for a process that is gone. The inventory is
-    /// authoritative for every field at once, so it is sent whole.
+    /// Called at the end of each of the four actor inputs that can retire a slot,
+    /// rather than at the point of retirement, because retirement is routinely
+    /// mid-operation. `restart` retires a provider and reopens its documents
+    /// against a fresh process; a signal sent between the two would have the
+    /// client re-query and cache `idle, 0 documents` for a provider that is up,
+    /// and nothing afterwards would correct it -- the transition event carries
+    /// state, and the document count has no event at all.
     ///
-    /// Sent once per retirement rather than once per slot, and only on
-    /// retirement: the document count only falls when a slot goes, and this is
-    /// not cheap to build. Per provider it reads the managed-install registry
-    /// four times, and per provider *and root* it re-resolves the executable --
-    /// probing the project directory and scanning `PATH`. Nothing memoises any
-    /// of it. If that ever shows up in a profile, the fix is to split
-    /// `inventory` into a settings-and-registry half (which changes only on
-    /// config reload, install, uninstall and decline, each of which already has
-    /// an event) and a live half that is pure over the slot map -- not to add a
-    /// second cache, which is the thing this change exists to remove.
-    ///
-    /// `replace` on the client already accepts an untagged snapshot, so this
-    /// needs no new vocabulary.
-    fn publish_language_server_inventory(&mut self) {
-        let paths = self
-            .store
-            .docs
-            .values()
-            .map(|document| document.path.clone())
-            .collect::<Vec<_>>();
-        let servers = self.lsp.inventory(paths);
-        self.emit(None, Event::LanguageServerStatus { servers });
+    /// Coalescing is the second reason: retiring four slots is one staleness
+    /// fact, not four, and a settings reload retires every slot at once.
+    pub(crate) fn settle_lsp_inventory(&mut self) {
+        if std::mem::take(&mut self.lsp_inventory_stale) {
+            self.emit(None, Event::LanguageServerInventoryStale);
+        }
     }
 
     pub(super) fn clear_lsp_diagnostic_layer(&mut self, server: &crate::lsp::SlotKey) {

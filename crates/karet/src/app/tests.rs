@@ -23,7 +23,7 @@ mod hover;
 mod inline_macros;
 mod language_server_badge;
 mod language_server_progress;
-mod language_server_push;
+mod language_server_staleness;
 mod language_servers;
 mod lifecycle;
 mod markdown_edit;

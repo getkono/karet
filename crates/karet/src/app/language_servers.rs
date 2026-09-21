@@ -21,14 +21,26 @@ pub(crate) use badge::LanguageServerBadge;
 pub(crate) use badge::LanguageServerBadgeSummary;
 
 impl LanguageServerRuntimeModel {
-    fn replace(&mut self, request: Option<RequestId>, servers: Vec<LanguageServerStatus>) {
-        self.servers = servers;
-        // An untagged push answers nobody. Taking its rows is right; clearing a
-        // request that is still out is not -- the reply would then land with
-        // nothing waiting for it, and this cache would keep the older push.
-        if request.is_some() && self.inventory_request == request {
-            self.inventory_request = None;
+    /// Adopt an inventory, unless a newer request is already out for a better one.
+    ///
+    /// The session signals staleness whenever a retirement invalidates what it
+    /// last said, and the client answers that by asking again. An answer
+    /// computed before that signal describes the session as it was *before* the
+    /// thing that made it stale, so it is refused: adopting it would cache
+    /// exactly the state the signal existed to correct, and nothing afterwards
+    /// would ask again.
+    ///
+    /// Refused only while a *different* request is outstanding, which is the
+    /// only situation in which a better answer is known to be coming. With
+    /// nothing pending there is no fresher answer to prefer, so the rows are
+    /// taken.
+    fn replace(&mut self, request: Option<RequestId>, servers: Vec<LanguageServerStatus>) -> bool {
+        if self.inventory_request.is_some() && self.inventory_request != request {
+            return false;
         }
+        self.servers = servers;
+        self.inventory_request = None;
+        true
     }
 
     fn update(
@@ -131,8 +143,46 @@ impl App {
         if self.lsp_runtime.inventory_request.is_some() {
             return;
         }
+        self.request_language_server_inventory();
+    }
+
+    /// Ask the session for a current inventory, and record the request in the one
+    /// place every reader of the answer consults.
+    ///
+    /// The cache refuses any answer but the outstanding one, so a request issued
+    /// without recording it here would have its answer dropped on the floor. One
+    /// helper rather than three call sites each remembering to do it.
+    fn request_language_server_inventory(&mut self) -> Option<RequestId> {
         let request = self.send(SessionCommand::LanguageServerStatus);
         self.lsp_runtime.inventory_request = request;
+        for tab in self.all_tabs_mut() {
+            if let TabKind::LanguageServers(view) = &mut tab.kind {
+                view.inventory_request = request;
+            }
+        }
+        request
+    }
+
+    /// The session says the inventory this client cached no longer describes it.
+    ///
+    /// Answering it with a fresh request is the whole protocol: the session sends
+    /// no rows, because building them is expensive and most sessions have nobody
+    /// looking at them. So only ask when something is actually reading the cache
+    /// -- an open manager tab, or a populated cache the per-pane badges draw
+    /// from. A client that never asked for an inventory has nothing to correct.
+    ///
+    /// Deliberately not coalesced against an in-flight request. That request's
+    /// answer was computed before the signal, so it describes the session as it
+    /// was before the retirement -- exactly what must not be cached.
+    pub(in crate::app) fn language_server_inventory_stale(&mut self) {
+        let reading = !self.lsp_runtime.servers.is_empty()
+            || self
+                .all_tabs()
+                .any(|tab| matches!(tab.kind, TabKind::LanguageServers(_)));
+        if !reading {
+            return;
+        }
+        self.request_language_server_inventory();
     }
 
     pub(super) fn open_language_servers(&mut self) {
@@ -157,7 +207,7 @@ impl App {
             return;
         }
 
-        let request = self.send(SessionCommand::LanguageServerStatus);
+        let request = self.request_language_server_inventory();
         self.push_tab(Tab::language_servers(request));
         self.sync_language_server_operations();
     }
@@ -243,9 +293,8 @@ impl App {
     }
 
     pub(in crate::app) fn refresh_language_servers(&mut self) {
-        let request = self.send(SessionCommand::LanguageServerStatus);
+        self.request_language_server_inventory();
         if let Some(view) = self.language_servers_mut() {
-            view.inventory_request = request;
             view.loading_since = Some(Pending::start());
             view.error = None;
         }
@@ -558,18 +607,22 @@ impl App {
         request: Option<RequestId>,
         servers: Vec<LanguageServerStatus>,
     ) {
-        self.lsp_runtime.replace(request, servers.clone());
+        // One guard, here. Whether an answer is worth adopting is a fact about
+        // the *client*, not about any one view of it, so it is decided once and
+        // the views follow. Checking again per tab was defence in depth that
+        // measured nothing: either check alone hid a defect in the other.
+        if !self.lsp_runtime.replace(request, servers.clone()) {
+            // Not the answer we are waiting for: a newer request is out, issued
+            // because the session told us this one's rows are already stale.
+            return;
+        }
         // No card for the count: this only ever fills the Language Servers tab,
         // whose table already lists every server and whether it is available.
         for tab in self.all_tabs_mut() {
             let TabKind::LanguageServers(view) = &mut tab.kind else {
                 continue;
             };
-            if request.is_none() {
-                view.adopt_pushed_servers(servers.clone());
-            } else if view.inventory_request == request {
-                view.set_servers(servers.clone());
-            }
+            view.set_servers(servers.clone());
         }
     }
 
@@ -773,15 +826,7 @@ impl App {
             }
         }
         if (!cached || missing_instance) && self.lsp_runtime.inventory_request.is_none() {
-            let request = self.send(SessionCommand::LanguageServerStatus);
-            self.lsp_runtime.inventory_request = request;
-            if missing_instance {
-                for tab in self.all_tabs_mut() {
-                    if let TabKind::LanguageServers(view) = &mut tab.kind {
-                        view.inventory_request = request;
-                    }
-                }
-            }
+            self.request_language_server_inventory();
         }
         if let Some(error) = error
             && matches!(

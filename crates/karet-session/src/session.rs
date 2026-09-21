@@ -357,6 +357,13 @@ pub struct Session {
     notebooks: crate::notebook_kernel::NotebookKernels,
     /// Language-server orchestration (lazy per-language tasks; see [`crate::lsp`]).
     lsp: LspManager,
+    /// Whether something this unit of actor work did left a client's cached
+    /// inventory describing a session that no longer exists.
+    ///
+    /// Set by [`Session::adopt_retirement`] and drained by
+    /// [`Session::settle_lsp_inventory`] once the work finishes, so a restart
+    /// signals staleness after its replacement is up rather than during the gap.
+    lsp_inventory_stale: bool,
     /// The LSP tasks' results, taken by [`crate::backend::local`] for the actor.
     lsp_rx: Option<mpsc::UnboundedReceiver<LspUpdate>>,
     /// Explicit install/update work for the shared managed-server registry.
@@ -388,6 +395,17 @@ impl Session {
     /// Handle one request. The editing fast paths resolve inline; the answering
     /// [`Event`] is tagged with `id`.
     pub fn handle(&mut self, id: RequestId, command: Command) {
+        self.dispatch(id, command);
+        // After the whole command, not inside it. A restart retires a provider
+        // and starts its replacement in one command, and a client re-querying
+        // between the two would cache the gap.
+        self.settle_lsp_inventory();
+    }
+
+    /// Route one command, leaving [`Session::settle_lsp_inventory`] to its
+    /// caller -- which is why this is split out: the routing has several early
+    /// returns, and each one is a path a retirement can happen on.
+    fn dispatch(&mut self, id: RequestId, command: Command) {
         if self.handle_debug_command(id, &command) {
             return;
         }

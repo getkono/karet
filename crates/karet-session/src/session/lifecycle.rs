@@ -130,6 +130,7 @@ impl Session {
             #[cfg(feature = "notebook-kernel")]
             notebooks,
             lsp,
+            lsp_inventory_stale: false,
             lsp_rx: Some(lsp_rx),
             lsp_registry,
             lsp_registry_rx: Some(lsp_registry_rx),

@@ -500,21 +500,26 @@ async fn restarting_one_provider_leaves_the_others_running() -> TestResult {
     Ok(())
 }
 
-/// A retirement pushes the whole inventory, so a client that never asks still
-/// stops offering a Restart for a process that is gone.
+/// A retirement signals that the inventory is stale, and the inventory a client
+/// then asks for no longer offers a Restart.
 ///
 /// This is the half of the acceptance criterion the per-transition event cannot
 /// reach. That event carries state, and a client patching state field by field
 /// ends with `runtime: Idle` beside whatever `open_documents` it was last told
 /// -- and `restartable` is true if *either* says the provider is alive, so the
-/// button outlives the process. The inventory is authoritative for both at
-/// once, so a retirement sends it whole and untagged.
+/// button outlives the process. Re-reading the inventory settles both at once.
 ///
-/// Falsified by: dropping `publish_language_server_inventory` from
-/// `adopt_retirement`. The `Idle` transition still arrives, and nothing else
-/// ever corrects the document count.
+/// The signal is deliberately not the rows themselves: building an inventory
+/// probes `PATH` and the install journal per provider and root, and most
+/// sessions have nobody looking at the result. The session says the cache is
+/// wrong; asking is the client's move.
+///
+/// Falsified by: dropping `self.lsp_inventory_stale = true` from
+/// `adopt_retirement`. The `Idle` transition still arrives, nothing announces
+/// that the count changed, and a client that patches state alone keeps the dead
+/// Restart.
 #[tokio::test]
-async fn retiring_a_provider_pushes_an_inventory_that_offers_no_restart() -> TestResult {
+async fn retiring_a_provider_reports_an_inventory_that_offers_no_restart() -> TestResult {
     let dir = tempfile::tempdir()?;
     let path = rust_file(&dir, "main.rs", "fn main() {}\n").ok_or("write failed")?;
     let root = crate::lsp::absolute_path(dir.path());
@@ -538,24 +543,106 @@ async fn retiring_a_provider_pushes_an_inventory_that_offers_no_restart() -> Tes
 
     backend.send(backend.next_id(), Command::CloseDocument { doc })?;
 
-    // Unsolicited: nothing after this point sends `Command::LanguageServerStatus`.
-    let mut pushed = None;
+    // Unsolicited: nothing after this point asks for anything.
+    let mut signalled = false;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    while pushed.is_none() && tokio::time::Instant::now() < deadline {
+    while !signalled && tokio::time::Instant::now() < deadline {
         let Some((id, event)) = next_event(&mut events).await else {
             break;
         };
-        if let Event::LanguageServerStatus { servers } = event {
-            assert_eq!(id, None, "a pushed inventory answers no request");
-            pushed = instance(&servers, "rust-analyzer", &root);
+        if matches!(event, Event::LanguageServerInventoryStale) {
+            assert_eq!(id, None, "a staleness signal answers no request");
+            signalled = true;
         }
     }
-    let pushed = pushed.ok_or("no inventory was pushed after the retirement")?;
-    assert_eq!(pushed.open_documents, 0);
-    assert_eq!(pushed.runtime, LanguageServerRuntimeState::Idle);
     assert!(
-        !pushed.restartable(),
+        signalled,
+        "the retirement never told the client its inventory was stale"
+    );
+
+    // What the client gets when it takes the session up on it.
+    let current = inventory(&backend, &mut events)
+        .await
+        .and_then(|servers| instance(&servers, "rust-analyzer", &root))
+        .ok_or("rust-analyzer missing after the retirement")?;
+    assert_eq!(current.open_documents, 0);
+    assert_eq!(current.runtime, LanguageServerRuntimeState::Idle);
+    assert!(
+        !current.restartable(),
         "the panel would still offer a Restart for a provider with no process"
+    );
+    Ok(())
+}
+
+/// The inventory a client reads after a restart still counts the open document.
+///
+/// This is what a *signal* buys over a pushed snapshot, and why the fix for the
+/// dead-Restart defect is the signal rather than the push. `restart` is a
+/// retirement followed by a reopen, and between the two the provider has no
+/// process and no documents. A snapshot built at the retirement describes that
+/// gap, and nothing afterwards corrects it -- the transition event carries
+/// `runtime` and `error` only, and `open_documents` has no event at all, so the
+/// panel would read "0 document(s)" for a serving provider until the user
+/// pressed Refresh. A signal cannot go stale that way: the client answers it
+/// with a fresh command, and the actor runs commands to completion in order, so
+/// the answer necessarily describes the settled state.
+///
+/// Falsified by: dropping `reopen_documents_at` from `Session::restart_lsp`.
+/// The provider is then retired and never comes back, and `open_documents`
+/// reads 0.
+#[tokio::test]
+async fn a_restart_reports_the_document_it_reopened() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let path = rust_file(&dir, "main.rs", "fn main() {}\n").ok_or("write failed")?;
+    let root = crate::lsp::absolute_path(dir.path());
+    let (session, mut events) = session_rooted_at(
+        &root,
+        test_connector(Behavior::Normal, None, Arc::new(AtomicUsize::new(0))),
+    );
+    let backend = local_session(session, None);
+
+    let _doc = open(&backend, &mut events, &path)
+        .await
+        .ok_or("main.rs never opened")?;
+    let serving = inventory(&backend, &mut events)
+        .await
+        .and_then(|servers| instance(&servers, "rust-analyzer", &root))
+        .ok_or("rust-analyzer missing while serving")?;
+    assert_eq!(serving.open_documents, 1);
+
+    backend.send(
+        backend.next_id(),
+        Command::RestartLanguageServer {
+            server: LanguageServerId::RustAnalyzer,
+        },
+    )?;
+
+    let mut signalled = false;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while !signalled && tokio::time::Instant::now() < deadline {
+        let Some((_, event)) = next_event(&mut events).await else {
+            break;
+        };
+        signalled = matches!(event, Event::LanguageServerInventoryStale);
+    }
+    assert!(
+        signalled,
+        "the restart never signalled that the cache was stale"
+    );
+
+    // The client takes the session up on it, which is the whole point of the
+    // signal landing where it does.
+    let after = inventory(&backend, &mut events)
+        .await
+        .and_then(|servers| instance(&servers, "rust-analyzer", &root))
+        .ok_or("rust-analyzer missing after the restart")?;
+    assert_eq!(
+        after.open_documents, 1,
+        "the restarted provider was reported with no documents attached"
+    );
+    assert!(
+        after.restartable(),
+        "a provider that came back is still what Restart is for"
     );
     Ok(())
 }

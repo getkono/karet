@@ -213,6 +213,9 @@ impl App {
             SessionEvent::LanguageServerStatus { servers } => {
                 self.show_language_server_status(id, servers);
             },
+            SessionEvent::LanguageServerInventoryStale => {
+                self.language_server_inventory_stale();
+            },
             SessionEvent::LanguageServerUpdatePlan { plan, changes } => {
                 self.prompt_language_server_updates(id, plan, changes);
             },
