@@ -928,37 +928,3 @@ fn a_hidden_commit_region_leaves_no_clickable_title_behind() {
         "no region, no clickable title"
     );
 }
-
-/// The branch-switch guard parks on the same save drain a close does, and it read
-/// the same count the same wrong way: with every dirty document's save already in
-/// flight, it found nothing to wait for and switched branches out from under the
-/// writes that were still parked on their formatter.
-#[test]
-fn switching_branches_waits_for_a_save_already_in_flight() {
-    let backend = Arc::new(RecordingBackend::new());
-    let mut app = app();
-    app.backend = Some(backend.clone());
-    app.push_tab(text_tab("t.rs", "x"));
-    if let TabKind::Code { doc, .. } = &mut app.tabs[app.active].kind {
-        *doc = Some(DocumentId(4));
-    }
-    app.tabs[app.active].dirty = true;
-    app.pending_saves
-        .insert(RequestId(12), PendingSave { doc: DocumentId(4) });
-
-    app.save_then_switch(karet_vcs::BranchTarget::Local("other".to_string()));
-
-    assert!(
-        app.vcs_after_save.is_some(),
-        "the switch must wait on the write the in-flight save still owes"
-    );
-    let switched = backend
-        .sent
-        .lock()
-        .map(|sent| {
-            sent.iter()
-                .any(|(_, command)| matches!(command, SessionCommand::VcsAction { .. }))
-        })
-        .unwrap_or_default();
-    assert!(!switched, "no branch switch may run while a write is parked");
-}

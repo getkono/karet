@@ -173,10 +173,9 @@ pub(super) fn remember_document(documents: &mut HashMap<PathBuf, OpenDocument>, 
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::DocumentId;
     use crate::RequestId;
-
-    use super::*;
 
     /// With no connection, nothing formatted the file — and the session has to
     /// hear exactly that, because it is what sends it to its own formatter.

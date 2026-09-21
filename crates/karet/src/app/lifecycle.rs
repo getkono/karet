@@ -330,7 +330,9 @@ impl App {
 
     /// Whether a save for `doc` is already awaiting its answering event.
     pub(super) fn save_in_flight(&self, doc: DocumentId) -> bool {
-        self.pending_saves.values().any(|pending| pending.doc == doc)
+        self.pending_saves
+            .values()
+            .any(|pending| pending.doc == doc)
     }
 
     /// Send one save through the same backend path used by manual, close-guard, and

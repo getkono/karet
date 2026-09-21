@@ -245,7 +245,10 @@ fn quitting_waits_for_a_save_already_in_flight() {
     );
     assert_eq!(app.saving_close, Some(CloseRequest::Quit));
 
-    app.on_backend_event(Some(RequestId(9)), SessionEvent::Saved { doc: DocumentId(3) });
+    app.on_backend_event(
+        Some(RequestId(9)),
+        SessionEvent::Saved { doc: DocumentId(3) },
+    );
     assert!(app.should_quit, "the quit runs once the write has landed");
 }
 
