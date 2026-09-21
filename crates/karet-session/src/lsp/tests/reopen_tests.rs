@@ -202,3 +202,85 @@ async fn a_document_opened_by_an_unnormalised_path_is_still_reopened() -> TestRe
     );
     Ok(())
 }
+
+/// A `didOpen` the queue refused is not recorded as though it had been sent.
+///
+/// A slot's document set is the manager's record of what the *server was told*.
+/// A command that never left the queue must leave no mark on it: the dedup
+/// guard in `document_opened` would otherwise read the file as already
+/// announced, and the reopen that exists precisely to repair a provider would
+/// skip straight past it for the rest of the session. Only closing the document
+/// could undo that, and the base revision -- which sent `DidOpen`
+/// unconditionally -- repaired it on the next reopen.
+///
+/// Falsified by: dropping the `slot.documents.remove(&path)` from the
+/// send-failure branch of `LspManager::document_opened`. The reopen then
+/// announces nothing and the final assertion fails.
+#[tokio::test]
+async fn a_didopen_the_queue_refused_is_not_recorded_as_sent() -> TestResult {
+    let (mut manager, _updates) = LspManager::new(LspSettings::default(), None, None, None);
+    manager.set_connector(test_connector(
+        Behavior::Normal,
+        None,
+        Arc::new(AtomicUsize::new(0)),
+    ));
+
+    let first = crate::lsp::absolute_path(Path::new("/tmp/first.rs"));
+    let _ = manager.document_opened(Some("rust"), Some("rust"), &first, 1, || {
+        "fn main() {}".into()
+    });
+    let key = manager
+        .servers
+        .keys()
+        .next()
+        .cloned()
+        .ok_or("the first document started no server")?;
+
+    // Stand in for a task that has stopped draining: a one-deep inbox, already
+    // full, whose receiver this test holds so that nothing empties it.
+    let (tx, mut rx) = mpsc::channel(1);
+    assert!(
+        tx.try_send(ServerCmd::DidClose {
+            path: first.clone(),
+        })
+        .is_ok(),
+        "the stand-in inbox refused its first command"
+    );
+    let slot = manager
+        .servers
+        .get_mut(&key)
+        .ok_or("the slot went away before it could be saturated")?;
+    slot.tx = tx;
+
+    let second = crate::lsp::absolute_path(Path::new("/tmp/second.rs"));
+    let _ = manager.document_opened(Some("rust"), Some("rust"), &second, 1, || {
+        "fn second() {}".into()
+    });
+    let slot = manager
+        .servers
+        .get(&key)
+        .ok_or("a full queue retired a slot whose task is alive")?;
+    assert!(
+        !slot.documents.contains(&second),
+        "a didOpen the queue refused was recorded as though the server had it"
+    );
+
+    // Draining lets the next attempt through, which is the repair the record
+    // above would otherwise have foreclosed.
+    let _ = rx.try_recv();
+    let _ = manager.document_opened(Some("rust"), Some("rust"), &second, 1, || {
+        "fn second() {}".into()
+    });
+    let mut announced = None;
+    while let Ok(command) = rx.try_recv() {
+        if let ServerCmd::DidOpen { path, .. } = command {
+            announced = Some(path);
+        }
+    }
+    assert_eq!(
+        announced.as_deref(),
+        Some(second.as_path()),
+        "the reopen never re-announced the document the queue had refused"
+    );
+    Ok(())
+}
