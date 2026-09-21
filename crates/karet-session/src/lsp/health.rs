@@ -42,6 +42,13 @@ use crate::api::LanguageServerRuntimeState;
 /// budget; a longer one earns a fresh start.
 pub(super) const STABLE_CONNECTION: Duration = Duration::from_secs(10);
 
+/// Consecutive silent deaths before a provider is put behind the circuit.
+///
+/// Two, not five, because each one costs at least [`TIMEOUT_DEATH_LIMIT`] request
+/// timeouts to establish -- a minute and a half of a server answering nothing.
+/// Waiting for five would spend seven minutes proving what two already show.
+pub(super) const HANG_LIMIT: u32 = 2;
+
 /// Consecutive timeouts that together mean the connection is dead.
 ///
 /// More than one because a single slow answer is ordinary: a cold
@@ -111,16 +118,35 @@ pub(super) fn was_stable(connected_at: Option<Instant>) -> bool {
 /// fails to *connect*, so nothing in the launch-failure accounting ever sees it.
 pub(super) fn charge_disconnect(
     connected_at: Option<Instant>,
+    hangs: &mut u32,
     hung: bool,
     failures: &mut VecDeque<Instant>,
     restart_delay: &mut Duration,
     language: &str,
 ) -> (Duration, LanguageServerRuntimeState) {
-    // A connection condemned for silence is never treated as proven, however long
-    // it lasted: condemning one takes three request timeouts, so it always looks
-    // old enough to be stable, and reading that as proof would hand a silent
-    // server a fresh budget on every cycle and keep the circuit shut forever.
-    if !hung && was_stable(connected_at) {
+    // A silent connection is counted separately from the sliding failure window,
+    // because it cannot be caught by it. Condemning one takes three request
+    // timeouts -- at least 90 seconds -- while the window is 60, so the previous
+    // charge has always expired before the next lands: the budget never reaches
+    // two, `RESTART_LIMIT` is unreachable, and the kill-and-respawn loop runs
+    // forever at one cycle per 90 seconds. A straight count of consecutive silent
+    // deaths has no such hole.
+    if hung {
+        *hangs = hangs.saturating_add(1);
+        if *hangs >= HANG_LIMIT {
+            tracing::warn!(
+                hangs = *hangs,
+                language,
+                "language server keeps going silent; restart circuit opened"
+            );
+            return (CIRCUIT_COOLDOWN, LanguageServerRuntimeState::CircuitOpen);
+        }
+        let delay = *restart_delay;
+        *restart_delay = (*restart_delay * 2).min(RESTART_MAX_DELAY);
+        return (delay, LanguageServerRuntimeState::Retrying);
+    }
+    *hangs = 0;
+    if was_stable(connected_at) {
         failures.clear();
         *restart_delay = RESTART_MIN_DELAY;
         return (*restart_delay, LanguageServerRuntimeState::Retrying);
@@ -184,10 +210,13 @@ impl FailureTally {
         generation: u64,
     ) {
         match result {
-            Ok(_) => {
-                self.consecutive_timeouts = 0;
-                self.answered = true;
-            },
+            // Deliberately not proof of an answer. Most callers of this are
+            // notification sends -- `didOpen`, `didChange` -- and those are local
+            // enqueues onto the outbound channel: `Ok` means the queue accepted a
+            // frame, not that any server read it. Treating one as an answer made
+            // the gate below satisfied milliseconds after connecting, since the
+            // first thing a new task processes is always a `didOpen`.
+            Ok(_) => {},
             Err(LspError::Closed) => self.die(dead, updates, language, generation),
             Err(LspError::Timeout) => {
                 self.consecutive_timeouts = self.consecutive_timeouts.saturating_add(1);
@@ -234,6 +263,22 @@ impl FailureTally {
     ) {
         let mut unreported = false;
         self.die(&mut unreported, updates, language, generation);
+    }
+
+    /// Observe a *request* outcome, passing it through unchanged.
+    ///
+    /// This is what records that the server answered: a response to a request the
+    /// editor issued after the handshake. The handshake itself does not count --
+    /// every connected server answers `initialize`, so counting it would make
+    /// "has answered" true for exactly the servers this distinction exists to
+    /// protect, like a jdtls that completes its handshake and then imports in
+    /// silence for two minutes.
+    pub(super) fn observe<T>(&mut self, result: Result<T, LspError>) -> Result<T, LspError> {
+        if result.is_ok() {
+            self.consecutive_timeouts = 0;
+            self.answered = true;
+        }
+        result
     }
 
     /// Whether this connection was condemned for going silent.
@@ -289,11 +334,13 @@ mod tests {
     fn a_server_that_dies_on_arrival_eventually_opens_the_circuit() {
         let mut failures = VecDeque::new();
         let mut delay = RESTART_MIN_DELAY;
+        let mut hangs = 0_u32;
         // Each cycle connects, then dies well inside the stability threshold.
         let cycles: Vec<_> = (0..RESTART_LIMIT)
             .map(|_| {
                 charge_disconnect(
                     Some(Instant::now()),
+                    &mut hangs,
                     false,
                     &mut failures,
                     &mut delay,
@@ -321,10 +368,12 @@ mod tests {
     fn a_proven_connection_earns_a_fresh_budget() {
         let mut failures = VecDeque::new();
         let mut delay = RESTART_MIN_DELAY;
+        let mut hangs = 0_u32;
         // Spend most of the budget on quick deaths.
         for _ in 0..RESTART_LIMIT.saturating_sub(1) {
             charge_disconnect(
                 Some(Instant::now()),
+                &mut hangs,
                 false,
                 &mut failures,
                 &mut delay,
@@ -334,24 +383,55 @@ mod tests {
         assert!(delay > RESTART_MIN_DELAY, "the backoff never advanced");
 
         let proven = Instant::now().checked_sub(STABLE_CONNECTION);
-        let (waited, state) = charge_disconnect(proven, false, &mut failures, &mut delay, "rust");
+        let (waited, state) =
+            charge_disconnect(proven, &mut hangs, false, &mut failures, &mut delay, "rust");
         assert_eq!(state, LanguageServerRuntimeState::Retrying);
         assert_eq!(waited, RESTART_MIN_DELAY, "the backoff was not reset");
         assert!(failures.is_empty(), "the budget was not cleared");
     }
 
-    /// A silent server is charged however long it stayed connected.
+    /// Repeated silent deaths must open the circuit, and the sliding failure window
+    /// cannot be what closes that loop.
     ///
-    /// Condemning one takes three request timeouts, so it always *looks* proven;
-    /// reading that age as proof would hand it a fresh budget every cycle.
+    /// Condemning a silent connection takes three request timeouts -- at least 90
+    /// seconds -- while the window is 60, so the previous charge has always expired
+    /// before the next lands. Counted through that window the budget never reaches
+    /// two, `RESTART_LIMIT` is unreachable, and the kill-and-respawn loop runs
+    /// forever at one cycle per 90 seconds. Hence a straight count of consecutive
+    /// silent deaths.
     #[test]
-    fn a_hung_connection_is_charged_despite_its_age() {
+    fn repeated_silent_deaths_open_the_circuit() {
         let mut failures = VecDeque::new();
         let mut delay = RESTART_MIN_DELAY;
+        let mut hangs = 0_u32;
+        // Each one looks perfectly stable by age, and the window is emptied between
+        // them -- the two properties that defeated window-based counting.
         let proven = Instant::now().checked_sub(STABLE_CONNECTION);
-        charge_disconnect(proven, true, &mut failures, &mut delay, "java");
-        assert_eq!(failures.len(), 1, "a hung connection was read as proven");
-        assert!(delay > RESTART_MIN_DELAY, "the backoff did not advance");
+        let cycles: Vec<_> = (0..HANG_LIMIT)
+            .map(|_| {
+                failures.clear();
+                charge_disconnect(proven, &mut hangs, true, &mut failures, &mut delay, "java")
+            })
+            .collect();
+        assert_eq!(
+            cycles.last().map(|(waited, state)| (*waited, *state)),
+            Some((CIRCUIT_COOLDOWN, LanguageServerRuntimeState::CircuitOpen)),
+            "repeated silent deaths never opened the circuit"
+        );
+    }
+
+    /// A death for any reason other than silence resets the count, so occasional
+    /// hangs spread across a session never accumulate into a circuit.
+    #[test]
+    fn a_non_silent_death_resets_the_hang_count() {
+        let mut failures = VecDeque::new();
+        let mut delay = RESTART_MIN_DELAY;
+        let mut hangs = 0_u32;
+        let proven = Instant::now().checked_sub(STABLE_CONNECTION);
+        charge_disconnect(proven, &mut hangs, true, &mut failures, &mut delay, "java");
+        assert_eq!(hangs, 1);
+        charge_disconnect(proven, &mut hangs, false, &mut failures, &mut delay, "java");
+        assert_eq!(hangs, 0, "a clean death did not reset the hang count");
     }
 
     /// Failures older than the window stop counting, so a provider that misbehaves
@@ -360,6 +440,7 @@ mod tests {
     fn failures_outside_the_window_are_forgotten() {
         let mut failures = VecDeque::new();
         let mut delay = RESTART_MIN_DELAY;
+        let mut hangs = 0_u32;
         for _ in 0..RESTART_LIMIT.saturating_sub(1) {
             let stale = Instant::now()
                 .checked_sub(RESTART_WINDOW * 2)
@@ -368,6 +449,7 @@ mod tests {
         }
         let (_, state) = charge_disconnect(
             Some(Instant::now()),
+            &mut hangs,
             false,
             &mut failures,
             &mut delay,
@@ -437,7 +519,7 @@ mod tests {
         // fresh budget every cycle and the circuit could never open.
         let (mut tally, tx, _rx) = tally();
         let mut dead = false;
-        tally.note(Ok(()), &mut dead, &tx, "rust", 1);
+        let _answered = tally.observe(Ok::<(), LspError>(()));
         for _ in 0..TIMEOUT_DEATH_LIMIT {
             tally.note::<()>(Err(LspError::Timeout), &mut dead, &tx, "rust", 1);
         }
@@ -475,7 +557,7 @@ mod tests {
         let mut dead = false;
         // It has to have answered something first, or silence is indistinguishable
         // from a server that is still starting up.
-        tally.note(Ok(()), &mut dead, &tx, "rust", 1);
+        let _answered = tally.observe(Ok::<(), LspError>(()));
         let _answered = rx.try_recv();
         for _ in 0..TIMEOUT_DEATH_LIMIT {
             tally.note::<()>(Err(LspError::Timeout), &mut dead, &tx, "rust", 1);
@@ -488,11 +570,11 @@ mod tests {
     fn an_answered_call_clears_the_timeout_run() {
         let (mut tally, tx, mut rx) = tally();
         let mut dead = false;
-        tally.note(Ok(()), &mut dead, &tx, "rust", 1);
+        let _answered = tally.observe(Ok::<(), LspError>(()));
         for _ in 0..TIMEOUT_DEATH_LIMIT.saturating_sub(1) {
             tally.note::<()>(Err(LspError::Timeout), &mut dead, &tx, "rust", 1);
         }
-        tally.note(Ok(()), &mut dead, &tx, "rust", 1);
+        let _answered = tally.observe(Ok::<(), LspError>(()));
         for _ in 0..TIMEOUT_DEATH_LIMIT.saturating_sub(1) {
             tally.note::<()>(Err(LspError::Timeout), &mut dead, &tx, "rust", 1);
         }

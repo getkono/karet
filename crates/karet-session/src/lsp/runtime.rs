@@ -199,6 +199,8 @@ pub(super) async fn server_task(task: ServerTask) {
     // timeouts on a server that has since been replaced says nothing about its
     // successor.
     let mut tally = FailureTally::default();
+    // Consecutive silent deaths, which the sliding failure window cannot count.
+    let mut hangs = 0_u32;
     // When the current connection was established, so a disconnect can tell a
     // server that worked from one that died on arrival.
     let mut connected_at: Option<Instant> = None;
@@ -215,6 +217,7 @@ pub(super) async fn server_task(task: ServerTask) {
                 // `language` is the slot key the forwarder publishes under, not a
                 // bare provider id -- reconstructing one here cleared nothing.
                 let _ = updates.send(LspUpdate::DiagnosticsCleared {
+                    generation,
                     server: language.clone(),
                 });
             }
@@ -395,6 +398,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     pending = None;
                     let (delay, state) = health::charge_disconnect(
                         connected_at,
+                        &mut hangs,
                         tally.hung(),
                         &mut failures,
                         &mut restart_delay,
@@ -428,6 +432,7 @@ pub(super) async fn server_task(task: ServerTask) {
                         }
                         let (delay, state) = health::charge_disconnect(
                             connected_at,
+                            &mut hangs,
                             tally.hung(),
                             &mut failures,
                             &mut restart_delay,
@@ -551,7 +556,7 @@ pub(super) async fn server_task(task: ServerTask) {
                 let items = if dead {
                     Vec::new()
                 } else {
-                    match active.completion(&path, position).await {
+                    match tally.observe(active.completion(&path, position).await) {
                         Ok(items) => items,
                         Err(e) => {
                             tally.note::<()>(Err(e), &mut dead, &updates, &language, generation);
@@ -587,7 +592,7 @@ pub(super) async fn server_task(task: ServerTask) {
                 let symbols = if dead {
                     Vec::new()
                 } else {
-                    match active.document_symbols(&path).await {
+                    match tally.observe(active.document_symbols(&path).await) {
                         Ok(symbols) => symbols,
                         Err(error) => {
                             tally.note::<()>(
@@ -629,10 +634,18 @@ pub(super) async fn server_task(task: ServerTask) {
                 let hover = if dead {
                     None
                 } else {
-                    active.hover(&path, position).await.unwrap_or_else(|error| {
-                        tally.note::<()>(Err(error), &mut dead, &updates, &language, generation);
-                        None
-                    })
+                    tally
+                        .observe(active.hover(&path, position).await)
+                        .unwrap_or_else(|error| {
+                            tally.note::<()>(
+                                Err(error),
+                                &mut dead,
+                                &updates,
+                                &language,
+                                generation,
+                            );
+                            None
+                        })
                 };
                 let _ = updates.send(LspUpdate::Hover {
                     generation,
@@ -662,9 +675,8 @@ pub(super) async fn server_task(task: ServerTask) {
                 let locations = if dead {
                     Vec::new()
                 } else {
-                    active
-                        .definition(&path, position)
-                        .await
+                    tally
+                        .observe(active.definition(&path, position).await)
                         .unwrap_or_else(|error| {
                             tally.note::<()>(
                                 Err(error),
@@ -698,9 +710,8 @@ pub(super) async fn server_task(task: ServerTask) {
                 let symbols = if dead {
                     Vec::new()
                 } else {
-                    active
-                        .workspace_symbols(&query)
-                        .await
+                    tally
+                        .observe(active.workspace_symbols(&query).await)
                         .unwrap_or_else(|error| {
                             tally.note::<()>(
                                 Err(error),
@@ -738,9 +749,8 @@ pub(super) async fn server_task(task: ServerTask) {
                 let edit = if dead {
                     WorkspaceEdit::default()
                 } else {
-                    active
-                        .rename(&path, position, &new_name)
-                        .await
+                    tally
+                        .observe(active.rename(&path, position, &new_name).await)
                         .unwrap_or_else(|error| {
                             tally.note::<()>(
                                 Err(error),
@@ -777,10 +787,18 @@ pub(super) async fn server_task(task: ServerTask) {
                 let edits = if dead {
                     Vec::new()
                 } else {
-                    active.formatting(&path).await.unwrap_or_else(|error| {
-                        tally.note::<()>(Err(error), &mut dead, &updates, &language, generation);
-                        Vec::new()
-                    })
+                    tally
+                        .observe(active.formatting(&path).await)
+                        .unwrap_or_else(|error| {
+                            tally.note::<()>(
+                                Err(error),
+                                &mut dead,
+                                &updates,
+                                &language,
+                                generation,
+                            );
+                            Vec::new()
+                        })
                 };
                 let _ = updates.send(LspUpdate::Formatting {
                     generation,
@@ -799,6 +817,7 @@ pub(super) async fn server_task(task: ServerTask) {
             pending = None;
             let (delay, state) = health::charge_disconnect(
                 connected_at,
+                &mut hangs,
                 tally.hung(),
                 &mut failures,
                 &mut restart_delay,
@@ -825,6 +844,7 @@ pub(super) async fn server_task(task: ServerTask) {
     // after a generation bump the key can change, so nothing would ever replace
     // them.
     let _ = updates.send(LspUpdate::DiagnosticsCleared {
+        generation,
         server: language.clone(),
     });
     report_state(LanguageServerRuntimeState::Stopped, None);
