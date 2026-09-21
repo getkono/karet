@@ -182,7 +182,7 @@ impl Session {
         // speculative state has diverged from ours); either way we still publish
         // below so the authoritative buffer flows back down to the client instead
         // of leaving it stuck rejecting every future edit forever.
-        let mut retired = crate::lsp::Retired::none();
+        let mut retired = crate::lsp::Retired::default();
         let (version, spell_without_syntax) = {
             let highlight_tx = &self.highlight_tx;
             let settings = &self.config.settings;
@@ -239,7 +239,7 @@ impl Session {
 
     pub(super) fn undo_redo(&mut self, id: RequestId, doc_id: DocumentId, undo: bool) {
         let tick = self.elapsed_ms();
-        let mut retired = crate::lsp::Retired::none();
+        let mut retired = crate::lsp::Retired::default();
         let (version, cursor, spell_without_syntax) = {
             let highlight_tx = &self.highlight_tx;
             let settings = &self.config.settings;

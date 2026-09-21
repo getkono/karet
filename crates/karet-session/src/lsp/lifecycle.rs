@@ -15,7 +15,7 @@ impl LspManager {
     /// provider could be retired and still be reported running, or retired and
     /// still be marking a file.
     pub(super) fn retire(&mut self, key: &SlotKey) -> Retired {
-        let mut retired = Retired::none();
+        let mut retired = Retired::default();
         if let Some(slot) = self.servers.remove(key) {
             self.sync_failure_reported.remove(key);
             retired.push(key.clone(), slot.documents.into_iter().collect());
@@ -31,7 +31,7 @@ impl LspManager {
             .filter(|key| wanted(key))
             .cloned()
             .collect();
-        let mut retired = Retired::none();
+        let mut retired = Retired::default();
         for key in keys {
             retired.absorb(self.retire(&key));
         }

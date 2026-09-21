@@ -417,7 +417,7 @@ impl Session {
                 )
             })
             .collect();
-        let mut retired = crate::lsp::Retired::none();
+        let mut retired = crate::lsp::Retired::default();
         for (selector, lsp_language_id, path, version, text) in documents {
             retired.absorb(self.lsp.document_opened(
                 selector,
@@ -468,7 +468,7 @@ impl Session {
                 )
             })
             .collect();
-        let mut retired = crate::lsp::Retired::none();
+        let mut retired = crate::lsp::Retired::default();
         for (selector, lsp_language_id, path, version, text) in documents {
             retired.absorb(self.lsp.document_opened(
                 selector,
@@ -740,7 +740,7 @@ impl Session {
 
         if let Some(retired) = lsp_retired {
             self.adopt_retirement(retired);
-            let mut reopened = crate::lsp::Retired::none();
+            let mut reopened = crate::lsp::Retired::default();
             let lsp = &mut self.lsp;
             for doc in self.store.docs.values() {
                 reopened.absorb(lsp.document_opened(

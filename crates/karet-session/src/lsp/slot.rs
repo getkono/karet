@@ -91,11 +91,6 @@ impl fmt::Display for SlotKey {
 pub(crate) struct Retired(Vec<(SlotKey, Vec<PathBuf>)>);
 
 impl Retired {
-    /// Nothing was retired.
-    pub(crate) fn none() -> Self {
-        Self(Vec::new())
-    }
-
     /// Record one retired slot and the documents it was serving.
     pub(crate) fn push(&mut self, key: SlotKey, documents: Vec<PathBuf>) {
         self.0.push((key, documents));

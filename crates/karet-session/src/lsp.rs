@@ -558,7 +558,7 @@ impl LspManager {
         // below without going through it, so once the primary stopped being
         // required this was the only remaining gate on the whole feature.
         if !self.settings.enabled {
-            return Retired::none();
+            return Retired::default();
         }
         let path = absolute_path(path);
         let selector = language_key(selector);
@@ -607,7 +607,7 @@ impl LspManager {
             }
         }
         if targets.is_empty() {
-            return Retired::none();
+            return Retired::default();
         }
         let document_language = lsp_language_id
             .map(str::to_owned)
@@ -652,7 +652,7 @@ impl LspManager {
         // drops: the server never learns the document exists, the task never adds
         // it to its replay set, and no later restart fixes it. The file simply has
         // no language support, with nothing anywhere saying why.
-        let mut retired = Retired::none();
+        let mut retired = Retired::default();
         for key in undelivered {
             retired.absorb(self.report_undelivered(&key, "the server's command queue is full"));
         }
@@ -669,7 +669,7 @@ impl LspManager {
     /// a fresh one rather than writing into a sender nobody reads.
     fn report_undelivered(&mut self, key: &SlotKey, reason: &str) -> Retired {
         let Some(slot) = self.servers.get(key) else {
-            return Retired::none();
+            return Retired::default();
         };
         let closed = slot.tx.is_closed();
         if self.sync_failure_reported.insert(key.clone()) {
@@ -682,7 +682,7 @@ impl LspManager {
         if closed {
             self.retire(key)
         } else {
-            Retired::none()
+            Retired::default()
         }
     }
 
@@ -696,7 +696,7 @@ impl LspManager {
         text: impl FnOnce() -> String,
     ) -> Retired {
         if language_key(language).is_none() {
-            return Retired::none();
+            return Retired::default();
         }
         let path = absolute_path(path);
         let senders: Vec<_> = self
@@ -706,7 +706,7 @@ impl LspManager {
             .map(|(key, slot)| (key.clone(), slot.tx.clone()))
             .collect();
         if senders.is_empty() {
-            return Retired::none();
+            return Retired::default();
         }
         let text = text();
         let mut undelivered = Vec::new();
@@ -728,7 +728,7 @@ impl LspManager {
         // buffer, so every answer it gives is about text the user no longer has.
         // Sync is full-text, so the next edit that *does* land repairs it -- but
         // until then the condition is real and was previously invisible.
-        let mut retired = Retired::none();
+        let mut retired = Retired::default();
         for key in undelivered {
             retired.absorb(self.report_undelivered(&key, "the server's command queue is full"));
         }
@@ -738,7 +738,7 @@ impl LspManager {
     /// Forward a document close, retiring any slot it was the last document for.
     pub(crate) fn document_closed(&mut self, language: Option<&str>, path: &Path) -> Retired {
         let Some(_language) = language_key(language) else {
-            return Retired::none();
+            return Retired::default();
         };
         let path = absolute_path(path);
         let keys: Vec<_> = self
@@ -747,7 +747,7 @@ impl LspManager {
             .filter(|(_, slot)| slot.documents.contains(&path))
             .map(|(key, _)| key.clone())
             .collect();
-        let mut retired = Retired::none();
+        let mut retired = Retired::default();
         for key in keys {
             let remove = self.servers.get_mut(&key).is_some_and(|slot| {
                 let _ = slot.tx.try_send(ServerCmd::DidClose { path: path.clone() });
