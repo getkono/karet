@@ -86,3 +86,36 @@ impl LspManager {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::schema::Lsp as LspSettings;
+
+    /// Two slots must never share a token, and none may hold zero.
+    ///
+    /// Tested here rather than at the `Command`/`Event` seam because a token is
+    /// only *observable* there through a zombie -- a task speaking after its slot
+    /// is gone -- and by design there is now almost no window in which one can:
+    /// the parting report is deleted and retirement is synchronous. That makes
+    /// the fence defence in depth against a report already in flight, and leaves
+    /// its allocator as the thing an honest test can pin.
+    ///
+    /// Not a hypothetical. Mutation testing (`mise run mutants`) reported both
+    /// halves of this as surviving until this test existed: pinning every token
+    /// to the same value left the whole suite green, and a fence that cannot
+    /// tell two incarnations apart is not a fence.
+    ///
+    /// Zero is called out separately because it is the value a `Default` yields,
+    /// so a token that was never set would otherwise match the first real slot.
+    #[test]
+    fn no_two_slots_ever_share_a_token() {
+        let (mut manager, _updates) = LspManager::new(LspSettings::default(), None, None, None);
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..1000 {
+            let token = manager.take_token();
+            assert_ne!(token, 0, "a default-valued token would match a live slot");
+            assert!(seen.insert(token), "token {token} was handed out twice");
+        }
+    }
+}

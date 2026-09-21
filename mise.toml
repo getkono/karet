@@ -54,6 +54,8 @@ description = "Opt-in: mutation-test the language-server lifecycle (slow, not in
 # Deliberately not part of `verify`, for the same reason as `test-servers-live`:
 # every mutant is a rebuild plus a full `-p karet-session` run, and this suite is
 # full of multi-second async deadlines that a surviving mutant waits out in full.
+# Measured: 86 mutants over this scope, around 13s each after a two-minute
+# baseline -- some twenty minutes, against `verify`'s couple of minutes.
 # Scoped to the modules that own slot lifetime and the fence over task reports,
 # where a surviving mutant means a test is not constraining what it claims to.
 #
