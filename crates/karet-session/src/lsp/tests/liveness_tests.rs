@@ -475,3 +475,84 @@ async fn retiring_a_slot_drops_the_state_recorded_for_it() -> TestResult {
     );
     Ok(())
 }
+
+/// A task that outlives its slot must not raise a launch failure about the
+/// provider now serving in its place.
+///
+/// The disconnected loop awaits `connector(...)` without polling its channel, and
+/// that await runs to the handshake timeout -- thirty seconds. So a task can
+/// outlive its own slot by that long: close the last file of a language, open
+/// another, and the first task's `SpawnFailed` would raise a warning card saying
+/// the provider failed to start while the badge beside it reads ready. The card
+/// never auto-dismisses.
+#[tokio::test]
+async fn a_task_that_outlived_its_slot_cannot_report_a_launch_failure() -> TestResult {
+    let (mut manager, _updates) = LspManager::new(LspSettings::default(), None, None, None);
+    manager.set_connector(test_connector(
+        Behavior::Normal,
+        None,
+        Arc::new(AtomicUsize::new(0)),
+    ));
+    let first = PathBuf::from("/tmp/outlived-a.rs");
+    manager.document_opened(Some("rust"), Some("rust"), &first, 1, || {
+        "fn main() {}".into()
+    });
+    let outlived = manager
+        .servers
+        .values()
+        .next()
+        .map(|slot| slot.token)
+        .ok_or("the open produced no server slot")?;
+
+    // Retired and re-taken, with no generation bump anywhere.
+    manager.document_closed(Some("rust"), &first);
+    let second = PathBuf::from("/tmp/outlived-b.rs");
+    manager.document_opened(Some("rust"), Some("rust"), &second, 1, || {
+        "fn main() {}".into()
+    });
+    let serving = manager
+        .servers
+        .values()
+        .next()
+        .map(|slot| slot.token)
+        .ok_or("the reopen produced no server slot")?;
+    assert_ne!(
+        outlived, serving,
+        "the replacement reused the retired token"
+    );
+
+    let spawn_failed = |token| LspUpdate::SpawnFailed {
+        token,
+        server: LanguageServerId::RustAnalyzer,
+        root: PathBuf::from("/tmp"),
+        command: "rust-analyzer".to_owned(),
+        reason: "did not answer the handshake".to_owned(),
+        permanent: false,
+    };
+    assert!(
+        !manager.accepts(&spawn_failed(outlived)),
+        "a task that outlived its slot reported a failure about a serving provider"
+    );
+    assert!(
+        manager.accepts(&spawn_failed(serving)),
+        "the task that owns the slot was refused its own launch failure"
+    );
+
+    // The same fence covers the other two things a task says about its own slot.
+    assert!(
+        !manager.accepts(&LspUpdate::ServerDied {
+            token: outlived,
+            language: "rust".to_owned(),
+        }),
+        "a task that outlived its slot reported its death"
+    );
+    assert!(
+        !manager.accepts(&LspUpdate::ServerStatus {
+            token: outlived,
+            server: "rust-analyzer".to_owned(),
+            message: "37% importing".to_owned(),
+        }),
+        "a task that outlived its slot reported progress"
+    );
+    Ok(())
+}

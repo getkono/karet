@@ -118,8 +118,8 @@ pub(crate) enum LspUpdate {
     /// A server-pushed status line (jdtls `language/status`-style), for the
     /// status bar while a heavyweight server imports/indexes.
     ServerStatus {
-        /// The manager generation that spawned the server task.
-        generation: u64,
+        /// The reporting task's slot token.
+        token: u64,
         /// The language the server serves.
         server: String,
         /// The human-readable status message.
@@ -208,8 +208,8 @@ pub(crate) enum LspUpdate {
     },
     /// The server binary could not be started (reported once per language).
     SpawnFailed {
-        /// The manager generation that spawned the server task.
-        generation: u64,
+        /// The reporting task's slot token.
+        token: u64,
         /// The provider that failed to start.
         ///
         /// The provider, not the task's slot key: that key is
@@ -237,8 +237,8 @@ pub(crate) enum LspUpdate {
     },
     /// A running server's connection closed (reported once per language).
     ServerDied {
-        /// The manager generation that spawned the server task.
-        generation: u64,
+        /// The reporting task's slot token.
+        token: u64,
         /// The language whose server died.
         language: String,
     },

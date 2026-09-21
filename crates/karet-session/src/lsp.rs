@@ -132,9 +132,14 @@ enum Configured {
 struct ServerSlot {
     /// The provider id this slot's task reports runtime state under.
     ///
-    /// Not always `provider`: a language-keyed slot has no provider of its own and
-    /// its task reports under the language name. Kept so retiring the slot can drop
-    /// the recorded state with it, rather than leaving a state nobody owns.
+    /// Kept so retiring the slot can drop the recorded state with it, rather than
+    /// leaving behind an entry the ownership fence will refuse to ever correct.
+    ///
+    /// In practice always `provider`, which `spec_for` returns on every success
+    /// path. Held separately anyway because it is what pairs with `root` to key
+    /// `runtime_states`, and a slot that reported under one id while being looked
+    /// up under another would be a silent disagreement rather than a compile
+    /// error.
     runtime_id: LanguageServerId,
     /// Which task owns this slot, distinct from every slot that held the key
     /// before it.
@@ -240,6 +245,20 @@ impl LspManager {
                     .get(server)
                     .is_some_and(|slot| slot.token == *token);
             },
+            // Everything else a *task* says about its own slot. Each is identified
+            // by something re-ownable without a generation bump -- `(provider,
+            // root)`, or the slot key -- so generation cannot fence them. A task
+            // sits inside `connector(...)` for up to the 30-second handshake
+            // timeout without polling its channel, so it can outlive its own slot
+            // by that long and then report: close one file of a language and open
+            // another, and its `SpawnFailed` would raise a warning card saying a
+            // provider that is serving failed to start, directly contradicting the
+            // badge beside it.
+            LspUpdate::SpawnFailed { token, .. }
+            | LspUpdate::ServerDied { token, .. }
+            | LspUpdate::ServerStatus { token, .. } => {
+                return self.servers.values().any(|slot| slot.token == *token);
+            },
             LspUpdate::DiagnosticsCleared { token, server, .. } => {
                 // Accepted from the task that owns the key, or when nobody does.
                 //
@@ -264,10 +283,7 @@ impl LspManager {
             | LspUpdate::WorkspaceEdit { generation, .. }
             | LspUpdate::Formatting { generation, .. }
             | LspUpdate::SyncFailed { generation, .. }
-            | LspUpdate::ServerStatus { generation, .. }
-            | LspUpdate::SpawnFailed { generation, .. }
             | LspUpdate::PreflightFailed { generation, .. }
-            | LspUpdate::ServerDied { generation, .. }
             | LspUpdate::InstallRequired { generation, .. }
             | LspUpdate::ManualInstallRequired { generation, .. } => *generation,
             // Lifecycle state is the report the editor badge actually reads, and it
@@ -522,10 +538,15 @@ impl LspManager {
             let runtime_provider = provider
                 .clone()
                 .unwrap_or_else(|| LanguageServerId::new(provider_key.clone()));
-            // Inserted before the spawn, not after: the task reports `Starting`
-            // as its first act, and runtime state is fenced on this slot existing.
-            // On a multi-threaded runtime the report could otherwise race ahead of
-            // its own slot and be refused as coming from a retired task.
+            // Inserted before the spawn, so the slot a task reports about always
+            // exists before the task does.
+            //
+            // Not a race fix -- there is no race to fix. `ensure_server` and
+            // `apply_lsp_update` are arms of the same actor `select!` on one task,
+            // so a report cannot be *processed* before the insert on any runtime.
+            // This is ordering as an invariant rather than as a guarantee that
+            // happens to hold, so the fence does not silently depend on where the
+            // actor's arms live.
             self.servers.insert(
                 key.clone(),
                 ServerSlot {

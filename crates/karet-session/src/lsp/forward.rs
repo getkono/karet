@@ -15,7 +15,6 @@ pub(super) fn forward_diagnostics(
     updates: mpsc::UnboundedSender<LspUpdate>,
     language: String,
     server: String,
-    generation: u64,
     token: u64,
 ) -> tokio::task::JoinHandle<()> {
     let mut diagnostic_rx = client.diagnostics();
@@ -37,7 +36,7 @@ pub(super) fn forward_diagnostics(
                     if !message.is_empty()
                         && status_updates
                             .send(LspUpdate::ServerStatus {
-                                generation,
+                                token,
                                 server: server.clone(),
                                 message,
                             })
