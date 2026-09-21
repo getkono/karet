@@ -10,8 +10,9 @@ use crate::tab::LanguageServersViewState;
 
 /// Lifecycle states retained independently of whether the manager tab is open.
 #[derive(Default)]
-pub(super) struct LanguageServerRuntimeModel {
-    servers: Vec<LanguageServerStatus>,
+pub(crate) struct LanguageServerRuntimeModel {
+    /// The client's one copy of the inventory, sorted for display.
+    pub(crate) servers: Vec<LanguageServerStatus>,
     inventory_request: Option<RequestId>,
     operations: Vec<LanguageServerPending>,
     operation_error: Option<String>,
@@ -34,10 +35,17 @@ impl LanguageServerRuntimeModel {
     /// only situation in which a better answer is known to be coming. With
     /// nothing pending there is no fresher answer to prefer, so the rows are
     /// taken.
-    fn replace(&mut self, request: Option<RequestId>, servers: Vec<LanguageServerStatus>) -> bool {
+    fn replace(
+        &mut self,
+        request: Option<RequestId>,
+        mut servers: Vec<LanguageServerStatus>,
+    ) -> bool {
         if self.inventory_request.is_some() && self.inventory_request != request {
             return false;
         }
+        // Sorted here because the order is a property of the inventory, not of
+        // any one view of it. Every view reads these rows.
+        servers.sort_by_key(|status| status.server.display_name().to_lowercase());
         self.servers = servers;
         self.inventory_request = None;
         true
@@ -220,20 +228,48 @@ impl App {
         Some(view)
     }
 
+    fn language_servers(&self) -> Option<&LanguageServersViewState> {
+        let tab = self.tabs.get(self.active)?;
+        let TabKind::LanguageServers(view) = &tab.kind else {
+            return None;
+        };
+        Some(view)
+    }
+
+    /// Move the manager's selection onto `server`, if the filter admits it.
+    ///
+    /// Two phases because the rows and the view live in different fields: the
+    /// row is found while both are borrowed immutably, and only the write takes
+    /// the view mutably.
+    fn focus_language_server(&mut self, server: &LanguageServerId) {
+        let selected = self.language_servers().and_then(|view| {
+            view.visible_indices(&self.lsp_runtime.servers)
+                .iter()
+                .position(|&index| {
+                    self.lsp_runtime
+                        .servers
+                        .get(index)
+                        .is_some_and(|status| status.server == *server)
+                })
+        });
+        if let Some(selected) = selected
+            && let Some(view) = self.language_servers_mut()
+        {
+            view.selected = selected;
+        }
+    }
+
     pub(in crate::app) fn selected_language_server(&self) -> Option<LanguageServerStatus> {
         let tab = self.tabs.get(self.active)?;
         let TabKind::LanguageServers(view) = &tab.kind else {
             return None;
         };
-        view.selected_server().cloned()
+        view.selected_server(&self.lsp_runtime.servers).cloned()
     }
 
     fn language_server(&self, server: &LanguageServerId) -> Option<LanguageServerStatus> {
-        let tab = self.tabs.get(self.active)?;
-        let TabKind::LanguageServers(view) = &tab.kind else {
-            return None;
-        };
-        view.servers
+        self.lsp_runtime
+            .servers
             .iter()
             .find(|status| status.server == *server)
             .cloned()
@@ -301,8 +337,13 @@ impl App {
     }
 
     pub(super) fn language_server_select(&mut self, delta: i32) {
-        if let Some(view) = self.language_servers_mut() {
-            view.select_relative(delta);
+        let visible = self
+            .language_servers()
+            .map(|view| view.visible_indices(&self.lsp_runtime.servers).len());
+        if let Some(visible) = visible
+            && let Some(view) = self.language_servers_mut()
+        {
+            view.select_relative(visible, delta);
         }
     }
 
@@ -396,14 +437,7 @@ impl App {
         let Some(status) = self.language_server(&server) else {
             return;
         };
-        if !status.instances.iter().any(|instance| {
-            instance.open_documents > 0
-                || !matches!(
-                    instance.runtime,
-                    karet_session::LanguageServerRuntimeState::Idle
-                        | karet_session::LanguageServerRuntimeState::Stopped
-                )
-        }) {
+        if !status.restartable() {
             self.notify(
                 Report::Refusal,
                 NotificationKind::Lsp,
@@ -520,36 +554,24 @@ impl App {
                 .cloned()
         });
         if let Some(hit) = action {
-            if let Some(server) = hit.server.as_ref()
-                && let Some(view) = self.language_servers_mut()
-                && let Some(selected) = view.visible_indices().iter().position(|&index| {
-                    view.servers
-                        .get(index)
-                        .is_some_and(|status| status.server == *server)
-                })
-            {
-                view.selected = selected;
+            if let Some(server) = hit.server.clone() {
+                self.focus_language_server(&server);
             }
             self.language_server_action(hit.action, hit.server);
             return true;
         }
-        let Some(view) = self.language_servers_mut() else {
+        let Some(view) = self.language_servers() else {
             return false;
         };
         if !rect_contains(view.table_rect, (column, row)) {
             return true;
         }
-        if let Some(server) = view
+        let clicked = view
             .row_hits
             .iter()
-            .find_map(|(rect, server)| rect_contains(*rect, (column, row)).then(|| server.clone()))
-            && let Some(selected) = view.visible_indices().iter().position(|&index| {
-                view.servers
-                    .get(index)
-                    .is_some_and(|status| status.server == server)
-            })
-        {
-            view.selected = selected;
+            .find_map(|(rect, server)| rect_contains(*rect, (column, row)).then(|| server.clone()));
+        if let Some(server) = clicked {
+            self.focus_language_server(&server);
         }
         true
     }
@@ -607,22 +629,34 @@ impl App {
         request: Option<RequestId>,
         servers: Vec<LanguageServerStatus>,
     ) {
+        // Each view remembers its selection by provider, so it has to be read
+        // against the rows that were in force when the user made it -- before
+        // the swap below replaces them.
+        let anchors: Vec<Option<LanguageServerId>> = self
+            .all_tabs()
+            .filter_map(|tab| match &tab.kind {
+                TabKind::LanguageServers(view) => Some(view.selected_id(&self.lsp_runtime.servers)),
+                _ => None,
+            })
+            .collect();
         // One guard, here. Whether an answer is worth adopting is a fact about
         // the *client*, not about any one view of it, so it is decided once and
         // the views follow. Checking again per tab was defence in depth that
         // measured nothing: either check alone hid a defect in the other.
-        if !self.lsp_runtime.replace(request, servers.clone()) {
+        if !self.lsp_runtime.replace(request, servers) {
             // Not the answer we are waiting for: a newer request is out, issued
             // because the session told us this one's rows are already stale.
             return;
         }
         // No card for the count: this only ever fills the Language Servers tab,
         // whose table already lists every server and whether it is available.
+        let rows = self.lsp_runtime.servers.clone();
+        let mut anchors = anchors.into_iter();
         for tab in self.all_tabs_mut() {
             let TabKind::LanguageServers(view) = &mut tab.kind else {
                 continue;
             };
-            view.set_servers(servers.clone());
+            view.resync(&rows, anchors.next().flatten());
         }
     }
 
@@ -757,10 +791,6 @@ impl App {
         }
         for tab in self.all_tabs_mut() {
             if let TabKind::LanguageServers(view) = &mut tab.kind {
-                if let Some(status) = view.servers.iter_mut().find(|item| item.server == server) {
-                    status.installed = Some(version.clone());
-                    status.cleanup_pending = false;
-                }
                 view.changes.retain(|change| change.server != server);
                 if view.changes.is_empty() {
                     view.plan = None;
@@ -778,13 +808,18 @@ impl App {
     ) {
         self.lsp_runtime.finish_operation(request, Some(&server));
         self.sync_language_server_toast();
+        if let Some(status) = self
+            .lsp_runtime
+            .servers
+            .iter_mut()
+            .find(|item| item.server == server)
+        {
+            status.installed = None;
+            status.cleanup_pending = cleanup_pending;
+            status.instances.clear();
+        }
         for tab in self.all_tabs_mut() {
             if let TabKind::LanguageServers(view) = &mut tab.kind {
-                if let Some(status) = view.servers.iter_mut().find(|item| item.server == server) {
-                    status.installed = None;
-                    status.cleanup_pending = cleanup_pending;
-                    status.instances.clear();
-                }
                 view.changes.retain(|change| change.server != server);
                 if view.changes.is_empty() {
                     view.plan = None;
@@ -811,21 +846,17 @@ impl App {
         state: karet_session::LanguageServerRuntimeState,
         error: Option<String>,
     ) {
-        let cached = self.lsp_runtime.update(&server, &root, state, &error);
-        let mut missing_instance = false;
-        for tab in self.all_tabs_mut() {
-            if let TabKind::LanguageServers(view) = &mut tab.kind
-                && let Some(status) = view.servers.iter_mut().find(|item| item.server == server)
-            {
-                if let Some(instance) = status.instances.iter_mut().find(|item| item.root == root) {
-                    instance.runtime = state;
-                    instance.error.clone_from(&error);
-                } else {
-                    missing_instance = true;
-                }
-            }
-        }
-        if (!cached || missing_instance) && self.lsp_runtime.inventory_request.is_none() {
+        // The low-latency half of the resync, which issue #278 explicitly leaves
+        // in place: the badge must not wait for a round trip to show that a
+        // server started. It patches the one copy, and it patches only the two
+        // fields the event actually carries -- everything else, `open_documents`
+        // above all, is corrected by the inventory the session tells us to ask
+        // for. This event being the *only* thing that ever corrected the cache
+        // is what left a dead Restart on screen.
+        let patched = self.lsp_runtime.update(&server, &root, state, &error);
+        if !patched && self.lsp_runtime.inventory_request.is_none() {
+            // A transition for a provider or root the cache has never heard of:
+            // the inventory predates it, so ask for one that does not.
             self.request_language_server_inventory();
         }
         if let Some(error) = error

@@ -11,6 +11,7 @@ mod labels;
 
 use actions::*;
 use detail::*;
+use karet_session::LanguageServerStatus;
 use labels::*;
 
 use super::*;
@@ -24,6 +25,7 @@ pub(super) fn draw_language_servers(
     theme: &Theme,
     area: Rect,
     view: &mut LanguageServersViewState,
+    servers: &[LanguageServerStatus],
     hits: &mut ScrollHits,
 ) {
     let detail_height = if area.height >= 16 { 7 } else { 4 };
@@ -33,12 +35,18 @@ pub(super) fn draw_language_servers(
         Constraint::Length(detail_height),
     ])
     .split(area);
-    draw_actions(f, theme, sections[0], view);
-    draw_inventory(f, theme, sections[1], view, hits);
-    draw_detail(f, theme, sections[2], view);
+    draw_actions(f, theme, sections[0], view, servers);
+    draw_inventory(f, theme, sections[1], view, servers, hits);
+    draw_detail(f, theme, sections[2], view, servers);
 }
 
-fn draw_actions(f: &mut Frame, theme: &Theme, area: Rect, view: &mut LanguageServersViewState) {
+fn draw_actions(
+    f: &mut Frame,
+    theme: &Theme,
+    area: Rect,
+    view: &mut LanguageServersViewState,
+    servers: &[LanguageServerStatus],
+) {
     view.action_hits.clear();
     let mut x = area.x;
     let y = area.y;
@@ -47,8 +55,7 @@ fn draw_actions(f: &mut Frame, theme: &Theme, area: Rect, view: &mut LanguageSer
         .pending
         .iter()
         .any(|pending| pending.kind == LanguageServerPendingKind::CheckAll);
-    let has_installed = view
-        .servers
+    let has_installed = servers
         .iter()
         .any(|status| status.managed && status.installed.is_some());
     let mut buttons = vec![(
@@ -124,6 +131,7 @@ fn draw_inventory(
     theme: &Theme,
     area: Rect,
     view: &mut LanguageServersViewState,
+    servers: &[LanguageServerStatus],
     hits: &mut ScrollHits,
 ) {
     view.table_rect = area;
@@ -138,9 +146,9 @@ fn draw_inventory(
     // Reserved inside the border so the box outline stays whole.
     let (content, tracks) = reserve_tracks(content, ScrollAxes::VERTICAL);
 
-    let visible = view.visible_indices();
+    let visible = view.visible_indices(servers);
     if visible.is_empty() {
-        let message = if view.servers.is_empty() {
+        let message = if servers.is_empty() {
             view.error.as_deref().or_else(|| {
                 view.loading_since
                     .filter(|since| since.visible())
@@ -213,7 +221,7 @@ fn draw_inventory(
 
     let content_height = content.height.saturating_sub(1);
     view.offset = view.offset.min(view.selected);
-    while row_heights_through_selection(view, &visible, view.offset, action_width, stacked)
+    while row_heights_through_selection(view, servers, &visible, view.offset, action_width, stacked)
         > content_height
         && view.offset < view.selected
     {
@@ -226,7 +234,7 @@ fn draw_inventory(
     // many the loop actually managed to paint.
     let mut painted = 0_usize;
     for (visible_index, &server_index) in visible.iter().enumerate().skip(view.offset) {
-        let Some(status) = view.servers.get(server_index).cloned() else {
+        let Some(status) = servers.get(server_index).cloned() else {
             continue;
         };
         let actions = server_actions(view, &status);

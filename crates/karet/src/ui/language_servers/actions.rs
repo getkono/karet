@@ -4,7 +4,6 @@
 //! Split from `language_servers.rs` so the table, the detail pane and the
 //! buttons each stay well inside the workspace file-size ceiling.
 
-use karet_session::LanguageServerRuntimeState;
 use karet_session::LanguageServerStatus;
 
 use super::*;
@@ -87,7 +86,7 @@ pub(super) fn server_actions(
             });
         }
     }
-    if restartable(status) {
+    if status.restartable() {
         actions.insert(
             actions.len().min(1),
             RowAction {
@@ -97,16 +96,6 @@ pub(super) fn server_actions(
         );
     }
     actions
-}
-
-pub(super) fn restartable(status: &LanguageServerStatus) -> bool {
-    status.instances.iter().any(|instance| {
-        instance.open_documents > 0
-            || !matches!(
-                instance.runtime,
-                LanguageServerRuntimeState::Idle | LanguageServerRuntimeState::Stopped
-            )
-    })
 }
 
 pub(super) fn action_line_count(actions: &[RowAction], width: u16) -> u16 {
@@ -130,6 +119,7 @@ pub(super) fn action_line_count(actions: &[RowAction], width: u16) -> u16 {
 
 pub(super) fn row_heights_through_selection(
     view: &LanguageServersViewState,
+    servers: &[LanguageServerStatus],
     visible: &[usize],
     offset: usize,
     action_width: u16,
@@ -140,7 +130,7 @@ pub(super) fn row_heights_through_selection(
         .enumerate()
         .skip(offset)
         .take(view.selected.saturating_sub(offset).saturating_add(1))
-        .filter_map(|(_, index)| view.servers.get(*index))
+        .filter_map(|(_, index)| servers.get(*index))
         .map(|status| {
             let lines = action_line_count(&server_actions(view, status), action_width);
             let content = if stacked {

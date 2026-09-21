@@ -1,6 +1,7 @@
 //! The pane under the table: everything known about the selected provider.
 
 use karet_session::LanguageServerInstanceStatus;
+use karet_session::LanguageServerStatus;
 
 use super::*;
 
@@ -9,8 +10,9 @@ pub(super) fn draw_detail(
     theme: &Theme,
     area: Rect,
     view: &LanguageServersViewState,
+    servers: &[LanguageServerStatus],
 ) {
-    let Some(status) = view.selected_server() else {
+    let Some(status) = view.selected_server(servers) else {
         return;
     };
     let update = view

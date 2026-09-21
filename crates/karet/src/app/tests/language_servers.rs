@@ -94,8 +94,11 @@ fn language_server_manager_filters_navigates_and_checks_selected_provider() {
     let TabKind::LanguageServers(view) = &app.tabs[app.active].kind else {
         panic!("expected language-server manager");
     };
-    assert_eq!(view.visible_indices().len(), 1);
-    assert_eq!(view.selected_id(), Some(LanguageServerId::RustAnalyzer));
+    assert_eq!(view.visible_indices(&app.lsp_runtime.servers).len(), 1);
+    assert_eq!(
+        view.selected_id(&app.lsp_runtime.servers),
+        Some(LanguageServerId::RustAnalyzer)
+    );
 }
 
 #[test]
@@ -306,7 +309,7 @@ fn language_server_row_action_targets_its_own_server() {
     assert!(matches!(
         &app.tabs[app.active].kind,
         TabKind::LanguageServers(view)
-            if view.selected_id() == Some(LanguageServerId::RustAnalyzer)
+            if view.selected_id(&app.lsp_runtime.servers) == Some(LanguageServerId::RustAnalyzer)
     ));
 }
 
