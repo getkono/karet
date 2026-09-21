@@ -142,8 +142,22 @@ impl App {
             // for the keystroke, so park on the same drain the prompt uses.
             let in_flight = self.pending_saves.len();
             if matches!(request, CloseRequest::Quit) && in_flight > 0 {
-                self.park_close_on_saves(request, in_flight);
-                return;
+                // Unless the user is already waiting on one. Nothing else here
+                // releases a parked quit -- only the backend answering does --
+                // so a second Ctrl+Q is the only way out of a wedged session,
+                // and refusing it would make the editor unexitable. The swap
+                // files survive, because quitting sends no `CloseDocument`.
+                if self.saving_close.is_none() {
+                    self.park_close_on_saves(request, in_flight);
+                    return;
+                }
+                self.saving_close = None;
+                self.notifications.dismiss_tagged(Self::SAVE_BATCH_TAG);
+                self.notify(
+                    Report::Failure,
+                    NotificationKind::Io,
+                    format!("quit: {in_flight} save(s) abandoned, recoverable from backups"),
+                );
             }
             self.execute_close(request);
         } else {

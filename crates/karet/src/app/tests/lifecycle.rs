@@ -611,3 +611,34 @@ fn successful_latex_build_replaces_the_reserved_view_and_publishes_diagnostics()
     );
     assert!(request.is_some_and(|request| !app.latex_previews.contains_key(&request)));
 }
+
+/// Parking a quit on an in-flight save is only safe if the user can still get
+/// out. Nothing but the backend answering releases `saving_close`, so without
+/// this a wedged session is an editor that cannot be quit at all — and a second
+/// Ctrl+Q would simply re-park. The abandoned writes stay recoverable: quitting
+/// sends no `CloseDocument`, so the swap files survive.
+#[test]
+fn a_second_quit_forces_through_a_parked_one() {
+    let mut app = app();
+    app.settings.files.confirm_on_exit = false;
+    dirty_doc_tab(&mut app, "t.rs", 3);
+    app.pending_saves
+        .insert(RequestId(9), PendingSave { doc: DocumentId(3) });
+
+    app.dispatch(Command::Quit);
+    assert!(!app.should_quit, "the first quit parks");
+    assert_eq!(app.saving_close, Some(CloseRequest::Quit));
+
+    app.dispatch(Command::Quit);
+
+    assert!(
+        app.should_quit,
+        "a second quit must not be swallowed by the park"
+    );
+    assert!(app.saving_close.is_none());
+    assert_eq!(
+        last_message(&app).as_deref(),
+        Some("quit: 1 save(s) abandoned, recoverable from backups"),
+        "abandoning a write is reported, not silent"
+    );
+}
