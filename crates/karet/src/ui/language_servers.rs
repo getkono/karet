@@ -275,16 +275,24 @@ fn draw_inventory(
         }
         render_server_actions(f, theme, view, &status, &actions, action_area);
         view.row_hits.push((row_rect, status.server.clone()));
-        painted += 1;
+        // Only a card that fits *whole* counts toward the viewport. A clipped one is
+        // still worth painting — it shows there is more below — but the pin above
+        // measures untruncated heights and demands a full fit, so counting it here
+        // would advertise a window one card wider than the render will keep, and a
+        // scrollbar aiming at that card would be undone on the very next frame.
+        if y.saturating_add(wanted_height) <= content.bottom() {
+            painted += 1;
+        }
         y = y.saturating_add(wanted_height);
     }
     // The extent counts servers, not rows: the cards are variable height, so
-    // `painted` is the viewport in the same unit `offset` is stored in.
+    // `painted` is the viewport in the same unit `offset` is stored in. Floored at
+    // one so a pane too short for even a single card still scrolls to the last.
     hits.record(
         tracks.paint(
             f.buffer_mut(),
             ScrollbarStyles::from_theme(theme),
-            ScrollExtent::new(visible.len(), view.offset, painted),
+            ScrollExtent::new(visible.len(), view.offset, painted.max(1)),
             ScrollExtent::default(),
         ),
         ScrollSurface::TabRows,
