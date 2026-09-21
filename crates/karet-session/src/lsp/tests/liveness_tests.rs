@@ -230,6 +230,7 @@ async fn only_the_task_that_owns_a_layer_may_write_it() -> TestResult {
         .ok_or("the reopen produced no server slot")?;
 
     let publish = |token| LspUpdate::Diagnostics {
+        generation: manager.generation,
         token,
         server: key.clone(),
         path: path.clone(),
@@ -292,6 +293,70 @@ async fn a_provider_that_gives_up_asks_for_its_layer_to_be_cleared() -> TestResu
     assert!(
         asked_to_clear,
         "giving up never asked for its layer to be cleared"
+    );
+    Ok(())
+}
+
+/// A replacement that never connects for a *retryable* reason must still clear
+/// what it inherited.
+///
+/// The hole this closes, reproduced by review: taking over a key refuses the
+/// predecessor's own clear, and a launch that keeps failing with a retryable
+/// cause -- a handshake timeout, a briefly unreachable broker -- never reaches the
+/// permanent branch that clears, never connects, and loops `Retrying` into
+/// `CircuitOpen` forever. The dead server's markers stayed on the document for the
+/// rest of the session, drifting onto lines the user had since edited.
+#[tokio::test]
+async fn a_replacement_that_never_connects_still_clears_what_it_inherited() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("main.rs");
+    std::fs::write(&path, "fn main() {}\n")?;
+    // Retryable, so the task backs off rather than giving up: the branch that
+    // already cleared is deliberately not the one under test.
+    let connector: Connector = Arc::new(move |spec, _root| {
+        let failure = karet_lsp::LaunchFailure::new(
+            spec.command.clone(),
+            spec.args.clone(),
+            karet_lsp::LaunchCause::Timeout,
+        );
+        Box::pin(async move { Err(LspError::Launch(Box::new(failure))) })
+    });
+    let (mut manager, mut updates) = LspManager::new(
+        LspSettings::default(),
+        Some(dir.path().to_path_buf()),
+        None,
+        None,
+    );
+    manager.set_connector(connector);
+    manager.document_opened(Some("rust"), Some("rust"), &path, 1, || {
+        "fn main() {}".into()
+    });
+
+    let mut retrying = false;
+    let mut asked_to_clear = false;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while tokio::time::Instant::now() < deadline && !asked_to_clear {
+        let Ok(Some(update)) = tokio::time::timeout(Duration::from_secs(3), updates.recv()).await
+        else {
+            break;
+        };
+        match update {
+            LspUpdate::RuntimeState { state, .. } => {
+                retrying = retrying
+                    || matches!(
+                        state,
+                        LanguageServerRuntimeState::Retrying
+                            | LanguageServerRuntimeState::CircuitOpen
+                    );
+            },
+            LspUpdate::DiagnosticsCleared { .. } => asked_to_clear = true,
+            _ => {},
+        }
+    }
+    assert!(retrying, "a retryable launch failure did not retry");
+    assert!(
+        asked_to_clear,
+        "a replacement that never connected left its inherited markers in place"
     );
     Ok(())
 }

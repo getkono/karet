@@ -170,6 +170,18 @@ pub(super) async fn server_task(task: ServerTask) {
                 },
                 Err(error) => {
                     tracing::warn!(language, command = %spec.command, error = %error, "language server failed to start");
+                    // A task that has never connected has published nothing, so
+                    // anything on screen under its key came from a predecessor and
+                    // is stale by definition. Arming the grace here is what stops
+                    // it being stale forever: taking over a key refuses the
+                    // predecessor's own clear, and a launch that keeps failing for
+                    // a *retryable* reason -- a handshake timeout, a broker that is
+                    // briefly unreachable -- never reaches the permanent branch
+                    // below, never connects, and so would never clear anything.
+                    if !ever_connected {
+                        clear_diagnostics_at = clear_diagnostics_at
+                            .or_else(|| Some(Instant::now() + DIAGNOSTIC_GRACE));
+                    }
                     let launch = match &error {
                         LspError::Launch(failure) => Some(failure.as_ref()),
                         _ => None,

@@ -205,10 +205,22 @@ impl LspManager {
     pub(crate) fn accepts(&self, update: &LspUpdate) -> bool {
         // Diagnostics are fenced on slot ownership; everything else on generation.
         let generation = match update {
-            // Both halves of a diagnostic layer are fenced on ownership: only the
-            // task that owns the key may write it, and only that task may erase it.
-            LspUpdate::Diagnostics { token, server, .. }
-            | LspUpdate::DiagnosticsCleared { token, server, .. } => {
+            // A publish takes ownership *and* a current generation; see the field
+            // docs on `LspUpdate::Diagnostics::generation` for why the extra
+            // conjunct costs nothing and closes the unowned-key window.
+            LspUpdate::Diagnostics {
+                generation,
+                token,
+                server,
+                ..
+            } => {
+                return *generation == self.generation
+                    && self
+                        .servers
+                        .get(server)
+                        .is_some_and(|slot| slot.token == *token);
+            },
+            LspUpdate::DiagnosticsCleared { token, server, .. } => {
                 // Accepted from the task that owns the key, or when nobody does.
                 //
                 // Ownership, not generation, because the two come apart. A slot is

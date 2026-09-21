@@ -57,6 +57,7 @@ pub(super) fn forward_diagnostics(
             match diagnostic_rx.recv().await {
                 Ok(publication) => {
                     let _ = updates.send(LspUpdate::Diagnostics {
+                        generation,
                         token,
                         server: language.clone(),
                         path: publication.path,
