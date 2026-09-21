@@ -232,7 +232,11 @@ struct Document {
     /// when the `mdlint` feature is off).
     lint_diagnostics: Vec<karet_core::Diagnostic>,
     /// Last language-server diagnostics accepted for this document version.
-    lsp_diagnostics: HashMap<String, Vec<karet_core::Diagnostic>>,
+    ///
+    /// One layer per [`SlotKey`](crate::lsp::SlotKey) -- one provider at one
+    /// repository root -- so a server that dies or is retired takes only its own
+    /// markers with it, and the same provider serving another root keeps its.
+    lsp_diagnostics: HashMap<crate::lsp::SlotKey, Vec<karet_core::Diagnostic>>,
     decorations: Vec<Decoration>,
     /// Open reference count (a path opened in N views shares one document).
     refs: u32,

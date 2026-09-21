@@ -3,9 +3,7 @@ use super::*;
 impl LspManager {
     /// Whether this session currently owns a process for `provider`.
     pub(crate) fn is_running(&self, provider: &LanguageServerId) -> bool {
-        self.servers
-            .values()
-            .any(|slot| slot.provider.as_ref() == Some(provider))
+        self.servers.keys().any(|key| key.serves(provider))
     }
 
     /// Retire live tasks after an explicit install or restart request.

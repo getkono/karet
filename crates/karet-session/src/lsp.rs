@@ -25,6 +25,7 @@ mod message;
 mod provider;
 mod requests;
 mod runtime;
+mod slot;
 #[cfg(test)]
 mod tests;
 
@@ -59,6 +60,8 @@ use provider::project_local_spec;
 use provider::python_diagnostic_provider;
 use provider::uses_biome;
 pub(crate) use provider::version_i32;
+use slot::ServerSlot;
+pub(crate) use slot::SlotKey;
 use tokio::sync::mpsc;
 
 use crate::api::DocumentId;
@@ -93,7 +96,7 @@ pub(crate) struct LspManager {
     generation: u64,
     root: Option<PathBuf>,
     registry_root: Option<PathBuf>,
-    servers: HashMap<String, ServerSlot>,
+    servers: HashMap<SlotKey, ServerSlot>,
     missing_reported: HashSet<LanguageServerId>,
     /// The cached jdtls JDK preflight: `None` until first checked, then the
     /// diagnosis (`None` = a usable JDK was found). Reset on reconfigure so a
@@ -107,7 +110,7 @@ pub(crate) struct LspManager {
     /// so reporting per failure grew an unbounded stack the user had to clear by
     /// hand. Reported once per outage instead, and cleared by the first delivery
     /// that succeeds.
-    sync_failure_reported: HashSet<String>,
+    sync_failure_reported: HashSet<SlotKey>,
     /// Providers whose launch preflight has already been reported in this
     /// generation, so a failed one is explained once rather than per document.
     preflight_reported: HashSet<LanguageServerId>,
@@ -125,14 +128,6 @@ enum Configured {
     Suppressed,
     /// An entry naming exactly what to run.
     Spec(LspSpec),
-}
-
-struct ServerSlot {
-    tx: mpsc::Sender<ServerCmd>,
-    documents: HashSet<PathBuf>,
-    provider: Option<LanguageServerId>,
-    primary: bool,
-    root: PathBuf,
 }
 
 impl LspManager {
@@ -236,9 +231,14 @@ impl LspManager {
     }
 
     /// The launch spec for `language`: user config first, then the built-ins.
-    fn spec_for(&self, language: &str, root: &Path) -> Option<(LspSpec, Option<LanguageServerId>)> {
+    ///
+    /// The provider is not optional: every launch names one, either the id the
+    /// user configured or the built-in for the language. It used to be an
+    /// `Option` whose `None` arm made callers invent a provider id out of the
+    /// language name -- an identity no other part of the manager ever produced.
+    fn spec_for(&self, language: &str, root: &Path) -> Option<(LspSpec, LanguageServerId)> {
         match self.configured_primary(language) {
-            Some((server_id, Configured::Spec(spec))) => return Some((spec, Some(server_id))),
+            Some((server_id, Configured::Spec(spec))) => return Some((spec, server_id)),
             // An entry that forbids a launch is the whole answer: the built-in
             // table does not get a second vote on a server switched off.
             Some((_, Configured::Suppressed)) => return None,
@@ -248,7 +248,7 @@ impl LspManager {
         let spec = self.resolve_provider(&provider, language, root);
         #[cfg(test)]
         let spec = spec.or_else(|| builtin_spec(&provider, language));
-        spec.map(|spec| (spec, Some(provider)))
+        spec.map(|spec| (spec, provider))
     }
 
     /// What `lsp.servers` says about the provider id `server_id`.
@@ -399,7 +399,7 @@ impl LspManager {
         &mut self,
         language: Option<&str>,
         path: &Path,
-    ) -> Option<(&mpsc::Sender<ServerCmd>, String)> {
+    ) -> Option<(&mpsc::Sender<ServerCmd>, SlotKey)> {
         if !self.settings.enabled {
             return None;
         }
@@ -427,30 +427,21 @@ impl LspManager {
         // their own is entitled to have it run: a wrapper that supplies its own
         // `tsdk` is exactly why someone configures one.
         if !matches!(configured, Some((_, Configured::Spec(_))))
-            && !self.astro_launch_gate(&mut spec, provider.as_ref(), &language, &root)
+            && !self.astro_launch_gate(&mut spec, Some(&provider), &language, &root)
         {
             return None;
         }
-        // Built-in JavaScript and TypeScript share one provider process. Custom
-        // entries remain language-keyed because independent config entries may
-        // intentionally name different executables.
-        let provider_key = provider
-            .as_ref()
-            .map_or_else(|| language.clone(), |server| server.key().to_owned());
-        let key = format!("{provider_key}@{}", root.to_string_lossy());
+        // Built-in JavaScript and TypeScript share one provider process, so the
+        // key names the *provider*, not the language that selected it.
+        let key = SlotKey::new(provider, root.clone());
         if !self.servers.contains_key(&key) {
             // Server tasks need an async runtime; a session driven synchronously
             // (unit tests, bare library use) simply runs without LSP.
             let handle = tokio::runtime::Handle::try_current().ok()?;
             let (tx, rx) = mpsc::channel(SERVER_COMMAND_CAPACITY);
-            let runtime_provider = provider
-                .clone()
-                .unwrap_or_else(|| LanguageServerId::new(provider_key.clone()));
             handle.spawn(runtime::server_task(runtime::ServerTask {
                 spec: spec.clone(),
-                root,
-                language: key.clone(),
-                provider: runtime_provider,
+                key: key.clone(),
                 rx,
                 updates: self.updates.clone(),
                 connector: Arc::clone(&self.connector),
@@ -461,9 +452,7 @@ impl LspManager {
                 ServerSlot {
                     tx,
                     documents: HashSet::new(),
-                    provider,
                     primary: true,
-                    root: nearest_repository_root(path, self.root.as_deref()),
                 },
             );
         }
@@ -475,7 +464,7 @@ impl LspManager {
         provider: LanguageServerId,
         language: &str,
         path: &Path,
-    ) -> Option<(mpsc::Sender<ServerCmd>, String)> {
+    ) -> Option<(mpsc::Sender<ServerCmd>, SlotKey)> {
         let root = nearest_repository_root(path, self.root.as_deref());
         let spec = match self.configured_spec(provider.key(), language) {
             Configured::Spec(spec) => Some(spec),
@@ -493,15 +482,13 @@ impl LspManager {
             self.report_unresolved(provider, language);
             return None;
         };
-        let key = format!("{}@{}", provider.key(), root.to_string_lossy());
+        let key = SlotKey::new(provider, root);
         if !self.servers.contains_key(&key) {
             let handle = tokio::runtime::Handle::try_current().ok()?;
             let (tx, rx) = mpsc::channel(SERVER_COMMAND_CAPACITY);
             handle.spawn(runtime::server_task(runtime::ServerTask {
                 spec: spec.clone(),
-                root,
-                language: key.clone(),
-                provider: provider.clone(),
+                key: key.clone(),
                 rx,
                 updates: self.updates.clone(),
                 connector: Arc::clone(&self.connector),
@@ -512,9 +499,7 @@ impl LspManager {
                 ServerSlot {
                     tx,
                     documents: HashSet::new(),
-                    provider: Some(provider),
                     primary: false,
-                    root: nearest_repository_root(path, self.root.as_deref()),
                 },
             );
         }
@@ -648,18 +633,15 @@ impl LspManager {
     /// "the LSP stopped working for this file". A closed channel additionally
     /// means the task has exited, so the slot is dropped and the next open builds
     /// a fresh one rather than writing into a sender nobody reads.
-    fn report_undelivered(&mut self, key: &str, reason: &str) {
+    fn report_undelivered(&mut self, key: &SlotKey, reason: &str) {
         let Some(slot) = self.servers.get(key) else {
             return;
         };
         let closed = slot.tx.is_closed();
-        let provider = slot.provider.clone();
-        if let Some(server) = provider
-            && self.sync_failure_reported.insert(key.to_owned())
-        {
+        if self.sync_failure_reported.insert(key.clone()) {
             let _ = self.updates.send(LspUpdate::SyncFailed {
                 generation: self.generation,
-                server,
+                server: key.provider.clone(),
                 reason: reason.to_owned(),
             });
         }

@@ -16,6 +16,7 @@ use karet_core::Symbol;
 use karet_core::TextEdit;
 use karet_core::WorkspaceEdit;
 
+use super::slot::SlotKey;
 use crate::api::DocumentId;
 use crate::api::LanguageServerId;
 use crate::api::LanguageServerRuntimeState;
@@ -191,7 +192,7 @@ pub(crate) enum LspUpdate {
         /// The manager generation that spawned the publishing task.
         generation: u64,
         /// Provider/root identity whose diagnostic layer is replaced.
-        server: String,
+        server: SlotKey,
         /// File whose LSP diagnostic layer is replaced.
         path: PathBuf,
         /// LSP document version, when the server supplied it.
@@ -232,8 +233,8 @@ pub(crate) enum LspUpdate {
     ServerDied {
         /// The manager generation that spawned the server task.
         generation: u64,
-        /// The language whose server died.
-        language: String,
+        /// The slot whose server died.
+        key: SlotKey,
     },
     /// A document-sync command never reached its server.
     ///
@@ -257,20 +258,17 @@ pub(crate) enum LspUpdate {
     /// current generation -- and only after the grace window, so a reconnect inside
     /// it does not make every marker flicker off and back on.
     ///
-    /// Scoped to what a live task can say about itself. Clearing a layer whose task
-    /// has been *retired* -- by a reconfigure, a restart, or the last `didClose` --
-    /// needs to know who owns a layer, which is deferred to its own change; those
-    /// markers stay until something republishes, as they did before this.
+    /// Scoped to what a live task can say about itself: a *retired* task's layer
+    /// is cleared by the manager, synchronously, as part of retiring it.
     DiagnosticsCleared {
         /// The manager generation that spawned the clearing task.
         generation: u64,
         /// The diagnostic layer to drop, keyed exactly as it was published.
         ///
-        /// That key is the slot's -- `{provider}@{root}` -- so it already scopes
-        /// the clear to the one instance that died. A provider running at two
-        /// repository roots keeps the markers published by the root that is still
-        /// healthy.
-        server: String,
+        /// Being the slot's own key, this already scopes the clear to the one
+        /// instance that died: a provider running at two repository roots keeps
+        /// the markers published by the root that is still healthy.
+        server: SlotKey,
     },
     /// A built-in provider karet can install is locally absent. No network
     /// operation was attempted.

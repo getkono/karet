@@ -9,17 +9,25 @@ use karet_lsp::LspClient;
 use tokio::sync::mpsc;
 
 use super::message::LspUpdate;
+use super::slot::SlotKey;
 
+/// Relay one connection's pushes, tagged with the slot that owns them.
+///
+/// `key` is both halves of the identity the two messages need: the diagnostic
+/// layer to publish under, and the provider to attribute a status line to.
+/// They used to arrive as two separate strings -- one confusingly named
+/// `language` while holding the slot key -- which is how a clear could be built
+/// for a layer that did not exist.
 pub(super) fn forward_diagnostics(
     client: &LspClient,
     updates: mpsc::UnboundedSender<LspUpdate>,
-    language: String,
-    server: String,
+    key: SlotKey,
     generation: u64,
 ) -> tokio::task::JoinHandle<()> {
     let mut diagnostic_rx = client.diagnostics();
     let mut raw_rx = client.raw_notifications();
     let status_updates = updates.clone();
+    let server = key.provider.key().to_owned();
     // jdtls-style `language/status` notifications carry the only feedback a
     // user gets during a 30–120 s first import; forward them for the status
     // bar rather than leaving the server looking hung.
@@ -57,7 +65,7 @@ pub(super) fn forward_diagnostics(
                 Ok(publication) => {
                     let _ = updates.send(LspUpdate::Diagnostics {
                         generation,
-                        server: language.clone(),
+                        server: key.clone(),
                         path: publication.path,
                         version: publication.version,
                         diagnostics: publication.diagnostics,

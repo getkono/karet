@@ -66,7 +66,7 @@ impl LspManager {
         if let Some(root) = &self.root {
             known_roots.insert(root.clone());
         }
-        known_roots.extend(self.servers.values().map(|slot| slot.root.clone()));
+        known_roots.extend(self.servers.keys().map(|key| key.root.clone()));
         if known_roots.is_empty() {
             known_roots.insert(PathBuf::from("."));
         }
@@ -205,10 +205,7 @@ impl LspManager {
                 let fallback = builtin_spec(server, language)?;
                 self.resolve_builtin(server, language, root, fallback)
             });
-        let slot = self
-            .servers
-            .values()
-            .find(|slot| slot.provider.as_ref() == Some(server) && slot.root == root);
+        let slot = self.servers.get(&SlotKey::new(server.clone(), root));
         let runtime = self
             .runtime_states
             .get(&(server.clone(), root.to_path_buf()));

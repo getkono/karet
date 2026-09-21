@@ -29,6 +29,7 @@ use super::RESTART_MIN_DELAY;
 use super::RESTART_WINDOW;
 use super::message::LspUpdate;
 use super::message::ServerCmd;
+use super::slot::SlotKey;
 use crate::api::LanguageServerRuntimeState;
 
 /// How long a connection must last before it counts as having worked.
@@ -133,7 +134,7 @@ pub(super) fn charge_disconnect(
     hung: bool,
     failures: &mut VecDeque<Instant>,
     restart_delay: &mut Duration,
-    language: &str,
+    key: &SlotKey,
 ) -> (Duration, LanguageServerRuntimeState) {
     // A silent connection is counted separately from the sliding failure window,
     // because it cannot be caught by it. Condemning one takes three request
@@ -154,7 +155,7 @@ pub(super) fn charge_disconnect(
         if hangs.len() >= HANG_LIMIT {
             tracing::warn!(
                 hangs = hangs.len(),
-                language,
+                language = %key,
                 "language server keeps going silent; restart circuit opened"
             );
             hangs.clear();
@@ -180,7 +181,7 @@ pub(super) fn charge_disconnect(
     failures.push_back(now);
     if failures.len() >= RESTART_LIMIT {
         tracing::warn!(
-            language,
+            language = %key,
             "language server keeps dying on startup; restart circuit opened"
         );
         return (CIRCUIT_COOLDOWN, LanguageServerRuntimeState::CircuitOpen);
@@ -225,7 +226,7 @@ impl FailureTally {
         result: Result<T, LspError>,
         dead: &mut bool,
         updates: &mpsc::UnboundedSender<LspUpdate>,
-        language: &str,
+        key: &SlotKey,
         generation: u64,
     ) {
         match result {
@@ -236,20 +237,20 @@ impl FailureTally {
             // the gate below satisfied milliseconds after connecting, since the
             // first thing a new task processes is always a `didOpen`.
             Ok(_) => {},
-            Err(LspError::Closed) => self.die(dead, updates, language, generation),
+            Err(LspError::Closed) => self.die(dead, updates, key, generation),
             Err(LspError::Timeout) => {
                 self.consecutive_timeouts = self.consecutive_timeouts.saturating_add(1);
                 if self.consecutive_timeouts >= TIMEOUT_DEATH_LIMIT && self.answered {
                     tracing::warn!(
-                        language,
+                        language = %key,
                         timeouts = self.consecutive_timeouts,
                         "language server stopped answering; treating it as dead"
                     );
                     self.hung = true;
-                    self.die(dead, updates, language, generation);
+                    self.die(dead, updates, key, generation);
                 } else {
                     tracing::warn!(
-                        language,
+                        language = %key,
                         timeouts = self.consecutive_timeouts,
                         answered = self.answered,
                         "language server request timed out"
@@ -258,7 +259,7 @@ impl FailureTally {
             },
             Err(e) => {
                 self.consecutive_timeouts = 0;
-                tracing::warn!(language, error = %e, "language server call failed");
+                tracing::warn!(language = %key, error = %e, "language server call failed");
             },
         }
     }
@@ -277,11 +278,11 @@ impl FailureTally {
     pub(super) fn note_lost(
         &mut self,
         updates: &mpsc::UnboundedSender<LspUpdate>,
-        language: &str,
+        key: &SlotKey,
         generation: u64,
     ) {
         let mut unreported = false;
-        self.die(&mut unreported, updates, language, generation);
+        self.die(&mut unreported, updates, key, generation);
     }
 
     /// Observe a *request* outcome, passing it through unchanged.
@@ -314,7 +315,7 @@ impl FailureTally {
         &mut self,
         dead: &mut bool,
         updates: &mpsc::UnboundedSender<LspUpdate>,
-        language: &str,
+        key: &SlotKey,
         generation: u64,
     ) {
         self.consecutive_timeouts = 0;
@@ -322,7 +323,7 @@ impl FailureTally {
             *dead = true;
             let _ = updates.send(LspUpdate::ServerDied {
                 generation,
-                language: language.to_owned(),
+                key: key.clone(),
             });
         }
     }
@@ -339,6 +340,12 @@ mod tests {
     ) {
         let (tx, rx) = mpsc::unbounded_channel();
         (FailureTally::default(), tx, rx)
+    }
+
+    /// A slot to attribute a death to. These tests care only that two different
+    /// languages give two different keys, never about the root.
+    fn key(language: &str) -> SlotKey {
+        SlotKey::new(crate::api::LanguageServerId::new(language), "/work/repo")
     }
 
     /// A connect-then-die loop must be bounded.
@@ -363,7 +370,7 @@ mod tests {
                     false,
                     &mut failures,
                     &mut delay,
-                    "rust",
+                    &key("rust"),
                 )
             })
             .collect();
@@ -396,14 +403,20 @@ mod tests {
                 false,
                 &mut failures,
                 &mut delay,
-                "rust",
+                &key("rust"),
             );
         }
         assert!(delay > RESTART_MIN_DELAY, "the backoff never advanced");
 
         let proven = Instant::now().checked_sub(STABLE_CONNECTION);
-        let (waited, state) =
-            charge_disconnect(proven, &mut hangs, false, &mut failures, &mut delay, "rust");
+        let (waited, state) = charge_disconnect(
+            proven,
+            &mut hangs,
+            false,
+            &mut failures,
+            &mut delay,
+            &key("rust"),
+        );
         assert_eq!(state, LanguageServerRuntimeState::Retrying);
         assert_eq!(waited, RESTART_MIN_DELAY, "the backoff was not reset");
         assert!(failures.is_empty(), "the budget was not cleared");
@@ -429,7 +442,14 @@ mod tests {
         let cycles: Vec<_> = (0..HANG_LIMIT)
             .map(|_| {
                 failures.clear();
-                charge_disconnect(proven, &mut hangs, true, &mut failures, &mut delay, "java")
+                charge_disconnect(
+                    proven,
+                    &mut hangs,
+                    true,
+                    &mut failures,
+                    &mut delay,
+                    &key("java"),
+                )
             })
             .collect();
         assert_eq!(
@@ -458,8 +478,14 @@ mod tests {
                 .unwrap_or_else(Instant::now),
         );
         let proven = Instant::now().checked_sub(STABLE_CONNECTION);
-        let (_, state) =
-            charge_disconnect(proven, &mut hangs, true, &mut failures, &mut delay, "rust");
+        let (_, state) = charge_disconnect(
+            proven,
+            &mut hangs,
+            true,
+            &mut failures,
+            &mut delay,
+            &key("rust"),
+        );
         assert_eq!(
             state,
             LanguageServerRuntimeState::Retrying,
@@ -476,9 +502,23 @@ mod tests {
         let mut delay = RESTART_MIN_DELAY;
         let mut hangs = VecDeque::new();
         let proven = Instant::now().checked_sub(STABLE_CONNECTION);
-        charge_disconnect(proven, &mut hangs, true, &mut failures, &mut delay, "java");
+        charge_disconnect(
+            proven,
+            &mut hangs,
+            true,
+            &mut failures,
+            &mut delay,
+            &key("java"),
+        );
         assert_eq!(hangs.len(), 1);
-        charge_disconnect(proven, &mut hangs, false, &mut failures, &mut delay, "java");
+        charge_disconnect(
+            proven,
+            &mut hangs,
+            false,
+            &mut failures,
+            &mut delay,
+            &key("java"),
+        );
         assert!(
             hangs.is_empty(),
             "a clean death did not reset the hang count"
@@ -504,7 +544,7 @@ mod tests {
             false,
             &mut failures,
             &mut delay,
-            "rust",
+            &key("rust"),
         );
         assert_eq!(
             state,
@@ -518,7 +558,7 @@ mod tests {
     fn a_closed_connection_dies_at_once() {
         let (mut tally, tx, mut rx) = tally();
         let mut dead = false;
-        tally.note::<()>(Err(LspError::Closed), &mut dead, &tx, "rust", 1);
+        tally.note::<()>(Err(LspError::Closed), &mut dead, &tx, &key("rust"), 1);
         assert!(dead);
         assert!(matches!(rx.try_recv(), Ok(LspUpdate::ServerDied { .. })));
     }
@@ -527,8 +567,8 @@ mod tests {
     fn one_death_is_reported_once() {
         let (mut tally, tx, mut rx) = tally();
         let mut dead = false;
-        tally.note::<()>(Err(LspError::Closed), &mut dead, &tx, "rust", 1);
-        tally.note::<()>(Err(LspError::Closed), &mut dead, &tx, "rust", 1);
+        tally.note::<()>(Err(LspError::Closed), &mut dead, &tx, &key("rust"), 1);
+        tally.note::<()>(Err(LspError::Closed), &mut dead, &tx, &key("rust"), 1);
         assert!(matches!(rx.try_recv(), Ok(LspUpdate::ServerDied { .. })));
         assert!(rx.try_recv().is_err(), "the second close reported again");
     }
@@ -537,7 +577,7 @@ mod tests {
     fn a_single_timeout_is_not_a_death() {
         let (mut tally, tx, mut rx) = tally();
         let mut dead = false;
-        tally.note::<()>(Err(LspError::Timeout), &mut dead, &tx, "rust", 1);
+        tally.note::<()>(Err(LspError::Timeout), &mut dead, &tx, &key("rust"), 1);
         assert!(!dead, "one slow answer condemned the connection");
         assert!(rx.try_recv().is_err());
     }
@@ -552,7 +592,7 @@ mod tests {
         let (mut tally, tx, mut rx) = tally();
         let mut dead = false;
         for _ in 0..TIMEOUT_DEATH_LIMIT.saturating_mul(10) {
-            tally.note::<()>(Err(LspError::Timeout), &mut dead, &tx, "java", 1);
+            tally.note::<()>(Err(LspError::Timeout), &mut dead, &tx, &key("java"), 1);
         }
         assert!(
             !dead,
@@ -572,7 +612,7 @@ mod tests {
         let mut dead = false;
         let _answered = tally.observe(Ok::<(), LspError>(()));
         for _ in 0..TIMEOUT_DEATH_LIMIT {
-            tally.note::<()>(Err(LspError::Timeout), &mut dead, &tx, "rust", 1);
+            tally.note::<()>(Err(LspError::Timeout), &mut dead, &tx, &key("rust"), 1);
         }
         assert!(dead);
         assert!(tally.hung(), "a silent death was not flagged as hung");
@@ -582,7 +622,7 @@ mod tests {
     fn a_closed_connection_is_not_flagged_as_hung() {
         let (mut tally, tx, _rx) = tally();
         let mut dead = false;
-        tally.note::<()>(Err(LspError::Closed), &mut dead, &tx, "rust", 1);
+        tally.note::<()>(Err(LspError::Closed), &mut dead, &tx, &key("rust"), 1);
         assert!(!tally.hung());
     }
 
@@ -611,7 +651,7 @@ mod tests {
         let _answered = tally.observe(Ok::<(), LspError>(()));
         let _answered = rx.try_recv();
         for _ in 0..TIMEOUT_DEATH_LIMIT {
-            tally.note::<()>(Err(LspError::Timeout), &mut dead, &tx, "rust", 1);
+            tally.note::<()>(Err(LspError::Timeout), &mut dead, &tx, &key("rust"), 1);
         }
         assert!(dead);
         assert!(matches!(rx.try_recv(), Ok(LspUpdate::ServerDied { .. })));
@@ -623,11 +663,11 @@ mod tests {
         let mut dead = false;
         let _answered = tally.observe(Ok::<(), LspError>(()));
         for _ in 0..TIMEOUT_DEATH_LIMIT.saturating_sub(1) {
-            tally.note::<()>(Err(LspError::Timeout), &mut dead, &tx, "rust", 1);
+            tally.note::<()>(Err(LspError::Timeout), &mut dead, &tx, &key("rust"), 1);
         }
         let _answered = tally.observe(Ok::<(), LspError>(()));
         for _ in 0..TIMEOUT_DEATH_LIMIT.saturating_sub(1) {
-            tally.note::<()>(Err(LspError::Timeout), &mut dead, &tx, "rust", 1);
+            tally.note::<()>(Err(LspError::Timeout), &mut dead, &tx, &key("rust"), 1);
         }
         assert!(!dead, "timeouts either side of a success were summed");
         assert!(rx.try_recv().is_err());
@@ -645,7 +685,7 @@ mod tests {
                 Err(LspError::Server("method not found".to_owned())),
                 &mut dead,
                 &tx,
-                "rust",
+                &key("rust"),
                 1,
             );
         }

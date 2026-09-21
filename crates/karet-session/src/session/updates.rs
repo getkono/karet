@@ -283,14 +283,14 @@ impl Session {
                     },
                 );
             },
-            LspUpdate::ServerDied { language, .. } => self.emit(
+            LspUpdate::ServerDied { key, .. } => self.emit(
                 None,
                 Event::Notification {
                     severity: Severity::Warning,
                     kind: NotificationKind::Lsp,
                     message: format!(
                         "the {} language server stopped; reconnecting with bounded backoff",
-                        provider_of(&language)
+                        key.provider.display_name()
                     ),
                 },
             ),
@@ -564,7 +564,7 @@ impl Session {
     /// another repository root keeps its own markers. Other servers'
     /// diagnostics, spell-check and lint results share the merged set and are
     /// untouched.
-    fn clear_lsp_diagnostic_layer(&mut self, server: &str) {
+    fn clear_lsp_diagnostic_layer(&mut self, server: &crate::lsp::SlotKey) {
         let affected = self
             .store
             .docs
@@ -849,24 +849,26 @@ impl Session {
     pub(crate) fn refresh_markdown_lint(&mut self, _doc: crate::api::DocumentId) {}
 }
 
-/// The provider half of a server task's slot key.
-///
-/// Task keys are `provider@/absolute/repository/root`. The path is useful in
-/// the manager and the log, and is only noise in a notification.
-fn provider_of(key: &str) -> &str {
-    key.split_once('@').map_or(key, |(provider, _)| provider)
-}
-
 #[cfg(test)]
 mod update_text_tests {
-    use super::*;
-
+    /// A slot key is `provider@/absolute/repository/root`. The path is useful in
+    /// the manager and the log, and is only noise in a notification.
+    ///
+    /// This used to be enforced by a string parser splitting the key back apart.
+    /// The key now carries its two halves separately, so naming the provider
+    /// cannot pick up the path -- but the property is the user-visible one, so it
+    /// keeps its test.
     #[test]
     fn a_notification_never_carries_a_repository_path() {
-        assert_eq!(
-            provider_of("rust-analyzer@/home/me/work/repo"),
-            "rust-analyzer"
+        let key = crate::lsp::SlotKey::new(
+            crate::api::LanguageServerId::RustAnalyzer,
+            "/home/me/work/repo",
         );
-        assert_eq!(provider_of("taplo"), "taplo");
+        let message = format!(
+            "the {} language server stopped; reconnecting with bounded backoff",
+            key.provider.display_name()
+        );
+        assert!(message.contains("rust-analyzer"), "{message}");
+        assert!(!message.contains('/'), "{message}");
     }
 }
