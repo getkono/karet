@@ -236,7 +236,18 @@ impl App {
             // this the one arm `viewport` is carried for.
             TabKind::LanguageServers(view) => {
                 let len = view.visible_indices().len();
-                view.selected = cursor_in_window(view.selected, position, viewport, len);
+                let bottom = position.saturating_add(viewport.max(1) - 1);
+                // Deliberately not `cursor_in_window`: that lands an outside cursor on
+                // the *nearer* edge, and for a list of variable-height cards the bottom
+                // edge is a promise this cannot keep. `viewport` was measured at the
+                // old offset, so it does not say how many cards fit at the new one, and
+                // asking the pin for an unmeasured fit is answered by nudging the offset
+                // past the position asked for — permanently, on the first card, whenever
+                // the cards above it are taller. The window's *top* is always honoured,
+                // because the pin keeps `offset == selected` whatever the heights.
+                if view.selected < position || view.selected > bottom {
+                    view.selected = position.min(len.saturating_sub(1));
+                }
                 view.offset = position;
             },
             // The graph view pans freely: dragging its scrollbar moves the viewport and

@@ -365,6 +365,26 @@ fn language_server_app(count: usize, height: u16) -> App {
     app
 }
 
+/// A manager tab whose cards are *not* all the same height, which is the ordinary
+/// case: only a managed server carries the full `Check updates / Restart / Uninstall`
+/// strip, so an unmanaged one is a row shorter.
+fn mixed_height_language_server_app(count: usize, height: u16) -> App {
+    let mut app = app();
+    app.open_language_servers();
+    let servers = (0..count)
+        .map(|i| {
+            language_server_status(
+                LanguageServerId::new(format!("server-{i:02}")),
+                "rust",
+                i == 0,
+            )
+        })
+        .collect();
+    app.show_language_server_status(None, servers);
+    screen(&mut app, 100, height);
+    app
+}
+
 /// Move the inventory's selection directly, as paging or a click would.
 fn select_server(app: &mut App, index: usize) {
     match &mut app.tabs[app.active].kind {
@@ -524,11 +544,106 @@ fn the_last_language_server_can_be_scrolled_fully_into_view() {
         LanguageServerId::new("server-15"),
         "the end of the scroll should reach the last server"
     );
+    // Reading the last card's height against the first only means anything while every
+    // card is the same height, so make that dependence fail loudly rather than quietly
+    // if the fixture ever gains a server with a different action strip.
+    assert!(
+        rows.iter().all(|row| row.0.height == first.0.height),
+        "this test measures the last card against the first, which needs a uniform \
+         fixture; use `mixed_height_language_server_app` for the variable case"
+    );
     // A clipped card is painted short. At the end of the scroll the last card has to
     // be whole, or the user can never actually read it.
     assert_eq!(
         last.0.height, first.0.height,
         "the last server is still clipped at the end of the scroll"
+    );
+}
+
+#[test]
+fn dragging_a_mixed_height_inventory_to_the_top_lands_exactly() {
+    // Cards are only uniform in a fixture. In practice a managed server carries a
+    // taller action strip than an unmanaged one, and the `viewport` the extent
+    // publishes was measured at the *old* offset — so it says nothing about how many
+    // of the cards at the *new* position fit. Landing an out-of-window selection on
+    // the window's bottom edge would therefore ask the pin for a fit nobody measured,
+    // and it answers by nudging the offset past the position asked for. At these
+    // heights that was permanent: the first server could never be reached from the
+    // bar, however many times it was dragged.
+    for height in [16_u16, 19, 25] {
+        let mut app = mixed_height_language_server_app(16, height);
+        select_server(&mut app, 12);
+        screen(&mut app, 100, height);
+
+        let hit = inventory_track(&app);
+        let track = hit.track.rect();
+        let (start, _) = hit.track.thumb_span().unwrap_or_default();
+        press(&mut app, track.x, track.y + start);
+        drag(&mut app, track.x, track.y);
+
+        assert_eq!(
+            inventory(&app).1,
+            0,
+            "one drag to the top should reach the first server at {height} rows"
+        );
+        screen(&mut app, 100, height);
+        assert_eq!(
+            inventory(&app).1,
+            0,
+            "and it must hold there across the next frame at {height} rows"
+        );
+    }
+}
+
+#[test]
+fn a_pane_too_short_for_a_whole_card_still_scrolls_to_the_last_server() {
+    // Fourteen rows leaves the inventory too short to fit even one card whole, so the
+    // count of whole cards is zero. Publishing that as the viewport would hand the
+    // extent a `max_position` one past the end and leave `cursor_in_window` with
+    // nothing to pull, and the pin would collapse the offset straight back — the very
+    // snap-back this change removes. The floor of one keeps the list scrollable.
+    let mut app = language_server_app(16, 14);
+    let hit = inventory_track(&app);
+    let extent = hit.track.extent();
+    assert_eq!(extent.viewport, 1, "a pane this short fits no card whole");
+    assert_eq!(
+        extent.max_position(),
+        15,
+        "every server must stay reachable"
+    );
+
+    let track = hit.track.rect();
+    let (start, _) = hit.track.thumb_span().unwrap_or_default();
+    press(&mut app, track.x, track.y + start);
+    drag(&mut app, track.x, track.bottom() - 1);
+    let (_, landed) = inventory(&app);
+    assert_eq!(landed, 15, "the drag should reach the last server");
+
+    screen(&mut app, 100, 14);
+    assert_eq!(
+        inventory(&app).1,
+        15,
+        "and it must not snap back on the next frame"
+    );
+}
+
+#[test]
+fn an_exactly_tiling_inventory_counts_every_card_it_paints() {
+    // The boundary of the whole-card test. At 24 rows the cards tile the pane exactly,
+    // so the bottom one ends flush with the content and no card is clipped — every
+    // card painted is a card that fits, and the published viewport has to say so.
+    // A predicate of `<` rather than `<=` would drop that flush card and understate
+    // the window by one.
+    let app = language_server_app(16, 24);
+    let painted = match &app.tabs[app.active].kind {
+        TabKind::LanguageServers(view) => view.row_hits.len(),
+        _ => panic!("expected the language-server manager"),
+    };
+    let extent = inventory_track(&app).track.extent();
+    assert!(painted > 0, "the inventory should paint some cards");
+    assert_eq!(
+        extent.viewport, painted,
+        "with nothing clipped, the viewport must count every painted card"
     );
 }
 
