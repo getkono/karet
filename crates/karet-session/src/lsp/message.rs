@@ -302,8 +302,11 @@ pub(crate) enum LspUpdate {
     /// A provider/root connection changed lifecycle state.
     RuntimeState {
         generation: u64,
-        server: LanguageServerId,
-        root: PathBuf,
+        /// The slot reporting about itself. Both halves the client needs --
+        /// provider and root -- come from it, and it is also what the manager
+        /// looks the slot up by, so a report cannot be filed against a different
+        /// instance than the one that sent it.
+        key: SlotKey,
         state: LanguageServerRuntimeState,
         error: Option<String>,
     },

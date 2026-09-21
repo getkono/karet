@@ -295,19 +295,14 @@ impl Session {
                 },
             ),
             LspUpdate::RuntimeState {
-                server,
-                root,
-                state,
-                error,
-                ..
+                key, state, error, ..
             } => {
-                self.lsp
-                    .note_runtime(server.clone(), root.clone(), state, error.clone());
+                self.lsp.note_runtime(&key, state, error.clone());
                 self.emit(
                     None,
                     Event::LanguageServerRuntimeChanged {
-                        server,
-                        root,
+                        server: key.provider,
+                        root: key.root,
                         state,
                         error,
                     },

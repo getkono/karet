@@ -16,6 +16,7 @@ use tokio::sync::mpsc;
 
 use super::message::ServerCmd;
 use crate::api::LanguageServerId;
+use crate::api::LanguageServerRuntimeState;
 
 /// One language-server provider at one repository root.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -52,6 +53,12 @@ impl fmt::Display for SlotKey {
 }
 
 /// A live server task, and what the manager knows about it.
+///
+/// The slot is the *only* record of a provider's runtime state. There is
+/// deliberately no map beside it: a state with no slot is then unrepresentable,
+/// so "no slot means idle" cannot be violated by forgetting to clean something
+/// up. A stale entry in such a map is what made the Language Servers panel offer
+/// a Restart for a process that did not exist.
 pub(super) struct ServerSlot {
     /// The task's command inbox.
     pub(super) tx: mpsc::Sender<ServerCmd>,
@@ -60,6 +67,27 @@ pub(super) struct ServerSlot {
     /// Whether this slot serves the language's primary provider rather than a
     /// diagnostics companion.
     pub(super) primary: bool,
+    /// What the task last reported about itself.
+    ///
+    /// Starts at [`LanguageServerRuntimeState::Starting`] rather than waiting for
+    /// the task's own first report, so a slot is never briefly indistinguishable
+    /// from one that does not exist.
+    pub(super) runtime: LanguageServerRuntimeState,
+    /// The most recent concise failure the task reported, if any.
+    pub(super) error: Option<String>,
+}
+
+impl ServerSlot {
+    /// A slot for a task that is starting up.
+    pub(super) fn new(tx: mpsc::Sender<ServerCmd>, primary: bool) -> Self {
+        Self {
+            tx,
+            documents: HashSet::new(),
+            primary,
+            runtime: LanguageServerRuntimeState::Starting,
+            error: None,
+        }
+    }
 }
 
 #[cfg(test)]

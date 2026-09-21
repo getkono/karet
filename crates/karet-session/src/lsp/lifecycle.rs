@@ -25,14 +25,21 @@ impl LspManager {
         self.missing_reported.remove(&provider);
     }
 
-    /// Record a runtime transition before forwarding it to presentation clients.
+    /// Record a runtime transition on the slot that reported it.
+    ///
+    /// A report whose slot is gone is dropped rather than stored. That is the
+    /// whole of the rule this used to need a side map and a fence to express:
+    /// the state lives on the slot, so retiring the slot takes the state with it,
+    /// and a task speaking after its retirement has nowhere to write.
     pub(crate) fn note_runtime(
         &mut self,
-        server: LanguageServerId,
-        root: PathBuf,
+        key: &SlotKey,
         state: LanguageServerRuntimeState,
         error: Option<String>,
     ) {
-        self.runtime_states.insert((server, root), (state, error));
+        if let Some(slot) = self.servers.get_mut(key) {
+            slot.runtime = state;
+            slot.error = error;
+        }
     }
 }

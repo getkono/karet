@@ -28,14 +28,13 @@ pub(super) async fn server_task(task: ServerTask) {
         connector,
         generation,
     } = task;
-    // The root is a local because `report_state` needs it by value in a closure
-    // that outlives each borrow of the key.
+    // The root is a local because the connector and `SpawnFailed` want it by
+    // value while `key` is still borrowed elsewhere.
     let root = key.root.clone();
     let report_state = |state, error: Option<String>| {
         let _ = updates.send(LspUpdate::RuntimeState {
             generation,
-            server: key.provider.clone(),
-            root: root.clone(),
+            key: key.clone(),
             state,
             error,
         });
@@ -654,14 +653,15 @@ pub(super) async fn server_task(task: ServerTask) {
     if let Some(task) = diagnostic_task {
         task.abort();
     }
-    // No parting clear. Retirement is the other way a provider's markers go stale,
-    // but clearing them from here needs to know who *owns* a layer: a task leaving
-    // through the channel-closed `break` has already lost its slot, possibly to a
-    // replacement under the identical key, and a clear at that moment can wipe the
-    // live server's markers instead. Establishing ownership is deferred to its own
-    // change; until then retired markers persist until something republishes, which
-    // is what they did before any of this.
-    report_state(LanguageServerRuntimeState::Stopped, None);
+    // Nothing is reported on the way out, and nothing can be: a task only reaches
+    // here after `rx.recv()` returned `None`, which happens only once the manager
+    // has dropped its slot. Anything said now is said by a task that no longer
+    // represents anything -- and since the key can be re-taken immediately, a
+    // parting word lands on whatever replaced it. That is how a *serving* provider
+    // came to be badged `Stopped` for the rest of a session.
+    //
+    // The manager reports the retirement instead, at the moment it retires the
+    // slot, where the fact is true by construction rather than raced for.
 }
 
 /// Send the pending `didChange`, if any.

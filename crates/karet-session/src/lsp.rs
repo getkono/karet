@@ -116,8 +116,6 @@ pub(crate) struct LspManager {
     preflight_reported: HashSet<LanguageServerId>,
     updates: mpsc::UnboundedSender<LspUpdate>,
     connector: Connector,
-    runtime_states:
-        HashMap<(LanguageServerId, PathBuf), (LanguageServerRuntimeState, Option<String>)>,
 }
 
 /// What the user's `lsp.servers` table says about one provider id.
@@ -152,7 +150,6 @@ impl LspManager {
                 preflight_reported: HashSet::new(),
                 updates,
                 connector: spawn_connector(supervisor, registry_root),
-                runtime_states: HashMap::new(),
             },
             rx,
         )
@@ -173,7 +170,6 @@ impl LspManager {
         self.settings = settings;
         self.generation = self.generation.wrapping_add(1);
         self.servers.clear();
-        self.runtime_states.clear();
         self.jdtls_preflight = None;
         self.preflight_reported.clear();
         self.sync_failure_reported.clear();
@@ -447,14 +443,7 @@ impl LspManager {
                 connector: Arc::clone(&self.connector),
                 generation: self.generation,
             }));
-            self.servers.insert(
-                key.clone(),
-                ServerSlot {
-                    tx,
-                    documents: HashSet::new(),
-                    primary: true,
-                },
-            );
+            self.servers.insert(key.clone(), ServerSlot::new(tx, true));
         }
         self.servers.get(&key).map(|slot| (&slot.tx, key))
     }
@@ -494,14 +483,7 @@ impl LspManager {
                 connector: Arc::clone(&self.connector),
                 generation: self.generation,
             }));
-            self.servers.insert(
-                key.clone(),
-                ServerSlot {
-                    tx,
-                    documents: HashSet::new(),
-                    primary: false,
-                },
-            );
+            self.servers.insert(key.clone(), ServerSlot::new(tx, false));
         }
         self.servers.get(&key).map(|slot| (slot.tx.clone(), key))
     }

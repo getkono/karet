@@ -869,3 +869,4 @@ mod launch_tests;
 mod liveness_tests;
 mod manual_provider_tests;
 mod restart_tests;
+mod retirement_tests;
