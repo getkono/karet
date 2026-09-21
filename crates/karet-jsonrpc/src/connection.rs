@@ -3,8 +3,9 @@
 //! A [`Connection`] owns a writer task (draining an outbound frame queue) and a
 //! reader task (de-framing inbound messages and routing them): responses resolve
 //! the pending request with the matching id, notifications fan out on a broadcast
-//! channel as a [`Handler::Push`] payload, peer→client requests are answered
-//! inline by [`Handler::answer`], and everything else is logged and dropped. When
+//! channel as a [`Handler::Push`] payload, peer→client requests go to the
+//! consumer's [`Connection::inbound_requests`] stream or, while nobody holds it,
+//! to [`Handler::answer`] inline, and everything else is logged and dropped. When
 //! the stream ends, in-flight requests fail with [`RpcError::Closed`].
 //!
 //! Everything protocol-specific lives on the [`Handler`]: the framing, the
@@ -35,15 +36,21 @@ use crate::message;
 use crate::message::Incoming;
 use crate::message::RequestId;
 use crate::message::ResponseError;
+use crate::peer::PeerRequest;
+use crate::peer::Responder;
 
 /// The protocol-specific half of a connection: framing, the broadcast payload,
 /// peer-request answers, and notification side effects.
 ///
-/// Peer→client requests are answered **synchronously** on the reader task, which
-/// is all a headless client needs (`workspace/configuration`,
-/// `client/registerCapability`, …). A protocol whose answers must await user
-/// input gains an additive, defaulted async entry point later; that is not a
-/// breaking change to this trait's shape.
+/// [`Handler::answer`] answers peer→client requests **synchronously** on the
+/// reader task, which is all a constant answer needs (`workspace/configuration`
+/// with nothing to offer, `client/registerCapability`, …).
+///
+/// An answer that must *await* — apply an edit, ask the user, read state behind
+/// a lock — cannot go here, because the reader task is blocked for its duration
+/// and every other message on the connection waits with it. Take
+/// [`Connection::inbound_requests`] instead: while a consumer holds that
+/// receiver it gets every peer request, and `answer` is not called at all.
 pub trait Handler: Send + Sync + 'static {
     /// How message bodies are delimited on the wire.
     type Framing: Framing;
@@ -69,6 +76,15 @@ pub trait Handler: Send + Sync + 'static {
     /// `tokio::sync::mpsc` accepts — an override of `0` degrades to `1` rather
     /// than panicking.
     const OUTBOUND_CHANNEL_CAPACITY: usize = 256;
+    /// Peer requests waiting for the consumer of [`Connection::inbound_requests`].
+    ///
+    /// Bounded, and deliberately not a broadcast: a lagging broadcast receiver
+    /// drops the oldest payloads, and a *dropped request* is one the peer waits
+    /// on forever. Overflow answers immediately instead — see
+    /// [`Responder`](crate::Responder).
+    ///
+    /// Clamped to at least `1` for the same reason as the outbound capacity.
+    const INBOUND_REQUEST_CAPACITY: usize = 32;
 
     /// Build the broadcast payload for one peer notification (`None` drops it).
     ///
@@ -81,7 +97,10 @@ pub trait Handler: Send + Sync + 'static {
         let _ = (method, params);
     }
 
-    /// Answer a peer→client request.
+    /// Answer a peer→client request, synchronously, on the reader task.
+    ///
+    /// Not called while a consumer holds [`Connection::inbound_requests`].
+    /// Anything that must await belongs there; see the trait docs.
     ///
     /// # Errors
     ///
@@ -144,11 +163,36 @@ pub enum RpcError {
 /// In-flight requests, keyed by the id we allocated for them.
 type Pending = Arc<Mutex<HashMap<RequestId, oneshot::Sender<Result<Value, ResponseError>>>>>;
 
+/// The reader's half of the peer-request stream, plus whether anyone is there.
+struct Inbound {
+    tx: mpsc::Sender<PeerRequest>,
+    active: Arc<AtomicBool>,
+}
+
+/// Every destination the reader routes a message to, bundled so the loop and
+/// its frame handler each take one argument instead of a positional list.
+struct Routes<H: Handler> {
+    handler: Arc<H>,
+    pending: Pending,
+    push: broadcast::Sender<H::Push>,
+    outbound: mpsc::Sender<Outbound>,
+    inbound: Inbound,
+}
+
 /// An item on the outbound queue: a frame to write, or the drain-and-stop
 /// signal [`Connection::close`] enqueues behind the final frames.
-enum Outbound {
+pub(crate) enum Outbound {
     Frame(Vec<u8>),
     Close,
+}
+
+impl std::fmt::Debug for Outbound {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Frame(frame) => write!(f, "Frame({} bytes)", frame.len()),
+            Self::Close => f.write_str("Close"),
+        }
+    }
 }
 
 /// A live JSON-RPC connection to one peer.
@@ -168,6 +212,13 @@ pub struct Connection<H: Handler> {
     /// The flag alone made loss detection demand-driven: a consumer parked on its
     /// own input with nothing to ask the peer never learned the peer had gone.
     closed_signal: watch::Sender<bool>,
+    /// The peer-request stream, until a consumer takes it.
+    inbound_rx: Mutex<Option<mpsc::Receiver<PeerRequest>>>,
+    /// Set once the receiver has been handed out. The reader consults this
+    /// rather than `Sender::is_closed`, which cannot tell "nobody has taken the
+    /// receiver yet" from "a consumer is listening" — the receiver exists from
+    /// the moment the channel is built.
+    inbound_active: Arc<AtomicBool>,
     reader_task: JoinHandle<()>,
     writer_task: JoinHandle<()>,
 }
@@ -187,6 +238,9 @@ impl<H: Handler> Connection<H> {
         let (outbound, mut outbound_rx) =
             mpsc::channel::<Outbound>(H::OUTBOUND_CHANNEL_CAPACITY.max(1));
         let (push, _) = broadcast::channel(H::PUSH_CHANNEL_CAPACITY.clamp(1, usize::MAX / 2));
+        let (inbound_tx, inbound_rx) =
+            mpsc::channel::<PeerRequest>(H::INBOUND_REQUEST_CAPACITY.max(1));
+        let inbound_active = Arc::new(AtomicBool::new(false));
         let pending: Pending = Arc::default();
         let closed = Arc::new(AtomicBool::new(false));
         let (closed_signal, _) = watch::channel(false);
@@ -211,10 +265,16 @@ impl<H: Handler> Connection<H> {
         });
         let reader_task = tokio::spawn(read_loop::<H, R>(
             BufReader::new(read),
-            Arc::clone(&handler),
-            Arc::clone(&pending),
-            push.clone(),
-            outbound.clone(),
+            Routes {
+                handler: Arc::clone(&handler),
+                pending: Arc::clone(&pending),
+                push: push.clone(),
+                outbound: outbound.clone(),
+                inbound: Inbound {
+                    tx: inbound_tx,
+                    active: Arc::clone(&inbound_active),
+                },
+            },
             Arc::clone(&closed),
             closed_signal.clone(),
         ));
@@ -227,9 +287,33 @@ impl<H: Handler> Connection<H> {
             handler,
             closed,
             closed_signal,
+            inbound_rx: Mutex::new(Some(inbound_rx)),
+            inbound_active,
             reader_task,
             writer_task,
         }
+    }
+
+    /// Take the stream of requests the **peer** issues to us.
+    ///
+    /// Returns the receiver once; every later call returns `None`, because a
+    /// request must reach exactly one answerer. While it is held, every peer
+    /// request arrives here and [`Handler::answer`] is not called — a consumer
+    /// that wants the old constant answers for some methods can delegate to
+    /// [`Connection::handler`] itself.
+    ///
+    /// Every [`PeerRequest`] carries a [`Responder`] that answers it. Dropping
+    /// one answers it anyway, with `-32601`, and so does letting this queue
+    /// overflow: the peer is never left waiting on our silence.
+    #[must_use]
+    pub fn inbound_requests(&self) -> Option<mpsc::Receiver<PeerRequest>> {
+        let taken = self.inbound_rx.lock().ok()?.take();
+        if taken.is_some() {
+            // Ordered after the take so the reader never routes to a stream
+            // whose receiver is not yet in the consumer's hands.
+            self.inbound_active.store(true, Ordering::SeqCst);
+        }
+        taken
     }
 
     /// Resolve once this connection is gone, whether the peer hung up, the
@@ -387,10 +471,7 @@ impl<H: Handler> Drop for Connection<H> {
 /// all in-flight requests by dropping their response senders.
 async fn read_loop<H, R>(
     mut reader: BufReader<R>,
-    handler: Arc<H>,
-    pending: Pending,
-    push: broadcast::Sender<H::Push>,
-    outbound: mpsc::Sender<Outbound>,
+    routes: Routes<H>,
     closed: Arc<AtomicBool>,
     closed_signal: watch::Sender<bool>,
 ) where
@@ -399,7 +480,7 @@ async fn read_loop<H, R>(
 {
     loop {
         match <H::Framing as Framing>::read_frame(&mut reader).await {
-            Ok(Some(bytes)) => handle_frame::<H>(&bytes, &handler, &pending, &push, &outbound),
+            Ok(Some(bytes)) => handle_frame::<H>(&bytes, &routes),
             Ok(None) => break,
             Err(e) => {
                 // A framing error means we lost message-boundary sync; the only
@@ -412,7 +493,7 @@ async fn read_loop<H, R>(
     // Flag first, then drain: a request that raced past the flag check has
     // already registered and is failed by the drain below.
     closed.store(true, Ordering::SeqCst);
-    if let Ok(mut map) = pending.lock() {
+    if let Ok(mut map) = routes.pending.lock() {
         map.clear(); // dropping the senders fails the awaiting requests
     }
     // Signalled last, so anyone woken by it finds a settled connection: the flag
@@ -423,13 +504,14 @@ async fn read_loop<H, R>(
 }
 
 /// Route one de-framed message.
-fn handle_frame<H: Handler>(
-    bytes: &[u8],
-    handler: &H,
-    pending: &Pending,
-    push: &broadcast::Sender<H::Push>,
-    outbound: &mpsc::Sender<Outbound>,
-) {
+fn handle_frame<H: Handler>(bytes: &[u8], routes: &Routes<H>) {
+    let Routes {
+        handler,
+        pending,
+        push,
+        outbound,
+        inbound,
+    } = routes;
     let value: Value = match serde_json::from_slice(bytes) {
         Ok(v) => v,
         Err(e) => {
@@ -454,21 +536,32 @@ fn handle_frame<H: Handler>(
             }
         },
         Some(Incoming::Request { id, method, params }) => {
-            let outcome = handler.answer(&method, &params);
-            match serde_json::to_vec(&message::OutgoingResponse::new(id, outcome)) {
-                Ok(frame) => {
-                    if outbound.try_send(Outbound::Frame(frame)).is_err() {
-                        tracing::warn!(
-                            peer = H::PEER,
-                            method,
-                            "dropping peer-request response: outbound queue full"
-                        );
-                    }
-                },
-                Err(e) => {
-                    tracing::warn!(peer = H::PEER, error = %e, method, "failed to encode a response");
-                },
+            let responder = Responder::new(id, method.clone(), outbound.clone(), H::PEER);
+            // A consumer holding the stream owns every peer request, including
+            // the ones `answer` used to field: splitting them by method would
+            // make which path ran depend on timing.
+            if inbound.active.load(Ordering::SeqCst) {
+                let request = PeerRequest {
+                    method: method.clone(),
+                    params,
+                    responder,
+                };
+                // Never blocks the reader, and never drops the request: a full
+                // queue or a hung-up consumer sends it back inside the error,
+                // and dropping that drops the `Responder`, which answers the
+                // peer on its way out.
+                if let Err(refused) = inbound.tx.try_send(request) {
+                    tracing::warn!(
+                        peer = H::PEER,
+                        method = %method,
+                        reason = %refused,
+                        "peer request not delivered to the consumer; answering it here"
+                    );
+                }
+                return;
             }
+            let outcome = handler.answer(&method, &params);
+            responder.respond(outcome);
         },
         Some(Incoming::Notification { method, params }) => {
             // Every notification fans out first — the escape hatch that lets a

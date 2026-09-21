@@ -484,3 +484,190 @@ async fn closed_resolves_when_framing_is_lost_rather_than_at_eof() -> TestResult
         .map_err(|_| "closed() did not resolve after the stream lost framing")?;
     Ok(())
 }
+
+#[tokio::test]
+async fn a_consumer_answers_peer_requests_with_a_verbatim_id() -> TestResult {
+    let ((read, write), mut peer) = wire();
+    let connection = Connection::start(TestHandler, read, write);
+    let mut requests = connection
+        .inbound_requests()
+        .ok_or("the peer-request stream was already taken")?;
+
+    // A second take must not hand out the same stream: a request has exactly
+    // one answerer, and two receivers would race for it.
+    assert!(connection.inbound_requests().is_none());
+
+    peer.send(&json!({"jsonrpc": "2.0", "id": "peer-1",
+                      "method": "workspace/applyEdit", "params": {"edit": 1}}))
+        .await;
+    let request = requests.recv().await.ok_or("no peer request arrived")?;
+    assert_eq!(request.method, "workspace/applyEdit");
+    assert_eq!(request.params, json!({"edit": 1}));
+    assert_eq!(request.responder.id(), &json!("peer-1"));
+    request.responder.ok(json!({"applied": true}));
+
+    let answered = peer.recv().await;
+    assert_eq!(
+        answered,
+        json!({"jsonrpc": "2.0", "id": "peer-1", "result": {"applied": true}})
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_dropped_responder_still_answers_the_peer() -> TestResult {
+    // Discipline is not a mechanism: a consumer that forgets to answer must
+    // not leave the peer blocked forever.
+    let ((read, write), mut peer) = wire();
+    let connection = Connection::start(TestHandler, read, write);
+    let mut requests = connection
+        .inbound_requests()
+        .ok_or("the peer-request stream was already taken")?;
+
+    peer.send(&json!({"jsonrpc": "2.0", "id": 7, "method": "window/showDocument"}))
+        .await;
+    let request = requests.recv().await.ok_or("no peer request arrived")?;
+    drop(request);
+
+    let answered = peer.recv().await;
+    assert_eq!(answered["id"], json!(7));
+    assert_eq!(answered["error"]["code"], json!(METHOD_NOT_FOUND));
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_slow_consumer_does_not_block_the_rest_of_the_connection() -> TestResult {
+    // The whole reason the stream exists. `Handler::answer` ran on the reader
+    // task, so an answer that awaited anything stalled every other message.
+    // Here a peer request is held unanswered while a client request completes.
+    let ((read, write), mut peer) = wire();
+    let connection = Connection::start(TestHandler, read, write);
+    let mut requests = connection
+        .inbound_requests()
+        .ok_or("the peer-request stream was already taken")?;
+
+    peer.send(&json!({"jsonrpc": "2.0", "id": "slow", "method": "window/showMessageRequest"}))
+        .await;
+    let held = requests.recv().await.ok_or("no peer request arrived")?;
+
+    let peer_task = tokio::spawn(async move {
+        let outgoing = peer.recv().await;
+        let id = outgoing["id"].clone();
+        peer.respond(&id, json!("answered anyway")).await;
+        peer
+    });
+
+    // Completes while `held` is still unanswered, which is the assertion.
+    let reply: String = tokio::time::timeout(
+        Duration::from_secs(5),
+        connection.request("test/while-busy", Value::Null),
+    )
+    .await
+    .map_err(|_| "a held peer request blocked an unrelated client request")??;
+    assert_eq!(reply, "answered anyway");
+
+    let mut peer = peer_task.await?;
+    held.responder.ok(json!(null));
+    assert_eq!(peer.recv().await["id"], json!("slow"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_overflowing_peer_request_queue_answers_rather_than_drops() -> TestResult {
+    struct OneDeepHandler;
+
+    impl Handler for OneDeepHandler {
+        type Framing = ContentLength;
+        type Push = (String, Value);
+
+        const INBOUND_REQUEST_CAPACITY: usize = 1;
+
+        fn push_payload(&self, _method: &str, _params: &Value) -> Option<Self::Push> {
+            None
+        }
+    }
+
+    let ((read, write), mut peer) = wire();
+    let connection = Connection::start(OneDeepHandler, read, write);
+    // Taken but deliberately never drained, so the queue fills and stays full.
+    let _requests = connection
+        .inbound_requests()
+        .ok_or("the peer-request stream was already taken")?;
+
+    for id in 1..=3 {
+        peer.send(&json!({"jsonrpc": "2.0", "id": id, "method": "workspace/configuration"}))
+            .await;
+    }
+
+    // The first fills the one slot; the two that overflow are answered here
+    // rather than discarded. A broadcast channel would have dropped them.
+    let first = peer.recv().await;
+    let second = peer.recv().await;
+    assert_eq!(first["id"], json!(2));
+    assert_eq!(second["id"], json!(3));
+    assert_eq!(first["error"]["code"], json!(METHOD_NOT_FOUND));
+    assert_eq!(second["error"]["code"], json!(METHOD_NOT_FOUND));
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_handler_still_answers_while_nobody_holds_the_stream() -> TestResult {
+    // The compatibility guarantee: a consumer that never takes the stream sees
+    // exactly the behaviour it had before the stream existed.
+    let ((read, write), mut peer) = wire();
+    let _connection = Connection::start(TestHandler, read, write);
+    peer.send(&json!({"jsonrpc": "2.0", "id": 1, "method": "test/answer", "params": {"a": 2}}))
+        .await;
+    assert_eq!(peer.recv().await["result"], json!({"echoed": {"a": 2}}));
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_full_outbound_queue_delays_a_reply_instead_of_dropping_it() -> TestResult {
+    struct NarrowHandler;
+
+    impl Handler for NarrowHandler {
+        type Framing = ContentLength;
+        type Push = (String, Value);
+
+        const OUTBOUND_CHANNEL_CAPACITY: usize = 1;
+
+        fn push_payload(&self, _method: &str, _params: &Value) -> Option<Self::Push> {
+            None
+        }
+
+        fn answer(&self, _method: &str, _params: &Value) -> Result<Value, ResponseError> {
+            Ok(json!("ok"))
+        }
+    }
+
+    // A pipe too narrow to absorb the replies, so the writer stalls and the
+    // one-slot outbound queue fills up behind it.
+    let (client_end, peer_end) = tokio::io::duplex(64);
+    let (client_read, client_write) = tokio::io::split(client_end);
+    let (peer_read, peer_write) = tokio::io::split(peer_end);
+    let mut peer = FakePeer {
+        reader: BufReader::new(peer_read),
+        writer: peer_write,
+    };
+    let _connection = Connection::start(NarrowHandler, client_read, client_write);
+
+    for id in 1..=4 {
+        peer.send(&json!({"jsonrpc": "2.0", "id": id, "method": "test/x"}))
+            .await;
+    }
+
+    // Every reply arrives once the peer starts draining. `try_send` alone
+    // discarded the ones that found the queue full, and the peer then waited
+    // on them forever.
+    let mut seen = Vec::new();
+    for _ in 1..=4 {
+        let reply = tokio::time::timeout(Duration::from_secs(5), peer.recv())
+            .await
+            .map_err(|_| "a reply was dropped when the outbound queue filled")?;
+        seen.push(reply["id"].clone());
+    }
+    seen.sort_by_key(serde_json::Value::to_string);
+    assert_eq!(seen, vec![json!(1), json!(2), json!(3), json!(4)]);
+    Ok(())
+}

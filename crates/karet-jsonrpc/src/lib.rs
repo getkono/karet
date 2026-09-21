@@ -42,6 +42,7 @@
 mod connection;
 pub mod framing;
 mod message;
+mod peer;
 
 pub use connection::Connection;
 pub use connection::Handler;
@@ -60,3 +61,5 @@ pub use message::PARSE_ERROR;
 pub use message::RequestId;
 pub use message::ResponseError;
 pub use message::classify;
+pub use peer::PeerRequest;
+pub use peer::Responder;
