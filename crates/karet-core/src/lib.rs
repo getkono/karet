@@ -25,11 +25,13 @@
 //!   [`Selection`], [`CursorState`].
 //! - Highlighting & folds: [`HighlightSpan`], [`Highlights`], [`FoldRegion`],
 //!   [`FoldRegions`].
+//! - Server capabilities: [`Capabilities`], [`ServerFeature`], [`PositionEncoding`].
 //! - Interop traits: [`SymbolProvider`], [`DiagnosticFormatter`].
 //! - Theme vocabulary: [`TokenId`], [`StandardToken`], [`ThemeRole`], [`Emphasis`].
 //! - Notifications: [`Notification`], [`NotificationKind`], [`severity_role`].
 
 mod blame;
+mod capability;
 mod coord;
 mod edit;
 mod error;
@@ -43,6 +45,14 @@ mod word;
 
 pub use blame::BlameAttribution;
 pub use blame::BlameCommit;
+pub use capability::Capabilities;
+pub use capability::CompletionOptions;
+pub use capability::OnTypeFormattingOptions;
+pub use capability::PositionEncoding;
+pub use capability::SemanticTokensLegend;
+pub use capability::ServerFeature;
+pub use capability::SignatureHelpOptions;
+pub use capability::TextSyncKind;
 pub use coord::BytePos;
 pub use coord::LineCol;
 pub use coord::LineIndex;
