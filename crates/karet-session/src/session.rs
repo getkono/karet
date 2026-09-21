@@ -879,9 +879,19 @@ struct PendingFormatSave {
 
 /// How long a save may wait on a formatter before it is written unformatted.
 ///
+/// Sized to the slowest formatting a working server plausibly does — a cold
+/// process, a large file, a loaded machine — because the cost of being wrong is
+/// asymmetric. Too generous and a rare save waits, visibly, with the tab
+/// spinner running; too tight and an ordinary save silently stops formatting.
+/// Three seconds was tight enough to lose the second way.
+///
+/// Its ceiling is `karet-jsonrpc`'s request timeout, the only other bound on
+/// this wait: past that there is no answer left to come, so a deadline above it
+/// would mean nothing. This sits well inside it.
+///
 /// Swept on the session's existing backup tick rather than its own timer, so
 /// the effective bound is this plus up to one tick.
-const FORMAT_ON_SAVE_DEADLINE_MS: u64 = 3_000;
+const FORMAT_ON_SAVE_DEADLINE_MS: u64 = 10_000;
 
 fn whole_document_change(doc: &Document, new_text: String) -> Option<Change> {
     let end = doc.buffer.byte_to_line_col(BytePos(doc.buffer.len_bytes()));
