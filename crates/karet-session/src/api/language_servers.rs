@@ -145,9 +145,13 @@ pub enum LanguageServerRuntimeState {
     /// a binary that is absent or not executable, or a server that exits on
     /// sight and never once connected. Installing the provider, or restarting
     /// it from the Language Servers panel, clears it.
+    ///
+    /// There is deliberately no separate "stopped" state beside this one. A
+    /// provider that stops and is not retried has no slot, and a provider with
+    /// no slot is [`Self::Idle`] -- there is nowhere left to record anything
+    /// else, which is the point of the slot being the only record. The one
+    /// remaining meaning, "karet has given up on it", is this variant.
     Unavailable,
-    /// The provider task stopped without another retry.
-    Stopped,
 }
 
 /// Resolution and runtime state for one provider at one repository root.
@@ -214,11 +218,7 @@ impl LanguageServerInstanceStatus {
     /// nothing outside tests calls this yet.
     #[must_use]
     pub fn restartable(&self) -> bool {
-        self.open_documents > 0
-            || !matches!(
-                self.runtime,
-                LanguageServerRuntimeState::Idle | LanguageServerRuntimeState::Stopped
-            )
+        self.open_documents > 0 || !matches!(self.runtime, LanguageServerRuntimeState::Idle)
     }
 }
 
@@ -254,7 +254,6 @@ mod tests {
     #[test]
     fn a_provider_with_no_process_is_not_restartable() {
         assert!(!instance(LanguageServerRuntimeState::Idle, 0).restartable());
-        assert!(!instance(LanguageServerRuntimeState::Stopped, 0).restartable());
     }
 
     #[test]

@@ -865,7 +865,6 @@ impl App {
                 LanguageServerRuntimeState::Retrying
                     | LanguageServerRuntimeState::CircuitOpen
                     | LanguageServerRuntimeState::Unavailable
-                    | LanguageServerRuntimeState::Stopped
             )
         {
             let (severity, state_label) = match state {
@@ -874,7 +873,6 @@ impl App {
                     (Severity::Error, "crashed (circuit open)")
                 },
                 LanguageServerRuntimeState::Unavailable => (Severity::Error, "unavailable"),
-                LanguageServerRuntimeState::Stopped => (Severity::Error, "stopped"),
                 _ => return,
             };
             self.notify_tagged(

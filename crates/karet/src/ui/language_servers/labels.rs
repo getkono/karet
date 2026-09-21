@@ -147,9 +147,9 @@ pub(super) fn runtime_role(state: LanguageServerRuntimeState) -> ThemeRole {
         // provider that crashed five times in a minute and will not be retried for
         // the next five. Colouring that as a hint made this table disagree with the
         // editor's own badge about the same condition.
-        LanguageServerRuntimeState::CircuitOpen
-        | LanguageServerRuntimeState::Unavailable
-        | LanguageServerRuntimeState::Stopped => ThemeRole::DiagnosticError,
+        LanguageServerRuntimeState::CircuitOpen | LanguageServerRuntimeState::Unavailable => {
+            ThemeRole::DiagnosticError
+        },
         _ => ThemeRole::Muted,
     }
 }
@@ -162,7 +162,6 @@ pub(super) fn runtime_label(state: LanguageServerRuntimeState) -> &'static str {
         LanguageServerRuntimeState::Retrying => "retrying",
         LanguageServerRuntimeState::CircuitOpen => "circuit open",
         LanguageServerRuntimeState::Unavailable => "unavailable",
-        LanguageServerRuntimeState::Stopped => "stopped",
         _ => "unknown",
     }
 }

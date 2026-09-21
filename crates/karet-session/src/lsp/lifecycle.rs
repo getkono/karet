@@ -44,6 +44,10 @@ impl LspManager {
     /// so uninstalling Ruff stopped rust-analyzer too, and restarting one server
     /// silently restarted all of them. Returns `None` when nothing was running,
     /// which is the caller's signal not to reopen documents.
+    /// `#[must_use]` on the function as well as on [`Retired`]: a dropped
+    /// `Option<Retired>` warns about neither, so the type-level guarantee does
+    /// not reach the two paths that return one.
+    #[must_use]
     pub(crate) fn restart(&mut self, provider: LanguageServerId) -> Option<Retired> {
         self.missing_reported.remove(&provider);
         if !self.is_running(&provider) {

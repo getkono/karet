@@ -102,7 +102,6 @@ fn provider_badge(status: &LanguageServerStatus, path: &Path) -> Option<Language
                     // an implementation detail; to the user the provider is broken.
                     // `Stopped` likewise: the task ended and scheduled no retry.
                     LanguageServerRuntimeState::CircuitOpen
-                    | LanguageServerRuntimeState::Stopped
                     | LanguageServerRuntimeState::Unavailable => LanguageServerBadge::Failed,
                     // `LanguageServerRuntimeState` is `#[non_exhaustive]`: a state
                     // added upstream is a condition this build cannot name, which is
@@ -410,10 +409,6 @@ mod tests {
             (
                 LanguageServerRuntimeState::Retrying,
                 LanguageServerBadge::Retrying,
-            ),
-            (
-                LanguageServerRuntimeState::Stopped,
-                LanguageServerBadge::Failed,
             ),
         ] {
             let servers = vec![status(

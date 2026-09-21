@@ -172,6 +172,9 @@ impl LspManager {
     /// `None` means the settings are unchanged and nothing need happen. `Some`
     /// carries the retirement the caller must adopt, and is also its signal to
     /// reopen documents against fresh servers.
+    /// `#[must_use]` for the same reason as [`LspManager::restart`]: a dropped
+    /// `Option<Retired>` warns about nothing on its own.
+    #[must_use]
     pub(crate) fn reconfigure(&mut self, settings: LspSettings) -> Option<Retired> {
         if self.settings == settings {
             return None;
