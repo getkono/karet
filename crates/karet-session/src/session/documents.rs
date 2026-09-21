@@ -401,6 +401,21 @@ impl Session {
         true
     }
 
+    /// Write out every save still waiting on a formatting answer, unformatted.
+    ///
+    /// Called when the answers those saves depend on are about to become
+    /// undeliverable — today, when an `lsp` settings change retires the server
+    /// generation that owes them. The alternative is a file that is never
+    /// written and a request nothing ever answers, which reads to the user as a
+    /// save that silently did nothing.
+    pub(super) fn commit_pending_format_saves(&mut self) {
+        let stranded: Vec<(RequestId, DocumentId)> =
+            self.pending_format_saves.drain().collect();
+        for (request, doc_id) in stranded {
+            self.commit_save(request, doc_id);
+        }
+    }
+
     fn commit_save(&mut self, id: RequestId, doc_id: DocumentId) {
         let result = self.store.docs.get_mut(&doc_id).map(save_document);
         match result {

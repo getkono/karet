@@ -52,8 +52,26 @@ impl Session {
     /// Adopt one LSP task result: convert positions against the live buffer
     /// (LSP's UTF-16 → the buffer's UTF-32 columns) and emit the answering event.
     /// A result for a document that has since closed is dropped as stale.
+    ///
+    /// Answers from a retired server generation are dropped — except a
+    /// formatting answer holding up a save. Every other answer is advisory, so
+    /// ignoring a stale one costs nothing; that one owes a disk write, and
+    /// dropping it would strand the file unwritten with nothing answering the
+    /// client's request. [`Self::apply_config_report`] already commits those
+    /// saves when it retires a generation, so this is the narrower race where
+    /// the answer and the retirement cross; committing twice is impossible
+    /// because [`Self::finish_format_on_save`] consumes the pending entry.
     pub(crate) fn apply_lsp_update(&mut self, update: LspUpdate) {
         if !self.lsp.accepts(&update) {
+            if let LspUpdate::Formatting {
+                request,
+                doc,
+                version,
+                ..
+            } = update
+            {
+                let _ = self.finish_format_on_save(request, doc, version, Vec::new());
+            }
             return;
         }
         match update {
@@ -695,7 +713,9 @@ impl Session {
 
     /// Adopt one validated live configuration snapshot and refresh producers whose
     /// behavior is derived from it. Existing LSP tasks are retired on an LSP change;
-    /// their generation-tagged late answers are ignored by [`Self::apply_lsp_update`].
+    /// their generation-tagged late answers are ignored by [`Self::apply_lsp_update`]
+    /// — so any save waiting on one is written out here first, before the
+    /// generation moves out from under it.
     pub(super) fn apply_config_report(&mut self, report: crate::config::LoadedConfig) {
         self.debug.reconfigure(report.settings.debug.clone());
         let lsp_changed = self.lsp.reconfigure(report.settings.lsp.clone());
@@ -720,6 +740,10 @@ impl Session {
         }
 
         if lsp_changed {
+            // Retiring the servers orphans every formatting request in flight.
+            // A save is not advisory: write it now, unformatted, which is the
+            // same posture a formatter error already takes.
+            self.commit_pending_format_saves();
             let lsp = &mut self.lsp;
             for doc in self.store.docs.values() {
                 lsp.document_opened(
