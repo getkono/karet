@@ -358,6 +358,8 @@ pub struct Session {
     lsp_registry: std::sync::mpsc::Sender<crate::lsp_registry::RegistryJob>,
     /// Registry results, taken by the local backend actor.
     lsp_registry_rx: Option<mpsc::UnboundedReceiver<crate::lsp_registry::RegistryUpdate>>,
+    /// Saves waiting on `textDocument/formatting` before the disk write.
+    pending_format_saves: HashMap<RequestId, DocumentId>,
     /// Exact-root public-GitHub identity, when this workspace is eligible.
     #[cfg(feature = "github")]
     github_repository: Option<karet_github::RepositoryIdentity>,

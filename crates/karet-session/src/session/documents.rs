@@ -284,6 +284,124 @@ impl Session {
         if self.apply_save_cleanup(doc_id) {
             self.publish(doc_id, None);
         }
+        if self.begin_format_on_save(id, doc_id) {
+            return;
+        }
+        self.commit_save(id, doc_id);
+    }
+
+    /// Request LSP formatting (or apply the built-in TOML formatter) before the
+    /// disk write. `true` means the save is waiting on an async formatting reply.
+    fn begin_format_on_save(&mut self, id: RequestId, doc_id: DocumentId) -> bool {
+        let Some(doc) = self.store.docs.get(&doc_id) else {
+            return false;
+        };
+        if !self
+            .config
+            .settings
+            .editor
+            .for_language(doc.language_selector)
+            .format_on_save()
+        {
+            return false;
+        }
+        let version = doc.buffer.version();
+        let selector = doc.language_selector;
+        let path = doc.path.clone();
+        if self.lsp.formatting(selector, id, doc_id, version, &path) {
+            self.pending_format_saves.insert(id, doc_id);
+            return true;
+        }
+        if let Some(edits) = self.builtin_format_edits(doc_id) {
+            self.apply_format_edits(doc_id, edits);
+        }
+        false
+    }
+
+    /// Built-in formatter edits when no language server offered formatting.
+    pub(super) fn builtin_format_edits(&self, doc_id: DocumentId) -> Option<Vec<TextEdit>> {
+        #[cfg(feature = "toml-format")]
+        {
+            let doc = self.store.docs.get(&doc_id)?;
+            if doc.language_selector == Some("toml")
+                && self.config.settings.toml.format
+                && let Some(formatted) =
+                    crate::toml_format::format_toml(&doc.buffer.text(), &self.config.roots)
+            {
+                return whole_document_change(doc, formatted).map(|change| change.edits);
+            }
+        }
+        #[cfg(not(feature = "toml-format"))]
+        let _ = doc_id;
+        None
+    }
+
+    /// Apply formatter edits in-place so the subsequent save writes formatted text.
+    fn apply_format_edits(&mut self, doc_id: DocumentId, edits: Vec<TextEdit>) {
+        let tick = self.elapsed_ms();
+        let spell_without_syntax = {
+            let highlight_tx = &self.highlight_tx;
+            let settings = &self.config.settings;
+            let lsp = &mut self.lsp;
+            let Some(doc) = self.store.docs.get_mut(&doc_id) else {
+                return;
+            };
+            let change = Change::new(doc.buffer.version(), edits);
+            let ctx = edit_context(tick, EditCause::Replace, &change);
+            let Ok(applied) = doc.buffer.apply(&change, ctx) else {
+                return;
+            };
+            let spell_without_syntax =
+                update_syntax(settings, highlight_tx, doc_id, doc, Some(&applied.edits));
+            doc.sync_dirty_since(tick);
+            lsp.document_changed(doc.language_selector, &doc.path, applied.version, || {
+                doc.buffer.text()
+            });
+            spell_without_syntax
+        };
+        self.publish(doc_id, None);
+        if spell_without_syntax {
+            self.schedule_spell(doc_id);
+        }
+    }
+
+    /// Adopt an LSP formatting reply that belongs to a pending save, then write.
+    pub(super) fn finish_format_on_save(
+        &mut self,
+        request: RequestId,
+        doc: DocumentId,
+        version: u64,
+        edits: Vec<TextEdit>,
+    ) -> bool {
+        let Some(pending) = self.pending_format_saves.remove(&request) else {
+            return false;
+        };
+        if !self.store.docs.contains_key(&pending) {
+            self.emit(
+                Some(request),
+                Event::Notification {
+                    severity: Severity::Warning,
+                    kind: NotificationKind::Io,
+                    message: "save cancelled: document closed".to_owned(),
+                },
+            );
+            return true;
+        }
+        if pending == doc
+            && self
+                .store
+                .docs
+                .get(&doc)
+                .is_some_and(|document| document.buffer.version() == version)
+            && !edits.is_empty()
+        {
+            self.apply_format_edits(doc, edits);
+        }
+        self.commit_save(request, pending);
+        true
+    }
+
+    fn commit_save(&mut self, id: RequestId, doc_id: DocumentId) {
         let result = self.store.docs.get_mut(&doc_id).map(save_document);
         match result {
             Some(Ok(_)) => {
@@ -466,6 +584,23 @@ impl Session {
             None => return,
         };
         if removed {
+            let cancelled: Vec<RequestId> = self
+                .pending_format_saves
+                .iter()
+                .filter(|(_, pending)| **pending == doc_id)
+                .map(|(id, _)| *id)
+                .collect();
+            for id in cancelled {
+                self.pending_format_saves.remove(&id);
+                self.emit(
+                    Some(id),
+                    Event::Notification {
+                        severity: Severity::Warning,
+                        kind: NotificationKind::Io,
+                        message: "save cancelled: document closed".to_owned(),
+                    },
+                );
+            }
             if let Some(doc) = self.store.docs.remove(&doc_id) {
                 self.store.by_path.remove(&doc.path);
                 self.lsp.document_closed(doc.language_selector, &doc.path);

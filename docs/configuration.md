@@ -57,7 +57,7 @@ Keys use the VS Code / Zed camelCase style. Defaults shown.
 | `stickyScroll` | bool | `true` | Pin the active semantic block hierarchy above scrolled text. Multi-line signatures collapse to one row with an ellipsis. |
 | `trimTrailingWhitespace` | bool | `true` | Strip trailing whitespace on save. |
 | `insertFinalNewline` | bool | `true` | Ensure a trailing newline on save. |
-| `formatOnSave` | bool | `false` | Run the formatter on save. |
+| `formatOnSave` | bool | `false` | Run the language-server formatter (`textDocument/formatting`) before writing the file. A formatter failure still saves. Per-language override and `lsp.languages.*.formatter` pick the server. |
 | `semanticComments` | object | enabled | Codetag highlighting (`enabled`, `tags`). |
 | `completion` | object | enabled | LSP completion (`enabled`, `autoTrigger`). |
 | `hover` | object | enabled | The hover popup (`Ctrl+K Ctrl+I`): LSP documentation plus the diagnostics under the caret (`enabled`). |
