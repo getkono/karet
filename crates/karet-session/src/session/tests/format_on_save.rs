@@ -595,3 +595,107 @@
         assert!(SaveCause::FocusChange.may_format());
         assert!(!SaveCause::AutoDelay.may_format());
     }
+
+    /// The deadline is only real if something drives it. `expire_format_on_save`
+    /// is reached from `tick`, which the backend actor runs on its backup timer —
+    /// a sweep nothing else calls, so a broken wiring would leave every stalled
+    /// save parked forever while the unit test on the expiry itself stayed green.
+    #[test]
+    fn the_session_tick_is_what_expires_a_stalled_format_save() {
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        let path = dir.path().join("main.rs");
+        if std::fs::write(&path, "original\n").is_err() {
+            return;
+        }
+        let Some((mut session, _doc, mut events, _request)) = parked_save(&path) else {
+            return;
+        };
+
+        session.tick_at(crate::session::FORMAT_ON_SAVE_DEADLINE_MS - 1);
+        assert!(!saved(&mut events), "the tick must not expire a save early");
+
+        session.tick_at(crate::session::FORMAT_ON_SAVE_DEADLINE_MS);
+
+        assert!(
+            saved(&mut events),
+            "the periodic tick must be what releases a stalled save"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap_or_default(), "edited\n");
+        assert!(session.pending_format_saves.is_empty());
+    }
+
+    /// Retirement drains the whole map, so a second document waiting on the same
+    /// generation must land too. With one document under test a drain and a
+    /// "commit the first entry" are indistinguishable.
+    #[test]
+    fn retiring_the_servers_writes_every_document_that_was_waiting() {
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        let first = dir.path().join("first.rs");
+        let second = dir.path().join("second.rs");
+        if std::fs::write(&first, "original\n").is_err()
+            || std::fs::write(&second, "original\n").is_err()
+        {
+            return;
+        }
+        let Some((mut session, _doc, mut events, _request)) = parked_save(&first) else {
+            return;
+        };
+        // A second document, dirtied and parked the same way the first was.
+        session.handle(
+            RequestId(10),
+            Command::OpenDocument {
+                path: second.clone(),
+                language: None,
+            },
+        );
+        let Some(other) = opened_doc(&mut events) else {
+            return;
+        };
+        let change = Change::new(
+            0,
+            vec![TextEdit {
+                range: Range {
+                    start: LineCol::new(0, 0),
+                    end: LineCol::new(1, 0),
+                },
+                new_text: "edited\n".to_string(),
+            }],
+        );
+        session.handle(
+            RequestId(11),
+            Command::ApplyChange {
+                doc: other,
+                change,
+                cause: EditCause::Replace,
+            },
+        );
+        while events.try_recv().is_some() {}
+        session.pending_format_saves.insert(
+            RequestId(12),
+            crate::session::PendingFormatSave {
+                doc: other,
+                issued_ms: 0,
+            },
+        );
+
+        let mut settings = crate::config::Settings::default();
+        settings.editor.format_on_save = true;
+        settings.lsp.enabled = false;
+        session.apply_config_report(crate::config::LoadedConfig::from_settings(settings));
+
+        assert_eq!(
+            std::fs::read_to_string(&first).unwrap_or_default(),
+            "edited\n",
+            "the first parked document must reach disk"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&second).unwrap_or_default(),
+            "edited\n",
+            "so must every other one waiting on the same generation"
+        );
+        assert!(session.pending_format_saves.is_empty());
+    }

@@ -118,7 +118,15 @@ impl Session {
     /// part of crash recovery, and [`Self::backup_tick`] declines to do anything
     /// at all when backups are switched off.
     pub(crate) fn tick(&mut self) {
-        self.expire_format_on_save(self.elapsed_ms());
+        self.tick_at(self.elapsed_ms());
+    }
+
+    /// [`Self::tick`] against a given clock reading, so a test can reach the
+    /// format-on-save deadline without waiting out its wall-clock duration —
+    /// the same seam, and for the same reason, as
+    /// [`Self::expire_format_on_save`].
+    pub(crate) fn tick_at(&mut self, now: u64) {
+        self.expire_format_on_save(now);
         self.backup_tick();
     }
 
