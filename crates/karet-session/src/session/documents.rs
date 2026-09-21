@@ -284,9 +284,6 @@ impl Session {
     }
 
     pub(super) fn save(&mut self, id: RequestId, doc_id: DocumentId, cause: SaveCause) {
-        if self.apply_save_cleanup(doc_id) {
-            self.publish(doc_id, None);
-        }
         if cause.may_format() && self.begin_format_on_save(id, doc_id) {
             return;
         }
@@ -449,6 +446,16 @@ impl Session {
     }
 
     fn commit_save(&mut self, id: RequestId, doc_id: DocumentId) {
+        // Trailing whitespace and the final newline are settled here, against the
+        // text actually about to be written, rather than before the formatter ran
+        // against text it was about to replace. `editor.trimTrailingWhitespace`
+        // and `editor.insertFinalNewline` are documented without qualification,
+        // so they have to hold over formatter output too -- and every ending of
+        // the formatter wait, including the ones that give up on it, arrives
+        // here.
+        if self.apply_save_cleanup(doc_id) {
+            self.publish(doc_id, None);
+        }
         let result = self.store.docs.get_mut(&doc_id).map(save_document);
         match result {
             Some(Ok(_)) => {

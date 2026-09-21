@@ -699,3 +699,95 @@
         );
         assert!(session.pending_format_saves.is_empty());
     }
+
+    /// The shipped default is part of the feature, not a detail of it: turning
+    /// format-on-save on for everyone is what decides whether an ordinary save
+    /// rewrites the file. Every other test here sets the flag explicitly, so
+    /// with nothing pinning the default the whole suite stays green when it
+    /// flips — the only thing that notices is the JSON-schema sync check, which
+    /// compares two declarations of the default rather than what it does.
+    #[cfg(feature = "toml-format")]
+    #[test]
+    fn format_on_save_is_on_by_default() {
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        let path = dir.path().join("Cargo.toml");
+        if std::fs::write(&path, "[package]\nname=\"x\"\n").is_err() {
+            return;
+        }
+        // Deliberately the untouched defaults: no `editor.format_on_save` here.
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
+        session.handle(
+            RequestId(1),
+            Command::OpenDocument {
+                path: path.clone(),
+                language: None,
+            },
+        );
+        let Some(doc) = opened_doc(&mut events) else {
+            return;
+        };
+
+        session.handle(
+            RequestId(2),
+            Command::Save {
+                doc,
+                cause: SaveCause::Manual,
+            },
+        );
+
+        assert!(saved(&mut events));
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap_or_default(),
+            "[package]\nname = \"x\"\n",
+            "a save with stock settings must format"
+        );
+    }
+
+    /// `editor.insertFinalNewline` and `editor.trimTrailingWhitespace` are
+    /// documented without qualification, so they have to survive the formatter.
+    /// Running the save cleanup before the formatter meant they applied to text
+    /// the formatter was about to replace and never to what actually reached
+    /// disk — so a formatter that emits no trailing newline wrote a file
+    /// without one, on every save, against a setting that says otherwise.
+    #[test]
+    fn the_save_cleanup_applies_to_what_the_formatter_produced() {
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        let path = dir.path().join("main.rs");
+        if std::fs::write(&path, "original\n").is_err() {
+            return;
+        }
+        let Some((mut session, doc, mut events, request)) = parked_save(&path) else {
+            return;
+        };
+        let version = session.document(doc).map(|d| d.version()).unwrap_or(0);
+
+        // A formatter that leaves trailing whitespace before a newline, and no
+        // final newline at all. Whitespace at EOF is deliberately preserved by
+        // `normalize_text_for_save`, so the assertion below exercises the two
+        // rules that do apply rather than the documented exception.
+        session.apply_lsp_update(crate::lsp::LspUpdate::Formatting {
+            generation: 0,
+            request,
+            doc,
+            version,
+            formatted: true,
+            edits: vec![TextEdit {
+                range: Range {
+                    start: LineCol::new(0, 0),
+                    end: LineCol::new(1, 0),
+                },
+                new_text: "formatted   \nstill here".to_string(),
+            }],
+        });
+
+        assert!(saved(&mut events));
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap_or_default(),
+            "formatted\nstill here\n",
+            "the cleanup must run on the formatter's output, not before it"
+        );
+    }
