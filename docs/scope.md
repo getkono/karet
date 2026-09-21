@@ -41,3 +41,23 @@ runtime — **sixel and iTerm2 protocols are out of scope**
 Tree-sitter only. No syntect, no TextMate grammars, no dual-backend
 abstraction — see "commit to one best backend" in
 [AGENTS.md](../AGENTS.md#design-principles).
+
+## Agent sessions (ACP)
+
+**Out of scope.** karet does not run coding agents: no ACP client crate, no
+session daemon, no Agents/Agent views. The
+[Agent Client Protocol](https://agentclientprotocol.com/) epic
+([#193](https://github.com/getkono/karet/issues/193) and its sub-issues) was
+designed in full and closed unbuilt — a daemon, a harness registry, a
+bidirectional request seam, and a PTY karet does not have add more surface than
+the editor core itself, for demand nobody has demonstrated. Run the agent in a
+terminal beside karet. In-karet Git worktree management went out with the epic;
+it existed only as the agent substrate, and would have to earn its way back on
+its own merits.
+
+This reopens on **proven demand**, not on protocol news. The closed issues keep
+the full design if that day comes.
+
+Not affected: the prerequisites that already landed and stand on their own —
+`karet-jsonrpc` (including its `LineDelimited` framing), the transcript /
+`TextArea` / dialog / spinner widgets, and the `View` layer above tabs.
