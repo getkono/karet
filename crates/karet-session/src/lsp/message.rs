@@ -184,12 +184,15 @@ pub(crate) enum LspUpdate {
         request: RequestId,
         doc: DocumentId,
         version: u64,
-        /// Whether the server advertised `textDocument/formatting` at all.
+        /// Whether a language server actually formatted this file.
         ///
-        /// Distinct from empty `edits`: a server that formats and found nothing
-        /// to change has done its job, while one that never offered the method
-        /// leaves the session free to use its own formatter instead.
-        supported: bool,
+        /// The question the session asks, rather than what the server claims it
+        /// can do. Distinct from empty `edits`: a server that formatted and
+        /// found nothing to change has done its job and this is `true`, while a
+        /// server that never offered the method, was not reachable, or failed
+        /// the request has formatted nothing — and the session is then free to
+        /// use its own formatter instead.
+        formatted: bool,
         edits: Vec<TextEdit>,
     },
     /// A complete server diagnostic layer for one file.

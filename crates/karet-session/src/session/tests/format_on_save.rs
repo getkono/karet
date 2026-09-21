@@ -264,7 +264,7 @@
             request,
             doc,
             version,
-            supported: true,
+            formatted: true,
             edits: Vec::new(),
         });
 
@@ -294,7 +294,7 @@
             request,
             doc,
             version,
-            supported: true,
+            formatted: true,
             edits: vec![TextEdit {
                 range: Range {
                     start: LineCol::new(0, 0),
@@ -333,7 +333,7 @@
             request,
             doc,
             version: version + 7, // an answer for a buffer that no longer exists
-            supported: true,
+            formatted: true,
             edits: vec![TextEdit {
                 range: Range {
                     start: LineCol::new(0, 0),
@@ -373,7 +373,7 @@
             request,
             doc,
             version,
-            supported: true,
+            formatted: true,
             edits: Vec::new(),
         });
 
@@ -498,7 +498,7 @@
             request,
             doc,
             version,
-            supported: false,
+            formatted: false,
             edits: Vec::new(),
         });
 
@@ -531,7 +531,7 @@
             request,
             doc,
             version,
-            supported: false,
+            formatted: false,
             edits: Vec::new(),
         });
 

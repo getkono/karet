@@ -645,13 +645,18 @@ pub(super) async fn server_task(task: ServerTask) {
                 // "method not found". Asking anyway would spend a round trip --
                 // on every save, once format-on-save is on -- to learn what the
                 // handshake already said.
-                let supported = dead || active.supports_formatting();
-                let edits = if dead || !supported {
-                    Vec::new()
+                let advertised = !dead && active.supports_formatting();
+                // Every ending but a successful reply leaves the file unformatted,
+                // and each one is reported as such so the session can fall back on
+                // its own formatter. A connection that died, and a request that
+                // errored, format exactly as much as a server that never offered
+                // the method: nothing.
+                let (formatted, edits) = if !advertised {
+                    (false, Vec::new())
                 } else {
-                    tally
-                        .observe(active.formatting(&path).await)
-                        .unwrap_or_else(|error| {
+                    match tally.observe(active.formatting(&path).await) {
+                        Ok(edits) => (true, edits),
+                        Err(error) => {
                             tally.note::<()>(
                                 Err(error),
                                 &mut dead,
@@ -659,15 +664,16 @@ pub(super) async fn server_task(task: ServerTask) {
                                 &language,
                                 generation,
                             );
-                            Vec::new()
-                        })
+                            (false, Vec::new())
+                        },
+                    }
                 };
                 let _ = updates.send(LspUpdate::Formatting {
                     generation,
                     request,
                     doc,
                     version,
-                    supported,
+                    formatted,
                     edits,
                 });
             },

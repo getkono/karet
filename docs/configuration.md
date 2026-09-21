@@ -309,7 +309,7 @@ an external prerequisite.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `format` | bool | `true` | Format TOML with the built-in taplo formatter (honouring the workspace's `.taplo.toml`) when no language server offers to format the file — including when a server has it open but never advertised `textDocument/formatting`. With the `taplo` LSP installed, its formatter wins. |
+| `format` | bool | `true` | Format TOML with the built-in taplo formatter (honouring the workspace's `.taplo.toml`) whenever no language server formatted the file — it never advertised `textDocument/formatting`, it was not reachable, or the request failed. With the `taplo` LSP installed and answering, its formatter wins. When karet gives up on a formatter it did reach (the deadline below, a server retired by a live `lsp.*` reload, or a buffer that moved on), the file is written as it stands rather than formatted twice by different rules. |
 
 ### `debug`
 

@@ -144,6 +144,13 @@ impl LspManager {
         version: u64,
         path: &Path,
     ) -> bool {
+        // Every other request reaches its server through `existing_server`, which
+        // declines when language servers are switched off. This one resolves its
+        // own slot to honour the per-language `formatter` preference, so it has to
+        // ask the same question itself.
+        if !self.settings.enabled {
+            return false;
+        }
         let Some(language_key) = language_key(language) else {
             return false;
         };

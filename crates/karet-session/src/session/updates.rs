@@ -189,7 +189,7 @@ impl Session {
                 request,
                 doc,
                 version,
-                supported,
+                formatted,
                 mut edits,
                 ..
             } => {
@@ -202,16 +202,17 @@ impl Session {
                     let _ = self.finish_format_on_save(request, doc, version, Vec::new());
                     return;
                 }
-                if supported {
+                if formatted {
                     if let Some(document) = self.store.docs.get(&doc) {
                         for edit in &mut edits {
                             edit.range = utf16_range_to_buffer(&document.buffer, edit.range);
                         }
                     }
                 } else {
-                    // The server has a hold on the document but does not format
-                    // it. That is exactly the case the built-in formatter exists
-                    // for, and it produces buffer coordinates already.
+                    // No language server formatted this file -- it never offered
+                    // the method, was not reachable, or failed the request. That
+                    // is exactly the case the built-in formatter exists for, and
+                    // it produces buffer coordinates already.
                     edits = self.builtin_format_edits(doc).unwrap_or_default();
                 }
                 let _ = self.finish_format_on_save(request, doc, version, edits);
