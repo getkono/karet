@@ -1,37 +1,6 @@
 use super::support::*;
 use crate::app::*;
 
-fn language_server_status(
-    server: LanguageServerId,
-    language: &str,
-    managed: bool,
-) -> LanguageServerStatus {
-    LanguageServerStatus {
-        ever_installed: managed,
-        declined: false,
-        server,
-        languages: vec![language.to_string()],
-        enabled: true,
-        managed,
-        manual_install_reason: (!managed).then(|| "install with the project toolchain".to_string()),
-        installed: managed.then(|| "1.2.3".to_string()),
-        cleanup_pending: false,
-        instances: vec![karet_session::LanguageServerInstanceStatus {
-            root: PathBuf::from("/workspace"),
-            source: if managed {
-                karet_session::LanguageServerSource::Managed
-            } else {
-                karet_session::LanguageServerSource::Path
-            },
-            command: Some("/bin/server".to_string()),
-            args: vec!["--stdio".to_string()],
-            runtime: karet_session::LanguageServerRuntimeState::Running,
-            open_documents: 2,
-            error: None,
-        }],
-    }
-}
-
 #[test]
 fn language_server_manager_is_a_singleton_and_requests_inventory() {
     let backend = Arc::new(RecordingBackend::new());
