@@ -1,6 +1,7 @@
 mod render;
 
 use super::*;
+use crate::app::scroll::adjust;
 
 impl App {
     /// The display width of hard tabs in `tab`, after per-document EditorConfig and
@@ -89,15 +90,9 @@ impl App {
             | TabKind::StashPreview { pager, .. }
             | TabKind::Graph { pager, .. }
             | TabKind::LoadedConfig { pager, .. }
-            | TabKind::CommitLoading { pager, .. } => {
-                let next =
-                    (i64::from(pager.scroll) + i64::from(delta)).clamp(0, i64::from(u16::MAX));
-                pager.scroll = next as u16;
-            },
+            | TabKind::CommitLoading { pager, .. } => adjust(&mut pager.scroll, delta),
             TabKind::Commit { view, .. } | TabKind::Compare { view, .. } => {
-                let next =
-                    (i64::from(view.scroll) + i64::from(delta)).clamp(0, i64::from(u16::MAX));
-                view.scroll = next as u16;
+                adjust(&mut view.scroll, delta);
             },
             TabKind::Hex { bytes, scroll, .. } => {
                 let max = bytes.len().div_ceil(16).saturating_sub(1) as i64;

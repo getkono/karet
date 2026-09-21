@@ -306,7 +306,12 @@ fn clamp_u32(position: usize) -> u32 {
     u32::try_from(position).unwrap_or(u32::MAX)
 }
 
-fn adjust(offset: &mut u16, delta: i32) {
+/// Step a `u16` offset by `delta`, clamped to the range the field can hold.
+///
+/// The upper bound is the type's, not the content's: the views that share this
+/// leave the real cap to their paint, which is the only place that knows how tall
+/// the content came out.
+pub(in crate::app) fn adjust(offset: &mut u16, delta: i32) {
     let next = (i64::from(*offset) + i64::from(delta)).clamp(0, i64::from(u16::MAX));
     *offset = next as u16;
 }
