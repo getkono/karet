@@ -161,6 +161,11 @@ impl Connection {
     pub(crate) async fn close(&mut self) {
         self.0.close().await;
     }
+
+    /// Resolve once the connection is gone. See [`karet_jsonrpc::Connection::closed`].
+    pub(crate) async fn closed(&self) {
+        self.0.closed().await;
+    }
 }
 
 /// Answer the server→client requests a headless client must not leave hanging.

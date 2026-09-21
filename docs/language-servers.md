@@ -285,6 +285,41 @@ The broker launches the real process through karet's process-group supervisor
 Crashes close the broker connection; each session retains the latest full text of
 every open document, reconnects with exponential delays from 250 ms to 30 seconds,
 and replays `didOpen`. Five failures in one minute open a five-minute circuit.
+
+A lost connection is noticed the moment it happens, not the next time karet has
+something to ask: each server task waits on the connection's liveness alongside its
+own command queue, so a server that exits while you are reading rather than typing
+starts reconnecting immediately. A server that keeps its pipe open but stops
+answering is also treated as dead, after three consecutive request timeouts -- but
+only once it has answered a request the editor issued *after* the handshake.
+"Stopped answering" presupposes having answered: a cold rust-analyzer or a jdtls
+mid-import can go minutes without answering its first request, and killing one
+there restarts the import, which guarantees the next requests time out too. The
+handshake itself does not count, since every connected server answers `initialize`.
+Two silent deaths in a row put the provider behind the circuit; they are counted
+directly rather than through the sliding failure window, because establishing each
+one costs at least three 30-second timeouts and the window always expires between
+them.
+
+A connection that dies without having lasted ten seconds is charged against the
+restart budget, so five such cycles in a minute open the circuit. Connecting is
+not the same as working: a server that exits as soon as it has read `didOpen`
+connects perfectly every time, and would otherwise respawn without bound.
+
+A dead provider's diagnostics are dropped one second after it goes down, and only
+its own: they are keyed by the exact provider-and-root that published them, so
+other servers' markers, the same provider's markers at another repository root,
+spell-check and lint results are all untouched. The delay is deliberate -- the
+usual death is followed by a reconnect at 250 ms, and clearing immediately would
+flicker every marker off and back on for an outage nobody would otherwise have
+noticed.
+
+This covers a server that *dies*. A provider **retired** outright -- turning LSP
+off, editing its settings, closing the last document that needed it -- keeps its
+markers until something republishes, as it always has. Clearing those safely means
+knowing which task owns a layer, because a retired task and its replacement can
+share a key, and getting that wrong wipes a live server's markers instead. That
+work is deliberately separate from this change.
 Requests made during an outage receive an empty response rather than hanging.
 Both protocol and per-server command queues are bounded at 256 messages.
 
@@ -301,11 +336,51 @@ shows its languages, executable source, managed version, and runtime state. The
 selected-server detail lists every repository root, resolved command and arguments,
 open-document count, retry/circuit state, and most recent error.
 
-An open file covered by a provider shows its live lifecycle beside the language label
-in the editor status bar: idle, starting, in sync, retrying, crashed, or unavailable.
-The badge changes color and text as runtime events arrive. Retry and crash failures
-also create persistent LSP notifications containing the underlying protocol or launch
-error, so the failure remains visible without opening the manager.
+### The badge
+
+Every editor pane carries its own language-server badge, right-aligned in its
+breadcrumb row, so a split showing a healthy Rust file beside a broken Python one
+says so twice rather than reporting only whichever pane has focus. The status bar
+spells the same condition out for the focused pane. A buffer with no path has no
+badge, because provider resolution is path-based and there is nothing to resolve.
+
+The eight states separate by *cause*, because what the user should do differs:
+
+| Badge | Condition | Whose move |
+|---|---|---|
+| `off` | a provider covers the language but your settings suppress it -- `lsp.enabled`, or an `enabled: false` / empty-command entry the language actually selects | yours, if you want it |
+| `idle` | resolvable and healthy; nothing has needed it yet | nobody's |
+| `ready` | connected and synchronized | nobody's |
+| `starting` | connecting | nobody's |
+| `retrying` | dropped; karet is reconnecting on its own | nobody's |
+| `needs setup` | missing, and karet cannot fetch it -- it needs your SDK or toolchain, or you declined it | yours |
+| `not installed` | missing, and karet can install it once you approve | yours, one click |
+| `failed` | the executable is present and does not work | yours, via the manager |
+
+Resolution is read before the runtime state, so "nothing is installed" is never
+reported as a crash: `failed` is reserved for a binary that exists and does not
+work. An open circuit is `failed` here and an error in the manager table too --
+the breaker is karet's mechanism, but what you have is a provider that crashed
+five times in a minute and will not be retried for five more.
+
+Where several providers cover one file -- Python is Pyright *and* Ruff -- the worst
+state wins so a problem is never hidden, and a `healthy/total` count rides along so
+a partial failure reads as partial. A provider you switched off is not counted: a
+running Pyright beside a deliberately disabled Ruff is working completely, and
+reporting `1/2` would invite you to go and fix your own decision. A file whose Pyright is answering normally and
+whose Ruff is missing shows `not installed 1/2`, not a blanket failure.
+
+**Clicking a badge opens the Language Servers tab, and does nothing else.** It
+starts no install and restarts no process: an install spends your bandwidth and a
+restart kills a running server, and neither is something a single click on a status
+glyph should decide. The manager is where those live.
+
+Retry and crash failures also create persistent LSP notifications containing the
+underlying protocol or launch error, so the failure remains visible without opening
+the manager. A provider karet *cannot* install raises no notification at all -- the
+badge says `needs setup` and the manager's row names the SDK or toolchain required
+and the executable karet looked for. karet does not tell you to put things on
+`PATH`.
 
 The bordered table responds to terminal width by dropping secondary columns before
 primary state and wrapping row actions when necessary. Runtime, availability,
@@ -385,6 +460,38 @@ Update checks are always explicit. Their discovered exact-version plan expires
 after 15 minutes and is rejected if another process changed the active version.
 Existing brokers keep their pinned executable until restarted; new brokers use the
 new activation.
+
+### Recovering without being asked
+
+karet distinguishes conditions it can fix from conditions only you can. Everything
+in the first group recovers on its own, idempotently, and without coordination
+between karet instances -- every recovery path re-reads the same install journal
+that each instance writes through the same per-provider lock, so two of them
+converge rather than fight.
+
+A provider that is simply not installed needs no recovery machinery. Resolution
+finds nothing, so no process slot is created, and resolution short-circuits only on
+a slot -- so installing it by hand is picked up the next time a file of that
+language opens. The check performs no network I/O: it reads settings, the project,
+`PATH`, and the install journal. That journal is the one every karet process writes
+through the same per-provider lock, so instances converge rather than fight, and
+the install prompt is still raised at most once, so re-resolving never re-asks a
+question you have answered.
+
+A provider whose *launch* fails in a way no retry can fix -- an explicitly
+configured command that is not there, a binary that exits on sight -- reports
+`failed` and is not retried for the rest of the session. karet deliberately does
+not re-attempt it on each file you open: nothing observable changes between those
+opens, so it would re-exec the same broken command and raise the same failure once
+per file. Fix it, then use **Restart** in the Language Servers tab.
+
+A completed install starts the provider immediately, for every open document whose
+language it serves -- including a companion like Ruff or Biome, which is no
+language's default and so used to require reopening the file by hand.
+
+What karet will not do by itself is spend your bandwidth. Downloading a provider
+needs explicit approval, once, and update discovery never applies a change: both
+live in the Language Servers tab, which is where the badge takes you.
 
 Uninstall first appends a deactivation record, so future resolution immediately
 stops selecting that managed version. It then retires language-server connections

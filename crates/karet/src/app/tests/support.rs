@@ -210,6 +210,7 @@ pub(crate) fn content_frame(app: &App, rect: Rect) -> PaneFrame {
         action_hits: Vec::new(),
         breadcrumb_rect: Rect::default(),
         breadcrumb_hits: Vec::new(),
+        lsp_badge_hit: None,
         content_rect: rect,
         editor_rect: rect,
         commit_file_hits: Vec::new(),

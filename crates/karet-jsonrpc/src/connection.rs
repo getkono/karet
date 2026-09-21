@@ -27,6 +27,7 @@ use tokio::io::BufReader;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 use crate::framing::Framing;
@@ -161,6 +162,12 @@ pub struct Connection<H: Handler> {
     /// connection died fail fast with [`RpcError::Closed`] instead of sitting in
     /// the pending map until they time out.
     closed: Arc<AtomicBool>,
+    /// Flipped alongside `closed`, so a caller can *await* the death rather than
+    /// only observe it while issuing a request.
+    ///
+    /// The flag alone made loss detection demand-driven: a consumer parked on its
+    /// own input with nothing to ask the peer never learned the peer had gone.
+    closed_signal: watch::Sender<bool>,
     reader_task: JoinHandle<()>,
     writer_task: JoinHandle<()>,
 }
@@ -182,9 +189,11 @@ impl<H: Handler> Connection<H> {
         let (push, _) = broadcast::channel(H::PUSH_CHANNEL_CAPACITY.clamp(1, usize::MAX / 2));
         let pending: Pending = Arc::default();
         let closed = Arc::new(AtomicBool::new(false));
+        let (closed_signal, _) = watch::channel(false);
         let handler = Arc::new(handler);
 
         let writer_closed = Arc::clone(&closed);
+        let writer_signal = closed_signal.clone();
         let writer_task = tokio::spawn(async move {
             let mut write = write;
             while let Some(item) = outbound_rx.recv().await {
@@ -198,6 +207,7 @@ impl<H: Handler> Connection<H> {
                 }
             }
             writer_closed.store(true, Ordering::SeqCst);
+            writer_signal.send_replace(true);
         });
         let reader_task = tokio::spawn(read_loop::<H, R>(
             BufReader::new(read),
@@ -206,6 +216,7 @@ impl<H: Handler> Connection<H> {
             push.clone(),
             outbound.clone(),
             Arc::clone(&closed),
+            closed_signal.clone(),
         ));
 
         Self {
@@ -215,9 +226,30 @@ impl<H: Handler> Connection<H> {
             push,
             handler,
             closed,
+            closed_signal,
             reader_task,
             writer_task,
         }
+    }
+
+    /// Resolve once this connection is gone, whether the peer hung up, the
+    /// stream lost framing, or a write failed.
+    ///
+    /// Returns immediately for a connection that is already closed, so a caller
+    /// cannot miss the transition by racing it. Intended for a `select!` arm
+    /// beside whatever else a consumer waits on: without one, a peer's death is
+    /// noticed only when something next tries to talk to it.
+    pub async fn closed(&self) {
+        let mut rx = self.closed_signal.subscribe();
+        // The atomic is checked too, not just the watch value: the two are set
+        // together, but a task cancelled between the store and the send would
+        // otherwise leave this waiting on a signal nobody will send.
+        if *rx.borrow_and_update() || self.closed.load(Ordering::SeqCst) {
+            return;
+        }
+        // `Err` means every sender is gone, which is itself the end of the
+        // connection -- so it resolves rather than propagating.
+        let _ = rx.wait_for(|closed| *closed).await;
     }
 
     /// The protocol handler this connection was started with.
@@ -360,6 +392,7 @@ async fn read_loop<H, R>(
     push: broadcast::Sender<H::Push>,
     outbound: mpsc::Sender<Outbound>,
     closed: Arc<AtomicBool>,
+    closed_signal: watch::Sender<bool>,
 ) where
     H: Handler,
     R: AsyncRead + Send + Unpin + 'static,
@@ -382,6 +415,11 @@ async fn read_loop<H, R>(
     if let Ok(mut map) = pending.lock() {
         map.clear(); // dropping the senders fails the awaiting requests
     }
+    // Signalled last, so anyone woken by it finds a settled connection: the flag
+    // set and every in-flight request already failed. `send_replace`, not `send`,
+    // because `send` discards the value when no receiver happens to exist -- and
+    // the common case is that nobody is waiting at the moment the peer dies.
+    closed_signal.send_replace(true);
 }
 
 /// Route one de-framed message.

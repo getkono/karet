@@ -14,12 +14,16 @@
 //! after repeated failures instead of creating a respawn storm.
 
 mod catalog;
+mod commands;
 mod connector;
+mod forward;
+mod health;
 mod inventory;
 mod jdtls;
 mod lifecycle;
 mod message;
 mod provider;
+mod requests;
 mod runtime;
 #[cfg(test)]
 mod tests;
@@ -35,6 +39,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 pub(crate) use catalog::managed_arguments;
+pub(crate) use catalog::serves_language;
 pub(crate) use connector::Connector;
 use connector::spawn_connector;
 use karet_core::LineCol;
@@ -73,6 +78,14 @@ const RESTART_MAX_DELAY: Duration = Duration::from_secs(30);
 const RESTART_WINDOW: Duration = Duration::from_secs(60);
 const RESTART_LIMIT: usize = 5;
 const CIRCUIT_COOLDOWN: Duration = Duration::from_secs(300);
+/// How long a dead provider's diagnostics stay on screen before being dropped.
+///
+/// Not zero, because the common death is followed by a reconnect at 250ms and
+/// another at 500ms; clearing immediately would flicker every marker off and back
+/// on for an outage the user would otherwise never have noticed. Long enough to
+/// outlast both, short enough that a server which is really gone does not leave
+/// its squiggles pointing at lines the user has since edited away.
+const DIAGNOSTIC_GRACE: Duration = Duration::from_secs(1);
 
 /// Lazy per-language language-server orchestration (see the module docs).
 pub(crate) struct LspManager {
@@ -86,6 +99,15 @@ pub(crate) struct LspManager {
     /// diagnosis (`None` = a usable JDK was found). Reset on reconfigure so a
     /// settings reload re-probes a fixed PATH.
     jdtls_preflight: Option<Option<String>>,
+    /// Slots whose document sync has already been reported as failing.
+    ///
+    /// A full queue is not a one-off: the task is blocked, so *every* subsequent
+    /// keystroke fails to enqueue. The resulting notification is a persistent
+    /// card -- warnings never auto-dismiss, and only transient cards are evicted --
+    /// so reporting per failure grew an unbounded stack the user had to clear by
+    /// hand. Reported once per outage instead, and cleared by the first delivery
+    /// that succeeds.
+    sync_failure_reported: HashSet<String>,
     /// Providers whose launch preflight has already been reported in this
     /// generation, so a failed one is explained once rather than per document.
     preflight_reported: HashSet<LanguageServerId>,
@@ -130,6 +152,7 @@ impl LspManager {
                 registry_root: registry_root.clone(),
                 servers: HashMap::new(),
                 missing_reported: HashSet::new(),
+                sync_failure_reported: HashSet::new(),
                 jdtls_preflight: None,
                 preflight_reported: HashSet::new(),
                 updates,
@@ -158,20 +181,23 @@ impl LspManager {
         self.runtime_states.clear();
         self.jdtls_preflight = None;
         self.preflight_reported.clear();
+        self.sync_failure_reported.clear();
         true
     }
 
     /// Whether an asynchronous update belongs to the current server generation.
     pub(crate) fn accepts(&self, update: &LspUpdate) -> bool {
         let generation = match update {
-            LspUpdate::Completions { generation, .. }
+            LspUpdate::Diagnostics { generation, .. }
+            | LspUpdate::DiagnosticsCleared { generation, .. }
+            | LspUpdate::Completions { generation, .. }
             | LspUpdate::Symbols { generation, .. }
             | LspUpdate::Hover { generation, .. }
             | LspUpdate::Definitions { generation, .. }
             | LspUpdate::WorkspaceSymbols { generation, .. }
             | LspUpdate::WorkspaceEdit { generation, .. }
             | LspUpdate::Formatting { generation, .. }
-            | LspUpdate::Diagnostics { generation, .. }
+            | LspUpdate::SyncFailed { generation, .. }
             | LspUpdate::ServerStatus { generation, .. }
             | LspUpdate::SpawnFailed { generation, .. }
             | LspUpdate::PreflightFailed { generation, .. }
@@ -581,6 +607,7 @@ impl LspManager {
             .unwrap_or_else(|| selector.unwrap_or_default());
         let document_text = text();
         let mut seen_targets = HashSet::new();
+        let mut undelivered = Vec::new();
         for (tx, key) in targets {
             if !seen_targets.insert(key.clone()) {
                 continue;
@@ -588,12 +615,57 @@ impl LspManager {
             if let Some(slot) = self.servers.get_mut(&key) {
                 slot.documents.insert(path.clone());
             }
-            let _ = tx.try_send(ServerCmd::DidOpen {
-                path: path.clone(),
-                language: document_language.clone(),
-                version: version_i32(version),
-                text: document_text.clone(),
+            if tx
+                .try_send(ServerCmd::DidOpen {
+                    path: path.clone(),
+                    language: document_language.clone(),
+                    version: version_i32(version),
+                    text: document_text.clone(),
+                })
+                .is_err()
+            {
+                undelivered.push(key);
+            } else {
+                // Delivery works again: forget the suppression so a *later* outage
+                // is reported rather than silenced by one that has since cleared.
+                self.sync_failure_reported.remove(&key);
+            }
+        }
+        // A dropped `didOpen` used to be silent, and was the worst of the silent
+        // drops: the server never learns the document exists, the task never adds
+        // it to its replay set, and no later restart fixes it. The file simply has
+        // no language support, with nothing anywhere saying why.
+        for key in undelivered {
+            self.report_undelivered(&key, "the server's command queue is full");
+        }
+    }
+
+    /// Report that a document-sync command never reached its server, and retire
+    /// the slot if the task behind it is gone.
+    ///
+    /// Both `try_send` failures leave the server's copy of the document out of
+    /// step with the buffer, which is exactly the state that reads to a user as
+    /// "the LSP stopped working for this file". A closed channel additionally
+    /// means the task has exited, so the slot is dropped and the next open builds
+    /// a fresh one rather than writing into a sender nobody reads.
+    fn report_undelivered(&mut self, key: &str, reason: &str) {
+        let Some(slot) = self.servers.get(key) else {
+            return;
+        };
+        let closed = slot.tx.is_closed();
+        let provider = slot.provider.clone();
+        if let Some(server) = provider
+            && self.sync_failure_reported.insert(key.to_owned())
+        {
+            let _ = self.updates.send(LspUpdate::SyncFailed {
+                generation: self.generation,
+                server,
+                reason: reason.to_owned(),
             });
+        }
+        if closed {
+            self.servers.remove(key);
+            self.sync_failure_reported.remove(key);
         }
     }
 
@@ -612,20 +684,35 @@ impl LspManager {
         let path = absolute_path(path);
         let senders: Vec<_> = self
             .servers
-            .values()
-            .filter(|slot| slot.documents.contains(&path))
-            .map(|slot| slot.tx.clone())
+            .iter()
+            .filter(|(_, slot)| slot.documents.contains(&path))
+            .map(|(key, slot)| (key.clone(), slot.tx.clone()))
             .collect();
         if senders.is_empty() {
             return;
         }
         let text = text();
-        for tx in senders {
-            let _ = tx.try_send(ServerCmd::DidChange {
-                path: path.clone(),
-                version: version_i32(version),
-                text: text.clone(),
-            });
+        let mut undelivered = Vec::new();
+        for (key, tx) in senders {
+            if tx
+                .try_send(ServerCmd::DidChange {
+                    path: path.clone(),
+                    version: version_i32(version),
+                    text: text.clone(),
+                })
+                .is_err()
+            {
+                undelivered.push(key);
+            } else {
+                self.sync_failure_reported.remove(&key);
+            }
+        }
+        // A dropped `didChange` leaves the server's copy of the file behind the
+        // buffer, so every answer it gives is about text the user no longer has.
+        // Sync is full-text, so the next edit that *does* land repairs it -- but
+        // until then the condition is real and was previously invisible.
+        for key in undelivered {
+            self.report_undelivered(&key, "the server's command queue is full");
         }
     }
 
@@ -680,198 +767,5 @@ impl LspManager {
                 text: text.clone(),
             });
         }
-    }
-
-    /// Forward a completion request (`position` already in UTF-16 columns).
-    /// Returns whether it was forwarded — when `false`, no server serves this
-    /// language and the caller must answer the request itself (empty set).
-    pub(crate) fn completion(
-        &mut self,
-        language: Option<&str>,
-        request: RequestId,
-        doc: DocumentId,
-        version: u64,
-        path: &Path,
-        position: LineCol,
-    ) -> bool {
-        let path = absolute_path(path);
-        let Some(tx) = self.existing_server(language, &path) else {
-            return false;
-        };
-        tx.try_send(ServerCmd::Completion {
-            request,
-            doc,
-            version,
-            path,
-            position,
-        })
-        .is_ok()
-    }
-
-    /// Forward a document-symbol request. Returns whether a live server accepted it.
-    pub(crate) fn document_symbols(
-        &mut self,
-        language: Option<&str>,
-        request: RequestId,
-        doc: DocumentId,
-        version: u64,
-        path: &Path,
-    ) -> bool {
-        let path = absolute_path(path);
-        let Some(tx) = self.existing_server(language, &path) else {
-            return false;
-        };
-        tx.try_send(ServerCmd::DocumentSymbols {
-            request,
-            doc,
-            version,
-            path,
-        })
-        .is_ok()
-    }
-
-    pub(crate) fn hover(
-        &self,
-        language: Option<&str>,
-        request: RequestId,
-        doc: DocumentId,
-        version: u64,
-        path: &Path,
-        position: LineCol,
-    ) -> bool {
-        let path = absolute_path(path);
-        let Some(tx) = self.existing_server(language, &path) else {
-            return false;
-        };
-        tx.try_send(ServerCmd::Hover {
-            request,
-            doc,
-            version,
-            path,
-            position,
-        })
-        .is_ok()
-    }
-
-    pub(crate) fn definition(
-        &self,
-        language: Option<&str>,
-        request: RequestId,
-        doc: DocumentId,
-        version: u64,
-        path: &Path,
-        position: LineCol,
-    ) -> bool {
-        let path = absolute_path(path);
-        let Some(tx) = self.existing_server(language, &path) else {
-            return false;
-        };
-        tx.try_send(ServerCmd::Definition {
-            request,
-            doc,
-            version,
-            path,
-            position,
-        })
-        .is_ok()
-    }
-
-    pub(crate) fn workspace_symbols(&self, request: RequestId, query: String) -> bool {
-        let Some(tx) = self
-            .servers
-            .values()
-            .find(|slot| slot.primary)
-            .map(|slot| &slot.tx)
-        else {
-            return false;
-        };
-        tx.try_send(ServerCmd::WorkspaceSymbols { request, query })
-            .is_ok()
-    }
-
-    pub(crate) fn rename(
-        &self,
-        language: Option<&str>,
-        request: RequestId,
-        path: &Path,
-        position: LineCol,
-        new_name: String,
-    ) -> bool {
-        let path = absolute_path(path);
-        let Some(tx) = self.existing_server(language, &path) else {
-            return false;
-        };
-        tx.try_send(ServerCmd::Rename {
-            request,
-            path,
-            position,
-            new_name,
-        })
-        .is_ok()
-    }
-
-    pub(crate) fn formatting(
-        &self,
-        language: Option<&str>,
-        request: RequestId,
-        doc: DocumentId,
-        version: u64,
-        path: &Path,
-    ) -> bool {
-        let Some(language_key) = language_key(language) else {
-            return false;
-        };
-        let path = absolute_path(path);
-        let preferred = self
-            .settings
-            .languages
-            .get(&language_key)
-            .and_then(|selection| selection.formatter.as_deref());
-        let repository_default = if preferred.is_none() && language_key == "python" {
-            Some(python_diagnostic_provider(&nearest_repository_root(
-                &path,
-                self.root.as_deref(),
-            )))
-        } else if preferred.is_none()
-            && matches!(
-                language_key.as_str(),
-                "javascript" | "typescript" | "jsx" | "tsx"
-            )
-            && uses_biome(&nearest_repository_root(&path, self.root.as_deref()))
-        {
-            Some(LanguageServerId::Biome)
-        } else {
-            None
-        };
-        let selected = preferred
-            .map(str::to_owned)
-            .or_else(|| repository_default.map(|provider| provider.key().to_owned()));
-        let tx = selected
-            .as_deref()
-            .and_then(|provider| {
-                self.servers.values().find(|slot| {
-                    slot.documents.contains(&path)
-                        && slot
-                            .provider
-                            .as_ref()
-                            .is_some_and(|id| id.key() == provider)
-                })
-            })
-            .or_else(|| {
-                self.servers
-                    .values()
-                    .find(|slot| slot.primary && slot.documents.contains(&path))
-            })
-            .map(|slot| &slot.tx);
-        let Some(tx) = tx else {
-            return false;
-        };
-        tx.try_send(ServerCmd::Formatting {
-            request,
-            doc,
-            version,
-            path,
-        })
-        .is_ok()
     }
 }

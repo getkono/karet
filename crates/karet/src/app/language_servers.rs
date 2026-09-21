@@ -1,3 +1,4 @@
+mod badge;
 mod progress;
 mod prompts;
 
@@ -16,29 +17,8 @@ pub(super) struct LanguageServerRuntimeModel {
     operation_error: Option<String>,
 }
 
-/// The active file's compact language-server condition.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum LanguageServerBadge {
-    Idle,
-    Starting,
-    InSync,
-    Retrying,
-    Crashed,
-    Unavailable,
-}
-
-impl LanguageServerBadge {
-    fn priority(self) -> u8 {
-        match self {
-            Self::Idle => 0,
-            Self::InSync => 1,
-            Self::Starting => 2,
-            Self::Retrying => 3,
-            Self::Crashed => 4,
-            Self::Unavailable => 5,
-        }
-    }
-}
+pub(crate) use badge::LanguageServerBadge;
+pub(crate) use badge::LanguageServerBadgeSummary;
 
 impl LanguageServerRuntimeModel {
     fn replace(&mut self, request: Option<RequestId>, servers: Vec<LanguageServerStatus>) {
@@ -73,37 +53,8 @@ impl LanguageServerRuntimeModel {
         true
     }
 
-    fn badge_for(&self, path: &Path, language: &str) -> Option<LanguageServerBadge> {
-        let language = language.to_lowercase();
-        self.servers
-            .iter()
-            .filter(|status| {
-                status.enabled
-                    && status
-                        .languages
-                        .iter()
-                        .any(|candidate| candidate.eq_ignore_ascii_case(&language))
-            })
-            .flat_map(|status| &status.instances)
-            .filter(|instance| path_contains_or_equals(&instance.root, path))
-            .map(|instance| {
-                if instance.command.is_none()
-                    || instance.source == karet_session::LanguageServerSource::Unavailable
-                {
-                    return LanguageServerBadge::Unavailable;
-                }
-                match instance.runtime {
-                    LanguageServerRuntimeState::Idle => LanguageServerBadge::Idle,
-                    LanguageServerRuntimeState::Starting => LanguageServerBadge::Starting,
-                    LanguageServerRuntimeState::Running => LanguageServerBadge::InSync,
-                    LanguageServerRuntimeState::Retrying => LanguageServerBadge::Retrying,
-                    LanguageServerRuntimeState::CircuitOpen
-                    | LanguageServerRuntimeState::Stopped => LanguageServerBadge::Crashed,
-                    LanguageServerRuntimeState::Unavailable => LanguageServerBadge::Unavailable,
-                    _ => LanguageServerBadge::Unavailable,
-                }
-            })
-            .max_by_key(|badge| badge.priority())
+    fn badge_for(&self, path: &Path, language: &str) -> Option<LanguageServerBadgeSummary> {
+        badge::badge_for(&self.servers, path, language)
     }
 
     fn start_operation(&mut self, operation: LanguageServerPending) {
@@ -147,12 +98,38 @@ impl LanguageServerRuntimeModel {
 }
 
 impl App {
-    /// The active code file's language-server lifecycle badge, when covered.
-    pub(crate) fn active_language_server_badge(&self) -> Option<LanguageServerBadge> {
-        let TabKind::Code { path, language, .. } = &self.tabs.get(self.active)?.kind else {
+    /// One tab's language-server badge, when it is a code file a provider covers.
+    ///
+    /// Takes a tab rather than reading the active one so a background pane can be
+    /// badged too: every pane reports its own file, not the focused pane's.
+    pub(crate) fn language_server_badge_for(
+        &self,
+        tab: &Tab,
+    ) -> Option<LanguageServerBadgeSummary> {
+        let TabKind::Code { path, language, .. } = &tab.kind else {
             return None;
         };
         self.lsp_runtime.badge_for(path, language)
+    }
+
+    /// The active code file's language-server badge, when covered.
+    pub(crate) fn active_language_server_badge(&self) -> Option<LanguageServerBadgeSummary> {
+        self.language_server_badge_for(self.tabs.get(self.active)?)
+    }
+
+    /// Re-read the local inventory, so the badge reflects a condition the backend
+    /// has just discovered.
+    ///
+    /// Coalesced against an in-flight request: opening ten Go files reports ten
+    /// unresolved providers, and each one arriving must not queue its own scan.
+    /// The query performs no network I/O -- it reads settings, the project, `PATH`
+    /// and the install journal.
+    pub(in crate::app) fn refresh_language_server_inventory(&mut self) {
+        if self.lsp_runtime.inventory_request.is_some() {
+            return;
+        }
+        let request = self.send(SessionCommand::LanguageServerStatus);
+        self.lsp_runtime.inventory_request = request;
     }
 
     pub(super) fn open_language_servers(&mut self) {

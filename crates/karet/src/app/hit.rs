@@ -93,6 +93,12 @@ pub(crate) struct PaneFrame {
     pub(crate) breadcrumb_rect: Rect,
     /// Per-segment clickable regions within the breadcrumb row.
     pub(crate) breadcrumb_hits: Vec<BreadcrumbHit>,
+    /// The language-server badge's columns in the breadcrumb row, when painted.
+    ///
+    /// Recorded for every pane, not just the focused one: the badge reports the
+    /// pane's own file, so clicking a background pane's badge has to work without
+    /// focusing it first.
+    pub(crate) lsp_badge_hit: Option<(u16, u16)>,
     /// The pane's content (editor) area.
     pub(crate) content_rect: Rect,
     /// The exact editable editor viewport within the content area.

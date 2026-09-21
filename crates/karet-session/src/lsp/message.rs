@@ -188,7 +188,7 @@ pub(crate) enum LspUpdate {
     },
     /// A complete server diagnostic layer for one file.
     Diagnostics {
-        /// The manager generation that spawned the server task.
+        /// The manager generation that spawned the publishing task.
         generation: u64,
         /// Provider/root identity whose diagnostic layer is replaced.
         server: String,
@@ -234,6 +234,43 @@ pub(crate) enum LspUpdate {
         generation: u64,
         /// The language whose server died.
         language: String,
+    },
+    /// A document-sync command never reached its server.
+    ///
+    /// Deliberately not a [`Self::RuntimeState`]: the server is running fine, it
+    /// is merely behind, and publishing `Retrying` for it wrote a wrong state into
+    /// the manager that nothing ever corrected -- the task had not transitioned, so
+    /// it never re-reported `Running`, and the badge stayed a warning for the rest
+    /// of the session while every request was answered normally.
+    SyncFailed {
+        /// The manager generation that spawned the server task.
+        generation: u64,
+        /// The provider whose copy of the document is now behind.
+        server: LanguageServerId,
+        /// What went wrong, phrased for the user.
+        reason: String,
+    },
+    /// A provider stayed down past the grace period: drop what it published.
+    ///
+    /// Diagnostics used to be inserted and never removed, so a crashed server's
+    /// squiggles outlived it. Sent by a task that is still live -- so still of the
+    /// current generation -- and only after the grace window, so a reconnect inside
+    /// it does not make every marker flicker off and back on.
+    ///
+    /// Scoped to what a live task can say about itself. Clearing a layer whose task
+    /// has been *retired* -- by a reconfigure, a restart, or the last `didClose` --
+    /// needs to know who owns a layer, which is deferred to its own change; those
+    /// markers stay until something republishes, as they did before this.
+    DiagnosticsCleared {
+        /// The manager generation that spawned the clearing task.
+        generation: u64,
+        /// The diagnostic layer to drop, keyed exactly as it was published.
+        ///
+        /// That key is the slot's -- `{provider}@{root}` -- so it already scopes
+        /// the clear to the one instance that died. A provider running at two
+        /// repository roots keeps the markers published by the root that is still
+        /// healthy.
+        server: String,
     },
     /// A built-in provider karet can install is locally absent. No network
     /// operation was attempted.

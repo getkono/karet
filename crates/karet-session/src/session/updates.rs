@@ -235,6 +235,17 @@ impl Session {
                 document.lsp_diagnostics.insert(server, diagnostics);
                 self.publish_document_diagnostics(doc_id);
             },
+            LspUpdate::DiagnosticsCleared { server, .. } => {
+                self.clear_lsp_diagnostic_layer(&server);
+            },
+            LspUpdate::SyncFailed { server, reason, .. } => self.emit(
+                None,
+                Event::Notification {
+                    severity: Severity::Warning,
+                    kind: NotificationKind::Lsp,
+                    message: format!("{} is behind on this file: {reason}", server.display_name()),
+                },
+            ),
             LspUpdate::SpawnFailed {
                 server,
                 root,
@@ -386,11 +397,19 @@ impl Session {
             .values()
             .filter(|document| {
                 only.as_ref().is_none_or(|server| {
+                    // The provider's own language list, not just "is it this
+                    // language's primary". A companion -- Ruff for Python, Biome
+                    // for TypeScript -- is never any language's primary, so
+                    // matching on that alone meant installing one started nothing
+                    // until the file was reopened by hand.
                     document
                         .language_selector
                         .and_then(crate::lsp::builtin_server)
                         .as_ref()
                         == Some(server)
+                        || document
+                            .language_selector
+                            .is_some_and(|selector| crate::lsp::serves_language(server, selector))
                 })
             })
             .map(|document| {
@@ -534,6 +553,30 @@ impl Session {
         if changed {
             self.publish_document_diagnostics(doc_id);
             self.publish_spelling(doc_id);
+        }
+    }
+
+    /// Drop one server instance's diagnostic layer, republishing the documents
+    /// that carried it.
+    ///
+    /// The layer key is the slot's -- `{provider}@{root}` -- so removing it is
+    /// already scoped to the instance that died: a provider still running at
+    /// another repository root keeps its own markers. Other servers'
+    /// diagnostics, spell-check and lint results share the merged set and are
+    /// untouched.
+    fn clear_lsp_diagnostic_layer(&mut self, server: &str) {
+        let affected = self
+            .store
+            .docs
+            .iter_mut()
+            .filter(|(_, document)| document.lsp_diagnostics.contains_key(server))
+            .map(|(doc_id, document)| {
+                document.lsp_diagnostics.remove(server);
+                *doc_id
+            })
+            .collect::<Vec<_>>();
+        for doc_id in affected {
+            self.publish_document_diagnostics(doc_id);
         }
     }
 

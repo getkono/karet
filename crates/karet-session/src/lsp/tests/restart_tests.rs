@@ -94,3 +94,76 @@ async fn a_transient_failure_is_retried_rather_than_giving_up() -> TestResult {
     );
     Ok(())
 }
+
+/// Repeatedly opening files of a language whose configured command does not exist
+/// must not re-attempt the launch each time.
+///
+/// An earlier attempt at recovery retired the slot whenever the task reported
+/// `Unavailable`, so that installing a binary would be picked up. But
+/// `Unavailable` is reached only when a spec *was* resolved and its launch failed
+/// permanently, and `configured_spec` performs no existence check -- so pointing
+/// `lsp.servers` at a path that does not exist produced a fresh task, a fresh
+/// exec, and a fresh persistent failure notification for every file opened.
+///
+/// Recovery for the case users actually hit needs no mechanism at all: a built-in
+/// provider that resolves to nothing gets no slot, and resolution short-circuits
+/// only on a slot, so installing it by hand is picked up on the next open.
+#[tokio::test]
+async fn a_configured_command_that_is_missing_is_attempted_once_not_per_open() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let binary = dir.path().join("does-not-exist");
+    let mut settings = LspSettings::default();
+    settings.languages.insert(
+        "rust".to_owned(),
+        crate::config::schema::LspLanguage {
+            servers: vec!["pretend-analyzer".to_owned()],
+            ..crate::config::schema::LspLanguage::default()
+        },
+    );
+    settings.servers.insert(
+        "pretend-analyzer".to_owned(),
+        crate::config::schema::LspServer {
+            command: binary.to_string_lossy().into_owned(),
+            ..crate::config::schema::LspServer::default()
+        },
+    );
+    let (mut manager, _updates) =
+        LspManager::new(settings, Some(dir.path().to_path_buf()), None, None);
+    manager.set_connector(test_connector(
+        Behavior::Normal,
+        None,
+        Arc::new(AtomicUsize::new(0)),
+    ));
+    let path = dir.path().join("main.rs");
+    std::fs::write(&path, "fn main() {}\n")?;
+    let verdict = (
+        LanguageServerId::new("pretend-analyzer"),
+        crate::lsp::absolute_path(dir.path()),
+    );
+
+    manager.document_opened(Some("rust"), Some("rust"), &path, 1, || {
+        "fn main() {}".into()
+    });
+    manager.note_runtime(
+        verdict.0.clone(),
+        verdict.1.clone(),
+        LanguageServerRuntimeState::Unavailable,
+        Some("no such file".to_owned()),
+    );
+
+    for version in 2..8 {
+        manager.document_opened(Some("rust"), Some("rust"), &path, version, || {
+            "fn main() {}".into()
+        });
+    }
+    assert_eq!(
+        manager.servers.len(),
+        1,
+        "each open built another server task for a command that cannot run"
+    );
+    assert!(
+        manager.runtime_states.contains_key(&verdict),
+        "the verdict was discarded, so the next open would re-attempt the launch"
+    );
+    Ok(())
+}

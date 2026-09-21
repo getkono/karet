@@ -377,9 +377,11 @@ async fn a_user_configured_astro_command_launches_without_a_project_typescript()
 }
 
 /// Switching a server off is a decision, not a missing install. Reporting one
-/// produced "install it yourself so 'gopls' is on PATH" for a user who had just
-/// said they did not want gopls -- and `managedDownloads: off` does not swallow
-/// a manual-install notice the way it swallows an install offer.
+/// told a user who had just said they did not want gopls to go and install it --
+/// and `managedDownloads: off` does not swallow a manual-install notice the way
+/// it swallows an install offer. The report is now a badge rather than a toast,
+/// which makes it quieter but no more correct: a provider the user disabled must
+/// still not be reported as one they are missing.
 #[tokio::test]
 async fn a_disabled_primary_server_is_not_reported_as_missing() -> TestResult {
     let dir = tempfile::tempdir()?;

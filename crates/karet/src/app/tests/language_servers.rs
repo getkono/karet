@@ -664,9 +664,11 @@ fn language_server_table_borders_and_runtime_text_are_semantic() {
             })
         })
     };
+    // An open breaker is an error in this table, matching the editor's badge: the
+    // provider crashed repeatedly and is not being retried.
     assert_eq!(
         semantic_cell("circuit open").map(|cell| cell.fg),
-        Some(app.theme.role(ThemeRole::DiagnosticHint).to_ratatui())
+        Some(app.theme.role(ThemeRole::DiagnosticError).to_ratatui())
     );
     assert_eq!(
         semantic_cell("Error: protocol failure").map(|cell| cell.fg),
@@ -698,7 +700,7 @@ fn active_file_lsp_badge_reacts_to_runtime_state_and_color() {
     let running_row = (0..100)
         .map(|x| running[(x, 11)].symbol())
         .collect::<String>();
-    let running_x = running_row.find("LSP in sync").expect("running LSP badge");
+    let running_x = running_row.find("LSP ready").expect("running LSP badge");
     assert_eq!(
         running[(u16::try_from(running_x).unwrap_or_default(), 11)].fg,
         app.theme.role(ThemeRole::DiagnosticHint).to_ratatui()
@@ -720,9 +722,9 @@ fn active_file_lsp_badge_reacts_to_runtime_state_and_color() {
     let crashed_row = (0..100)
         .map(|x| crashed[(x, 11)].symbol())
         .collect::<String>();
-    let crashed_x = crashed_row.find("LSP crashed").expect("crashed LSP badge");
+    let failed_x = crashed_row.find("LSP failed").expect("failed LSP badge");
     assert_eq!(
-        crashed[(u16::try_from(crashed_x).unwrap_or_default(), 11)].fg,
+        crashed[(u16::try_from(failed_x).unwrap_or_default(), 11)].fg,
         app.theme.role(ThemeRole::DiagnosticError).to_ratatui()
     );
 }

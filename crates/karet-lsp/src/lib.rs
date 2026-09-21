@@ -423,6 +423,18 @@ impl LspClient {
         outcome.map(|_| ())
     }
 
+    /// Resolve once this server's connection is gone -- it exited, its stream
+    /// lost framing, or a write failed.
+    ///
+    /// Meant for a `select!` arm beside whatever else a caller waits on. Without
+    /// one, a server that dies while the editor is idle goes unnoticed until the
+    /// next request happens to fail, which can be an arbitrarily long time: the
+    /// badge keeps reading healthy and no restart is scheduled. Resolves
+    /// immediately for a connection that is already closed.
+    pub async fn closed(&self) {
+        self.conn.closed().await;
+    }
+
     // --- document sync (the seam the editing path drives) -----------------
 
     /// Notify the server that `doc` opened, with its `language_id`, `version` and

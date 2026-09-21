@@ -200,12 +200,15 @@ impl App {
             } => {
                 self.prompt_language_server_install(server, &language, enabled);
             },
-            SessionEvent::LanguageServerManualInstallRequired {
-                server,
-                command,
-                reason,
-            } => {
-                self.report_manual_language_server(&server, &command, &reason);
+            // No notification. karet cannot install these, so the old toast could
+            // only tell the user to get the executable onto `PATH` themselves --
+            // advice that named a condition rather than offering a way out of it,
+            // and interrupted them to do it. The badge now carries the condition,
+            // and clicking it opens the manager, whose row for this provider names
+            // the SDK or toolchain required and the executable karet looked for.
+            // All this event does is make the badge show up promptly.
+            SessionEvent::LanguageServerManualInstallRequired { .. } => {
+                self.refresh_language_server_inventory();
             },
             SessionEvent::LanguageServerStatus { servers } => {
                 self.show_language_server_status(id, servers);

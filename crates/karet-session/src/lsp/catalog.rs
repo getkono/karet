@@ -287,6 +287,20 @@ pub(crate) fn builtin_provider(server: &LanguageServerId) -> Option<&'static Bui
         .find(|provider| provider.key == server.key())
 }
 
+/// Whether `server` is a built-in provider for `language`.
+///
+/// Asked of a provider rather than of a language, so a companion that is no
+/// language's default -- Ruff, Biome -- still answers for the languages it
+/// covers.
+pub(crate) fn serves_language(server: &LanguageServerId, language: &str) -> bool {
+    builtin_provider(server).is_some_and(|provider| {
+        provider
+            .languages
+            .iter()
+            .any(|candidate| candidate.eq_ignore_ascii_case(language))
+    })
+}
+
 /// The arguments a managed installation of `server` must be launched with.
 ///
 /// Read by the registry so an installed provider and a `PATH` one are launched

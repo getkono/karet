@@ -229,6 +229,14 @@ enum Behavior {
     DieAfterHandshake,
     /// Crash the first process, then serve normally after the supervisor retries.
     DieOnce,
+    /// Accept the document, then hang up with nothing outstanding.
+    ///
+    /// The only way to notice this death is to watch the connection: no request
+    /// is ever issued over it, and `didOpen` is a notification, so nothing the
+    /// client sends can come back failed.
+    DieWhenIdle,
+    /// Publish one diagnostic for the opened document, then hang up for good.
+    DieAfterDiagnostics,
 }
 
 /// A connector that runs a scripted in-memory server per "spawn".
@@ -264,6 +272,32 @@ fn test_connector(
                 let _initialized = read_msg(&mut reader).await;
                 if matches!(behavior, Behavior::DieAfterHandshake | Behavior::DieOnce) {
                     return; // both halves drop: the client sees EOF
+                }
+                if matches!(
+                    behavior,
+                    Behavior::DieWhenIdle | Behavior::DieAfterDiagnostics
+                ) {
+                    let open = read_msg(&mut reader).await;
+                    if matches!(behavior, Behavior::DieAfterDiagnostics)
+                        && let Some(open) = open
+                        && let Some(uri) = open["params"]["textDocument"]["uri"].as_str()
+                    {
+                        write_msg(
+                            &mut server_write,
+                            &json!({"jsonrpc": "2.0",
+                            "method": "textDocument/publishDiagnostics",
+                            "params": {"uri": uri, "diagnostics": [{
+                                "range": {
+                                    "start": {"line": 0, "character": 0},
+                                    "end": {"line": 0, "character": 2}
+                                },
+                                "severity": 1,
+                                "message": "a marker that must not outlive its server"
+                            }]}}),
+                        )
+                        .await;
+                    }
+                    return;
                 }
                 while let Some(msg) = read_msg(&mut reader).await {
                     if let Some(tx) = &observed {
@@ -828,8 +862,10 @@ async fn crashed_server_restarts_and_replays_open_documents() -> TestResult {
     Ok(())
 }
 
+mod disabled_tests;
 mod inventory_tests;
 mod jdtls_tests;
 mod launch_tests;
+mod liveness_tests;
 mod manual_provider_tests;
 mod restart_tests;

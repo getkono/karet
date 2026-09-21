@@ -43,6 +43,25 @@ pub(super) fn draw_panes(
     let editor_focused = app.focus == Focus::Editor;
     let graphics = app.caps.graphics;
     let graphical_cursor = app.graphical_cursor_enabled();
+    // Resolved up front, for every pane, because `PaneCtx` is assembled while
+    // `app.stored` is mutably borrowed -- a lookup inside the loop would not
+    // compile. Each pane badges its own active tab, so a background pane reports
+    // its file's condition rather than inheriting the focused pane's.
+    let lsp_badges: HashMap<karet_widgets::PaneId, Option<LanguageServerBadgeSummary>> = app
+        .layout
+        .layout(area)
+        .into_iter()
+        .map(|(pane, _)| {
+            let tab = if pane == focused {
+                app.tabs.get(app.active)
+            } else {
+                app.stored
+                    .get(&pane)
+                    .and_then(|stored| stored.tabs.get(stored.active))
+            };
+            (pane, tab.and_then(|tab| app.language_server_badge_for(tab)))
+        })
+        .collect();
     for (pane, rect) in app.layout.layout(area) {
         let is_focused = pane == focused;
         // Only the focused pane's bars are grabbable, for the same reason only its
@@ -110,6 +129,7 @@ pub(super) fn draw_panes(
                 markdown_link_hover: app.markdown_link_hover,
                 pane_action_hover: app.pane_action_hover,
                 selection: app.surface_selection,
+                lsp_badge: lsp_badges.get(&pane).copied().flatten(),
             };
             render_pane(f, &mut app.tabs, app.active, rect, &ctx, sink)
         } else if let Some(stored) = app.stored.get_mut(&pane) {
@@ -148,6 +168,7 @@ pub(super) fn draw_panes(
                 markdown_link_hover: None,
                 pane_action_hover: app.pane_action_hover,
                 selection: None,
+                lsp_badge: lsp_badges.get(&pane).copied().flatten(),
             };
             render_pane(f, &mut stored.tabs, stored.active, rect, &ctx, sink)
         } else {
@@ -169,6 +190,7 @@ pub(super) fn draw_panes(
             action_hits: rendered.action_hits,
             breadcrumb_rect: rendered.breadcrumb_rect,
             breadcrumb_hits: rendered.breadcrumb_hits,
+            lsp_badge_hit: rendered.lsp_badge_hit,
             content_rect: rendered.content_rect,
             editor_rect: rendered.editor_rect,
             commit_file_hits: rendered.commit_file_hits,
@@ -237,18 +259,19 @@ pub(super) fn render_pane(
     ])
     .split(area);
     let (tabstrip_rect, tab_hits, action_hits) = draw_pane_tabs(f, tabs, active, ctx, parts[0]);
-    let (breadcrumb_rect, breadcrumb_hits) = if bc == 1 {
-        let hits = draw_pane_breadcrumb(
+    let (breadcrumb_rect, breadcrumb_hits, lsp_badge_hit) = if bc == 1 {
+        let (hits, badge_hit) = draw_pane_breadcrumb(
             f,
             tabs.get(active),
             ctx.theme,
             ctx.root,
             ctx.icon_style,
+            ctx.lsp_badge,
             parts[1],
         );
-        (parts[1], hits)
+        (parts[1], hits, badge_hit)
     } else {
-        (Rect::default(), Vec::new())
+        (Rect::default(), Vec::new(), None)
     };
     let mut content = parts[2];
     let mut find_rects = FindBarRects::default();
@@ -274,6 +297,7 @@ pub(super) fn render_pane(
         action_hits,
         breadcrumb_rect,
         breadcrumb_hits,
+        lsp_badge_hit,
         content_rect: content,
         editor_rect: painted.editor_rect,
         markdown_preview_rect: painted.markdown_preview_rect,

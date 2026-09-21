@@ -8,6 +8,7 @@ mod confirm;
 mod content;
 mod github;
 mod language_servers;
+mod lsp_badge;
 mod osc8;
 mod panes;
 mod scm;
@@ -93,6 +94,7 @@ use unicode_width::UnicodeWidthStr;
 use view_chrome::*;
 
 use crate::app::App;
+use crate::app::LanguageServerBadgeSummary;
 use crate::app::MIN_SCM_REGION;
 use crate::app::OperationBlocker;
 use crate::app::Pending;
@@ -416,6 +418,11 @@ struct PaneCtx<'a> {
     ref_labels: &'a HashMap<String, Vec<karet_vcs::RefLabel>>,
     /// Branch, upstream and divergence, for the commit-graph header.
     repo_state: Option<&'a karet_vcs::RepositoryState>,
+    /// This pane's own language-server condition, badged in its breadcrumb.
+    ///
+    /// Resolved per pane rather than read from the focused tab: a split showing a
+    /// healthy Rust file beside a broken Python one has to say so twice.
+    lsp_badge: Option<LanguageServerBadgeSummary>,
 }
 
 /// What a rendered pane reported back for hit-testing and image placement.
@@ -425,6 +432,7 @@ struct RenderedPane {
     action_hits: Vec<(u16, u16, Command)>,
     breadcrumb_rect: Rect,
     breadcrumb_hits: Vec<crate::app::BreadcrumbHit>,
+    lsp_badge_hit: Option<(u16, u16)>,
     content_rect: Rect,
     editor_rect: Rect,
     markdown_preview_rect: Rect,
@@ -690,22 +698,62 @@ fn save_mark(tab: &Tab, icon_style: karet_filetype::IconStyle) -> char {
 
 /// Draw the pane's breadcrumb (the active tab's path components joined by `›`)
 /// via the shared widget, and return the clickable segment regions.
+/// Draw one pane's breadcrumb, reserving its right edge for the LSP badge.
+///
+/// The badge is painted here rather than inside `karet_widgets::breadcrumbs`
+/// because the widget crate must not learn what a language-server state is; it
+/// keeps its neutral API and simply gets a narrower `Rect`.
+///
+/// Returns the path hits and, when a badge was painted, the columns it occupies.
 fn draw_pane_breadcrumb(
     f: &mut Frame,
     tab: Option<&Tab>,
     theme: &Theme,
     root: &Path,
     icon_style: karet_filetype::IconStyle,
+    badge: Option<LanguageServerBadgeSummary>,
     area: Rect,
-) -> Vec<crate::app::BreadcrumbHit> {
+) -> (Vec<crate::app::BreadcrumbHit>, Option<(u16, u16)>) {
     let Some(path) = tab.and_then(Tab::path) else {
-        return Vec::new();
+        return (Vec::new(), None);
     };
-    karet_widgets::breadcrumbs::Breadcrumbs {
+    // The path yields the badge's columns, not the other way round: a breadcrumb
+    // too narrow to hold both keeps the path, because a truncated path is still
+    // readable while a half-painted badge is not.
+    let (crumbs, badge_hit) = match badge {
+        Some(badge) => {
+            let text = lsp_badge::compact(badge, icon_style);
+            let width = cell_width(&text);
+            if width < area.width {
+                let x = area.right().saturating_sub(width);
+                f.buffer_mut().set_string(
+                    x,
+                    area.y,
+                    &text,
+                    theme
+                        .style(lsp_badge::role(badge.state))
+                        .bg(theme.role(ThemeRole::Background).to_ratatui())
+                        .add_modifier(Modifier::BOLD),
+                );
+                (
+                    Rect {
+                        width: area.width.saturating_sub(width),
+                        ..area
+                    },
+                    Some((x, area.right())),
+                )
+            } else {
+                (area, None)
+            }
+        },
+        None => (area, None),
+    };
+    let hits = karet_widgets::breadcrumbs::Breadcrumbs {
         path,
         root,
         is_symlink: tab.is_some_and(|tab| tab.is_symlink),
         icon_style,
     }
-    .draw(f, theme, area)
+    .draw(f, theme, crumbs);
+    (hits, badge_hit)
 }
