@@ -44,6 +44,7 @@ pub use launch::ExitReport;
 pub use launch::LaunchCause;
 pub use launch::LaunchFailure;
 
+mod capability;
 mod conn;
 mod convert;
 mod launch;
@@ -54,6 +55,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Stdio;
 
+use karet_core::Capabilities;
 use karet_core::CodeAction;
 use karet_core::CompletionItem;
 use karet_core::Diagnostic;
@@ -62,6 +64,7 @@ use karet_core::InlayHint;
 use karet_core::LineCol;
 use karet_core::Location;
 use karet_core::Range;
+use karet_core::ServerFeature;
 use karet_core::SignatureHelp;
 use karet_core::Symbol;
 use karet_core::TextEdit;
@@ -100,6 +103,18 @@ pub enum LspError {
     /// The connection to the server closed (process exit or stream EOF).
     #[error("connection to the language server closed")]
     Closed,
+    /// The server did not advertise this capability, so no request was issued.
+    ///
+    /// Deliberately distinct from [`LspError::Server`]: a server that does not
+    /// implement `textDocument/inlayHint` is not failing, it is answering a
+    /// question nobody should have asked it. Collapsing the two is what made a
+    /// missing feature read as a broken server, and left the difference
+    /// invisible in a `warn` log nobody sees.
+    #[error("the language server does not support {method}")]
+    Unsupported {
+        /// The request that was not issued.
+        method: &'static str,
+    },
 }
 
 /// How long a failed handshake waits for the child to exit before reporting.
@@ -197,6 +212,12 @@ pub struct RawNotification {
 pub struct LspClient {
     conn: conn::Connection,
     child: Option<tokio::process::Child>,
+    /// What this server said it can do.
+    ///
+    /// Behind a lock, and read rather than copied at the handshake, because
+    /// dynamic registration changes it while the connection is live. Never held
+    /// across an `.await`: every read clones or answers a question outright.
+    capabilities: std::sync::RwLock<Capabilities>,
 }
 
 impl LspClient {
@@ -392,9 +413,61 @@ impl LspClient {
         let mut params = initialize_params(root)?;
         params.initialization_options = initialization_options;
         let conn = conn::Connection::start(read, write);
-        let _server_capabilities: Value = conn.request("initialize", params).await?;
+        let result: Value = conn.request("initialize", params).await?;
+        let capabilities = capability::parse(&result);
+        tracing::debug!(
+            features = capabilities.len(),
+            encoding = ?capabilities.position_encoding,
+            sync = ?capabilities.text_sync,
+            "language server advertised its capabilities"
+        );
         conn.notify("initialized", lsp_types::InitializedParams {})?;
-        Ok(Self { conn, child: None })
+        Ok(Self {
+            conn,
+            child: None,
+            capabilities: std::sync::RwLock::new(capabilities),
+        })
+    }
+
+    /// What this server said it can do.
+    ///
+    /// A snapshot: dynamic registration may change it afterwards, so a caller
+    /// deciding about one request should ask again rather than cache this.
+    #[must_use]
+    pub fn capabilities(&self) -> Capabilities {
+        self.capabilities
+            .read()
+            .map(|caps| caps.clone())
+            .unwrap_or_default()
+    }
+
+    /// Whether this server currently supports `feature`.
+    #[must_use]
+    pub fn supports(&self, feature: ServerFeature) -> bool {
+        self.capabilities
+            .read()
+            .is_ok_and(|caps| caps.supports(feature))
+    }
+
+    /// Refuse `method` when the server never said it could answer it.
+    ///
+    /// The refusal is the point: issuing the request anyway produced a
+    /// JSON-RPC error that looked exactly like a failure, so a server missing
+    /// a feature was indistinguishable from a server that was broken.
+    ///
+    /// A poisoned lock refuses too. It can only be poisoned by a panic while
+    /// capabilities were being written, and at that point what the server
+    /// supports is genuinely unknown -- refusing is the safe reading.
+    fn require(&self, feature: ServerFeature, method: &'static str) -> Result<(), LspError> {
+        if self.supports(feature) {
+            return Ok(());
+        }
+        tracing::debug!(
+            method,
+            ?feature,
+            "refusing a request the server cannot answer"
+        );
+        Err(LspError::Unsupported { method })
     }
 
     /// Shut the server down (`shutdown` request + `exit` notification) and await
@@ -523,12 +596,15 @@ impl LspClient {
     /// `snippetSupport`.
     ///
     /// # Errors
-    /// Returns [`LspError::Server`] or [`LspError::Timeout`].
+    /// Returns [`LspError::Unsupported`] **without issuing a request** when the
+    /// server did not advertise the capability, else [`LspError::Server`] or
+    /// [`LspError::Timeout`].
     pub async fn completion(
         &self,
         doc: &Path,
         pos: LineCol,
     ) -> Result<Vec<CompletionItem>, LspError> {
+        self.require(ServerFeature::Completion, "textDocument/completion")?;
         let params = lsp_types::CompletionParams {
             text_document_position: lsp_types::TextDocumentPositionParams {
                 text_document: lsp_types::TextDocumentIdentifier::new(uri::path_to_uri(doc)?),
@@ -546,8 +622,11 @@ impl LspClient {
     /// Request hover information at `pos` in `doc`.
     ///
     /// # Errors
-    /// Returns [`LspError::Server`] or [`LspError::Timeout`].
+    /// Returns [`LspError::Unsupported`] **without issuing a request** when the
+    /// server did not advertise the capability, else [`LspError::Server`] or
+    /// [`LspError::Timeout`].
     pub async fn hover(&self, doc: &Path, pos: LineCol) -> Result<Option<Hover>, LspError> {
+        self.require(ServerFeature::Hover, "textDocument/hover")?;
         let params = lsp_types::HoverParams {
             text_document_position_params: text_document_position(doc, pos)?,
             work_done_progress_params: lsp_types::WorkDoneProgressParams::default(),
@@ -560,8 +639,11 @@ impl LspClient {
     /// Request the document symbols of `doc`.
     ///
     /// # Errors
-    /// Returns [`LspError::Server`] or [`LspError::Timeout`].
+    /// Returns [`LspError::Unsupported`] **without issuing a request** when the
+    /// server did not advertise the capability, else [`LspError::Server`] or
+    /// [`LspError::Timeout`].
     pub async fn document_symbols(&self, doc: &Path) -> Result<Vec<Symbol>, LspError> {
+        self.require(ServerFeature::DocumentSymbol, "textDocument/documentSymbol")?;
         let params = lsp_types::DocumentSymbolParams {
             text_document: lsp_types::TextDocumentIdentifier::new(uri::path_to_uri(doc)?),
             work_done_progress_params: lsp_types::WorkDoneProgressParams::default(),
@@ -577,8 +659,11 @@ impl LspClient {
     /// Search workspace symbols matching `query`.
     ///
     /// # Errors
-    /// Returns [`LspError::Server`] or [`LspError::Timeout`].
+    /// Returns [`LspError::Unsupported`] **without issuing a request** when the
+    /// server did not advertise the capability, else [`LspError::Server`] or
+    /// [`LspError::Timeout`].
     pub async fn workspace_symbols(&self, query: &str) -> Result<Vec<Symbol>, LspError> {
+        self.require(ServerFeature::WorkspaceSymbol, "workspace/symbol")?;
         let params = lsp_types::WorkspaceSymbolParams {
             query: query.to_owned(),
             work_done_progress_params: lsp_types::WorkDoneProgressParams::default(),
@@ -596,12 +681,15 @@ impl LspClient {
     /// function when no server is running.
     ///
     /// # Errors
-    /// Returns [`LspError::Server`] or [`LspError::Timeout`].
+    /// Returns [`LspError::Unsupported`] **without issuing a request** when the
+    /// server did not advertise the capability, else [`LspError::Server`] or
+    /// [`LspError::Timeout`].
     pub async fn implementations(
         &self,
         doc: &Path,
         pos: LineCol,
     ) -> Result<Vec<Location>, LspError> {
+        self.require(ServerFeature::Implementation, "textDocument/implementation")?;
         let params = lsp_types::request::GotoImplementationParams {
             text_document_position_params: text_document_position(doc, pos)?,
             work_done_progress_params: lsp_types::WorkDoneProgressParams::default(),
@@ -621,8 +709,14 @@ impl LspClient {
     /// supertypes rather than an error, since not supporting the request is not a failure.
     ///
     /// # Errors
-    /// Returns [`LspError::Server`] or [`LspError::Timeout`].
+    /// Returns [`LspError::Unsupported`] **without issuing a request** when the
+    /// server did not advertise the capability, else [`LspError::Server`] or
+    /// [`LspError::Timeout`].
     pub async fn supertypes(&self, doc: &Path, pos: LineCol) -> Result<Vec<Location>, LspError> {
+        self.require(
+            ServerFeature::TypeHierarchy,
+            "textDocument/prepareTypeHierarchy",
+        )?;
         let prepare = lsp_types::TypeHierarchyPrepareParams {
             text_document_position_params: text_document_position(doc, pos)?,
             work_done_progress_params: lsp_types::WorkDoneProgressParams::default(),
@@ -649,8 +743,11 @@ impl LspClient {
     /// Resolve the definition location(s) of the symbol at `pos`.
     ///
     /// # Errors
-    /// Returns [`LspError::Server`] or [`LspError::Timeout`].
+    /// Returns [`LspError::Unsupported`] **without issuing a request** when the
+    /// server did not advertise the capability, else [`LspError::Server`] or
+    /// [`LspError::Timeout`].
     pub async fn definition(&self, doc: &Path, pos: LineCol) -> Result<Vec<Location>, LspError> {
+        self.require(ServerFeature::Definition, "textDocument/definition")?;
         let params = lsp_types::GotoDefinitionParams {
             text_document_position_params: text_document_position(doc, pos)?,
             work_done_progress_params: lsp_types::WorkDoneProgressParams::default(),
@@ -664,8 +761,11 @@ impl LspClient {
     /// Request inlay hints within `range`.
     ///
     /// # Errors
-    /// Returns [`LspError::Server`] or [`LspError::Timeout`].
+    /// Returns [`LspError::Unsupported`] **without issuing a request** when the
+    /// server did not advertise the capability, else [`LspError::Server`] or
+    /// [`LspError::Timeout`].
     pub async fn inlay_hints(&self, doc: &Path, range: Range) -> Result<Vec<InlayHint>, LspError> {
+        self.require(ServerFeature::InlayHint, "textDocument/inlayHint")?;
         let params = lsp_types::InlayHintParams {
             text_document: lsp_types::TextDocumentIdentifier::new(uri::path_to_uri(doc)?),
             range: convert::range_to_lsp(range),
@@ -679,13 +779,16 @@ impl LspClient {
     /// Rename the symbol at `pos` to `new_name`, returning the edits to apply.
     ///
     /// # Errors
-    /// Returns [`LspError::Server`] or [`LspError::Timeout`].
+    /// Returns [`LspError::Unsupported`] **without issuing a request** when the
+    /// server did not advertise the capability, else [`LspError::Server`] or
+    /// [`LspError::Timeout`].
     pub async fn rename(
         &self,
         doc: &Path,
         pos: LineCol,
         new_name: &str,
     ) -> Result<WorkspaceEdit, LspError> {
+        self.require(ServerFeature::Rename, "textDocument/rename")?;
         let params = lsp_types::RenameParams {
             text_document_position: text_document_position(doc, pos)?,
             new_name: new_name.to_owned(),
@@ -699,12 +802,15 @@ impl LspClient {
     /// Request signature help at `pos` in `doc`.
     ///
     /// # Errors
-    /// Returns [`LspError::Server`] or [`LspError::Timeout`].
+    /// Returns [`LspError::Unsupported`] **without issuing a request** when the
+    /// server did not advertise the capability, else [`LspError::Server`] or
+    /// [`LspError::Timeout`].
     pub async fn signature_help(
         &self,
         doc: &Path,
         pos: LineCol,
     ) -> Result<Option<SignatureHelp>, LspError> {
+        self.require(ServerFeature::SignatureHelp, "textDocument/signatureHelp")?;
         let params = lsp_types::SignatureHelpParams {
             text_document_position_params: text_document_position(doc, pos)?,
             work_done_progress_params: lsp_types::WorkDoneProgressParams::default(),
@@ -720,8 +826,11 @@ impl LspClient {
     /// Request code actions available for `range` in `doc`.
     ///
     /// # Errors
-    /// Returns [`LspError::Server`] or [`LspError::Timeout`].
+    /// Returns [`LspError::Unsupported`] **without issuing a request** when the
+    /// server did not advertise the capability, else [`LspError::Server`] or
+    /// [`LspError::Timeout`].
     pub async fn code_action(&self, doc: &Path, range: Range) -> Result<Vec<CodeAction>, LspError> {
+        self.require(ServerFeature::CodeAction, "textDocument/codeAction")?;
         let params = lsp_types::CodeActionParams {
             text_document: lsp_types::TextDocumentIdentifier::new(uri::path_to_uri(doc)?),
             range: convert::range_to_lsp(range),
@@ -741,8 +850,11 @@ impl LspClient {
     /// Request whole-document formatting edits for `doc`.
     ///
     /// # Errors
-    /// Returns [`LspError::Server`] or [`LspError::Timeout`].
+    /// Returns [`LspError::Unsupported`] **without issuing a request** when the
+    /// server did not advertise the capability, else [`LspError::Server`] or
+    /// [`LspError::Timeout`].
     pub async fn formatting(&self, doc: &Path) -> Result<Vec<TextEdit>, LspError> {
+        self.require(ServerFeature::Formatting, "textDocument/formatting")?;
         let params = lsp_types::DocumentFormattingParams {
             text_document: lsp_types::TextDocumentIdentifier::new(uri::path_to_uri(doc)?),
             options: formatting_options(),
@@ -756,12 +868,18 @@ impl LspClient {
     /// Request formatting edits for `range` in `doc`.
     ///
     /// # Errors
-    /// Returns [`LspError::Server`] or [`LspError::Timeout`].
+    /// Returns [`LspError::Unsupported`] **without issuing a request** when the
+    /// server did not advertise the capability, else [`LspError::Server`] or
+    /// [`LspError::Timeout`].
     pub async fn range_formatting(
         &self,
         doc: &Path,
         range: Range,
     ) -> Result<Vec<TextEdit>, LspError> {
+        self.require(
+            ServerFeature::RangeFormatting,
+            "textDocument/rangeFormatting",
+        )?;
         let params = lsp_types::DocumentRangeFormattingParams {
             text_document: lsp_types::TextDocumentIdentifier::new(uri::path_to_uri(doc)?),
             range: convert::range_to_lsp(range),

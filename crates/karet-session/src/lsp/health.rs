@@ -256,6 +256,19 @@ impl FailureTally {
                     );
                 }
             },
+            // Neither a failure nor an answer: no request reached the wire,
+            // because the server never advertised the capability. Counting it
+            // as a failure would slander a perfectly healthy server; counting
+            // it as an answer would satisfy the liveness gate below without
+            // the server having said anything at all. The timeout streak is
+            // left exactly as it was, since nothing happened to inform it.
+            Err(LspError::Unsupported { method }) => {
+                tracing::debug!(
+                    language,
+                    method,
+                    "skipped a request this server does not support"
+                );
+            },
             Err(e) => {
                 self.consecutive_timeouts = 0;
                 tracing::warn!(language, error = %e, "language server call failed");
@@ -651,5 +664,43 @@ mod tests {
         }
         assert!(!dead);
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn a_capability_refusal_touches_neither_the_streak_nor_the_connection() {
+        // A refusal never reached the wire, so it carries no evidence either
+        // way. Counted as a failure it would condemn a healthy server; counted
+        // as an answer it would satisfy the liveness gate on the strength of a
+        // request that was never sent. It must do neither -- including leaving
+        // a timeout streak already in progress exactly where it was.
+        let (mut tally, tx, mut rx) = tally();
+        let mut dead = false;
+        let _answered = tally.observe(Ok::<(), LspError>(()));
+
+        for _ in 0..TIMEOUT_DEATH_LIMIT.saturating_sub(1) {
+            tally.note::<()>(Err(LspError::Timeout), &mut dead, &tx, "rust", 1);
+        }
+        assert!(!dead, "the streak should not have reached the limit yet");
+
+        // Interleaving refusals must not reset the streak the way an ordinary
+        // error does, nor advance it.
+        for _ in 0..TIMEOUT_DEATH_LIMIT.saturating_mul(3) {
+            tally.note::<()>(
+                Err(LspError::Unsupported {
+                    method: "textDocument/inlayHint",
+                }),
+                &mut dead,
+                &tx,
+                "rust",
+                1,
+            );
+        }
+        assert!(!dead, "refusals must not condemn the connection");
+        assert!(rx.try_recv().is_err());
+
+        // The streak resumes where it left off: one more real timeout still
+        // reaches the limit, proving the refusals were genuinely inert.
+        tally.note::<()>(Err(LspError::Timeout), &mut dead, &tx, "rust", 1);
+        assert!(dead, "a refusal silently reset a real timeout streak");
     }
 }

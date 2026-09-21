@@ -53,17 +53,62 @@ impl FakeServer {
             .await;
     }
 
-    /// Serve the `initialize`/`initialized` handshake, returning the
-    /// `initialize` params for assertions.
+    /// Serve the `initialize`/`initialized` handshake advertising everything
+    /// karet gates on, returning the `initialize` params for assertions.
+    ///
+    /// Broad on purpose: a test about what `completion` *returns* should not
+    /// have to restate the handshake, while a test about a refusal says
+    /// exactly what it withholds. The old fake advertised `{}` and answered
+    /// every request anyway, which is why nothing noticed that karet issued
+    /// requests no server had agreed to — see `handshake_with`.
     async fn handshake(&mut self) -> Value {
+        self.handshake_with(everything()).await
+    }
+
+    /// Serve the handshake advertising exactly `capabilities`.
+    async fn handshake_with(&mut self, capabilities: Value) -> Value {
         let init = self.recv().await;
         assert_eq!(init["method"], "initialize");
         let id = init["id"].clone();
-        self.respond(&id, json!({"capabilities": {}})).await;
+        self.respond(&id, json!({ "capabilities": capabilities }))
+            .await;
         let initialized = self.recv().await;
         assert_eq!(initialized["method"], "initialized");
         init["params"].clone()
     }
+}
+
+/// Every capability karet currently gates a request on.
+fn everything() -> Value {
+    json!({
+        "textDocumentSync": 1,
+        "hoverProvider": true,
+        "completionProvider": {"resolveProvider": true, "triggerCharacters": ["."]},
+        "signatureHelpProvider": {"triggerCharacters": ["("]},
+        "declarationProvider": true,
+        "definitionProvider": true,
+        "typeDefinitionProvider": true,
+        "implementationProvider": true,
+        "referencesProvider": true,
+        "documentHighlightProvider": true,
+        "documentSymbolProvider": true,
+        "workspaceSymbolProvider": true,
+        "codeActionProvider": true,
+        "codeLensProvider": {"resolveProvider": true},
+        "documentLinkProvider": {"resolveProvider": true},
+        "colorProvider": true,
+        "documentFormattingProvider": true,
+        "documentRangeFormattingProvider": true,
+        "renameProvider": {"prepareProvider": true},
+        "foldingRangeProvider": true,
+        "selectionRangeProvider": true,
+        "callHierarchyProvider": true,
+        "typeHierarchyProvider": true,
+        "linkedEditingRangeProvider": true,
+        "inlayHintProvider": {"resolveProvider": true},
+        "inlineValueProvider": true,
+        "executeCommandProvider": {"commands": []},
+    })
 }
 
 #[tokio::test]
@@ -842,3 +887,6 @@ async fn a_server_that_really_exited_still_reports_exited() -> TestResult {
     assert_eq!(failure.diagnosis(), "boom");
     Ok(())
 }
+
+#[path = "gating_tests.rs"]
+mod gating;
