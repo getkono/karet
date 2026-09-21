@@ -241,10 +241,17 @@ pub enum DictionaryScope {
 
 /// What prompted a save, for the decisions that depend on it.
 ///
-/// Only format-on-save reads this today, and only to stay off the autosave
-/// timer: reformatting the whole buffer a second after every typing pause moves
-/// text under the user's cursor while they are still working in it. VS Code
-/// draws the same line, and for the same reason.
+/// Only format-on-save reads this today, and it asks one question: does this
+/// save record a decision to persist the file, or is it a snapshot taken while
+/// the user is still editing it? Formatting rewrites the whole buffer, so on a
+/// snapshot it moves text under a live caret mid-edit — the reformat is not
+/// wrong, it is just badly timed, and it arrives while the user is typing.
+///
+/// Every cause here records a decision except [`SaveCause::AutoDelay`], which
+/// fires a second after a typing pause with the caret still in the file. The
+/// rest — a keystroke, a close prompt, focus leaving the document — all mean
+/// the user is done with it for now, which is precisely when reformatting is
+/// free.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -252,10 +259,12 @@ pub enum SaveCause {
     /// The user asked, explicitly — a keybinding, a command, or a close prompt.
     #[default]
     Manual,
-    /// Autosave, triggered by focus leaving the document.
+    /// Autosave, triggered by focus leaving the document. The user has moved on
+    /// from it, so there is no caret in it left to disturb.
     FocusChange,
     /// Autosave, triggered by the inactivity timer while the document is still
-    /// the one being edited.
+    /// the one being edited. A pause in typing is not a decision to persist,
+    /// and this is the one cause that does not format.
     AutoDelay,
     /// Forward-compatibility fallback: an unrecognized cause from a newer peer.
     /// Treated as [`SaveCause::Manual`], the conservative reading — a save that
@@ -266,6 +275,9 @@ pub enum SaveCause {
 
 impl SaveCause {
     /// Whether a save from this cause may run the formatter first.
+    ///
+    /// True for every cause that records a decision to persist the file, which
+    /// is all of them but the inactivity timer.
     #[must_use]
     pub fn may_format(self) -> bool {
         !matches!(self, Self::AutoDelay)
