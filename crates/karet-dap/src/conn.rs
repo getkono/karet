@@ -327,14 +327,40 @@ fn handle_frame<R>(bytes: &[u8], ctx: &ReadLoop<R>) {
                 "message": format!("karet does not support the {command} reverse request"),
             });
             match serde_json::to_vec(&refusal) {
-                Ok(frame) => {
-                    if ctx.outbound.try_send(frame).is_err() {
-                        tracing::warn!(command, "dropping a reverse-request refusal: queue full");
-                    }
-                },
+                Ok(frame) => defer_refusal(ctx.outbound.clone(), frame, command),
                 Err(e) => tracing::warn!(error = %e, "failed to encode a refusal"),
             }
         },
         _ => tracing::warn!("dropping a message with no DAP shape"),
+    }
+}
+
+/// Hand a reverse-request refusal to the writer without dropping it, and
+/// without blocking the reader.
+///
+/// `try_send` alone discarded the refusal whenever the outbound queue was
+/// full, which is the one outcome that defeats the point of refusing at all:
+/// the adapter blocks on its reverse request forever, and `runInTerminal` is
+/// issued precisely when a session is trying to start.
+///
+/// The wait cannot happen inline. This runs on the reader task, and an adapter
+/// can be blocked writing to a stdout we have stopped draining -- waiting here
+/// would close that into a deadlock.
+fn defer_refusal(outbound: mpsc::Sender<Vec<u8>>, frame: Vec<u8>, command: &str) {
+    let full = match outbound.try_send(frame) {
+        Ok(()) => return,
+        Err(mpsc::error::TrySendError::Closed(_)) => {
+            tracing::debug!(command, "adapter closed before its refusal could be sent");
+            return;
+        },
+        Err(mpsc::error::TrySendError::Full(frame)) => frame,
+    };
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => {
+            handle.spawn(async move {
+                let _ = outbound.send(full).await;
+            });
+        },
+        Err(_) => tracing::warn!(command, "no runtime to defer a refusal onto"),
     }
 }

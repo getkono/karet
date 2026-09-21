@@ -397,3 +397,83 @@ fn error_displays() {
         "failed to launch the debug adapter: x: gone"
     );
 }
+
+#[tokio::test]
+async fn a_reverse_request_is_refused_rather_than_ignored() -> TestResult {
+    // karet runs adapters headless, so `runInTerminal` cannot be honoured --
+    // but an adapter blocks on its reverse request, so it must be *answered*.
+    let (client_end, server_end) = tokio::io::duplex(1 << 20);
+    let (server_read, mut server_write) = tokio::io::split(server_end);
+    let (read, write) = tokio::io::split(client_end);
+    let _client = DapClient::connect(read, write);
+    let mut server_read = BufReader::new(server_read);
+
+    let request = json!({
+        "seq": 42,
+        "type": "request",
+        "command": "runInTerminal",
+        "arguments": {"args": ["echo", "hi"]},
+    });
+    codec::write_frame(&mut server_write, &serde_json::to_vec(&request)?).await?;
+
+    let bytes = codec::read_frame(&mut server_read)
+        .await?
+        .ok_or("the adapter was never answered")?;
+    let refusal: Value = serde_json::from_slice(&bytes)?;
+    assert_eq!(refusal["type"], json!("response"));
+    assert_eq!(refusal["request_seq"], json!(42));
+    assert_eq!(refusal["command"], json!("runInTerminal"));
+    assert_eq!(refusal["success"], json!(false));
+    Ok(())
+}
+
+#[tokio::test]
+async fn every_reverse_request_is_refused_even_once_the_queue_fills() -> TestResult {
+    // A pipe too narrow to absorb the refusals, so the writer stalls and the
+    // bounded outbound queue fills behind it. `try_send` discarded whatever
+    // arrived then, and the adapter waited on those forever -- during session
+    // start, which is exactly when `runInTerminal` is issued.
+    const BURST: i64 = 400;
+
+    let (client_end, server_end) = tokio::io::duplex(128);
+    let (server_read, mut server_write) = tokio::io::split(server_end);
+    let (read, write) = tokio::io::split(client_end);
+    let _client = DapClient::connect(read, write);
+    let mut server_read = BufReader::new(server_read);
+
+    let sender = tokio::spawn(async move {
+        for seq in 1..=BURST {
+            let request = json!({
+                "seq": seq,
+                "type": "request",
+                "command": "runInTerminal",
+            });
+            let Ok(bytes) = serde_json::to_vec(&request) else {
+                return;
+            };
+            if codec::write_frame(&mut server_write, &bytes).await.is_err() {
+                return;
+            }
+        }
+    });
+
+    let mut answered = Vec::new();
+    for _ in 1..=BURST {
+        let bytes = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            codec::read_frame(&mut server_read),
+        )
+        .await
+        .map_err(|_| "a refusal was dropped once the outbound queue filled")??
+        .ok_or("the adapter stream ended early")?;
+        let refusal: Value = serde_json::from_slice(&bytes)?;
+        answered.push(refusal["request_seq"].as_i64().unwrap_or_default());
+    }
+    sender.await?;
+
+    // Order is not preserved once replies are deferred, and need not be: DAP
+    // correlates on `request_seq`. Every request being answered is the point.
+    answered.sort_unstable();
+    assert_eq!(answered, (1..=BURST).collect::<Vec<_>>());
+    Ok(())
+}
