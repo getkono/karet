@@ -99,6 +99,12 @@ impl App {
                 let next = (*scroll as i64 + i64::from(delta)).clamp(0, max);
                 *scroll = next as usize;
             },
+            // One server per notch, not three: the render pins this view's offset to
+            // its selection, so a notch has to move the *selection* to move the
+            // window — the same bargain the Seam spine and the outline already make.
+            // A notch therefore also retargets the action strip, which is the point:
+            // the card under the cursor is the one "Restart" restarts.
+            TabKind::LanguageServers(view) => view.select_relative(delta.signum()),
             // Scrolling a document turns pages (one page per scroll gesture).
             #[cfg(feature = "pdf")]
             TabKind::Document {
