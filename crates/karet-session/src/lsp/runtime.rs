@@ -641,7 +641,12 @@ pub(super) async fn server_task(task: ServerTask) {
                     generation,
                 )
                 .await;
-                let edits = if dead {
+                // A server that never advertised the method can only answer
+                // "method not found". Asking anyway would spend a round trip --
+                // on every save, once format-on-save is on -- to learn what the
+                // handshake already said.
+                let supported = dead || active.supports_formatting();
+                let edits = if dead || !supported {
                     Vec::new()
                 } else {
                     tally
@@ -662,6 +667,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     request,
                     doc,
                     version,
+                    supported,
                     edits,
                 });
             },

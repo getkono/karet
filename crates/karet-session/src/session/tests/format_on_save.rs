@@ -255,6 +255,7 @@
             request,
             doc,
             version,
+            supported: true,
             edits: Vec::new(),
         });
 
@@ -284,6 +285,7 @@
             request,
             doc,
             version,
+            supported: true,
             edits: vec![TextEdit {
                 range: Range {
                     start: LineCol::new(0, 0),
@@ -322,6 +324,7 @@
             request,
             doc,
             version: version + 7, // an answer for a buffer that no longer exists
+            supported: true,
             edits: vec![TextEdit {
                 range: Range {
                     start: LineCol::new(0, 0),
@@ -361,6 +364,7 @@
             request,
             doc,
             version,
+            supported: true,
             edits: Vec::new(),
         });
 
@@ -430,5 +434,99 @@
             "edited\n",
             "an unanswered formatter costs the formatting, not the save"
         );
+        assert!(session.pending_format_saves.is_empty());
+    }
+
+    /// A server can hold a TOML document without offering to format it. The
+    /// built-in taplo formatter exists for exactly that case, and the docs
+    /// promise it — but it used to be skipped whenever *any* server had the
+    /// file open, because nothing asked what the server could actually do.
+    #[cfg(feature = "toml-format")]
+    #[test]
+    fn a_server_that_does_not_format_hands_toml_back_to_the_builtin() {
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        let path = dir.path().join("Cargo.toml");
+        if std::fs::write(&path, "[package]\n").is_err() {
+            return;
+        }
+        let Some((mut session, doc, mut events)) = format_on_save_session(&path) else {
+            return;
+        };
+        // Dirty the buffer into something the formatter will want to change.
+        let change = Change::new(
+            0,
+            vec![TextEdit {
+                range: Range {
+                    start: LineCol::new(1, 0),
+                    end: LineCol::new(1, 0),
+                },
+                new_text: "name=\"x\"\n".to_string(),
+            }],
+        );
+        session.handle(
+            RequestId(2),
+            Command::ApplyChange {
+                doc,
+                change,
+                cause: EditCause::Replace,
+            },
+        );
+        while events.try_recv().is_some() {}
+        let request = RequestId(3);
+        session.pending_format_saves.insert(
+            request,
+            crate::session::PendingFormatSave {
+                doc,
+                issued_ms: 0,
+            },
+        );
+        let version = session.document(doc).map(|d| d.version()).unwrap_or(0);
+
+        session.apply_lsp_update(crate::lsp::LspUpdate::Formatting {
+            generation: 0,
+            request,
+            doc,
+            version,
+            supported: false,
+            edits: Vec::new(),
+        });
+
+        assert!(saved(&mut events));
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap_or_default(),
+            "[package]\nname = \"x\"\n",
+            "the built-in formatter must run when the server offers nothing"
+        );
+    }
+
+    /// The same answer for a language with no built-in formatter is simply a
+    /// save: there is nothing to fall back to, and nothing to fail over.
+    #[test]
+    fn a_server_that_does_not_format_still_writes_other_languages() {
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        let path = dir.path().join("main.rs");
+        if std::fs::write(&path, "original\n").is_err() {
+            return;
+        }
+        let Some((mut session, doc, mut events, request)) = parked_save(&path) else {
+            return;
+        };
+        let version = session.document(doc).map(|d| d.version()).unwrap_or(0);
+
+        session.apply_lsp_update(crate::lsp::LspUpdate::Formatting {
+            generation: 0,
+            request,
+            doc,
+            version,
+            supported: false,
+            edits: Vec::new(),
+        });
+
+        assert!(saved(&mut events));
+        assert_eq!(std::fs::read_to_string(&path).unwrap_or_default(), "edited\n");
         assert!(session.pending_format_saves.is_empty());
     }

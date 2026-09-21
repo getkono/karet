@@ -104,6 +104,8 @@ pub(super) fn answer_empty(
                 request,
                 doc,
                 version,
+                // Not a verdict on the capability: there is no connection to ask.
+                supported: true,
                 edits: Vec::new(),
             });
         },
