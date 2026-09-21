@@ -290,11 +290,16 @@ A lost connection is noticed the moment it happens, not the next time karet has
 something to ask: each server task waits on the connection's liveness alongside its
 own command queue, so a server that exits while you are reading rather than typing
 starts reconnecting immediately. A server that keeps its pipe open but stops
-answering is also treated as dead, after three consecutive request timeouts --
-but only once it has answered something. "Stopped answering" presupposes having
-answered: a cold rust-analyzer or a jdtls mid-import can go minutes without
-answering its first request, and killing one there restarts the import, which
-guarantees the next requests time out too.
+answering is also treated as dead, after three consecutive request timeouts -- but
+only once it has answered a request the editor issued *after* the handshake.
+"Stopped answering" presupposes having answered: a cold rust-analyzer or a jdtls
+mid-import can go minutes without answering its first request, and killing one
+there restarts the import, which guarantees the next requests time out too. The
+handshake itself does not count, since every connected server answers `initialize`.
+Two silent deaths in a row put the provider behind the circuit; they are counted
+directly rather than through the sliding failure window, because establishing each
+one costs at least three 30-second timeouts and the window always expires between
+them.
 
 A connection that dies without having lasted ten seconds is charged against the
 restart budget, so five such cycles in a minute open the circuit. Connecting is
@@ -338,7 +343,7 @@ The eight states separate by *cause*, because what the user should do differs:
 
 | Badge | Condition | Whose move |
 |---|---|---|
-| `off` | a provider covers the language but is disabled -- by `lsp.enabled` or by its own `lsp.servers.<id>.enabled` | yours, if you want it |
+| `off` | a provider covers the language but your settings suppress it -- `lsp.enabled`, or an `enabled: false` / empty-command entry the language actually selects | yours, if you want it |
 | `idle` | resolvable and healthy; nothing has needed it yet | nobody's |
 | `ready` | connected and synchronized | nobody's |
 | `starting` | connecting | nobody's |
@@ -459,23 +464,21 @@ between karet instances -- every recovery path re-reads the same install journal
 that each instance writes through the same per-provider lock, so two of them
 converge rather than fight.
 
-A provider that karet gives up on -- a binary that is absent, not executable, or
-that exits on sight and never once connected -- reports `failed`/`not installed`
-and stops being retried. Resolution short-circuits on a live provider, so that
-verdict used to be permanent: installing the binary, or fixing its permissions,
-changed nothing for the rest of the session.
+A provider that is simply not installed needs no recovery machinery. Resolution
+finds nothing, so no process slot is created, and resolution short-circuits only on
+a slot -- so installing it by hand is picked up the next time a file of that
+language opens. The check performs no network I/O: it reads settings, the project,
+`PATH`, and the install journal. That journal is the one every karet process writes
+through the same per-provider lock, so instances converge rather than fight, and
+the install prompt is still raised at most once, so re-resolving never re-asks a
+question you have answered.
 
-The verdict is now lifted on evidence. Each time a document of that language
-opens, karet checks whether the executable is actually there; if it is, the
-provider is re-resolved from the top -- settings, project, `PATH`, install
-journal -- and started. If it is not, the verdict stands and karet says nothing.
-That asymmetry matters: re-attempting the launch unconditionally would re-run a
-missing binary on every file you open and report the same failure each time.
-
-The check is a `stat`, never a spawn, and performs no network I/O. It reads the
-same install journal every karet process writes through the same per-provider
-lock, so instances converge rather than fight. The install prompt is still raised
-at most once, so re-resolution never re-asks a question you have answered.
+A provider whose *launch* fails in a way no retry can fix -- an explicitly
+configured command that is not there, a binary that exits on sight -- reports
+`failed` and is not retried for the rest of the session. karet deliberately does
+not re-attempt it on each file you open: nothing observable changes between those
+opens, so it would re-exec the same broken command and raise the same failure once
+per file. Fix it, then use **Restart** in the Language Servers tab.
 
 A completed install starts the provider immediately, for every open document whose
 language it serves -- including a companion like Ruff or Biome, which is no
