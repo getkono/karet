@@ -188,8 +188,15 @@ pub(crate) enum LspUpdate {
     },
     /// A complete server diagnostic layer for one file.
     Diagnostics {
-        /// The manager generation that spawned the server task.
-        generation: u64,
+        /// The publishing task's slot token.
+        ///
+        /// Fenced on the same ownership as [`Self::DiagnosticsCleared`], because a
+        /// layer that only its owner may erase must be one that only its owner may
+        /// write. A task inside `shutdown` -- up to ten seconds, with its forwarder
+        /// still running -- could otherwise publish once more at an unchanged
+        /// generation after its replacement had already cleared the layer, leaving
+        /// a dead server's markers that nothing would ever remove.
+        token: u64,
         /// Provider/root identity whose diagnostic layer is replaced.
         server: String,
         /// File whose LSP diagnostic layer is replaced.

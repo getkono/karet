@@ -196,29 +196,19 @@ impl LspManager {
         true
     }
 
-    /// Whether an asynchronous update belongs to the current server generation.
+    /// Whether an asynchronous update is still one this manager wants.
+    ///
+    /// Generation for everything a *request* produced: a reconfigure or restart
+    /// retires every task, and answers from a retired one are stale by definition.
+    /// Slot ownership for the two diagnostic updates, which outlive request/response
+    /// pairing -- see the arm below for why generation is the wrong fence there.
     pub(crate) fn accepts(&self, update: &LspUpdate) -> bool {
-        // Clearing a diagnostic layer takes generation *or* ownership, because
-        // neither fence alone is right.
-        //
-        // Generation alone is too strict: `reconfigure` and `restart` bump it
-        // before the task they retire gets to exit, so the parting clear that
-        // removes the retired generation's markers would be discarded -- and for a
-        // provider the new settings no longer select, nothing would ever replace
-        // them.
-        //
-        // Exemption alone is too loose: the layer key is the slot key, which is
-        // *identical* across a generation bump for the same provider and root. A
-        // task still parked on a 30-second request can send its clear long after
-        // its replacement has connected and published, wiping a live server's
-        // markers until the file next changes.
-        //
-        // Together they are exact. A live task clearing after its grace window
-        // matches on generation. A retired task's parting clear is let through
-        // only when no live slot claims the key -- which is precisely when its
-        // markers are orphaned rather than superseded.
+        // Diagnostics are fenced on slot ownership; everything else on generation.
         let generation = match update {
-            LspUpdate::DiagnosticsCleared { token, server, .. } => {
+            // Both halves of a diagnostic layer are fenced on ownership: only the
+            // task that owns the key may write it, and only that task may erase it.
+            LspUpdate::Diagnostics { token, server, .. }
+            | LspUpdate::DiagnosticsCleared { token, server, .. } => {
                 // Accepted from the task that owns the key, or when nobody does.
                 //
                 // Ownership, not generation, because the two come apart. A slot is
@@ -241,7 +231,6 @@ impl LspManager {
             | LspUpdate::WorkspaceSymbols { generation, .. }
             | LspUpdate::WorkspaceEdit { generation, .. }
             | LspUpdate::Formatting { generation, .. }
-            | LspUpdate::Diagnostics { generation, .. }
             | LspUpdate::SyncFailed { generation, .. }
             | LspUpdate::ServerStatus { generation, .. }
             | LspUpdate::SpawnFailed { generation, .. }

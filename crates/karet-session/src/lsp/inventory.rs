@@ -109,16 +109,32 @@ impl LspManager {
     /// Whether the user's settings suppress this provider for every language it
     /// covers.
     ///
-    /// Asked through `configured_primary`, which is the *only* rule that decides
-    /// whether a launch happens, rather than by looking up the provider's own id
-    /// in `lsp.servers`. Those are not the same lookup: settings select a provider
-    /// by the id named in `lsp.languages.<language>.servers`, or by the language's
-    /// own name -- never by a built-in provider id. So
-    /// `lsp.servers."rust-analyzer".enabled = false` with no `lsp.languages.rust`
-    /// entry does *not* stop rust-analyzer running, and reporting it as disabled
-    /// would make the inventory lie in the opposite direction: a server that is
-    /// spawned and serving, badged `off`, with its real runtime state and error
-    /// hidden from the manager.
+    /// Reported only when settings make a launch *impossible*, never merely
+    /// unlikely -- the asymmetry is deliberate.
+    ///
+    /// Saying "enabled" about a provider the user switched off is a mild
+    /// inaccuracy. Saying "disabled" about one that is spawned and serving hides
+    /// its real runtime state and its error behind an `off` badge, which is worse
+    /// and is what two earlier attempts at this got wrong. So each clause below has
+    /// to be certain.
+    ///
+    /// Two are. A provider explicitly selected by
+    /// `lsp.languages.<language>.servers` and explicitly switched off cannot
+    /// launch. And an entry keyed by the language's own name suppresses that
+    /// language's built-in primary -- `lsp.servers.rust = { enabled = false }`
+    /// stops rust-analyzer without ever naming it.
+    ///
+    /// The second needs the companion exclusion. `ensure_additional_provider`
+    /// never consults `configured_primary`, so a provider listed in that language's
+    /// `diagnostics` still starts even when the primary path is suppressed --
+    /// `lsp.servers.python = { enabled = false }` with
+    /// `lsp.languages.python.diagnostics = ["pyright"]` really does run pyright.
+    ///
+    /// Known gap, deliberately not guessed at: a companion suppressed by its *own*
+    /// id (`lsp.servers.ruff = { enabled = false }`) is honoured by the launch path
+    /// but still reports enabled here. Establishing that needs the repository
+    /// markers that pick marker-default companions, which are root-scoped and not
+    /// available at this level.
     fn provider_disabled(&self, server: &LanguageServerId, languages: &BTreeSet<String>) -> bool {
         !languages.is_empty()
             && languages.iter().all(|language| {
@@ -126,13 +142,28 @@ impl LspManager {
                 let Some((id, Configured::Suppressed)) = self.configured_primary(&language) else {
                     return false;
                 };
-                // Suppressed under this provider's own id, or under the language's
-                // name -- which is the case the first attempt at this missed.
-                // `lsp.servers.rust = { enabled = false }` stops rust-analyzer from
-                // launching without ever naming it, so a comparison against the id
-                // alone left the inventory reporting a language with no server at
-                // all as healthy and idle.
-                id == *server || builtin_server(&language).as_ref() == Some(server)
+                if id == *server {
+                    return true;
+                }
+                builtin_server(&language).as_ref() == Some(server)
+                    && !self.selected_as_companion(server, &language)
+            })
+    }
+
+    /// Whether `lsp.languages.<language>.diagnostics` names this provider.
+    ///
+    /// That list is read by `ensure_additional_provider`, which is a launch path
+    /// `configured_primary` says nothing about -- so a provider on it runs whatever
+    /// the primary selection does.
+    fn selected_as_companion(&self, server: &LanguageServerId, language: &str) -> bool {
+        self.settings
+            .languages
+            .get(language)
+            .is_some_and(|selection| {
+                selection
+                    .diagnostics
+                    .iter()
+                    .any(|candidate| candidate == server.key())
             })
     }
 

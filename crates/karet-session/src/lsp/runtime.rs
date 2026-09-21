@@ -144,6 +144,7 @@ pub(super) async fn server_task(task: ServerTask) {
                         language.clone(),
                         provider.key().to_owned(),
                         generation,
+                        token,
                     ));
                     client = Some(candidate);
                     ever_connected = true;

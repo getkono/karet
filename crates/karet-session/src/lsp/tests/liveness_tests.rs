@@ -185,3 +185,113 @@ async fn a_retiring_task_cannot_clear_its_replacements_diagnostics() -> TestResu
     );
     Ok(())
 }
+
+/// A task that owns the key may write and erase its layer; one that has been
+/// replaced may do neither.
+///
+/// The erase half alone was not enough. A retiring task sits inside `shutdown` for
+/// up to ten seconds with its diagnostics forwarder still running, so it could
+/// publish once more at an unchanged generation *after* its replacement had
+/// cleared the layer -- leaving a dead server's markers that nothing would ever
+/// remove, because its own parting clear is correctly refused by then.
+#[tokio::test]
+async fn only_the_task_that_owns_a_layer_may_write_it() -> TestResult {
+    let (mut manager, _updates) = LspManager::new(LspSettings::default(), None, None, None);
+    manager.set_connector(test_connector(
+        Behavior::Normal,
+        None,
+        Arc::new(AtomicUsize::new(0)),
+    ));
+    let path = PathBuf::from("/tmp/owned-layer.rs");
+    manager.document_opened(Some("rust"), Some("rust"), &path, 1, || {
+        "fn main() {}".into()
+    });
+    let key = manager
+        .servers
+        .keys()
+        .next()
+        .cloned()
+        .ok_or("the open produced no server slot")?;
+    let retiring = manager
+        .servers
+        .get(&key)
+        .map(|slot| slot.token)
+        .ok_or("the slot has no token")?;
+
+    // Same key, same generation, different owner.
+    manager.document_closed(Some("rust"), &path);
+    manager.document_opened(Some("rust"), Some("rust"), &path, 2, || {
+        "fn main() {}".into()
+    });
+    let serving = manager
+        .servers
+        .get(&key)
+        .map(|slot| slot.token)
+        .ok_or("the reopen produced no server slot")?;
+
+    let publish = |token| LspUpdate::Diagnostics {
+        token,
+        server: key.clone(),
+        path: path.clone(),
+        version: None,
+        diagnostics: Vec::new(),
+    };
+    assert!(
+        !manager.accepts(&publish(retiring)),
+        "a retired task was allowed to write over a live layer"
+    );
+    assert!(
+        manager.accepts(&publish(serving)),
+        "the owning task was refused its own publish"
+    );
+    Ok(())
+}
+
+/// A provider that gives up permanently must still ask for its layer to be
+/// cleared, even though it never publishes anything itself.
+///
+/// That branch reports `Unavailable` and then drains its channel forever rather
+/// than exiting, so the parting clear at the end of the task is unreachable from
+/// it -- and it keeps holding the key, so a previous task's clear is refused.
+/// Without this, markers inherited from a task that did publish would never be
+/// removed. Asserted on the instruction rather than its effect: in this fixture
+/// nothing was ever published, so clearing is correctly a downstream no-op.
+#[tokio::test]
+async fn a_provider_that_gives_up_asks_for_its_layer_to_be_cleared() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("main.rs");
+    std::fs::write(&path, "fn main() {}\n")?;
+    let (mut manager, mut updates) = LspManager::new(
+        LspSettings::default(),
+        Some(dir.path().to_path_buf()),
+        None,
+        None,
+    );
+    manager.set_connector(failing_connector(Arc::new(AtomicUsize::new(0))));
+    manager.document_opened(Some("rust"), Some("rust"), &path, 1, || {
+        "fn main() {}".into()
+    });
+
+    let mut unavailable = false;
+    let mut asked_to_clear = false;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while tokio::time::Instant::now() < deadline && !(unavailable && asked_to_clear) {
+        let Ok(Some(update)) = tokio::time::timeout(Duration::from_secs(2), updates.recv()).await
+        else {
+            break;
+        };
+        match update {
+            LspUpdate::RuntimeState { state, .. } => {
+                unavailable = unavailable || state == LanguageServerRuntimeState::Unavailable;
+            },
+            LspUpdate::DiagnosticsCleared { .. } => asked_to_clear = true,
+            _ => {},
+        }
+    }
+    assert!(unavailable, "the provider never reported giving up");
+    assert!(
+        asked_to_clear,
+        "giving up never asked for its layer to be cleared"
+    );
+    Ok(())
+}

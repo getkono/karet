@@ -16,6 +16,7 @@ pub(super) fn forward_diagnostics(
     language: String,
     server: String,
     generation: u64,
+    token: u64,
 ) -> tokio::task::JoinHandle<()> {
     let mut diagnostic_rx = client.diagnostics();
     let mut raw_rx = client.raw_notifications();
@@ -56,7 +57,7 @@ pub(super) fn forward_diagnostics(
             match diagnostic_rx.recv().await {
                 Ok(publication) => {
                     let _ = updates.send(LspUpdate::Diagnostics {
-                        generation,
+                        token,
                         server: language.clone(),
                         path: publication.path,
                         version: publication.version,
