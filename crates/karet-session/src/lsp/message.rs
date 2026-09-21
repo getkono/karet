@@ -305,26 +305,28 @@ pub(crate) enum LspUpdate {
         /// [`manual_install_reason`](crate::lsp_registry::manual_install_reason).
         reason: String,
     },
-    /// A provider/root connection changed lifecycle state.
     /// A slot was retired, so nothing is serving that provider at that root.
     ///
-    /// Emitted by the *manager*, not a task, and so fenced on generation rather
-    /// than ownership -- by the time this is sent the slot is already gone, which
-    /// is exactly what an ownership fence would refuse.
+    /// Emitted by the *manager*, not a task, and **not fenced at all**. Ownership
+    /// cannot fence it -- by the time it is sent the slot is gone, which is exactly
+    /// what an ownership fence refuses. Nor can generation: the report is queued on
+    /// the same channel the actor drains, so a `reconfigure` landing in that window
+    /// would bump past it and discard it, and then nothing would ever correct the
+    /// client. A fence can only lose truth here. "This slot is gone" cannot become
+    /// false, and FIFO on one channel guarantees it precedes any report from a task
+    /// created after it.
     ///
     /// It exists because dropping the recorded state is not the same as telling
     /// anyone. The manager's own map falls back to `Idle` once the entry is gone,
-    /// but a presentation client caches what it was last told and only re-queries
-    /// the inventory when asked -- so without this it keeps rendering `running`,
-    /// and offering a Restart, for a provider whose process is dead.
+    /// but a presentation client caches what it was last told -- so without this it
+    /// keeps rendering `running`, and offering a Restart, for a dead process.
     SlotRetired {
-        /// The manager generation the retirement happened in.
-        generation: u64,
         /// The provider whose slot went away.
         server: LanguageServerId,
         /// The repository root it served.
         root: PathBuf,
     },
+    /// A provider/root connection changed lifecycle state.
     RuntimeState {
         /// The reporting task's slot token, so a task shutting down cannot
         /// overwrite the state of the task that replaced it under the same key.

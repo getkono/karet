@@ -205,8 +205,7 @@ impl LspManager {
         }
         self.settings = settings;
         self.generation = self.generation.wrapping_add(1);
-        self.servers.clear();
-        self.runtime_states.clear();
+        self.retire_all_slots();
         self.jdtls_preflight = None;
         self.preflight_reported.clear();
         self.sync_failure_reported.clear();
@@ -220,6 +219,22 @@ impl LspManager {
     /// the inventory prefers a recorded state over slot presence, so a leftover
     /// `Running` would keep describing a task that no longer exists. With no entry
     /// it falls back to `Idle`, which is the truth -- nothing needs the provider.
+    /// Retire every slot, reporting each, for a wholesale change of plan.
+    ///
+    /// Used where `reconfigure` and `restart` used to clear the map directly. That
+    /// told nobody, so saving `lsp.enabled = false` over a running Ruff left the
+    /// client's cached `Running` in place: badge healthy, panel `running`, Restart
+    /// offered and silently doing nothing. Retirement has one meaning, so it has
+    /// one path.
+    fn retire_all_slots(&mut self) {
+        for key in self.servers.keys().cloned().collect::<Vec<_>>() {
+            self.retire_slot(&key);
+        }
+        // Belt and braces: a slot may have been inserted before a state was ever
+        // recorded for it, so clearing is not implied by retiring each one.
+        self.runtime_states.clear();
+    }
+
     fn retire_slot(&mut self, key: &str) {
         let Some(slot) = self.servers.remove(key) else {
             return;
@@ -234,7 +249,6 @@ impl LspManager {
         // own parting report cannot do this job: by now its slot is gone, which is
         // exactly what its ownership fence refuses.
         let _ = self.updates.send(LspUpdate::SlotRetired {
-            generation: self.generation,
             server: slot.runtime_id,
             root: slot.root,
         });
@@ -257,6 +271,9 @@ impl LspManager {
         // retired and re-taken with no bump at all, which is what the last
         // `didClose` of a language followed by the next open does.
         let generation = match update {
+            // Unfenced: "this slot is gone" cannot become false, and a fence can
+            // only lose it. See the variant's own docs.
+            LspUpdate::SlotRetired { .. } => return true,
             LspUpdate::Diagnostics { token, server, .. } => {
                 return self
                     .servers
@@ -301,7 +318,6 @@ impl LspManager {
             | LspUpdate::WorkspaceEdit { generation, .. }
             | LspUpdate::Formatting { generation, .. }
             | LspUpdate::SyncFailed { generation, .. }
-            | LspUpdate::SlotRetired { generation, .. }
             | LspUpdate::PreflightFailed { generation, .. }
             | LspUpdate::InstallRequired { generation, .. }
             | LspUpdate::ManualInstallRequired { generation, .. } => *generation,

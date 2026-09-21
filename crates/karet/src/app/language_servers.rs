@@ -50,6 +50,15 @@ impl LanguageServerRuntimeModel {
         };
         instance.runtime = state;
         instance.error.clone_from(error);
+        // `Idle` is only ever reported for a provider whose slot has been retired,
+        // and a retired slot has no documents attached -- the backend retires it
+        // precisely because its document set emptied. Zeroing the count here is
+        // what stops the panel reading "2 document(s)" beside `idle`, and stops it
+        // offering a Restart whose guard is that same count: the restart would find
+        // no process, do nothing, and say nothing.
+        if state == LanguageServerRuntimeState::Idle {
+            instance.open_documents = 0;
+        }
         true
     }
 
@@ -761,6 +770,9 @@ impl App {
                 if let Some(instance) = status.instances.iter_mut().find(|item| item.root == root) {
                     instance.runtime = state;
                     instance.error.clone_from(&error);
+                    if state == LanguageServerRuntimeState::Idle {
+                        instance.open_documents = 0;
+                    }
                 } else {
                     missing_instance = true;
                 }

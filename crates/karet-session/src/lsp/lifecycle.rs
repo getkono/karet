@@ -17,11 +17,10 @@ impl LspManager {
         let running = self.is_running(&provider);
         if running {
             self.generation = self.generation.wrapping_add(1);
-            self.servers.clear();
-            // Cleared with them, as `reconfigure` does: runtime state is fenced on
-            // a slot existing, so an entry whose slot is gone can no longer be
-            // updated and would keep describing a task that does not exist.
-            self.runtime_states.clear();
+            // Reported, not merely cleared: a client caches lifecycle state, and a
+            // restart whose replacement never comes up would otherwise leave it
+            // showing the old process as running.
+            self.retire_all_slots();
         }
         running
     }

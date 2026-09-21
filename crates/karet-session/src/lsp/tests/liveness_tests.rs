@@ -559,48 +559,59 @@ async fn a_task_that_outlived_its_slot_cannot_report_a_launch_failure() -> TestR
 
 /// Retiring a slot must *tell* somebody, not just forget.
 ///
-/// The gap this closes: dropping the recorded state made the manager's own answer
-/// correct, but nothing reads that map except an inventory query, and a client
-/// caches the last state it was told. With no report on retirement the panel kept
-/// rendering `running` -- and offering a Restart that silently did nothing -- for a
-/// provider whose process was dead. The task's own parting report cannot do this
-/// job: by then its slot is gone, which is what its ownership fence refuses.
+/// Asserted through the public `Command`/`Event` seam, not on the internal enum.
+/// The first version of this test destructured the report, threw its fence field
+/// away, rebuilt a fresh one and asserted that *that* was accepted -- true by
+/// construction. Review proved it vacuous by mutation: making `retire_slot` send a
+/// report every client would refuse left the whole file passing.
 #[tokio::test]
-async fn retiring_a_slot_reports_that_nothing_is_serving() -> TestResult {
-    let (mut manager, mut updates) = LspManager::new(LspSettings::default(), None, None, None);
-    manager.set_connector(test_connector(
+async fn closing_the_last_document_tells_the_client_nothing_is_serving() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let path = rust_file(&dir, "main.rs", "fn main() {}\n").ok_or("write failed")?;
+    let (session, mut events) = session_with_connector(test_connector(
         Behavior::Normal,
         None,
         Arc::new(AtomicUsize::new(0)),
     ));
-    let path = PathBuf::from("/tmp/retire-report.rs");
-    manager.document_opened(Some("rust"), Some("rust"), &path, 1, || {
-        "fn main() {}".into()
-    });
-    // Drain whatever the open produced, so the assertion below is about the close.
-    while let Ok(update) = updates.try_recv() {
-        assert!(
-            !matches!(update, LspUpdate::SlotRetired { .. }),
-            "opening a document retired a slot"
-        );
-    }
+    let backend = local_session(session, None);
+    backend.send(
+        backend.next_id(),
+        Command::OpenDocument {
+            path: path.clone(),
+            language: None,
+        },
+    )?;
+    let (doc, _) = await_opened(&mut events).await.ok_or("no Opened")?;
 
-    manager.document_closed(Some("rust"), &path);
-    let mut retired = None;
-    while let Ok(update) = updates.try_recv() {
-        if let LspUpdate::SlotRetired { server, root, .. } = update {
-            retired = Some((server, root));
+    // Wait until the client has been told the provider is serving, so the `Idle`
+    // below is a correction of something rather than an opening statement.
+    let mut running = false;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while tokio::time::Instant::now() < deadline && !running {
+        let Some((_, event)) = next_event(&mut events).await else {
+            break;
+        };
+        if let Event::LanguageServerRuntimeChanged { state, .. } = event {
+            running = state == LanguageServerRuntimeState::Running;
         }
     }
-    let (server, root) = retired.ok_or("closing the last document reported nothing")?;
-    assert_eq!(server, LanguageServerId::RustAnalyzer);
+    assert!(running, "the provider never reported serving");
+
+    backend.send(backend.next_id(), Command::CloseDocument { doc })?;
+
+    let mut idle = false;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while tokio::time::Instant::now() < deadline && !idle {
+        let Some((_, event)) = next_event(&mut events).await else {
+            break;
+        };
+        if let Event::LanguageServerRuntimeChanged { state, .. } = event {
+            idle = state == LanguageServerRuntimeState::Idle;
+        }
+    }
     assert!(
-        manager.accepts(&LspUpdate::SlotRetired {
-            generation: manager.generation,
-            server,
-            root,
-        }),
-        "the retirement report was refused, so no client would ever hear it"
+        idle,
+        "closing the last document never told the client the provider stopped"
     );
     Ok(())
 }
