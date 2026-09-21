@@ -1,5 +1,8 @@
 use super::*;
 
+/// Answer to a save abandoned because its document was closed first.
+const SAVE_CANCELLED_CLOSED: &str = "save cancelled: document closed";
+
 /// Test-only read view of a document's buffer state. Production consumers render
 /// from the [`DocSnapshot`](crate::local::DocSnapshot) stream instead.
 #[cfg(test)]
@@ -383,17 +386,9 @@ impl Session {
         let Some(pending) = self.pending_format_saves.remove(&request).map(|save| save.doc) else {
             return false;
         };
-        if !self.store.docs.contains_key(&pending) {
-            self.emit(
-                Some(request),
-                Event::Notification {
-                    severity: Severity::Warning,
-                    kind: NotificationKind::Io,
-                    message: "save cancelled: document closed".to_owned(),
-                },
-            );
-            return true;
-        }
+        // A closed document cannot be found here: `close` drains this map before
+        // it removes the document, and that is the only place documents are
+        // removed. A cancelled save is reported there, once.
         if pending == doc
             && self
                 .store
@@ -645,7 +640,7 @@ impl Session {
                     Event::Notification {
                         severity: Severity::Warning,
                         kind: NotificationKind::Io,
-                        message: "save cancelled: document closed".to_owned(),
+                        message: SAVE_CANCELLED_CLOSED.to_owned(),
                     },
                 );
             }
