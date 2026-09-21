@@ -17,7 +17,7 @@ fn manager_with_test_connector() -> (LspManager, mpsc::UnboundedReceiver<LspUpda
 async fn cached_preflight_failure_blocks_the_server() {
     let (mut manager, _updates) = manager_with_test_connector();
     manager.jdtls_preflight = Some(Some("no jdk".to_owned()));
-    manager.document_opened(
+    let _ = manager.document_opened(
         Some("java"),
         Some("java"),
         Path::new("/tmp/Main.java"),
@@ -34,7 +34,7 @@ async fn cached_preflight_failure_blocks_the_server() {
 async fn passing_preflight_spawns_the_server() {
     let (mut manager, _updates) = manager_with_test_connector();
     manager.jdtls_preflight = Some(None);
-    manager.document_opened(
+    let _ = manager.document_opened(
         Some("java"),
         Some("java"),
         Path::new("/tmp/Main.java"),
@@ -48,7 +48,7 @@ async fn passing_preflight_spawns_the_server() {
 async fn language_status_notifications_surface_as_status_updates() {
     let (mut manager, mut updates) = manager_with_test_connector();
     manager.jdtls_preflight = Some(None);
-    manager.document_opened(
+    let _ = manager.document_opened(
         Some("java"),
         Some("java"),
         Path::new("/tmp/Status.java"),

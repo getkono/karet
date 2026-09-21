@@ -60,6 +60,7 @@ use provider::project_local_spec;
 use provider::python_diagnostic_provider;
 use provider::uses_biome;
 pub(crate) use provider::version_i32;
+pub(crate) use slot::Retired;
 use slot::ServerSlot;
 pub(crate) use slot::SlotKey;
 use tokio::sync::mpsc;
@@ -166,18 +167,20 @@ impl LspManager {
     }
 
     /// Apply new settings, retiring every task created under the old snapshot.
-    /// Returns whether documents need to be reopened against fresh servers.
-    pub(crate) fn reconfigure(&mut self, settings: LspSettings) -> bool {
+    ///
+    /// `None` means the settings are unchanged and nothing need happen. `Some`
+    /// carries the retirement the caller must adopt, and is also its signal to
+    /// reopen documents against fresh servers.
+    pub(crate) fn reconfigure(&mut self, settings: LspSettings) -> Option<Retired> {
         if self.settings == settings {
-            return false;
+            return None;
         }
         self.settings = settings;
         self.generation = self.generation.wrapping_add(1);
-        self.servers.clear();
+        let retired = self.retire_matching(|_| true);
         self.jdtls_preflight = None;
         self.preflight_reported.clear();
-        self.sync_failure_reported.clear();
-        true
+        Some(retired)
     }
 
     /// Whether an asynchronous update is still worth adopting.
@@ -549,12 +552,12 @@ impl LspManager {
         path: &Path,
         version: u64,
         text: impl FnOnce() -> String,
-    ) {
+    ) -> Retired {
         // Checked here, not only in `ensure_server`: companions are attached
         // below without going through it, so once the primary stopped being
         // required this was the only remaining gate on the whole feature.
         if !self.settings.enabled {
-            return;
+            return Retired::none();
         }
         let path = absolute_path(path);
         let selector = language_key(selector);
@@ -603,7 +606,7 @@ impl LspManager {
             }
         }
         if targets.is_empty() {
-            return;
+            return Retired::none();
         }
         let document_language = lsp_language_id
             .map(str::to_owned)
@@ -638,9 +641,11 @@ impl LspManager {
         // drops: the server never learns the document exists, the task never adds
         // it to its replay set, and no later restart fixes it. The file simply has
         // no language support, with nothing anywhere saying why.
+        let mut retired = Retired::none();
         for key in undelivered {
-            self.report_undelivered(&key, "the server's command queue is full");
+            retired.absorb(self.report_undelivered(&key, "the server's command queue is full"));
         }
+        retired
     }
 
     /// Report that a document-sync command never reached its server, and retire
@@ -651,9 +656,9 @@ impl LspManager {
     /// "the LSP stopped working for this file". A closed channel additionally
     /// means the task has exited, so the slot is dropped and the next open builds
     /// a fresh one rather than writing into a sender nobody reads.
-    fn report_undelivered(&mut self, key: &SlotKey, reason: &str) {
+    fn report_undelivered(&mut self, key: &SlotKey, reason: &str) -> Retired {
         let Some(slot) = self.servers.get(key) else {
-            return;
+            return Retired::none();
         };
         let closed = slot.tx.is_closed();
         if self.sync_failure_reported.insert(key.clone()) {
@@ -664,8 +669,9 @@ impl LspManager {
             });
         }
         if closed {
-            self.servers.remove(key);
-            self.sync_failure_reported.remove(key);
+            self.retire(key)
+        } else {
+            Retired::none()
         }
     }
 
@@ -677,9 +683,9 @@ impl LspManager {
         path: &Path,
         version: u64,
         text: impl FnOnce() -> String,
-    ) {
+    ) -> Retired {
         if language_key(language).is_none() {
-            return;
+            return Retired::none();
         }
         let path = absolute_path(path);
         let senders: Vec<_> = self
@@ -689,7 +695,7 @@ impl LspManager {
             .map(|(key, slot)| (key.clone(), slot.tx.clone()))
             .collect();
         if senders.is_empty() {
-            return;
+            return Retired::none();
         }
         let text = text();
         let mut undelivered = Vec::new();
@@ -711,15 +717,17 @@ impl LspManager {
         // buffer, so every answer it gives is about text the user no longer has.
         // Sync is full-text, so the next edit that *does* land repairs it -- but
         // until then the condition is real and was previously invisible.
+        let mut retired = Retired::none();
         for key in undelivered {
-            self.report_undelivered(&key, "the server's command queue is full");
+            retired.absorb(self.report_undelivered(&key, "the server's command queue is full"));
         }
+        retired
     }
 
-    /// Forward a document close. A no-op for languages without a running server.
-    pub(crate) fn document_closed(&mut self, language: Option<&str>, path: &Path) {
+    /// Forward a document close, retiring any slot it was the last document for.
+    pub(crate) fn document_closed(&mut self, language: Option<&str>, path: &Path) -> Retired {
         let Some(_language) = language_key(language) else {
-            return;
+            return Retired::none();
         };
         let path = absolute_path(path);
         let keys: Vec<_> = self
@@ -728,6 +736,7 @@ impl LspManager {
             .filter(|(_, slot)| slot.documents.contains(&path))
             .map(|(key, _)| key.clone())
             .collect();
+        let mut retired = Retired::none();
         for key in keys {
             let remove = self.servers.get_mut(&key).is_some_and(|slot| {
                 let _ = slot.tx.try_send(ServerCmd::DidClose { path: path.clone() });
@@ -735,9 +744,10 @@ impl LspManager {
                 slot.documents.is_empty()
             });
             if remove {
-                self.servers.remove(&key);
+                retired.absorb(self.retire(&key));
             }
         }
+        retired
     }
 
     /// Forward a successful save to every server attached to the document.

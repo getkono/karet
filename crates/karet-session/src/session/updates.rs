@@ -417,18 +417,28 @@ impl Session {
                 )
             })
             .collect();
+        let mut retired = crate::lsp::Retired::none();
         for (selector, lsp_language_id, path, version, text) in documents {
-            self.lsp
-                .document_opened(selector, lsp_language_id, &path, version, || text);
+            retired.absorb(self.lsp.document_opened(
+                selector,
+                lsp_language_id,
+                &path,
+                version,
+                || text,
+            ));
         }
+        self.adopt_retirement(retired);
     }
 
     pub(super) fn restart_lsp(&mut self, server: crate::api::LanguageServerId) {
-        if self.lsp.restart(server) {
-            // Restart advances a global generation and retires every slot so no
-            // late answer from the old provider can be adopted.
-            self.reopen_lsp_documents(None);
-        }
+        let Some(retired) = self.lsp.restart(server.clone()) else {
+            return;
+        };
+        // Markers cleared and the stop reported *before* the replacement starts,
+        // so the client never sees the new instance's `Starting` arrive behind
+        // the old one's retirement and conclude the provider went backwards.
+        self.adopt_retirement(retired);
+        self.reopen_lsp_documents(Some(server));
     }
 
     pub(super) fn queue_lsp_registry(
@@ -559,6 +569,35 @@ impl Session {
     /// another repository root keeps its own markers. Other servers'
     /// diagnostics, spell-check and lint results share the merged set and are
     /// untouched.
+    /// Settle what a retirement owes the user: markers off the screen, and the
+    /// client told the provider is no longer serving.
+    ///
+    /// Both halves happen here, together, for every path that retires a slot --
+    /// a document closing, a settings change, an explicit restart. They used to
+    /// be spread across those paths in different combinations, and no path did
+    /// both, which is how a retired provider kept its squiggles *and* went on
+    /// being reported as running.
+    ///
+    /// The report is emitted directly rather than routed back through the task
+    /// channel. It is the manager's own statement about a slot it has already
+    /// removed, so there is no incarnation to attribute it to and nothing for a
+    /// fence to decide -- and a message would have had to be exempted from the
+    /// very fence that keeps a retired task quiet.
+    pub(crate) fn adopt_retirement(&mut self, retired: crate::lsp::Retired) {
+        for key in retired.into_keys() {
+            self.clear_lsp_diagnostic_layer(&key);
+            self.emit(
+                None,
+                Event::LanguageServerRuntimeChanged {
+                    server: key.provider,
+                    root: key.root,
+                    state: crate::api::LanguageServerRuntimeState::Idle,
+                    error: None,
+                },
+            );
+        }
+    }
+
     fn clear_lsp_diagnostic_layer(&mut self, server: &crate::lsp::SlotKey) {
         let affected = self
             .store
@@ -691,7 +730,7 @@ impl Session {
     /// their generation-tagged late answers are ignored by [`Self::apply_lsp_update`].
     pub(super) fn apply_config_report(&mut self, report: crate::config::LoadedConfig) {
         self.debug.reconfigure(report.settings.debug.clone());
-        let lsp_changed = self.lsp.reconfigure(report.settings.lsp.clone());
+        let lsp_retired = self.lsp.reconfigure(report.settings.lsp.clone());
         let ai_commit_changed = self.config.settings.git.ai_commit != report.settings.git.ai_commit;
         self.config.settings = report.settings.clone();
         self.config.loaded_config = report.clone();
@@ -712,17 +751,20 @@ impl Session {
             self.schedule_spell(doc_id);
         }
 
-        if lsp_changed {
+        if let Some(retired) = lsp_retired {
+            self.adopt_retirement(retired);
+            let mut reopened = crate::lsp::Retired::none();
             let lsp = &mut self.lsp;
             for doc in self.store.docs.values() {
-                lsp.document_opened(
+                reopened.absorb(lsp.document_opened(
                     doc.language_selector,
                     doc.lsp_language_id,
                     &doc.path,
                     doc.buffer.version(),
                     || doc.buffer.text(),
-                );
+                ));
             }
+            self.adopt_retirement(reopened);
         }
 
         // Re-probe when the agent, its binary, or the on/off switch moved. A

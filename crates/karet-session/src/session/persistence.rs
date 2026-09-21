@@ -185,7 +185,7 @@ impl Session {
     /// Reload a clean document from disk (history reset, version bumped), then emit
     /// [`Event::Reloaded`] and publish the fresh snapshot.
     pub(super) fn reload(&mut self, doc_id: DocumentId) {
-        let (version, spell_without_syntax) = {
+        let (version, spell_without_syntax, retired) = {
             let highlight_tx = &self.highlight_tx;
             let settings = &self.config.settings;
             let lsp = &mut self.lsp;
@@ -201,14 +201,15 @@ impl Session {
             // `None` edits force it to start over.
             let spell_without_syntax = update_syntax(settings, highlight_tx, doc_id, doc, None);
             // The on-disk content is the new truth; keep the server in sync.
-            lsp.document_changed(
+            let retired = lsp.document_changed(
                 doc.language_selector,
                 &doc.path,
                 doc.buffer.version(),
                 || doc.buffer.text(),
             );
-            (doc.buffer.version(), spell_without_syntax)
+            (doc.buffer.version(), spell_without_syntax, retired)
         };
+        self.adopt_retirement(retired);
         self.emit(
             None,
             Event::Reloaded {

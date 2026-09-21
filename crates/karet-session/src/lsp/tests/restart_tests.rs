@@ -139,7 +139,7 @@ async fn a_configured_command_that_is_missing_is_attempted_once_not_per_open() -
     let provider = LanguageServerId::new("pretend-analyzer");
     let key = crate::lsp::SlotKey::new(provider.clone(), crate::lsp::absolute_path(dir.path()));
 
-    manager.document_opened(Some("rust"), Some("rust"), &path, 1, || {
+    let _ = manager.document_opened(Some("rust"), Some("rust"), &path, 1, || {
         "fn main() {}".into()
     });
     manager.note_runtime(
@@ -149,7 +149,7 @@ async fn a_configured_command_that_is_missing_is_attempted_once_not_per_open() -
     );
 
     for version in 2..8 {
-        manager.document_opened(Some("rust"), Some("rust"), &path, version, || {
+        let _ = manager.document_opened(Some("rust"), Some("rust"), &path, version, || {
             "fn main() {}".into()
         });
     }

@@ -44,8 +44,11 @@ impl Session {
                 server,
                 cleanup_pending,
             } => {
-                if self.lsp.restart(server.clone()) {
-                    self.reopen_lsp_documents(None);
+                // Scoped to the uninstalled provider. This used to retire every
+                // slot, so removing Ruff stopped rust-analyzer as a side effect.
+                if let Some(retired) = self.lsp.restart(server.clone()) {
+                    self.adopt_retirement(retired);
+                    self.reopen_lsp_documents(Some(server.clone()));
                 }
                 self.emit(
                     Some(request),

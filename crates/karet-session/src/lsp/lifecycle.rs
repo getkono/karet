@@ -6,18 +6,50 @@ impl LspManager {
         self.servers.keys().any(|key| key.serves(provider))
     }
 
-    /// Retire live tasks after an explicit install or restart request.
+    /// Retire one slot. The only way a slot ever leaves the manager.
     ///
-    /// All tasks are retired together so late task updates are rejected by one
-    /// generation boundary. The session immediately reopens its documents.
-    pub(crate) fn restart(&mut self, provider: LanguageServerId) -> bool {
-        self.missing_reported.remove(&provider);
-        let running = self.is_running(&provider);
-        if running {
-            self.generation = self.generation.wrapping_add(1);
-            self.servers.clear();
+    /// Everything a slot owns goes with it in one step: the slot itself, the
+    /// runtime state it carried, the suppression that stopped its sync failures
+    /// repeating, and -- through the returned receipt -- its diagnostic layer.
+    /// Four call sites used to do four different subsets of this, which is why a
+    /// provider could be retired and still be reported running, or retired and
+    /// still be marking a file.
+    pub(super) fn retire(&mut self, key: &SlotKey) -> Retired {
+        let mut retired = Retired::none();
+        if self.servers.remove(key).is_some() {
+            self.sync_failure_reported.remove(key);
+            retired.push(key.clone());
         }
-        running
+        retired
+    }
+
+    /// Retire every slot matching `wanted`.
+    pub(super) fn retire_matching(&mut self, wanted: impl Fn(&SlotKey) -> bool) -> Retired {
+        let keys: Vec<SlotKey> = self
+            .servers
+            .keys()
+            .filter(|key| wanted(key))
+            .cloned()
+            .collect();
+        let mut retired = Retired::none();
+        for key in keys {
+            retired.absorb(self.retire(&key));
+        }
+        retired
+    }
+
+    /// Retire the named provider's tasks after an explicit install or restart.
+    ///
+    /// Scoped to the provider the caller named. It used to clear *every* slot,
+    /// so uninstalling Ruff stopped rust-analyzer too, and restarting one server
+    /// silently restarted all of them. Returns `None` when nothing was running,
+    /// which is the caller's signal not to reopen documents.
+    pub(crate) fn restart(&mut self, provider: LanguageServerId) -> Option<Retired> {
+        self.missing_reported.remove(&provider);
+        if !self.is_running(&provider) {
+            return None;
+        }
+        Some(self.retire_matching(|key| key.serves(&provider)))
     }
 
     /// Take the next slot token.

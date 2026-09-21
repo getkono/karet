@@ -52,6 +52,41 @@ impl fmt::Display for SlotKey {
     }
 }
 
+/// Slots that have just been retired, and whose markers the session still owes
+/// the user.
+///
+/// Returned rather than acted on because the two halves of retiring a provider
+/// live in different places: the manager owns the slot, and the diagnostic layer
+/// lives on the documents, which it cannot reach. `#[must_use]` is the point of
+/// the type -- it makes "retired a slot and forgot its markers" a build failure
+/// rather than the silent omission that left a dead server's squiggles on screen
+/// pointing at lines the user had since edited away.
+#[must_use = "a retired slot's diagnostic layer must be cleared; pass this to `adopt_retirement`"]
+#[derive(Default)]
+pub(crate) struct Retired(Vec<SlotKey>);
+
+impl Retired {
+    /// Nothing was retired.
+    pub(crate) fn none() -> Self {
+        Self(Vec::new())
+    }
+
+    /// Record one retired slot.
+    pub(crate) fn push(&mut self, key: SlotKey) {
+        self.0.push(key);
+    }
+
+    /// Fold another retirement into this one.
+    pub(crate) fn absorb(&mut self, other: Self) {
+        self.0.extend(other.0);
+    }
+
+    /// The retired slots, consuming the receipt.
+    pub(crate) fn into_keys(self) -> Vec<SlotKey> {
+        self.0
+    }
+}
+
 /// A live server task, and what the manager knows about it.
 ///
 /// The slot is the *only* record of a provider's runtime state. There is
