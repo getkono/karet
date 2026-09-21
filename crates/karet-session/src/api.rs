@@ -18,7 +18,6 @@ use karet_core::Location;
 use karet_core::NotificationKind;
 use karet_core::Severity;
 use karet_core::Symbol;
-use karet_core::TextEdit;
 use karet_core::WorkspaceEdit;
 use karet_text::EditCause;
 use karet_vcs::Branch;
@@ -378,11 +377,6 @@ pub enum Command {
         position: LineCol,
         /// The new name.
         new_name: String,
-    },
-    /// Format a document as part of saving it.
-    FormatOnSave {
-        /// The document to format.
-        doc: DocumentId,
     },
     /// Compile the LaTeX root containing an editable TeX document and produce a PDF.
     BuildLatex {
@@ -890,7 +884,7 @@ mod tests {
             doc: DocumentId(3),
             change: Change::new(
                 7,
-                vec![TextEdit {
+                vec![karet_core::TextEdit {
                     range: karet_core::Range::default(),
                     new_text: "x".into(),
                 }],

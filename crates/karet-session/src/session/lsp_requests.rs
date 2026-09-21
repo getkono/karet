@@ -138,24 +138,4 @@ impl Session {
             );
         }
     }
-
-    pub(super) fn format_document(&mut self, id: RequestId, doc_id: DocumentId) {
-        let Some(doc) = Self::doc_or_report(&self.store, &self.events, id, doc_id) else {
-            return;
-        };
-        let version = doc.buffer.version();
-        let selector = doc.language_selector;
-        let path = doc.path.clone();
-        if !self.lsp.formatting(selector, id, doc_id, version, &path) {
-            let edits = self.builtin_format_edits(doc_id).unwrap_or_default();
-            self.emit(
-                Some(id),
-                Event::FormattingEdits {
-                    doc: doc_id,
-                    version,
-                    edits,
-                },
-            );
-        }
-    }
 }

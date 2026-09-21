@@ -163,6 +163,10 @@ impl Session {
                 }
                 self.emit(Some(request), Event::WorkspaceEdit { edit });
             },
+            // A formatting answer exists only to finish a deferred save: the
+            // edits are applied here, never handed to the client. Edits computed
+            // against a version the buffer has moved past are dropped, but the
+            // save they were holding up still completes.
             LspUpdate::Formatting {
                 request,
                 doc,
@@ -170,29 +174,21 @@ impl Session {
                 mut edits,
                 ..
             } => {
-                let Some(document) = self.store.docs.get(&doc) else {
+                let stale = self
+                    .store
+                    .docs
+                    .get(&doc)
+                    .is_none_or(|document| document.buffer.version() != version);
+                if stale {
                     let _ = self.finish_format_on_save(request, doc, version, Vec::new());
                     return;
-                };
-                if document.buffer.version() != version {
-                    let _ = self.finish_format_on_save(request, doc, version, Vec::new());
-                    return;
                 }
-                for edit in &mut edits {
-                    edit.range = utf16_range_to_buffer(&document.buffer, edit.range);
+                if let Some(document) = self.store.docs.get(&doc) {
+                    for edit in &mut edits {
+                        edit.range = utf16_range_to_buffer(&document.buffer, edit.range);
+                    }
                 }
-                if self.pending_format_saves.contains_key(&request) {
-                    let _ = self.finish_format_on_save(request, doc, version, edits);
-                    return;
-                }
-                self.emit(
-                    Some(request),
-                    Event::FormattingEdits {
-                        doc,
-                        version,
-                        edits,
-                    },
-                );
+                let _ = self.finish_format_on_save(request, doc, version, edits);
             },
             LspUpdate::ServerStatus {
                 server, message, ..

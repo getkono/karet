@@ -497,8 +497,8 @@ impl App {
                 self.run_global_search();
             },
             // Events answering commands this client never sends (hover, workspace
-            // symbols, rename, format-on-save) fall through here until the
-            // corresponding UI exists.
+            // symbols, rename) fall through here until the corresponding UI
+            // exists.
             _ => {},
         }
         // A "save & close" runs the parked request once every issued save succeeds.

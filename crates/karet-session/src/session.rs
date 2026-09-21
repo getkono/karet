@@ -606,7 +606,6 @@ impl Session {
                 position,
                 new_name,
             } => self.rename(id, doc, position, new_name),
-            Command::FormatOnSave { doc } => self.format_document(id, doc),
             Command::RemoteFacts { path } => {
                 self.submit_vcs(id, |id, cancel| crate::vcs_worker::VcsJob::RemoteFacts {
                     id,
