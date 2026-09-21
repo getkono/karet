@@ -88,7 +88,7 @@ impl LspManager {
                     // as healthy-but-idle: a state indistinguishable from a working
                     // provider that simply has not been needed yet, for something
                     // the user had explicitly switched off.
-                    enabled: self.settings.enabled && !self.provider_disabled(&server),
+                    enabled: self.settings.enabled && !self.provider_disabled(&server, &languages),
                     installed,
                     ever_installed: crate::lsp_registry::ever_installed(root, &server),
                     declined: crate::lsp_registry::read_declined(root, &server).is_some(),
@@ -106,16 +106,27 @@ impl LspManager {
             .collect()
     }
 
-    /// Whether this provider's own `lsp.servers` entry forbids launching it.
+    /// Whether the user's settings suppress this provider for every language it
+    /// covers.
     ///
-    /// The same verdict `spec_for` acts on -- an entry with `enabled = false`, or
-    /// with an empty command -- read here so the inventory agrees with what the
-    /// launch path will actually do.
-    fn provider_disabled(&self, server: &LanguageServerId) -> bool {
-        self.settings
-            .servers
-            .get(server.key())
-            .is_some_and(|setting| !setting.enabled || setting.command.is_empty())
+    /// Asked through `configured_primary`, which is the *only* rule that decides
+    /// whether a launch happens, rather than by looking up the provider's own id
+    /// in `lsp.servers`. Those are not the same lookup: settings select a provider
+    /// by the id named in `lsp.languages.<language>.servers`, or by the language's
+    /// own name -- never by a built-in provider id. So
+    /// `lsp.servers."rust-analyzer".enabled = false` with no `lsp.languages.rust`
+    /// entry does *not* stop rust-analyzer running, and reporting it as disabled
+    /// would make the inventory lie in the opposite direction: a server that is
+    /// spawned and serving, badged `off`, with its real runtime state and error
+    /// hidden from the manager.
+    fn provider_disabled(&self, server: &LanguageServerId, languages: &BTreeSet<String>) -> bool {
+        !languages.is_empty()
+            && languages.iter().all(|language| {
+                matches!(
+                    self.configured_primary(&language.to_ascii_lowercase()),
+                    Some((id, Configured::Suppressed)) if id == *server
+                )
+            })
     }
 
     fn inventory_instance(
@@ -129,7 +140,7 @@ impl LspManager {
         // A provider its own entry disables resolves to nothing at all. Falling
         // through to the built-in table here reported a command that would never be
         // run, which read as an available provider.
-        if self.provider_disabled(server) {
+        if self.provider_disabled(server, languages) {
             return LanguageServerInstanceStatus {
                 root: root.to_path_buf(),
                 source: LanguageServerSource::Unavailable,
