@@ -359,7 +359,7 @@ pub struct Session {
     /// Registry results, taken by the local backend actor.
     lsp_registry_rx: Option<mpsc::UnboundedReceiver<crate::lsp_registry::RegistryUpdate>>,
     /// Saves waiting on `textDocument/formatting` before the disk write.
-    pending_format_saves: HashMap<RequestId, DocumentId>,
+    pending_format_saves: HashMap<RequestId, PendingFormatSave>,
     /// Exact-root public-GitHub identity, when this workspace is eligible.
     #[cfg(feature = "github")]
     github_repository: Option<karet_github::RepositoryIdentity>,
@@ -863,6 +863,25 @@ fn update_syntax(
 /// Build a [`Change`] that replaces the entirety of `doc`'s buffer with `new_text`,
 /// based on the buffer's current version. Used to restore a recovered swap's content
 /// as a dirty edit (undo returns to the on-disk version).
+/// A save parked on a `textDocument/formatting` answer, and when it was parked.
+///
+/// The clock reading is what bounds the wait: a server that accepts the request
+/// and then never answers would otherwise hold the file unwritten for the
+/// JSON-RPC request timeout, which is far longer than anyone expects a save to
+/// take. See [`Session::expire_format_on_save`].
+struct PendingFormatSave {
+    /// The document whose disk write is waiting.
+    doc: DocumentId,
+    /// Session-clock reading, in milliseconds, when the request was dispatched.
+    issued_ms: u64,
+}
+
+/// How long a save may wait on a formatter before it is written unformatted.
+///
+/// Swept on the session's existing backup tick rather than its own timer, so
+/// the effective bound is this plus up to one tick.
+const FORMAT_ON_SAVE_DEADLINE_MS: u64 = 3_000;
+
 fn whole_document_change(doc: &Document, new_text: String) -> Option<Change> {
     let end = doc.buffer.byte_to_line_col(BytePos(doc.buffer.len_bytes()));
     let range = Range::new(LineCol::new(0, 0), end).ok()?;

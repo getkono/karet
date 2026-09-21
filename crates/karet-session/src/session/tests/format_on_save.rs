@@ -169,7 +169,13 @@
         );
         while events.try_recv().is_some() {}
         let request = RequestId(3);
-        session.pending_format_saves.insert(request, doc);
+        session.pending_format_saves.insert(
+            request,
+            crate::session::PendingFormatSave {
+                doc,
+                issued_ms: 0,
+            },
+        );
         Some((session, doc, events, request))
     }
 
@@ -390,6 +396,39 @@
             std::fs::read_to_string(&path).unwrap_or_default(),
             "original\n",
             "a cancelled save writes nothing"
+        );
+        assert!(session.pending_format_saves.is_empty());
+    }
+
+    /// A server may accept the request and never answer. Without a deadline of
+    /// its own the save would wait out the JSON-RPC request timeout — tens of
+    /// seconds of a file not being on disk, with only a spinner to show for it.
+    #[test]
+    fn a_formatter_that_never_answers_does_not_hold_the_file_forever() {
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        let path = dir.path().join("main.rs");
+        if std::fs::write(&path, "original\n").is_err() {
+            return;
+        }
+        let Some((mut session, _doc, mut events, _request)) = parked_save(&path) else {
+            return;
+        };
+
+        // Just short of the deadline the save is still the formatter's to finish.
+        session.expire_format_on_save(crate::session::FORMAT_ON_SAVE_DEADLINE_MS - 1);
+        assert!(!saved(&mut events), "the deadline must not fire early");
+        assert_eq!(std::fs::read_to_string(&path).unwrap_or_default(), "original\n");
+        assert_eq!(session.pending_format_saves.len(), 1);
+
+        session.expire_format_on_save(crate::session::FORMAT_ON_SAVE_DEADLINE_MS);
+
+        assert!(saved(&mut events), "past the deadline the save must land");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap_or_default(),
+            "edited\n",
+            "an unanswered formatter costs the formatting, not the save"
         );
         assert!(session.pending_format_saves.is_empty());
     }

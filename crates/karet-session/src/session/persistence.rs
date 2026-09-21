@@ -111,6 +111,17 @@ impl Session {
 
     /// Back up every document that has been dirty past the configured backup interval
     /// (and changed since its last swap). Called on a timer by the backend actor.
+    /// One period of the session's own clock: every sweep that has to happen
+    /// whether or not the user is typing.
+    ///
+    /// The format-on-save deadline runs first and unconditionally — it is not
+    /// part of crash recovery, and [`Self::backup_tick`] declines to do anything
+    /// at all when backups are switched off.
+    pub(crate) fn tick(&mut self) {
+        self.expire_format_on_save(self.elapsed_ms());
+        self.backup_tick();
+    }
+
     pub(crate) fn backup_tick(&mut self) {
         let Session {
             swaps,

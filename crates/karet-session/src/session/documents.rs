@@ -309,7 +309,14 @@ impl Session {
         let selector = doc.language_selector;
         let path = doc.path.clone();
         if self.lsp.formatting(selector, id, doc_id, version, &path) {
-            self.pending_format_saves.insert(id, doc_id);
+            let issued_ms = self.elapsed_ms();
+            self.pending_format_saves.insert(
+                id,
+                PendingFormatSave {
+                    doc: doc_id,
+                    issued_ms,
+                },
+            );
             return true;
         }
         if let Some(edits) = self.builtin_format_edits(doc_id) {
@@ -373,7 +380,7 @@ impl Session {
         version: u64,
         edits: Vec<TextEdit>,
     ) -> bool {
-        let Some(pending) = self.pending_format_saves.remove(&request) else {
+        let Some(pending) = self.pending_format_saves.remove(&request).map(|save| save.doc) else {
             return false;
         };
         if !self.store.docs.contains_key(&pending) {
@@ -409,9 +416,35 @@ impl Session {
     /// written and a request nothing ever answers, which reads to the user as a
     /// save that silently did nothing.
     pub(super) fn commit_pending_format_saves(&mut self) {
-        let stranded: Vec<(RequestId, DocumentId)> =
-            self.pending_format_saves.drain().collect();
+        let stranded: Vec<(RequestId, DocumentId)> = self
+            .pending_format_saves
+            .drain()
+            .map(|(request, save)| (request, save.doc))
+            .collect();
         for (request, doc_id) in stranded {
+            self.commit_save(request, doc_id);
+        }
+    }
+
+    /// Write out any save whose formatter has taken too long.
+    ///
+    /// A server is free to accept `textDocument/formatting` and then never
+    /// answer; the only other bound is the JSON-RPC request timeout, which is
+    /// tens of seconds. A save that slow is indistinguishable from a broken one,
+    /// so past the deadline the buffer goes to disk unformatted rather than
+    /// waiting on a formatter that may never come back.
+    ///
+    /// Takes `now` rather than reading the clock, so the deadline is reachable
+    /// from a unit test without waiting out its wall-clock duration.
+    pub(super) fn expire_format_on_save(&mut self, now: u64) {
+        let expired: Vec<(RequestId, DocumentId)> = self
+            .pending_format_saves
+            .iter()
+            .filter(|(_, save)| now.saturating_sub(save.issued_ms) >= FORMAT_ON_SAVE_DEADLINE_MS)
+            .map(|(request, save)| (*request, save.doc))
+            .collect();
+        for (request, doc_id) in expired {
+            self.pending_format_saves.remove(&request);
             self.commit_save(request, doc_id);
         }
     }
@@ -602,7 +635,7 @@ impl Session {
             let cancelled: Vec<RequestId> = self
                 .pending_format_saves
                 .iter()
-                .filter(|(_, pending)| **pending == doc_id)
+                .filter(|(_, pending)| pending.doc == doc_id)
                 .map(|(id, _)| *id)
                 .collect();
             for id in cancelled {

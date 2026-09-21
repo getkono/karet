@@ -119,8 +119,9 @@ pub(crate) fn local_session(mut session: Session, events: Option<EventRx>) -> Lo
         // construction thread — a large repository's `git status` then runs
         // concurrently with the first frame instead of blocking it.
         session.start();
-        // A steady tick drives the crash-recovery backup sweep; the session decides
-        // per-document whether the configured dirty interval has elapsed.
+        // A steady tick drives the session's periodic sweeps: the crash-recovery
+        // backup (which decides per-document whether the configured dirty
+        // interval has elapsed) and the format-on-save deadline.
         let mut backup = tokio::time::interval(BACKUP_TICK);
         backup.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
@@ -151,7 +152,7 @@ pub(crate) fn local_session(mut session: Session, events: Option<EventRx>) -> Lo
                     Some(update) => session.apply_lsp_registry_update(update),
                     None => registry_updates = None,
                 },
-                _ = backup.tick() => session.backup_tick(),
+                _ = backup.tick() => session.tick(),
             }
         }
     });
