@@ -187,10 +187,10 @@ fn answer_server_request(
         "client/registerCapability"
         | "client/unregisterCapability"
         | "window/workDoneProgress/create" => Ok(Value::Null),
-        _ => Err(karet_jsonrpc::ResponseError {
-            code: karet_jsonrpc::METHOD_NOT_FOUND,
-            message: format!("karet-lsp does not implement {method}"),
-        }),
+        _ => Err(karet_jsonrpc::ResponseError::new(
+            karet_jsonrpc::METHOD_NOT_FOUND,
+            format!("karet-lsp does not implement {method}"),
+        )),
     }
 }
 

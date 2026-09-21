@@ -487,6 +487,19 @@ fn handle_frame<H: Handler>(
             }
             handler.on_notification(&method, params);
         },
+        Some(Incoming::ProtocolError { error }) => {
+            // The peer rejected something we sent before it could say which
+            // request was at fault, so nothing in `pending` can be completed
+            // with this. Reporting it is the whole point: the request it refers
+            // to will otherwise wait out its full timeout with no explanation,
+            // and the fault is ours to fix.
+            tracing::warn!(
+                peer = H::PEER,
+                code = error.code,
+                message = %error.message,
+                "peer rejected a message we sent"
+            );
+        },
         None => {
             tracing::warn!(peer = H::PEER, "dropping a message with no JSON-RPC shape");
         },
