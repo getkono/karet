@@ -193,9 +193,6 @@ pub(super) fn charge_disconnect(
 /// Running verdict on a connection, from the calls made over it.
 #[derive(Default)]
 pub(super) struct FailureTally {
-    /// The slot token of the task this tally speaks for, so the death it reports
-    /// is fenced on ownership like every other thing a task says about its slot.
-    token: u64,
     /// Timeouts since the last answered call.
     consecutive_timeouts: u32,
     /// Whether this connection has ever answered anything.
@@ -216,14 +213,6 @@ pub(super) struct FailureTally {
 }
 
 impl FailureTally {
-    /// A tally for the task owning `token`.
-    pub(super) fn new(token: u64) -> Self {
-        Self {
-            token,
-            ..Self::default()
-        }
-    }
-
     /// Record one call's outcome, returning whether the connection is now dead.
     ///
     /// `Closed` is immediate and obvious. `Timeout` needs a tally because one
@@ -237,6 +226,7 @@ impl FailureTally {
         dead: &mut bool,
         updates: &mpsc::UnboundedSender<LspUpdate>,
         language: &str,
+        generation: u64,
     ) {
         match result {
             // Deliberately not proof of an answer. Most callers of this are
@@ -246,7 +236,7 @@ impl FailureTally {
             // the gate below satisfied milliseconds after connecting, since the
             // first thing a new task processes is always a `didOpen`.
             Ok(_) => {},
-            Err(LspError::Closed) => self.die(dead, updates, language),
+            Err(LspError::Closed) => self.die(dead, updates, language, generation),
             Err(LspError::Timeout) => {
                 self.consecutive_timeouts = self.consecutive_timeouts.saturating_add(1);
                 if self.consecutive_timeouts >= TIMEOUT_DEATH_LIMIT && self.answered {
@@ -256,7 +246,7 @@ impl FailureTally {
                         "language server stopped answering; treating it as dead"
                     );
                     self.hung = true;
-                    self.die(dead, updates, language);
+                    self.die(dead, updates, language, generation);
                 } else {
                     tracing::warn!(
                         language,
@@ -284,9 +274,14 @@ impl FailureTally {
     ///
     /// Called only while a client is still held, so the death is always news and
     /// needs no de-duplication of its own.
-    pub(super) fn note_lost(&mut self, updates: &mpsc::UnboundedSender<LspUpdate>, language: &str) {
+    pub(super) fn note_lost(
+        &mut self,
+        updates: &mpsc::UnboundedSender<LspUpdate>,
+        language: &str,
+        generation: u64,
+    ) {
         let mut unreported = false;
-        self.die(&mut unreported, updates, language);
+        self.die(&mut unreported, updates, language, generation);
     }
 
     /// Observe a *request* outcome, passing it through unchanged.
@@ -315,12 +310,18 @@ impl FailureTally {
     }
 
     /// Record that the connection is gone, reporting it at most once.
-    fn die(&mut self, dead: &mut bool, updates: &mpsc::UnboundedSender<LspUpdate>, language: &str) {
+    fn die(
+        &mut self,
+        dead: &mut bool,
+        updates: &mpsc::UnboundedSender<LspUpdate>,
+        language: &str,
+        generation: u64,
+    ) {
         self.consecutive_timeouts = 0;
         if !*dead {
             *dead = true;
             let _ = updates.send(LspUpdate::ServerDied {
-                token: self.token,
+                generation,
                 language: language.to_owned(),
             });
         }
@@ -517,7 +518,7 @@ mod tests {
     fn a_closed_connection_dies_at_once() {
         let (mut tally, tx, mut rx) = tally();
         let mut dead = false;
-        tally.note::<()>(Err(LspError::Closed), &mut dead, &tx, "rust");
+        tally.note::<()>(Err(LspError::Closed), &mut dead, &tx, "rust", 1);
         assert!(dead);
         assert!(matches!(rx.try_recv(), Ok(LspUpdate::ServerDied { .. })));
     }
@@ -526,8 +527,8 @@ mod tests {
     fn one_death_is_reported_once() {
         let (mut tally, tx, mut rx) = tally();
         let mut dead = false;
-        tally.note::<()>(Err(LspError::Closed), &mut dead, &tx, "rust");
-        tally.note::<()>(Err(LspError::Closed), &mut dead, &tx, "rust");
+        tally.note::<()>(Err(LspError::Closed), &mut dead, &tx, "rust", 1);
+        tally.note::<()>(Err(LspError::Closed), &mut dead, &tx, "rust", 1);
         assert!(matches!(rx.try_recv(), Ok(LspUpdate::ServerDied { .. })));
         assert!(rx.try_recv().is_err(), "the second close reported again");
     }
@@ -536,7 +537,7 @@ mod tests {
     fn a_single_timeout_is_not_a_death() {
         let (mut tally, tx, mut rx) = tally();
         let mut dead = false;
-        tally.note::<()>(Err(LspError::Timeout), &mut dead, &tx, "rust");
+        tally.note::<()>(Err(LspError::Timeout), &mut dead, &tx, "rust", 1);
         assert!(!dead, "one slow answer condemned the connection");
         assert!(rx.try_recv().is_err());
     }
@@ -551,7 +552,7 @@ mod tests {
         let (mut tally, tx, mut rx) = tally();
         let mut dead = false;
         for _ in 0..TIMEOUT_DEATH_LIMIT.saturating_mul(10) {
-            tally.note::<()>(Err(LspError::Timeout), &mut dead, &tx, "java");
+            tally.note::<()>(Err(LspError::Timeout), &mut dead, &tx, "java", 1);
         }
         assert!(
             !dead,
@@ -571,7 +572,7 @@ mod tests {
         let mut dead = false;
         let _answered = tally.observe(Ok::<(), LspError>(()));
         for _ in 0..TIMEOUT_DEATH_LIMIT {
-            tally.note::<()>(Err(LspError::Timeout), &mut dead, &tx, "rust");
+            tally.note::<()>(Err(LspError::Timeout), &mut dead, &tx, "rust", 1);
         }
         assert!(dead);
         assert!(tally.hung(), "a silent death was not flagged as hung");
@@ -581,7 +582,7 @@ mod tests {
     fn a_closed_connection_is_not_flagged_as_hung() {
         let (mut tally, tx, _rx) = tally();
         let mut dead = false;
-        tally.note::<()>(Err(LspError::Closed), &mut dead, &tx, "rust");
+        tally.note::<()>(Err(LspError::Closed), &mut dead, &tx, "rust", 1);
         assert!(!tally.hung());
     }
 
@@ -610,7 +611,7 @@ mod tests {
         let _answered = tally.observe(Ok::<(), LspError>(()));
         let _answered = rx.try_recv();
         for _ in 0..TIMEOUT_DEATH_LIMIT {
-            tally.note::<()>(Err(LspError::Timeout), &mut dead, &tx, "rust");
+            tally.note::<()>(Err(LspError::Timeout), &mut dead, &tx, "rust", 1);
         }
         assert!(dead);
         assert!(matches!(rx.try_recv(), Ok(LspUpdate::ServerDied { .. })));
@@ -622,11 +623,11 @@ mod tests {
         let mut dead = false;
         let _answered = tally.observe(Ok::<(), LspError>(()));
         for _ in 0..TIMEOUT_DEATH_LIMIT.saturating_sub(1) {
-            tally.note::<()>(Err(LspError::Timeout), &mut dead, &tx, "rust");
+            tally.note::<()>(Err(LspError::Timeout), &mut dead, &tx, "rust", 1);
         }
         let _answered = tally.observe(Ok::<(), LspError>(()));
         for _ in 0..TIMEOUT_DEATH_LIMIT.saturating_sub(1) {
-            tally.note::<()>(Err(LspError::Timeout), &mut dead, &tx, "rust");
+            tally.note::<()>(Err(LspError::Timeout), &mut dead, &tx, "rust", 1);
         }
         assert!(!dead, "timeouts either side of a success were summed");
         assert!(rx.try_recv().is_err());
@@ -645,6 +646,7 @@ mod tests {
                 &mut dead,
                 &tx,
                 "rust",
+                1,
             );
         }
         assert!(!dead);

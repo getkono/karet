@@ -144,19 +144,9 @@ pub enum LanguageServerRuntimeState {
     /// comes back from. This is reached only for a failure no retry can fix --
     /// a binary that is absent or not executable, or a server that exits on
     /// sight and never once connected. Installing the provider, or restarting
-    /// it from the Language Servers panel, clears it -- and so does closing the
-    /// last document of its language, which retires the provider's slot and with
-    /// it every state recorded about it.
+    /// it from the Language Servers panel, clears it.
     Unavailable,
     /// The provider task stopped without another retry.
-    ///
-    /// **No longer reported by the in-process backend.** A task there stops only
-    /// because its slot was retired, and a retired slot takes its recorded state
-    /// with it -- so the provider reads `Idle`, which is the truth: nothing needs
-    /// it any more. Retained because the state is meaningful to a backend whose
-    /// tasks can outlive their registration, which the deferred remote split
-    /// would be, and because removing it from this `#[non_exhaustive]` enum would
-    /// buy nothing.
     Stopped,
 }
 

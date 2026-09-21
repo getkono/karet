@@ -118,8 +118,8 @@ pub(crate) enum LspUpdate {
     /// A server-pushed status line (jdtls `language/status`-style), for the
     /// status bar while a heavyweight server imports/indexes.
     ServerStatus {
-        /// The reporting task's slot token.
-        token: u64,
+        /// The manager generation that spawned the server task.
+        generation: u64,
         /// The language the server serves.
         server: String,
         /// The human-readable status message.
@@ -188,15 +188,8 @@ pub(crate) enum LspUpdate {
     },
     /// A complete server diagnostic layer for one file.
     Diagnostics {
-        /// The publishing task's slot token.
-        ///
-        /// Fenced on the same ownership as [`Self::DiagnosticsCleared`], because a
-        /// layer that only its owner may erase must be one that only its owner may
-        /// write. A task inside `shutdown` -- up to ten seconds, with its forwarder
-        /// still running -- could otherwise publish once more at an unchanged
-        /// generation after its replacement had already cleared the layer, leaving
-        /// a dead server's markers that nothing would ever remove.
-        token: u64,
+        /// The manager generation that spawned the publishing task.
+        generation: u64,
         /// Provider/root identity whose diagnostic layer is replaced.
         server: String,
         /// File whose LSP diagnostic layer is replaced.
@@ -208,8 +201,8 @@ pub(crate) enum LspUpdate {
     },
     /// The server binary could not be started (reported once per language).
     SpawnFailed {
-        /// The reporting task's slot token.
-        token: u64,
+        /// The manager generation that spawned the server task.
+        generation: u64,
         /// The provider that failed to start.
         ///
         /// The provider, not the task's slot key: that key is
@@ -237,8 +230,8 @@ pub(crate) enum LspUpdate {
     },
     /// A running server's connection closed (reported once per language).
     ServerDied {
-        /// The reporting task's slot token.
-        token: u64,
+        /// The manager generation that spawned the server task.
+        generation: u64,
         /// The language whose server died.
         language: String,
     },
@@ -260,14 +253,17 @@ pub(crate) enum LspUpdate {
     /// A provider stayed down past the grace period: drop what it published.
     ///
     /// Diagnostics used to be inserted and never removed, so a crashed server's
-    /// squiggles outlived it -- and after a generation bump, which can change the
-    /// key they were filed under, they could outlive the session. Sent only after
-    /// the grace window, so a reconnect inside it does not make every marker
-    /// flicker off and back on.
+    /// squiggles outlived it. Sent by a task that is still live -- so still of the
+    /// current generation -- and only after the grace window, so a reconnect inside
+    /// it does not make every marker flicker off and back on.
+    ///
+    /// Scoped to what a live task can say about itself. Clearing a layer whose task
+    /// has been *retired* -- by a reconfigure, a restart, or the last `didClose` --
+    /// needs to know who owns a layer, which is deferred to its own change; those
+    /// markers stay until something republishes, as they did before this.
     DiagnosticsCleared {
-        /// The sending task's slot token, so a task shutting down cannot clear
-        /// the markers of the task that replaced it under the same key.
-        token: u64,
+        /// The manager generation that spawned the clearing task.
+        generation: u64,
         /// The diagnostic layer to drop, keyed exactly as it was published.
         ///
         /// That key is the slot's -- `{provider}@{root}` -- so it already scopes
@@ -305,35 +301,9 @@ pub(crate) enum LspUpdate {
         /// [`manual_install_reason`](crate::lsp_registry::manual_install_reason).
         reason: String,
     },
-    /// A slot was retired, so nothing is serving that provider at that root.
-    ///
-    /// Emitted by the *manager*, not a task, and **not fenced at all**. Ownership
-    /// cannot fence it -- by the time it is sent the slot is gone, which is exactly
-    /// what an ownership fence refuses. Nor can generation: the report is queued on
-    /// the same channel the actor drains, so a `reconfigure` landing in that window
-    /// would bump past it and discard it, and then nothing would ever correct the
-    /// client. A fence can only lose truth here. "This slot is gone" cannot become
-    /// false, and FIFO on one channel guarantees it precedes any report from a task
-    /// created after it.
-    ///
-    /// It exists because dropping the recorded state is not the same as telling
-    /// anyone. The manager's own map falls back to `Idle` once the entry is gone,
-    /// but a presentation client caches what it was last told -- so without this it
-    /// keeps rendering `running`, and offering a Restart, for a dead process.
-    SlotRetired {
-        /// The provider whose slot went away.
-        server: LanguageServerId,
-        /// The repository root it served.
-        root: PathBuf,
-    },
     /// A provider/root connection changed lifecycle state.
     RuntimeState {
-        /// The reporting task's slot token, so a task shutting down cannot
-        /// overwrite the state of the task that replaced it under the same key.
-        ///
-        /// Carries no generation: ownership subsumes it, because every generation
-        /// bump clears every slot.
-        token: u64,
+        generation: u64,
         server: LanguageServerId,
         root: PathBuf,
         state: LanguageServerRuntimeState,

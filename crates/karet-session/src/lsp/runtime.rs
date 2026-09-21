@@ -15,9 +15,6 @@ pub(super) struct ServerTask {
     pub(super) updates: mpsc::UnboundedSender<LspUpdate>,
     pub(super) connector: Connector,
     pub(super) generation: u64,
-    /// Identifies this task as the owner of its slot, so a clear it sends while
-    /// shutting down cannot be mistaken for one from its replacement.
-    pub(super) token: u64,
 }
 
 /// The per-language server task: serialize document sync and requests, restart
@@ -32,11 +29,10 @@ pub(super) async fn server_task(task: ServerTask) {
         updates,
         connector,
         generation,
-        token,
     } = task;
     let report_state = |state, error: Option<String>| {
         let _ = updates.send(LspUpdate::RuntimeState {
-            token,
+            generation,
             server: provider.clone(),
             root: root.clone(),
             state,
@@ -58,7 +54,7 @@ pub(super) async fn server_task(task: ServerTask) {
     // The verdict on the *current* connection, reset with every new one: a run of
     // timeouts on a server that has since been replaced says nothing about its
     // successor.
-    let mut tally = FailureTally::new(token);
+    let mut tally = FailureTally::default();
     // Silent deaths, windowed separately: the failure window is too short to hold
     // even one hang cycle, and an unwindowed count never forgives.
     let mut hangs = VecDeque::<Instant>::new();
@@ -78,7 +74,7 @@ pub(super) async fn server_task(task: ServerTask) {
                 // `language` is the slot key the forwarder publishes under, not a
                 // bare provider id -- reconstructing one here cleared nothing.
                 let _ = updates.send(LspUpdate::DiagnosticsCleared {
-                    token,
+                    generation,
                     server: language.clone(),
                 });
             }
@@ -143,12 +139,12 @@ pub(super) async fn server_task(task: ServerTask) {
                         updates.clone(),
                         language.clone(),
                         provider.key().to_owned(),
-                        token,
+                        generation,
                     ));
                     client = Some(candidate);
                     ever_connected = true;
                     connected_at = Some(Instant::now());
-                    tally = FailureTally::new(token);
+                    tally = FailureTally::default();
                     // Back inside the window: the markers on screen are about to
                     // be republished, so they were never stale.
                     clear_diagnostics_at = None;
@@ -169,25 +165,13 @@ pub(super) async fn server_task(task: ServerTask) {
                 },
                 Err(error) => {
                     tracing::warn!(language, command = %spec.command, error = %error, "language server failed to start");
-                    // A task that has never connected has published nothing, so
-                    // anything on screen under its key came from a predecessor and
-                    // is stale by definition. Arming the grace here is what stops
-                    // it being stale forever: taking over a key refuses the
-                    // predecessor's own clear, and a launch that keeps failing for
-                    // a *retryable* reason -- a handshake timeout, a broker that is
-                    // briefly unreachable -- never reaches the permanent branch
-                    // below, never connects, and so would never clear anything.
-                    if !ever_connected {
-                        clear_diagnostics_at = clear_diagnostics_at
-                            .or_else(|| Some(Instant::now() + DIAGNOSTIC_GRACE));
-                    }
                     let launch = match &error {
                         LspError::Launch(failure) => Some(failure.as_ref()),
                         _ => None,
                     };
                     if !spawn_failure_reported {
                         let _ = updates.send(LspUpdate::SpawnFailed {
-                            token,
+                            generation,
                             server: provider.clone(),
                             root: root.clone(),
                             // The spec, not the failure's own argv: through
@@ -219,16 +203,6 @@ pub(super) async fn server_task(task: ServerTask) {
                             LanguageServerRuntimeState::Unavailable,
                             Some(error.to_string()),
                         );
-                        // This task owns the key and will never publish anything,
-                        // so whatever is on screen under it belongs to a previous
-                        // task and nothing else will ever replace it. Cleared here
-                        // because the exit below is unreachable from this branch --
-                        // it drains instead of breaking, so the parting clear at
-                        // the end of the task never runs.
-                        let _ = updates.send(LspUpdate::DiagnosticsCleared {
-                            token,
-                            server: language.clone(),
-                        });
                         // Drain rather than return: callers must keep getting
                         // empty answers instead of waiting on a dead channel.
                         while let Some(cmd) = rx.recv().await {
@@ -274,7 +248,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     }
                     // Reported exactly as a death found by a failing call is, so
                     // catching the exit sooner does not make it quieter.
-                    tally.note_lost(&updates, &language);
+                    tally.note_lost(&updates, &language, generation);
                     // The buffered edit dies with the connection it was headed for.
                     // The replay set holds the document's whole text, so the reconnect
                     // re-opens it entire rather than applying a stale delta.
@@ -305,6 +279,7 @@ pub(super) async fn server_task(task: ServerTask) {
                         &mut tally,
                         &updates,
                         &language,
+                        generation,
                     )
                     .await;
                     if dead {
@@ -354,6 +329,7 @@ pub(super) async fn server_task(task: ServerTask) {
                         &mut tally,
                         &updates,
                         &language,
+                        generation,
                     )
                     .await;
                 }
@@ -374,13 +350,14 @@ pub(super) async fn server_task(task: ServerTask) {
                     &mut tally,
                     &updates,
                     &language,
+                    generation,
                 )
                 .await;
                 if !dead {
                     let result = active
                         .did_open(&path, &document_language, version, &text)
                         .await;
-                    tally.note(result, &mut dead, &updates, &language);
+                    tally.note(result, &mut dead, &updates, &language, generation);
                 }
             },
             ServerCmd::DidClose { path } => {
@@ -391,11 +368,12 @@ pub(super) async fn server_task(task: ServerTask) {
                     &mut tally,
                     &updates,
                     &language,
+                    generation,
                 )
                 .await;
                 if !dead {
                     let result = active.did_close(&path).await;
-                    tally.note(result, &mut dead, &updates, &language);
+                    tally.note(result, &mut dead, &updates, &language, generation);
                 }
             },
             ServerCmd::DidSave { path, text } => {
@@ -406,11 +384,12 @@ pub(super) async fn server_task(task: ServerTask) {
                     &mut tally,
                     &updates,
                     &language,
+                    generation,
                 )
                 .await;
                 if !dead {
                     let result = active.did_save(&path, Some(&text)).await;
-                    tally.note(result, &mut dead, &updates, &language);
+                    tally.note(result, &mut dead, &updates, &language, generation);
                 }
             },
             ServerCmd::Completion {
@@ -428,6 +407,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     &mut tally,
                     &updates,
                     &language,
+                    generation,
                 )
                 .await;
                 let items = if dead {
@@ -436,7 +416,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     match tally.observe(active.completion(&path, position).await) {
                         Ok(items) => items,
                         Err(e) => {
-                            tally.note::<()>(Err(e), &mut dead, &updates, &language);
+                            tally.note::<()>(Err(e), &mut dead, &updates, &language, generation);
                             Vec::new()
                         },
                     }
@@ -463,6 +443,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     &mut tally,
                     &updates,
                     &language,
+                    generation,
                 )
                 .await;
                 let symbols = if dead {
@@ -471,7 +452,13 @@ pub(super) async fn server_task(task: ServerTask) {
                     match tally.observe(active.document_symbols(&path).await) {
                         Ok(symbols) => symbols,
                         Err(error) => {
-                            tally.note::<()>(Err(error), &mut dead, &updates, &language);
+                            tally.note::<()>(
+                                Err(error),
+                                &mut dead,
+                                &updates,
+                                &language,
+                                generation,
+                            );
                             Vec::new()
                         },
                     }
@@ -498,6 +485,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     &mut tally,
                     &updates,
                     &language,
+                    generation,
                 )
                 .await;
                 let hover = if dead {
@@ -506,7 +494,13 @@ pub(super) async fn server_task(task: ServerTask) {
                     tally
                         .observe(active.hover(&path, position).await)
                         .unwrap_or_else(|error| {
-                            tally.note::<()>(Err(error), &mut dead, &updates, &language);
+                            tally.note::<()>(
+                                Err(error),
+                                &mut dead,
+                                &updates,
+                                &language,
+                                generation,
+                            );
                             None
                         })
                 };
@@ -532,6 +526,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     &mut tally,
                     &updates,
                     &language,
+                    generation,
                 )
                 .await;
                 let locations = if dead {
@@ -540,7 +535,13 @@ pub(super) async fn server_task(task: ServerTask) {
                     tally
                         .observe(active.definition(&path, position).await)
                         .unwrap_or_else(|error| {
-                            tally.note::<()>(Err(error), &mut dead, &updates, &language);
+                            tally.note::<()>(
+                                Err(error),
+                                &mut dead,
+                                &updates,
+                                &language,
+                                generation,
+                            );
                             Vec::new()
                         })
                 };
@@ -560,6 +561,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     &mut tally,
                     &updates,
                     &language,
+                    generation,
                 )
                 .await;
                 let symbols = if dead {
@@ -568,7 +570,13 @@ pub(super) async fn server_task(task: ServerTask) {
                     tally
                         .observe(active.workspace_symbols(&query).await)
                         .unwrap_or_else(|error| {
-                            tally.note::<()>(Err(error), &mut dead, &updates, &language);
+                            tally.note::<()>(
+                                Err(error),
+                                &mut dead,
+                                &updates,
+                                &language,
+                                generation,
+                            );
                             Vec::new()
                         })
                 };
@@ -592,6 +600,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     &mut tally,
                     &updates,
                     &language,
+                    generation,
                 )
                 .await;
                 let edit = if dead {
@@ -600,7 +609,13 @@ pub(super) async fn server_task(task: ServerTask) {
                     tally
                         .observe(active.rename(&path, position, &new_name).await)
                         .unwrap_or_else(|error| {
-                            tally.note::<()>(Err(error), &mut dead, &updates, &language);
+                            tally.note::<()>(
+                                Err(error),
+                                &mut dead,
+                                &updates,
+                                &language,
+                                generation,
+                            );
                             WorkspaceEdit::default()
                         })
                 };
@@ -623,6 +638,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     &mut tally,
                     &updates,
                     &language,
+                    generation,
                 )
                 .await;
                 let edits = if dead {
@@ -631,7 +647,13 @@ pub(super) async fn server_task(task: ServerTask) {
                     tally
                         .observe(active.formatting(&path).await)
                         .unwrap_or_else(|error| {
-                            tally.note::<()>(Err(error), &mut dead, &updates, &language);
+                            tally.note::<()>(
+                                Err(error),
+                                &mut dead,
+                                &updates,
+                                &language,
+                                generation,
+                            );
                             Vec::new()
                         })
                 };
@@ -670,28 +692,14 @@ pub(super) async fn server_task(task: ServerTask) {
     if let Some(task) = diagnostic_task {
         task.abort();
     }
-    // Retirement is the other way a provider's diagnostics become stale, and the
-    // grace timer cannot cover it: `reconfigure`, `restart` and the last
-    // `didClose` all retire a slot by dropping its sender, so the task leaves
-    // through the channel-closed `break` above without ever reaching the
-    // disconnected branch where the grace fires. Cleared here with no grace,
-    // because there is no reconnect coming to make the markers true again -- and
-    // after a generation bump the key can change, so nothing would ever replace
-    // them.
-    let _ = updates.send(LspUpdate::DiagnosticsCleared {
-        token,
-        server: language.clone(),
-    });
-    // No parting lifecycle report. A task reaches here only because its channel
-    // closed, which means every sender was dropped, which means its slot was
-    // removed -- so an ownership-fenced report would be refused by construction.
-    // Sending one anyway would read as a live signal to the next person to touch
-    // this, who would find it "not showing up" and loosen the fence, restoring the
-    // zombie-overwrites-its-replacement bug the fence exists to prevent.
-    //
-    // Nothing is lost: retiring a slot drops its recorded state, so the provider
-    // falls back to `Idle` -- "no open document needs it", which is exactly what
-    // has just become true.
+    // No parting clear. Retirement is the other way a provider's markers go stale,
+    // but clearing them from here needs to know who *owns* a layer: a task leaving
+    // through the channel-closed `break` has already lost its slot, possibly to a
+    // replacement under the identical key, and a clear at that moment can wipe the
+    // live server's markers instead. Establishing ownership is deferred to its own
+    // change; until then retired markers persist until something republishes, which
+    // is what they did before any of this.
+    report_state(LanguageServerRuntimeState::Stopped, None);
 }
 
 /// Send the pending `didChange`, if any.
@@ -702,6 +710,7 @@ async fn flush_pending(
     tally: &mut FailureTally,
     updates: &mpsc::UnboundedSender<LspUpdate>,
     language: &str,
+    generation: u64,
 ) {
     if *dead {
         *pending = None;
@@ -709,6 +718,6 @@ async fn flush_pending(
     }
     if let Some((path, version, text)) = pending.take() {
         let result = client.did_change(&path, version, &text).await;
-        tally.note(result, dead, updates, language);
+        tally.note(result, dead, updates, language, generation);
     }
 }

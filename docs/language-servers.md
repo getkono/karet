@@ -312,9 +312,14 @@ other servers' markers, the same provider's markers at another repository root,
 spell-check and lint results are all untouched. The delay is deliberate -- the
 usual death is followed by a reconnect at 250 ms, and clearing immediately would
 flicker every marker off and back on for an outage nobody would otherwise have
-noticed. Retiring a provider outright -- turning LSP off, editing its settings,
-closing the last document that needed it -- clears its markers with no delay,
-since no reconnect is coming to make them true again.
+noticed.
+
+This covers a server that *dies*. A provider **retired** outright -- turning LSP
+off, editing its settings, closing the last document that needed it -- keeps its
+markers until something republishes, as it always has. Clearing those safely means
+knowing which task owns a layer, because a retired task and its replacement can
+share a key, and getting that wrong wipes a live server's markers instead. That
+work is deliberately separate from this change.
 Requests made during an outage receive an empty response rather than hanging.
 Both protocol and per-server command queues are bounded at 256 messages.
 

@@ -294,20 +294,6 @@ impl Session {
                     ),
                 },
             ),
-            LspUpdate::SlotRetired { server, root, .. } => {
-                // No `note_runtime`: the absence of an entry *is* the state, and
-                // the inventory reads absence as `Idle`. This only carries that
-                // same answer out to a client that would otherwise keep its last.
-                self.emit(
-                    None,
-                    Event::LanguageServerRuntimeChanged {
-                        server,
-                        root,
-                        state: crate::api::LanguageServerRuntimeState::Idle,
-                        error: None,
-                    },
-                );
-            },
             LspUpdate::RuntimeState {
                 server,
                 root,
