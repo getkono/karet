@@ -197,6 +197,8 @@ pub struct RawNotification {
 pub struct LspClient {
     conn: conn::Connection,
     child: Option<tokio::process::Child>,
+    /// What the handshake said about `textDocument/formatting`.
+    formats: bool,
 }
 
 impl LspClient {
@@ -392,9 +394,14 @@ impl LspClient {
         let mut params = initialize_params(root)?;
         params.initialization_options = initialization_options;
         let conn = conn::Connection::start(read, write);
-        let _server_capabilities: Value = conn.request("initialize", params).await?;
+        let server_capabilities: Value = conn.request("initialize", params).await?;
+        let formats = advertises_formatting(&server_capabilities);
         conn.notify("initialized", lsp_types::InitializedParams {})?;
-        Ok(Self { conn, child: None })
+        Ok(Self {
+            conn,
+            child: None,
+            formats,
+        })
     }
 
     /// Shut the server down (`shutdown` request + `exit` notification) and await
@@ -753,6 +760,17 @@ impl LspClient {
         Ok(convert::text_edits_from_lsp(response))
     }
 
+    /// Whether the server advertised `textDocument/formatting` in its handshake.
+    ///
+    /// Worth asking before [`Self::formatting`]: a server that never offered the
+    /// method can only answer "method not found", so dispatching to it spends a
+    /// round trip to learn nothing. A caller that has its own formatter to fall
+    /// back on needs the answer before it decides, not after.
+    #[must_use]
+    pub fn supports_formatting(&self) -> bool {
+        self.formats
+    }
+
     /// Request formatting edits for `range` in `doc`.
     ///
     /// # Errors
@@ -854,6 +872,24 @@ fn text_document_position(
         text_document: lsp_types::TextDocumentIdentifier::new(uri::path_to_uri(doc)?),
         position: convert::position_to_lsp(position),
     })
+}
+
+/// Whether an `initialize` result advertises `textDocument/formatting`.
+///
+/// LSP types the field as `boolean | DocumentFormattingOptions`, so a bare
+/// `true` and an options object both mean yes. `false`, `null`, and an absent
+/// field all mean no — under LSP, a capability that is not advertised is not
+/// there. Read from the raw value because the handshake result is kept as
+/// `Value`; nothing else in this client needs it typed.
+fn advertises_formatting(initialize_result: &Value) -> bool {
+    match initialize_result
+        .get("capabilities")
+        .and_then(|capabilities| capabilities.get("documentFormattingProvider"))
+    {
+        Some(Value::Bool(supported)) => *supported,
+        Some(Value::Object(_)) => true,
+        _ => false,
+    }
 }
 
 fn formatting_options() -> lsp_types::FormattingOptions {
