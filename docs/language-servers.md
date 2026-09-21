@@ -329,9 +329,23 @@ retiring the slot, so there is no window between the two.
 
 A provider retired by *any* path reports `idle` with no open documents, and the
 Language Servers panel offers **Restart** only where this session holds a process.
-The whole inventory is pushed on retirement rather than a field at a time, because
-the document count has no event of its own: a client patching state alone ended up
-with a row reading `idle` that still offered a Restart for a process that was gone.
+
+Keeping the panel right takes one more thing, because the per-transition event
+carries a provider's *state* and nothing else: the open-document count has no
+event at all, so a client patching rows field by field finishes with one that
+reads `idle` and still offers a Restart for a process that is gone. So a
+retirement also tells the client its inventory is **stale**, and the client asks
+for a current one. The signal carries no rows deliberately -- building an
+inventory re-resolves every provider against the settings, the project and
+`PATH`, and most sessions have nobody looking at the result, so the session
+states the fact and the client decides what it is worth.
+
+Asking rather than being pushed to is also what keeps the answer current. A
+retirement is often the first half of an operation: a restart retires a provider
+and then starts its replacement, and a snapshot taken at the retirement would
+describe the gap in between, where the provider has no process and no documents.
+A request is answered when it is handled, after the operation it followed has
+finished.
 
 One consequence is worth stating, because it reads as a regression and is not.
 Closing the last file of a provider that could not start used to leave the panel
