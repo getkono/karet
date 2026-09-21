@@ -199,3 +199,83 @@ pub struct LanguageServerStatus {
     /// Repository-scoped resolution and runtime state.
     pub instances: Vec<LanguageServerInstanceStatus>,
 }
+
+impl LanguageServerInstanceStatus {
+    /// Whether this session holds a process worth restarting.
+    ///
+    /// The one definition. Presentation used to carry two byte-identical copies
+    /// of this predicate -- one deciding whether to paint the button, one
+    /// deciding whether the click did anything -- and both read
+    /// [`open_documents`](Self::open_documents), which no event ever corrected.
+    /// A retired provider therefore kept offering a Restart for a process that
+    /// no longer existed.
+    #[must_use]
+    pub fn restartable(&self) -> bool {
+        self.open_documents > 0
+            || !matches!(
+                self.runtime,
+                LanguageServerRuntimeState::Idle | LanguageServerRuntimeState::Stopped
+            )
+    }
+}
+
+impl LanguageServerStatus {
+    /// Whether any of this provider's instances is worth restarting.
+    #[must_use]
+    pub fn restartable(&self) -> bool {
+        self.instances
+            .iter()
+            .any(LanguageServerInstanceStatus::restartable)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn instance(
+        runtime: LanguageServerRuntimeState,
+        open_documents: usize,
+    ) -> LanguageServerInstanceStatus {
+        LanguageServerInstanceStatus {
+            root: std::path::PathBuf::from("/work/repo"),
+            source: LanguageServerSource::Path,
+            command: Some("rust-analyzer".to_owned()),
+            args: Vec::new(),
+            runtime,
+            open_documents,
+            error: None,
+        }
+    }
+
+    #[test]
+    fn a_provider_with_no_process_is_not_restartable() {
+        assert!(!instance(LanguageServerRuntimeState::Idle, 0).restartable());
+        assert!(!instance(LanguageServerRuntimeState::Stopped, 0).restartable());
+    }
+
+    #[test]
+    fn a_serving_provider_is_restartable() {
+        assert!(instance(LanguageServerRuntimeState::Running, 1).restartable());
+        assert!(instance(LanguageServerRuntimeState::Starting, 0).restartable());
+    }
+
+    /// A provider karet has given up on, or is cooling down, is still holding a
+    /// slot: restarting it is how the user asks karet to try again.
+    #[test]
+    fn a_failed_provider_is_restartable() {
+        assert!(instance(LanguageServerRuntimeState::Unavailable, 0).restartable());
+        assert!(instance(LanguageServerRuntimeState::CircuitOpen, 0).restartable());
+    }
+
+    /// The stale-count case, which is the defect itself: state says idle, the
+    /// document count was never corrected, and the row offered a dead Restart.
+    #[test]
+    fn a_stale_document_count_still_reads_as_restartable() {
+        assert!(
+            instance(LanguageServerRuntimeState::Idle, 2).restartable(),
+            "the predicate trusts its input; keeping that input true is the \
+             inventory's job, and is what the session-side change exists to do"
+        );
+    }
+}

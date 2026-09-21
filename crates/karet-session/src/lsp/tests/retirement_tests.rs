@@ -486,3 +486,63 @@ async fn restarting_one_provider_leaves_the_others_running() -> TestResult {
     );
     Ok(())
 }
+
+/// A retirement pushes the whole inventory, so a client that never asks still
+/// stops offering a Restart for a process that is gone.
+///
+/// This is the half of the acceptance criterion the per-transition event cannot
+/// reach. That event carries state, and a client patching state field by field
+/// ends with `runtime: Idle` beside whatever `open_documents` it was last told
+/// -- and `restartable` is true if *either* says the provider is alive, so the
+/// button outlives the process. The inventory is authoritative for both at
+/// once, so a retirement sends it whole and untagged.
+///
+/// Falsified by: dropping `publish_language_server_inventory` from
+/// `adopt_retirement`. The `Idle` transition still arrives, and nothing else
+/// ever corrects the document count.
+#[tokio::test]
+async fn retiring_a_provider_pushes_an_inventory_that_offers_no_restart() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let path = rust_file(&dir, "main.rs", "fn main() {}\n").ok_or("write failed")?;
+    let root = crate::lsp::absolute_path(dir.path());
+    let (session, mut events) = session_rooted_at(
+        &root,
+        test_connector(Behavior::Normal, None, Arc::new(AtomicUsize::new(0))),
+    );
+    let backend = local_session(session, None);
+
+    let doc = open(&backend, &mut events, &path)
+        .await
+        .ok_or("main.rs never opened")?;
+    let serving = inventory(&backend, &mut events)
+        .await
+        .and_then(|servers| instance(&servers, "rust-analyzer", &root))
+        .ok_or("rust-analyzer missing while serving")?;
+    assert!(
+        serving.restartable(),
+        "a serving provider is what Restart is for"
+    );
+
+    backend.send(backend.next_id(), Command::CloseDocument { doc })?;
+
+    // Unsolicited: nothing after this point sends `Command::LanguageServerStatus`.
+    let mut pushed = None;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while pushed.is_none() && tokio::time::Instant::now() < deadline {
+        let Some((id, event)) = next_event(&mut events).await else {
+            break;
+        };
+        if let Event::LanguageServerStatus { servers } = event {
+            assert_eq!(id, None, "a pushed inventory answers no request");
+            pushed = instance(&servers, "rust-analyzer", &root);
+        }
+    }
+    let pushed = pushed.ok_or("no inventory was pushed after the retirement")?;
+    assert_eq!(pushed.open_documents, 0);
+    assert_eq!(pushed.runtime, LanguageServerRuntimeState::Idle);
+    assert!(
+        !pushed.restartable(),
+        "the panel would still offer a Restart for a provider with no process"
+    );
+    Ok(())
+}

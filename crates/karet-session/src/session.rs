@@ -35,6 +35,7 @@ mod mdlint;
 mod notebooks;
 mod notify_text;
 mod persistence;
+mod retirement;
 mod search;
 mod spelling;
 mod updates;
