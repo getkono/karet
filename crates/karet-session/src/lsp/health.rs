@@ -227,7 +227,7 @@ impl FailureTally {
         dead: &mut bool,
         updates: &mpsc::UnboundedSender<LspUpdate>,
         key: &SlotKey,
-        generation: u64,
+        token: u64,
     ) {
         match result {
             // Deliberately not proof of an answer. Most callers of this are
@@ -237,7 +237,7 @@ impl FailureTally {
             // the gate below satisfied milliseconds after connecting, since the
             // first thing a new task processes is always a `didOpen`.
             Ok(_) => {},
-            Err(LspError::Closed) => self.die(dead, updates, key, generation),
+            Err(LspError::Closed) => self.die(dead, updates, key, token),
             Err(LspError::Timeout) => {
                 self.consecutive_timeouts = self.consecutive_timeouts.saturating_add(1);
                 if self.consecutive_timeouts >= TIMEOUT_DEATH_LIMIT && self.answered {
@@ -247,7 +247,7 @@ impl FailureTally {
                         "language server stopped answering; treating it as dead"
                     );
                     self.hung = true;
-                    self.die(dead, updates, key, generation);
+                    self.die(dead, updates, key, token);
                 } else {
                     tracing::warn!(
                         language = %key,
@@ -279,10 +279,10 @@ impl FailureTally {
         &mut self,
         updates: &mpsc::UnboundedSender<LspUpdate>,
         key: &SlotKey,
-        generation: u64,
+        token: u64,
     ) {
         let mut unreported = false;
-        self.die(&mut unreported, updates, key, generation);
+        self.die(&mut unreported, updates, key, token);
     }
 
     /// Observe a *request* outcome, passing it through unchanged.
@@ -316,13 +316,13 @@ impl FailureTally {
         dead: &mut bool,
         updates: &mpsc::UnboundedSender<LspUpdate>,
         key: &SlotKey,
-        generation: u64,
+        token: u64,
     ) {
         self.consecutive_timeouts = 0;
         if !*dead {
             *dead = true;
             let _ = updates.send(LspUpdate::ServerDied {
-                generation,
+                token,
                 key: key.clone(),
             });
         }

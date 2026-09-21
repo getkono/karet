@@ -119,10 +119,10 @@ pub(crate) enum LspUpdate {
     /// A server-pushed status line (jdtls `language/status`-style), for the
     /// status bar while a heavyweight server imports/indexes.
     ServerStatus {
-        /// The manager generation that spawned the server task.
-        generation: u64,
-        /// The language the server serves.
-        server: String,
+        /// The slot this report is about, and the incarnation making it.
+        token: u64,
+        /// The slot the reporting task holds.
+        key: SlotKey,
         /// The human-readable status message.
         message: String,
     },
@@ -189,8 +189,8 @@ pub(crate) enum LspUpdate {
     },
     /// A complete server diagnostic layer for one file.
     Diagnostics {
-        /// The manager generation that spawned the publishing task.
-        generation: u64,
+        /// The incarnation of the slot that published these.
+        token: u64,
         /// Provider/root identity whose diagnostic layer is replaced.
         server: SlotKey,
         /// File whose LSP diagnostic layer is replaced.
@@ -202,17 +202,14 @@ pub(crate) enum LspUpdate {
     },
     /// The server binary could not be started (reported once per language).
     SpawnFailed {
-        /// The manager generation that spawned the server task.
-        generation: u64,
-        /// The provider that failed to start.
+        /// The incarnation of the slot that failed to start.
+        token: u64,
+        /// The slot that failed to start.
         ///
-        /// The provider, not the task's slot key: that key is
-        /// `provider@/absolute/repository/root`, and rendering it put a full
-        /// path into the user's notification.
-        server: LanguageServerId,
-        /// The repository root the launch was rooted at, for the manager's
-        /// per-instance detail. Not for the notification.
-        root: PathBuf,
+        /// Render `key.provider`, never the key: the key is
+        /// `provider@/absolute/repository/root`, and printing it whole put a
+        /// full path into the user's notification.
+        key: SlotKey,
         /// The executable and arguments karet ran.
         command: String,
         /// The most specific one-line reason available, which for a server that
@@ -231,8 +228,8 @@ pub(crate) enum LspUpdate {
     },
     /// A running server's connection closed (reported once per language).
     ServerDied {
-        /// The manager generation that spawned the server task.
-        generation: u64,
+        /// The incarnation of the slot that died.
+        token: u64,
         /// The slot whose server died.
         key: SlotKey,
     },
@@ -261,8 +258,8 @@ pub(crate) enum LspUpdate {
     /// Scoped to what a live task can say about itself: a *retired* task's layer
     /// is cleared by the manager, synchronously, as part of retiring it.
     DiagnosticsCleared {
-        /// The manager generation that spawned the clearing task.
-        generation: u64,
+        /// The incarnation of the slot asking for the clear.
+        token: u64,
         /// The diagnostic layer to drop, keyed exactly as it was published.
         ///
         /// Being the slot's own key, this already scopes the clear to the one
@@ -301,7 +298,8 @@ pub(crate) enum LspUpdate {
     },
     /// A provider/root connection changed lifecycle state.
     RuntimeState {
-        generation: u64,
+        /// The incarnation of the slot reporting.
+        token: u64,
         /// The slot reporting about itself. Both halves the client needs --
         /// provider and root -- come from it, and it is also what the manager
         /// looks the slot up by, so a report cannot be filed against a different

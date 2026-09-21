@@ -22,12 +22,12 @@ pub(super) fn forward_diagnostics(
     client: &LspClient,
     updates: mpsc::UnboundedSender<LspUpdate>,
     key: SlotKey,
-    generation: u64,
+    token: u64,
 ) -> tokio::task::JoinHandle<()> {
     let mut diagnostic_rx = client.diagnostics();
     let mut raw_rx = client.raw_notifications();
     let status_updates = updates.clone();
-    let server = key.provider.key().to_owned();
+    let status_key = key.clone();
     // jdtls-style `language/status` notifications carry the only feedback a
     // user gets during a 30–120 s first import; forward them for the status
     // bar rather than leaving the server looking hung.
@@ -44,8 +44,8 @@ pub(super) fn forward_diagnostics(
                     if !message.is_empty()
                         && status_updates
                             .send(LspUpdate::ServerStatus {
-                                generation,
-                                server: server.clone(),
+                                token,
+                                key: status_key.clone(),
                                 message,
                             })
                             .is_err()
@@ -64,7 +64,7 @@ pub(super) fn forward_diagnostics(
             match diagnostic_rx.recv().await {
                 Ok(publication) => {
                     let _ = updates.send(LspUpdate::Diagnostics {
-                        generation,
+                        token,
                         server: key.clone(),
                         path: publication.path,
                         version: publication.version,

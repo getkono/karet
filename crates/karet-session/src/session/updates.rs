@@ -188,9 +188,8 @@ impl Session {
                     },
                 );
             },
-            LspUpdate::ServerStatus {
-                server, message, ..
-            } => {
+            LspUpdate::ServerStatus { key, message, .. } => {
+                let server = key.provider.display_name();
                 // Progress rather than a notification: the client shows these under
                 // one tag, so a stream of ticks rewrites a single card instead of
                 // queueing one per tick.
@@ -247,13 +246,14 @@ impl Session {
                 },
             ),
             LspUpdate::SpawnFailed {
-                server,
-                root,
+                key,
                 command,
                 reason,
                 permanent,
                 ..
             } => {
+                let server = &key.provider;
+                let root = &key.root;
                 // The log and, through `RuntimeState`, the Language Servers
                 // panel keep the full evidence: the repository root, and the
                 // server's own words exactly as it wrote them. The toast names

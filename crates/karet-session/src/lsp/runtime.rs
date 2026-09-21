@@ -11,6 +11,9 @@ pub(super) struct ServerTask {
     /// The slot this task serves: its provider, its root, and the identity of
     /// the diagnostic layer it publishes under, all in one value.
     pub(super) key: SlotKey,
+    /// Which incarnation of `key` this task is. Stamped on every report it makes
+    /// about its own slot, so a report outliving its slot is refused.
+    pub(super) token: u64,
     pub(super) rx: mpsc::Receiver<ServerCmd>,
     pub(super) updates: mpsc::UnboundedSender<LspUpdate>,
     pub(super) connector: Connector,
@@ -23,6 +26,7 @@ pub(super) async fn server_task(task: ServerTask) {
     let ServerTask {
         spec,
         key,
+        token,
         mut rx,
         updates,
         connector,
@@ -33,7 +37,7 @@ pub(super) async fn server_task(task: ServerTask) {
     let root = key.root.clone();
     let report_state = |state, error: Option<String>| {
         let _ = updates.send(LspUpdate::RuntimeState {
-            generation,
+            token,
             key: key.clone(),
             state,
             error,
@@ -72,7 +76,7 @@ pub(super) async fn server_task(task: ServerTask) {
             {
                 clear_diagnostics_at = None;
                 let _ = updates.send(LspUpdate::DiagnosticsCleared {
-                    generation,
+                    token,
                     server: key.clone(),
                 });
             }
@@ -136,7 +140,7 @@ pub(super) async fn server_task(task: ServerTask) {
                         &candidate,
                         updates.clone(),
                         key.clone(),
-                        generation,
+                        token,
                     ));
                     client = Some(candidate);
                     ever_connected = true;
@@ -168,9 +172,8 @@ pub(super) async fn server_task(task: ServerTask) {
                     };
                     if !spawn_failure_reported {
                         let _ = updates.send(LspUpdate::SpawnFailed {
-                            generation,
-                            server: key.provider.clone(),
-                            root: root.clone(),
+                            token,
+                            key: key.clone(),
                             // The spec, not the failure's own argv: through
                             // the supervisor and the broker the process karet
                             // literally ran is a hidden re-exec of the editor
@@ -245,7 +248,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     }
                     // Reported exactly as a death found by a failing call is, so
                     // catching the exit sooner does not make it quieter.
-                    tally.note_lost(&updates, &key, generation);
+                    tally.note_lost(&updates, &key, token);
                     // The buffered edit dies with the connection it was headed for.
                     // The replay set holds the document's whole text, so the reconnect
                     // re-opens it entire rather than applying a stale delta.
@@ -354,7 +357,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     let result = active
                         .did_open(&path, &document_language, version, &text)
                         .await;
-                    tally.note(result, &mut dead, &updates, &key, generation);
+                    tally.note(result, &mut dead, &updates, &key, token);
                 }
             },
             ServerCmd::DidClose { path } => {
@@ -370,7 +373,7 @@ pub(super) async fn server_task(task: ServerTask) {
                 .await;
                 if !dead {
                     let result = active.did_close(&path).await;
-                    tally.note(result, &mut dead, &updates, &key, generation);
+                    tally.note(result, &mut dead, &updates, &key, token);
                 }
             },
             ServerCmd::DidSave { path, text } => {
@@ -386,7 +389,7 @@ pub(super) async fn server_task(task: ServerTask) {
                 .await;
                 if !dead {
                     let result = active.did_save(&path, Some(&text)).await;
-                    tally.note(result, &mut dead, &updates, &key, generation);
+                    tally.note(result, &mut dead, &updates, &key, token);
                 }
             },
             ServerCmd::Completion {
@@ -413,7 +416,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     match tally.observe(active.completion(&path, position).await) {
                         Ok(items) => items,
                         Err(e) => {
-                            tally.note::<()>(Err(e), &mut dead, &updates, &key, generation);
+                            tally.note::<()>(Err(e), &mut dead, &updates, &key, token);
                             Vec::new()
                         },
                     }
@@ -672,7 +675,7 @@ async fn flush_pending(
     tally: &mut FailureTally,
     updates: &mpsc::UnboundedSender<LspUpdate>,
     key: &SlotKey,
-    generation: u64,
+    token: u64,
 ) {
     if *dead {
         *pending = None;
@@ -680,6 +683,6 @@ async fn flush_pending(
     }
     if let Some((path, version, text)) = pending.take() {
         let result = client.did_change(&path, version, &text).await;
-        tally.note(result, dead, updates, key, generation);
+        tally.note(result, dead, updates, key, token);
     }
 }

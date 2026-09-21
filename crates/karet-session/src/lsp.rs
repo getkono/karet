@@ -116,6 +116,9 @@ pub(crate) struct LspManager {
     preflight_reported: HashSet<LanguageServerId>,
     updates: mpsc::UnboundedSender<LspUpdate>,
     connector: Connector,
+    /// Source of slot tokens. Never reused, and never zero, so a task holding a
+    /// token can always be told apart from every task that held its key before.
+    next_token: u64,
 }
 
 /// What the user's `lsp.servers` table says about one provider id.
@@ -150,6 +153,7 @@ impl LspManager {
                 preflight_reported: HashSet::new(),
                 updates,
                 connector: spawn_connector(supervisor, registry_root),
+                next_token: 1,
             },
             rx,
         )
@@ -176,12 +180,38 @@ impl LspManager {
         true
     }
 
-    /// Whether an asynchronous update belongs to the current server generation.
+    /// Whether an asynchronous update is still worth adopting.
+    ///
+    /// Two rules, because there are exactly two kinds of message.
+    ///
+    /// A task's report *about its own slot* -- its state, its diagnostics, its
+    /// death -- is worth adopting only while it still holds that slot. The token
+    /// says which incarnation is speaking, and a key is re-taken unchanged, so
+    /// without it a retired task and its replacement are indistinguishable. That
+    /// is one predicate covering every such message; the attempt this replaces
+    /// had four, one per message shape, and each was separately wrong.
+    ///
+    /// An *answer to a request* is different, and deliberately not fenced on the
+    /// slot: a task that has since been retired still gives the right answer to
+    /// the question that was put to it, and dropping it would leave the caller
+    /// waiting for a reply that never comes. Those keep the generation fence,
+    /// which exists to discard work begun under a settings snapshot that is gone.
     pub(crate) fn accepts(&self, update: &LspUpdate) -> bool {
-        let generation = match update {
-            LspUpdate::Diagnostics { generation, .. }
-            | LspUpdate::DiagnosticsCleared { generation, .. }
-            | LspUpdate::Completions { generation, .. }
+        match update {
+            LspUpdate::ServerStatus { token, key, .. }
+            | LspUpdate::Diagnostics {
+                token, server: key, ..
+            }
+            | LspUpdate::DiagnosticsCleared {
+                token, server: key, ..
+            }
+            | LspUpdate::SpawnFailed { token, key, .. }
+            | LspUpdate::ServerDied { token, key, .. }
+            | LspUpdate::RuntimeState { token, key, .. } => self
+                .servers
+                .get(key)
+                .is_some_and(|slot| slot.token == *token),
+            LspUpdate::Completions { generation, .. }
             | LspUpdate::Symbols { generation, .. }
             | LspUpdate::Hover { generation, .. }
             | LspUpdate::Definitions { generation, .. }
@@ -189,15 +219,10 @@ impl LspManager {
             | LspUpdate::WorkspaceEdit { generation, .. }
             | LspUpdate::Formatting { generation, .. }
             | LspUpdate::SyncFailed { generation, .. }
-            | LspUpdate::ServerStatus { generation, .. }
-            | LspUpdate::SpawnFailed { generation, .. }
             | LspUpdate::PreflightFailed { generation, .. }
-            | LspUpdate::ServerDied { generation, .. }
             | LspUpdate::InstallRequired { generation, .. }
-            | LspUpdate::ManualInstallRequired { generation, .. }
-            | LspUpdate::RuntimeState { generation, .. } => *generation,
-        };
-        generation == self.generation
+            | LspUpdate::ManualInstallRequired { generation, .. } => *generation == self.generation,
+        }
     }
 
     /// What the user's configuration says about `language`'s primary server:
@@ -435,15 +460,22 @@ impl LspManager {
             // (unit tests, bare library use) simply runs without LSP.
             let handle = tokio::runtime::Handle::try_current().ok()?;
             let (tx, rx) = mpsc::channel(SERVER_COMMAND_CAPACITY);
+            let token = self.take_token();
+            // Inserted before the task is spawned, not after. The task's first
+            // act is to report `Starting`, and a report is accepted only against
+            // a live slot -- so spawning first leaves a window in which the
+            // provider's own opening move is thrown away.
+            self.servers
+                .insert(key.clone(), ServerSlot::new(token, tx, true));
             handle.spawn(runtime::server_task(runtime::ServerTask {
                 spec: spec.clone(),
                 key: key.clone(),
+                token,
                 rx,
                 updates: self.updates.clone(),
                 connector: Arc::clone(&self.connector),
                 generation: self.generation,
             }));
-            self.servers.insert(key.clone(), ServerSlot::new(tx, true));
         }
         self.servers.get(&key).map(|slot| (&slot.tx, key))
     }
@@ -475,15 +507,19 @@ impl LspManager {
         if !self.servers.contains_key(&key) {
             let handle = tokio::runtime::Handle::try_current().ok()?;
             let (tx, rx) = mpsc::channel(SERVER_COMMAND_CAPACITY);
+            let token = self.take_token();
+            // Insert before spawn -- see `ensure_server`.
+            self.servers
+                .insert(key.clone(), ServerSlot::new(token, tx, false));
             handle.spawn(runtime::server_task(runtime::ServerTask {
                 spec: spec.clone(),
                 key: key.clone(),
+                token,
                 rx,
                 updates: self.updates.clone(),
                 connector: Arc::clone(&self.connector),
                 generation: self.generation,
             }));
-            self.servers.insert(key.clone(), ServerSlot::new(tx, false));
         }
         self.servers.get(&key).map(|slot| (slot.tx.clone(), key))
     }

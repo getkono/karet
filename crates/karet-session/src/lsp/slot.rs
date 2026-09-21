@@ -60,6 +60,12 @@ impl fmt::Display for SlotKey {
 /// up. A stale entry in such a map is what made the Language Servers panel offer
 /// a Restart for a process that did not exist.
 pub(super) struct ServerSlot {
+    /// Which task holds this slot.
+    ///
+    /// Distinct from every slot that ever held the same key before it, so a task
+    /// that has been retired cannot be mistaken for the one that replaced it --
+    /// the two are otherwise identical, since a key is re-taken unchanged.
+    pub(super) token: u64,
     /// The task's command inbox.
     pub(super) tx: mpsc::Sender<ServerCmd>,
     /// Documents currently attached to this instance.
@@ -79,8 +85,9 @@ pub(super) struct ServerSlot {
 
 impl ServerSlot {
     /// A slot for a task that is starting up.
-    pub(super) fn new(tx: mpsc::Sender<ServerCmd>, primary: bool) -> Self {
+    pub(super) fn new(token: u64, tx: mpsc::Sender<ServerCmd>, primary: bool) -> Self {
         Self {
+            token,
             tx,
             documents: HashSet::new(),
             primary,

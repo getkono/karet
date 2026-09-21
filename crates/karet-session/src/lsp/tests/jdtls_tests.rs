@@ -58,9 +58,9 @@ async fn language_status_notifications_surface_as_status_updates() {
     let status = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             match updates.recv().await {
-                Some(LspUpdate::ServerStatus {
-                    server, message, ..
-                }) => break Some((server, message)),
+                Some(LspUpdate::ServerStatus { key, message, .. }) => {
+                    break Some((key.provider.key().to_owned(), message));
+                },
                 Some(_) => {},
                 None => break None,
             }

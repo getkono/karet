@@ -20,6 +20,17 @@ impl LspManager {
         running
     }
 
+    /// Take the next slot token.
+    ///
+    /// Monotonic and never reused. Starting at 1 rather than 0 is deliberate: a
+    /// token that a `Default` could produce would match a live slot's, and a
+    /// message carrying it would be believed.
+    pub(super) fn take_token(&mut self) -> u64 {
+        let token = self.next_token;
+        self.next_token = self.next_token.wrapping_add(1).max(1);
+        token
+    }
+
     /// Forget a missing-provider suppression after its installation activates.
     pub(crate) fn installed(&mut self, provider: LanguageServerId) {
         self.missing_reported.remove(&provider);
