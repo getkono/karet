@@ -390,7 +390,7 @@
         "formatOnSave": {
           "description": "Run the configured formatter on save.",
           "type": "boolean",
-          "default": false
+          "default": true
         },
         "graphicalCursor": {
           "description": "Draw the caret with terminal graphics: `null` auto-enables when supported,\n`true` requests it and reports incompatibility, `false` disables it.",
