@@ -16,9 +16,9 @@ impl LspManager {
     /// still be marking a file.
     pub(super) fn retire(&mut self, key: &SlotKey) -> Retired {
         let mut retired = Retired::none();
-        if self.servers.remove(key).is_some() {
+        if let Some(slot) = self.servers.remove(key) {
             self.sync_failure_reported.remove(key);
-            retired.push(key.clone());
+            retired.push(key.clone(), slot.documents.into_iter().collect());
         }
         retired
     }

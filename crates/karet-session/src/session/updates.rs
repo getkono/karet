@@ -431,14 +431,47 @@ impl Session {
     }
 
     pub(super) fn restart_lsp(&mut self, server: crate::api::LanguageServerId) {
-        let Some(retired) = self.lsp.restart(server.clone()) else {
+        let Some(retired) = self.lsp.restart(server) else {
             return;
         };
+        // Exactly the documents the retirement detached, so a surviving provider
+        // is not sent a second `didOpen` for a file it already has open.
+        let reopen = retired.document_paths();
         // Markers cleared and the stop reported *before* the replacement starts,
         // so the client never sees the new instance's `Starting` arrive behind
         // the old one's retirement and conclude the provider went backwards.
         self.adopt_retirement(retired);
-        self.reopen_lsp_documents(Some(server));
+        self.reopen_documents_at(&reopen);
+    }
+
+    /// Reopen exactly `paths` against whatever provider now serves them.
+    pub(super) fn reopen_documents_at(&mut self, paths: &[std::path::PathBuf]) {
+        let documents: Vec<_> = self
+            .store
+            .docs
+            .values()
+            .filter(|document| paths.contains(&document.path))
+            .map(|document| {
+                (
+                    document.language_selector,
+                    document.lsp_language_id,
+                    document.path.clone(),
+                    document.buffer.version(),
+                    document.buffer.text(),
+                )
+            })
+            .collect();
+        let mut retired = crate::lsp::Retired::none();
+        for (selector, lsp_language_id, path, version, text) in documents {
+            retired.absorb(self.lsp.document_opened(
+                selector,
+                lsp_language_id,
+                &path,
+                version,
+                || text,
+            ));
+        }
+        self.adopt_retirement(retired);
     }
 
     pub(super) fn queue_lsp_registry(

@@ -390,3 +390,99 @@ async fn retiring_one_provider_leaves_another_providers_markers_alone() -> TestR
     );
     Ok(())
 }
+
+/// Restarting one provider leaves every other provider running.
+///
+/// `Command::RestartLanguageServer` had no test at all, and it retired *every*
+/// slot: restarting one server silently restarted all of them, and uninstalling
+/// Ruff stopped rust-analyzer as a side effect. The markers are the visible
+/// consequence -- a provider nobody asked about lost its own, and only got them
+/// back if it happened to republish.
+///
+/// Falsified by (each independently):
+/// - `retire_matching(|_| true)` in `LspManager::restart`: the untouched
+///   provider's markers go too.
+/// - reopening by language rather than by the documents the retirement
+///   detached: these providers are configured, not built-in, so nothing matches
+///   and the restarted provider never comes back.
+#[tokio::test]
+async fn restarting_one_provider_leaves_the_others_running() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let root = crate::lsp::absolute_path(dir.path());
+    let notes = dir.path().join("notes.txt");
+    std::fs::write(&notes, "plain text\n")?;
+    let rust = rust_file(&dir, "main.rs", "fn main() {}\n").ok_or("write failed")?;
+    let python = dir.path().join("main.py");
+    std::fs::write(&python, "x = 1\n")?;
+
+    let mut settings = LspSettings::default();
+    for (language, command) in [("rust", "server-rust"), ("python", "server-python")] {
+        settings.servers.insert(
+            language.to_owned(),
+            crate::config::schema::LspServer {
+                command: command.to_owned(),
+                ..crate::config::schema::LspServer::default()
+            },
+        );
+    }
+    let (mut session, mut events, _snaps) = Session::new(SessionConfig {
+        roots: vec![root.clone()],
+        settings: crate::config::Settings {
+            lsp: settings,
+            ..crate::config::Settings::default()
+        },
+        ..SessionConfig::default()
+    });
+    session.set_lsp_connector(marking_connector(crate::lsp::absolute_path(&notes)));
+    let backend = local_session(session, None);
+
+    let notes_doc = open(&backend, &mut events, &notes)
+        .await
+        .ok_or("notes.txt never opened")?;
+    let _rust_doc = open(&backend, &mut events, &rust)
+        .await
+        .ok_or("main.rs never opened")?;
+    let _python_doc = open(&backend, &mut events, &python)
+        .await
+        .ok_or("main.py never opened")?;
+
+    await_sources(&mut events, notes_doc, |sources| {
+        sources.iter().any(|s| s == "server-rust") && sources.iter().any(|s| s == "server-python")
+    })
+    .await
+    .ok_or("both providers never marked notes.txt")?;
+
+    backend.send(
+        backend.next_id(),
+        Command::RestartLanguageServer {
+            server: LanguageServerId::new("rust"),
+        },
+    )?;
+
+    // Asserted on the retirement *report*, not on a payload of markers. Under
+    // the defect this guards against both providers' markers vanish and then
+    // come back, so any assertion about markers here is a race -- and a test
+    // that races is one that can pass against a broken implementation, which is
+    // the failure this issue exists to stop repeating. (Written that way first,
+    // and it did pass the mutation.) `adopt_retirement` emits exactly one `Idle`
+    // per slot it retires, so "was Python retired too?" has a direct answer.
+    let mut rust_returned = false;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while !rust_returned && tokio::time::Instant::now() < deadline {
+        let Some((_, event)) = next_event(&mut events).await else {
+            break;
+        };
+        if let Event::LanguageServerRuntimeChanged { server, state, .. } = event {
+            assert!(
+                !(server.key() == "python" && state == LanguageServerRuntimeState::Idle),
+                "restarting rust retired python as well"
+            );
+            rust_returned = server.key() == "rust" && state == LanguageServerRuntimeState::Running;
+        }
+    }
+    assert!(
+        rust_returned,
+        "the restarted provider never came back -- the reopen matched no documents"
+    );
+    Ok(())
+}

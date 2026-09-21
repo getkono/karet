@@ -63,7 +63,7 @@ impl fmt::Display for SlotKey {
 /// pointing at lines the user had since edited away.
 #[must_use = "a retired slot's diagnostic layer must be cleared; pass this to `adopt_retirement`"]
 #[derive(Default)]
-pub(crate) struct Retired(Vec<SlotKey>);
+pub(crate) struct Retired(Vec<(SlotKey, Vec<PathBuf>)>);
 
 impl Retired {
     /// Nothing was retired.
@@ -71,9 +71,9 @@ impl Retired {
         Self(Vec::new())
     }
 
-    /// Record one retired slot.
-    pub(crate) fn push(&mut self, key: SlotKey) {
-        self.0.push(key);
+    /// Record one retired slot and the documents it was serving.
+    pub(crate) fn push(&mut self, key: SlotKey, documents: Vec<PathBuf>) {
+        self.0.push((key, documents));
     }
 
     /// Fold another retirement into this one.
@@ -81,9 +81,26 @@ impl Retired {
         self.0.extend(other.0);
     }
 
+    /// The documents the retired slots were serving, deduplicated.
+    ///
+    /// What a restart must reopen, and *only* that. Deciding it from the
+    /// language instead cannot work: the obvious test -- does this provider
+    /// serve that language -- is answerable only for built-in providers, so a
+    /// user-configured one would be retired and then never started again.
+    pub(crate) fn document_paths(&self) -> Vec<PathBuf> {
+        let mut paths: Vec<PathBuf> = self
+            .0
+            .iter()
+            .flat_map(|(_, documents)| documents.iter().cloned())
+            .collect();
+        paths.sort();
+        paths.dedup();
+        paths
+    }
+
     /// The retired slots, consuming the receipt.
     pub(crate) fn into_keys(self) -> Vec<SlotKey> {
-        self.0
+        self.0.into_iter().map(|(key, _)| key).collect()
     }
 }
 
