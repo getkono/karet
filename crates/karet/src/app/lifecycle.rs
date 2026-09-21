@@ -136,6 +136,15 @@ impl App {
         let honor_setting =
             !matches!(request, CloseRequest::Quit) || self.settings.files.confirm_on_exit;
         if at_risk.is_empty() || !honor_setting {
+            // A quit that never raises the prompt still cannot outrun a write it
+            // already owes. A save deferred on a formatter answers seconds after
+            // it was asked for, and exiting first drops it with nothing to show
+            // for the keystroke, so park on the same drain the prompt uses.
+            let in_flight = self.pending_saves.len();
+            if matches!(request, CloseRequest::Quit) && in_flight > 0 {
+                self.park_close_on_saves(request, in_flight);
+                return;
+            }
             self.execute_close(request);
         } else {
             let names = self.at_risk_names(&at_risk);
@@ -244,19 +253,25 @@ impl App {
         if saved == 0 {
             self.execute_close(request);
         } else {
-            self.saving_close = Some(request);
-            let verb = if matches!(request, CloseRequest::Quit) {
-                "quitting"
-            } else {
-                "closing"
-            };
-            self.notify_progress(
-                NotificationKind::Io,
-                Self::SAVE_BATCH_TAG.to_string(),
-                format!("saving {saved} file(s) before {verb}…"),
-                None,
-            );
+            self.park_close_on_saves(request, saved);
         }
+    }
+
+    /// Hold `request` until every save in flight has answered, and say so. The drain
+    /// in [`App::on_backend_event`] runs it; a failed save cancels it there instead.
+    fn park_close_on_saves(&mut self, request: CloseRequest, count: usize) {
+        self.saving_close = Some(request);
+        let verb = if matches!(request, CloseRequest::Quit) {
+            "quitting"
+        } else {
+            "closing"
+        };
+        self.notify_progress(
+            NotificationKind::Io,
+            Self::SAVE_BATCH_TAG.to_string(),
+            format!("saving {count} file(s) before {verb}…"),
+            None,
+        );
     }
 
     /// At the close prompt: discard unsaved changes and run the parked request now.
@@ -295,15 +310,27 @@ impl App {
     }
 
     /// Issue a save for each of `docs` (skipping any already in flight), tracking it
-    /// in `pending_saves` and marking its tabs as saving. Returns the number issued.
+    /// in `pending_saves` and marking its tabs as saving. Returns how many of `docs`
+    /// a write is now owed for.
+    ///
+    /// That count is documents *covered*, not requests issued: a document whose save
+    /// is already in flight is one this call must still be waited on for. Callers park
+    /// destructive work on a non-zero count, and a save deferred on a formatter can be
+    /// in flight for seconds — so counting only the new requests would run the close,
+    /// or the branch switch, while the write it was guarding is still parked.
     pub(super) fn save_docs(&mut self, docs: &[DocumentId], cause: SaveCause) -> usize {
-        let mut issued = 0;
+        let mut covered = 0;
         for &doc in docs {
-            if self.send_save(doc, cause) {
-                issued += 1;
+            if self.send_save(doc, cause) || self.save_in_flight(doc) {
+                covered += 1;
             }
         }
-        issued
+        covered
+    }
+
+    /// Whether a save for `doc` is already awaiting its answering event.
+    pub(super) fn save_in_flight(&self, doc: DocumentId) -> bool {
+        self.pending_saves.values().any(|pending| pending.doc == doc)
     }
 
     /// Send one save through the same backend path used by manual, close-guard, and
@@ -313,11 +340,7 @@ impl App {
         let Some(backend) = self.backend.clone() else {
             return false;
         };
-        if self
-            .pending_saves
-            .values()
-            .any(|pending| pending.doc == doc)
-        {
+        if self.save_in_flight(doc) {
             return false;
         }
         let version = self.document_version(doc);
@@ -372,11 +395,7 @@ impl App {
             );
             return;
         };
-        if self
-            .pending_saves
-            .values()
-            .any(|pending| pending.doc == doc)
-        {
+        if self.save_in_flight(doc) {
             self.notify(
                 Report::Refusal,
                 NotificationKind::Io,

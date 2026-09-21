@@ -193,6 +193,62 @@ fn close_tab_save_parks_request_then_closes_when_saves_drain() {
     assert!(matches!(app.tabs[app.active].kind, TabKind::Welcome));
 }
 
+/// A save deferred on a formatter is in flight for seconds, and the session refuses
+/// to issue a second one for the same document. Counting only newly issued requests
+/// made "save & close" find nothing to wait for: the close ran immediately, the
+/// session cancelled the parked save, wrote nothing, and dropped the swap with it.
+#[test]
+fn closing_a_tab_waits_for_a_save_already_in_flight() {
+    let backend = Arc::new(RecordingBackend::new());
+    let mut app = app();
+    app.backend = Some(backend.clone());
+    dirty_doc_tab(&mut app, "t.rs", 7);
+    app.pending_saves
+        .insert(RequestId(41), PendingSave { doc: DocumentId(7) });
+
+    app.dispatch(Command::CloseTab);
+    app.dispatch(Command::CloseConfirmSave);
+
+    assert!(
+        matches!(app.saving_close, Some(CloseRequest::Tab { .. })),
+        "the close must wait on the write the in-flight save still owes"
+    );
+    assert!(
+        matches!(app.tabs[0].kind, TabKind::Code { .. }),
+        "closing here would cancel the save and take its swap with it"
+    );
+
+    app.on_backend_event(
+        Some(RequestId(41)),
+        SessionEvent::Saved { doc: DocumentId(7) },
+    );
+    assert!(app.saving_close.is_none());
+    assert!(matches!(app.tabs[app.active].kind, TabKind::Welcome));
+}
+
+/// `confirmOnExit = false` skips the prompt, so the parking the prompt does never
+/// happened — and a quit issued a second after Ctrl+S exited before the deferred
+/// write landed.
+#[test]
+fn quitting_waits_for_a_save_already_in_flight() {
+    let mut app = app();
+    app.settings.files.confirm_on_exit = false;
+    dirty_doc_tab(&mut app, "t.rs", 3);
+    app.pending_saves
+        .insert(RequestId(9), PendingSave { doc: DocumentId(3) });
+
+    app.dispatch(Command::Quit);
+
+    assert!(
+        !app.should_quit,
+        "quitting here would abandon the write the save still owes"
+    );
+    assert_eq!(app.saving_close, Some(CloseRequest::Quit));
+
+    app.on_backend_event(Some(RequestId(9)), SessionEvent::Saved { doc: DocumentId(3) });
+    assert!(app.should_quit, "the quit runs once the write has landed");
+}
+
 #[test]
 fn close_other_tabs_with_unsaved_arms_the_prompt() {
     let mut app = app();
