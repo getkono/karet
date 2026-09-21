@@ -383,7 +383,11 @@ impl Session {
         version: u64,
         edits: Vec<TextEdit>,
     ) -> bool {
-        let Some(pending) = self.pending_format_saves.remove(&request).map(|save| save.doc) else {
+        let Some(pending) = self
+            .pending_format_saves
+            .remove(&request)
+            .map(|save| save.doc)
+        else {
             return false;
         };
         // A closed document cannot be found here: `close` drains this map before

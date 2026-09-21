@@ -875,7 +875,9 @@ fn formatting_capability_reads_every_shape_the_spec_allows() {
 /// again, so a client that drops it has to guess for the rest of the session.
 #[tokio::test]
 async fn the_handshake_records_whether_the_server_formats() -> TestResult {
-    async fn connect_advertising(provider: Value) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+    async fn connect_advertising(
+        provider: Value,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
         let ((read, write), mut server) = wire();
         let server_task = tokio::spawn(async move {
             let init = server.recv().await;

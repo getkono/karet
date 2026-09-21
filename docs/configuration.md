@@ -57,7 +57,7 @@ Keys use the VS Code / Zed camelCase style. Defaults shown.
 | `stickyScroll` | bool | `true` | Pin the active semantic block hierarchy above scrolled text. Multi-line signatures collapse to one row with an ellipsis. |
 | `trimTrailingWhitespace` | bool | `true` | Strip trailing whitespace on save. |
 | `insertFinalNewline` | bool | `true` | Ensure a trailing newline on save. |
-| `formatOnSave` | bool | `false` | Run the language-server formatter (`textDocument/formatting`) before writing the file. A formatter failure still saves. Per-language override and `lsp.languages.*.formatter` pick the server. |
+| `formatOnSave` | bool | `false` | Format before writing the file, using the language server's `textDocument/formatting` when the server offers it and the built-in formatter otherwise. Honours the per-language override. The write waits for the formatter, briefly: a formatter that fails, declines, or takes too long costs the formatting, never the save. The `afterDelay` autosave is excluded, so a reformat never lands mid-edit; every other save formats. |
 | `semanticComments` | object | enabled | Codetag highlighting (`enabled`, `tags`). |
 | `completion` | object | enabled | LSP completion (`enabled`, `autoTrigger`). |
 | `hover` | object | enabled | The hover popup (`Ctrl+K Ctrl+I`): LSP documentation plus the diagnostics under the caret (`enabled`). |
@@ -309,7 +309,7 @@ an external prerequisite.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `format` | bool | `true` | Format TOML with the built-in taplo formatter (honouring the workspace's `.taplo.toml`) when no language server offers formatting; with the `taplo` LSP installed, its formatter wins. |
+| `format` | bool | `true` | Format TOML with the built-in taplo formatter (honouring the workspace's `.taplo.toml`) when no language server offers to format the file — including when a server has it open but never advertised `textDocument/formatting`. With the `taplo` LSP installed, its formatter wins. |
 
 ### `debug`
 
