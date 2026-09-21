@@ -18,6 +18,31 @@ use super::message::ServerCmd;
 use crate::api::LanguageServerId;
 use crate::api::LanguageServerRuntimeState;
 
+/// Which incarnation of a slot is speaking.
+///
+/// A newtype rather than a bare `u64`, and the distinction is load-bearing: the
+/// task also carries a `generation`, which is also a `u64`, and the two are
+/// passed side by side through the report helpers. With both as `u64` a call
+/// that handed over the wrong one compiled in silence -- and did, until an
+/// adversarial review found deaths being reported under the generation and
+/// silently refused by the very fence meant to protect them. Making the two
+/// types different makes that class of mistake a build failure.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub(crate) struct SlotToken(u64);
+
+impl SlotToken {
+    /// The first token a session hands out.
+    ///
+    /// One, not zero: zero is what a `Default` yields, so a token nobody set
+    /// would otherwise match the session's first real slot.
+    pub(crate) const FIRST: Self = Self(1);
+
+    /// The next token, which is never this one.
+    pub(crate) fn next(self) -> Self {
+        Self(self.0.wrapping_add(1).max(1))
+    }
+}
+
 /// One language-server provider at one repository root.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) struct SlotKey {
@@ -117,7 +142,7 @@ pub(super) struct ServerSlot {
     /// Distinct from every slot that ever held the same key before it, so a task
     /// that has been retired cannot be mistaken for the one that replaced it --
     /// the two are otherwise identical, since a key is re-taken unchanged.
-    pub(super) token: u64,
+    pub(super) token: SlotToken,
     /// The task's command inbox.
     pub(super) tx: mpsc::Sender<ServerCmd>,
     /// Documents currently attached to this instance.
@@ -137,7 +162,7 @@ pub(super) struct ServerSlot {
 
 impl ServerSlot {
     /// A slot for a task that is starting up.
-    pub(super) fn new(token: u64, tx: mpsc::Sender<ServerCmd>, primary: bool) -> Self {
+    pub(super) fn new(token: SlotToken, tx: mpsc::Sender<ServerCmd>, primary: bool) -> Self {
         Self {
             token,
             tx,

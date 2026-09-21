@@ -143,9 +143,12 @@ impl Session {
             version,
             || doc.buffer.text(),
         );
-        self.adopt_retirement(retired);
         self.store.by_path.insert(path, doc_id);
         self.store.docs.insert(doc_id, doc);
+        // After the store insert, not before: adopting a retirement republishes
+        // the inventory, which derives the roots it reports from the open
+        // documents. Adopting first hid the root of the file being opened.
+        self.adopt_retirement(retired);
         self.emit(
             Some(id),
             Event::Opened {

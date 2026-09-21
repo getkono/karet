@@ -10,6 +10,7 @@ use tokio::sync::mpsc;
 
 use super::message::LspUpdate;
 use super::slot::SlotKey;
+use super::slot::SlotToken;
 
 /// Relay one connection's pushes, tagged with the slot that owns them.
 ///
@@ -22,7 +23,7 @@ pub(super) fn forward_diagnostics(
     client: &LspClient,
     updates: mpsc::UnboundedSender<LspUpdate>,
     key: SlotKey,
-    token: u64,
+    token: SlotToken,
 ) -> tokio::task::JoinHandle<()> {
     let mut diagnostic_rx = client.diagnostics();
     let mut raw_rx = client.raw_notifications();

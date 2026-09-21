@@ -30,6 +30,7 @@ use super::RESTART_WINDOW;
 use super::message::LspUpdate;
 use super::message::ServerCmd;
 use super::slot::SlotKey;
+use super::slot::SlotToken;
 use crate::api::LanguageServerRuntimeState;
 
 /// How long a connection must last before it counts as having worked.
@@ -227,7 +228,7 @@ impl FailureTally {
         dead: &mut bool,
         updates: &mpsc::UnboundedSender<LspUpdate>,
         key: &SlotKey,
-        token: u64,
+        token: SlotToken,
     ) {
         match result {
             // Deliberately not proof of an answer. Most callers of this are
@@ -279,7 +280,7 @@ impl FailureTally {
         &mut self,
         updates: &mpsc::UnboundedSender<LspUpdate>,
         key: &SlotKey,
-        token: u64,
+        token: SlotToken,
     ) {
         let mut unreported = false;
         self.die(&mut unreported, updates, key, token);
@@ -316,7 +317,7 @@ impl FailureTally {
         dead: &mut bool,
         updates: &mpsc::UnboundedSender<LspUpdate>,
         key: &SlotKey,
-        token: u64,
+        token: SlotToken,
     ) {
         self.consecutive_timeouts = 0;
         if !*dead {
@@ -558,7 +559,13 @@ mod tests {
     fn a_closed_connection_dies_at_once() {
         let (mut tally, tx, mut rx) = tally();
         let mut dead = false;
-        tally.note::<()>(Err(LspError::Closed), &mut dead, &tx, &key("rust"), 1);
+        tally.note::<()>(
+            Err(LspError::Closed),
+            &mut dead,
+            &tx,
+            &key("rust"),
+            SlotToken::FIRST,
+        );
         assert!(dead);
         assert!(matches!(rx.try_recv(), Ok(LspUpdate::ServerDied { .. })));
     }
@@ -567,8 +574,20 @@ mod tests {
     fn one_death_is_reported_once() {
         let (mut tally, tx, mut rx) = tally();
         let mut dead = false;
-        tally.note::<()>(Err(LspError::Closed), &mut dead, &tx, &key("rust"), 1);
-        tally.note::<()>(Err(LspError::Closed), &mut dead, &tx, &key("rust"), 1);
+        tally.note::<()>(
+            Err(LspError::Closed),
+            &mut dead,
+            &tx,
+            &key("rust"),
+            SlotToken::FIRST,
+        );
+        tally.note::<()>(
+            Err(LspError::Closed),
+            &mut dead,
+            &tx,
+            &key("rust"),
+            SlotToken::FIRST,
+        );
         assert!(matches!(rx.try_recv(), Ok(LspUpdate::ServerDied { .. })));
         assert!(rx.try_recv().is_err(), "the second close reported again");
     }
@@ -577,7 +596,13 @@ mod tests {
     fn a_single_timeout_is_not_a_death() {
         let (mut tally, tx, mut rx) = tally();
         let mut dead = false;
-        tally.note::<()>(Err(LspError::Timeout), &mut dead, &tx, &key("rust"), 1);
+        tally.note::<()>(
+            Err(LspError::Timeout),
+            &mut dead,
+            &tx,
+            &key("rust"),
+            SlotToken::FIRST,
+        );
         assert!(!dead, "one slow answer condemned the connection");
         assert!(rx.try_recv().is_err());
     }
@@ -592,7 +617,13 @@ mod tests {
         let (mut tally, tx, mut rx) = tally();
         let mut dead = false;
         for _ in 0..TIMEOUT_DEATH_LIMIT.saturating_mul(10) {
-            tally.note::<()>(Err(LspError::Timeout), &mut dead, &tx, &key("java"), 1);
+            tally.note::<()>(
+                Err(LspError::Timeout),
+                &mut dead,
+                &tx,
+                &key("java"),
+                SlotToken::FIRST,
+            );
         }
         assert!(
             !dead,
@@ -612,7 +643,13 @@ mod tests {
         let mut dead = false;
         let _answered = tally.observe(Ok::<(), LspError>(()));
         for _ in 0..TIMEOUT_DEATH_LIMIT {
-            tally.note::<()>(Err(LspError::Timeout), &mut dead, &tx, &key("rust"), 1);
+            tally.note::<()>(
+                Err(LspError::Timeout),
+                &mut dead,
+                &tx,
+                &key("rust"),
+                SlotToken::FIRST,
+            );
         }
         assert!(dead);
         assert!(tally.hung(), "a silent death was not flagged as hung");
@@ -622,7 +659,13 @@ mod tests {
     fn a_closed_connection_is_not_flagged_as_hung() {
         let (mut tally, tx, _rx) = tally();
         let mut dead = false;
-        tally.note::<()>(Err(LspError::Closed), &mut dead, &tx, &key("rust"), 1);
+        tally.note::<()>(
+            Err(LspError::Closed),
+            &mut dead,
+            &tx,
+            &key("rust"),
+            SlotToken::FIRST,
+        );
         assert!(!tally.hung());
     }
 
@@ -651,7 +694,13 @@ mod tests {
         let _answered = tally.observe(Ok::<(), LspError>(()));
         let _answered = rx.try_recv();
         for _ in 0..TIMEOUT_DEATH_LIMIT {
-            tally.note::<()>(Err(LspError::Timeout), &mut dead, &tx, &key("rust"), 1);
+            tally.note::<()>(
+                Err(LspError::Timeout),
+                &mut dead,
+                &tx,
+                &key("rust"),
+                SlotToken::FIRST,
+            );
         }
         assert!(dead);
         assert!(matches!(rx.try_recv(), Ok(LspUpdate::ServerDied { .. })));
@@ -663,11 +712,23 @@ mod tests {
         let mut dead = false;
         let _answered = tally.observe(Ok::<(), LspError>(()));
         for _ in 0..TIMEOUT_DEATH_LIMIT.saturating_sub(1) {
-            tally.note::<()>(Err(LspError::Timeout), &mut dead, &tx, &key("rust"), 1);
+            tally.note::<()>(
+                Err(LspError::Timeout),
+                &mut dead,
+                &tx,
+                &key("rust"),
+                SlotToken::FIRST,
+            );
         }
         let _answered = tally.observe(Ok::<(), LspError>(()));
         for _ in 0..TIMEOUT_DEATH_LIMIT.saturating_sub(1) {
-            tally.note::<()>(Err(LspError::Timeout), &mut dead, &tx, &key("rust"), 1);
+            tally.note::<()>(
+                Err(LspError::Timeout),
+                &mut dead,
+                &tx,
+                &key("rust"),
+                SlotToken::FIRST,
+            );
         }
         assert!(!dead, "timeouts either side of a success were summed");
         assert!(rx.try_recv().is_err());
@@ -686,7 +747,7 @@ mod tests {
                 &mut dead,
                 &tx,
                 &key("rust"),
-                1,
+                SlotToken::FIRST,
             );
         }
         assert!(!dead);

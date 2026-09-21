@@ -50,7 +50,7 @@ use karet_lsp::LspError;
 use karet_lsp::LspSpec;
 pub(crate) use message::LspUpdate;
 use message::ServerCmd;
-use provider::absolute_path;
+pub(crate) use provider::absolute_path;
 pub(crate) use provider::builtin_server;
 use provider::builtin_spec;
 use provider::executable_exists;
@@ -63,6 +63,7 @@ pub(crate) use provider::version_i32;
 pub(crate) use slot::Retired;
 use slot::ServerSlot;
 pub(crate) use slot::SlotKey;
+use slot::SlotToken;
 use tokio::sync::mpsc;
 
 use crate::api::DocumentId;
@@ -119,7 +120,7 @@ pub(crate) struct LspManager {
     connector: Connector,
     /// Source of slot tokens. Never reused, and never zero, so a task holding a
     /// token can always be told apart from every task that held its key before.
-    next_token: u64,
+    next_token: SlotToken,
 }
 
 /// What the user's `lsp.servers` table says about one provider id.
@@ -154,7 +155,7 @@ impl LspManager {
                 preflight_reported: HashSet::new(),
                 updates,
                 connector: spawn_connector(supervisor, registry_root),
-                next_token: 1,
+                next_token: SlotToken::FIRST,
             },
             rx,
         )

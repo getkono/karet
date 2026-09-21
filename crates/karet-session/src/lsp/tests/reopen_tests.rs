@@ -98,3 +98,107 @@ async fn a_provider_that_was_not_restarted_is_not_reopened() -> TestResult {
     );
     Ok(())
 }
+
+/// A document opened under a non-absolute path is still reopened by a restart.
+///
+/// A document is stored under the path the client opened it with; the manager
+/// records what it sent the server, which is always absolute. Matching the two
+/// as written meant `karet main.rs` -- the commonest invocation there is --
+/// retired its provider on Restart and then found no documents to reopen it
+/// with, leaving the server down for the rest of the session with nothing said.
+///
+/// The path here differs from its absolute form only by a `/./`, which
+/// `std::path::absolute` removes. That reproduces the mismatch exactly without
+/// depending on the process working directory, which is global to the test
+/// binary and cannot be changed safely from one test.
+///
+/// Falsified by: matching on `document.path` instead of its absolute form in
+/// `reopen_documents_at` -- the provider never reports `Running` again.
+#[tokio::test]
+async fn a_document_opened_by_an_unnormalised_path_is_still_reopened() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let root = crate::lsp::absolute_path(dir.path());
+    let notes = dir.path().join("notes.txt");
+    std::fs::write(&notes, "plain text\n")?;
+    std::fs::write(dir.path().join("main.rs"), "fn main() {}\n")?;
+    // The same file, named relatively. Built by walking up from the process
+    // working directory rather than by changing it: the working directory is
+    // global to the test binary and cannot be moved safely from one test.
+    //
+    // `..` is the key. `std::path::absolute` drops `.` components but keeps
+    // `..`, and `Path`'s own equality normalises `.` away too -- so a `./`
+    // spelling is invisible to both and reproduces nothing. A `../` one is
+    // resolved by the kernel when opening the file and by nobody else, so the
+    // stored path and the absolutised one really do differ.
+    let cwd = std::env::current_dir()?;
+    let mut relative = PathBuf::new();
+    for _ in cwd.components().skip(1) {
+        relative.push("..");
+    }
+    let mut absolute_tail = root.components();
+    absolute_tail.next();
+    relative.extend(absolute_tail);
+    let unnormalised = relative.join("main.rs");
+    assert_ne!(
+        unnormalised,
+        crate::lsp::absolute_path(&unnormalised),
+        "the test needs a path that differs from its absolute form"
+    );
+
+    let mut settings = LspSettings::default();
+    settings.servers.insert(
+        "rust".to_owned(),
+        crate::config::schema::LspServer {
+            command: "server-rust".to_owned(),
+            ..crate::config::schema::LspServer::default()
+        },
+    );
+    let (mut session, mut events, _snaps) = Session::new(SessionConfig {
+        roots: vec![root.clone()],
+        settings: crate::config::Settings {
+            lsp: settings,
+            ..crate::config::Settings::default()
+        },
+        ..SessionConfig::default()
+    });
+    session.set_lsp_connector(marking_connector(crate::lsp::absolute_path(&notes), None));
+    let backend = local_session(session, None);
+
+    open(&backend, &mut events, &unnormalised)
+        .await
+        .ok_or("the document never opened")?;
+    let mut running = false;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while !running && tokio::time::Instant::now() < deadline {
+        let Some((_, event)) = next_event(&mut events).await else {
+            break;
+        };
+        if let Event::LanguageServerRuntimeChanged { state, .. } = event {
+            running = state == LanguageServerRuntimeState::Running;
+        }
+    }
+    assert!(running, "the provider never started");
+
+    backend.send(
+        backend.next_id(),
+        Command::RestartLanguageServer {
+            server: LanguageServerId::new("rust"),
+        },
+    )?;
+
+    let mut restarted = false;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while !restarted && tokio::time::Instant::now() < deadline {
+        let Some((_, event)) = next_event(&mut events).await else {
+            break;
+        };
+        if let Event::LanguageServerRuntimeChanged { state, .. } = event {
+            restarted = state == LanguageServerRuntimeState::Running;
+        }
+    }
+    assert!(
+        restarted,
+        "the provider was retired and never reopened: Restart killed it for good"
+    );
+    Ok(())
+}

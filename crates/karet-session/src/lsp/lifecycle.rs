@@ -57,9 +57,9 @@ impl LspManager {
     /// Monotonic and never reused. Starting at 1 rather than 0 is deliberate: a
     /// token that a `Default` could produce would match a live slot's, and a
     /// message carrying it would be believed.
-    pub(super) fn take_token(&mut self) -> u64 {
+    pub(super) fn take_token(&mut self) -> SlotToken {
         let token = self.next_token;
-        self.next_token = self.next_token.wrapping_add(1).max(1);
+        self.next_token = token.next();
         token
     }
 
@@ -114,8 +114,12 @@ mod tests {
         let mut seen = std::collections::HashSet::new();
         for _ in 0..1000 {
             let token = manager.take_token();
-            assert_ne!(token, 0, "a default-valued token would match a live slot");
-            assert!(seen.insert(token), "token {token} was handed out twice");
+            assert_ne!(
+                token,
+                SlotToken::default(),
+                "a default-valued token would match a live slot"
+            );
+            assert!(seen.insert(token), "token {token:?} was handed out twice");
         }
     }
 }

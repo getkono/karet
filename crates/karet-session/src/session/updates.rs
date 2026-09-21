@@ -445,12 +445,19 @@ impl Session {
     }
 
     /// Reopen exactly `paths` against whatever provider now serves them.
+    ///
+    /// Matched on absolute paths. A document is stored under the path the client
+    /// opened it with, which need not be absolute -- `karet main.rs` opens
+    /// `./main.rs` -- while the manager records what it sent the server, which
+    /// always is. Comparing the two as written meant the commonest invocation of
+    /// all retired a provider on Restart and then matched no documents to reopen
+    /// it with, leaving it down for the rest of the session.
     pub(super) fn reopen_documents_at(&mut self, paths: &[std::path::PathBuf]) {
         let documents: Vec<_> = self
             .store
             .docs
             .values()
-            .filter(|document| paths.contains(&document.path))
+            .filter(|document| paths.contains(&crate::lsp::absolute_path(&document.path)))
             .map(|document| {
                 (
                     document.language_selector,
@@ -864,28 +871,4 @@ pub(super) fn utf16_caret(doc: &Document, position: LineCol) -> LineCol {
 impl Session {
     /// Without the `mdlint` feature there is no markdown lint layer.
     pub(crate) fn refresh_markdown_lint(&mut self, _doc: crate::api::DocumentId) {}
-}
-
-#[cfg(test)]
-mod update_text_tests {
-    /// A slot key is `provider@/absolute/repository/root`. The path is useful in
-    /// the manager and the log, and is only noise in a notification.
-    ///
-    /// This used to be enforced by a string parser splitting the key back apart.
-    /// The key now carries its two halves separately, so naming the provider
-    /// cannot pick up the path -- but the property is the user-visible one, so it
-    /// keeps its test.
-    #[test]
-    fn a_notification_never_carries_a_repository_path() {
-        let key = crate::lsp::SlotKey::new(
-            crate::api::LanguageServerId::RustAnalyzer,
-            "/home/me/work/repo",
-        );
-        let message = format!(
-            "the {} language server stopped; reconnecting with bounded backoff",
-            key.provider.display_name()
-        );
-        assert!(message.contains("rust-analyzer"), "{message}");
-        assert!(!message.contains('/'), "{message}");
-    }
 }

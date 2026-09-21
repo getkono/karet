@@ -13,7 +13,7 @@ pub(super) struct ServerTask {
     pub(super) key: SlotKey,
     /// Which incarnation of `key` this task is. Stamped on every report it makes
     /// about its own slot, so a report outliving its slot is refused.
-    pub(super) token: u64,
+    pub(super) token: SlotToken,
     pub(super) rx: mpsc::Receiver<ServerCmd>,
     pub(super) updates: mpsc::UnboundedSender<LspUpdate>,
     pub(super) connector: Connector,
@@ -279,7 +279,7 @@ pub(super) async fn server_task(task: ServerTask) {
                         &mut tally,
                         &updates,
                         &key,
-                        generation,
+                        token,
                     )
                     .await;
                     if dead {
@@ -329,7 +329,7 @@ pub(super) async fn server_task(task: ServerTask) {
                         &mut tally,
                         &updates,
                         &key,
-                        generation,
+                        token,
                     )
                     .await;
                 }
@@ -350,7 +350,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     &mut tally,
                     &updates,
                     &key,
-                    generation,
+                    token,
                 )
                 .await;
                 if !dead {
@@ -368,7 +368,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     &mut tally,
                     &updates,
                     &key,
-                    generation,
+                    token,
                 )
                 .await;
                 if !dead {
@@ -384,7 +384,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     &mut tally,
                     &updates,
                     &key,
-                    generation,
+                    token,
                 )
                 .await;
                 if !dead {
@@ -407,7 +407,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     &mut tally,
                     &updates,
                     &key,
-                    generation,
+                    token,
                 )
                 .await;
                 let items = if dead {
@@ -443,7 +443,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     &mut tally,
                     &updates,
                     &key,
-                    generation,
+                    token,
                 )
                 .await;
                 let symbols = if dead {
@@ -452,7 +452,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     match tally.observe(active.document_symbols(&path).await) {
                         Ok(symbols) => symbols,
                         Err(error) => {
-                            tally.note::<()>(Err(error), &mut dead, &updates, &key, generation);
+                            tally.note::<()>(Err(error), &mut dead, &updates, &key, token);
                             Vec::new()
                         },
                     }
@@ -479,7 +479,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     &mut tally,
                     &updates,
                     &key,
-                    generation,
+                    token,
                 )
                 .await;
                 let hover = if dead {
@@ -488,7 +488,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     tally
                         .observe(active.hover(&path, position).await)
                         .unwrap_or_else(|error| {
-                            tally.note::<()>(Err(error), &mut dead, &updates, &key, generation);
+                            tally.note::<()>(Err(error), &mut dead, &updates, &key, token);
                             None
                         })
                 };
@@ -514,7 +514,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     &mut tally,
                     &updates,
                     &key,
-                    generation,
+                    token,
                 )
                 .await;
                 let locations = if dead {
@@ -523,7 +523,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     tally
                         .observe(active.definition(&path, position).await)
                         .unwrap_or_else(|error| {
-                            tally.note::<()>(Err(error), &mut dead, &updates, &key, generation);
+                            tally.note::<()>(Err(error), &mut dead, &updates, &key, token);
                             Vec::new()
                         })
                 };
@@ -543,7 +543,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     &mut tally,
                     &updates,
                     &key,
-                    generation,
+                    token,
                 )
                 .await;
                 let symbols = if dead {
@@ -552,7 +552,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     tally
                         .observe(active.workspace_symbols(&query).await)
                         .unwrap_or_else(|error| {
-                            tally.note::<()>(Err(error), &mut dead, &updates, &key, generation);
+                            tally.note::<()>(Err(error), &mut dead, &updates, &key, token);
                             Vec::new()
                         })
                 };
@@ -576,7 +576,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     &mut tally,
                     &updates,
                     &key,
-                    generation,
+                    token,
                 )
                 .await;
                 let edit = if dead {
@@ -585,7 +585,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     tally
                         .observe(active.rename(&path, position, &new_name).await)
                         .unwrap_or_else(|error| {
-                            tally.note::<()>(Err(error), &mut dead, &updates, &key, generation);
+                            tally.note::<()>(Err(error), &mut dead, &updates, &key, token);
                             WorkspaceEdit::default()
                         })
                 };
@@ -608,7 +608,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     &mut tally,
                     &updates,
                     &key,
-                    generation,
+                    token,
                 )
                 .await;
                 let edits = if dead {
@@ -617,7 +617,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     tally
                         .observe(active.formatting(&path).await)
                         .unwrap_or_else(|error| {
-                            tally.note::<()>(Err(error), &mut dead, &updates, &key, generation);
+                            tally.note::<()>(Err(error), &mut dead, &updates, &key, token);
                             Vec::new()
                         })
                 };
@@ -675,7 +675,7 @@ async fn flush_pending(
     tally: &mut FailureTally,
     updates: &mpsc::UnboundedSender<LspUpdate>,
     key: &SlotKey,
-    token: u64,
+    token: SlotToken,
 ) {
     if *dead {
         *pending = None;

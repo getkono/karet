@@ -17,6 +17,7 @@ use karet_core::TextEdit;
 use karet_core::WorkspaceEdit;
 
 use super::slot::SlotKey;
+use super::slot::SlotToken;
 use crate::api::DocumentId;
 use crate::api::LanguageServerId;
 use crate::api::LanguageServerRuntimeState;
@@ -120,7 +121,7 @@ pub(crate) enum LspUpdate {
     /// status bar while a heavyweight server imports/indexes.
     ServerStatus {
         /// The slot this report is about, and the incarnation making it.
-        token: u64,
+        token: SlotToken,
         /// The slot the reporting task holds.
         key: SlotKey,
         /// The human-readable status message.
@@ -190,7 +191,7 @@ pub(crate) enum LspUpdate {
     /// A complete server diagnostic layer for one file.
     Diagnostics {
         /// The incarnation of the slot that published these.
-        token: u64,
+        token: SlotToken,
         /// Provider/root identity whose diagnostic layer is replaced.
         server: SlotKey,
         /// File whose LSP diagnostic layer is replaced.
@@ -203,7 +204,7 @@ pub(crate) enum LspUpdate {
     /// The server binary could not be started (reported once per language).
     SpawnFailed {
         /// The incarnation of the slot that failed to start.
-        token: u64,
+        token: SlotToken,
         /// The slot that failed to start.
         ///
         /// Render `key.provider`, never the key: the key is
@@ -229,7 +230,7 @@ pub(crate) enum LspUpdate {
     /// A running server's connection closed (reported once per language).
     ServerDied {
         /// The incarnation of the slot that died.
-        token: u64,
+        token: SlotToken,
         /// The slot whose server died.
         key: SlotKey,
     },
@@ -259,7 +260,7 @@ pub(crate) enum LspUpdate {
     /// is cleared by the manager, synchronously, as part of retiring it.
     DiagnosticsCleared {
         /// The incarnation of the slot asking for the clear.
-        token: u64,
+        token: SlotToken,
         /// The diagnostic layer to drop, keyed exactly as it was published.
         ///
         /// Being the slot's own key, this already scopes the clear to the one
@@ -299,7 +300,7 @@ pub(crate) enum LspUpdate {
     /// A provider/root connection changed lifecycle state.
     RuntimeState {
         /// The incarnation of the slot reporting.
-        token: u64,
+        token: SlotToken,
         /// The slot reporting about itself. Both halves the client needs --
         /// provider and root -- come from it, and it is also what the manager
         /// looks the slot up by, so a report cannot be filed against a different

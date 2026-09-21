@@ -192,7 +192,7 @@ pub(super) fn nearest_repository_root(path: &Path, fallback: Option<&Path>) -> P
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-pub(super) fn absolute_path(path: &Path) -> PathBuf {
+pub(crate) fn absolute_path(path: &Path) -> PathBuf {
     std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
