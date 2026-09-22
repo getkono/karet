@@ -638,7 +638,120 @@ fn a_second_quit_forces_through_a_parked_one() {
     assert!(app.saving_close.is_none());
     assert_eq!(
         last_message(&app).as_deref(),
-        Some("quit: 1 save(s) abandoned, recoverable from backups"),
+        Some("quit: 1 save(s) abandoned, recoverable from swap files"),
         "abandoning a write is reported, not silent"
+    );
+}
+
+/// The escape hatch is armed by a parked *quit*, not by any parked close. Keying it
+/// on `saving_close` alone let a tab close standing in the map spend the hatch on the
+/// user's first Ctrl+Q, abandoning a write they had just asked for.
+#[test]
+fn a_parked_tab_close_does_not_arm_the_quit_escape_hatch() {
+    let backend = Arc::new(RecordingBackend::new());
+    let mut app = app();
+    app.backend = Some(backend.clone());
+    app.settings.files.confirm_on_exit = false;
+    dirty_doc_tab(&mut app, "t.rs", 11);
+    app.pending_saves.insert(
+        RequestId(52),
+        PendingSave {
+            doc: DocumentId(11),
+        },
+    );
+
+    app.dispatch(Command::CloseTab);
+    app.dispatch(Command::CloseConfirmSave);
+    assert!(
+        matches!(app.saving_close, Some(CloseRequest::Tab { .. })),
+        "the tab close parks on the in-flight save"
+    );
+
+    app.dispatch(Command::Quit);
+
+    assert!(
+        !app.should_quit,
+        "the first quit must park, not spend the hatch a tab close happened to arm"
+    );
+    assert_eq!(
+        app.saving_close,
+        Some(CloseRequest::Quit),
+        "the quit replaces the parked close and waits on the same drain"
+    );
+
+    app.dispatch(Command::Quit);
+    assert!(app.should_quit, "the second quit still forces through");
+}
+
+/// Ctrl+S on a buffer with no unsaved edits still issues a real save -- it is how a
+/// reformat is asked for -- so the prompt never runs and the close guard is the only
+/// thing standing between the close and the write it would cancel.
+#[test]
+fn closing_a_clean_tab_waits_for_a_save_still_in_flight() {
+    let backend = Arc::new(RecordingBackend::new());
+    let mut app = app();
+    app.backend = Some(backend.clone());
+    app.push_tab(text_tab("clean.rs", "x"));
+    let idx = app.active;
+    if let TabKind::Code { doc: d, .. } = &mut app.tabs[idx].kind {
+        *d = Some(DocumentId(13));
+    }
+    app.pending_saves.insert(
+        RequestId(64),
+        PendingSave {
+            doc: DocumentId(13),
+        },
+    );
+
+    app.dispatch(Command::CloseTab);
+
+    assert!(
+        matches!(app.saving_close, Some(CloseRequest::Tab { .. })),
+        "closing here would cancel the save and write nothing"
+    );
+    assert!(
+        matches!(app.tabs[0].kind, TabKind::Code { .. }),
+        "the tab stays until the write lands"
+    );
+
+    app.on_backend_event(
+        Some(RequestId(64)),
+        SessionEvent::Saved {
+            doc: DocumentId(13),
+        },
+    );
+    assert!(app.saving_close.is_none());
+    assert!(matches!(app.tabs[app.active].kind, TabKind::Welcome));
+}
+
+/// A tab close owes nothing for a document it leaves open in another tab, so it must
+/// not park on a save that is none of its business.
+#[test]
+fn closing_a_tab_ignores_a_save_for_a_document_it_keeps() {
+    let backend = Arc::new(RecordingBackend::new());
+    let mut app = app();
+    app.backend = Some(backend.clone());
+    app.push_tab(text_tab("kept.rs", "x"));
+    let kept = app.active;
+    if let TabKind::Code { doc: d, .. } = &mut app.tabs[kept].kind {
+        *d = Some(DocumentId(21));
+    }
+    app.push_tab(text_tab("going.rs", "y"));
+    let going = app.active;
+    if let TabKind::Code { doc: d, .. } = &mut app.tabs[going].kind {
+        *d = Some(DocumentId(22));
+    }
+    app.pending_saves.insert(
+        RequestId(70),
+        PendingSave {
+            doc: DocumentId(21),
+        },
+    );
+
+    app.dispatch(Command::CloseTab);
+
+    assert!(
+        app.saving_close.is_none(),
+        "the save belongs to a document this close keeps open"
     );
 }

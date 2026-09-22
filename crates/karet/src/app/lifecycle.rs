@@ -67,30 +67,49 @@ impl App {
     /// surviving tab or another pane is not at risk, so closing
     /// one of its several views must not prompt.
     pub(super) fn docs_at_risk(&self, request: CloseRequest) -> Vec<DocumentId> {
+        self.fully_dropped_docs(request)
+            .into_iter()
+            // Prompt only for a dirty document, checked across every view so that
+            // per-tab flag skew cannot hide it.
+            .filter(|doc| {
+                self.all_tabs()
+                    .any(|t| Self::tab_doc(t) == Some(*doc) && t.dirty)
+            })
+            .collect()
+    }
+
+    /// The documents `request` drops entirely: those whose **last** referencing view
+    /// is being removed. A document still shown in a surviving tab or another pane is
+    /// not dropped by it, so closing one of its several views loses nothing.
+    fn fully_dropped_docs(&self, request: CloseRequest) -> Vec<DocumentId> {
         let removed: HashSet<ViewId> = self.removed_tab_views(request).into_iter().collect();
         let surviving: HashSet<DocumentId> = self
             .all_tabs()
             .filter(|tab| !removed.contains(&tab.view))
             .filter_map(Self::tab_doc)
             .collect();
-        let mut at_risk: Vec<DocumentId> = Vec::new();
+        let mut dropped: Vec<DocumentId> = Vec::new();
         for tab in self.all_tabs().filter(|tab| removed.contains(&tab.view)) {
             let Some(doc) = Self::tab_doc(tab) else {
                 continue;
             };
-            if surviving.contains(&doc) || at_risk.contains(&doc) {
+            if surviving.contains(&doc) || dropped.contains(&doc) {
                 continue;
             }
-            // The document is fully dropped by this request; prompt only if it is
-            // dirty (checked across every view, so per-tab flag skew can't hide it).
-            if self
-                .all_tabs()
-                .any(|t| Self::tab_doc(t) == Some(doc) && t.dirty)
-            {
-                at_risk.push(doc);
-            }
+            dropped.push(doc);
         }
-        at_risk
+        dropped
+    }
+
+    /// How many saves are still in flight for documents `request` would drop. A close
+    /// that outran one would lose a write the user explicitly asked for, so it parks
+    /// on the drain instead of racing it.
+    fn saves_at_risk(&self, request: CloseRequest) -> usize {
+        let dropped = self.fully_dropped_docs(request);
+        self.pending_saves
+            .values()
+            .filter(|save| dropped.contains(&save.doc))
+            .count()
     }
 
     /// Route an irreversible close through the unified unsaved-changes guard. When it
@@ -136,18 +155,27 @@ impl App {
         let honor_setting =
             !matches!(request, CloseRequest::Quit) || self.settings.files.confirm_on_exit;
         if at_risk.is_empty() || !honor_setting {
-            // A quit that never raises the prompt still cannot outrun a write it
+            // A close that never raises the prompt still cannot outrun a write it
             // already owes. A save deferred on a formatter answers seconds after
-            // it was asked for, and exiting first drops it with nothing to show
-            // for the keystroke, so park on the same drain the prompt uses.
-            let in_flight = self.pending_saves.len();
-            if matches!(request, CloseRequest::Quit) && in_flight > 0 {
-                // Unless the user is already waiting on one. Nothing else here
-                // releases a parked quit -- only the backend answering does --
+            // it was asked for, and closing first drops it with nothing to show
+            // for the keystroke, so park on the same drain the prompt uses. Count
+            // only the writes *this* request would drop: a tab close owes nothing
+            // for a document it leaves open elsewhere. Ctrl+S on a buffer with no
+            // unsaved edits still issues a real save -- it is how a reformat is
+            // asked for -- so a clean document arrives here with a write pending
+            // and no prompt above to have held it.
+            let in_flight = self.saves_at_risk(request);
+            if in_flight > 0 {
+                // Unless the user is already waiting on a parked quit. Nothing
+                // else here releases one -- only the backend answering does --
                 // so a second Ctrl+Q is the only way out of a wedged session,
-                // and refusing it would make the editor unexitable. The swap
-                // files survive, because quitting sends no `CloseDocument`.
-                if self.saving_close.is_none() {
+                // and refusing it would make the editor unexitable. Only a quit
+                // arms that hatch and only a parked quit trips it: a parked tab
+                // close is a different request, and letting it stand in would
+                // abandon writes on the user's *first* Ctrl+Q.
+                let forcing = matches!(request, CloseRequest::Quit)
+                    && matches!(self.saving_close, Some(CloseRequest::Quit));
+                if !forcing {
                     self.park_close_on_saves(request, in_flight);
                     return;
                 }
@@ -156,7 +184,7 @@ impl App {
                 self.notify(
                     Report::Failure,
                     NotificationKind::Io,
-                    format!("quit: {in_flight} save(s) abandoned, recoverable from backups"),
+                    format!("quit: {in_flight} save(s) abandoned, recoverable from swap files"),
                 );
             }
             self.execute_close(request);
