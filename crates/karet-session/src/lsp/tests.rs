@@ -871,3 +871,4 @@ mod manual_provider_tests;
 mod reopen_tests;
 mod restart_tests;
 mod retirement_tests;
+mod routing_tests;

@@ -63,12 +63,18 @@ description = "Opt-in: mutation-test the language-server lifecycle (slow, not in
 # in a way the client refuses" -- the shape that made the previous attempt at
 # this ship a test that passed against a broken build. Those are falsified by
 # hand, and each test names its own falsifier in its docstring.
+#
+# Scoped to slot lifetime and retirement, which is what this suite constrains,
+# and kept green so a failure means a real regression. `lsp/runtime.rs` and
+# `lsp/health.rs` are deliberately *not* here: their reconnect backoff and
+# circuit thresholds are dense in exactly the comparisons and arithmetic these
+# operators mutate, and they have no tests that pin any of it. Widening the
+# scope to them reports twenty-odd survivors on a clean tree, which is a gate
+# nobody looks at twice. Covering them is issue #288.
 run = """cargo mutants --package karet-session \
   --file 'crates/karet-session/src/lsp.rs' \
   --file 'crates/karet-session/src/lsp/lifecycle.rs' \
   --file 'crates/karet-session/src/lsp/slot.rs' \
-  --file 'crates/karet-session/src/lsp/health.rs' \
-  --file 'crates/karet-session/src/lsp/runtime.rs' \
   --file 'crates/karet-session/src/session/retirement.rs' \
   -- --all-features"""
 
