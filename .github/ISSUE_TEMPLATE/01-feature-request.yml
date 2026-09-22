@@ -3,6 +3,13 @@ description: Suggest an improvement or new capability
 labels:
   - enhancement
 body:
+  - type: markdown
+    attributes:
+      value: |
+        Check [`docs/scope.md`](https://github.com/getkono/karet/blob/master/docs/scope.md)
+        first — some capabilities are deliberate non-goals. Proposing one anyway is
+        fine; bring evidence of demand.
+
   - type: textarea
     id: problem
     attributes:

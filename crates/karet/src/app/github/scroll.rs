@@ -4,6 +4,7 @@
 //! out in, so the offsets stay reachable once a view rather than a tab owns them.
 
 use super::*;
+use crate::app::scroll::adjust;
 use crate::app::scroll::clamp_u16;
 use crate::app::scroll::cursor_in_window;
 
@@ -12,14 +13,9 @@ impl GithubViewState {
     pub(crate) fn scroll_lines(&mut self, delta: i32) {
         match self {
             Self::Issue { scroll, .. } | Self::WorkflowRun { scroll, .. } => {
-                let next = (i64::from(*scroll) + i64::from(delta)).clamp(0, i64::from(u16::MAX));
-                *scroll = next as u16;
+                adjust(scroll, delta);
             },
-            Self::PullRequest(view) => {
-                let next =
-                    (i64::from(view.scroll) + i64::from(delta)).clamp(0, i64::from(u16::MAX));
-                view.scroll = next as u16;
-            },
+            Self::PullRequest(view) => adjust(&mut view.scroll, delta),
             // The dashboard moves a cursor and the forms move between fields; neither
             // carries a row offset a wheel could write to.
             Self::Dashboard(_) | Self::NewIssue { .. } | Self::NewPullRequest { .. } => {},

@@ -1,6 +1,7 @@
 mod render;
 
 use super::*;
+use crate::app::scroll::adjust;
 
 impl App {
     /// The display width of hard tabs in `tab`, after per-document EditorConfig and
@@ -89,21 +90,21 @@ impl App {
             | TabKind::StashPreview { pager, .. }
             | TabKind::Graph { pager, .. }
             | TabKind::LoadedConfig { pager, .. }
-            | TabKind::CommitLoading { pager, .. } => {
-                let next =
-                    (i64::from(pager.scroll) + i64::from(delta)).clamp(0, i64::from(u16::MAX));
-                pager.scroll = next as u16;
-            },
+            | TabKind::CommitLoading { pager, .. } => adjust(&mut pager.scroll, delta),
             TabKind::Commit { view, .. } | TabKind::Compare { view, .. } => {
-                let next =
-                    (i64::from(view.scroll) + i64::from(delta)).clamp(0, i64::from(u16::MAX));
-                view.scroll = next as u16;
+                adjust(&mut view.scroll, delta);
             },
             TabKind::Hex { bytes, scroll, .. } => {
                 let max = bytes.len().div_ceil(16).saturating_sub(1) as i64;
                 let next = (*scroll as i64 + i64::from(delta)).clamp(0, max);
                 *scroll = next as usize;
             },
+            // One server per notch, not three: the render pins this view's offset to
+            // its selection, so a notch has to move the *selection* to move the
+            // window — the same bargain the Seam spine and the outline already make.
+            // A notch therefore also retargets the action strip, which is the point:
+            // the card under the cursor is the one "Restart" restarts.
+            TabKind::LanguageServers(view) => view.select_relative(delta.signum()),
             // Scrolling a document turns pages (one page per scroll gesture).
             #[cfg(feature = "pdf")]
             TabKind::Document {

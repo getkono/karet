@@ -1,18 +1,19 @@
 //! Horizontal scrolling, and the absolute scrolling a scrollbar drives.
 //!
 //! The wheel and the keyboard move by a *delta*; a scrollbar hands over a *position*.
-//! Those are not the same operation. Three views throw a delta's magnitude away (the
-//! commit browser and the sidebar lists move a selection by one, a document turns one
-//! page), and stepping the editor there would re-wrap the document once per row. So
-//! [`App::scroll_surface_to`] is its own path rather than a wrapper over
-//! [`App::scroll_lines`].
+//! Those are not the same operation. Several views throw a delta's magnitude away
+//! (the commit browser, the sidebar lists and the language-servers inventory move a
+//! selection by one, a document turns one page), and stepping the editor there would
+//! re-wrap the document once per row. So [`App::scroll_surface_to`] is its own path
+//! rather than a wrapper over [`App::scroll_lines`].
 //!
 //! It divides the views in two. Most own an offset the renderer honours, and setting
 //! it is the whole job. The rest derive their offset from a cursor *during* the
 //! render — the file tree, the search and spelling lists, the outline, the commit
-//! browser, the GitHub dashboard — and for those an offset written on its own is
-//! undone before it is ever seen. Scrolling them means moving the cursor into the
-//! window the pointer asked for, which is also what their wheel already does.
+//! browser, the GitHub dashboard, the language-servers inventory — and for those an
+//! offset written on its own is undone before it is ever seen. Scrolling them means
+//! moving the cursor into the window the pointer asked for, which is also what their
+//! wheel already does.
 
 use super::*;
 
@@ -132,7 +133,7 @@ impl App {
         viewport: usize,
     ) {
         match surface {
-            ScrollSurface::TabRows => self.scroll_tab_rows_to(position),
+            ScrollSurface::TabRows => self.scroll_tab_rows_to(position, viewport),
             ScrollSurface::TabColumns => self.scroll_tab_columns_to(position),
             ScrollSurface::EditorPreview => self.set_markdown_preview_scroll(position),
             ScrollSurface::GithubPage => self.scroll_github_page_to(position, viewport),
@@ -207,7 +208,11 @@ impl App {
 
     /// The absolute counterpart to [`scroll_lines`](Self::scroll_lines): the same
     /// per-tab-kind split, but landing on a position instead of stepping by a delta.
-    fn scroll_tab_rows_to(&mut self, position: usize) {
+    ///
+    /// `viewport` is in whatever unit the grabbed track's extent counts, and only the
+    /// language-servers inventory reads it — every other tab kind here owns an offset
+    /// the render honours, so landing on a position is the whole job for them.
+    fn scroll_tab_rows_to(&mut self, position: usize, viewport: usize) {
         let Some(tab) = self.tabs.get_mut(self.active) else {
             return;
         };
@@ -224,7 +229,27 @@ impl App {
                 view.scroll = clamp_u16(position);
             },
             TabKind::Hex { scroll, .. } => *scroll = position,
-            TabKind::LanguageServers(view) => view.offset = position,
+            // The render re-derives this offset from the selection every frame, so a
+            // position written on its own is undone before it is ever seen: the cursor
+            // has to travel into the window the pointer asked for. The cards are
+            // variable height, so the extent counts *servers* — which is what makes
+            // this the one arm `viewport` is carried for.
+            TabKind::LanguageServers(view) => {
+                let len = view.visible_indices().len();
+                let bottom = position.saturating_add(viewport.max(1) - 1);
+                // Deliberately not `cursor_in_window`: that lands an outside cursor on
+                // the *nearer* edge, and for a list of variable-height cards the bottom
+                // edge is a promise this cannot keep. `viewport` was measured at the
+                // old offset, so it does not say how many cards fit at the new one, and
+                // asking the pin for an unmeasured fit is answered by nudging the offset
+                // past the position asked for — permanently, on the first card, whenever
+                // the cards above it are taller. The window's *top* is always honoured,
+                // because the pin keeps `offset == selected` whatever the heights.
+                if view.selected < position || view.selected > bottom {
+                    view.selected = position.min(len.saturating_sub(1));
+                }
+                view.offset = position;
+            },
             // The graph view pans freely: dragging its scrollbar moves the viewport and
             // leaves the selection where the user put it.
             TabKind::CommitGraph { .. } => self.graph_scroll_to(position),
@@ -306,7 +331,12 @@ fn clamp_u32(position: usize) -> u32 {
     u32::try_from(position).unwrap_or(u32::MAX)
 }
 
-fn adjust(offset: &mut u16, delta: i32) {
+/// Step a `u16` offset by `delta`, clamped to the range the field can hold.
+///
+/// The upper bound is the type's, not the content's: the views that share this
+/// leave the real cap to their paint, which is the only place that knows how tall
+/// the content came out.
+pub(in crate::app) fn adjust(offset: &mut u16, delta: i32) {
     let next = (i64::from(*offset) + i64::from(delta)).clamp(0, i64::from(u16::MAX));
     *offset = next as u16;
 }
