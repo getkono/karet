@@ -60,10 +60,14 @@ async fn installing_a_provider_lets_it_report_being_missing_again() -> TestResul
 
     let provider = LanguageServerId::RustAnalyzer;
     manager.report_unresolved(provider.clone(), "rust");
-    updates
-        .recv()
-        .await
-        .ok_or("the first report never arrived")?;
+    // `try_recv`, never `recv().await`: the send is synchronous, so the update is
+    // already there. Awaiting it would turn "the report was suppressed" into a
+    // hang rather than a failure -- which is what mutation testing saw when this
+    // test was first written.
+    assert!(
+        updates.try_recv().is_ok(),
+        "an unresolved provider was never reported at all"
+    );
 
     manager.report_unresolved(provider.clone(), "rust");
     assert!(
