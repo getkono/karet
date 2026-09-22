@@ -272,3 +272,80 @@ async fn a_deferred_save_writes_no_swap_when_backups_are_off() -> TestResult {
     );
     Ok(())
 }
+
+/// A server is free to take `textDocument/formatting` and never answer it. The
+/// server task awaits that reply inline in its serial command loop, so until it
+/// returns this server publishes no diagnostics, answers no completions and
+/// flushes no `didChange`. Left to `karet-jsonrpc` the wait is thirty seconds —
+/// twenty of them past the point the save gave up and went to disk unformatted.
+///
+/// The clock is tokio's virtual one (`start_paused`), so this measures the
+/// bound rather than waiting it out: idle time is advanced to the next timer, and
+/// the assertion is on *which* timer that turns out to be.
+#[tokio::test(start_paused = true)]
+async fn a_formatter_that_never_answers_does_not_wedge_its_server() -> TestResult {
+    let (mut manager, mut updates) = LspManager::new(LspSettings::default(), None, None, None);
+    manager.set_connector(test_connector(
+        Behavior::FormatsNever,
+        None,
+        Arc::new(AtomicUsize::new(0)),
+    ));
+    let path = PathBuf::from("/tmp/wedged.rs");
+    manager.document_opened(Some("rust"), Some("rust"), &path, 1, || {
+        "fn main() {}".into()
+    });
+    assert!(
+        manager.formatting(Some("rust"), RequestId(1), DocumentId(1), 1, &path),
+        "the request must reach a server for this to test anything"
+    );
+
+    let started = tokio::time::Instant::now();
+    let answer = loop {
+        match updates.recv().await {
+            Some(LspUpdate::Formatting {
+                formatted,
+                edits,
+                request,
+                ..
+            }) => {
+                break (formatted, edits, request);
+            },
+            Some(_other) => continue,
+            None => return Err("the server task ended without answering".into()),
+        }
+    };
+    let waited = started.elapsed();
+
+    assert_eq!(answer.2, RequestId(1));
+    assert!(
+        !answer.0 && answer.1.is_empty(),
+        "giving up must report the shape every other non-success ending uses"
+    );
+    assert!(
+        waited <= crate::lsp::runtime::FORMATTING_DEADLINE,
+        "the wait must be bounded by the formatting deadline, not by the \
+         JSON-RPC request timeout (waited {waited:?})"
+    );
+
+    // And the task is genuinely back: the next command for this server is served
+    // by the same connection, which was never declared dead.
+    assert!(manager.completion(
+        Some("rust"),
+        RequestId(2),
+        DocumentId(1),
+        1,
+        &path,
+        karet_core::LineCol::new(0, 0),
+    ));
+    loop {
+        match updates.recv().await {
+            Some(LspUpdate::Completions { items, .. }) => {
+                assert_eq!(items.len(), 1, "the server is still answering");
+                break;
+            },
+            Some(_other) => continue,
+            None => return Err("the server task was left wedged on the formatter".into()),
+        }
+    }
+    Ok(())
+}

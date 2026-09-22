@@ -76,6 +76,10 @@ pub(super) enum Behavior {
     /// line with `formatted\n`. The only behaviour that lets a save actually
     /// reach `begin_format_on_save` and park on a reply.
     Formats,
+    /// Advertise `textDocument/formatting` and then never answer it, while
+    /// staying perfectly alive and serving everything else. A formatter wedged
+    /// on one request is not a dead server, and must not be treated as one.
+    FormatsNever,
 }
 
 /// A connector that runs a scripted in-memory server per "spawn".
@@ -104,7 +108,8 @@ pub(super) fn test_connector(
                 };
                 // Only the formatting behaviour advertises the method, so every
                 // other test's handshake is byte-for-byte what it always was.
-                let capabilities = if matches!(behavior, Behavior::Formats) {
+                let capabilities = if matches!(behavior, Behavior::Formats | Behavior::FormatsNever)
+                {
                     json!({"documentFormattingProvider": true})
                 } else {
                     json!({})
@@ -202,6 +207,9 @@ pub(super) fn test_connector(
                                 .await;
                             }
                         },
+                        // Swallowed whole: no reply, no error, no hang-up.
+                        Some("textDocument/formatting")
+                            if matches!(behavior, Behavior::FormatsNever) => {},
                         Some("textDocument/formatting") => {
                             write_msg(
                                 &mut server_write,

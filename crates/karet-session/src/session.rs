@@ -891,7 +891,12 @@ struct PendingFormatSave {
 ///
 /// Swept on the session's existing backup tick rather than its own timer, so
 /// the effective bound is this plus up to one tick.
-const FORMAT_ON_SAVE_DEADLINE_MS: u64 = 10_000;
+///
+/// The server task bounds its own await on the same answer, and derives that
+/// bound from this one (`lsp::runtime::FORMATTING_DEADLINE`) so the two cannot
+/// drift: once this deadline has passed there is nobody left for a reply to be
+/// delivered to, and continuing to wait only keeps that server's task busy.
+pub(crate) const FORMAT_ON_SAVE_DEADLINE_MS: u64 = 10_000;
 
 fn whole_document_change(doc: &Document, new_text: String) -> Option<Change> {
     let end = doc.buffer.byte_to_line_col(BytePos(doc.buffer.len_bytes()));
