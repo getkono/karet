@@ -7,38 +7,6 @@
 use super::support::*;
 use crate::app::*;
 
-/// A provider status for `language`, resolved and running at `/workspace`.
-fn language_server_status(
-    server: LanguageServerId,
-    language: &str,
-    managed: bool,
-) -> LanguageServerStatus {
-    LanguageServerStatus {
-        ever_installed: managed,
-        declined: false,
-        server,
-        languages: vec![language.to_string()],
-        enabled: true,
-        managed,
-        manual_install_reason: (!managed).then(|| "install with the project toolchain".to_string()),
-        installed: managed.then(|| "1.2.3".to_string()),
-        cleanup_pending: false,
-        instances: vec![karet_session::LanguageServerInstanceStatus {
-            root: PathBuf::from("/workspace"),
-            source: if managed {
-                karet_session::LanguageServerSource::Managed
-            } else {
-                karet_session::LanguageServerSource::Path
-            },
-            command: Some("/bin/server".to_string()),
-            args: Vec::new(),
-            runtime: LanguageServerRuntimeState::Running,
-            open_documents: 1,
-            error: None,
-        }],
-    }
-}
-
 /// A code tab whose language is set explicitly.
 ///
 /// `text_tab` hardcodes `"Rust"`, which is fine for most tests but hides the very
