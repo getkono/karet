@@ -169,3 +169,123 @@ fn offers_restart(app: &App) -> bool {
         _ => panic!("expected the language-server manager"),
     }
 }
+
+/// A refreshed inventory keeps the selection on the provider the user chose,
+/// not on the row number they chose it at.
+///
+/// Selection is re-anchored by identity against the rows that were in force
+/// before the swap, because a refresh can add or drop a provider and the list
+/// is sorted by display name. Anchoring by row number instead silently moves
+/// the cursor onto a neighbour, and the action strip then offers Restart and
+/// Uninstall for a server the user never selected.
+///
+/// Falsified by: passing `None` instead of `anchors.next().flatten()` in
+/// `show_language_server_status`. Selection falls back to row 0, which is the
+/// provider that sorted in above the selected one.
+#[test]
+fn a_refresh_keeps_the_selection_on_the_provider_not_the_row() {
+    let backend = std::sync::Arc::new(RecordingBackend::new());
+    let mut app = app();
+    app.backend = Some(backend);
+    app.open_language_servers();
+
+    // Clangd sorts above Rust-analyzer, so selecting row 1 selects rust-analyzer.
+    answer_inventory(
+        &mut app,
+        vec![
+            serving(LanguageServerId::Clangd),
+            serving(LanguageServerId::RustAnalyzer),
+        ],
+    );
+    match &mut app.tabs[app.active].kind {
+        TabKind::LanguageServers(view) => view.selected = 1,
+        _ => panic!("expected the language-server manager"),
+    }
+    assert_eq!(
+        selected(&app),
+        Some(LanguageServerId::RustAnalyzer),
+        "the fixture does not select the provider this test is about"
+    );
+
+    // A provider appears that sorts above both, shifting every row down one.
+    answer_inventory(
+        &mut app,
+        vec![
+            serving(LanguageServerId::Biome),
+            serving(LanguageServerId::Clangd),
+            serving(LanguageServerId::RustAnalyzer),
+        ],
+    );
+    assert_eq!(
+        selected(&app),
+        Some(LanguageServerId::RustAnalyzer),
+        "a refresh moved the selection onto a provider the user never chose"
+    );
+}
+
+/// The provider the manager currently has selected.
+fn selected(app: &App) -> Option<LanguageServerId> {
+    match &app.tabs[app.active].kind {
+        TabKind::LanguageServers(view) => view.selected_id(&app.lsp_runtime.servers),
+        _ => panic!("expected the language-server manager"),
+    }
+}
+
+/// A badge-only client answers a staleness signal; a client that never asked
+/// does not.
+///
+/// The session sends no rows, so the client decides whether the signal is worth
+/// a round trip. Both ends of that decision matter. A client with a populated
+/// cache and no manager tab is exactly the ordinary case -- the per-pane badges
+/// draw from those rows -- and skipping the re-query there restores the whole
+/// defect: the badge keeps reporting a provider that has been retired. A client
+/// that has never asked for an inventory has nothing to correct, and asking
+/// would make every session pay for a scan nobody reads.
+///
+/// Falsified by: forcing `reading` to `true` (the virgin client then sends a
+/// request), or to `false` (the badge-only client then does not).
+#[test]
+fn only_a_client_that_is_reading_the_inventory_answers_a_staleness_signal() {
+    let backend = std::sync::Arc::new(RecordingBackend::new());
+    let mut app = app();
+    app.backend = Some(backend.clone());
+
+    // Never asked for an inventory, nothing on screen that draws from one.
+    app.on_backend_event(None, karet_session::Event::LanguageServerInventoryStale);
+    assert_eq!(
+        status_requests(&backend),
+        0,
+        "a client with nothing to correct asked for an inventory anyway"
+    );
+
+    // Populate the badge cache, then close the manager tab so only badges read it.
+    app.open_language_servers();
+    answer_inventory(&mut app, vec![serving(LanguageServerId::RustAnalyzer)]);
+    app.close_tab_at(app.active);
+    assert!(
+        !app.all_tabs()
+            .any(|tab| matches!(tab.kind, TabKind::LanguageServers(_))),
+        "the manager tab did not close"
+    );
+    let before = status_requests(&backend);
+
+    app.on_backend_event(None, karet_session::Event::LanguageServerInventoryStale);
+    assert_eq!(
+        status_requests(&backend),
+        before + 1,
+        "a badge-only client ignored the signal and kept its stale rows"
+    );
+}
+
+/// How many inventory requests the backend has been sent.
+fn status_requests(backend: &RecordingBackend) -> usize {
+    backend
+        .sent
+        .lock()
+        .map(|sent| {
+            sent.iter()
+                .filter(|(_, command)| matches!(command, SessionCommand::LanguageServerStatus))
+                .count()
+        })
+        .unwrap_or_default()
+}

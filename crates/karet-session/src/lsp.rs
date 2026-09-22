@@ -650,12 +650,6 @@ impl LspManager {
                 // already announced for the rest of the session: the reopen that
                 // exists precisely to repair a provider would `continue` straight
                 // past it, and only closing the document could undo that.
-                // The document set records what the *server was told*, so a
-                // command that never left the queue must not leave a mark on it.
-                // Kept as written, the dedup guard above reads the file as
-                // already announced for the rest of the session: the reopen that
-                // exists precisely to repair a provider would `continue` straight
-                // past it, and only closing the document could undo that.
                 if let Some(slot) = self.servers.get_mut(&key) {
                     slot.documents.remove(&path);
                 }

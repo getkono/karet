@@ -100,7 +100,6 @@ fn provider_badge(status: &LanguageServerStatus, path: &Path) -> Option<Language
                     LanguageServerRuntimeState::Retrying => LanguageServerBadge::Retrying,
                     // The circuit breaker protecting the editor from a crash loop is
                     // an implementation detail; to the user the provider is broken.
-                    // `Stopped` likewise: the task ended and scheduled no retry.
                     LanguageServerRuntimeState::CircuitOpen
                     | LanguageServerRuntimeState::Unavailable => LanguageServerBadge::Failed,
                     // `LanguageServerRuntimeState` is `#[non_exhaustive]`: a state

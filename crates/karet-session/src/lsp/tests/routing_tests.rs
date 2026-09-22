@@ -30,6 +30,12 @@ async fn a_document_is_routed_only_to_a_primary_that_holds_it() -> TestResult {
     let _ = manager.document_opened(Some("rust"), Some("rust"), &held, 1, || {
         "fn main() {}".into()
     });
+    let key = manager
+        .servers
+        .keys()
+        .next()
+        .cloned()
+        .ok_or("the document started no server")?;
     assert!(
         manager.existing_server(Some("rust"), &held).is_some(),
         "the slot that was told about this document did not answer for it"
@@ -40,6 +46,28 @@ async fn a_document_is_routed_only_to_a_primary_that_holds_it() -> TestResult {
     assert!(
         manager.existing_server(Some("rust"), &unknown).is_none(),
         "a primary answered for a document it has never been told about"
+    );
+
+    // And the other conjunct: a companion holds the same document without being
+    // primary, so `holds` alone would route to it. Asserted on identity, because
+    // both slots are live and both hold the file -- only one may answer.
+    let companion = SlotKey::new(LanguageServerId::new("companion"), Path::new("/tmp"));
+    let (tx, _companion_rx) = mpsc::channel(4);
+    let token = manager.take_token();
+    let mut slot = ServerSlot::new(token, tx, false);
+    slot.documents.insert(held.clone());
+    manager.servers.insert(companion.clone(), slot);
+    let answering = manager
+        .existing_server(Some("rust"), &held)
+        .ok_or("the primary stopped answering once a companion joined it")?;
+    let primary_tx = manager
+        .servers
+        .get(&key)
+        .map(|slot| &slot.tx)
+        .ok_or("the primary slot went away")?;
+    assert!(
+        std::ptr::eq(answering, primary_tx),
+        "a non-primary companion answered for a document the primary owns"
     );
     Ok(())
 }

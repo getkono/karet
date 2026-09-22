@@ -661,7 +661,7 @@ pub(super) async fn server_task(task: ServerTask) {
     // has dropped its slot. Anything said now is said by a task that no longer
     // represents anything -- and since the key can be re-taken immediately, a
     // parting word lands on whatever replaced it. That is how a *serving* provider
-    // came to be badged `Stopped` for the rest of a session.
+    // came to be badged `Unavailable` for the rest of a session.
     //
     // The manager reports the retirement instead, at the moment it retires the
     // slot, where the fact is true by construction rather than raced for.
