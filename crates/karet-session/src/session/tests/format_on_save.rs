@@ -791,3 +791,58 @@
             "the cleanup must run on the formatter's output, not before it"
         );
     }
+
+    /// A save with nothing to ask writes straight through, so there is no wait
+    /// to back the buffer up for. The swap a deferred save leaves behind is
+    /// scoped to that wait: when the save completes, the swap dir is clean —
+    /// a leftover would have the next session offering to recover a file that
+    /// is already on disk.
+    #[test]
+    fn a_save_that_does_not_defer_leaves_no_swap_behind() {
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        let Ok(swapdir) = tempfile::tempdir() else {
+            return;
+        };
+        let path = dir.path().join("main.rs");
+        if std::fs::write(&path, "original\n").is_err() {
+            return;
+        }
+        // `formatOnSave` is on, but no server is attached to offer formatting,
+        // so the save never parks.
+        let Some((mut session, doc, mut events)) = format_on_save_session(&path) else {
+            return;
+        };
+        session.swaps = Some(SwapStore::with_dir(swapdir.path().to_path_buf(), 1));
+        session.handle(
+            RequestId(2),
+            Command::ApplyChange {
+                doc,
+                change: Change::new(
+                    0,
+                    vec![TextEdit {
+                        range: Range {
+                            start: LineCol::new(0, 0),
+                            end: LineCol::new(1, 0),
+                        },
+                        new_text: "edited\n".to_string(),
+                    }],
+                ),
+                cause: EditCause::Replace,
+            },
+        );
+        while events.try_recv().is_some() {}
+
+        session.handle(RequestId(3), Command::Save {
+            doc,
+            cause: SaveCause::Manual,
+        });
+
+        assert!(saved(&mut events), "the save must write immediately");
+        assert_eq!(std::fs::read_to_string(&path).unwrap_or_default(), "edited\n");
+        assert!(
+            scan(swapdir.path()).is_empty(),
+            "a save that wrote straight through must leave no swap"
+        );
+    }

@@ -317,6 +317,14 @@ impl Session {
                     issued_ms,
                 },
             );
+            // The user asked for this buffer to be on disk and it is not going
+            // to be for a while: the write waits on a formatter that has up to
+            // `FORMAT_ON_SAVE_DEADLINE_MS` to answer. Until then the swap is the
+            // only other copy there is, and the backup interval alone would not
+            // have written one — a buffer edited in the last thirty seconds, or
+            // edited since its last swap, has none. Write it now, so what the
+            // force-quit path promises the user is recoverable actually is.
+            self.back_up_document(doc_id);
             return true;
         }
         if let Some(edits) = self.builtin_format_edits(doc_id) {

@@ -86,7 +86,12 @@ impl Session {
         }
     }
 
-    /// Write a crash-recovery swap for `doc_id` immediately (used when a save fails).
+    /// Write a crash-recovery swap for `doc_id` now, whatever the buffer's state.
+    ///
+    /// The one place a swap is actually written. A failed save calls it directly
+    /// — that is a data-loss event, and the backup is the whole of the recovery
+    /// — while every routine backup arrives through [`Self::back_up_document`],
+    /// which asks the settings and staleness questions this deliberately does not.
     pub(super) fn write_swap(&mut self, doc_id: DocumentId) {
         let Session { swaps, store, .. } = self;
         let Some(swap_store) = swaps.as_ref() else {
@@ -131,46 +136,49 @@ impl Session {
     }
 
     pub(crate) fn backup_tick(&mut self) {
-        let Session {
-            swaps,
-            store,
-            config,
-            clock,
-            ..
-        } = self;
-        if !config.settings.files.backup {
+        // Cheap short-circuits for a sweep that usually has nothing to do.
+        // [`Self::back_up_document`] asks the same two questions per document,
+        // so a swap is never written past them whichever way it is reached.
+        if !self.config.settings.files.backup || self.swaps.is_none() {
             return;
         }
-        let Some(store_ref) = swaps.as_ref() else {
+        let interval = self.config.settings.files.backup_interval;
+        let now = self.elapsed_ms();
+        let due: Vec<DocumentId> = self
+            .store
+            .docs
+            .iter()
+            .filter(|(_, doc)| {
+                doc.dirty_since
+                    .is_some_and(|since| now.saturating_sub(since) >= interval)
+            })
+            .map(|(doc_id, _)| *doc_id)
+            .collect();
+        for doc_id in due {
+            self.back_up_document(doc_id);
+        }
+    }
+
+    /// Back `doc_id` up now, regardless of how long it has been dirty.
+    ///
+    /// The interval is the only thing this skips. A swap still needs backups to
+    /// be switched on, a store to write to, and a dirty buffer that has changed
+    /// since its last swap — backing up an unchanged one would only rewrite the
+    /// swap it already has.
+    ///
+    /// Called by [`Self::backup_tick`] for every document whose interval has
+    /// come due, and by a save that parks on a formatter: that save's disk write
+    /// is deferred for as long as the formatter takes, and for that whole window
+    /// the swap is the only other copy of the buffer there is.
+    pub(super) fn back_up_document(&mut self, doc_id: DocumentId) {
+        if !self.config.settings.files.backup {
             return;
-        };
-        let interval = config.settings.files.backup_interval;
-        let now = u64::try_from(clock.elapsed().as_millis()).unwrap_or(u64::MAX);
-        for doc in store.docs.values_mut() {
-            if !doc.buffer.is_dirty() {
-                continue;
-            }
-            let Some(since) = doc.dirty_since else {
-                continue;
-            };
-            if now.saturating_sub(since) < interval {
-                continue;
-            }
-            let version = doc.buffer.version();
-            if doc.backed_up_version == Some(version) {
-                continue; // already backed up at this version
-            }
-            let (hash, size) = doc
-                .buffer
-                .saved_state()
-                .map(|s| (Some(s.hash), Some(s.size)))
-                .unwrap_or((None, None));
-            if store_ref
-                .write(&doc.path, &doc.buffer.text(), hash, size, version)
-                .is_ok()
-            {
-                doc.backed_up_version = Some(version);
-            }
+        }
+        let due = self.store.docs.get(&doc_id).is_some_and(|doc| {
+            doc.buffer.is_dirty() && doc.backed_up_version != Some(doc.buffer.version())
+        });
+        if due {
+            self.write_swap(doc_id);
         }
     }
 
