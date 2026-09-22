@@ -284,3 +284,62 @@ async fn a_didopen_the_queue_refused_is_not_recorded_as_sent() -> TestResult {
     );
     Ok(())
 }
+
+/// A send to a task that has exited retires the slot it was addressed to.
+///
+/// The other half of [`a_didopen_the_queue_refused_is_not_recorded_as_sent`]:
+/// that one covers a queue that is merely full, where the task is alive and the
+/// slot must survive. A *closed* channel means the task is gone, and leaving the
+/// slot behind would have every later open write into a sender nobody reads --
+/// the provider would look live and never answer again. Retiring it means the
+/// next open builds a fresh one.
+///
+/// Falsified by: returning `Retired::default()` from
+/// `LspManager::report_undelivered`, which mutation testing found nothing else
+/// objected to. The slot then stays in the map and the retirement is never
+/// reported, so its markers are never cleared either.
+#[tokio::test]
+async fn a_send_to_a_task_that_has_exited_retires_its_slot() -> TestResult {
+    let (mut manager, _updates) = LspManager::new(LspSettings::default(), None, None, None);
+    manager.set_connector(test_connector(
+        Behavior::Normal,
+        None,
+        Arc::new(AtomicUsize::new(0)),
+    ));
+
+    let first = crate::lsp::absolute_path(Path::new("/tmp/gone.rs"));
+    let _ = manager.document_opened(Some("rust"), Some("rust"), &first, 1, || {
+        "fn main() {}".into()
+    });
+    let key = manager
+        .servers
+        .keys()
+        .next()
+        .cloned()
+        .ok_or("the first document started no server")?;
+
+    // Stand in for a task that has exited: its inbox has no receiver left, so
+    // every send fails closed rather than merely full.
+    let (tx, rx) = mpsc::channel(1);
+    drop(rx);
+    let slot = manager
+        .servers
+        .get_mut(&key)
+        .ok_or("the slot went away before its task could be closed")?;
+    slot.tx = tx;
+
+    let second = crate::lsp::absolute_path(Path::new("/tmp/next.rs"));
+    let retired = manager.document_opened(Some("rust"), Some("rust"), &second, 1, || {
+        "fn next() {}".into()
+    });
+    assert_eq!(
+        retired.into_keys(),
+        vec![key.clone()],
+        "a send to a dead task did not retire its slot"
+    );
+    assert!(
+        !manager.servers.contains_key(&key),
+        "the slot outlived the task holding it"
+    );
+    Ok(())
+}
