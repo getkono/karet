@@ -213,6 +213,9 @@ impl App {
     /// language-servers inventory reads it — every other tab kind here owns an offset
     /// the render honours, so landing on a position is the whole job for them.
     fn scroll_tab_rows_to(&mut self, position: usize, viewport: usize) {
+        // Borrowed before the tab, from a different field, so the manager arm can
+        // read the inventory it filters while holding its view mutably.
+        let language_servers = &self.lsp_runtime.servers;
         let Some(tab) = self.tabs.get_mut(self.active) else {
             return;
         };
@@ -235,7 +238,7 @@ impl App {
             // variable height, so the extent counts *servers* — which is what makes
             // this the one arm `viewport` is carried for.
             TabKind::LanguageServers(view) => {
-                let len = view.visible_indices().len();
+                let len = view.visible_indices(language_servers).len();
                 let bottom = position.saturating_add(viewport.max(1) - 1);
                 // Deliberately not `cursor_in_window`: that lands an outside cursor on
                 // the *nearer* edge, and for a list of variable-height cards the bottom

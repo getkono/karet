@@ -34,8 +34,8 @@ fn language_server_manager_filters_navigates_and_checks_selected_provider() {
     let mut app = app();
     app.backend = Some(backend.clone());
     app.open_language_servers();
-    app.show_language_server_status(
-        None,
+    answer_inventory(
+        &mut app,
         vec![
             language_server_status(LanguageServerId::RustAnalyzer, "rust", true),
             language_server_status(LanguageServerId::Clangd, "c", false),
@@ -63,16 +63,19 @@ fn language_server_manager_filters_navigates_and_checks_selected_provider() {
     let TabKind::LanguageServers(view) = &app.tabs[app.active].kind else {
         panic!("expected language-server manager");
     };
-    assert_eq!(view.visible_indices().len(), 1);
-    assert_eq!(view.selected_id(), Some(LanguageServerId::RustAnalyzer));
+    assert_eq!(view.visible_indices(&app.lsp_runtime.servers).len(), 1);
+    assert_eq!(
+        view.selected_id(&app.lsp_runtime.servers),
+        Some(LanguageServerId::RustAnalyzer)
+    );
 }
 
 #[test]
 fn language_server_manager_renders_inventory_controls_and_detail() {
     let mut app = app();
     app.open_language_servers();
-    app.show_language_server_status(
-        None,
+    answer_inventory(
+        &mut app,
         vec![
             language_server_status(LanguageServerId::RustAnalyzer, "rust", true),
             language_server_status(LanguageServerId::Clangd, "c, cpp", false),
@@ -102,8 +105,8 @@ fn language_server_manager_mouse_selects_rows_and_runs_toolbar_actions() {
     let mut app = app();
     app.backend = Some(backend.clone());
     app.open_language_servers();
-    app.show_language_server_status(
-        None,
+    answer_inventory(
+        &mut app,
         vec![
             language_server_status(LanguageServerId::RustAnalyzer, "rust", true),
             language_server_status(LanguageServerId::Clangd, "c", false),
@@ -186,8 +189,8 @@ fn language_server_manager_only_renders_applicable_row_actions() {
 
     let mut app = app();
     app.open_language_servers();
-    app.show_language_server_status(
-        None,
+    answer_inventory(
+        &mut app,
         vec![
             installed.clone(),
             missing.clone(),
@@ -234,8 +237,8 @@ fn language_server_row_action_targets_its_own_server() {
     let mut app = app();
     app.backend = Some(backend.clone());
     app.open_language_servers();
-    app.show_language_server_status(
-        None,
+    answer_inventory(
+        &mut app,
         vec![
             language_server_status(LanguageServerId::RustAnalyzer, "rust", true),
             language_server_status(LanguageServerId::Clangd, "c", false),
@@ -275,7 +278,7 @@ fn language_server_row_action_targets_its_own_server() {
     assert!(matches!(
         &app.tabs[app.active].kind,
         TabKind::LanguageServers(view)
-            if view.selected_id() == Some(LanguageServerId::RustAnalyzer)
+            if view.selected_id(&app.lsp_runtime.servers) == Some(LanguageServerId::RustAnalyzer)
     ));
 }
 
@@ -287,7 +290,7 @@ fn language_server_install_action_is_the_only_install_approval() {
     app.open_language_servers();
     let mut missing = language_server_status(LanguageServerId::Texlab, "tex", true);
     missing.installed = None;
-    app.show_language_server_status(None, vec![missing]);
+    answer_inventory(&mut app, vec![missing]);
 
     app.language_server_action(
         crate::tab::LanguageServerAction::Primary,
@@ -328,7 +331,7 @@ fn language_server_installs_are_independent_per_provider() {
     texlab.installed = None;
     let mut zls = language_server_status(LanguageServerId::Zls, "zig", true);
     zls.installed = None;
-    app.show_language_server_status(None, vec![texlab, zls]);
+    answer_inventory(&mut app, vec![texlab, zls]);
 
     app.language_server_action(
         crate::tab::LanguageServerAction::Primary,
@@ -378,12 +381,12 @@ fn language_server_install_state_survives_manager_reopen() {
     app.open_language_servers();
     let mut missing = language_server_status(LanguageServerId::Texlab, "tex", true);
     missing.installed = None;
-    app.show_language_server_status(None, vec![missing.clone()]);
+    answer_inventory(&mut app, vec![missing.clone()]);
     app.begin_language_server_install(LanguageServerId::Texlab);
 
     app.close_tab_at(app.active);
     app.open_language_servers();
-    app.show_language_server_status(None, vec![missing]);
+    answer_inventory(&mut app, vec![missing]);
 
     assert!(matches!(
         &app.tabs[app.active].kind,
@@ -403,7 +406,7 @@ fn language_server_install_progress_stays_in_manager() {
     app.open_language_servers();
     let mut missing = language_server_status(LanguageServerId::Texlab, "tex", true);
     missing.installed = None;
-    app.show_language_server_status(None, vec![missing]);
+    answer_inventory(&mut app, vec![missing]);
     // Drop the cards the setup raised, so what survives below is the install's.
     app.notifications.dismiss_all();
     app.begin_language_server_install(LanguageServerId::Texlab);
@@ -472,7 +475,7 @@ fn language_server_install_failure_stays_in_manager() {
     app.open_language_servers();
     let mut missing = language_server_status(LanguageServerId::Texlab, "tex", true);
     missing.installed = None;
-    app.show_language_server_status(None, vec![missing]);
+    answer_inventory(&mut app, vec![missing]);
     app.begin_language_server_install(LanguageServerId::Texlab);
     let request = backend
         .sent
@@ -513,8 +516,8 @@ fn language_server_update_action_applies_the_visible_plan_directly() {
     let mut app = app();
     app.backend = Some(backend.clone());
     app.open_language_servers();
-    app.show_language_server_status(
-        None,
+    answer_inventory(
+        &mut app,
         vec![language_server_status(
             LanguageServerId::RustAnalyzer,
             "rust",
@@ -568,8 +571,8 @@ fn language_server_update_action_applies_the_visible_plan_directly() {
 fn language_server_actions_wrap_without_disappearing_on_narrow_views() {
     let mut app = app();
     app.open_language_servers();
-    app.show_language_server_status(
-        None,
+    answer_inventory(
+        &mut app,
         vec![language_server_status(
             LanguageServerId::RustAnalyzer,
             "rust",
@@ -592,7 +595,7 @@ fn language_server_table_borders_and_runtime_text_are_semantic() {
     status.instances[0].error = Some("protocol failure".to_string());
     let mut app = app();
     app.open_language_servers();
-    app.show_language_server_status(None, vec![status]);
+    answer_inventory(&mut app, vec![status]);
 
     let mut terminal = Terminal::new(TestBackend::new(120, 24)).expect("test terminal");
     terminal
@@ -652,8 +655,8 @@ fn active_file_lsp_badge_reacts_to_runtime_state_and_color() {
 
     let mut app = app();
     app.push_tab(text_tab("/workspace/src/main.rs", "fn main() {}\n"));
-    app.show_language_server_status(
-        None,
+    answer_inventory(
+        &mut app,
         vec![language_server_status(
             LanguageServerId::RustAnalyzer,
             "rust",
@@ -701,8 +704,8 @@ fn active_file_lsp_badge_reacts_to_runtime_state_and_color() {
 #[test]
 fn runtime_protocol_failures_remain_as_deduplicated_notifications() {
     let mut app = app();
-    app.show_language_server_status(
-        None,
+    answer_inventory(
+        &mut app,
         vec![language_server_status(
             LanguageServerId::RustAnalyzer,
             "rust",
@@ -745,8 +748,8 @@ fn completed_language_server_uninstall_clears_only_its_pending_request() {
     let mut app = app();
     app.backend = Some(backend.clone());
     app.open_language_servers();
-    app.show_language_server_status(
-        None,
+    answer_inventory(
+        &mut app,
         vec![language_server_status(
             LanguageServerId::RustAnalyzer,
             "rust",

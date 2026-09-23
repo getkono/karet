@@ -145,9 +145,13 @@ pub enum LanguageServerRuntimeState {
     /// a binary that is absent or not executable, or a server that exits on
     /// sight and never once connected. Installing the provider, or restarting
     /// it from the Language Servers panel, clears it.
+    ///
+    /// There is deliberately no separate "stopped" state beside this one. A
+    /// provider that stops and is not retried has no slot, and a provider with
+    /// no slot is [`Self::Idle`] -- there is nowhere left to record anything
+    /// else, which is the point of the slot being the only record. The one
+    /// remaining meaning, "karet has given up on it", is this variant.
     Unavailable,
-    /// The provider task stopped without another retry.
-    Stopped,
 }
 
 /// Resolution and runtime state for one provider at one repository root.
@@ -198,4 +202,85 @@ pub struct LanguageServerStatus {
     pub cleanup_pending: bool,
     /// Repository-scoped resolution and runtime state.
     pub instances: Vec<LanguageServerInstanceStatus>,
+}
+
+impl LanguageServerInstanceStatus {
+    /// Whether this session holds a process worth restarting.
+    ///
+    /// The one definition. Presentation asks it twice -- once to decide whether
+    /// to paint the button, once to decide whether the click does anything --
+    /// and both used to be byte-identical copies living in the client, which is
+    /// how the panel went on offering a Restart for a process the inventory
+    /// already reported gone.
+    ///
+    /// Reads [`open_documents`](Self::open_documents) as well as
+    /// [`runtime`](Self::runtime) because either alone is insufficient: a
+    /// provider can be `Starting` with nothing attached yet, or attached while
+    /// its connection is between retries. Neither field has an event that
+    /// corrects it on its own, which is why a client is told to re-read the
+    /// inventory rather than patch a row.
+    #[must_use]
+    pub fn restartable(&self) -> bool {
+        self.open_documents > 0 || !matches!(self.runtime, LanguageServerRuntimeState::Idle)
+    }
+}
+
+impl LanguageServerStatus {
+    /// Whether any of this provider's instances is worth restarting.
+    #[must_use]
+    pub fn restartable(&self) -> bool {
+        self.instances
+            .iter()
+            .any(LanguageServerInstanceStatus::restartable)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn instance(
+        runtime: LanguageServerRuntimeState,
+        open_documents: usize,
+    ) -> LanguageServerInstanceStatus {
+        LanguageServerInstanceStatus {
+            root: std::path::PathBuf::from("/work/repo"),
+            source: LanguageServerSource::Path,
+            command: Some("rust-analyzer".to_owned()),
+            args: Vec::new(),
+            runtime,
+            open_documents,
+            error: None,
+        }
+    }
+
+    #[test]
+    fn a_provider_with_no_process_is_not_restartable() {
+        assert!(!instance(LanguageServerRuntimeState::Idle, 0).restartable());
+    }
+
+    #[test]
+    fn a_serving_provider_is_restartable() {
+        assert!(instance(LanguageServerRuntimeState::Running, 1).restartable());
+        assert!(instance(LanguageServerRuntimeState::Starting, 0).restartable());
+    }
+
+    /// A provider karet has given up on, or is cooling down, is still holding a
+    /// slot: restarting it is how the user asks karet to try again.
+    #[test]
+    fn a_failed_provider_is_restartable() {
+        assert!(instance(LanguageServerRuntimeState::Unavailable, 0).restartable());
+        assert!(instance(LanguageServerRuntimeState::CircuitOpen, 0).restartable());
+    }
+
+    /// The stale-count case, which is the defect itself: state says idle, the
+    /// document count was never corrected, and the row offered a dead Restart.
+    #[test]
+    fn a_stale_document_count_still_reads_as_restartable() {
+        assert!(
+            instance(LanguageServerRuntimeState::Idle, 2).restartable(),
+            "the predicate trusts its input; keeping that input true is the \
+             inventory's job, and is what the session-side change exists to do"
+        );
+    }
 }

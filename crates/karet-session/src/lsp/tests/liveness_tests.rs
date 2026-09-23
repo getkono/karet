@@ -34,9 +34,9 @@ async fn a_server_that_dies_while_idle_is_noticed_without_being_asked() -> TestR
     )?;
 
     let mut retrying = false;
-    let mut reported = false;
+    let mut reported: Option<String> = None;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    while tokio::time::Instant::now() < deadline && !(retrying && reported) {
+    while tokio::time::Instant::now() < deadline && !(retrying && reported.is_some()) {
         let Some((_, event)) = next_event(&mut events).await else {
             break;
         };
@@ -49,8 +49,9 @@ async fn a_server_that_dies_while_idle_is_noticed_without_being_asked() -> TestR
             // itself revealed it.
             Event::Notification {
                 kind: NotificationKind::Lsp,
+                message,
                 ..
-            } => reported = true,
+            } if message.contains("stopped") => reported = Some(message),
             _ => {},
         }
     }
@@ -58,7 +59,20 @@ async fn a_server_that_dies_while_idle_is_noticed_without_being_asked() -> TestR
         retrying,
         "an idle death left the provider reading as healthy"
     );
-    assert!(reported, "an idle death was never reported to the user");
+    let reported = reported.ok_or("an idle death was never reported to the user")?;
+    // The death is attributed to the *provider*, never to its slot key. The key
+    // is `provider@/absolute/repository/root`, and rendering it whole puts the
+    // user's filesystem layout in a toast. Asserted on the message the session
+    // really emitted, because a test that rebuilds the sentence itself stops
+    // constraining the code that writes it.
+    assert!(
+        reported.contains("rust-analyzer"),
+        "the death did not name its provider: {reported}"
+    );
+    assert!(
+        !reported.contains('/'),
+        "the death notification carried a filesystem path: {reported}"
+    );
     Ok(())
 }
 

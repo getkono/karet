@@ -474,6 +474,22 @@ pub(crate) async fn pump_until(app: &mut App, events: &mut EventRx, ready: impl 
     }
 }
 
+/// Answer the manager tab's outstanding inventory request, the way the session
+/// does.
+///
+/// The session only ever sends an inventory tagged with the request that asked
+/// for it; an untagged payload is no longer part of the vocabulary. A test that
+/// passes `None` while the tab has a request out is therefore describing
+/// something that cannot happen, and the client now refuses it -- so seeding the
+/// view means answering what it actually asked.
+pub(crate) fn answer_inventory(app: &mut App, servers: Vec<LanguageServerStatus>) {
+    let pending = app.all_tabs().find_map(|tab| match &tab.kind {
+        TabKind::LanguageServers(view) => Some(view.inventory_request),
+        _ => None,
+    });
+    app.show_language_server_status(pending.flatten(), servers);
+}
+
 /// A provider status for `language`, resolved and running at `/workspace`.
 ///
 /// Shared rather than per-module: the manager-tab, badge, and scrollbar suites all

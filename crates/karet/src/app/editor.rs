@@ -62,6 +62,9 @@ impl App {
                     .word_wrap(),
             )
         });
+        // Borrowed before the tab, from a different field, so the manager arm can
+        // read the inventory it filters while holding its view mutably.
+        let language_servers = &self.lsp_runtime.servers;
         let Some(tab) = self.tabs.get_mut(self.active) else {
             return;
         };
@@ -104,7 +107,9 @@ impl App {
             // window — the same bargain the Seam spine and the outline already make.
             // A notch therefore also retargets the action strip, which is the point:
             // the card under the cursor is the one "Restart" restarts.
-            TabKind::LanguageServers(view) => view.select_relative(delta.signum()),
+            TabKind::LanguageServers(view) => {
+                view.select_relative(view.visible_indices(language_servers).len(), delta.signum());
+            },
             // Scrolling a document turns pages (one page per scroll gesture).
             #[cfg(feature = "pdf")]
             TabKind::Document {

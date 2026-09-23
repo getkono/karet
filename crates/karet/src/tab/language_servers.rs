@@ -72,7 +72,6 @@ pub(crate) struct LanguageServerActionHit {
 
 /// View-local inventory, selection, update-plan, and hit-testing state.
 pub(crate) struct LanguageServersViewState {
-    pub(crate) servers: Vec<LanguageServerStatus>,
     pub(crate) selected: usize,
     pub(crate) offset: usize,
     pub(crate) filter: String,
@@ -92,7 +91,6 @@ impl LanguageServersViewState {
     #[must_use]
     pub(crate) fn loading(inventory_request: Option<karet_session::RequestId>) -> Self {
         Self {
-            servers: Vec::new(),
             selected: 0,
             offset: 0,
             filter: String::new(),
@@ -109,10 +107,16 @@ impl LanguageServersViewState {
         }
     }
 
+    /// Which rows the filter admits, as indices into `servers`.
+    ///
+    /// Takes the rows rather than owning them: the inventory is the client's,
+    /// held once on [`LanguageServerRuntimeModel`](crate::app::LanguageServerRuntimeModel),
+    /// and this view holds only where the user is looking at it. Two copies of
+    /// the rows is what issue #278 was filed about.
     #[must_use]
-    pub(crate) fn visible_indices(&self) -> Vec<usize> {
+    pub(crate) fn visible_indices(&self, servers: &[LanguageServerStatus]) -> Vec<usize> {
         let query = self.filter.trim().to_lowercase();
-        self.servers
+        servers
             .iter()
             .enumerate()
             .filter_map(|(index, status)| {
@@ -127,19 +131,30 @@ impl LanguageServersViewState {
             .collect()
     }
 
+    /// The row the user has selected, if the filter still admits one.
     #[must_use]
-    pub(crate) fn selected_server(&self) -> Option<&LanguageServerStatus> {
-        let index = self.visible_indices().get(self.selected).copied()?;
-        self.servers.get(index)
+    pub(crate) fn selected_server<'a>(
+        &self,
+        servers: &'a [LanguageServerStatus],
+    ) -> Option<&'a LanguageServerStatus> {
+        let index = self.visible_indices(servers).get(self.selected).copied()?;
+        servers.get(index)
     }
 
+    /// The selected row's provider, which is how selection survives a refresh.
     #[must_use]
-    pub(crate) fn selected_id(&self) -> Option<LanguageServerId> {
-        self.selected_server().map(|status| status.server.clone())
+    pub(crate) fn selected_id(&self, servers: &[LanguageServerStatus]) -> Option<LanguageServerId> {
+        self.selected_server(servers)
+            .map(|status| status.server.clone())
     }
 
-    pub(crate) fn select_relative(&mut self, delta: i32) {
-        let count = self.visible_indices().len();
+    /// Move the selection by `delta` within `visible`, the number of rows the
+    /// filter currently admits.
+    ///
+    /// Takes the count rather than the rows so the caller can read it while the
+    /// inventory is borrowed and still take this view mutably afterwards.
+    pub(crate) fn select_relative(&mut self, visible: usize, delta: i32) {
+        let count = visible;
         if count == 0 {
             self.selected = 0;
             self.offset = 0;
@@ -149,14 +164,21 @@ impl LanguageServersViewState {
             (self.selected as i64 + i64::from(delta)).clamp(0, (count - 1) as i64) as usize;
     }
 
-    pub(crate) fn set_servers(&mut self, mut servers: Vec<LanguageServerStatus>) {
-        let selected = self.selected_id();
-        servers.sort_by_key(|status| status.server.display_name().to_lowercase());
-        self.servers = servers;
-        self.selected = selected
+    /// Re-anchor this view on a freshly adopted inventory.
+    ///
+    /// `anchor` is the provider that was selected before the swap, read against
+    /// the rows that were in force when the user selected it. Selection follows
+    /// the provider rather than the row number, so a refresh that adds or drops
+    /// a provider does not silently move the cursor onto a different one.
+    pub(crate) fn resync(
+        &mut self,
+        servers: &[LanguageServerStatus],
+        anchor: Option<LanguageServerId>,
+    ) {
+        self.selected = anchor
             .and_then(|server| {
-                self.visible_indices().iter().position(|&index| {
-                    self.servers
+                self.visible_indices(servers).iter().position(|&index| {
+                    servers
                         .get(index)
                         .is_some_and(|status| status.server == server)
                 })

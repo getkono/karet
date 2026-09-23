@@ -107,7 +107,7 @@ async fn a_configured_companion_launches_the_command_it_was_configured_with() ->
     }));
     let (mut manager, _updates, mut launched) = manager_with_recorder(settings, dir.path());
 
-    manager.document_opened(
+    let _ = manager.document_opened(
         Some("python"),
         Some("python"),
         &dir.path().join("app.py"),
@@ -139,7 +139,7 @@ async fn a_companion_the_user_disabled_is_not_started() -> TestResult {
     }));
     let (mut manager, _updates, mut launched) = manager_with_recorder(settings, dir.path());
 
-    manager.document_opened(
+    let _ = manager.document_opened(
         Some("python"),
         Some("python"),
         &dir.path().join("app.py"),
@@ -172,7 +172,7 @@ async fn an_unknown_companion_id_is_explained_rather_than_launched() -> TestResu
     );
     let (mut manager, mut updates, mut launched) = manager_with_recorder(settings, dir.path());
 
-    manager.document_opened(
+    let _ = manager.document_opened(
         Some("python"),
         Some("python"),
         &dir.path().join("app.py"),
@@ -211,7 +211,7 @@ async fn disabling_lsp_stops_a_language_with_companions_too() -> TestResult {
     };
     let (mut manager, _updates, mut launched) = manager_with_recorder(settings, dir.path());
 
-    manager.document_opened(
+    let _ = manager.document_opened(
         Some("python"),
         Some("python"),
         &dir.path().join("app.py"),
@@ -245,7 +245,7 @@ async fn a_project_local_astro_is_given_the_project_typescript_sdk() -> TestResu
     std::fs::create_dir_all(&tsdk)?;
     let (mut manager, _updates, mut launched) = manager_with_recorder(LspSettings::default(), root);
 
-    manager.document_opened(
+    let _ = manager.document_opened(
         Some("astro"),
         Some("astro"),
         &root.join("src").join("page.astro"),
@@ -278,7 +278,7 @@ async fn astro_without_any_typescript_sdk_is_reported_rather_than_launched() -> 
     let (mut manager, mut updates, mut launched) =
         manager_with_recorder(LspSettings::default(), root);
 
-    manager.document_opened(
+    let _ = manager.document_opened(
         Some("astro"),
         Some("astro"),
         &root.join("src").join("page.astro"),
@@ -349,7 +349,7 @@ async fn a_user_configured_astro_command_launches_without_a_project_typescript()
     );
     let (mut manager, mut updates, mut launched) = manager_with_recorder(settings, root);
 
-    manager.document_opened(
+    let _ = manager.document_opened(
         Some("astro"),
         Some("astro"),
         &root.join("src").join("page.astro"),
@@ -404,7 +404,7 @@ async fn a_disabled_primary_server_is_not_reported_as_missing() -> TestResult {
     );
     let (mut manager, mut updates, mut launched) = manager_with_recorder(settings, root);
 
-    manager.document_opened(Some("go"), Some("go"), &root.join("main.go"), 1, || {
+    let _ = manager.document_opened(Some("go"), Some("go"), &root.join("main.go"), 1, || {
         "package main\n".into()
     });
 

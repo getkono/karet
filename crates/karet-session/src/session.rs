@@ -35,6 +35,7 @@ mod mdlint;
 mod notebooks;
 mod notify_text;
 mod persistence;
+mod retirement;
 mod search;
 mod spelling;
 mod updates;
@@ -232,7 +233,11 @@ struct Document {
     /// when the `mdlint` feature is off).
     lint_diagnostics: Vec<karet_core::Diagnostic>,
     /// Last language-server diagnostics accepted for this document version.
-    lsp_diagnostics: HashMap<String, Vec<karet_core::Diagnostic>>,
+    ///
+    /// One layer per [`SlotKey`](crate::lsp::SlotKey) -- one provider at one
+    /// repository root -- so a server that dies or is retired takes only its own
+    /// markers with it, and the same provider serving another root keeps its.
+    lsp_diagnostics: HashMap<crate::lsp::SlotKey, Vec<karet_core::Diagnostic>>,
     decorations: Vec<Decoration>,
     /// Open reference count (a path opened in N views shares one document).
     refs: u32,
@@ -352,6 +357,13 @@ pub struct Session {
     notebooks: crate::notebook_kernel::NotebookKernels,
     /// Language-server orchestration (lazy per-language tasks; see [`crate::lsp`]).
     lsp: LspManager,
+    /// Whether something this unit of actor work did left a client's cached
+    /// inventory describing a session that no longer exists.
+    ///
+    /// Set by [`Session::adopt_retirement`] and drained by
+    /// [`Session::settle_lsp_inventory`] once the work finishes, so a restart
+    /// signals staleness after its replacement is up rather than during the gap.
+    lsp_inventory_stale: bool,
     /// The LSP tasks' results, taken by [`crate::backend::local`] for the actor.
     lsp_rx: Option<mpsc::UnboundedReceiver<LspUpdate>>,
     /// Explicit install/update work for the shared managed-server registry.

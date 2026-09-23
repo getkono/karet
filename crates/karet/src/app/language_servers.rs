@@ -10,8 +10,9 @@ use crate::tab::LanguageServersViewState;
 
 /// Lifecycle states retained independently of whether the manager tab is open.
 #[derive(Default)]
-pub(super) struct LanguageServerRuntimeModel {
-    servers: Vec<LanguageServerStatus>,
+pub(crate) struct LanguageServerRuntimeModel {
+    /// The client's one copy of the inventory, sorted for display.
+    pub(crate) servers: Vec<LanguageServerStatus>,
     inventory_request: Option<RequestId>,
     operations: Vec<LanguageServerPending>,
     operation_error: Option<String>,
@@ -21,11 +22,33 @@ pub(crate) use badge::LanguageServerBadge;
 pub(crate) use badge::LanguageServerBadgeSummary;
 
 impl LanguageServerRuntimeModel {
-    fn replace(&mut self, request: Option<RequestId>, servers: Vec<LanguageServerStatus>) {
-        self.servers = servers;
-        if request.is_none() || self.inventory_request == request {
-            self.inventory_request = None;
+    /// Adopt an inventory, unless a newer request is already out for a better one.
+    ///
+    /// The session signals staleness whenever a retirement invalidates what it
+    /// last said, and the client answers that by asking again. An answer
+    /// computed before that signal describes the session as it was *before* the
+    /// thing that made it stale, so it is refused: adopting it would cache
+    /// exactly the state the signal existed to correct, and nothing afterwards
+    /// would ask again.
+    ///
+    /// Refused only while a *different* request is outstanding, which is the
+    /// only situation in which a better answer is known to be coming. With
+    /// nothing pending there is no fresher answer to prefer, so the rows are
+    /// taken.
+    fn replace(
+        &mut self,
+        request: Option<RequestId>,
+        mut servers: Vec<LanguageServerStatus>,
+    ) -> bool {
+        if self.inventory_request.is_some() && self.inventory_request != request {
+            return false;
         }
+        // Sorted here because the order is a property of the inventory, not of
+        // any one view of it. Every view reads these rows.
+        servers.sort_by_key(|status| status.server.display_name().to_lowercase());
+        self.servers = servers;
+        self.inventory_request = None;
+        true
     }
 
     fn update(
@@ -128,8 +151,46 @@ impl App {
         if self.lsp_runtime.inventory_request.is_some() {
             return;
         }
+        self.request_language_server_inventory();
+    }
+
+    /// Ask the session for a current inventory, and record the request in the one
+    /// place every reader of the answer consults.
+    ///
+    /// The cache refuses any answer but the outstanding one, so a request issued
+    /// without recording it here would have its answer dropped on the floor. One
+    /// helper rather than three call sites each remembering to do it.
+    fn request_language_server_inventory(&mut self) -> Option<RequestId> {
         let request = self.send(SessionCommand::LanguageServerStatus);
         self.lsp_runtime.inventory_request = request;
+        for tab in self.all_tabs_mut() {
+            if let TabKind::LanguageServers(view) = &mut tab.kind {
+                view.inventory_request = request;
+            }
+        }
+        request
+    }
+
+    /// The session says the inventory this client cached no longer describes it.
+    ///
+    /// Answering it with a fresh request is the whole protocol: the session sends
+    /// no rows, because building them is expensive and most sessions have nobody
+    /// looking at them. So only ask when something is actually reading the cache
+    /// -- an open manager tab, or a populated cache the per-pane badges draw
+    /// from. A client that never asked for an inventory has nothing to correct.
+    ///
+    /// Deliberately not coalesced against an in-flight request. That request's
+    /// answer was computed before the signal, so it describes the session as it
+    /// was before the retirement -- exactly what must not be cached.
+    pub(in crate::app) fn language_server_inventory_stale(&mut self) {
+        let reading = !self.lsp_runtime.servers.is_empty()
+            || self
+                .all_tabs()
+                .any(|tab| matches!(tab.kind, TabKind::LanguageServers(_)));
+        if !reading {
+            return;
+        }
+        self.request_language_server_inventory();
     }
 
     pub(super) fn open_language_servers(&mut self) {
@@ -154,7 +215,7 @@ impl App {
             return;
         }
 
-        let request = self.send(SessionCommand::LanguageServerStatus);
+        let request = self.request_language_server_inventory();
         self.push_tab(Tab::language_servers(request));
         self.sync_language_server_operations();
     }
@@ -167,20 +228,48 @@ impl App {
         Some(view)
     }
 
+    fn language_servers(&self) -> Option<&LanguageServersViewState> {
+        let tab = self.tabs.get(self.active)?;
+        let TabKind::LanguageServers(view) = &tab.kind else {
+            return None;
+        };
+        Some(view)
+    }
+
+    /// Move the manager's selection onto `server`, if the filter admits it.
+    ///
+    /// Two phases because the rows and the view live in different fields: the
+    /// row is found while both are borrowed immutably, and only the write takes
+    /// the view mutably.
+    fn focus_language_server(&mut self, server: &LanguageServerId) {
+        let selected = self.language_servers().and_then(|view| {
+            view.visible_indices(&self.lsp_runtime.servers)
+                .iter()
+                .position(|&index| {
+                    self.lsp_runtime
+                        .servers
+                        .get(index)
+                        .is_some_and(|status| status.server == *server)
+                })
+        });
+        if let Some(selected) = selected
+            && let Some(view) = self.language_servers_mut()
+        {
+            view.selected = selected;
+        }
+    }
+
     pub(in crate::app) fn selected_language_server(&self) -> Option<LanguageServerStatus> {
         let tab = self.tabs.get(self.active)?;
         let TabKind::LanguageServers(view) = &tab.kind else {
             return None;
         };
-        view.selected_server().cloned()
+        view.selected_server(&self.lsp_runtime.servers).cloned()
     }
 
     fn language_server(&self, server: &LanguageServerId) -> Option<LanguageServerStatus> {
-        let tab = self.tabs.get(self.active)?;
-        let TabKind::LanguageServers(view) = &tab.kind else {
-            return None;
-        };
-        view.servers
+        self.lsp_runtime
+            .servers
             .iter()
             .find(|status| status.server == *server)
             .cloned()
@@ -240,17 +329,21 @@ impl App {
     }
 
     pub(in crate::app) fn refresh_language_servers(&mut self) {
-        let request = self.send(SessionCommand::LanguageServerStatus);
+        self.request_language_server_inventory();
         if let Some(view) = self.language_servers_mut() {
-            view.inventory_request = request;
             view.loading_since = Some(Pending::start());
             view.error = None;
         }
     }
 
     pub(super) fn language_server_select(&mut self, delta: i32) {
-        if let Some(view) = self.language_servers_mut() {
-            view.select_relative(delta);
+        let visible = self
+            .language_servers()
+            .map(|view| view.visible_indices(&self.lsp_runtime.servers).len());
+        if let Some(visible) = visible
+            && let Some(view) = self.language_servers_mut()
+        {
+            view.select_relative(visible, delta);
         }
     }
 
@@ -344,14 +437,7 @@ impl App {
         let Some(status) = self.language_server(&server) else {
             return;
         };
-        if !status.instances.iter().any(|instance| {
-            instance.open_documents > 0
-                || !matches!(
-                    instance.runtime,
-                    karet_session::LanguageServerRuntimeState::Idle
-                        | karet_session::LanguageServerRuntimeState::Stopped
-                )
-        }) {
+        if !status.restartable() {
             self.notify(
                 Report::Refusal,
                 NotificationKind::Lsp,
@@ -468,36 +554,24 @@ impl App {
                 .cloned()
         });
         if let Some(hit) = action {
-            if let Some(server) = hit.server.as_ref()
-                && let Some(view) = self.language_servers_mut()
-                && let Some(selected) = view.visible_indices().iter().position(|&index| {
-                    view.servers
-                        .get(index)
-                        .is_some_and(|status| status.server == *server)
-                })
-            {
-                view.selected = selected;
+            if let Some(server) = hit.server.clone() {
+                self.focus_language_server(&server);
             }
             self.language_server_action(hit.action, hit.server);
             return true;
         }
-        let Some(view) = self.language_servers_mut() else {
+        let Some(view) = self.language_servers() else {
             return false;
         };
         if !rect_contains(view.table_rect, (column, row)) {
             return true;
         }
-        if let Some(server) = view
+        let clicked = view
             .row_hits
             .iter()
-            .find_map(|(rect, server)| rect_contains(*rect, (column, row)).then(|| server.clone()))
-            && let Some(selected) = view.visible_indices().iter().position(|&index| {
-                view.servers
-                    .get(index)
-                    .is_some_and(|status| status.server == server)
-            })
-        {
-            view.selected = selected;
+            .find_map(|(rect, server)| rect_contains(*rect, (column, row)).then(|| server.clone()));
+        if let Some(server) = clicked {
+            self.focus_language_server(&server);
         }
         true
     }
@@ -555,15 +629,34 @@ impl App {
         request: Option<RequestId>,
         servers: Vec<LanguageServerStatus>,
     ) {
-        self.lsp_runtime.replace(request, servers.clone());
+        // Each view remembers its selection by provider, so it has to be read
+        // against the rows that were in force when the user made it -- before
+        // the swap below replaces them.
+        let anchors: Vec<Option<LanguageServerId>> = self
+            .all_tabs()
+            .filter_map(|tab| match &tab.kind {
+                TabKind::LanguageServers(view) => Some(view.selected_id(&self.lsp_runtime.servers)),
+                _ => None,
+            })
+            .collect();
+        // One guard, here. Whether an answer is worth adopting is a fact about
+        // the *client*, not about any one view of it, so it is decided once and
+        // the views follow. Checking again per tab was defence in depth that
+        // measured nothing: either check alone hid a defect in the other.
+        if !self.lsp_runtime.replace(request, servers) {
+            // Not the answer we are waiting for: a newer request is out, issued
+            // because the session told us this one's rows are already stale.
+            return;
+        }
         // No card for the count: this only ever fills the Language Servers tab,
         // whose table already lists every server and whether it is available.
+        let rows = self.lsp_runtime.servers.clone();
+        let mut anchors = anchors.into_iter();
         for tab in self.all_tabs_mut() {
-            if let TabKind::LanguageServers(view) = &mut tab.kind
-                && (request.is_none() || view.inventory_request == request)
-            {
-                view.set_servers(servers.clone());
-            }
+            let TabKind::LanguageServers(view) = &mut tab.kind else {
+                continue;
+            };
+            view.resync(&rows, anchors.next().flatten());
         }
     }
 
@@ -698,10 +791,6 @@ impl App {
         }
         for tab in self.all_tabs_mut() {
             if let TabKind::LanguageServers(view) = &mut tab.kind {
-                if let Some(status) = view.servers.iter_mut().find(|item| item.server == server) {
-                    status.installed = Some(version.clone());
-                    status.cleanup_pending = false;
-                }
                 view.changes.retain(|change| change.server != server);
                 if view.changes.is_empty() {
                     view.plan = None;
@@ -719,13 +808,18 @@ impl App {
     ) {
         self.lsp_runtime.finish_operation(request, Some(&server));
         self.sync_language_server_toast();
+        if let Some(status) = self
+            .lsp_runtime
+            .servers
+            .iter_mut()
+            .find(|item| item.server == server)
+        {
+            status.installed = None;
+            status.cleanup_pending = cleanup_pending;
+            status.instances.clear();
+        }
         for tab in self.all_tabs_mut() {
             if let TabKind::LanguageServers(view) = &mut tab.kind {
-                if let Some(status) = view.servers.iter_mut().find(|item| item.server == server) {
-                    status.installed = None;
-                    status.cleanup_pending = cleanup_pending;
-                    status.instances.clear();
-                }
                 view.changes.retain(|change| change.server != server);
                 if view.changes.is_empty() {
                     view.plan = None;
@@ -752,30 +846,18 @@ impl App {
         state: karet_session::LanguageServerRuntimeState,
         error: Option<String>,
     ) {
-        let cached = self.lsp_runtime.update(&server, &root, state, &error);
-        let mut missing_instance = false;
-        for tab in self.all_tabs_mut() {
-            if let TabKind::LanguageServers(view) = &mut tab.kind
-                && let Some(status) = view.servers.iter_mut().find(|item| item.server == server)
-            {
-                if let Some(instance) = status.instances.iter_mut().find(|item| item.root == root) {
-                    instance.runtime = state;
-                    instance.error.clone_from(&error);
-                } else {
-                    missing_instance = true;
-                }
-            }
-        }
-        if (!cached || missing_instance) && self.lsp_runtime.inventory_request.is_none() {
-            let request = self.send(SessionCommand::LanguageServerStatus);
-            self.lsp_runtime.inventory_request = request;
-            if missing_instance {
-                for tab in self.all_tabs_mut() {
-                    if let TabKind::LanguageServers(view) = &mut tab.kind {
-                        view.inventory_request = request;
-                    }
-                }
-            }
+        // The low-latency half of the resync, which issue #278 explicitly leaves
+        // in place: the badge must not wait for a round trip to show that a
+        // server started. It patches the one copy, and it patches only the two
+        // fields the event actually carries -- everything else, `open_documents`
+        // above all, is corrected by the inventory the session tells us to ask
+        // for. This event being the *only* thing that ever corrected the cache
+        // is what left a dead Restart on screen.
+        let patched = self.lsp_runtime.update(&server, &root, state, &error);
+        if !patched && self.lsp_runtime.inventory_request.is_none() {
+            // A transition for a provider or root the cache has never heard of:
+            // the inventory predates it, so ask for one that does not.
+            self.request_language_server_inventory();
         }
         if let Some(error) = error
             && matches!(
@@ -783,7 +865,6 @@ impl App {
                 LanguageServerRuntimeState::Retrying
                     | LanguageServerRuntimeState::CircuitOpen
                     | LanguageServerRuntimeState::Unavailable
-                    | LanguageServerRuntimeState::Stopped
             )
         {
             let (severity, state_label) = match state {
@@ -792,7 +873,6 @@ impl App {
                     (Severity::Error, "crashed (circuit open)")
                 },
                 LanguageServerRuntimeState::Unavailable => (Severity::Error, "unavailable"),
-                LanguageServerRuntimeState::Stopped => (Severity::Error, "stopped"),
                 _ => return,
             };
             self.notify_tagged(

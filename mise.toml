@@ -11,6 +11,7 @@ pkl = "latest"                 # config language hk.pkl is written in
 "cargo:cargo-llvm-cov" = "latest"  # code coverage
 "cargo:convco" = "latest"          # conventional-commit validation (commit-msg hook + CI)
 "cargo:tokei" = "12.1.2"           # per-file source line enforcement (issue #81)
+"cargo:cargo-mutants" = "latest"   # opt-in mutation testing (see `mise run mutants`)
 
 [tasks.format]
 description = "Format code with rustfmt (pinned nightly: rustfmt.toml uses unstable import opts)"
@@ -47,6 +48,33 @@ description = "Run the test suite"
 # managed-install matrix is in the same target set but is `#[ignore]`d, so this
 # performs no network I/O.
 run = "cargo test --workspace --all-features"
+
+[tasks.mutants]
+description = "Opt-in: mutation-test the language-server lifecycle (slow, not in `verify`)"
+# Deliberately not part of `verify`, for the same reason as `test-servers-live`:
+# every mutant is a rebuild plus a full `-p karet-session` run, and this suite is
+# full of multi-second async deadlines that a surviving mutant waits out in full.
+# A surviving mutant here means a test is not constraining what it claims to.
+#
+# A backstop, not the whole story: its operators delete statements and negate
+# conditions, so they reproduce "forgot to clear the layer" but not "reported it
+# in a way the client refuses" -- the shape that made the previous attempt at
+# this ship a test that passed against a broken build. Those are falsified by
+# hand, and each test names its own falsifier in its docstring.
+#
+# Scoped to slot lifetime and retirement, which is what this suite constrains,
+# and kept green so a failure means a real regression. `lsp/runtime.rs` and
+# `lsp/health.rs` are deliberately *not* here: their reconnect backoff and
+# circuit thresholds are dense in exactly the comparisons and arithmetic these
+# operators mutate, and they have no tests that pin any of it. Widening the
+# scope to them reports twenty-odd survivors on a clean tree, which is a gate
+# nobody looks at twice. Covering them is issue #288.
+run = """cargo mutants --package karet-session \
+  --file 'crates/karet-session/src/lsp.rs' \
+  --file 'crates/karet-session/src/lsp/lifecycle.rs' \
+  --file 'crates/karet-session/src/lsp/slot.rs' \
+  --file 'crates/karet-session/src/session/retirement.rs' \
+  -- --all-features"""
 
 [tasks.test-servers-live]
 description = "Opt-in: really install and start every managed language server (network, minutes)"

@@ -40,6 +40,7 @@ pub(super) fn draw_panes(
     #[cfg(not(feature = "mermaid"))]
     let mermaid: Option<&[String]> = None;
     let color_highlight = app.settings.editor.color_highlight.enabled;
+    let language_servers = &app.lsp_runtime.servers;
     let editor_focused = app.focus == Focus::Editor;
     let graphics = app.caps.graphics;
     let graphical_cursor = app.graphical_cursor_enabled();
@@ -114,6 +115,7 @@ pub(super) fn draw_panes(
                 sticky_scroll,
                 tab_width,
                 diagnostics: &app.docs.diagnostics,
+                language_servers,
                 find: app
                     .find_open
                     .then(|| app.tabs.get(app.active))
@@ -161,6 +163,7 @@ pub(super) fn draw_panes(
                 sticky_scroll,
                 tab_width,
                 diagnostics: &app.docs.diagnostics,
+                language_servers,
                 find: None,
                 blame: None,
                 definition_underline: None,
