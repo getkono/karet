@@ -653,6 +653,7 @@ pub(super) async fn server_task(task: ServerTask) {
                 doc,
                 version,
                 path,
+                indentation,
             } => {
                 flush_pending(
                     active,
@@ -682,7 +683,11 @@ pub(super) async fn server_task(task: ServerTask) {
                 let (formatted, edits) = if !advertised {
                     (false, Vec::new())
                 } else {
-                    match tokio::time::timeout(FORMATTING_DEADLINE, active.formatting(&path)).await
+                    match tokio::time::timeout(
+                        FORMATTING_DEADLINE,
+                        active.formatting(&path, indentation),
+                    )
+                    .await
                     {
                         Ok(answer) => match tally.observe(answer) {
                             Ok(edits) => (true, edits),

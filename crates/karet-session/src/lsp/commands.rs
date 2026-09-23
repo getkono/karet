@@ -196,6 +196,7 @@ mod tests {
                 doc: DocumentId(2),
                 version: 3,
                 path: PathBuf::from("Cargo.toml"),
+                indentation: karet_lsp::Indentation::default(),
             },
             7,
         );

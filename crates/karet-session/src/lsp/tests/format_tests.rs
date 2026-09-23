@@ -4,6 +4,9 @@
 //! which covers every ending of the wait and none of its beginning. These
 //! start from a real `Command::Save`.
 
+use serde_json::Value;
+use tokio::sync::mpsc;
+
 use super::*;
 
 async fn await_saved(events: &mut EventRx) -> Option<(Option<RequestId>, DocumentId)> {
@@ -295,7 +298,14 @@ async fn a_formatter_that_never_answers_does_not_wedge_its_server() -> TestResul
         "fn main() {}".into()
     });
     assert!(
-        manager.formatting(Some("rust"), RequestId(1), DocumentId(1), 1, &path),
+        manager.formatting(
+            Some("rust"),
+            RequestId(1),
+            DocumentId(1),
+            1,
+            &path,
+            karet_lsp::Indentation::default(),
+        ),
         "the request must reach a server for this to test anything"
     );
 
@@ -347,5 +357,158 @@ async fn a_formatter_that_never_answers_does_not_wedge_its_server() -> TestResul
             None => return Err("the server task was left wedged on the formatter".into()),
         }
     }
+    Ok(())
+}
+
+/// The `FormattingOptions` the client sent with the last `textDocument/formatting`
+/// it issued, out of everything the scripted server received.
+fn formatting_options_sent(observed: &mut mpsc::UnboundedReceiver<Value>) -> Option<Value> {
+    let mut found = None;
+    while let Ok(message) = observed.try_recv() {
+        if message["method"] == "textDocument/formatting" {
+            found = Some(message["params"]["options"].clone());
+        }
+    }
+    found
+}
+
+/// The request has to carry the *user's* indentation.
+///
+/// `FormattingOptions` is not advisory: it is the only statement of how this
+/// buffer is indented that a whole-document format gets, and a server that
+/// honours it (clangd with no `.clang-format`, jdtls, lua-language-server,
+/// omnisharp) reindents the entire file to match. Built from a constant, the
+/// request said four-spaces on every save no matter what the user configured —
+/// so an `insertSpaces: false` project was silently re-spaced by its own editor
+/// every Ctrl+S. The per-language override is asserted too, because that is the
+/// layer that gets lost first: the resolution has to happen against the
+/// document's selector, not against the global editor settings.
+#[tokio::test]
+async fn a_formatting_request_carries_the_configured_indentation() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let path = rust_file(&dir, "main.rs", "original\n").ok_or("write failed")?;
+    let (observed, mut received) = mpsc::unbounded_channel();
+
+    let mut settings = crate::config::Settings::default();
+    settings.editor.format_on_save = true;
+    settings.editor.tab_size = 2;
+    settings.editor.insert_spaces = false;
+    if let Some(selector) = crate::config::schema::LanguageSelector::from_language("rust") {
+        settings.editor.language_overrides.insert(
+            selector,
+            crate::config::schema::EditorOverride {
+                tab_size: Some(3),
+                ..crate::config::schema::EditorOverride::default()
+            },
+        );
+    }
+    let (mut session, mut events, _snaps) = Session::new(SessionConfig {
+        settings,
+        ..SessionConfig::default()
+    });
+    session.set_lsp_connector(test_connector(
+        Behavior::Formats,
+        Some(observed),
+        Arc::new(AtomicUsize::new(0)),
+    ));
+    let backend = local_session(session, None);
+
+    backend.send(
+        backend.next_id(),
+        Command::OpenDocument {
+            path: path.clone(),
+            language: None,
+        },
+    )?;
+    let (doc, _version) = await_opened(&mut events).await.ok_or("no Opened")?;
+    backend.send(
+        backend.next_id(),
+        Command::Save {
+            doc,
+            cause: crate::api::SaveCause::Manual,
+        },
+    )?;
+    await_saved(&mut events).await.ok_or("no Saved")?;
+
+    let options = formatting_options_sent(&mut received).ok_or("no formatting request observed")?;
+    assert_eq!(
+        options["tabSize"],
+        json!(3),
+        "the per-language tabSize override must reach the server, not the \
+         global 2 and certainly not the hard-coded 4"
+    );
+    assert_eq!(
+        options["insertSpaces"],
+        json!(false),
+        "a tabs-indented project must not be re-spaced by its own editor"
+    );
+    Ok(())
+}
+
+/// `.editorconfig` is the layer that decides how a file is indented.
+///
+/// Every other consumer reads the document's *resolved* settings, which
+/// `editorconfig::resolve` produces by overlaying each matching
+/// `.editorconfig` on top of the language defaults — the editor types by it,
+/// and the save path already trims and terminates by it. Resolving the
+/// formatting request one layer lower would tell the server the opposite of
+/// what the buffer believes, and a server that honours `FormattingOptions`
+/// would then reindent the whole file against the project's own rules on
+/// every save.
+#[tokio::test]
+async fn a_formatting_request_carries_the_editorconfig_indentation() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    std::fs::write(
+        dir.path().join(".editorconfig"),
+        "root = true\n\n[*.rs]\nindent_style = tab\ntab_width = 8\n",
+    )?;
+    let path = rust_file(&dir, "main.rs", "original\n").ok_or("write failed")?;
+    let (observed, mut received) = mpsc::unbounded_channel();
+
+    // Settings say the opposite of the file: two-column spaces. The
+    // `.editorconfig` overlay has to win, or it is not a layer at all.
+    let mut settings = crate::config::Settings::default();
+    settings.editor.format_on_save = true;
+    settings.editor.tab_size = 2;
+    settings.editor.insert_spaces = true;
+    let (mut session, mut events, _snaps) = Session::new(SessionConfig {
+        settings,
+        ..SessionConfig::default()
+    });
+    session.set_lsp_connector(test_connector(
+        Behavior::Formats,
+        Some(observed),
+        Arc::new(AtomicUsize::new(0)),
+    ));
+    let backend = local_session(session, None);
+
+    backend.send(
+        backend.next_id(),
+        Command::OpenDocument {
+            path: path.clone(),
+            language: None,
+        },
+    )?;
+    let (doc, _version) = await_opened(&mut events).await.ok_or("no Opened")?;
+    backend.send(
+        backend.next_id(),
+        Command::Save {
+            doc,
+            cause: crate::api::SaveCause::Manual,
+        },
+    )?;
+    await_saved(&mut events).await.ok_or("no Saved")?;
+
+    let options = formatting_options_sent(&mut received).ok_or("no formatting request observed")?;
+    assert_eq!(
+        options["insertSpaces"],
+        json!(false),
+        "`indent_style = tab` must reach the formatter, not the settings layer's spaces"
+    );
+    assert_eq!(
+        options["tabSize"],
+        json!(8),
+        "with tabs the width the server is told is the tab stop, not the indent step"
+    );
     Ok(())
 }

@@ -296,19 +296,38 @@ impl Session {
         let Some(doc) = self.store.docs.get(&doc_id) else {
             return false;
         };
-        if !self
+        let editor = self
             .config
             .settings
             .editor
-            .for_language(doc.language_selector)
-            .format_on_save()
-        {
+            .for_language(doc.language_selector);
+        if !editor.format_on_save() {
             return false;
         }
+        // The server is told how this buffer is actually indented rather than
+        // guessing: a formatter that honours `FormattingOptions` reindents the
+        // whole file to whatever the request says, so a constant here would undo
+        // the user's indentation on every save. Read from the document's own
+        // resolved settings -- the layer `.editorconfig` lands on, and the one
+        // the editor itself types by -- because telling a formatter something
+        // the buffer does not believe is how a save comes to fight its project.
+        // `tabSize` is a width in columns either way: the indent step when that
+        // is spaces, the tab stop when it is not.
+        let indentation = karet_lsp::Indentation {
+            tab_size: u32::from(if doc.settings.insert_spaces {
+                doc.settings.indent_size
+            } else {
+                doc.settings.tab_width
+            }),
+            insert_spaces: doc.settings.insert_spaces,
+        };
         let version = doc.buffer.version();
         let selector = doc.language_selector;
         let path = doc.path.clone();
-        if self.lsp.formatting(selector, id, doc_id, version, &path) {
+        if self
+            .lsp
+            .formatting(selector, id, doc_id, version, &path, indentation)
+        {
             let issued_ms = self.elapsed_ms();
             self.pending_format_saves.insert(
                 id,

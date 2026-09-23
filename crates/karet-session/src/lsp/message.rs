@@ -15,6 +15,7 @@ use karet_core::Location;
 use karet_core::Symbol;
 use karet_core::TextEdit;
 use karet_core::WorkspaceEdit;
+use karet_lsp::Indentation;
 
 use crate::api::DocumentId;
 use crate::api::LanguageServerId;
@@ -110,6 +111,14 @@ pub(crate) enum ServerCmd {
         doc: DocumentId,
         version: u64,
         path: PathBuf,
+        /// The buffer's resolved `editor.tabSize` / `editor.insertSpaces`.
+        ///
+        /// Carried per request rather than read from the manager's settings:
+        /// the setting is per *language*, resolved against the document's
+        /// selector, and the server task serving the language has no document
+        /// to resolve it from. A server that honours it reindents the whole
+        /// file, so a default here is not a neutral choice.
+        indentation: Indentation,
     },
 }
 
