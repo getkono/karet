@@ -429,6 +429,44 @@ pub(super) async fn server_task(task: ServerTask) {
                     items,
                 });
             },
+            ServerCmd::InlayHints {
+                request,
+                doc,
+                version,
+                path,
+                range,
+            } => {
+                // Hints are positions into the text, so the server has to be
+                // looking at the same revision the request was made against.
+                flush_pending(
+                    active,
+                    &mut pending,
+                    &mut dead,
+                    &mut tally,
+                    &updates,
+                    &language,
+                    generation,
+                )
+                .await;
+                let hints = if dead {
+                    Vec::new()
+                } else {
+                    match tally.observe(active.inlay_hints(&path, range).await) {
+                        Ok(hints) => hints,
+                        Err(e) => {
+                            tally.note::<()>(Err(e), &mut dead, &updates, &language, generation);
+                            Vec::new()
+                        },
+                    }
+                };
+                let _ = updates.send(LspUpdate::InlayHints {
+                    generation,
+                    request,
+                    doc,
+                    version,
+                    hints,
+                });
+            },
             ServerCmd::DocumentSymbols {
                 request,
                 doc,

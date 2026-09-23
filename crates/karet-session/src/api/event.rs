@@ -118,6 +118,19 @@ pub enum Event {
         /// The completion items, with edit ranges in buffer (UTF-32) columns.
         items: Vec<CompletionItem>,
     },
+    /// Inlay hints answering a [`Command::InlayHints`].
+    ///
+    /// `version` echoes the request's target so a client can drop a set the
+    /// buffer has already been edited past -- a hint positioned against stale
+    /// text would annotate the wrong column.
+    InlayHints {
+        /// The document the hints are for.
+        doc: DocumentId,
+        /// The document version the request was made against.
+        version: u64,
+        /// The hints, positioned in buffer (UTF-32) columns.
+        hints: Vec<InlayHint>,
+    },
     /// An open document needs a managed server that is not installed.
     ///
     /// This event is local-only: emitting it performs no metadata request or

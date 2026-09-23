@@ -10,8 +10,10 @@ use std::path::PathBuf;
 use karet_core::CompletionItem;
 use karet_core::Diagnostic;
 use karet_core::Hover;
+use karet_core::InlayHint;
 use karet_core::LineCol;
 use karet_core::Location;
+use karet_core::Range;
 use karet_core::Symbol;
 use karet_core::TextEdit;
 use karet_core::WorkspaceEdit;
@@ -79,6 +81,19 @@ pub(crate) enum ServerCmd {
         /// The document path.
         path: PathBuf,
     },
+    /// Request inlay hints for a range.
+    InlayHints {
+        /// The originating request, echoed on the answer.
+        request: RequestId,
+        /// The target document, echoed on the answer.
+        doc: DocumentId,
+        /// The buffer version at request time, echoed on the answer.
+        version: u64,
+        /// The document path.
+        path: PathBuf,
+        /// The range, already converted to UTF-16 columns.
+        range: Range,
+    },
     /// Request hover information.
     Hover {
         request: RequestId,
@@ -138,6 +153,20 @@ pub(crate) enum LspUpdate {
         version: u64,
         /// The mapped items.
         items: Vec<CompletionItem>,
+    },
+    /// Inlay hints answering a [`ServerCmd::InlayHints`] request. Positions
+    /// remain in UTF-16 until the session adopts the update.
+    InlayHints {
+        /// The manager generation that spawned the server task.
+        generation: u64,
+        /// The originating request.
+        request: RequestId,
+        /// The target document.
+        doc: DocumentId,
+        /// The buffer version the request was made against.
+        version: u64,
+        /// The mapped hints.
+        hints: Vec<InlayHint>,
     },
     /// Document symbols answering a [`ServerCmd::DocumentSymbols`] request. Ranges
     /// remain in UTF-16 until the session adopts the update.

@@ -37,6 +37,20 @@ pub(super) fn answer_empty(
                 items: Vec::new(),
             });
         },
+        ServerCmd::InlayHints {
+            request,
+            doc,
+            version,
+            ..
+        } => {
+            let _ = updates.send(LspUpdate::InlayHints {
+                generation,
+                request,
+                doc,
+                version,
+                hints: Vec::new(),
+            });
+        },
         ServerCmd::DocumentSymbols {
             request,
             doc,
@@ -157,6 +171,7 @@ pub(super) fn remember_document(documents: &mut HashMap<PathBuf, OpenDocument>, 
             documents.remove(path);
         },
         ServerCmd::Completion { .. }
+        | ServerCmd::InlayHints { .. }
         | ServerCmd::DocumentSymbols { .. }
         | ServerCmd::Hover { .. }
         | ServerCmd::Definition { .. }

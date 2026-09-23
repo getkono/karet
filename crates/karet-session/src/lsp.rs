@@ -191,6 +191,7 @@ impl LspManager {
             LspUpdate::Diagnostics { generation, .. }
             | LspUpdate::DiagnosticsCleared { generation, .. }
             | LspUpdate::Completions { generation, .. }
+            | LspUpdate::InlayHints { generation, .. }
             | LspUpdate::Symbols { generation, .. }
             | LspUpdate::Hover { generation, .. }
             | LspUpdate::Definitions { generation, .. }

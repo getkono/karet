@@ -86,6 +86,30 @@ impl Session {
                     },
                 );
             },
+            LspUpdate::InlayHints {
+                request,
+                doc,
+                version,
+                mut hints,
+                ..
+            } => {
+                let Some(d) = self.store.docs.get(&doc) else {
+                    return; // closed since the request: stale by definition
+                };
+                for hint in &mut hints {
+                    hint.position = d
+                        .buffer
+                        .utf16_to_line_col(hint.position.line, hint.position.col);
+                }
+                self.emit(
+                    Some(request),
+                    Event::InlayHints {
+                        doc,
+                        version,
+                        hints,
+                    },
+                );
+            },
             LspUpdate::Symbols {
                 request,
                 doc,

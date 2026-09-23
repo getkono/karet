@@ -51,6 +51,35 @@ impl Session {
         }
     }
 
+    /// Serve [`Command::InlayHints`]: convert the range to the server's UTF-16
+    /// encoding and forward it. A language with no server, or a server that
+    /// does not offer hints, answers immediately with an empty set so the
+    /// editor never holds a stale annotation waiting for a reply that is not
+    /// coming.
+    pub(super) fn inlay_hints(&mut self, id: RequestId, doc_id: DocumentId, range: Range) {
+        let Some(doc) = Self::doc_or_report(&self.store, &self.events, id, doc_id) else {
+            return;
+        };
+        let version = doc.buffer.version();
+        let utf16 = Range {
+            start: utf16_caret(doc, range.start),
+            end: utf16_caret(doc, range.end),
+        };
+        let forwarded =
+            self.lsp
+                .inlay_hints(doc.language_selector, id, doc_id, version, &doc.path, utf16);
+        if !forwarded {
+            self.emit(
+                Some(id),
+                Event::InlayHints {
+                    doc: doc_id,
+                    version,
+                    hints: Vec::new(),
+                },
+            );
+        }
+    }
+
     /// Serve [`Command::DocumentSymbols`] from the document's language server.
     pub(super) fn document_symbols(&mut self, id: RequestId, doc_id: DocumentId) {
         let Some(doc) = Self::doc_or_report(&self.store, &self.events, id, doc_id) else {

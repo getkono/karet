@@ -349,6 +349,22 @@ fn test_connector(
                             )
                             .await;
                         },
+                        Some("textDocument/inlayHint") => {
+                            // One hint at UTF-16 character 4 on line 0, which
+                            // is buffer column 3 once the emoji is accounted
+                            // for.
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": [{
+                                    "position": {"line": 0, "character": 4},
+                                    "label": ": i32",
+                                    "kind": 1,
+                                    "paddingLeft": false,
+                                    "paddingRight": false
+                                }]}),
+                            )
+                            .await;
+                        },
                         Some("textDocument/documentSymbol") => {
                             write_msg(
                                 &mut server_write,
@@ -450,6 +466,27 @@ async fn await_completions(
         }
     }
     None
+}
+
+async fn await_inlay_hints(
+    events: &mut EventRx,
+) -> Option<(
+    Option<RequestId>,
+    DocumentId,
+    u64,
+    Vec<karet_core::InlayHint>,
+)> {
+    loop {
+        let (id, event) = next_event(events).await?;
+        if let Event::InlayHints {
+            doc,
+            version,
+            hints,
+        } = event
+        {
+            return Some((id, doc, version, hints));
+        }
+    }
 }
 
 async fn await_symbols(

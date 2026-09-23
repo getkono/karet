@@ -182,3 +182,105 @@ async fn open_and_debounced_changes_reach_the_server() -> TestResult {
     assert_eq!(last_change_text, "fn a() {}\nyx");
     Ok(())
 }
+
+#[tokio::test]
+async fn inlay_hints_round_trip_with_utf16_conversion() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    // '😀' is one buffer column but two UTF-16 units, so a hint the server
+    // positions at character 4 belongs at buffer column 3. Getting this wrong
+    // puts the annotation one cell off, on every line containing any
+    // non-ASCII character.
+    let path = rust_file(&dir, "main.rs", "😀ab\n").ok_or("write failed")?;
+    let (observed_tx, mut observed_rx) = mpsc::unbounded_channel();
+    let spawns = Arc::new(AtomicUsize::new(0));
+    let (session, mut events) =
+        session_with_connector(test_connector(Behavior::Normal, Some(observed_tx), spawns));
+    let backend = local_session(session, None);
+
+    backend.send(
+        backend.next_id(),
+        Command::OpenDocument {
+            path,
+            language: None,
+        },
+    )?;
+    let (doc, version) = await_opened(&mut events).await.ok_or("no Opened")?;
+
+    let request = backend.next_id();
+    backend.send(
+        request,
+        Command::InlayHints {
+            doc,
+            range: Range {
+                start: LineCol::new(0, 0),
+                end: LineCol::new(0, 3),
+            },
+        },
+    )?;
+
+    let (rid, hdoc, hversion, hints) = await_inlay_hints(&mut events)
+        .await
+        .ok_or("no InlayHints event")?;
+    assert_eq!(rid, Some(request), "answer tagged with the request id");
+    assert_eq!(hdoc, doc);
+    assert_eq!(hversion, version);
+    assert_eq!(hints.len(), 1);
+    assert_eq!(hints[0].label, ": i32");
+    assert_eq!(hints[0].position, LineCol::new(0, 3));
+
+    // And the outgoing range carried UTF-16 columns (buffer col 3 → 4).
+    let mut saw_utf16 = false;
+    while let Ok(msg) = tokio::time::timeout(Duration::from_secs(5), observed_rx.recv()).await {
+        let Some(msg) = msg else { break };
+        if msg["method"] == "textDocument/inlayHint" {
+            assert_eq!(
+                msg["params"]["range"]["end"],
+                json!({"line": 0, "character": 4})
+            );
+            saw_utf16 = true;
+            break;
+        }
+    }
+    assert!(saw_utf16, "the inlay-hint request should reach the server");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_language_with_no_server_answers_inlay_hints_immediately() -> TestResult {
+    // The editor asks for hints on every viewport change. A language with no
+    // server must answer rather than leave the request outstanding, or the
+    // editor holds a stale annotation set waiting for a reply never coming.
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("notes.txt");
+    std::fs::write(&path, "plain text\n")?;
+    let spawns = Arc::new(AtomicUsize::new(0));
+    let (session, mut events) =
+        session_with_connector(test_connector(Behavior::Normal, None, spawns));
+    let backend = local_session(session, None);
+    backend.send(
+        backend.next_id(),
+        Command::OpenDocument {
+            path,
+            language: None,
+        },
+    )?;
+    let (doc, _) = await_opened(&mut events).await.ok_or("no Opened")?;
+
+    let request = backend.next_id();
+    backend.send(
+        request,
+        Command::InlayHints {
+            doc,
+            range: Range {
+                start: LineCol::new(0, 0),
+                end: LineCol::new(0, 5),
+            },
+        },
+    )?;
+    let (rid, _, _, hints) = await_inlay_hints(&mut events)
+        .await
+        .ok_or("no InlayHints event")?;
+    assert_eq!(rid, Some(request));
+    assert!(hints.is_empty());
+    Ok(())
+}
