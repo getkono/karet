@@ -220,3 +220,52 @@ fn wrapping_counts_the_cells_a_hint_consumes() {
     assert_eq!(unhinted.first().map(|range| range.end), Some(10));
     assert_eq!(hinted.first().map(|range| range.end), Some(5));
 }
+
+#[test]
+fn a_hint_on_a_wrap_boundary_does_not_sit_under_the_caret() {
+    // The subtlest case in the mapping. A row paints the hint anchored at its
+    // own first column, and `display_col(start)` has already counted that hint
+    // -- so a naive `display_col(c) - display_col(start)` puts the caret at
+    // offset 0, on top of the annotation it should follow.
+    let buffer = TextBuffer::from_text("aaaa bbbb cccc\n");
+    let index = crate::hint::HintIndex::new(&[hint(0, 5, ">>")]);
+    let layout = Layout {
+        width: 10,
+        tab_width: 4,
+        unwrapped_lines: &[],
+        hints: &index,
+    };
+    let ranges = visual_ranges(&buffer, 0, layout);
+    // The hint is at column 5, which is where the second row begins.
+    assert!(
+        ranges.iter().any(|range| range.start == 5),
+        "expected a row starting at the hinted column: {ranges:?}"
+    );
+
+    let chars: Vec<char> = "aaaa bbbb cccc".chars().collect();
+    let hints = index.line(0);
+    // Two cells of hint precede the row's first character, so the caret for
+    // that character sits after them rather than on them.
+    assert_eq!(offset_within_row(&chars, 5, 5, 4, hints), 2);
+    // And the next column is one character further along.
+    assert_eq!(offset_within_row(&chars, 5, 6, 4, hints), 3);
+}
+
+#[test]
+fn a_hint_at_column_zero_still_round_trips() {
+    // Column 0 is the one place where "hints at or before `col`" and "hints
+    // strictly before `col`" differ most visibly: the hint renders at the very
+    // start of the line, and the caret at column 0 must follow it.
+    let chars: Vec<char> = "value".chars().collect();
+    let index = crate::hint::HintIndex::new(&[hint(0, 0, "let ")]);
+    let hints = index.line(0);
+
+    assert_eq!(display_col(&chars, 0, 4, hints), 4);
+    // Row-relative: the caret for column 0 sits four cells in, after the hint.
+    assert_eq!(offset_within_row(&chars, 0, 0, 4, hints), 4);
+    for col in 0..=chars.len() as u32 {
+        let screen = offset_within_row(&chars, 0, col, 4, hints);
+        let back = source_col_at_display_offset(&chars, 0, chars.len() as u32, screen, 4, hints);
+        assert_eq!(back, col, "column {col} did not round trip");
+    }
+}

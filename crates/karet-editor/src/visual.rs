@@ -93,10 +93,16 @@ pub(super) fn display_col(
 
 /// The buffer column `offset` screen cells into the row starting at `start`.
 ///
+/// `offset` is measured from the row's own first cell — the same origin
+/// [`offset_within_row`] produces and the same one a mouse click arrives in —
+/// so the two are exact inverses. The row paints the hint anchored at `start`,
+/// which is why the walk begins *before* it rather than at
+/// `display_col(start)`: that value already counts it.
+///
 /// A cell inside a hint resolves to the hint's own column — the position it
 /// renders ahead of — rather than to the character before it. Clicking an
-/// annotation therefore puts the caret after it, where it appears to be,
-/// instead of several cells to the left.
+/// annotation therefore puts the caret where it appears to be, instead of
+/// several cells to the left.
 pub(super) fn source_col_at_display_offset(
     chars: &[char],
     start: u32,
@@ -107,27 +113,25 @@ pub(super) fn source_col_at_display_offset(
 ) -> u32 {
     let mut source = start.min(chars.len() as u32);
     let end = end.min(chars.len() as u32);
-    let mut absolute = display_col(chars, source, tab_width, hints);
+    let mut absolute =
+        display_col(chars, source, tab_width, hints).saturating_sub(hints.width_at(source));
     let target = absolute.saturating_add(offset);
     while source < end {
         let Some(ch) = chars.get(source as usize) else {
             break;
         };
-        let width = character_width(*ch, absolute, tab_width);
-        let after_char = absolute.saturating_add(width);
-        // Cells `[absolute, after_char)` are the character itself.
-        if after_char > target {
+        // The hint anchored at `source` paints before the character there, so
+        // its cells belong to this column.
+        let after_hint = absolute.saturating_add(hints.width_at(source));
+        if target < after_hint {
+            return source;
+        }
+        let width = character_width(*ch, after_hint, tab_width);
+        if target < after_hint.saturating_add(width) {
             break;
         }
-        let next = source.saturating_add(1);
-        let hint = hints.width_at(next);
-        // The cells immediately after it belong to the hint anchored at
-        // `next`, and land on that column rather than this one.
-        if hint > 0 && after_char.saturating_add(hint) > target {
-            return next;
-        }
-        absolute = after_char.saturating_add(hint);
-        source = next;
+        absolute = after_hint.saturating_add(width);
+        source = source.saturating_add(1);
     }
     source
 }
