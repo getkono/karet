@@ -615,12 +615,14 @@ fn successful_latex_build_replaces_the_reserved_view_and_publishes_diagnostics()
 /// Parking a quit on an in-flight save is only safe if the user can still get
 /// out. Nothing but the backend answering releases `saving_close`, so without
 /// this a wedged session is an editor that cannot be quit at all — and a second
-/// Ctrl+Q would simply re-park. The abandoned writes stay recoverable: quitting
-/// sends no `CloseDocument`, so the swap files survive.
+/// Ctrl+Q would simply re-park. With `files.backup` on the abandoned writes stay
+/// recoverable: quitting sends no `CloseDocument`, so the swap files survive.
 #[test]
 fn a_second_quit_forces_through_a_parked_one() {
     let mut app = app();
     app.settings.files.confirm_on_exit = false;
+    // The swap file the message points at is written only when backups are on.
+    app.settings.files.backup = true;
     dirty_doc_tab(&mut app, "t.rs", 3);
     app.pending_saves
         .insert(RequestId(9), PendingSave { doc: DocumentId(3) });
@@ -640,6 +642,39 @@ fn a_second_quit_forces_through_a_parked_one() {
         last_message(&app).as_deref(),
         Some("quit: 1 save(s) abandoned, recoverable from swap files"),
         "abandoning a write is reported, not silent"
+    );
+}
+
+/// The hatch abandons writes either way; whether anything survives it is
+/// `files.backup`'s answer. With backups off the session writes no swap file at all
+/// (`Session::back_up_document` returns immediately), so the one message this path
+/// used to emit told the user their work was recoverable at the exact moment it was
+/// destroyed.
+#[test]
+fn a_forced_quit_without_backups_does_not_promise_swap_recovery() {
+    let mut app = app();
+    app.settings.files.confirm_on_exit = false;
+    app.settings.files.backup = false;
+    dirty_doc_tab(&mut app, "t.rs", 3);
+    app.pending_saves
+        .insert(RequestId(9), PendingSave { doc: DocumentId(3) });
+
+    app.dispatch(Command::Quit);
+    app.dispatch(Command::Quit);
+
+    assert!(
+        app.should_quit,
+        "the hatch still opens — a session with no way out is worse"
+    );
+    let (severity, message) = last_report(&app).expect("a forced quit reports itself");
+    assert_eq!(severity, Severity::Error);
+    assert!(
+        !message.contains("recoverable"),
+        "there is no swap file to recover from: {message}"
+    );
+    assert!(
+        message.contains("1 save(s) abandoned and lost") && message.contains("files.backup"),
+        "the loss, and the setting that caused it, are named: {message}"
     );
 }
 

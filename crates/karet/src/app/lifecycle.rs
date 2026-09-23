@@ -81,7 +81,7 @@ impl App {
     /// The documents `request` drops entirely: those whose **last** referencing view
     /// is being removed. A document still shown in a surviving tab or another pane is
     /// not dropped by it, so closing one of its several views loses nothing.
-    fn fully_dropped_docs(&self, request: CloseRequest) -> Vec<DocumentId> {
+    pub(super) fn fully_dropped_docs(&self, request: CloseRequest) -> Vec<DocumentId> {
         let removed: HashSet<ViewId> = self.removed_tab_views(request).into_iter().collect();
         let surviving: HashSet<DocumentId> = self
             .all_tabs()
@@ -104,7 +104,11 @@ impl App {
     /// How many saves are still in flight for documents `request` would drop. A close
     /// that outran one would lose a write the user explicitly asked for, so it parks
     /// on the drain instead of racing it.
-    fn saves_at_risk(&self, request: CloseRequest) -> usize {
+    ///
+    /// The same count releases a parked request in [`App::on_backend_event`]: park and
+    /// release must read the *same* set of saves, or a close waits on writes it does
+    /// not own — or, worse, runs while one it does own is still in flight.
+    pub(super) fn saves_at_risk(&self, request: CloseRequest) -> usize {
         let dropped = self.fully_dropped_docs(request);
         self.pending_saves
             .values()
@@ -181,11 +185,22 @@ impl App {
                 }
                 self.saving_close = None;
                 self.notifications.dismiss_tagged(Self::SAVE_BATCH_TAG);
-                self.notify(
-                    Report::Failure,
-                    NotificationKind::Io,
-                    format!("quit: {in_flight} save(s) abandoned, recoverable from swap files"),
-                );
+                // What makes an abandoned write recoverable is the swap file the
+                // session wrote for it -- and `files.backup = false` means it wrote
+                // none. Promising recovery there would tell the user their work is
+                // safe at the exact moment it is destroyed, so the two cases get
+                // two messages. Both stay on the Failure tier, which is already the
+                // loudest one (red, persists until dismissed); the wording is what
+                // has to carry the difference.
+                let report = if self.settings.files.backup {
+                    format!("quit: {in_flight} save(s) abandoned, recoverable from swap files")
+                } else {
+                    format!(
+                        "quit: {in_flight} save(s) abandoned and lost — files.backup is off, \
+                         so no swap file was written"
+                    )
+                };
+                self.notify(Report::Failure, NotificationKind::Io, report);
             }
             self.execute_close(request);
         } else {

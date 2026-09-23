@@ -667,3 +667,215 @@ fn switching_branches_waits_for_a_save_already_in_flight() {
         "no branch switch may run while a write is parked"
     );
 }
+
+/// Open a dirty code tab for `doc`, returning its index in the focused pane.
+fn dirty_tab(app: &mut App, name: &str, doc: u64) -> usize {
+    app.push_tab(text_tab(name, "x"));
+    let idx = app.active;
+    if let TabKind::Code { doc: d, .. } = &mut app.tabs[idx].kind {
+        *d = Some(DocumentId(doc));
+    }
+    app.tabs[idx].dirty = true;
+    idx
+}
+
+/// Whether the abandoned-close report is on screen. Looked up across every active
+/// card rather than through `last_message`: the failing event raises its own
+/// notification too, and which lands last is not what this is about.
+fn close_cancelled(app: &App) -> bool {
+    app.notifications
+        .active()
+        .iter()
+        .any(|note| note.title == "close cancelled: save failed")
+}
+
+/// A save deferred on a formatter answers seconds later, and for whatever document
+/// asked. Reading "some save failed" globally let document A's failure cancel the
+/// parked close of an unrelated tab B — nothing about B had failed, and its own
+/// write was still on its way.
+#[test]
+fn a_failed_save_for_another_document_leaves_a_parked_close_alone() {
+    let backend = Arc::new(RecordingBackend::new());
+    let mut app = app();
+    app.backend = Some(backend.clone());
+    // A stays open, parked on its formatter.
+    dirty_tab(&mut app, "a.rs", 31);
+    app.pending_saves.insert(
+        RequestId(80),
+        PendingSave {
+            doc: DocumentId(31),
+        },
+    );
+    // B is the tab the user answered "Save & close" for.
+    let b = dirty_tab(&mut app, "b.rs", 32);
+    let view = app.tabs[b].view;
+    app.dispatch(Command::CloseTab);
+    app.dispatch(Command::CloseConfirmSave);
+    assert_eq!(app.saving_close, Some(CloseRequest::Tab { view }));
+
+    app.on_backend_event(
+        Some(RequestId(80)),
+        SessionEvent::ExternalConflict {
+            doc: DocumentId(31),
+        },
+    );
+
+    assert_eq!(
+        app.saving_close,
+        Some(CloseRequest::Tab { view }),
+        "a failure for a document this close keeps open is none of its business"
+    );
+    assert!(
+        !close_cancelled(&app),
+        "nothing about the closing tab failed"
+    );
+
+    let pending = *app
+        .pending_saves
+        .keys()
+        .next()
+        .expect("B's own save is still in flight");
+    app.on_backend_event(
+        Some(pending),
+        SessionEvent::Saved {
+            doc: DocumentId(32),
+        },
+    );
+    assert!(app.saving_close.is_none());
+    assert!(
+        !app.all_tabs().any(|tab| tab.view == view),
+        "B closes once the write it owed landed"
+    );
+}
+
+/// The counterpart: a close is still cancelled by a failure for a write it *does*
+/// owe. Scoping the check must not turn the guard off.
+#[test]
+fn a_failed_save_the_parked_close_owns_still_cancels_it() {
+    let backend = Arc::new(RecordingBackend::new());
+    let mut app = app();
+    app.backend = Some(backend.clone());
+    let b = dirty_tab(&mut app, "b.rs", 33);
+    let view = app.tabs[b].view;
+    app.dispatch(Command::CloseTab);
+    app.dispatch(Command::CloseConfirmSave);
+    let pending = *app
+        .pending_saves
+        .keys()
+        .next()
+        .expect("the close issued a save");
+
+    app.on_backend_event(
+        Some(pending),
+        SessionEvent::ExternalConflict {
+            doc: DocumentId(33),
+        },
+    );
+
+    assert!(app.saving_close.is_none(), "the close is abandoned");
+    assert!(close_cancelled(&app), "and says why");
+    assert!(
+        app.all_tabs().any(|tab| tab.view == view),
+        "the tab stays open with its unsaved changes"
+    );
+}
+
+/// The release half of the same guard. Waiting on `pending_saves` globally held a
+/// tab close hostage to a save for a document it never touches — one a formatter can
+/// keep in flight for seconds, or forever if the server never answers.
+#[test]
+fn a_parked_close_runs_once_the_saves_it_owns_land() {
+    let backend = Arc::new(RecordingBackend::new());
+    let mut app = app();
+    app.backend = Some(backend.clone());
+    dirty_tab(&mut app, "a.rs", 41);
+    app.pending_saves.insert(
+        RequestId(90),
+        PendingSave {
+            doc: DocumentId(41),
+        },
+    );
+    let b = dirty_tab(&mut app, "b.rs", 42);
+    let view = app.tabs[b].view;
+    app.dispatch(Command::CloseTab);
+    app.dispatch(Command::CloseConfirmSave);
+    let pending = app
+        .pending_saves
+        .keys()
+        .find(|id| **id != RequestId(90))
+        .copied()
+        .expect("B's save is in flight alongside A's");
+
+    app.on_backend_event(
+        Some(pending),
+        SessionEvent::Saved {
+            doc: DocumentId(42),
+        },
+    );
+
+    assert!(
+        app.saving_close.is_none(),
+        "B's close owed one write, and it landed"
+    );
+    assert!(!app.all_tabs().any(|tab| tab.view == view));
+    assert!(
+        app.pending_saves
+            .values()
+            .any(|save| save.doc == DocumentId(41)),
+        "A's save is untouched by B's close"
+    );
+}
+
+/// A tab close and a branch switch can be parked at the same time, and they share
+/// one tagged progress card — so the close's card is whatever the user is looking
+/// at. Retiring it when the close's own writes land left the switch, which rewrites
+/// the whole worktree, about to run with no indicator at all.
+#[test]
+fn a_released_close_leaves_the_branch_switch_its_progress_card() {
+    let backend = Arc::new(RecordingBackend::new());
+    let mut app = app();
+    app.backend = Some(backend.clone());
+    dirty_tab(&mut app, "a.rs", 41);
+    app.pending_saves.insert(
+        RequestId(90),
+        PendingSave {
+            doc: DocumentId(41),
+        },
+    );
+    app.vcs_after_save = Some(VcsAction::SwitchBranch(karet_vcs::BranchTarget::Local(
+        "other".to_string(),
+    )));
+    let b = dirty_tab(&mut app, "b.rs", 42);
+    let view = app.tabs[b].view;
+    app.dispatch(Command::CloseTab);
+    app.dispatch(Command::CloseConfirmSave);
+    let pending = app
+        .pending_saves
+        .keys()
+        .find(|id| **id != RequestId(90))
+        .copied()
+        .expect("B's save is in flight alongside A's");
+
+    app.on_backend_event(
+        Some(pending),
+        SessionEvent::Saved {
+            doc: DocumentId(42),
+        },
+    );
+
+    assert!(
+        !app.all_tabs().any(|tab| tab.view == view),
+        "B owed one write and it landed, so its close runs"
+    );
+    assert!(
+        app.vcs_after_save.is_some(),
+        "the switch is still parked on A's write"
+    );
+    assert!(
+        app.notifications
+            .active()
+            .iter()
+            .any(|note| note.title.contains("before switching")),
+        "and the card has to describe the work that is still outstanding"
+    );
+}
