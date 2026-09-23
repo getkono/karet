@@ -220,11 +220,39 @@ provider, path, and document version, then sorted and deduplicated.
 | Capability | Owner and behavior |
 |---|---|
 | Parsing, syntax colours, folds, brackets, structural selection, injections | Tree-sitter, always the baseline |
-| Completion, hover, symbols, rename, signature help, code actions, inlay hints | first capable LSP in the language's ordered `servers` list |
+| Completion, hover, symbols, rename, signature help, code actions | first capable LSP in the language's ordered `servers` list |
+| Inlay hints (inferred types, parameter names) | first capable LSP in the language's ordered `servers` list; requested for the visible range with overscan, re-asked when the buffer or the viewport moves past it, and drawn as virtual text the caret steps over rather than into. `editor.inlayHints.enabled` turns them off |
 | Definition (`F12` / `Ctrl+Click`, with `Ctrl`-hover underline and Go Back) | first capable LSP in the language's ordered `servers` list; a `LocationLink` reply lands the caret on the definition's *name*, a plain `Location` on whatever the server calls its start |
 | Semantic tokens | Tree-sitter owns highlighting today; `semanticTokens` reserves one future LSP overlay owner and is never allowed to replace parsing |
 | Diagnostics | every provider in `diagnostics`, version-gated and merged |
 | Formatting | exactly one `formatter`; a user selection wins, then a repository-native provider, then the language default |
+
+### Capability negotiation
+
+A server is asked only for what it said it can do. karet keeps the capability
+set from the `initialize` reply and refuses a request the server never
+advertised, **without putting it on the wire**.
+
+This matters because the sets differ enormously — no two of rust-analyzer,
+gopls, jdtls and `vscode-json-language-server` implement the same one — and an
+un-negotiated request comes back as a protocol error indistinguishable from a
+failure. A missing feature then reads as a broken server rather than an absent
+capability.
+
+A refusal is therefore reported as a *fact about the provider*, not a fault. It
+is not counted against the provider's failure budget, does not advance the
+"stopped answering" streak that declares a server dead, and does not satisfy
+the "has it ever answered" gate — because nothing reached the wire either way.
+
+The reply is read from its JSON rather than through a typed mirror of one
+spec revision, so a capability karet learns about later needs no dependency
+bump: `typeHierarchyProvider`, which karet already issues requests against, has
+no field at all in the `lsp-types` release this workspace pins.
+
+Position encoding is negotiated with it. The protocol's default is UTF-16 and
+clangd prefers UTF-8; the two agree on every ASCII-only line, so a mismatch
+stays invisible until a line contains one non-ASCII character and then
+misplaces every position after it.
 
 Tree-sitter and LSP are complementary. Tree-sitter is local, incremental, stable
 while a server restarts, and understands injected regions in Astro, Svelte, Vue,
