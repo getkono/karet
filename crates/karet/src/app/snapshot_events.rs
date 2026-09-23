@@ -5,6 +5,11 @@ impl App {
     /// render source of truth (buffer, highlights, the search text, and the
     /// unsaved-changes flag).
     pub(super) fn on_snapshot(&mut self, doc: DocumentId, snap: &DocSnapshot) {
+        // The text moved, so the hints on screen now describe the previous
+        // revision. Mark the coverage stale so the next frame re-asks, but
+        // leave the hints themselves painted: clearing them on every keystroke
+        // would make every annotation strobe while typing.
+        self.stale_inlay_hints(doc);
         for tab in self.all_tabs_mut() {
             let matches = matches!(&tab.kind, TabKind::Code { doc: Some(d), .. } if *d == doc);
             if !matches {

@@ -2,6 +2,10 @@
 //! chrome recorded during the last render (mouse hit-testing), and per-document
 //! caches. Pure data — behavior stays on `App`.
 
+use karet_core::InlayHint;
+
+use super::inlay::HintRange;
+use super::inlay::PendingInlay;
 use super::*;
 
 /// What the terminal was confirmed to support at startup. Capabilities are
@@ -356,6 +360,13 @@ pub(crate) struct DocState {
     pub(crate) settings: HashMap<DocumentId, DocumentSettings>,
     /// Latest complete diagnostic set per editable backend document.
     pub(crate) diagnostics: HashMap<DocumentId, Vec<Diagnostic>>,
+    /// Latest inlay-hint set per document, positioned in buffer columns.
+    pub(crate) inlay_hints: HashMap<DocumentId, Vec<InlayHint>>,
+    /// What each cached hint set covers, so an unchanged viewport asks again
+    /// for nothing.
+    pub(crate) inlay_covered: HashMap<DocumentId, HintRange>,
+    /// The outstanding hint request per document, for matching its answer.
+    pub(crate) inlay_pending: HashMap<DocumentId, PendingInlay>,
     /// Latest language-server symbol tree for each open document.
     pub(crate) symbols: HashMap<DocumentId, Vec<Symbol>>,
     /// Buffer version represented by each cached symbol tree.

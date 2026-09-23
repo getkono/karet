@@ -114,6 +114,7 @@ pub(super) fn draw_panes(
                 sticky_scroll,
                 tab_width,
                 diagnostics: &app.docs.diagnostics,
+                inlay_hints: &app.docs.inlay_hints,
                 find: app
                     .find_open
                     .then(|| app.tabs.get(app.active))
@@ -161,6 +162,7 @@ pub(super) fn draw_panes(
                 sticky_scroll,
                 tab_width,
                 diagnostics: &app.docs.diagnostics,
+                inlay_hints: &app.docs.inlay_hints,
                 find: None,
                 blame: None,
                 definition_underline: None,

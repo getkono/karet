@@ -132,6 +132,11 @@ impl App {
                 version,
                 items,
             } => self.on_completions(id, doc, version, items),
+            SessionEvent::InlayHints {
+                doc,
+                version,
+                hints,
+            } => self.on_inlay_hints(id, doc, version, hints),
             SessionEvent::HoverResult { hover } => self.on_hover_result(id, hover),
             SessionEvent::WakatimeStatus { text } => self.wakatime_status = Some(text),
             SessionEvent::DebugState {

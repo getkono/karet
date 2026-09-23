@@ -20,6 +20,7 @@ mod editor_mouse;
 mod explorer;
 mod github;
 mod hover;
+mod inlay;
 mod inline_macros;
 mod language_server_badge;
 mod language_server_progress;

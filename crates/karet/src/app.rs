@@ -21,6 +21,7 @@ mod graphics;
 mod history;
 mod hit;
 mod hover;
+mod inlay;
 mod inline_macros;
 mod input;
 mod language_servers;
