@@ -294,3 +294,48 @@ fn parse_on_type_formatting(caps: &Value) -> Option<OnTypeFormattingOptions> {
 #[cfg(test)]
 #[path = "capability_tests.rs"]
 mod tests;
+
+/// The feature a dynamic registration's method name enables.
+///
+/// `client/registerCapability` names a *method*, not a provider field, so this
+/// is a second mapping onto [`ServerFeature`] rather than a reuse of the
+/// handshake's. Servers that advertise little or nothing statically and
+/// register afterwards are common — haskell-language-server, eslint and some
+/// jdtls configurations all do it — so a gate that ignored registrations would
+/// refuse them features they really have.
+pub(crate) fn feature_for_method(method: &str) -> Option<ServerFeature> {
+    Some(match method {
+        "textDocument/completion" => ServerFeature::Completion,
+        "textDocument/hover" => ServerFeature::Hover,
+        "textDocument/signatureHelp" => ServerFeature::SignatureHelp,
+        "textDocument/declaration" => ServerFeature::Declaration,
+        "textDocument/definition" => ServerFeature::Definition,
+        "textDocument/typeDefinition" => ServerFeature::TypeDefinition,
+        "textDocument/implementation" => ServerFeature::Implementation,
+        "textDocument/references" => ServerFeature::References,
+        "textDocument/documentHighlight" => ServerFeature::DocumentHighlight,
+        "textDocument/documentSymbol" => ServerFeature::DocumentSymbol,
+        "workspace/symbol" => ServerFeature::WorkspaceSymbol,
+        "textDocument/codeAction" => ServerFeature::CodeAction,
+        "textDocument/codeLens" => ServerFeature::CodeLens,
+        "textDocument/documentLink" => ServerFeature::DocumentLink,
+        "textDocument/documentColor" => ServerFeature::DocumentColor,
+        "textDocument/formatting" => ServerFeature::Formatting,
+        "textDocument/rangeFormatting" => ServerFeature::RangeFormatting,
+        "textDocument/onTypeFormatting" => ServerFeature::OnTypeFormatting,
+        "textDocument/rename" => ServerFeature::Rename,
+        "textDocument/foldingRange" => ServerFeature::FoldingRange,
+        "textDocument/selectionRange" => ServerFeature::SelectionRange,
+        "textDocument/prepareCallHierarchy" => ServerFeature::CallHierarchy,
+        "textDocument/prepareTypeHierarchy" => ServerFeature::TypeHierarchy,
+        "textDocument/linkedEditingRange" => ServerFeature::LinkedEditingRange,
+        "textDocument/inlayHint" => ServerFeature::InlayHint,
+        "textDocument/inlineValue" => ServerFeature::InlineValue,
+        "textDocument/diagnostic" => ServerFeature::PullDiagnostics,
+        "textDocument/semanticTokens" => ServerFeature::SemanticTokensFull,
+        "workspace/executeCommand" => ServerFeature::ExecuteCommand,
+        "workspace/didChangeWatchedFiles" => ServerFeature::DidChangeWatchedFiles,
+        "workspace/willRenameFiles" | "workspace/didRenameFiles" => ServerFeature::FileOperations,
+        _ => return None,
+    })
+}

@@ -214,10 +214,11 @@ pub struct LspClient {
     child: Option<tokio::process::Child>,
     /// What this server said it can do.
     ///
-    /// Behind a lock, and read rather than copied at the handshake, because
-    /// dynamic registration changes it while the connection is live. Never held
-    /// across an `.await`: every read clones or answers a question outright.
-    capabilities: std::sync::RwLock<Capabilities>,
+    /// Behind a lock, and *shared with the connection handler* rather than
+    /// copied at the handshake, because `client/registerCapability` arrives on
+    /// the handler and has to be visible here immediately. Never held across an
+    /// `.await`: every read clones or answers a question outright.
+    capabilities: std::sync::Arc<std::sync::RwLock<Capabilities>>,
 }
 
 impl LspClient {
@@ -414,18 +415,35 @@ impl LspClient {
         params.initialization_options = initialization_options;
         let conn = conn::Connection::start(read, write);
         let result: Value = conn.request("initialize", params).await?;
-        let capabilities = capability::parse(&result);
+        // Seeded into the set the handler already owns, so a registration that
+        // arrives between here and the first request is not overwritten.
+        let capabilities = conn.capabilities();
+        let parsed = capability::parse(&result);
         tracing::debug!(
-            features = capabilities.len(),
-            encoding = ?capabilities.position_encoding,
-            sync = ?capabilities.text_sync,
+            features = parsed.len(),
+            encoding = ?parsed.position_encoding,
+            sync = ?parsed.text_sync,
             "language server advertised its capabilities"
         );
+        if let Ok(mut live) = capabilities.write() {
+            for feature in parsed.iter() {
+                live.enable(feature);
+            }
+            live.position_encoding = parsed.position_encoding;
+            live.text_sync = parsed.text_sync;
+            live.save_includes_text = parsed.save_includes_text;
+            live.completion = parsed.completion.clone();
+            live.signature_help = parsed.signature_help.clone();
+            live.code_action_kinds = parsed.code_action_kinds.clone();
+            live.semantic_tokens_legend = parsed.semantic_tokens_legend.clone();
+            live.execute_commands = parsed.execute_commands.clone();
+            live.on_type_formatting = parsed.on_type_formatting.clone();
+        }
         conn.notify("initialized", lsp_types::InitializedParams {})?;
         Ok(Self {
             conn,
             child: None,
-            capabilities: std::sync::RwLock::new(capabilities),
+            capabilities,
         })
     }
 

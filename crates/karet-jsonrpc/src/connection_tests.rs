@@ -9,6 +9,7 @@ use tokio::io::ReadHalf;
 use tokio::io::WriteHalf;
 
 use super::*;
+use crate::INTERNAL_ERROR;
 use crate::METHOD_NOT_FOUND;
 use crate::framing::content_length;
 use crate::framing::content_length::ContentLength;
@@ -605,8 +606,11 @@ async fn an_overflowing_peer_request_queue_answers_rather_than_drops() -> TestRe
     let second = peer.recv().await;
     assert_eq!(first["id"], json!(2));
     assert_eq!(second["id"], json!(3));
-    assert_eq!(first["error"]["code"], json!(METHOD_NOT_FOUND));
-    assert_eq!(second["error"]["code"], json!(METHOD_NOT_FOUND));
+    // `-32603`, not `-32601`. Back-pressure is a transient condition; a peer
+    // told "method not found" concludes the client does not implement the
+    // method at all and stops offering the feature.
+    assert_eq!(first["error"]["code"], json!(INTERNAL_ERROR));
+    assert_eq!(second["error"]["code"], json!(INTERNAL_ERROR));
     Ok(())
 }
 
@@ -619,6 +623,30 @@ async fn the_handler_still_answers_while_nobody_holds_the_stream() -> TestResult
     peer.send(&json!({"jsonrpc": "2.0", "id": 1, "method": "test/answer", "params": {"a": 2}}))
         .await;
     assert_eq!(peer.recv().await["result"], json!({"echoed": {"a": 2}}));
+    Ok(())
+}
+
+#[tokio::test]
+async fn dropping_the_stream_falls_back_to_the_handler() -> TestResult {
+    // A consumer that takes the stream and then goes away -- finished,
+    // cancelled, panicked -- must not permanently disable `Handler::answer`.
+    // Tracking only "was it ever taken" meant every later peer request was
+    // refused, including the constant answers the handler implements.
+    let ((read, write), mut peer) = wire();
+    let connection = Connection::start(TestHandler, read, write);
+    let requests = connection
+        .inbound_requests()
+        .ok_or("the peer-request stream was already taken")?;
+    drop(requests);
+
+    peer.send(&json!({"jsonrpc": "2.0", "id": 1, "method": "test/answer", "params": {"a": 1}}))
+        .await;
+    let answered = peer.recv().await;
+    assert_eq!(
+        answered["result"],
+        json!({"echoed": {"a": 1}}),
+        "the handler should answer once nobody holds the stream"
+    );
     Ok(())
 }
 

@@ -367,6 +367,9 @@ pub(crate) struct DocState {
     pub(crate) inlay_covered: HashMap<DocumentId, HintRange>,
     /// The outstanding hint request per document, for matching its answer.
     pub(crate) inlay_pending: HashMap<DocumentId, PendingInlay>,
+    /// Bumped whenever hint coverage is invalidated, so a request issued
+    /// before it stops counting as covering anything.
+    pub(crate) inlay_epoch: u64,
     /// Latest language-server symbol tree for each open document.
     pub(crate) symbols: HashMap<DocumentId, Vec<Symbol>>,
     /// Buffer version represented by each cached symbol tree.

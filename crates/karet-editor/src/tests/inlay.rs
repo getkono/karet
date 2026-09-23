@@ -269,3 +269,46 @@ fn a_hint_at_column_zero_still_round_trips() {
         assert_eq!(back, col, "column {col} did not round trip");
     }
 }
+
+#[test]
+fn a_trailing_hint_stays_off_a_line_scrolled_past_its_end() {
+    // An unwrapped row carries `u32::MAX` as its end, so "is this the last
+    // row" is always true. Without also checking the row's *start*, a line
+    // scrolled entirely off to the left painted its trailing hint at the left
+    // margin, floating over nothing.
+    let buffer = TextBuffer::from_text("fn f()\na_very_long_line_of_text_here\n");
+    let mut state = EditorState::new();
+    state.scroll_col = 20;
+    let area = Rect::new(0, 0, 40, 2);
+    let mut target = Buffer::empty(area);
+    Editor::new(&buffer)
+        .inlay_hints(&[hint(0, 6, " -> i32")])
+        .render(area, &mut target, &mut state);
+    let row: String = (0..area.width)
+        .map(|x| target[(x, 0)].symbol().chars().next().unwrap_or(' '))
+        .collect();
+    assert!(
+        !row.contains("i32"),
+        "a hint painted on a row scrolled past its line: {row:?}"
+    );
+}
+
+#[test]
+fn a_tab_after_the_row_start_lands_where_the_mapping_says() {
+    // The painter walks the skipped prefix to keep its running column, and a
+    // tab expands from that column. Omitting the hint widths in the prefix put
+    // the painted tab on a different stop than `display_col` computed, so the
+    // caret sat beside the character it belonged to.
+    let chars: Vec<char> = "abc\tX".chars().collect();
+    let index = crate::hint::HintIndex::new(&[hint(0, 0, "ZZ")]);
+    let hints = index.line(0);
+
+    // `ZZ` then `abc` puts the tab at screen 5, so it fills to the stop at 8.
+    assert_eq!(display_col(&chars, 3, 4, hints), 5);
+    assert_eq!(display_col(&chars, 4, 4, hints), 8);
+
+    // Row-relative from a scrolled start, the same stop has to come out: the
+    // absolute column 8 minus the row's origin (column 1 renders at 3, and the
+    // row carries no leading hint of its own).
+    assert_eq!(offset_within_row(&chars, 1, 4, 4, hints), 5);
+}

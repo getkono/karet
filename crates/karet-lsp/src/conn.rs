@@ -7,8 +7,14 @@
 //! server→client requests a headless client must not leave hanging, and the
 //! bridge that turns [`karet_jsonrpc::RpcError`] into [`LspError`].
 
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::RwLock;
 use std::time::Duration;
 
+use karet_core::Capabilities;
+use karet_core::ServerFeature;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -19,6 +25,7 @@ use tokio::sync::broadcast;
 use crate::LspError;
 use crate::PublishedDiagnostics;
 use crate::RawNotification;
+use crate::capability;
 use crate::convert;
 use crate::uri;
 
@@ -58,12 +65,97 @@ impl From<karet_jsonrpc::RpcError> for LspError {
 /// server→client requests a headless client must not leave hanging.
 pub(crate) struct LspHandler {
     diagnostics: broadcast::Sender<PublishedDiagnostics>,
+    /// The live capability set, shared with the [`LspClient`] that gates on it.
+    ///
+    /// Shared rather than copied because `client/registerCapability` arrives
+    /// *here*, on the handler, and has to be visible to the gate immediately.
+    ///
+    /// [`LspClient`]: crate::LspClient
+    capabilities: Arc<RwLock<Capabilities>>,
+    /// Which feature each live registration turned on, so an unregister
+    /// disables exactly what its id enabled.
+    ///
+    /// Keyed by the server's registration id: two registrations can name the
+    /// same method, and unregistering one must not disable the other.
+    registrations: Mutex<HashMap<String, ServerFeature>>,
 }
 
 impl Default for LspHandler {
     fn default() -> Self {
         let (diagnostics, _) = broadcast::channel(DIAGNOSTICS_CHANNEL_CAPACITY);
-        Self { diagnostics }
+        Self {
+            diagnostics,
+            capabilities: Arc::default(),
+            registrations: Mutex::default(),
+        }
+    }
+}
+
+impl LspHandler {
+    /// Turn on everything a `client/registerCapability` asks for.
+    fn register(&self, params: &Value) {
+        let Some(items) = params.get("registrations").and_then(Value::as_array) else {
+            return;
+        };
+        for item in items {
+            let (Some(id), Some(method)) = (
+                item.get("id").and_then(Value::as_str),
+                item.get("method").and_then(Value::as_str),
+            ) else {
+                continue;
+            };
+            let Some(feature) = capability::feature_for_method(method) else {
+                // A method karet does not gate on. Acknowledged, as before.
+                continue;
+            };
+            if let Ok(mut caps) = self.capabilities.write() {
+                caps.enable(feature);
+            }
+            if let Ok(mut live) = self.registrations.lock() {
+                live.insert(id.to_owned(), feature);
+            }
+            tracing::debug!(method, ?feature, "server registered a capability");
+        }
+    }
+
+    /// Turn off everything a `client/unregisterCapability` withdraws.
+    fn unregister(&self, params: &Value) {
+        // The spec's own field name is misspelled, and servers send it that
+        // way; accept the corrected spelling too rather than ignore either.
+        let items = params
+            .get("unregisterations")
+            .or_else(|| params.get("unregistrations"))
+            .and_then(Value::as_array);
+        let Some(items) = items else { return };
+        for item in items {
+            let Some(id) = item.get("id").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(feature) = self
+                .registrations
+                .lock()
+                .ok()
+                .and_then(|mut live| live.remove(id))
+            else {
+                continue;
+            };
+            // Only if no other live registration still provides it: two
+            // registrations may cover one method, and withdrawing one of them
+            // must not disable a feature the other still supplies.
+            let still_registered = self
+                .registrations
+                .lock()
+                .is_ok_and(|live| live.values().any(|other| *other == feature));
+            if !still_registered && let Ok(mut caps) = self.capabilities.write() {
+                caps.disable(feature);
+            }
+            tracing::debug!(?feature, "server unregistered a capability");
+        }
+    }
+
+    /// The shared capability set, for the client that gates on it.
+    pub(crate) fn capabilities(&self) -> Arc<RwLock<Capabilities>> {
+        Arc::clone(&self.capabilities)
     }
 }
 
@@ -97,7 +189,17 @@ impl karet_jsonrpc::Handler for LspHandler {
     }
 
     fn answer(&self, method: &str, params: &Value) -> Result<Value, karet_jsonrpc::ResponseError> {
-        answer_server_request(method, params)
+        match method {
+            "client/registerCapability" => {
+                self.register(params);
+                Ok(Value::Null)
+            },
+            "client/unregisterCapability" => {
+                self.unregister(params);
+                Ok(Value::Null)
+            },
+            _ => answer_server_request(method, params),
+        }
     }
 }
 
@@ -106,6 +208,14 @@ pub(crate) struct Connection(karet_jsonrpc::Connection<LspHandler>);
 
 impl Connection {
     /// Start the reader/writer tasks over an arbitrary I/O pair.
+    /// The live capability set this connection's handler maintains.
+    ///
+    /// Shared with the handler, not a copy, so a capability registered after
+    /// the handshake is visible to the gate the moment it arrives.
+    pub(crate) fn capabilities(&self) -> Arc<RwLock<Capabilities>> {
+        self.0.handler().capabilities()
+    }
+
     pub(crate) fn start<R, W>(read: R, write: W) -> Self
     where
         R: AsyncRead + Send + Unpin + 'static,
@@ -184,9 +294,9 @@ fn answer_server_request(
         },
         // Acknowledge without acting; dynamic registration and progress tokens
         // carry no state a headless completion client needs.
-        "client/registerCapability"
-        | "client/unregisterCapability"
-        | "window/workDoneProgress/create" => Ok(Value::Null),
+        // Dynamic registration is handled by `LspHandler::answer` before it
+        // reaches here, because it mutates the capability set.
+        "window/workDoneProgress/create" => Ok(Value::Null),
         _ => Err(karet_jsonrpc::ResponseError::new(
             karet_jsonrpc::METHOD_NOT_FOUND,
             format!("karet-lsp does not implement {method}"),

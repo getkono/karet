@@ -138,7 +138,12 @@ impl OutgoingResponse {
 }
 
 /// The `error` member of a response.
+///
+/// `#[non_exhaustive]`: the JSON-RPC error object has grown a member once
+/// already (`data`, added here), and a struct literal downstream would break
+/// again next time. Build one with [`ResponseError::new`].
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct ResponseError {
     /// The JSON-RPC error code.
     pub code: i64,
@@ -201,7 +206,14 @@ impl ResponseError {
 }
 
 /// A parsed incoming message.
+///
+/// `#[non_exhaustive]` — unlike [`RpcError`](crate::RpcError), which is
+/// deliberately exhaustive so a new variant breaks the one bridge that must
+/// classify it. This enum is a *description of the wire*, and JSON-RPC has
+/// shapes this crate does not model yet (batches), so a consumer matching on
+/// it should be asked to tolerate a new one rather than fail to compile.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum Incoming {
     /// A response to a request we issued.
     Response {

@@ -281,6 +281,12 @@ impl Editor<'_> {
         let mut display_col = 0_u32;
         for (boff, ch) in content.char_indices() {
             if col < range.start {
+                // Hints before the row start still shift the running column,
+                // and a tab's expansion is measured from it. Skipping their
+                // width here would put every tab after the row start on a
+                // different stop than `display_col` and `visual_ranges`
+                // computed, so the caret and the painted text would disagree.
+                display_col = display_col.saturating_add(hints.width_at(col));
                 display_col =
                     display_col.saturating_add(character_width(ch, display_col, self.tab_width));
                 col += 1;
@@ -347,7 +353,11 @@ impl Editor<'_> {
         // Anchored at the line's own length, never at `range.end`: an
         // unwrapped row carries `u32::MAX` there, which matches no hint at all.
         let line_len = content.chars().count() as u32;
-        if !hints.is_empty() && range.end >= line_len {
+        // `range.start <= line_len` as well as `range.end >= line_len`: an
+        // unwrapped row carries `u32::MAX` as its end, so the end test alone is
+        // always true, and a line scrolled entirely off to the left would paint
+        // its trailing hint at the left margin over nothing.
+        if !hints.is_empty() && range.start <= line_len && range.end >= line_len {
             self.push_hint_spans(spans, &mut run, &mut run_style, hints, line_len, theme);
         }
         if let Some(prev) = run_style {

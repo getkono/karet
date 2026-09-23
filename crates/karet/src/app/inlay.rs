@@ -51,6 +51,13 @@ pub(crate) struct PendingInlay {
     pub(crate) id: RequestId,
     /// What it asked for.
     pub(crate) asked: HintRange,
+    /// The invalidation epoch it was issued in.
+    ///
+    /// A request issued before the last invalidation no longer counts as
+    /// covering anything, so it cannot suppress the re-ask that invalidation
+    /// exists to trigger — but it is still *adopted* if it arrives, because a
+    /// real answer is worth having whatever prompted the re-ask.
+    pub(crate) epoch: u64,
 }
 
 impl App {
@@ -71,26 +78,54 @@ impl App {
                 doc,
                 range: Range {
                     start: LineCol::new(wanted.first, 0),
-                    end: LineCol::new(wanted.last, 0),
+                    // The end of the last line, not its start: ending at
+                    // column 0 excludes every hint on the final requested line.
+                    end: LineCol::new(wanted.last, u32::MAX),
                 },
             }) else {
                 continue;
             };
-            self.docs
-                .inlay_pending
-                .insert(doc, PendingInlay { id, asked: wanted });
+            let epoch = self.docs.inlay_epoch;
+            self.docs.inlay_pending.insert(
+                doc,
+                PendingInlay {
+                    id,
+                    asked: wanted,
+                    epoch,
+                },
+            );
         }
     }
 
     /// The `(version, line range)` each open code document wants covered.
     ///
-    /// Every code tab, not only the focused one: a background tab keeps the
-    /// viewport it last had, so switching to it shows annotations immediately
-    /// instead of after a round trip. The coverage check below means an
-    /// already-covered tab costs nothing per frame.
+    /// `all_tabs`, not `self.tabs`: the latter is only the *focused* pane's,
+    /// so a split's background pane would never be asked about and would keep
+    /// a stale set until its document closed.
+    ///
+    /// One document open in two panes contributes one range spanning both
+    /// viewports, because the cache is keyed by document. Taking whichever
+    /// pane was seen last instead would make the annotations vanish from the
+    /// other pane every time focus moved between them.
     fn visible_hint_ranges(&self) -> Vec<(DocumentId, HintRange)> {
-        self.tabs
-            .iter()
+        let mut wanted: Vec<(DocumentId, HintRange)> = Vec::new();
+        for range in self.hint_ranges_per_view() {
+            match wanted.iter_mut().find(|(doc, _)| *doc == range.0) {
+                // Same document in another pane: widen to cover both.
+                Some((_, have)) if have.version == range.1.version => {
+                    have.first = have.first.min(range.1.first);
+                    have.last = have.last.max(range.1.last);
+                },
+                Some(_) => {},
+                None => wanted.push(range),
+            }
+        }
+        wanted
+    }
+
+    /// One range per *view*, before the per-document union above.
+    fn hint_ranges_per_view(&self) -> Vec<(DocumentId, HintRange)> {
+        self.all_tabs()
             .filter_map(|tab| {
                 let TabKind::Code {
                     doc: Some(doc),
@@ -105,15 +140,20 @@ impl App {
                 // one screenful is a better guess than none.
                 let visible = tab.editor.visible_lines().max(1);
                 let last = (buffer.line_count() as u32).saturating_sub(1);
+                let first = top.saturating_sub(OVERSCAN);
                 Some((
                     *doc,
                     HintRange {
                         version: buffer.version(),
-                        first: top.saturating_sub(OVERSCAN),
+                        first,
+                        // Clamped up to `first`: a document that shrank under a
+                        // scrolled tab before the next paint would otherwise
+                        // produce an inverted range and send it to the server.
                         last: top
                             .saturating_add(visible)
                             .saturating_add(OVERSCAN)
-                            .min(last),
+                            .min(last)
+                            .max(first),
                     },
                 ))
             })
@@ -122,7 +162,7 @@ impl App {
 
     /// The version of `doc`'s buffer as the app currently holds it.
     fn buffer_version(&self, doc: DocumentId) -> Option<u64> {
-        self.tabs.iter().find_map(|tab| match &tab.kind {
+        self.all_tabs().find_map(|tab| match &tab.kind {
             TabKind::Code {
                 doc: Some(id),
                 buffer,
@@ -144,11 +184,12 @@ impl App {
             return true;
         }
         // An identical request already in flight: asking twice would only race
-        // two answers for the same range.
-        self.docs
-            .inlay_pending
-            .get(&doc)
-            .is_some_and(|pending| pending.asked.covers(wanted))
+        // two answers for the same range. Only one from the current epoch,
+        // though -- a request issued before the last invalidation may be about
+        // to be answered by a provider that was not running when it was made.
+        self.docs.inlay_pending.get(&doc).is_some_and(|pending| {
+            pending.epoch == self.docs.inlay_epoch && pending.asked.covers(wanted)
+        })
     }
 
     /// Adopt an answered hint set.
@@ -178,7 +219,13 @@ impl App {
             return; // the buffer moved on while the server was thinking
         }
         self.docs.inlay_hints.insert(doc, hints);
-        self.docs.inlay_covered.insert(doc, pending.asked);
+        // Coverage only from the current epoch. An answer from before the last
+        // invalidation is worth painting, but it was produced under conditions
+        // that have since changed -- during startup, by a provider that was not
+        // running -- so it must not stop the next frame asking again.
+        if pending.epoch == self.docs.inlay_epoch {
+            self.docs.inlay_covered.insert(doc, pending.asked);
+        }
     }
 
     /// Drop everything cached for `doc`, on close or on a language change.
@@ -199,6 +246,14 @@ impl App {
     /// ready, and its empty answer would otherwise be cached forever.
     pub(crate) fn invalidate_inlay_coverage(&mut self) {
         self.docs.inlay_covered.clear();
+        // The epoch moves rather than the pending map being cleared. An
+        // in-flight request is not abandoned -- clearing it would discard an
+        // answer that is about to arrive, and during startup these events land
+        // constantly -- but it stops counting as coverage, so a request that
+        // will never be answered (a provider restart bumps the manager
+        // generation, and `apply_lsp_update` drops updates from the previous
+        // one) can no longer suppress the re-ask forever.
+        self.docs.inlay_epoch = self.docs.inlay_epoch.saturating_add(1);
     }
 
     /// Invalidate the coverage for `doc` without dropping what is on screen.

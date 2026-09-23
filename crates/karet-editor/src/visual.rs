@@ -88,7 +88,10 @@ pub(super) fn display_col(
             col = col.saturating_add(character_width(*ch, col, tab_width));
         }
     }
-    col.saturating_add(hints.width_at(source_col))
+    // Clamped to `limit`, not `source_col`: past the end of the line there are
+    // no characters left to walk, so adding a hint anchored beyond it would
+    // make this non-monotonic in `source_col`.
+    col.saturating_add(hints.width_at(limit))
 }
 
 /// The buffer column `offset` screen cells into the row starting at `start`.

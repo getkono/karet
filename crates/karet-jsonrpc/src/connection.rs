@@ -540,7 +540,11 @@ fn handle_frame<H: Handler>(bytes: &[u8], routes: &Routes<H>) {
             // A consumer holding the stream owns every peer request, including
             // the ones `answer` used to field: splitting them by method would
             // make which path ran depend on timing.
-            if inbound.active.load(Ordering::SeqCst) {
+            // `is_closed` as well as the flag: the flag says the stream was
+            // ever taken, and a consumer that has since dropped the receiver
+            // would otherwise disable `Handler::answer` permanently, refusing
+            // the constant answers it implements correctly.
+            if inbound.active.load(Ordering::SeqCst) && !inbound.tx.is_closed() {
                 let request = PeerRequest {
                     method: method.clone(),
                     params,
@@ -557,6 +561,16 @@ fn handle_frame<H: Handler>(bytes: &[u8], routes: &Routes<H>) {
                         reason = %refused,
                         "peer request not delivered to the consumer; answering it here"
                     );
+                    // Answered explicitly, because `Responder`'s drop says
+                    // `-32601` and that is the wrong thing to tell a peer here.
+                    // A server reads "method not found" as "this client does
+                    // not implement it" and stops offering the feature; this is
+                    // transient back-pressure, which `-32603` reports honestly.
+                    let responder = match refused {
+                        mpsc::error::TrySendError::Full(request)
+                        | mpsc::error::TrySendError::Closed(request) => request.responder,
+                    };
+                    responder.error(ResponseError::internal_error(&method, "the client is busy"));
                 }
                 return;
             }
