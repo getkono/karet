@@ -311,6 +311,14 @@ pub enum ThemeRole {
     /// De-emphasized UI text (gitignored / disabled explorer rows, etc.). Readable,
     /// unlike the near-background [`IndentGuide`](Self::IndentGuide) rule color.
     Muted,
+    /// Inlay-hint text: inferred types and parameter names the editor draws
+    /// between characters.
+    ///
+    /// Its own role rather than [`Muted`](Self::Muted) because it is the one
+    /// de-emphasized text that sits *inside* a line of code, so it has to read
+    /// as annotation against syntax colours rather than against chrome. VS Code
+    /// themes it separately for the same reason.
+    InlayHint,
     /// Explorer icon tint for text-like files (code, markup, data, config, shell).
     FileIconText,
     /// Explorer icon tint for media and documents (images, PDFs, office docs).

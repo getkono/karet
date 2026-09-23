@@ -103,6 +103,7 @@ pub(crate) fn dark() -> Theme {
     // De-emphasized UI text — readable grey (matches the Comment brightness), used
     // for gitignored explorer rows.
     role(ThemeRole::Muted, rgb(0x56, 0x5f, 0x89));
+    role(ThemeRole::InlayHint, rgb(0x4d, 0x55, 0x7a));
     // Explorer file-icon tints, keyed to the coarse file Category.
     role(ThemeRole::FileIconText, rgb(0x7a, 0xa2, 0xf7));
     role(ThemeRole::FileIconMedia, rgb(0x9e, 0xce, 0x6a));

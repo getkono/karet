@@ -1,5 +1,7 @@
 use std::ops::RangeInclusive;
 
+use super::hint::HintIndex;
+use super::hint::LineHints;
 use super::text::*;
 use super::*;
 
@@ -21,6 +23,31 @@ impl VisualRange {
     }
 }
 
+/// Everything that decides where a buffer position lands on screen.
+///
+/// Bundled rather than passed as four parallel arguments because inlay hints
+/// had to reach every one of these functions, and several were already at the
+/// argument limit. It also removes the `too_many_arguments` allow that
+/// [`reveal_visual_anchor`] used to need.
+#[derive(Clone, Copy)]
+pub(super) struct Layout<'a> {
+    /// Content width available for wrapping.
+    pub(super) width: u32,
+    /// Columns between hard-tab stops.
+    pub(super) tab_width: u16,
+    /// Lines kept on one visual row regardless of width.
+    pub(super) unwrapped_lines: &'a [RangeInclusive<u32>],
+    /// Virtual text occupying cells no buffer column owns.
+    pub(super) hints: &'a HintIndex,
+}
+
+impl<'a> Layout<'a> {
+    /// The hints on `line`.
+    pub(super) fn hints_on(&self, line: u32) -> LineHints<'a> {
+        self.hints.line(line)
+    }
+}
+
 /// Split one logical line into source-column ranges for soft wrapping. Whitespace is
 /// kept in the range before the break so every source column maps to exactly one row;
 /// words wider than the viewport are split at the hard width.
@@ -33,33 +60,74 @@ pub(super) fn character_width(ch: char, display_col: u32, tab_width: u16) -> u32
     }
 }
 
-pub(super) fn display_col(chars: &[char], source_col: u32, tab_width: u16) -> u32 {
-    chars
-        .iter()
-        .take(source_col as usize)
-        .fold(0_u32, |col, ch| {
-            col.saturating_add(character_width(*ch, col, tab_width))
-        })
+/// The screen column a buffer column renders at.
+///
+/// Characters *before* `source_col` and hints *at or before* it: a hint
+/// anchored at `c` renders ahead of the character there, so a caret at `c`
+/// sits past it. A tab's width is measured against the running screen column,
+/// hints included, because a tab stops at a real screen position.
+pub(super) fn display_col(
+    chars: &[char],
+    source_col: u32,
+    tab_width: u16,
+    hints: LineHints<'_>,
+) -> u32 {
+    if hints.is_empty() {
+        return chars
+            .iter()
+            .take(source_col as usize)
+            .fold(0_u32, |col, ch| {
+                col.saturating_add(character_width(*ch, col, tab_width))
+            });
+    }
+    let limit = source_col.min(chars.len() as u32);
+    let mut col = 0_u32;
+    for index in 0..limit {
+        col = col.saturating_add(hints.width_at(index));
+        if let Some(ch) = chars.get(index as usize) {
+            col = col.saturating_add(character_width(*ch, col, tab_width));
+        }
+    }
+    col.saturating_add(hints.width_at(source_col))
 }
 
+/// The buffer column `offset` screen cells into the row starting at `start`.
+///
+/// A cell inside a hint resolves to the hint's own column — the position it
+/// renders ahead of — rather than to the character before it. Clicking an
+/// annotation therefore puts the caret after it, where it appears to be,
+/// instead of several cells to the left.
 pub(super) fn source_col_at_display_offset(
     chars: &[char],
     start: u32,
     end: u32,
     offset: u32,
     tab_width: u16,
+    hints: LineHints<'_>,
 ) -> u32 {
     let mut source = start.min(chars.len() as u32);
     let end = end.min(chars.len() as u32);
-    let mut absolute = display_col(chars, source, tab_width);
+    let mut absolute = display_col(chars, source, tab_width, hints);
     let target = absolute.saturating_add(offset);
     while source < end {
-        let width = character_width(chars[source as usize], absolute, tab_width);
-        if absolute.saturating_add(width) > target {
+        let Some(ch) = chars.get(source as usize) else {
+            break;
+        };
+        let width = character_width(*ch, absolute, tab_width);
+        let after_char = absolute.saturating_add(width);
+        // Cells `[absolute, after_char)` are the character itself.
+        if after_char > target {
             break;
         }
-        absolute = absolute.saturating_add(width);
-        source += 1;
+        let next = source.saturating_add(1);
+        let hint = hints.width_at(next);
+        // The cells immediately after it belong to the hint anchored at
+        // `next`, and land on that column rather than this one.
+        if hint > 0 && after_char.saturating_add(hint) > target {
+            return next;
+        }
+        absolute = after_char.saturating_add(hint);
+        source = next;
     }
     source
 }
@@ -67,9 +135,7 @@ pub(super) fn source_col_at_display_offset(
 pub(super) fn visual_ranges(
     buffer: &TextBuffer,
     line: u32,
-    width: u32,
-    tab_width: u16,
-    unwrapped_lines: &[RangeInclusive<u32>],
+    layout: Layout<'_>,
 ) -> Vec<VisualRange> {
     let chars: Vec<char> = buffer
         .line(line as usize)
@@ -80,23 +146,37 @@ pub(super) fn visual_ranges(
     if len == 0 {
         return vec![VisualRange::empty(0)];
     }
-    if unwrapped_lines.iter().any(|range| range.contains(&line)) {
+    if layout
+        .unwrapped_lines
+        .iter()
+        .any(|range| range.contains(&line))
+    {
         return vec![VisualRange { start: 0, end: len }];
     }
-    let width = width.max(1);
+    let hints = layout.hints_on(line);
+    let width = layout.width.max(1);
     let mut ranges = Vec::new();
     let mut start = 0_u32;
     while start < len {
         let mut hard_end = start;
         let mut used = 0_u32;
-        let mut absolute = display_col(&chars, start, tab_width);
+        // Back off the hint at `start`: this row paints it, so its cells are
+        // counted below rather than inherited from the column's screen origin.
+        let mut absolute = display_col(&chars, start, layout.tab_width, hints)
+            .saturating_sub(hints.width_at(start));
         while hard_end < len {
-            let char_width = character_width(chars[hard_end as usize], absolute, tab_width);
-            if hard_end > start && used.saturating_add(char_width) > width {
+            let hint = hints.width_at(hard_end);
+            let char_width = character_width(
+                chars[hard_end as usize],
+                absolute.saturating_add(hint),
+                layout.tab_width,
+            );
+            let step = hint.saturating_add(char_width);
+            if hard_end > start && used.saturating_add(step) > width {
                 break;
             }
-            used = used.saturating_add(char_width);
-            absolute = absolute.saturating_add(char_width);
+            used = used.saturating_add(step);
+            absolute = absolute.saturating_add(step);
             hard_end += 1;
             if used >= width {
                 break;
@@ -120,9 +200,7 @@ pub(super) fn visual_ranges(
 pub(super) fn normalize_visual_anchor(
     buffer: &TextBuffer,
     folds: &[Fold],
-    width: u32,
-    tab_width: u16,
-    unwrapped_lines: &[RangeInclusive<u32>],
+    layout: Layout<'_>,
     anchor: VisualAnchor,
 ) -> VisualAnchor {
     let last = last_line(buffer);
@@ -133,9 +211,7 @@ pub(super) fn normalize_visual_anchor(
     while line > 0 && hidden_in(folds, line) {
         line -= 1;
     }
-    let rows = visual_ranges(buffer, line, width, tab_width, unwrapped_lines)
-        .len()
-        .max(1) as u32;
+    let rows = visual_ranges(buffer, line, layout).len().max(1) as u32;
     VisualAnchor {
         line,
         subrow: anchor.subrow.min(rows - 1),
@@ -145,13 +221,11 @@ pub(super) fn normalize_visual_anchor(
 pub(super) fn next_visual_anchor(
     buffer: &TextBuffer,
     folds: &[Fold],
-    width: u32,
-    tab_width: u16,
-    unwrapped_lines: &[RangeInclusive<u32>],
+    layout: Layout<'_>,
     anchor: VisualAnchor,
 ) -> VisualAnchor {
-    let anchor = normalize_visual_anchor(buffer, folds, width, tab_width, unwrapped_lines, anchor);
-    let rows = visual_ranges(buffer, anchor.line, width, tab_width, unwrapped_lines).len() as u32;
+    let anchor = normalize_visual_anchor(buffer, folds, layout, anchor);
+    let rows = visual_ranges(buffer, anchor.line, layout).len() as u32;
     if anchor.subrow + 1 < rows {
         return VisualAnchor {
             subrow: anchor.subrow + 1,
@@ -173,12 +247,10 @@ pub(super) fn next_visual_anchor(
 pub(super) fn previous_visual_anchor(
     buffer: &TextBuffer,
     folds: &[Fold],
-    width: u32,
-    tab_width: u16,
-    unwrapped_lines: &[RangeInclusive<u32>],
+    layout: Layout<'_>,
     anchor: VisualAnchor,
 ) -> VisualAnchor {
-    let anchor = normalize_visual_anchor(buffer, folds, width, tab_width, unwrapped_lines, anchor);
+    let anchor = normalize_visual_anchor(buffer, folds, layout, anchor);
     if anchor.subrow > 0 {
         return VisualAnchor {
             subrow: anchor.subrow - 1,
@@ -189,9 +261,7 @@ pub(super) fn previous_visual_anchor(
     while line > 0 {
         line -= 1;
         if !hidden_in(folds, line) {
-            let rows = visual_ranges(buffer, line, width, tab_width, unwrapped_lines)
-                .len()
-                .max(1) as u32;
+            let rows = visual_ranges(buffer, line, layout).len().max(1) as u32;
             return VisualAnchor {
                 line,
                 subrow: rows - 1,
@@ -220,16 +290,13 @@ pub(super) fn next_line_anchor(
 pub(super) fn visual_anchor_at_row(
     buffer: &TextBuffer,
     folds: &[Fold],
-    width: u32,
-    tab_width: u16,
-    unwrapped_lines: &[RangeInclusive<u32>],
+    layout: Layout<'_>,
     start: VisualAnchor,
     row: u32,
 ) -> VisualAnchor {
-    let mut anchor =
-        normalize_visual_anchor(buffer, folds, width, tab_width, unwrapped_lines, start);
+    let mut anchor = normalize_visual_anchor(buffer, folds, layout, start);
     for _ in 0..row {
-        let next = next_visual_anchor(buffer, folds, width, tab_width, unwrapped_lines, anchor);
+        let next = next_visual_anchor(buffer, folds, layout, anchor);
         if next == anchor {
             break;
         }
@@ -240,13 +307,11 @@ pub(super) fn visual_anchor_at_row(
 
 pub(super) fn visual_anchor_for_position(
     buffer: &TextBuffer,
-    width: u32,
-    tab_width: u16,
-    unwrapped_lines: &[RangeInclusive<u32>],
+    layout: Layout<'_>,
     pos: LineCol,
 ) -> VisualAnchor {
     let line = pos.line.min(last_line(buffer));
-    let ranges = visual_ranges(buffer, line, width, tab_width, unwrapped_lines);
+    let ranges = visual_ranges(buffer, line, layout);
     let last = ranges.len().saturating_sub(1);
     let subrow = ranges
         .iter()
@@ -260,28 +325,22 @@ pub(super) fn visual_anchor_for_position(
     VisualAnchor { line, subrow }
 }
 
-#[allow(clippy::too_many_arguments)]
-// These are the independent viewport inputs needed to reveal one logical cursor;
-// bundling them would duplicate the editor widget/state split solely for this helper.
 pub(super) fn reveal_visual_anchor(
     buffer: &TextBuffer,
     folds: &[Fold],
-    width: u32,
-    tab_width: u16,
-    unwrapped_lines: &[RangeInclusive<u32>],
+    layout: Layout<'_>,
     height: u16,
     current: VisualAnchor,
     cursor: LineCol,
 ) -> VisualAnchor {
-    let current =
-        normalize_visual_anchor(buffer, folds, width, tab_width, unwrapped_lines, current);
-    let target = visual_anchor_for_position(buffer, width, tab_width, unwrapped_lines, cursor);
+    let current = normalize_visual_anchor(buffer, folds, layout, current);
+    let target = visual_anchor_for_position(buffer, layout, cursor);
     let mut probe = current;
     for _ in 0..height.max(1) {
         if probe == target {
             return current;
         }
-        let next = next_visual_anchor(buffer, folds, width, tab_width, unwrapped_lines, probe);
+        let next = next_visual_anchor(buffer, folds, layout, probe);
         if next == probe {
             break;
         }
@@ -292,14 +351,31 @@ pub(super) fn reveal_visual_anchor(
     }
     let mut revealed = target;
     for _ in 1..height.max(1) {
-        let previous =
-            previous_visual_anchor(buffer, folds, width, tab_width, unwrapped_lines, revealed);
+        let previous = previous_visual_anchor(buffer, folds, layout, revealed);
         if previous == revealed {
             break;
         }
         revealed = previous;
     }
     revealed
+}
+
+/// The screen offset of `col` within the row that begins at `row_start`.
+///
+/// Not simply the difference of two [`display_col`]s: the row paints the hint
+/// anchored at its own first column, which `display_col(row_start)` has
+/// already counted. Adding it back puts the caret after that leading hint
+/// rather than on top of it.
+pub(super) fn offset_within_row(
+    chars: &[char],
+    row_start: u32,
+    col: u32,
+    tab_width: u16,
+    hints: LineHints<'_>,
+) -> u32 {
+    display_col(chars, col, tab_width, hints)
+        .saturating_sub(display_col(chars, row_start, tab_width, hints))
+        .saturating_add(hints.width_at(row_start))
 }
 
 pub(super) fn caret_cell(
@@ -320,26 +396,18 @@ pub(super) fn caret_cell(
     let content_width = area.right().saturating_sub(content_x);
 
     if state.last_word_wrap {
-        let width = u32::from(content_width.max(1));
+        let layout = state.layout(u32::from(content_width.max(1)));
         let mut anchor = normalize_visual_anchor(
             buffer,
             folds,
-            width,
-            state.last_tab_width,
-            &state.last_unwrapped_lines,
+            layout,
             VisualAnchor {
                 line: state.scroll_line,
                 subrow: state.scroll_subrow,
             },
         );
         for row in 0..content_height {
-            let ranges = visual_ranges(
-                buffer,
-                anchor.line,
-                width,
-                state.last_tab_width,
-                &state.last_unwrapped_lines,
-            );
+            let ranges = visual_ranges(buffer, anchor.line, layout);
             let index = (anchor.subrow as usize).min(ranges.len().saturating_sub(1));
             let range = ranges
                 .get(index)
@@ -355,22 +423,20 @@ pub(super) fn caret_cell(
                     .unwrap_or_default()
                     .chars()
                     .collect();
-                let rel = display_col(&chars, at.col, state.last_tab_width)
-                    .saturating_sub(display_col(&chars, range.start, state.last_tab_width));
+                let rel = offset_within_row(
+                    &chars,
+                    range.start,
+                    at.col,
+                    state.last_tab_width,
+                    layout.hints_on(at.line),
+                );
                 let x = content_x.saturating_add(
                     u16::try_from(rel.min(u32::from(content_width.saturating_sub(1))))
                         .unwrap_or(u16::MAX),
                 );
                 return Some((x, content_y.saturating_add(row)));
             }
-            anchor = next_visual_anchor(
-                buffer,
-                folds,
-                width,
-                state.last_tab_width,
-                &state.last_unwrapped_lines,
-                anchor,
-            );
+            anchor = next_visual_anchor(buffer, folds, layout, anchor);
         }
         return None;
     }
@@ -402,14 +468,17 @@ pub(super) fn caret_cell(
     if at.col > chars.len() as u32 {
         return None;
     }
+    let hints = state.hints_on(at.line);
     let rel = if at.col < state.scroll_col {
         0
     } else {
-        display_col(&chars, at.col, state.last_tab_width).saturating_sub(display_col(
+        offset_within_row(
             &chars,
             state.scroll_col,
+            at.col,
             state.last_tab_width,
-        ))
+            hints,
+        )
     };
     let rel = rel.min(u32::from(content_width.saturating_sub(1)));
     let cx = content_x.saturating_add(u16::try_from(rel).unwrap_or(u16::MAX));

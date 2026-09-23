@@ -12,6 +12,7 @@
 
 mod conflict;
 pub mod editing;
+mod hint;
 mod state;
 mod text;
 mod view;

@@ -1,5 +1,7 @@
 use std::ops::RangeInclusive;
 
+use super::hint::HintIndex;
+use super::hint::LineHints;
 use super::text::*;
 use super::visual::*;
 use super::*;
@@ -250,6 +252,10 @@ impl Editor<'_> {
 
     /// Append the syntax-colored content spans for line `l`, honoring horizontal
     /// scroll, active selections, and text-background decorations.
+    #[allow(clippy::too_many_arguments)]
+    // The already-resolved render palette and geometry for one row, plus the
+    // row's hints. Bundling them would duplicate the widget/state split for a
+    // single private helper.
     fn push_content_spans(
         &self,
         spans: &mut Vec<Span<'static>>,
@@ -258,6 +264,7 @@ impl Editor<'_> {
         default_fg: Rgba,
         range: VisualRange,
         selections: &[Range],
+        hints: LineHints<'_>,
     ) {
         let Some(content) = self.buffer.line(l as usize) else {
             return;
@@ -273,15 +280,22 @@ impl Editor<'_> {
         let mut col: u32 = 0;
         let mut display_col = 0_u32;
         for (boff, ch) in content.char_indices() {
-            let width = character_width(ch, display_col, self.tab_width);
             if col < range.start {
-                display_col = display_col.saturating_add(width);
+                display_col =
+                    display_col.saturating_add(character_width(ch, display_col, self.tab_width));
                 col += 1;
                 continue;
             }
             if col >= range.end {
                 break;
             }
+            // The hint anchored here renders *before* this character, which is
+            // what puts the caret at this column after it.
+            if !hints.is_empty() {
+                self.push_hint_spans(spans, &mut run, &mut run_style, hints, col, theme);
+                display_col = display_col.saturating_add(hints.width_at(col));
+            }
+            let width = character_width(ch, display_col, self.tab_width);
             let mut style = token_style(line_start + boff, hl, theme, default_fg);
             // Diagnostics win an overlap: a squiggle carries more information than
             // "this is navigable", and losing it would hide a real problem.
@@ -325,7 +339,58 @@ impl Editor<'_> {
             col += 1;
         }
         if let Some(prev) = run_style {
+            spans.push(Span::styled(std::mem::take(&mut run), prev));
+            run_style = None;
+        }
+        // A hint anchored one past the last character -- a trailing return type,
+        // say -- has no character to precede, so it closes the row instead.
+        // Anchored at the line's own length, never at `range.end`: an
+        // unwrapped row carries `u32::MAX` there, which matches no hint at all.
+        let line_len = content.chars().count() as u32;
+        if !hints.is_empty() && range.end >= line_len {
+            self.push_hint_spans(spans, &mut run, &mut run_style, hints, line_len, theme);
+        }
+        if let Some(prev) = run_style {
             spans.push(Span::styled(run, prev));
+        }
+    }
+
+    /// Flush the pending run and emit the hints anchored at `col`.
+    #[allow(clippy::too_many_arguments)]
+    // Threading the in-progress run through is what keeps a hint from
+    // splitting a styled run it does not belong to.
+    fn push_hint_spans(
+        &self,
+        spans: &mut Vec<Span<'static>>,
+        run: &mut String,
+        run_style: &mut Option<Style>,
+        hints: LineHints<'_>,
+        col: u32,
+        theme: &Theme,
+    ) {
+        let mut first = true;
+        for index in hints.at(col) {
+            let Some(hint) = self.inlay_hints.get(index) else {
+                continue;
+            };
+            if first {
+                if let Some(prev) = run_style.take() {
+                    spans.push(Span::styled(std::mem::take(run), prev));
+                }
+                first = false;
+            }
+            let mut text = String::new();
+            if hint.padding_left {
+                text.push(' ');
+            }
+            text.push_str(&hint.label);
+            if hint.padding_right {
+                text.push(' ');
+            }
+            spans.push(Span::styled(
+                text,
+                Style::default().fg(theme.role(ThemeRole::InlayHint).to_ratatui()),
+            ));
         }
     }
 
@@ -474,6 +539,11 @@ impl Editor<'_> {
                 end: u32::MAX,
             },
             selections,
+            // Deliberately unhinted. A sticky row is a compressed header
+            // preview, and `EditorState::pos_at` resolves a click on one with a
+            // plain `scroll_col + offset` -- painting hints here would shift the
+            // text without shifting that, so every click would land wrong.
+            LineHints::EMPTY,
         );
         buf.set_line(area.x, y, &Line::from(spans), area.width);
         if block.has_multiline_header() && area.width > 0 {
@@ -528,12 +598,21 @@ impl StatefulWidget for Editor<'_> {
         }
 
         let width = u32::from(content_width);
+        // Indexed once per frame and handed to `state` after the row loop, so
+        // a later mouse click resolves against the hints this frame painted.
+        // Held locally until then because `layout` borrows it while the loop
+        // is still assigning scroll positions.
+        let hint_index = HintIndex::new(self.inlay_hints);
+        let layout = Layout {
+            width,
+            tab_width: self.tab_width,
+            unwrapped_lines: self.unwrapped_lines,
+            hints: &hint_index,
+        };
         let mut anchor = normalize_visual_anchor(
             self.buffer,
             self.folds,
-            width,
-            self.tab_width,
-            self.unwrapped_lines,
+            layout,
             VisualAnchor {
                 line: state.scroll_line,
                 subrow: state.scroll_subrow,
@@ -547,9 +626,7 @@ impl StatefulWidget for Editor<'_> {
             anchor = reveal_visual_anchor(
                 self.buffer,
                 self.folds,
-                width,
-                self.tab_width,
-                self.unwrapped_lines,
+                layout,
                 initial_content_height,
                 anchor,
                 state.cursor(),
@@ -662,7 +739,7 @@ impl StatefulWidget for Editor<'_> {
                 ),
             ];
             let ranges = if self.word_wrap {
-                visual_ranges(self.buffer, l, width, self.tab_width, self.unwrapped_lines)
+                visual_ranges(self.buffer, l, layout)
             } else {
                 vec![VisualRange {
                     start: state.scroll_col,
@@ -681,7 +758,15 @@ impl StatefulWidget for Editor<'_> {
             if range_index == 0 {
                 self.push_inline_spans(&mut spans, l, true, theme);
             }
-            self.push_content_spans(&mut spans, l, theme, default_fg, range, &selections);
+            self.push_content_spans(
+                &mut spans,
+                l,
+                theme,
+                default_fg,
+                range,
+                &selections,
+                layout.hints_on(l),
+            );
             // A collapsed header hints at the hidden lines it conceals.
             if fold.is_some_and(|f| f.collapsed) && range_index + 1 == ranges.len() {
                 spans.push(Span::styled(
@@ -695,14 +780,7 @@ impl StatefulWidget for Editor<'_> {
             buf.set_line(area.x, y, &Line::from(spans), area.width);
 
             let next = if self.word_wrap {
-                next_visual_anchor(
-                    self.buffer,
-                    self.folds,
-                    width,
-                    self.tab_width,
-                    self.unwrapped_lines,
-                    anchor,
-                )
+                next_visual_anchor(self.buffer, self.folds, layout, anchor)
             } else {
                 next_line_anchor(self.folds, line_count, anchor)
             };
@@ -711,6 +789,7 @@ impl StatefulWidget for Editor<'_> {
             }
             anchor = next;
         }
+        state.last_hints = hint_index;
         state.last_visible_lines =
             last_painted.map_or(0, |last: u32| last.saturating_sub(state.scroll_line) + 1);
         if !self.word_wrap {

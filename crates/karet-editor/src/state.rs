@@ -1,5 +1,7 @@
 use std::ops::RangeInclusive;
 
+use super::hint::HintIndex;
+use super::hint::LineHints;
 use super::text::*;
 use super::visual::*;
 use super::*;
@@ -69,6 +71,13 @@ pub struct EditorState {
     pub(super) last_tab_width: u16,
     /// Logical-line ranges exempted from soft wrapping at the last render.
     pub(super) last_unwrapped_lines: Vec<RangeInclusive<u32>>,
+    /// Inlay hints captured at the last render, indexed for lookup.
+    ///
+    /// Cached rather than recomputed because a mouse click resolves outside a
+    /// render, and it must land against the geometry actually on screen. A
+    /// click resolved against hints the frame did not paint would select the
+    /// wrong character.
+    pub(super) last_hints: HintIndex,
     /// Whether the next wrapped render should reveal a cursor moved by an editor
     /// command rather than preserve a manually-scrolled viewport.
     pub(super) follow_cursor: bool,
@@ -98,6 +107,7 @@ impl Default for EditorState {
             last_word_wrap: false,
             last_tab_width: 4,
             last_unwrapped_lines: Vec::new(),
+            last_hints: HintIndex::default(),
             follow_cursor: false,
             sticky_rows: Vec::new(),
             sticky_height: 0,
@@ -161,6 +171,21 @@ impl EditorState {
         }
     }
 
+    /// The geometry of the last render, at `width` content columns.
+    pub(super) fn layout(&self, width: u32) -> Layout<'_> {
+        Layout {
+            width,
+            tab_width: self.last_tab_width,
+            unwrapped_lines: &self.last_unwrapped_lines,
+            hints: &self.last_hints,
+        }
+    }
+
+    /// The inlay hints the last render painted on `line`.
+    pub(super) fn hints_on(&self, line: u32) -> LineHints<'_> {
+        self.last_hints.line(line)
+    }
+
     /// Scroll the viewport vertically by display rows.
     ///
     /// In overflow mode a display row is one buffer line. In soft-wrap mode this
@@ -188,23 +213,9 @@ impl EditorState {
         let steps = delta.unsigned_abs();
         for _ in 0..steps {
             anchor = if delta.is_negative() {
-                previous_visual_anchor(
-                    buffer,
-                    folds,
-                    width,
-                    self.last_tab_width,
-                    &self.last_unwrapped_lines,
-                    anchor,
-                )
+                previous_visual_anchor(buffer, folds, self.layout(width), anchor)
             } else {
-                next_visual_anchor(
-                    buffer,
-                    folds,
-                    width,
-                    self.last_tab_width,
-                    &self.last_unwrapped_lines,
-                    anchor,
-                )
+                next_visual_anchor(buffer, folds, self.layout(width), anchor)
             };
         }
         self.scroll_line = anchor.line;
@@ -713,25 +724,18 @@ impl EditorState {
         rel_row = rel_row.saturating_sub(u32::from(self.sticky_height));
         if self.last_word_wrap {
             let width = u32::from(area.width.saturating_sub(gutter).max(1));
+            let layout = self.layout(width);
             let anchor = visual_anchor_at_row(
                 buffer,
                 folds,
-                width,
-                self.last_tab_width,
-                &self.last_unwrapped_lines,
+                layout,
                 VisualAnchor {
                     line: self.scroll_line,
                     subrow: self.scroll_subrow,
                 },
                 rel_row,
             );
-            let ranges = visual_ranges(
-                buffer,
-                anchor.line,
-                width,
-                self.last_tab_width,
-                &self.last_unwrapped_lines,
-            );
+            let ranges = visual_ranges(buffer, anchor.line, layout);
             let range = ranges
                 .get(anchor.subrow as usize)
                 .copied()
@@ -749,6 +753,7 @@ impl EditorState {
                     range.end,
                     rel_col,
                     self.last_tab_width,
+                    layout.hints_on(anchor.line),
                 ),
             );
         }
@@ -781,6 +786,7 @@ impl EditorState {
                 chars.len() as u32,
                 rel_col,
                 self.last_tab_width,
+                self.hints_on(line),
             ),
         )
     }
