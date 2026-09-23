@@ -244,7 +244,15 @@ impl App {
                 root,
                 state,
                 error,
-            } => self.update_language_server_runtime(server, root, state, error),
+            } => {
+                self.update_language_server_runtime(server, root, state, error);
+                // A provider that has just come up can answer things it could
+                // not a moment ago. Anything already answered *because no
+                // server was running* is not a real answer, and without this
+                // the empty set returned during startup would be cached as
+                // authoritative and never re-asked.
+                self.invalidate_inlay_coverage();
+            },
             SessionEvent::Saved { doc } => {
                 self.reindex_saved_seam(doc);
                 self.on_saved(doc);

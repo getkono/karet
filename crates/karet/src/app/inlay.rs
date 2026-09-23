@@ -188,6 +188,19 @@ impl App {
         self.docs.inlay_pending.remove(&doc);
     }
 
+    /// Forget what every document is covered for, without dropping what is on
+    /// screen.
+    ///
+    /// Called when a language server's runtime state changes. An empty set
+    /// answered while nothing was running is indistinguishable, at this layer,
+    /// from a document that genuinely has no hints -- so a provider coming up
+    /// has to be treated as making every previous answer suspect. Startup is
+    /// exactly this race: the first frame is painted long before a server is
+    /// ready, and its empty answer would otherwise be cached forever.
+    pub(crate) fn invalidate_inlay_coverage(&mut self) {
+        self.docs.inlay_covered.clear();
+    }
+
     /// Invalidate the coverage for `doc` without dropping what is on screen.
     ///
     /// Used when the buffer changes: the hints are now positioned against
