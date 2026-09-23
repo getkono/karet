@@ -53,14 +53,6 @@ impl Session {
     /// (LSP's UTF-16 → the buffer's UTF-32 columns) and emit the answering event.
     /// A result for a document that has since closed is dropped as stale.
     pub(crate) fn apply_lsp_update(&mut self, update: LspUpdate) {
-        self.dispatch_lsp_update(update);
-        self.settle_lsp_inventory();
-    }
-
-    /// Route one task report. A dropped document-sync command can retire the
-    /// slot behind it, so this is one of the four actor inputs that owe a
-    /// [`Session::settle_lsp_inventory`].
-    fn dispatch_lsp_update(&mut self, update: LspUpdate) {
         if !self.lsp.accepts(&update) {
             return;
         }
@@ -648,14 +640,6 @@ impl Session {
     /// React to a debounced filesystem event by reloading or flagging any open
     /// document whose file changed underneath it.
     pub(crate) fn handle_fs_event(&mut self, event: FsEvent) {
-        self.dispatch_fs_event(event);
-        self.settle_lsp_inventory();
-    }
-
-    /// Route one filesystem event. A settings file changing reloads the LSP
-    /// configuration, which retires every slot, so this is one of the four actor
-    /// inputs that owe a [`Session::settle_lsp_inventory`].
-    fn dispatch_fs_event(&mut self, event: FsEvent) {
         if event.kind == karet_watch::FsEventKind::WatchDegraded {
             self.emit(
                 None,

@@ -59,16 +59,21 @@ impl Session {
     /// Tell the client its inventory is stale, if anything this unit of work did
     /// made it so.
     ///
-    /// Called at the end of each of the four actor inputs that can retire a slot,
-    /// rather than at the point of retirement, because retirement is routinely
-    /// mid-operation. `restart` retires a provider and reopens its documents
-    /// against a fresh process; a signal sent between the two would have the
-    /// client re-query and cache `idle, 0 documents` for a provider that is up,
-    /// and nothing afterwards would correct it -- the transition event carries
-    /// state, and the document count has no event at all.
+    /// Drained by the actor loop once per message it handles, rather than at the
+    /// point of retirement, because retirement is routinely mid-operation.
+    /// `restart` retires a provider and reopens its documents against a fresh
+    /// process; a signal sent between the two would have the client re-query and
+    /// cache `idle, 0 documents` for a provider that is up, and nothing
+    /// afterwards would correct it -- the transition event carries state, and
+    /// the document count has no event at all.
     ///
     /// Coalescing is the second reason: retiring four slots is one staleness
     /// fact, not four, and a settings reload retires every slot at once.
+    ///
+    /// A no-op unless something set the flag, so the actor calls it after every
+    /// message rather than after the ones that can retire -- that list would
+    /// have to be maintained by hand, and an arm that forgot would go back to
+    /// silently never telling the client.
     pub(crate) fn settle_lsp_inventory(&mut self) {
         if std::mem::take(&mut self.lsp_inventory_stale) {
             self.emit(None, Event::LanguageServerInventoryStale);

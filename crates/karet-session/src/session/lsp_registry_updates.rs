@@ -7,14 +7,6 @@ impl Session {
         &mut self,
         update: crate::lsp_registry::RegistryUpdate,
     ) {
-        self.dispatch_lsp_registry_update(update);
-        self.settle_lsp_inventory();
-    }
-
-    /// Route one registry result. An uninstall retires the provider's slots, so
-    /// this is one of the four actor inputs that owe a
-    /// [`Session::settle_lsp_inventory`].
-    fn dispatch_lsp_registry_update(&mut self, update: crate::lsp_registry::RegistryUpdate) {
         use crate::lsp_registry::RegistryUpdate;
         match update {
             RegistryUpdate::Plan {
