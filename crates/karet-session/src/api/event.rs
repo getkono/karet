@@ -149,10 +149,31 @@ pub enum Event {
     },
     /// Local managed-language-server status, answering
     /// [`Command::LanguageServerStatus`].
+    ///
+    /// Only ever an answer. A client may treat the request it is tagged with as
+    /// settled, and may replace its cached rows wholesale.
     LanguageServerStatus {
         /// One row per built-in provider.
         servers: Vec<LanguageServerStatus>,
     },
+    /// The inventory a client last asked for no longer describes this session:
+    /// re-issue [`Command::LanguageServerStatus`] to get a current one.
+    ///
+    /// Emitted when a provider is retired, and after whatever replaces it has
+    /// started, so the answer to the re-query describes the settled state rather
+    /// than the moment in the middle.
+    ///
+    /// A signal rather than a pushed snapshot, deliberately. `open_documents`
+    /// has no event of its own, so a client patching rows field by field is
+    /// always one fact behind and ends up offering a Restart for a process that
+    /// is gone. Pushing the whole inventory instead would fix that but overload
+    /// [`Event::LanguageServerStatus`] into both an answer and an unsolicited
+    /// push -- two meanings a client must tell apart by whether a request id is
+    /// attached, which is exactly the distinction one already got wrong. The
+    /// session says only *what it knows*: that the client's copy is stale. What
+    /// to do about it is the client's, and building the inventory is not cheap
+    /// enough to spend on clients that are not showing it.
+    LanguageServerInventoryStale,
     /// Exact changes discovered by an explicitly requested update check.
     LanguageServerUpdatePlan {
         /// Opaque plan required to approve these exact versions.

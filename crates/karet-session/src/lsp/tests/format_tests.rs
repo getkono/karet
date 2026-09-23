@@ -294,7 +294,9 @@ async fn a_formatter_that_never_answers_does_not_wedge_its_server() -> TestResul
         Arc::new(AtomicUsize::new(0)),
     ));
     let path = PathBuf::from("/tmp/wedged.rs");
-    manager.document_opened(Some("rust"), Some("rust"), &path, 1, || {
+    // No retirement to adopt: this manager has one slot and nothing has replaced
+    // it, and the test asserts on the task's liveness rather than on any layer.
+    let _ = manager.document_opened(Some("rust"), Some("rust"), &path, 1, || {
         "fn main() {}".into()
     });
     assert!(

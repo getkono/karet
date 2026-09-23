@@ -136,23 +136,20 @@ async fn a_configured_command_that_is_missing_is_attempted_once_not_per_open() -
     ));
     let path = dir.path().join("main.rs");
     std::fs::write(&path, "fn main() {}\n")?;
-    let verdict = (
-        LanguageServerId::new("pretend-analyzer"),
-        crate::lsp::absolute_path(dir.path()),
-    );
+    let provider = LanguageServerId::new("pretend-analyzer");
+    let key = crate::lsp::SlotKey::new(provider.clone(), crate::lsp::absolute_path(dir.path()));
 
-    manager.document_opened(Some("rust"), Some("rust"), &path, 1, || {
+    let _ = manager.document_opened(Some("rust"), Some("rust"), &path, 1, || {
         "fn main() {}".into()
     });
     manager.note_runtime(
-        verdict.0.clone(),
-        verdict.1.clone(),
+        &key,
         LanguageServerRuntimeState::Unavailable,
         Some("no such file".to_owned()),
     );
 
     for version in 2..8 {
-        manager.document_opened(Some("rust"), Some("rust"), &path, version, || {
+        let _ = manager.document_opened(Some("rust"), Some("rust"), &path, version, || {
             "fn main() {}".into()
         });
     }
@@ -161,9 +158,25 @@ async fn a_configured_command_that_is_missing_is_attempted_once_not_per_open() -
         1,
         "each open built another server task for a command that cannot run"
     );
-    assert!(
-        manager.runtime_states.contains_key(&verdict),
+    // Asserted through the inventory the panel is drawn from, rather than against
+    // the manager's own storage: the verdict matters because the *user* must see
+    // it, and after this change the slot is the only thing that can carry it.
+    let reported = manager
+        .inventory([path.clone()])
+        .into_iter()
+        .find(|status| status.server == provider)
+        .and_then(|status| {
+            status
+                .instances
+                .into_iter()
+                .find(|instance| instance.root == key.root)
+        })
+        .ok_or("the provider was missing from the inventory")?;
+    assert_eq!(
+        reported.runtime,
+        LanguageServerRuntimeState::Unavailable,
         "the verdict was discarded, so the next open would re-attempt the launch"
     );
+    assert_eq!(reported.error.as_deref(), Some("no such file"));
     Ok(())
 }

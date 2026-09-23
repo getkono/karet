@@ -217,9 +217,8 @@ impl Session {
                 }
                 let _ = self.finish_format_on_save(request, doc, version, edits);
             },
-            LspUpdate::ServerStatus {
-                server, message, ..
-            } => {
+            LspUpdate::ServerStatus { key, message, .. } => {
+                let server = key.provider.display_name();
                 // Progress rather than a notification: the client shows these under
                 // one tag, so a stream of ticks rewrites a single card instead of
                 // queueing one per tick.
@@ -276,13 +275,14 @@ impl Session {
                 },
             ),
             LspUpdate::SpawnFailed {
-                server,
-                root,
+                key,
                 command,
                 reason,
                 permanent,
                 ..
             } => {
+                let server = &key.provider;
+                let root = &key.root;
                 // The log and, through `RuntimeState`, the Language Servers
                 // panel keep the full evidence: the repository root, and the
                 // server's own words exactly as it wrote them. The toast names
@@ -312,31 +312,26 @@ impl Session {
                     },
                 );
             },
-            LspUpdate::ServerDied { language, .. } => self.emit(
+            LspUpdate::ServerDied { key, .. } => self.emit(
                 None,
                 Event::Notification {
                     severity: Severity::Warning,
                     kind: NotificationKind::Lsp,
                     message: format!(
                         "the {} language server stopped; reconnecting with bounded backoff",
-                        provider_of(&language)
+                        key.provider.display_name()
                     ),
                 },
             ),
             LspUpdate::RuntimeState {
-                server,
-                root,
-                state,
-                error,
-                ..
+                key, state, error, ..
             } => {
-                self.lsp
-                    .note_runtime(server.clone(), root.clone(), state, error.clone());
+                self.lsp.note_runtime(&key, state, error.clone());
                 self.emit(
                     None,
                     Event::LanguageServerRuntimeChanged {
-                        server,
-                        root,
+                        server: key.provider,
+                        root: key.root,
                         state,
                         error,
                     },
@@ -451,18 +446,68 @@ impl Session {
                 )
             })
             .collect();
+        let mut retired = crate::lsp::Retired::default();
         for (selector, lsp_language_id, path, version, text) in documents {
-            self.lsp
-                .document_opened(selector, lsp_language_id, &path, version, || text);
+            retired.absorb(self.lsp.document_opened(
+                selector,
+                lsp_language_id,
+                &path,
+                version,
+                || text,
+            ));
         }
+        self.adopt_retirement(retired);
     }
 
     pub(super) fn restart_lsp(&mut self, server: crate::api::LanguageServerId) {
-        if self.lsp.restart(server) {
-            // Restart advances a global generation and retires every slot so no
-            // late answer from the old provider can be adopted.
-            self.reopen_lsp_documents(None);
+        let Some(retired) = self.lsp.restart(server) else {
+            return;
+        };
+        // Exactly the documents the retirement detached, so a surviving provider
+        // is not sent a second `didOpen` for a file it already has open.
+        let reopen = retired.document_paths();
+        // Markers cleared and the stop reported *before* the replacement starts,
+        // so the client never sees the new instance's `Starting` arrive behind
+        // the old one's retirement and conclude the provider went backwards.
+        self.adopt_retirement(retired);
+        self.reopen_documents_at(&reopen);
+    }
+
+    /// Reopen exactly `paths` against whatever provider now serves them.
+    ///
+    /// Matched on absolute paths. A document is stored under the path the client
+    /// opened it with, which need not be absolute -- `karet main.rs` opens
+    /// `./main.rs` -- while the manager records what it sent the server, which
+    /// always is. Comparing the two as written meant the commonest invocation of
+    /// all retired a provider on Restart and then matched no documents to reopen
+    /// it with, leaving it down for the rest of the session.
+    pub(super) fn reopen_documents_at(&mut self, paths: &[std::path::PathBuf]) {
+        let documents: Vec<_> = self
+            .store
+            .docs
+            .values()
+            .filter(|document| paths.contains(&crate::lsp::absolute_path(&document.path)))
+            .map(|document| {
+                (
+                    document.language_selector,
+                    document.lsp_language_id,
+                    document.path.clone(),
+                    document.buffer.version(),
+                    document.buffer.text(),
+                )
+            })
+            .collect();
+        let mut retired = crate::lsp::Retired::default();
+        for (selector, lsp_language_id, path, version, text) in documents {
+            retired.absorb(self.lsp.document_opened(
+                selector,
+                lsp_language_id,
+                &path,
+                version,
+                || text,
+            ));
         }
+        self.adopt_retirement(retired);
     }
 
     pub(super) fn queue_lsp_registry(
@@ -585,30 +630,6 @@ impl Session {
         }
     }
 
-    /// Drop one server instance's diagnostic layer, republishing the documents
-    /// that carried it.
-    ///
-    /// The layer key is the slot's -- `{provider}@{root}` -- so removing it is
-    /// already scoped to the instance that died: a provider still running at
-    /// another repository root keeps its own markers. Other servers'
-    /// diagnostics, spell-check and lint results share the merged set and are
-    /// untouched.
-    fn clear_lsp_diagnostic_layer(&mut self, server: &str) {
-        let affected = self
-            .store
-            .docs
-            .iter_mut()
-            .filter(|(_, document)| document.lsp_diagnostics.contains_key(server))
-            .map(|(doc_id, document)| {
-                document.lsp_diagnostics.remove(server);
-                *doc_id
-            })
-            .collect::<Vec<_>>();
-        for doc_id in affected {
-            self.publish_document_diagnostics(doc_id);
-        }
-    }
-
     pub(crate) fn publish_document_diagnostics(&self, doc_id: DocumentId) {
         let Some(document) = self.store.docs.get(&doc_id) else {
             return;
@@ -727,7 +748,7 @@ impl Session {
     /// generation moves out from under it.
     pub(super) fn apply_config_report(&mut self, report: crate::config::LoadedConfig) {
         self.debug.reconfigure(report.settings.debug.clone());
-        let lsp_changed = self.lsp.reconfigure(report.settings.lsp.clone());
+        let lsp_retired = self.lsp.reconfigure(report.settings.lsp.clone());
         let ai_commit_changed = self.config.settings.git.ai_commit != report.settings.git.ai_commit;
         self.config.settings = report.settings.clone();
         self.config.loaded_config = report.clone();
@@ -748,21 +769,26 @@ impl Session {
             self.schedule_spell(doc_id);
         }
 
-        if lsp_changed {
+        if let Some(retired) = lsp_retired {
             // Retiring the servers orphans every formatting request in flight.
             // A save is not advisory: write it now, unformatted, which is the
-            // same posture a formatter error already takes.
+            // same posture a formatter error already takes -- and before the
+            // retirement is adopted, so nothing is waiting on a slot that has
+            // already gone.
             self.commit_pending_format_saves();
+            self.adopt_retirement(retired);
+            let mut reopened = crate::lsp::Retired::default();
             let lsp = &mut self.lsp;
             for doc in self.store.docs.values() {
-                lsp.document_opened(
+                reopened.absorb(lsp.document_opened(
                     doc.language_selector,
                     doc.lsp_language_id,
                     &doc.path,
                     doc.buffer.version(),
                     || doc.buffer.text(),
-                );
+                ));
             }
+            self.adopt_retirement(reopened);
         }
 
         // Re-probe when the agent, its binary, or the on/off switch moved. A
@@ -882,26 +908,4 @@ pub(super) fn utf16_caret(doc: &Document, position: LineCol) -> LineCol {
 impl Session {
     /// Without the `mdlint` feature there is no markdown lint layer.
     pub(crate) fn refresh_markdown_lint(&mut self, _doc: crate::api::DocumentId) {}
-}
-
-/// The provider half of a server task's slot key.
-///
-/// Task keys are `provider@/absolute/repository/root`. The path is useful in
-/// the manager and the log, and is only noise in a notification.
-fn provider_of(key: &str) -> &str {
-    key.split_once('@').map_or(key, |(provider, _)| provider)
-}
-
-#[cfg(test)]
-mod update_text_tests {
-    use super::*;
-
-    #[test]
-    fn a_notification_never_carries_a_repository_path() {
-        assert_eq!(
-            provider_of("rust-analyzer@/home/me/work/repo"),
-            "rust-analyzer"
-        );
-        assert_eq!(provider_of("taplo"), "taplo");
-    }
 }

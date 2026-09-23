@@ -25,7 +25,9 @@ use tokio::sync::mpsc;
 use super::super::Connector;
 use super::super::LspError;
 
-async fn read_msg(reader: &mut BufReader<ReadHalf<DuplexStream>>) -> Option<Value> {
+/// Read one `Content-Length`-framed message, for a test that speaks the wire
+/// itself rather than scripting this double.
+pub(super) async fn read_msg(reader: &mut BufReader<ReadHalf<DuplexStream>>) -> Option<Value> {
     let mut len: Option<usize> = None;
     let mut line = Vec::new();
     loop {
@@ -47,7 +49,8 @@ async fn read_msg(reader: &mut BufReader<ReadHalf<DuplexStream>>) -> Option<Valu
     serde_json::from_slice(&body).ok()
 }
 
-async fn write_msg(writer: &mut WriteHalf<DuplexStream>, message: &Value) {
+/// Frame and send one message, the counterpart to [`read_msg`].
+pub(super) async fn write_msg(writer: &mut WriteHalf<DuplexStream>, message: &Value) {
     let body = serde_json::to_vec(message).unwrap_or_default();
     let head = format!("Content-Length: {}\r\n\r\n", body.len());
     let _ = writer.write_all(head.as_bytes()).await;

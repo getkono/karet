@@ -386,6 +386,10 @@ struct PaneCtx<'a> {
     tab_width: u16,
     /// Complete diagnostic sets keyed by backend document.
     diagnostics: &'a HashMap<DocumentId, Vec<Diagnostic>>,
+    /// The client's one copy of the language-server inventory, which the manager
+    /// tab draws from. Held on the app rather than the view, so a background
+    /// pane's manager tab and the focused one cannot disagree.
+    language_servers: &'a [karet_session::LanguageServerStatus],
     /// The find bar to draw atop this pane's content, if any (focused pane only).
     /// Owned (not borrowed): it now lives on the active `Tab` itself, and
     /// `render_pane` needs a mutable borrow of the tabs slice at the same time.

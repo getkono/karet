@@ -139,7 +139,7 @@ impl Session {
         );
         let version = doc.buffer.version();
         // Lazily start (or address) this language's server and announce the open.
-        self.lsp.document_opened(
+        let retired = self.lsp.document_opened(
             doc.language_selector,
             doc.lsp_language_id,
             &doc.path,
@@ -148,6 +148,10 @@ impl Session {
         );
         self.store.by_path.insert(path, doc_id);
         self.store.docs.insert(doc_id, doc);
+        // After the store insert, not before: adopting a retirement republishes
+        // the inventory, which derives the roots it reports from the open
+        // documents. Adopting first hid the root of the file being opened.
+        self.adopt_retirement(retired);
         self.emit(
             Some(id),
             Event::Opened {
@@ -181,6 +185,7 @@ impl Session {
         // speculative state has diverged from ours); either way we still publish
         // below so the authoritative buffer flows back down to the client instead
         // of leaving it stuck rejecting every future edit forever.
+        let mut retired = crate::lsp::Retired::default();
         let (version, spell_without_syntax) = {
             let highlight_tx = &self.highlight_tx;
             let settings = &self.config.settings;
@@ -199,15 +204,19 @@ impl Session {
                     // The single LSP apply site: forward the new full text
                     // (debounced by the server task). A no-op while no server is
                     // attached for this language.
-                    lsp.document_changed(doc.language_selector, &doc.path, applied.version, || {
-                        doc.buffer.text()
-                    });
+                    retired.absorb(lsp.document_changed(
+                        doc.language_selector,
+                        &doc.path,
+                        applied.version,
+                        || doc.buffer.text(),
+                    ));
                     Some(applied.version)
                 },
                 Err(_) => None,
             };
             (version, doc.lang_id.is_none())
         };
+        self.adopt_retirement(retired);
         match version {
             Some(version) => self.emit(
                 Some(id),
@@ -233,10 +242,12 @@ impl Session {
 
     pub(super) fn undo_redo(&mut self, id: RequestId, doc_id: DocumentId, undo: bool) {
         let tick = self.elapsed_ms();
+        let mut retired = crate::lsp::Retired::default();
         let (version, cursor, spell_without_syntax) = {
             let highlight_tx = &self.highlight_tx;
             let settings = &self.config.settings;
             let lsp = &mut self.lsp;
+            let retired = &mut retired;
             let Some(doc) = self.store.docs.get_mut(&doc_id) else {
                 return;
             };
@@ -252,9 +263,12 @@ impl Session {
             // Undoing back to the save point clears dirtiness (and any pending backup).
             doc.sync_dirty_since(tick);
             // The buffer changed like any other edit: keep the server in sync.
-            lsp.document_changed(doc.language_selector, &doc.path, applied.version, || {
-                doc.buffer.text()
-            });
+            retired.absorb(lsp.document_changed(
+                doc.language_selector,
+                &doc.path,
+                applied.version,
+                || doc.buffer.text(),
+            ));
             // Jump the caret to the change: undo restores the exact pre-edit cursor;
             // redo (which records none) lands at the end of the re-applied edit that
             // reaches furthest into the document.
@@ -270,6 +284,7 @@ impl Session {
             });
             (applied.version, cursor, doc.lang_id.is_none())
         };
+        self.adopt_retirement(retired);
         self.emit(
             Some(id),
             Event::Applied {
@@ -373,7 +388,7 @@ impl Session {
     /// Apply formatter edits in-place so the subsequent save writes formatted text.
     fn apply_format_edits(&mut self, doc_id: DocumentId, edits: Vec<TextEdit>) {
         let tick = self.elapsed_ms();
-        let spell_without_syntax = {
+        let (spell_without_syntax, retired) = {
             let highlight_tx = &self.highlight_tx;
             let settings = &self.config.settings;
             let lsp = &mut self.lsp;
@@ -388,11 +403,16 @@ impl Session {
             let spell_without_syntax =
                 update_syntax(settings, highlight_tx, doc_id, doc, Some(&applied.edits));
             doc.sync_dirty_since(tick);
-            lsp.document_changed(doc.language_selector, &doc.path, applied.version, || {
-                doc.buffer.text()
-            });
-            spell_without_syntax
+            let retired =
+                lsp.document_changed(doc.language_selector, &doc.path, applied.version, || {
+                    doc.buffer.text()
+                });
+            (spell_without_syntax, retired)
         };
+        // Formatter edits are a document change like any other, so the same
+        // retirement a plain edit can trigger has to be adopted here too -- a
+        // slot retired while its layer stands would badge a server that is gone.
+        self.adopt_retirement(retired);
         self.publish(doc_id, None);
         if spell_without_syntax {
             self.schedule_spell(doc_id);
@@ -612,9 +632,11 @@ impl Session {
         let spell_without_syntax =
             update_syntax(settings, highlight_tx, doc_id, doc, Some(&applied.edits));
         doc.sync_dirty_since(tick);
-        lsp.document_changed(doc.language_selector, &doc.path, applied.version, || {
-            doc.buffer.text()
-        });
+        let retired =
+            lsp.document_changed(doc.language_selector, &doc.path, applied.version, || {
+                doc.buffer.text()
+            });
+        self.adopt_retirement(retired);
         if spell_without_syntax {
             self.schedule_spell(doc_id);
         }
@@ -639,14 +661,15 @@ impl Session {
             update_syntax(&self.config.settings, &self.highlight_tx, doc_id, doc, None);
         // The old URI is gone; the (possibly different) new language's server
         // adopts the new one.
-        self.lsp.document_closed(old_language, &old);
-        self.lsp.document_opened(
+        let mut retired = self.lsp.document_closed(old_language, &old);
+        retired.absorb(self.lsp.document_opened(
             doc.language_selector,
             doc.lsp_language_id,
             &doc.path,
             doc.buffer.version(),
             || doc.buffer.text(),
-        );
+        ));
+        self.adopt_retirement(retired);
         self.store.by_path.insert(path.clone(), doc_id);
         self.emit(Some(id), Event::Retargeted { doc: doc_id, path });
         self.refresh_document_settings(&[doc_id]);
@@ -684,7 +707,8 @@ impl Session {
             }
             if let Some(doc) = self.store.docs.remove(&doc_id) {
                 self.store.by_path.remove(&doc.path);
-                self.lsp.document_closed(doc.language_selector, &doc.path);
+                let retired = self.lsp.document_closed(doc.language_selector, &doc.path);
+                self.adopt_retirement(retired);
                 // Release the worker's retained trees for this document.
                 self.highlight_tx.send(HighlightJob::Drop(doc_id)).ok();
                 self.spell_errors.remove(&doc_id);

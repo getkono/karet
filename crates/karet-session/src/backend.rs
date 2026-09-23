@@ -154,6 +154,19 @@ pub(crate) fn local_session(mut session: Session, events: Option<EventRx>) -> Lo
                 },
                 _ = backup.tick() => session.tick(),
             }
+            // One drain, here, for whichever arm just ran. A retirement is
+            // routinely the first half of an operation -- `restart` retires a
+            // provider and then starts its replacement -- so the client is told
+            // its inventory is stale once the whole unit of work is done rather
+            // than partway through it.
+            //
+            // At the loop rather than inside the arms that can retire, because
+            // that list is not something a reader can be asked to maintain: an
+            // arm added later that retires a slot and forgets to drain would
+            // silently stop telling the client, which is the defect #278 was
+            // filed over. Here every arm is covered by construction, and the
+            // arms that cannot retire pay one bool test.
+            session.settle_lsp_inventory();
         }
     });
     LocalBackend {

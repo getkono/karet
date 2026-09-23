@@ -12,7 +12,12 @@ use karet_text::EditCause;
 use serde_json::json;
 use server_double::Behavior;
 use server_double::failing_connector;
+// The framing helpers live with the double but belong to `lsp::tests`: a test
+// that scripts its own server inline speaks the same wire this one does.
+use server_double::read_msg;
 use server_double::test_connector;
+use server_double::write_msg;
+use tokio::io::BufReader;
 
 use super::*;
 use crate::api::Command;
@@ -43,10 +48,10 @@ fn reconfigure_retires_updates_from_old_server_tasks() {
         enabled: false,
         ..LspSettings::default()
     };
-    assert!(manager.reconfigure(settings.clone()));
+    assert!(manager.reconfigure(settings.clone()).is_some());
     assert!(!manager.accepts(&old));
     assert!(
-        !manager.reconfigure(settings),
+        manager.reconfigure(settings).is_none(),
         "an identical snapshot is a no-op"
     );
 }
@@ -60,11 +65,11 @@ async fn last_document_close_retires_the_server_slot() {
         Arc::new(AtomicUsize::new(0)),
     ));
     let path = PathBuf::from("/tmp/owned.rs");
-    manager.document_opened(Some("rust"), Some("rust"), &path, 1, || {
+    let _ = manager.document_opened(Some("rust"), Some("rust"), &path, 1, || {
         "fn main() {}".into()
     });
     assert!(manager.is_running(&LanguageServerId::RustAnalyzer));
-    manager.document_closed(Some("rust"), &path);
+    let _ = manager.document_closed(Some("rust"), &path);
     assert!(!manager.is_running(&LanguageServerId::RustAnalyzer));
 }
 
@@ -76,14 +81,14 @@ async fn javascript_and_typescript_share_one_builtin_process() {
         None,
         Arc::new(AtomicUsize::new(0)),
     ));
-    manager.document_opened(
+    let _ = manager.document_opened(
         Some("javascript"),
         Some("javascript"),
         Path::new("/tmp/a.js"),
         1,
         String::new,
     );
-    manager.document_opened(
+    let _ = manager.document_opened(
         Some("typescript"),
         Some("typescript"),
         Path::new("/tmp/b.ts"),
@@ -91,9 +96,9 @@ async fn javascript_and_typescript_share_one_builtin_process() {
         String::new,
     );
     assert_eq!(manager.servers.len(), 1);
-    manager.document_closed(Some("javascript"), Path::new("/tmp/a.js"));
+    let _ = manager.document_closed(Some("javascript"), Path::new("/tmp/a.js"));
     assert!(manager.is_running(&LanguageServerId::TypeScript));
-    manager.document_closed(Some("typescript"), Path::new("/tmp/b.ts"));
+    let _ = manager.document_closed(Some("typescript"), Path::new("/tmp/b.ts"));
     assert!(!manager.is_running(&LanguageServerId::TypeScript));
 }
 
@@ -106,7 +111,7 @@ async fn tsx_routes_to_typescript_with_protocol_specific_language_id() -> TestRe
         Some(observed_tx),
         Arc::new(AtomicUsize::new(0)),
     ));
-    manager.document_opened(
+    let _ = manager.document_opened(
         Some("tsx"),
         Some("typescriptreact"),
         Path::new("/tmp/component.tsx"),
@@ -142,12 +147,12 @@ async fn relative_root_and_document_paths_reach_lsp_as_absolute_uris() -> TestRe
         Arc::new(AtomicUsize::new(0)),
     ));
 
-    manager.document_opened(Some("rust"), Some("rust"), &path, 1, || {
+    let _ = manager.document_opened(Some("rust"), Some("rust"), &path, 1, || {
         "fn main() {}".into()
     });
-    manager.document_changed(Some("rust"), &path, 2, || "fn changed() {}".into());
+    let _ = manager.document_changed(Some("rust"), &path, 2, || "fn changed() {}".into());
     manager.document_saved(Some("rust"), &path, || "fn changed() {}".into());
-    manager.document_closed(Some("rust"), &path);
+    let _ = manager.document_closed(Some("rust"), &path);
 
     let mut methods = Vec::new();
     while methods
@@ -664,5 +669,8 @@ mod jdtls_tests;
 mod launch_tests;
 mod liveness_tests;
 mod manual_provider_tests;
+mod reopen_tests;
 mod restart_tests;
+mod retirement_tests;
+mod routing_tests;
 mod server_double;

@@ -191,12 +191,9 @@ impl LspManager {
         let tx = selected
             .as_deref()
             .and_then(|provider| {
-                self.servers.values().find(|slot| {
-                    slot.documents.contains(&path)
-                        && slot
-                            .provider
-                            .as_ref()
-                            .is_some_and(|id| id.key() == provider)
+                self.servers.iter().find_map(|(key, slot)| {
+                    (slot.documents.contains(&path) && key.provider.key() == provider)
+                        .then_some(slot)
                 })
             })
             .or_else(|| {
