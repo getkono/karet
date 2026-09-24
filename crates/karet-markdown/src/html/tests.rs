@@ -223,3 +223,27 @@ fn lexing_never_panics_on_hostile_input() {
         }
     }
 }
+
+#[test]
+fn a_comment_of_any_length_stays_hidden() {
+    let body = "hidden line\n".repeat(PENDING_CAP);
+    let mut chunks = vec!["a<!--\n"];
+    chunks.extend(body.split_inclusive('\n'));
+    chunks.push("-->b");
+    assert_eq!(lex(&chunks), vec![text("ab")]);
+}
+
+#[test]
+fn an_unfinished_tag_spanning_many_lines_is_released_once_over_the_cap() {
+    // Line after line with no `>`: held back only up to the cap, never rescanned per line.
+    let lines = vec!["<b\n"; 50_000];
+    let tokens = lex(&lines);
+    let joined: String = tokens
+        .iter()
+        .map(|token| match token {
+            Token::Text(text) => text.as_str(),
+            _ => "",
+        })
+        .collect();
+    assert_eq!(joined.len(), 3 * 50_000, "every byte survives as text");
+}

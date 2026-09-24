@@ -6,16 +6,19 @@
 //! No tree is built and no content model is enforced; nesting is the caller's business.
 //!
 //! `pulldown-cmark` hands an HTML block over line by line, so a tag or comment may be
-//! split across [`Tokenizer::feed`] calls. The unfinished tail is held back until the next
-//! chunk completes it, bounded by [`PENDING_CAP`]; [`Tokenizer::flush`] releases whatever
-//! is left once the block ends.
+//! split across [`Tokenizer::feed`] calls. A comment (or CDATA section, or declaration)
+//! left open is carried as state and skipped until its end, however long. An unfinished
+//! tag is held back until a chunk brings a `>`, bounded by [`PENDING_CAP`];
+//! [`Tokenizer::flush`] releases whatever is left once the block ends. Each chunk is
+//! scanned a bounded number of times, so lexing stays linear in the block's length.
 
 #[cfg(test)]
 mod tests;
 
-/// The most unfinished markup held back waiting for its end. Past it the tail is
-/// released as literal text, so a stray `<` can never swallow a document.
-const PENDING_CAP: usize = 16 * 1024;
+/// The most of an unfinished tag held back waiting for its `>`. Past it the `<` is
+/// released as literal text, so a stray `<` can never swallow a document. Real tags
+/// split over lines (`<img` with an attribute per line) are far shorter.
+const PENDING_CAP: usize = 4 * 1024;
 
 /// Elements whose content is never rendered, and is skipped unread up to the matching
 /// close tag (their content is not markup: `if (a<b)` inside a script is no tag).
@@ -50,19 +53,41 @@ pub(crate) fn attr<'a>(attrs: &'a [(String, String)], name: &str) -> Option<&'a 
 /// A stateful lexer fed an HTML block chunk by chunk.
 #[derive(Debug, Default)]
 pub(crate) struct Tokenizer {
-    /// Unfinished markup from the previous chunk, awaiting its end.
+    /// An unfinished tag from the previous chunk, awaiting its `>`.
     pending: String,
     /// The raw element being skipped, if inside one.
     raw: Option<String>,
+    /// The end of the comment, CDATA section or declaration being skipped, if inside one.
+    skip: Option<&'static str>,
 }
 
 impl Tokenizer {
     /// Lex `chunk`, appending complete tokens to `out`.
     pub(crate) fn feed(&mut self, chunk: &str, out: &mut Vec<Token>) {
+        // A held-back tag cannot end before a `>` arrives: wait without rescanning it.
+        if !self.pending.is_empty() && !chunk.contains('>') {
+            if self.pending.len() + chunk.len() <= PENDING_CAP {
+                self.pending.push_str(chunk);
+                return;
+            }
+            // Past the cap the tag is given up on: what was held back is text.
+            let pending = std::mem::take(&mut self.pending);
+            push_text(out, &pending);
+        }
         let mut input = std::mem::take(&mut self.pending);
         input.push_str(chunk);
         let mut rest = input.as_str();
         while !rest.is_empty() {
+            if let Some(end) = self.skip.take() {
+                match rest.find(end) {
+                    Some(at) => rest = &rest[at + end.len()..],
+                    None => {
+                        self.skip = Some(end);
+                        return;
+                    },
+                }
+                continue;
+            }
             if let Some(name) = self.raw.take() {
                 match skip_raw(rest, &name) {
                     Some(after) => {
@@ -97,6 +122,10 @@ impl Tokenizer {
                     rest = after;
                 },
                 Lexed::Skip(after) => rest = after,
+                Lexed::Unterminated(end) => {
+                    self.skip = Some(end);
+                    return;
+                },
                 Lexed::Literal => {
                     push_text(out, "<");
                     rest = &rest[1..];
@@ -105,9 +134,12 @@ impl Tokenizer {
                     self.pending = rest.to_owned();
                     return;
                 },
+                // No `>` ends this tag before the input does, and there is too much to
+                // hold: it is all text. (Relexing from each later `<` instead would
+                // rescan the tail once per `<`.)
                 Lexed::Incomplete => {
-                    push_text(out, "<");
-                    rest = &rest[1..];
+                    push_text(out, rest);
+                    return;
                 },
             }
         }
@@ -117,6 +149,7 @@ impl Tokenizer {
     /// unterminated comment is dropped, and an unclosed raw element is closed.
     pub(crate) fn flush(&mut self, out: &mut Vec<Token>) {
         self.flush_pending(out);
+        self.skip = None;
         if let Some(name) = self.raw.take() {
             out.push(Token::Close(name));
         }
@@ -125,9 +158,7 @@ impl Tokenizer {
     /// Release the unfinished markup held back, leaving a raw element open.
     pub(crate) fn flush_pending(&mut self, out: &mut Vec<Token>) {
         let pending = std::mem::take(&mut self.pending);
-        if !pending.starts_with("<!") && !pending.starts_with("<?") {
-            push_text(out, &pending);
-        }
+        push_text(out, &pending);
     }
 }
 
@@ -138,6 +169,8 @@ enum Lexed<'a> {
     /// A comment, doctype, CDATA section or processing instruction to drop, and the
     /// input after it.
     Skip(&'a str),
+    /// Such a construct whose end — the given terminator — lies beyond the input.
+    Unterminated(&'static str),
     /// Not markup: the `<` is text.
     Literal,
     /// Markup whose end lies beyond the input.
@@ -183,8 +216,8 @@ fn lex_markup(input: &str) -> Lexed<'_> {
 }
 
 /// Drop everything up to and including `end`.
-fn skip_past<'a>(input: &'a str, end: &str) -> Lexed<'a> {
-    input.find(end).map_or(Lexed::Incomplete, |at| {
+fn skip_past<'a>(input: &'a str, end: &'static str) -> Lexed<'a> {
+    input.find(end).map_or(Lexed::Unterminated(end), |at| {
         Lexed::Skip(&input[at + end.len()..])
     })
 }

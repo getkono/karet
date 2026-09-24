@@ -66,8 +66,14 @@ enum Frame {
     /// An HTML container element (`<div>`, `<p>`, `<details>`, …). It holds nothing
     /// itself: blocks closing inside it land in the nearest real container, wrapped in
     /// [`Block::Aligned`] when it (or an enclosing one) declares an alignment.
+    ///
+    /// Both are resolved when the marker is pushed — markers only ever leave from the
+    /// top — so a block finds its home in constant time however deep the markers nest.
     HtmlBlock {
+        /// The innermost alignment declared by this marker or those it sits in.
         align: Option<Alignment>,
+        /// The stack index of the real container beneath the markers, if any.
+        target: Option<usize>,
     },
     /// An HTML `<code>`/`<kbd>`/`<tt>` element, collecting its text verbatim.
     HtmlCode(String),
@@ -140,6 +146,9 @@ struct Builder {
     /// The frames HTML tags opened: `(stack index, tag name)`, ascending by index, so a
     /// close tag finds its frame and a markdown end tag can pass one by.
     html_tags: Vec<(usize, String)>,
+    /// The same frames by tag name, innermost last, so a close tag finds its element
+    /// without scanning every open one.
+    html_by_name: std::collections::HashMap<String, Vec<usize>>,
     /// Lexer state carried across the chunks of one HTML block.
     lexer: crate::html::Tokenizer,
     /// A raw element (`<script>`, …) whose content is being dropped, and the stack depth
@@ -157,6 +166,7 @@ impl Builder {
             pending_start: 0,
             markers: 0,
             html_tags: Vec::new(),
+            html_by_name: std::collections::HashMap::new(),
             lexer: crate::html::Tokenizer::default(),
             suppress: None,
         }
@@ -308,7 +318,9 @@ impl Builder {
         };
         // An unmodelled tag (a footnote) pushed no frame; closing on it would tear down
         // an unrelated one.
-        if !(0..self.stack.len()).any(|index| target(self, index)) {
+        // Searched from the top: the frame an end tag closes is almost always the
+        // innermost, even under thousands of HTML containers.
+        if !(0..self.stack.len()).rev().any(|index| target(self, index)) {
             return;
         }
         // Close inward-out until the tag's own frame goes: `End(Item)` on a tight list
@@ -328,8 +340,10 @@ impl Builder {
             return;
         };
         let depth = self.stack.len();
-        while self.html_tags.last().is_some_and(|(at, _)| *at >= depth) {
-            self.html_tags.pop();
+        while let Some((_, name)) = self.html_tags.pop_if(|(at, _)| *at >= depth) {
+            if let Some(open) = self.html_by_name.get_mut(&name) {
+                open.pop();
+            }
         }
         if self.suppress.as_ref().is_some_and(|(_, at)| depth < *at) {
             self.suppress = None;
@@ -446,16 +460,7 @@ impl Builder {
         }
         // HTML containers are transparent: look through them for the real container,
         // and carry the innermost alignment one declares onto the block.
-        let mut align = None;
-        let mut target = None;
-        for (index, frame) in self.stack.iter().enumerate().rev() {
-            if let Frame::HtmlBlock { align: declared } = frame {
-                align = align.or(*declared);
-            } else {
-                target = Some(index);
-                break;
-            }
-        }
+        let (target, align) = self.container();
         let block = match align {
             Some(align) => Block::Aligned {
                 align,
@@ -471,6 +476,16 @@ impl Builder {
                 blocks: vec![block],
             }),
             _ => self.push_root(block),
+        }
+    }
+
+    /// The real container a block would land in — the innermost frame that is not an
+    /// HTML marker — and the alignment the markers above it declare.
+    fn container(&self) -> (Option<usize>, Option<Alignment>) {
+        match self.stack.last() {
+            Some(Frame::HtmlBlock { align, target }) => (*target, *align),
+            Some(_) => (self.stack.len().checked_sub(1), None),
+            None => (None, None),
         }
     }
 

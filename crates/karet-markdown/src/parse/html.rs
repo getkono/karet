@@ -70,7 +70,10 @@ impl Builder {
     }
 
     /// An HTML block ended: release what the lexer held back, and close the inline
-    /// content it left open. Containers stay open — they may span markdown blocks.
+    /// content it left open. Containers stay open — a `<div>` may span markdown blocks —
+    /// except a `<p>`: markdown after it starts a paragraph of its own, which in a
+    /// browser ends the open one, so an unclosed `<p align="center">` cannot centre the
+    /// rest of the document.
     pub(super) fn end_html_block(&mut self) {
         let mut tokens = Vec::new();
         self.lexer.flush(&mut tokens);
@@ -78,6 +81,9 @@ impl Builder {
             self.html_token(token, false);
         }
         self.close_inline_run();
+        if self.innermost_html_tag() == Some("p") {
+            self.html_close("p");
+        }
     }
 
     fn html_token(&mut self, token: Token, inline: bool) {
@@ -247,11 +253,9 @@ impl Builder {
             return;
         }
         let Some(index) = self
-            .html_tags
-            .iter()
-            .rev()
-            .find(|(_, tag)| tag == name)
-            .map(|(at, _)| *at)
+            .html_by_name
+            .get(name)
+            .and_then(|open| open.last().copied())
         else {
             return;
         };
@@ -285,13 +289,22 @@ impl Builder {
     /// Push `frame`, remembering that tag `name` opened it.
     fn push_html(&mut self, name: &str, frame: Frame) {
         self.html_tags.push((self.stack.len(), name.to_owned()));
+        self.html_by_name
+            .entry(name.to_owned())
+            .or_default()
+            .push(self.stack.len());
         self.stack.push(frame);
     }
 
     /// Push a transparent container marker for `name`.
     fn push_marker(&mut self, name: &str, align: Option<Alignment>) {
+        let (target, inherited) = self.container();
         self.markers += 1;
-        self.push_html(name, Frame::HtmlBlock { align });
+        let marker = Frame::HtmlBlock {
+            align: align.or(inherited),
+            target,
+        };
+        self.push_html(name, marker);
     }
 
     /// The name of the innermost element HTML opened that is still open.

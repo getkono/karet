@@ -198,6 +198,9 @@ model through a curated subset; everything else is a deliberate non-goal recorde
 | `table`, `pre`, `sub`/`sup`, `span`, any other tag | its text only |
 | `script`, `style`, `iframe`, `object`, comments | nothing |
 
+As in a browser, a `<p>` ends where its HTML block does, so markdown after a blank
+line is not inside it; to align markdown content, wrap it in `<div align="center">`.
+
 An image — markdown `![alt](src)` or `<img>`, whose `width`/`height` are honoured —
 paints as truecolor half-blocks when it stands alone in its paragraph (as a
 `<p align="center"><img …></p>` logo does) and is a **local, decodable** file: a

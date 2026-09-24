@@ -384,3 +384,44 @@ fn an_inline_element_closed_at_the_top_level_leaves_its_paragraph_open() {
     );
     assert_eq!(all_text(&parse("<b>x</b> y\n").blocks), "x y|");
 }
+
+#[test]
+fn an_unclosed_paragraph_ends_with_its_html_block_but_a_div_spans_on() {
+    let doc = parse("<p align=\"center\">\n<img src=\"a.png\">\n\n# Title\n\nbody\n");
+    assert!(matches!(doc.blocks.first(), Some(Block::Aligned { .. })));
+    assert!(
+        matches!(doc.blocks.get(1), Some(Block::Heading { .. })),
+        "{:#?}",
+        doc.blocks
+    );
+    assert!(matches!(doc.blocks.get(2), Some(Block::Paragraph(_))));
+    // As in a browser, a markdown paragraph after `<p>` is not inside it.
+    let doc = parse("<p align=\"center\">\n\n![a](a.png)\n\n</p>\n");
+    assert!(
+        matches!(doc.blocks.as_slice(), [Block::Paragraph(_)]),
+        "{:#?}",
+        doc.blocks
+    );
+    let doc = parse("<div align=\"center\">\n\n![a](a.png)\n\n</div>\n");
+    assert!(matches!(doc.blocks.as_slice(), [Block::Aligned { .. }]));
+}
+
+#[test]
+fn thousands_of_open_containers_do_not_slow_each_block() {
+    // Every block would otherwise walk every open marker, and every stray close tag
+    // scan every open element.
+    let n = 20_000;
+    let source = format!(
+        "{}{}{}",
+        "<div align=\"center\">\n\n".repeat(n),
+        "para\n\n".repeat(n),
+        "</span>\n\n".repeat(n)
+    );
+    let doc = parse(&source);
+    assert_eq!(doc.blocks.len(), n);
+    assert!(
+        doc.blocks
+            .iter()
+            .all(|block| matches!(block, Block::Aligned { .. }))
+    );
+}
