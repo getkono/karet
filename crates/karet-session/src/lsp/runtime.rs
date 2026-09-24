@@ -1,6 +1,9 @@
+use karet_core::ServerFeature;
+
 use super::commands::OpenDocument;
 use super::commands::answer_empty;
 use super::commands::remember_document;
+use super::commands::report_unsupported;
 use super::forward::forward_diagnostics;
 use super::health::FailureTally;
 use super::health::{self};
@@ -555,12 +558,19 @@ pub(super) async fn server_task(task: ServerTask) {
                     let hover = if dead {
                         None
                     } else {
-                        tally
-                            .observe(active.hover(&path, position).await)
-                            .unwrap_or_else(|error| {
-                                tally.note::<()>(Err(error), &mut dead, &updates, &key, token);
-                                None
-                            })
+                        let result = active.hover(&path, position).await;
+                        report_unsupported(
+                            &result,
+                            &updates,
+                            generation,
+                            request,
+                            &key,
+                            ServerFeature::Hover,
+                        );
+                        tally.observe(result).unwrap_or_else(|error| {
+                            tally.note::<()>(Err(error), &mut dead, &updates, &key, token);
+                            None
+                        })
                     };
                     let _ = updates.send(LspUpdate::Hover {
                         generation,
@@ -590,12 +600,19 @@ pub(super) async fn server_task(task: ServerTask) {
                     let locations = if dead {
                         Vec::new()
                     } else {
-                        tally
-                            .observe(active.definition(&path, position).await)
-                            .unwrap_or_else(|error| {
-                                tally.note::<()>(Err(error), &mut dead, &updates, &key, token);
-                                Vec::new()
-                            })
+                        let result = active.definition(&path, position).await;
+                        report_unsupported(
+                            &result,
+                            &updates,
+                            generation,
+                            request,
+                            &key,
+                            ServerFeature::Definition,
+                        );
+                        tally.observe(result).unwrap_or_else(|error| {
+                            tally.note::<()>(Err(error), &mut dead, &updates, &key, token);
+                            Vec::new()
+                        })
                     };
                     let _ = updates.send(LspUpdate::Definitions {
                         generation,
@@ -619,12 +636,19 @@ pub(super) async fn server_task(task: ServerTask) {
                     let symbols = if dead {
                         Vec::new()
                     } else {
-                        tally
-                            .observe(active.workspace_symbols(&query).await)
-                            .unwrap_or_else(|error| {
-                                tally.note::<()>(Err(error), &mut dead, &updates, &key, token);
-                                Vec::new()
-                            })
+                        let result = active.workspace_symbols(&query).await;
+                        report_unsupported(
+                            &result,
+                            &updates,
+                            generation,
+                            request,
+                            &key,
+                            ServerFeature::WorkspaceSymbol,
+                        );
+                        tally.observe(result).unwrap_or_else(|error| {
+                            tally.note::<()>(Err(error), &mut dead, &updates, &key, token);
+                            Vec::new()
+                        })
                     };
                     let _ = updates.send(LspUpdate::WorkspaceSymbols {
                         generation,
@@ -652,12 +676,19 @@ pub(super) async fn server_task(task: ServerTask) {
                     let edit = if dead {
                         WorkspaceEdit::default()
                     } else {
-                        tally
-                            .observe(active.rename(&path, position, &new_name).await)
-                            .unwrap_or_else(|error| {
-                                tally.note::<()>(Err(error), &mut dead, &updates, &key, token);
-                                WorkspaceEdit::default()
-                            })
+                        let result = active.rename(&path, position, &new_name).await;
+                        report_unsupported(
+                            &result,
+                            &updates,
+                            generation,
+                            request,
+                            &key,
+                            ServerFeature::Rename,
+                        );
+                        tally.observe(result).unwrap_or_else(|error| {
+                            tally.note::<()>(Err(error), &mut dead, &updates, &key, token);
+                            WorkspaceEdit::default()
+                        })
                     };
                     let _ = updates.send(LspUpdate::WorkspaceEdit {
                         generation,

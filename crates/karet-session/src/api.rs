@@ -18,6 +18,7 @@ use karet_core::LineCol;
 use karet_core::Location;
 use karet_core::NotificationKind;
 use karet_core::Range;
+use karet_core::ServerFeature;
 use karet_core::Severity;
 use karet_core::Symbol;
 use karet_core::WorkspaceEdit;

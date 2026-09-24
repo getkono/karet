@@ -233,6 +233,14 @@ pub(super) fn test_connector(
                             )
                             .await;
                         },
+                        // Nothing to say, which is still an answer.
+                        Some("textDocument/hover") => {
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": null}),
+                            )
+                            .await;
+                        },
                         Some("textDocument/documentSymbol") => {
                             write_msg(
                                 &mut server_write,

@@ -190,9 +190,22 @@ async fn a_server_without_inlay_hints_answers_them_empty() -> TestResult {
             },
         },
     )?;
-    let (rid, hdoc, hversion, hints) = await_inlay_hints(&mut events)
-        .await
-        .ok_or("no InlayHints event")?;
+    // A background request is refused *silently*: no notice precedes the
+    // empty answer, or every viewport change would raise one.
+    let (rid, hdoc, hversion, hints) = loop {
+        let (id, event) = next_event(&mut events).await.ok_or("no InlayHints event")?;
+        match event {
+            Event::FeatureUnsupported { .. } => {
+                return Err("a background request raised an unsupported notice".into());
+            },
+            Event::InlayHints {
+                doc,
+                version,
+                hints,
+            } => break (id, doc, version, hints),
+            _ => {},
+        }
+    };
     assert_eq!(rid, Some(request));
     assert_eq!((hdoc, hversion), (doc, version));
     assert!(hints.is_empty());
@@ -207,4 +220,86 @@ async fn a_server_without_inlay_hints_answers_them_empty() -> TestResult {
         );
     }
     Ok(())
+}
+
+#[tokio::test]
+async fn a_request_asked_for_by_hand_says_the_server_does_not_support_it() -> TestResult {
+    // Issue #279: "this server does not support X" must read differently from
+    // "this server found nothing". The notice comes first, tagged with the
+    // request, and the empty answer the caller is owed still follows it.
+    let dir = tempfile::tempdir()?;
+    let path = rust_file(&dir, "main.rs", "fn main() {}\n").ok_or("write failed")?;
+    let spawns = Arc::new(AtomicUsize::new(0));
+    let (session, mut events) =
+        session_with_connector(test_connector(Behavior::Bare, None, spawns));
+    let backend = local_session(session, None);
+    let (doc, _) = open(&backend, &mut events, path).await?;
+
+    let request = backend.next_id();
+    backend.send(
+        request,
+        Command::Definition {
+            doc,
+            position: LineCol::new(0, 3),
+        },
+    )?;
+    let mut notice = None;
+    loop {
+        let (id, event) = next_event(&mut events)
+            .await
+            .ok_or("no Definitions answer")?;
+        match event {
+            Event::FeatureUnsupported { server, feature } => {
+                assert_eq!(id, Some(request), "the notice names its request");
+                notice = Some((server, feature));
+            },
+            Event::Definitions { locations } => {
+                assert_eq!(id, Some(request));
+                assert!(locations.is_empty());
+                break;
+            },
+            _ => {},
+        }
+    }
+    assert_eq!(
+        notice,
+        Some((
+            LanguageServerId::RustAnalyzer,
+            karet_core::ServerFeature::Definition
+        )),
+        "the refusal was not surfaced ahead of its empty answer"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_supported_request_raises_no_notice() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let path = rust_file(&dir, "main.rs", "fn main() {}\n").ok_or("write failed")?;
+    let spawns = Arc::new(AtomicUsize::new(0));
+    let (session, mut events) =
+        session_with_connector(test_connector(Behavior::Normal, None, spawns));
+    let backend = local_session(session, None);
+    let (doc, _) = open(&backend, &mut events, path).await?;
+
+    let request = backend.next_id();
+    backend.send(
+        request,
+        Command::Hover {
+            doc,
+            position: LineCol::new(0, 3),
+        },
+    )?;
+    loop {
+        let (_, event) = next_event(&mut events)
+            .await
+            .ok_or("no HoverResult answer")?;
+        match event {
+            Event::FeatureUnsupported { .. } => {
+                return Err("a server that offers hover was reported as not".into());
+            },
+            Event::HoverResult { .. } => return Ok(()),
+            _ => {},
+        }
+    }
 }

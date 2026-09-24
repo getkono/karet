@@ -31,7 +31,12 @@ impl App {
             .send(id, SessionCommand::Hover { doc, position: at })
             .is_ok()
         {
-            self.pending_hover = Some(PendingHover { id, doc, at });
+            self.pending_hover = Some(PendingHover {
+                id,
+                doc,
+                at,
+                refused: false,
+            });
         }
     }
 
@@ -62,6 +67,8 @@ impl App {
                     at: pending.at,
                 });
             },
+            // Already explained: the server does not offer hover at all.
+            None if pending.refused => {},
             None => self.notify(
                 Report::Refusal,
                 NotificationKind::Lsp,

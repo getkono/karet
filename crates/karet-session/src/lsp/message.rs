@@ -14,6 +14,7 @@ use karet_core::InlayHint;
 use karet_core::LineCol;
 use karet_core::Location;
 use karet_core::Range;
+use karet_core::ServerFeature;
 use karet_core::Symbol;
 use karet_core::TextEdit;
 use karet_core::WorkspaceEdit;
@@ -203,6 +204,21 @@ pub(crate) enum LspUpdate {
         version: u64,
         /// The mapped symbol tree.
         symbols: Vec<Symbol>,
+    },
+    /// A request was refused because the server never offered `feature`.
+    ///
+    /// Sent only for requests a user asks for by hand, and always *before*
+    /// the request's own empty answer, so the client can explain the empty
+    /// answer rather than report it as nothing found.
+    Unsupported {
+        /// The manager generation that spawned the server task.
+        generation: u64,
+        /// The refused request.
+        request: RequestId,
+        /// The provider that was asked.
+        server: LanguageServerId,
+        /// What it does not offer.
+        feature: ServerFeature,
     },
     /// Hover response in UTF-16 coordinates.
     Hover {

@@ -44,4 +44,5 @@ mod surface_select;
 mod tab_focus;
 mod tabs_search;
 mod todos;
+mod unsupported;
 mod view;

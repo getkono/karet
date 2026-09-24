@@ -241,6 +241,12 @@ impl Session {
                 }
                 let _ = self.finish_format_on_save(request, doc, version, edits);
             },
+            LspUpdate::Unsupported {
+                request,
+                server,
+                feature,
+                ..
+            } => self.emit(Some(request), Event::FeatureUnsupported { server, feature }),
             LspUpdate::InlayHintsRefresh { key, .. } => self.emit(
                 None,
                 Event::InlayHintsRefresh {

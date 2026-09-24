@@ -47,6 +47,7 @@ mod startup;
 mod state;
 mod tabs;
 mod todos;
+mod unsupported;
 mod util;
 
 #[cfg(test)]

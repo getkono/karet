@@ -168,6 +168,9 @@ impl App {
             // the same set, arriving in place of itself.
             SessionEvent::InlayHintsRefresh { .. } => self.invalidate_inlay_coverage(),
             SessionEvent::HoverResult { hover } => self.on_hover_result(id, hover),
+            SessionEvent::FeatureUnsupported { server, feature } => {
+                self.on_feature_unsupported(id, server, feature);
+            },
             SessionEvent::WakatimeStatus { text } => self.wakatime_status = Some(text),
             SessionEvent::DebugState {
                 state,

@@ -5,15 +5,49 @@
 //! is nothing. `remember_document` maintains the task's authoritative copy of the
 //! open-document set, which is what a reconnect replays; a document missing from
 //! it is one the server never learns about again.
+//!
+//! `report_unsupported` sits beside them because it is the other half of
+//! answering: when the answer is empty because the server does not offer the
+//! feature, the user who asked is told so rather than left to read "nothing".
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use karet_core::ServerFeature;
 use karet_core::WorkspaceEdit;
+use karet_lsp::LspError;
 use tokio::sync::mpsc;
 
 use super::message::LspUpdate;
 use super::message::ServerCmd;
+use super::slot::SlotKey;
+use crate::RequestId;
+
+/// Tell the client a request it asked for by hand was refused because the
+/// server never offered `feature` -- ahead of the empty answer that follows.
+///
+/// Issue #279 asked for exactly this distinction: "this server does not
+/// support X" read the same as "this server found nothing", and the first is
+/// a fact the user can act on (use another provider) while the second is not.
+/// Only for requests a user asks for by hand; the server task calls it for
+/// nothing else.
+pub(super) fn report_unsupported<T>(
+    result: &Result<T, LspError>,
+    updates: &mpsc::UnboundedSender<LspUpdate>,
+    generation: u64,
+    request: RequestId,
+    key: &SlotKey,
+    feature: ServerFeature,
+) {
+    if matches!(result, Err(LspError::Unsupported { .. })) {
+        let _ = updates.send(LspUpdate::Unsupported {
+            generation,
+            request,
+            server: key.provider.clone(),
+            feature,
+        });
+    }
+}
 
 /// Answer a request command with an empty set (used whenever no live server can
 /// answer, so the client is never left waiting).

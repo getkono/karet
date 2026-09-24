@@ -230,6 +230,7 @@ impl LspManager {
             | LspUpdate::InlayHints { generation, .. }
             | LspUpdate::Symbols { generation, .. }
             | LspUpdate::Hover { generation, .. }
+            | LspUpdate::Unsupported { generation, .. }
             | LspUpdate::Definitions { generation, .. }
             | LspUpdate::WorkspaceSymbols { generation, .. }
             | LspUpdate::WorkspaceEdit { generation, .. }

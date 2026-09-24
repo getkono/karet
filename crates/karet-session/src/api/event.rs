@@ -243,6 +243,25 @@ pub enum Event {
         /// Most recent concise failure, when applicable.
         error: Option<String>,
     },
+    /// The language server serving a request does not offer what it asked
+    /// for, so the request was never issued.
+    ///
+    /// A fact about the provider, not a failure: the server is healthy, and
+    /// this is kept out of its failure record. Delivered with the request's
+    /// [`RequestId`], *before* the request's own (empty) answer, so a client
+    /// can say "this server does not support X" instead of "nothing found".
+    ///
+    /// Emitted only for requests a user asks for by hand --
+    /// [`Command::Hover`], [`Command::Definition`], [`Command::Rename`],
+    /// [`Command::WorkspaceSymbols`]. Background requests (inlay hints,
+    /// completion, document symbols, format-on-save) are refused silently: a
+    /// notice nobody asked for, repeated on every keystroke or save, is noise.
+    FeatureUnsupported {
+        /// The provider that was asked.
+        server: LanguageServerId,
+        /// What it does not offer.
+        feature: ServerFeature,
+    },
     /// Hover result answering a [`Command::Hover`].
     HoverResult {
         /// The hover, if any.
