@@ -16,7 +16,7 @@
 //! Built without the `images` feature, nothing is ever sized, so every image is a chip.
 
 #[cfg(feature = "images")]
-mod cache;
+pub(crate) mod cache;
 #[cfg(all(test, feature = "images"))]
 pub(crate) mod tests;
 

@@ -315,3 +315,35 @@ fn a_jpeg_whose_frame_header_lies_past_the_probe_is_still_queued() {
         Lookup::Missing
     ));
 }
+
+/// A JPEG whose frame header — past the probe, behind a long APP1 segment — claims
+/// `width`×`height`, with no scan after it.
+fn jpeg_claiming(width: u16, height: u16) -> Vec<u8> {
+    let mut bytes = b"\xff\xd8".to_vec();
+    for _ in 0..2 {
+        bytes.extend_from_slice(&[0xff, 0xe1, 0xff, 0xff]);
+        bytes.extend(std::iter::repeat_n(0u8, 0xfffd));
+    }
+    bytes.extend_from_slice(&[0xff, 0xc2, 0x00, 0x11, 8]);
+    bytes.extend_from_slice(&height.to_be_bytes());
+    bytes.extend_from_slice(&width.to_be_bytes());
+    bytes.extend_from_slice(&[3, 1, 0x11, 0, 2, 0x11, 1, 3, 0x11, 1]);
+    bytes
+}
+
+#[test]
+fn a_file_claiming_a_vast_image_is_refused_before_decoding() {
+    // The decoder would allocate for the claimed size; the claim alone refuses it.
+    assert!(!cache::admissible(&jpeg_claiming(40_000, 40_000)));
+    assert!(cache::admissible(&jpeg_claiming(64, 64)));
+    assert!(cache::admissible(&png(2, 2, [0, 0, 0])));
+    assert!(!cache::admissible(b"GIF89a"));
+    let dir = workspace(&[("vast.jpg", &jpeg_claiming(40_000, 40_000))]);
+    let images = PreviewImages::default();
+    assert_eq!(size(&images, dir.path(), "vast.jpg"), None);
+    images.settle();
+    assert!(matches!(
+        lookup(&images, dir.path(), "vast.jpg"),
+        Lookup::Missing
+    ));
+}

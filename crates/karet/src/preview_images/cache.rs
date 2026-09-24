@@ -361,6 +361,7 @@ fn decode_file(job: Job) -> Decoded {
         .ok()
         .filter(|meta| meta.is_file() && meta.len() <= MAX_FILE_BYTES)
         .and_then(|_| std::fs::read(&job.path).ok())
+        .filter(|bytes| admissible(bytes))
         .and_then(|bytes| image::decode(&bytes).ok())
         .filter(|image| u64::from(image.width()) * u64::from(image.height()) <= MAX_PIXELS)
         .map(Arc::new);
@@ -368,6 +369,18 @@ fn decode_file(job: Job) -> Decoded {
         path: job.path,
         stamp: job.stamp,
         image,
+    }
+}
+
+/// Whether a whole file may be decoded: its header's size, read from the full bytes
+/// (a JPEG's frame header can lie past the draw path's probe), is within
+/// [`MAX_PIXELS`]. The decoder allocates from that header, so a hostile file claiming
+/// a vast image is refused before it can. TIFF, whose size is not in a fixed header,
+/// relies on its decoder's own allocation cap.
+pub(crate) fn admissible(bytes: &[u8]) -> bool {
+    match image::probe_dimensions(bytes) {
+        Some((w, h)) => u64::from(w) * u64::from(h) <= MAX_PIXELS,
+        None => is_tiff(bytes),
     }
 }
 
