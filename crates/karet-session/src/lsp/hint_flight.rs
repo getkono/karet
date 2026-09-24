@@ -232,8 +232,10 @@ impl HintFlight {
 /// three of them can time out together inside one 30-second window -- and a
 /// server slow to infer types for a large file is slow, not hung. Charging
 /// them condemned such a server, killing it mid-analysis for background work
-/// nobody was waiting on. A successful answer still counts: it is a real reply
-/// to a real request, and proof the server is talking.
+/// nobody was waiting on. A successful answer is neutral too: counting it would
+/// let a server that keeps answering hints but has stopped answering hover and
+/// completion reset the streak forever, which is the hang the streak is there
+/// to catch.
 pub(super) fn deliver(
     answer: HintAnswer,
     tally: &mut FailureTally,
@@ -243,7 +245,7 @@ pub(super) fn deliver(
     token: SlotToken,
     generation: u64,
 ) {
-    let hints = match tally.observe(answer.result) {
+    let hints = match answer.result {
         Ok(hints) => hints,
         Err(LspError::Timeout) => {
             tracing::debug!(language = %key, "inlay-hint request timed out; not charged");
@@ -472,7 +474,9 @@ mod tests {
     }
 
     #[test]
-    fn an_answered_hint_request_still_clears_the_streak() {
+    fn an_answered_hint_request_does_not_clear_the_streak() {
+        // A server that still answers hints but has stopped answering hover
+        // and completion is hung on what the user is waiting for.
         let (tx, mut rx) = mpsc::unbounded_channel();
         let mut tally = FailureTally::default();
         let mut dead = false;
@@ -481,11 +485,10 @@ mod tests {
             serial_timeout(&mut tally, &mut dead, &tx);
         }
         deliver_one(&mut tally, &mut dead, &tx, Ok(Vec::new()));
-        for _ in 0..health::TIMEOUT_DEATH_LIMIT.saturating_sub(1) {
-            serial_timeout(&mut tally, &mut dead, &tx);
-        }
-        assert!(!dead, "timeouts either side of a hint answer were summed");
-        assert!(!died(&mut rx));
+        assert!(!dead);
+        serial_timeout(&mut tally, &mut dead, &tx);
+        assert!(dead, "a hint answer reset the streak");
+        assert!(died(&mut rx));
     }
 
     #[tokio::test]

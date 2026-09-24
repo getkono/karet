@@ -373,7 +373,8 @@ Inlay-hint requests run in the background, several documents at once, so three c
 time out together inside one 30-second window, and a server slow to infer types
 for a large file is slow rather than hung — so a timed-out hint request is answered
 empty and never counts toward declaring the server dead. An answered hint request
-still counts as the server answering, and clears the streak like any other answer.
+is neutral too: it does not clear the streak, so a server that keeps answering
+hints while hover and completion time out is still caught.
 
 A connection that dies without having lasted ten seconds is charged against the
 restart budget, so five such cycles in a minute open the circuit. Connecting is
