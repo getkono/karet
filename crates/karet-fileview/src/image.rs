@@ -9,8 +9,8 @@
 //! only) for now; Sixel/iTerm2 protocols and PDF rasterization are out of scope.
 //!
 //! Pixel work sits behind two features so a lean build pulls no codec tree: the
-//! shared primitives ([`Image`], [`ImageWidget`]) and their built-in bilinear
-//! resampler require `raster` (enabled by both `images` and `pdf`), while the
+//! shared primitives ([`Image`], [`ImageWidget`]) and their built-in resampler
+//! (area-averaging when shrinking, bilinear when enlarging) require `raster` (enabled by both `images` and `pdf`), while the
 //! image-file decoders ([`decode`], [`dimensions`]) require `images`. Gamut owns
 //! every supported codec. Protocol detection ([`GraphicsProtocol`],
 //! [`detect_protocol`], [`fit_rect`]) carries no codec dependency and is always
@@ -35,6 +35,26 @@ use ratatui::widgets::Widget;
 /// The maximum base64 payload per Kitty escape chunk.
 #[cfg(feature = "raster")]
 const KITTY_CHUNK: usize = 4096;
+
+/// The most source pixels a side the per-frame halfblock painters average for one
+/// destination pixel (see [`Image::sample_resized`]).
+#[cfg(feature = "raster")]
+const PAINT_TAPS: u32 = 4;
+
+/// The source pixels, with their overlap, that destination pixel `at` of `dest`
+/// covers along an axis `source` pixels long.
+#[cfg(feature = "raster")]
+fn covered(at: u32, dest: u32, source: u32) -> Vec<(u32, f64)> {
+    let scale = f64::from(source) / f64::from(dest);
+    let (start, end) = (f64::from(at) * scale, (f64::from(at) + 1.0) * scale);
+    ((start.floor() as u32)..(end.ceil() as u32).min(source))
+        .map(|pixel| {
+            let overlap = (f64::from(pixel) + 1.0).min(end) - f64::from(pixel).max(start);
+            (pixel, overlap)
+        })
+        .filter(|&(_, overlap)| overlap > 0.0)
+        .collect()
+}
 
 /// Errors decoding or rendering an image.
 #[cfg(feature = "images")]
@@ -79,6 +99,13 @@ pub fn detect_protocol() -> GraphicsProtocol {
 #[must_use]
 pub fn kitty_delete_all() -> String {
     "\x1b_Ga=d\x1b\\".to_string()
+}
+
+/// The Kitty escape that deletes image `id` — its placements and its pixel data —
+/// leaving every other image on screen alone.
+#[must_use]
+pub fn kitty_delete_image(id: u32) -> String {
+    format!("\x1b_Ga=d,d=I,i={id},q=2\x1b\\")
 }
 
 /// Approximate terminal cell aspect ratio (height ÷ width). A monospace cell is
@@ -148,11 +175,36 @@ impl Image {
         self.height
     }
 
+    /// The raw RGBA pixels, row-major, 4 bytes per pixel.
+    #[must_use]
+    pub fn rgba(&self) -> &[u8] {
+        &self.rgba
+    }
+
     /// Build the Kitty graphics escape that transmits and displays this image
     /// scaled into a `cols`×`rows` cell box. The application positions the cursor
     /// at the target cell and writes this sequence after drawing the frame.
     #[must_use]
     pub fn kitty_escape(&self, cols: u16, rows: u16) -> String {
+        self.kitty_escape_keys(&format!(
+            "a=T,f=32,s={},v={},c={cols},r={rows}",
+            self.width, self.height
+        ))
+    }
+
+    /// Like [`Image::kitty_escape`], but under image id `id` (and with the
+    /// terminal's replies silenced), so [`kitty_delete_image`] can remove exactly
+    /// this image without touching any other placement on screen.
+    #[must_use]
+    pub fn kitty_escape_with_id(&self, id: u32, cols: u16, rows: u16) -> String {
+        self.kitty_escape_keys(&format!(
+            "a=T,i={id},f=32,s={},v={},c={cols},r={rows},q=2",
+            self.width, self.height
+        ))
+    }
+
+    /// Chunk the base64 pixels into escapes, `keys` leading the first.
+    fn kitty_escape_keys(&self, keys: &str) -> String {
         let payload = base64::engine::general_purpose::STANDARD.encode(&self.rgba);
         let chunks: Vec<&[u8]> = payload.as_bytes().chunks(KITTY_CHUNK).collect();
         let mut out = String::new();
@@ -160,15 +212,36 @@ impl Image {
             let more = u8::from(i + 1 != chunks.len());
             let data = std::str::from_utf8(chunk).unwrap_or("");
             if i == 0 {
-                out.push_str(&format!(
-                    "\x1b_Ga=T,f=32,s={},v={},c={},r={},m={more};{data}\x1b\\",
-                    self.width, self.height, cols, rows
-                ));
+                out.push_str(&format!("\x1b_G{keys},m={more};{data}\x1b\\"));
             } else {
                 out.push_str(&format!("\x1b_Gm={more};{data}\x1b\\"));
             }
         }
         out
+    }
+
+    /// This image resampled to `width`×`height` pixels: an exact area average when
+    /// shrinking, so no source pixel is skipped, and bilinear when enlarging.
+    ///
+    /// The halfblock painters resample on every frame, so they bound the average's
+    /// cost; a caller that paints the same box every frame can resample once here,
+    /// exactly, and paint the result 1:1.
+    #[must_use]
+    pub fn resized(&self, width: u32, height: u32) -> Self {
+        if self.width == 0 || self.height == 0 || width == 0 || height == 0 {
+            return Self::from_rgba(Vec::new(), width, height);
+        }
+        let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
+        for y in 0..height {
+            for x in 0..width {
+                rgba.extend_from_slice(&self.sample_resized(x, y, width, height, u32::MAX));
+            }
+        }
+        Self {
+            rgba,
+            width,
+            height,
+        }
     }
 
     /// Render the image as truecolor halfblocks into `area` (two vertically
@@ -233,10 +306,16 @@ impl Image {
         let cols = target_w.min(u32::from(area.width));
         for cy in first_row..last_row {
             for cx in 0..cols {
-                let top = self.sample_resized(cx, (cy * 2).min(target_h - 1), target_w, target_h);
+                let top = self.sample_resized(
+                    cx,
+                    (cy * 2).min(target_h - 1),
+                    target_w,
+                    target_h,
+                    PAINT_TAPS,
+                );
                 let bottom_y = cy * 2 + 1;
                 let bottom = if bottom_y < target_h {
-                    self.sample_resized(cx, bottom_y, target_w, target_h)
+                    self.sample_resized(cx, bottom_y, target_w, target_h, PAINT_TAPS)
                 } else {
                     top
                 };
@@ -251,9 +330,89 @@ impl Image {
         }
     }
 
+    /// Sample one destination pixel of this image resampled to `width`×`height`,
+    /// reading at most `taps` source pixels a side.
+    ///
+    /// Shrinking on both axes averages the source pixels the destination pixel
+    /// covers, weighted by their overlap and by their alpha (a transparent pixel's
+    /// colour must not bleed into its neighbours): a four-tap bilinear read would see
+    /// four of the k² pixels a k-times shrink folds together and drop the rest, so
+    /// thin lines and text would vanish or alias. Past `taps` pixels a side it reads
+    /// `taps` evenly spread ones instead, bounding the cost of a painter that
+    /// resamples on every frame. Anything else is bilinear.
+    fn sample_resized(&self, x: u32, y: u32, width: u32, height: u32, taps: u32) -> [u8; 4] {
+        if width > self.width
+            || height > self.height
+            || (width, height) == (self.width, self.height)
+        {
+            return self.sample_bilinear(x, y, width, height);
+        }
+        let scale_x = f64::from(self.width) / f64::from(width);
+        let scale_y = f64::from(self.height) / f64::from(height);
+        let averaged = if scale_x > f64::from(taps) || scale_y > f64::from(taps) {
+            self.average(self.spread(x, y, (scale_x, scale_y), taps))
+        } else {
+            let columns = covered(x, width, self.width);
+            let rows = covered(y, height, self.height);
+            self.average(
+                rows.iter()
+                    .flat_map(|&(sy, wy)| columns.iter().map(move |&(sx, wx)| (sx, sy, wx * wy))),
+            )
+        };
+        averaged.unwrap_or_else(|| self.sample_bilinear(x, y, width, height))
+    }
+
+    /// `taps`² source pixels spread over the area destination pixel `(x, y)` covers
+    /// at `scale`, equally weighted: a grid whose every row is shifted by a further
+    /// `1 / taps` of a column, so it reads every phase of a fine regular pattern — a
+    /// one-pixel checkerboard averages to grey — instead of one.
+    fn spread(
+        &self,
+        x: u32,
+        y: u32,
+        (scale_x, scale_y): (f64, f64),
+        taps: u32,
+    ) -> impl Iterator<Item = (u32, u32, f64)> {
+        let (left, top) = (f64::from(x) * scale_x, f64::from(y) * scale_y);
+        let (last_x, last_y) = (self.width.saturating_sub(1), self.height.saturating_sub(1));
+        let n = f64::from(taps);
+        (0..taps).flat_map(move |j| {
+            let sy = ((top + (f64::from(j) + 0.5) * scale_y / n) as u32).min(last_y);
+            (0..taps).map(move |k| {
+                let offset = (f64::from(k) + (f64::from(j) + 0.5) / n) * scale_x / n;
+                (((left + offset) as u32).min(last_x), sy, 1.0)
+            })
+        })
+    }
+
+    /// The alpha-weighted average of `samples`, each a source pixel and its weight.
+    fn average(&self, samples: impl Iterator<Item = (u32, u32, f64)>) -> Option<[u8; 4]> {
+        let (mut rgb, mut alpha, mut total) = ([0.0_f64; 3], 0.0_f64, 0.0_f64);
+        for (sx, sy, weight) in samples {
+            let pixel = self.pixel(sx, sy);
+            let covered = weight * f64::from(pixel[3]);
+            for (sum, &channel) in rgb.iter_mut().zip(&pixel[..3]) {
+                *sum += f64::from(channel) * covered;
+            }
+            alpha += covered;
+            total += weight;
+        }
+        if total <= 0.0 {
+            return None;
+        }
+        let byte = |value: f64| value.round().clamp(0.0, 255.0) as u8;
+        let colour = |sum: f64| if alpha > 0.0 { byte(sum / alpha) } else { 0 };
+        Some([
+            colour(rgb[0]),
+            colour(rgb[1]),
+            colour(rgb[2]),
+            byte(alpha / total),
+        ])
+    }
+
     /// Bilinearly sample one destination pixel. Mapping pixel centers instead of
     /// corners avoids a half-pixel drift while scaling both up and down.
-    fn sample_resized(&self, x: u32, y: u32, width: u32, height: u32) -> [u8; 4] {
+    fn sample_bilinear(&self, x: u32, y: u32, width: u32, height: u32) -> [u8; 4] {
         let source_x = ((x as f64 + 0.5) * f64::from(self.width) / f64::from(width) - 0.5)
             .clamp(0.0, f64::from(self.width - 1));
         let source_y = ((y as f64 + 0.5) * f64::from(self.height) / f64::from(height) - 0.5)

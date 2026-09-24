@@ -123,7 +123,125 @@ fn built_in_resampler_bilinearly_blends_pixel_centers() {
     let pixel = |value: u8| [value, value, value, 255];
     let rgba = [pixel(0), pixel(100), pixel(200), pixel(255)].concat();
     let image = Image::from_rgba(rgba, 2, 2);
-    assert_eq!(image.sample_resized(1, 1, 3, 3), [139, 139, 139, 255]);
+    assert_eq!(
+        image.sample_resized(1, 1, 3, 3, u32::MAX),
+        [139, 139, 139, 255]
+    );
+}
+
+/// A `size`×`size` one-pixel black-and-white checkerboard.
+#[cfg(feature = "raster")]
+fn checkerboard(size: u32) -> Image {
+    let rgba = (0..size * size)
+        .flat_map(|i| {
+            let value = if (i % size + i / size).is_multiple_of(2) {
+                0
+            } else {
+                255
+            };
+            [value, value, value, 255]
+        })
+        .collect();
+    Image::from_rgba(rgba, size, size)
+}
+
+#[cfg(feature = "raster")]
+#[test]
+fn shrinking_averages_every_covered_pixel_instead_of_aliasing() {
+    // A fourfold shrink of a one-pixel checkerboard folds equal black and white into
+    // every destination pixel; a four-tap bilinear read lands on one colour.
+    let image = checkerboard(16);
+    for (x, y) in [(0, 0), (1, 2), (3, 3)] {
+        assert_eq!(
+            image.sample_resized(x, y, 4, 4, u32::MAX),
+            [128, 128, 128, 255]
+        );
+    }
+    // A non-integral shrink weighs the partly covered edge pixels by their overlap.
+    let image = Image::from_rgba(
+        [[0, 0, 0, 255], [255, 255, 255, 255], [90, 90, 90, 255]].concat(),
+        3,
+        1,
+    );
+    assert_eq!(
+        image.sample_resized(0, 0, 2, 1, u32::MAX),
+        [85, 85, 85, 255]
+    );
+    assert_eq!(
+        image.sample_resized(1, 0, 2, 1, u32::MAX),
+        [145, 145, 145, 255]
+    );
+}
+
+#[cfg(feature = "raster")]
+#[test]
+fn a_bounded_shrink_still_reads_every_phase_of_a_fine_pattern() {
+    // A 16-fold shrink past the painters' four taps a side spreads its samples over
+    // both colours of the checkerboard rather than landing on one.
+    let image = checkerboard(64);
+    for (x, y) in [(0, 0), (1, 2), (3, 3)] {
+        assert_eq!(image.sample_resized(x, y, 4, 4, 4), [128, 128, 128, 255]);
+    }
+    // And the per-frame painter uses it: every cell of the painted box is grey.
+    let mut buf = Buffer::empty(Rect::new(0, 0, 4, 2));
+    image.render_halfblocks_rows(4, 2, 0, Rect::new(0, 0, 4, 2), &mut buf);
+    assert!(
+        buf.content().iter().all(
+            |cell| cell.fg == Color::Rgb(128, 128, 128) && cell.bg == Color::Rgb(128, 128, 128)
+        )
+    );
+}
+
+#[cfg(feature = "raster")]
+#[test]
+fn a_transparent_pixel_does_not_darken_its_neighbours() {
+    // White beside fully transparent black: the average stays white, half covered.
+    let image = Image::from_rgba([[255, 255, 255, 255], [0, 0, 0, 0]].concat(), 2, 1);
+    assert_eq!(
+        image.sample_resized(0, 0, 1, 1, u32::MAX),
+        [255, 255, 255, 128]
+    );
+    // All transparent: no colour to weigh, and no division by zero.
+    let clear = Image::from_rgba(vec![0; 8], 2, 1);
+    assert_eq!(clear.sample_resized(0, 0, 1, 1, u32::MAX), [0, 0, 0, 0]);
+}
+
+#[cfg(feature = "raster")]
+#[test]
+fn resized_matches_the_sampler_and_paints_one_to_one() {
+    let image = checkerboard(16);
+    let small = image.resized(4, 8);
+    assert_eq!((small.width(), small.height()), (4, 8));
+    assert!(
+        small
+            .rgba()
+            .chunks(4)
+            .all(|pixel| pixel == [128, 128, 128, 255])
+    );
+    // Painting the resized copy at its own size equals painting the original into
+    // the same box.
+    let area = Rect::new(0, 0, 4, 4);
+    let (mut direct, mut copied) = (Buffer::empty(area), Buffer::empty(area));
+    image.render_halfblocks_rows(4, 4, 0, area, &mut direct);
+    small.render_halfblocks_rows(4, 4, 0, area, &mut copied);
+    assert_eq!(direct, copied);
+    // Degenerate sizes give an empty image, not a panic.
+    assert_eq!(image.resized(0, 3).rgba().len(), 0);
+}
+
+#[cfg(feature = "raster")]
+#[test]
+fn an_id_scoped_kitty_escape_is_deletable_by_that_id_alone() {
+    let image = Image::from_rgba(vec![255; 4 * 4], 2, 2);
+    let escape = image.kitty_escape_with_id(7, 3, 1);
+    assert!(escape.starts_with("\x1b_Ga=T,i=7,f=32,s=2,v=2,c=3,r=1,q=2,m=0;"));
+    assert_eq!(kitty_delete_image(7), "\x1b_Ga=d,d=I,i=7,q=2\x1b\\");
+    // The anonymous escape keeps its exact form.
+    assert!(
+        image
+            .kitty_escape(3, 1)
+            .starts_with("\x1b_Ga=T,f=32,s=2,v=2,c=3,r=1,m=0;")
+    );
 }
 
 #[cfg(feature = "images")]
