@@ -83,7 +83,7 @@ pub(super) enum Wake {
     Hint(HintAnswer),
 }
 
-/// Wait for whichever comes first: a command, a quiet debounce window, a
+/// Wait for whichever comes first: a command, the pending edit's flush deadline, a
 /// launched hint request finishing, or the connection's death.
 ///
 /// The select is `biased` so liveness is polled first. With a dead connection
@@ -93,23 +93,24 @@ pub(super) enum Wake {
 pub(super) async fn next_wake(
     rx: &mut mpsc::Receiver<ServerCmd>,
     client: Option<&LspClient>,
-    debounce: std::time::Duration,
-    has_pending: bool,
+    flush_at: Option<Instant>,
     hints: &mut HintFlight,
 ) -> Wake {
     let Some(client) = client else {
         return Wake::Command(rx.recv().await);
     };
     let busy = hints.is_busy();
-    if has_pending {
+    if let Some(flush_at) = flush_at {
+        // A deadline rather than a timeout on the next command: the debounce
+        // measures quiet since the last *edit*, and a command that does not
+        // flush -- an inlay-hint request waiting on this very flush -- must
+        // not restart it.
         tokio::select! {
             biased;
             () = client.closed() => Wake::Lost,
+            () = tokio::time::sleep_until(tokio::time::Instant::from_std(flush_at)) => Wake::Quiet,
             Some(answer) = hints.next(), if busy => Wake::Hint(answer),
-            cmd = tokio::time::timeout(debounce, rx.recv()) => match cmd {
-                Ok(cmd) => Wake::Command(cmd),
-                Err(_quiet) => Wake::Quiet,
-            },
+            cmd = rx.recv() => Wake::Command(cmd),
         }
     } else {
         tokio::select! {

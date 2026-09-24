@@ -81,6 +81,10 @@ pub(super) async fn server_task(task: ServerTask) {
     let mut diagnostic_task: Option<tokio::task::JoinHandle<()>> = None;
     let mut documents = HashMap::<PathBuf, OpenDocument>::new();
     let mut pending: Option<(PathBuf, i32, String)> = None;
+    // When the pending edit will have been quiet for `CHANGE_DEBOUNCE`: timed
+    // from the last *edit*, not the last command, so a hint request waiting on
+    // the flush does not itself push the flush back.
+    let mut flush_at = Instant::now();
     let mut restart_delay = RESTART_MIN_DELAY;
     let mut next_restart = Instant::now();
     let mut failures = VecDeque::<Instant>::new();
@@ -274,8 +278,7 @@ pub(super) async fn server_task(task: ServerTask) {
         let wake = health::next_wake(
             &mut rx,
             client.as_deref(),
-            CHANGE_DEBOUNCE,
-            pending.is_some(),
+            pending.is_some().then_some(flush_at),
             &mut hints,
         )
         .await;
@@ -385,6 +388,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     }
                     if !dead {
                         pending = Some((path, version, text));
+                        flush_at = Instant::now() + CHANGE_DEBOUNCE;
                     }
                 },
                 ServerCmd::DidOpen {
