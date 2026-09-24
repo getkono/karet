@@ -76,8 +76,14 @@ use crate::config::schema::Lsp as LspSettings;
 
 /// How long an edited document may sit before its full text is forwarded as
 /// `didChange`. A pending forward is also flushed immediately ahead of any
-/// request, so completions never see stale text.
-const CHANGE_DEBOUNCE: Duration = Duration::from_millis(150);
+/// request the user is waiting on, so completions never see stale text; an
+/// inlay-hint request waits for the debounced flush instead (see
+/// `hint_flight`).
+///
+/// Public so a client can pace its own background requests to it: a request
+/// issued once an edit has been quiet this long reaches a server that already
+/// has the edit.
+pub const CHANGE_DEBOUNCE: Duration = Duration::from_millis(150);
 const SERVER_COMMAND_CAPACITY: usize = 256;
 const RESTART_MIN_DELAY: Duration = Duration::from_millis(250);
 const RESTART_MAX_DELAY: Duration = Duration::from_secs(30);

@@ -8,15 +8,22 @@
 //!
 //! The request is issued *after* a frame, beside `graph_prefetch`, for the
 //! same reason that one is: the viewport is a property of having been painted.
+//! Only what is painted is asked about -- the front tab of each visible pane --
+//! and a document being edited is not asked about until it has been quiet for
+//! [`LSP_CHANGE_DEBOUNCE`], so typing costs the server one request per pause
+//! rather than one per keystroke.
 
 use karet_core::InlayHint;
 use karet_core::LineCol;
 use karet_core::Range;
+use karet_session::LSP_CHANGE_DEBOUNCE;
 use karet_session::api::Command as SessionCommand;
 use karet_session::api::DocumentId;
 use karet_session::api::RequestId;
 
 use super::App;
+use super::Instant;
+use crate::tab::Tab;
 use crate::tab::TabKind;
 
 /// Lines requested above and below the viewport.
@@ -67,11 +74,27 @@ impl App {
     /// Called once per frame. Cheap in the common case: a scroll inside the
     /// overscan, or a document already covered at this version, sends nothing.
     pub(crate) fn request_inlay_hints(&mut self) {
+        self.request_inlay_hints_at(Instant::now());
+    }
+
+    /// [`Self::request_inlay_hints`] at a given moment, so the edit debounce
+    /// can be tested without sleeping.
+    pub(crate) fn request_inlay_hints_at(&mut self, now: Instant) {
+        // Pruned before anything else, the disabled setting included: a
+        // deadline left in the past would make `inlay_next_wake` ask for an
+        // immediate wake on every frame.
+        self.docs.inlay_quiet_until.retain(|_, until| *until > now);
         if !self.settings.editor.inlay_hints.enabled {
             return;
         }
         for (doc, wanted) in self.visible_hint_ranges() {
             if self.hints_are_current(doc, wanted) {
+                continue;
+            }
+            // Still being typed in. The request waits for the pause; the
+            // event loop wakes for it (`inlay_next_wake`), so it goes out
+            // without another keystroke.
+            if self.docs.inlay_quiet_until.contains_key(&doc) {
                 continue;
             }
             let Some(id) = self.send(SessionCommand::InlayHints {
@@ -99,9 +122,12 @@ impl App {
 
     /// The `(version, line range)` each open code document wants covered.
     ///
-    /// `all_tabs`, not `self.tabs`: the latter is only the *focused* pane's,
-    /// so a split's background pane would never be asked about and would keep
-    /// a stale set until its document closed.
+    /// Every *visible* pane, not only the focused one: `self.tabs` is only the
+    /// focused pane's, so a split's other pane would never be asked about and
+    /// would keep a stale set until its document closed. But only the tab at
+    /// the front of each -- a background tab paints nothing, and asking for it
+    /// spends a server's inference on text nobody can see. It is asked about
+    /// when it is brought forward.
     ///
     /// One document open in two panes contributes one range spanning both
     /// viewports, because the cache is keyed by document. Taking whichever
@@ -123,9 +149,27 @@ impl App {
         wanted
     }
 
+    /// The tab at the front of every pane on screen.
+    fn visible_tabs(&self) -> Vec<&Tab> {
+        let focused = self.layout.focus();
+        self.layout
+            .panes()
+            .into_iter()
+            .filter_map(|pane| {
+                if pane == focused {
+                    self.tabs.get(self.active)
+                } else {
+                    let stored = self.stored.get(&pane)?;
+                    stored.tabs.get(stored.active)
+                }
+            })
+            .collect()
+    }
+
     /// One range per *view*, before the per-document union above.
     fn hint_ranges_per_view(&self) -> Vec<(DocumentId, HintRange)> {
-        self.all_tabs()
+        self.visible_tabs()
+            .into_iter()
             .filter_map(|tab| {
                 let TabKind::Code {
                     doc: Some(doc),
@@ -256,12 +300,27 @@ impl App {
         self.docs.inlay_epoch = self.docs.inlay_epoch.saturating_add(1);
     }
 
-    /// Invalidate the coverage for `doc` without dropping what is on screen.
+    /// Note that `doc`'s text just changed, holding its next hint request
+    /// until the edits pause.
     ///
-    /// Used when the buffer changes: the hints are now positioned against
-    /// stale text, but blanking them on every keystroke would make the
-    /// annotations strobe. They stay until the replacement arrives.
-    pub(crate) fn stale_inlay_hints(&mut self, doc: DocumentId) {
-        self.docs.inlay_covered.remove(&doc);
+    /// Coverage needs no invalidating here: it is keyed on the buffer version,
+    /// which the edit already moved. What an edit adds is the wait. Without
+    /// it every keystroke asked the server to re-infer the viewport, and each
+    /// answer was obsolete before it arrived.
+    pub(crate) fn note_inlay_edit(&mut self, doc: DocumentId, now: Instant) {
+        self.docs
+            .inlay_quiet_until
+            .insert(doc, now + LSP_CHANGE_DEBOUNCE);
+    }
+
+    /// How long until a document being edited has been quiet long enough to
+    /// be asked about, so the event loop wakes to ask without further input.
+    pub(crate) fn inlay_next_wake(&self, now: Instant) -> Option<std::time::Duration> {
+        self.docs
+            .inlay_quiet_until
+            .values()
+            .filter(|until| **until > now)
+            .map(|until| until.saturating_duration_since(now))
+            .min()
     }
 }

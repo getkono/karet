@@ -27,6 +27,9 @@ impl App {
             .filter_map(|pending| pending.wake(now))
             .min();
         let nested_repositories = self.nested_repository_next_wake(now);
+        // An edited document's hint request goes out once typing pauses, and
+        // has to without another keystroke to wake the loop.
+        let inlay = self.inlay_next_wake(now);
         // Generation runs for seconds with no output to stream, so its spinner is
         // the only progress there is — it has to keep animating without input.
         let ai_commit = self.ai_commit_next_wake(now);
@@ -49,6 +52,7 @@ impl App {
             caret,
             loading,
             nested_repositories,
+            inlay,
             ai_commit,
             operation,
             reveal,

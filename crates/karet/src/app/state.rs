@@ -370,6 +370,9 @@ pub(crate) struct DocState {
     /// Bumped whenever hint coverage is invalidated, so a request issued
     /// before it stops counting as covering anything.
     pub(crate) inlay_epoch: u64,
+    /// When each recently edited document will have been quiet long enough to
+    /// ask about; its hint requests wait until then.
+    pub(crate) inlay_quiet_until: HashMap<DocumentId, Instant>,
     /// Latest language-server symbol tree for each open document.
     pub(crate) symbols: HashMap<DocumentId, Vec<Symbol>>,
     /// Buffer version represented by each cached symbol tree.

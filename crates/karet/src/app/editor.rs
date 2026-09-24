@@ -776,6 +776,7 @@ impl App {
             editor.scroll_to(head);
         }
         if let Some(version) = auto_save_version {
+            self.note_inlay_edit(doc, Instant::now());
             self.schedule_auto_save(doc, version, Instant::now());
         }
     }

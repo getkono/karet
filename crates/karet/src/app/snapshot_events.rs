@@ -5,11 +5,10 @@ impl App {
     /// render source of truth (buffer, highlights, the search text, and the
     /// unsaved-changes flag).
     pub(super) fn on_snapshot(&mut self, doc: DocumentId, snap: &DocSnapshot) {
-        // The text moved, so the hints on screen now describe the previous
-        // revision. Mark the coverage stale so the next frame re-asks, but
-        // leave the hints themselves painted: clearing them on every keystroke
-        // would make every annotation strobe while typing.
-        self.stale_inlay_hints(doc);
+        // Most snapshots do not move the text -- a highlight pass republishes
+        // the same version -- and those must not re-ask for hints. One that
+        // does holds the next request until the edits pause.
+        let mut advanced = false;
         for tab in self.all_tabs_mut() {
             let matches = matches!(&tab.kind, TabKind::Code { doc: Some(d), .. } if *d == doc);
             if !matches {
@@ -32,6 +31,7 @@ impl App {
                 // only the buffer/text catch up when the snapshot is at least as
                 // new as what's already applied locally.
                 if snap.version >= buffer.version() {
+                    advanced |= snap.version > buffer.version();
                     *buffer = snap.buffer.clone();
                     *text = snap.buffer.text();
                 }
@@ -61,6 +61,9 @@ impl App {
                     tab.editor.scroll_to(cursor.primary().head);
                 }
             }
+        }
+        if advanced {
+            self.note_inlay_edit(doc, Instant::now());
         }
         if snap.dirty {
             self.schedule_auto_save(doc, snap.version, Instant::now());
