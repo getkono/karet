@@ -539,6 +539,8 @@ pub struct App {
     clipboard: Clipboard,
     /// The active Kitty image placement rect (set by the renderer), if any.
     pub(crate) image_area: Option<Rect>,
+    /// Local images the markdown preview paints, decoded off the UI thread.
+    pub(crate) preview_images: crate::preview_images::PreviewImages,
     /// The tab index whose image is currently transmitted to the terminal.
     shown_image: Option<ViewId>,
     /// The document page currently transmitted, so paging a PDF re-transmits even

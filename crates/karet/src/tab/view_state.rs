@@ -16,8 +16,9 @@ pub enum ViewMode {
 pub(crate) struct MarkdownPreviewState {
     /// The parsed and wrapped render model.
     pub(crate) wrapped: WrappedDocument,
-    /// The `(document version, wrap width)` represented by [`Self::wrapped`].
-    pub(crate) rendered: Option<(u64, u16)>,
+    /// The `(document version, wrap width, image generation)` represented by
+    /// [`Self::wrapped`]; the generation moves when an image's reserved size does.
+    pub(crate) rendered: Option<(u64, u16, u64)>,
     /// The first visible wrapped line.
     pub(crate) scroll: u16,
 }

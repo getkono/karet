@@ -9,6 +9,7 @@ mod content;
 mod github;
 mod language_servers;
 mod lsp_badge;
+mod markdown_images;
 mod osc8;
 mod panes;
 mod scm;
@@ -65,6 +66,7 @@ use karet_widgets::SplitAxis;
 use karet_widgets::Toasts;
 use karet_widgets::UiIcon;
 use language_servers::*;
+use markdown_images::PreviewEnv;
 use panes::*;
 use ratatui::Frame;
 use ratatui::layout::Alignment;
@@ -407,9 +409,8 @@ struct PaneCtx<'a> {
     selection: Option<crate::app::SurfaceSelection>,
     /// Mouse position over a format-specific pane action.
     pane_action_hover: Option<(u16, u16)>,
-    /// Fence languages the markdown preview renders as mermaid diagrams
-    /// (`None` = rendering disabled or compiled out).
-    mermaid: Option<&'a [String]>,
+    /// What the markdown preview renders beyond text: mermaid fences and images.
+    preview: PreviewEnv<'a>,
     /// Whether to tint visible color literals with their own color.
     color_highlight: bool,
     /// Dependency-freshness hints per open manifest.

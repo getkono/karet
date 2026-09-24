@@ -164,6 +164,8 @@ async fn event_loop(
         }
     });
 
+    let mut decoded_images = preview_image_results(app);
+
     loop {
         terminal.draw(|f| ui::draw(f, app))?;
         app.flush_graphics();
@@ -188,6 +190,7 @@ async fn event_loop(
             snap = snaps.recv() => if let Some((doc, snap)) = snap {
                 app.on_snapshot(doc, &snap);
             },
+            image = recv_decoded(&mut decoded_images) => accept_decoded(app, image),
             () = async move {
                 match deadline {
                     Some(d) => tokio::time::sleep(d).await,
@@ -213,12 +216,49 @@ async fn event_loop(
         while let Some((doc, snap)) = snaps.try_recv() {
             app.on_snapshot(doc, &snap);
         }
+        while let Some(image) = decoded_images.as_mut().and_then(|rx| rx.try_recv().ok()) {
+            accept_decoded(app, Some(image));
+        }
 
         if app.should_quit {
             return Ok(());
         }
     }
 }
+
+/// The channel finished preview-image decodes arrive on (`None` in a lean build).
+#[cfg(feature = "images")]
+pub(super) type DecodedImages = Option<mpsc::UnboundedReceiver<crate::preview_images::Decoded>>;
+#[cfg(not(feature = "images"))]
+pub(super) type DecodedImages = Option<mpsc::UnboundedReceiver<std::convert::Infallible>>;
+
+#[cfg(feature = "images")]
+pub(super) fn preview_image_results(app: &App) -> DecodedImages {
+    app.preview_images.take_receiver()
+}
+
+#[cfg(not(feature = "images"))]
+pub(super) fn preview_image_results(_app: &App) -> DecodedImages {
+    None
+}
+
+/// The next finished decode; never resolves when there is no channel.
+pub(super) async fn recv_decoded<T>(rx: &mut Option<mpsc::UnboundedReceiver<T>>) -> Option<T> {
+    match rx {
+        Some(rx) => rx.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+#[cfg(feature = "images")]
+pub(super) fn accept_decoded(app: &mut App, image: Option<crate::preview_images::Decoded>) {
+    if let Some(image) = image {
+        app.preview_images.accept(image);
+    }
+}
+
+#[cfg(not(feature = "images"))]
+pub(super) fn accept_decoded(_app: &mut App, _image: Option<std::convert::Infallible>) {}
 
 /// Dispatch one terminal event to the app.
 fn handle_terminal_event(app: &mut App, event: Event) {

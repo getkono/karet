@@ -63,6 +63,12 @@ pub fn from_markdown(source: &str) -> Vec<OutlineEntry> {
         .iter()
         .enumerate()
         .filter_map(|(index, block)| {
+            // An HTML heading aligned by its container (`<h1 align="center">`) is still
+            // a heading; the container holds exactly the one block.
+            let block = match block {
+                Block::Aligned { blocks, .. } => blocks.first()?,
+                block => block,
+            };
             let Block::Heading { level, content } = block else {
                 return None;
             };
@@ -181,6 +187,19 @@ mod tests {
         assert_eq!((rows[0].depth, rows[0].label.as_str()), (0, "A"));
         assert_eq!((rows[1].depth, rows[1].label.as_str()), (1, "A.1"));
         assert_eq!(rows[1].target, Some(OutlineTarget::Page(1)));
+    }
+
+    #[test]
+    fn an_aligned_html_heading_is_an_outline_entry_on_its_line() {
+        let entries = from_markdown("intro\n\n<h1 align=\"center\">Title</h1>\n\n## Sub\n");
+        let rows = flatten(&entries);
+        assert_eq!(rows.len(), 2);
+        assert_eq!((rows[0].depth, rows[0].label.as_str()), (0, "Title"));
+        assert_eq!(
+            rows[0].target,
+            Some(OutlineTarget::Text(LineCol::new(2, 0)))
+        );
+        assert_eq!((rows[1].depth, rows[1].label.as_str()), (1, "Sub"));
     }
 
     #[cfg(feature = "pdf")]
