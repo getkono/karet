@@ -106,7 +106,20 @@ pub trait ImageSizer {
     fn chip_glyph(&self) -> &str {
         DEFAULT_CHIP_GLYPH
     }
+
+    /// The `(width, height)` in pixels of one terminal cell, which sizes an image at
+    /// its native resolution: an image of `w`×`h` pixels takes `w / width` columns
+    /// and `h / height` rows.
+    ///
+    /// Defaults to `8`×`16`, a common monospace cell; a consumer that can ask the
+    /// terminal for its real cell size overrides it.
+    fn cell_pixels(&self) -> (u32, u32) {
+        DEFAULT_CELL_PIXELS
+    }
 }
+
+/// The cell size [`ImageSizer::cell_pixels`] returns unless overridden.
+pub const DEFAULT_CELL_PIXELS: (u32, u32) = (8, 16);
 
 /// The glyph [`ImageSizer::chip_glyph`] returns unless overridden.
 pub(crate) const DEFAULT_CHIP_GLYPH: &str = "🖼";
@@ -222,9 +235,10 @@ impl MarkdownDocument {
     /// As [`wrap`](Self::wrap), but a paragraph holding only images gives every image
     /// `sizer` sizes rows of its own, as [`ImageSlice`]s on the lines it reserves.
     ///
-    /// An image is fitted to the width at an assumed 8×16-pixel cell, honouring its
-    /// HTML `width`/`height`, never upscaled and never taller than 20 lines. Images
-    /// among text, in a table, or left unsized render as chips.
+    /// An image takes its native size on the sizer's [cell](ImageSizer::cell_pixels) —
+    /// one image pixel per screen pixel — honouring its HTML `width`/`height`, never
+    /// upscaled, and shrunk only to fit the width. Images among text, in a table, or
+    /// left unsized render as chips.
     #[must_use]
     pub fn wrap_with(&self, width: u16, sizer: &dyn ImageSizer) -> WrappedDocument {
         wrap::wrap_with(self, width, sizer)

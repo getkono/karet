@@ -44,58 +44,120 @@ fn describe(doc: &WrappedDocument) -> Vec<String> {
         .collect()
 }
 
+const CELL: (u32, u32) = crate::DEFAULT_CELL_PIXELS;
+
 #[test]
-fn cell_box_fits_native_size_at_eight_by_sixteen_pixels_per_cell() {
-    assert_eq!(cell_box((80, 32), (None, None), 100), Some((10, 2)));
+fn cell_box_fits_native_size_one_image_pixel_per_screen_pixel() {
+    assert_eq!(cell_box((80, 32), (None, None), 100, CELL), Some((10, 2)));
     // Partial cells round up, so no pixel row is cut off.
-    assert_eq!(cell_box((81, 33), (None, None), 100), Some((11, 3)));
-    assert_eq!(cell_box((1, 1), (None, None), 100), Some((1, 1)));
+    assert_eq!(cell_box((81, 33), (None, None), 100, CELL), Some((11, 3)));
+    assert_eq!(cell_box((1, 1), (None, None), 100, CELL), Some((1, 1)));
+    // The terminal's real cell size decides the box: 10×20-pixel cells.
+    assert_eq!(
+        cell_box((100, 100), (None, None), 100, (10, 20)),
+        Some((10, 5))
+    );
+    // A zero-sized cell (a terminal that reports none) cannot divide by zero.
+    assert!(cell_box((10, 10), (None, None), 100, (0, 0)).is_some());
 }
 
 #[test]
 fn cell_box_shrinks_to_the_width_keeping_the_aspect() {
     // 800×160 px is 100×10 cells; at 50 columns it halves both ways.
-    assert_eq!(cell_box((800, 160), (None, None), 50), Some((50, 5)));
+    assert_eq!(cell_box((800, 160), (None, None), 50, CELL), Some((50, 5)));
 }
 
 #[test]
-fn cell_box_caps_the_height_keeping_the_aspect() {
-    // 160×800 px is 20×50 cells; capped at 20 rows, the width follows.
+fn a_tall_image_keeps_its_native_height() {
+    // 160×800 px is 20×50 cells: no line cap shrinks it.
     assert_eq!(
-        cell_box((160, 800), (None, None), 100),
-        Some((8, MAX_IMAGE_ROWS))
+        cell_box((160, 800), (None, None), 100, CELL),
+        Some((20, 50))
+    );
+    // A 4096-pixel-tall screenshot at a 16-pixel cell keeps all 256 of its rows.
+    assert_eq!(
+        cell_box((1024, 4096), (None, None), 200, CELL),
+        Some((128, 256))
+    );
+}
+
+#[test]
+fn only_the_placeholder_ceiling_bounds_the_rows() {
+    // Past the 297 addressable rows the image shrinks, keeping its aspect.
+    assert_eq!(
+        cell_box((160, 8000), (None, None), 100, CELL),
+        Some((11, MAX_IMAGE_CELLS))
     );
     // Even a one-pixel-wide sliver keeps a column.
     assert_eq!(
-        cell_box((1, 100_000), (None, None), 100),
-        Some((1, MAX_IMAGE_ROWS))
+        cell_box((1, 100_000), (None, None), 100, CELL),
+        Some((1, MAX_IMAGE_CELLS))
+    );
+    // The width is bounded the same way, however wide the pane.
+    assert_eq!(
+        cell_box((8000, 16), (None, None), usize::MAX, CELL),
+        Some((MAX_IMAGE_CELLS, 1))
     );
 }
 
 #[test]
 fn cell_box_honours_size_hints_but_never_upscales() {
     // One hint scales the other side by the aspect.
-    assert_eq!(cell_box((800, 400), (Some(200), None), 100), Some((25, 7)));
-    assert_eq!(cell_box((800, 400), (None, Some(160)), 100), Some((40, 10)));
+    assert_eq!(
+        cell_box((800, 400), (Some(200), None), 100, CELL),
+        Some((25, 7))
+    );
+    assert_eq!(
+        cell_box((800, 400), (None, Some(160)), 100, CELL),
+        Some((40, 10))
+    );
     // Both hints are taken as given.
     assert_eq!(
-        cell_box((800, 400), (Some(80), Some(80)), 100),
+        cell_box((800, 400), (Some(80), Some(80)), 100, CELL),
         Some((10, 5))
     );
     // A hint beyond the native size is clamped to it.
     assert_eq!(
-        cell_box((80, 32), (Some(8000), None), 100),
-        cell_box((80, 32), (None, None), 100)
+        cell_box((80, 32), (Some(8000), None), 100, CELL),
+        cell_box((80, 32), (None, None), 100, CELL)
     );
 }
 
 #[test]
 fn cell_box_refuses_an_empty_image_or_no_room_and_survives_huge_values() {
-    assert_eq!(cell_box((0, 10), (None, None), 10), None);
-    assert_eq!(cell_box((10, 0), (None, None), 10), None);
-    assert_eq!(cell_box((10, 10), (None, None), 0), None);
-    let huge = cell_box((u32::MAX, u32::MAX), (Some(u32::MAX), Some(1)), usize::MAX);
+    assert_eq!(cell_box((0, 10), (None, None), 10, CELL), None);
+    assert_eq!(cell_box((10, 0), (None, None), 10, CELL), None);
+    assert_eq!(cell_box((10, 10), (None, None), 0, CELL), None);
+    let huge = cell_box(
+        (u32::MAX, u32::MAX),
+        (Some(u32::MAX), Some(1)),
+        usize::MAX,
+        (u32::MAX, 1),
+    );
     assert!(huge.is_some_and(|(cols, rows)| cols >= 1 && rows >= 1));
+}
+
+#[test]
+fn the_sizer_cell_size_sizes_the_reserved_rows() {
+    struct Big;
+    impl ImageSizer for Big {
+        fn dimensions(&self, _: &ImageRef) -> Option<(u32, u32)> {
+            Some((80, 80))
+        }
+        fn cell_pixels(&self) -> (u32, u32) {
+            (8, 20)
+        }
+    }
+    let doc = parse("![a](a.png)").wrap_with(40, &Big);
+    assert_eq!(
+        describe(&doc),
+        vec![
+            "[a.png 0/4 @0 10]",
+            "[a.png 1/4 @0 10]",
+            "[a.png 2/4 @0 10]",
+            "[a.png 3/4 @0 10]"
+        ]
+    );
 }
 
 #[test]

@@ -15,14 +15,10 @@ use crate::ImageSizer;
 use crate::Inline;
 use crate::TextSpan;
 
-/// The pixel width of one terminal cell assumed when sizing an image. Cells are about
-/// twice as tall as wide; the ratio is what matters, since a half-block row paints two
-/// square pixels per cell.
-const CELL_PX_WIDTH: u64 = 8;
-/// The pixel height of one terminal cell assumed when sizing an image.
-const CELL_PX_HEIGHT: u64 = 16;
-/// The most lines one image may take, so a tall screenshot cannot swallow the view.
-pub(crate) const MAX_IMAGE_ROWS: u16 = 20;
+/// The most rows or columns one image may take: the 297 row/column diacritics of the
+/// Kitty unicode-placeholder protocol, so every row of a preview image stays
+/// addressable. Only an image thousands of pixels tall at a small font reaches it.
+pub(crate) const MAX_IMAGE_CELLS: u16 = 297;
 
 /// Wrap a paragraph made only of images (and the whitespace between them), giving each
 /// image `sizer` sizes rows of its own and gathering the rest into lines of chips.
@@ -47,9 +43,14 @@ pub(super) fn wrap_image_paragraph(
     let sized: Vec<(&ImageRef, Option<(u16, u16)>)> = images
         .into_iter()
         .map(|image| {
-            let cells = sizer
-                .dimensions(image)
-                .and_then(|native| cell_box(native, (image.width, image.height), inner));
+            let cells = sizer.dimensions(image).and_then(|native| {
+                cell_box(
+                    native,
+                    (image.width, image.height),
+                    inner,
+                    sizer.cell_pixels(),
+                )
+            });
             (image, cells)
         })
         .collect();
@@ -90,21 +91,25 @@ pub(super) fn wrap_image_paragraph(
     true
 }
 
-/// The `(columns, rows)` an image of `native` pixel size takes, given the author's
-/// `hints` (HTML `width`/`height`, in CSS pixels) and at most `max_cols` columns.
+/// The `(columns, rows)` an image of `native` pixel size takes on cells of `cell_px`
+/// pixels, given the author's `hints` (HTML `width`/`height`, in CSS pixels) and at
+/// most `max_cols` columns.
 ///
-/// Never larger than the image's native size, never wider than `max_cols`, never taller
-/// than [`MAX_IMAGE_ROWS`], and aspect-preserving throughout except where both hints
-/// are given (the author's call). `None` for an image with no area, or no room.
+/// An image takes its native size — one image pixel per screen pixel — and shrinks
+/// only to fit `max_cols` (or, past any real image, [`MAX_IMAGE_CELLS`]), keeping its
+/// aspect throughout except where both hints are given (the author's call). `None`
+/// for an image with no area, or no room.
 pub(crate) fn cell_box(
     native: (u32, u32),
     hints: (Option<u32>, Option<u32>),
     max_cols: usize,
+    cell_px: (u32, u32),
 ) -> Option<(u16, u16)> {
+    let (cell_w, cell_h) = (u64::from(cell_px.0.max(1)), u64::from(cell_px.1.max(1)));
     let (native_w, native_h) = (u64::from(native.0), u64::from(native.1));
     let max_cols = u64::try_from(max_cols)
         .unwrap_or(u64::MAX)
-        .min(u64::from(u16::MAX));
+        .min(u64::from(MAX_IMAGE_CELLS));
     if native_w == 0 || native_h == 0 || max_cols == 0 {
         return None;
     }
@@ -121,16 +126,23 @@ pub(crate) fn cell_box(
         (None, None) => (native_w, native_h),
     };
     let (w, h) = (w.max(1), h.max(1));
-    let mut cols = w.div_ceil(CELL_PX_WIDTH);
-    let mut rows = h.div_ceil(CELL_PX_HEIGHT);
+    let mut cols = w.div_ceil(cell_w);
+    let mut rows = h.div_ceil(cell_h);
     if cols > max_cols {
         cols = max_cols;
-        rows = (cols * CELL_PX_WIDTH * h).div_ceil(w * CELL_PX_HEIGHT);
+        rows = (u128::from(cols * cell_w) * u128::from(h))
+            .div_ceil(u128::from(w) * u128::from(cell_h))
+            .try_into()
+            .unwrap_or(u64::MAX);
     }
-    let max_rows = u64::from(MAX_IMAGE_ROWS);
+    let max_rows = u64::from(MAX_IMAGE_CELLS);
     if rows > max_rows {
         rows = max_rows;
-        cols = (rows * CELL_PX_HEIGHT * w / (h * CELL_PX_WIDTH)).clamp(1, max_cols);
+        cols = u64::try_from(
+            u128::from(rows * cell_h) * u128::from(w) / (u128::from(h) * u128::from(cell_w)),
+        )
+        .unwrap_or(u64::MAX)
+        .clamp(1, max_cols);
     }
     Some((
         u16::try_from(cols.max(1)).unwrap_or(u16::MAX),
