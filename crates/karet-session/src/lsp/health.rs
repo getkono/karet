@@ -328,6 +328,16 @@ impl FailureTally {
         result
     }
 
+    /// Record that the server answered a *background* request, without letting
+    /// the answer excuse a timeout.
+    ///
+    /// A background answer proves the server has finished starting up, so it
+    /// arms the gate above; it says nothing about the requests the user is
+    /// waiting on, so it leaves the streak where it was.
+    pub(super) fn note_background_answer(&mut self) {
+        self.answered = true;
+    }
+
     /// Whether this connection was condemned for going silent.
     ///
     /// Such a connection outlived [`STABLE_CONNECTION`] by construction -- it took

@@ -235,7 +235,9 @@ impl HintFlight {
 /// nobody was waiting on. A successful answer is neutral too: counting it would
 /// let a server that keeps answering hints but has stopped answering hover and
 /// completion reset the streak forever, which is the hang the streak is there
-/// to catch.
+/// to catch. It does prove the server has finished starting up, though, so it
+/// arms the liveness gate: a server whose only answers so far were hints is
+/// still one that can be condemned for going silent afterwards.
 pub(super) fn deliver(
     answer: HintAnswer,
     tally: &mut FailureTally,
@@ -246,7 +248,10 @@ pub(super) fn deliver(
     generation: u64,
 ) {
     let hints = match answer.result {
-        Ok(hints) => hints,
+        Ok(hints) => {
+            tally.note_background_answer();
+            hints
+        },
         Err(LspError::Timeout) => {
             tracing::debug!(language = %key, "inlay-hint request timed out; not charged");
             Vec::new()
@@ -520,6 +525,21 @@ mod tests {
         assert!(!dead, "a hint error is not a death");
         serial_timeout(&mut tally, &mut dead, &tx);
         assert!(dead, "a hint error reset the streak");
+        assert!(died(&mut rx));
+    }
+
+    #[test]
+    fn an_answered_hint_request_arms_the_liveness_gate() {
+        // A server whose only answers so far were hints has finished starting
+        // up; silence on what the user waits for afterwards is a hang.
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut tally = FailureTally::default();
+        let mut dead = false;
+        deliver_one(&mut tally, &mut dead, &tx, Ok(Vec::new()));
+        for _ in 0..health::TIMEOUT_DEATH_LIMIT {
+            serial_timeout(&mut tally, &mut dead, &tx);
+        }
+        assert!(dead, "a server that answered hints was never condemned");
         assert!(died(&mut rx));
     }
 
