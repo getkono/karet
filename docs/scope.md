@@ -56,7 +56,7 @@ Deliberately not built:
   reads as plain text, a line per row. Tags outside the subset keep their text and lose their
   markup.
 - **Remote images.** The preview never makes a network request: an `http(s)` image —
-  a CI badge — renders as a `🖼 alt` chip that links to it. Opening a file performs no
+  a CI badge — renders as a chip naming its alt text that links to it. Opening a file performs no
   network I/O, and a README must not be able to phone home through an image.
 - **Active content.** `<script>`, `<style>`, `<iframe>` and `<object>` vanish with
   their content; forms and embedded media are not interactive.
@@ -69,16 +69,21 @@ Deliberately not built:
   the workspace (`../`, symlinks); files over the 10 MiB guard or images over
   4096×4096 pixels.
 - **Watching image files.** A changed image is picked up on the preview's next
-  re-render (an edit, a resize), not by watching the file.
+  re-render (an edit, a resize) at least a second after it was last checked, not by
+  watching the file.
 
 Accepted rough edges, not bugs:
 
 - An image takes up to 20 preview lines but a single source line, so the two panes'
   scroll sync jumps across it.
-- A TIFF — or a JPEG whose frame header lies past its first 64 KiB — reserves its rows
-  only once decoded, so the layout shifts once.
+- A TIFF — or a JPEG or extended WebP whose size lies past its first 64 KiB —
+  reserves its rows only once decoded, so the layout shifts once; such an image
+  decodes as soon as the document is laid out, not when it is scrolled into view.
+- A screen whose images together decode to more than the 256 MiB budget keeps them
+  all while they are on screen rather than re-decoding them.
 - Chips are clickable in the preview only; hover popups, dialogs and the GitHub
-  surfaces render images as chip text. A lean build (`--no-default-features`)
+  surfaces render images as chip text, led by a fixed `🖼` rather than the icon
+  style's glyph. A lean build (`--no-default-features`)
   renders every image as a chip.
 
 This reopens on **proven demand** for a specific construct, which is then added to

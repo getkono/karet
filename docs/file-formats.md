@@ -208,10 +208,12 @@ paints as truecolor half-blocks when it stands alone in its paragraph (as a
 relative path to a regular file inside the workspace, in a format from the Gamut table
 above, under 10 MiB and 4096×4096 pixels. It is fitted to the preview's width, never
 enlarged past its native size, and capped at 20 lines. Its rows are reserved from the
-file's header at once; the pixels decode off the UI thread, behind a muted placeholder
-if that takes longer than a moment. Every other image — among text, in a table, remote
-(`http(s)`, never fetched), outside the workspace, or undecodable — is a `🖼 alt` chip
-linking to it. Ctrl/Cmd-click an image to open it in the image tab. Without the
+file's header at once; the pixels decode off the UI thread once the image is first
+scrolled into view, behind a muted placeholder if that takes longer than a moment.
+Decoded images share a 256 MiB budget, and one off screen gives its pixels back.
+Every other image — among text, in a table, remote (`http(s)`, never fetched), outside
+the workspace, or undecodable — is a chip naming its alt text and linking to it, led by
+the image glyph of the configured icon style. Ctrl/Cmd-click an image to open it in the image tab. Without the
 `images` feature every image is a chip.
 
 ## Planned / not yet supported
