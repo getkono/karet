@@ -530,6 +530,14 @@ impl LspClient {
     /// A selector's `language` filter is matched against the `languageId` the
     /// document was opened with through [`Self::did_open`]; a document never
     /// opened on this client matches no language filter.
+    ///
+    /// # Open before asking
+    ///
+    /// Call [`Self::did_open`] for a document before asking about it or sending
+    /// it a request. The protocol already requires that order, and it is the
+    /// only way this client learns the document's language: no language is
+    /// guessed from the path, so a language-scoped registration covers a
+    /// document only once it is open.
     #[must_use]
     pub fn supports_for(&self, feature: ServerFeature, doc: &Path) -> bool {
         self.gate
