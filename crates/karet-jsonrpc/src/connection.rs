@@ -318,7 +318,8 @@ impl<H: Handler> Connection<H> {
     ///
     /// Every [`PeerRequest`] carries a [`Responder`] that answers it. Dropping
     /// one answers it anyway, with `-32601`, and so does letting this queue
-    /// overflow: the peer is never left waiting on our silence.
+    /// overflow: the peer is never left waiting on our silence. A request the
+    /// peer cancels is answered through [`Responder::cancel`], not dropped.
     #[must_use]
     pub fn inbound_requests(&self) -> Option<mpsc::Receiver<PeerRequest>> {
         let taken = self.inbound_rx.lock().ok()?.take();

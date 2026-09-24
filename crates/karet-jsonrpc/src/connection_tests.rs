@@ -537,6 +537,38 @@ async fn a_dropped_responder_still_answers_the_peer() -> TestResult {
 }
 
 #[tokio::test]
+async fn a_cancelled_request_is_answered_with_the_callers_error() -> TestResult {
+    // Dropping the responder on cancellation answered `-32601`, and a peer
+    // told "method not found" may stop offering the feature. The protocol on
+    // top chooses the code; LSP's `RequestCancelled` stands in here.
+    const REQUEST_CANCELLED: i64 = -32800;
+
+    let ((read, write), mut peer) = wire();
+    let connection = Connection::start(TestHandler, read, write);
+    let mut requests = connection
+        .inbound_requests()
+        .ok_or("the peer-request stream was already taken")?;
+
+    peer.send(&json!({"jsonrpc": "2.0", "id": "c-1", "method": "workspace/applyEdit"}))
+        .await;
+    let request = requests.recv().await.ok_or("no peer request arrived")?;
+    request.responder.cancel(
+        ResponseError::new(REQUEST_CANCELLED, "request cancelled").with_data(json!({"why": 1})),
+    );
+
+    let answered = peer.recv().await;
+    assert_eq!(
+        answered,
+        json!({"jsonrpc": "2.0", "id": "c-1", "error": {
+            "code": REQUEST_CANCELLED,
+            "message": "request cancelled",
+            "data": {"why": 1},
+        }})
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_slow_consumer_does_not_block_the_rest_of_the_connection() -> TestResult {
     // The whole reason the stream exists. `Handler::answer` ran on the reader
     // task, so an answer that awaited anything stalled every other message.

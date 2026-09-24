@@ -44,10 +44,11 @@ pub struct PeerRequest {
 /// The right — and the obligation — to answer one peer request.
 ///
 /// Answer with [`respond`](Self::respond), [`ok`](Self::ok) or
-/// [`error`](Self::error). Dropping it without answering is not a leak: the
+/// [`error`](Self::error), and a request the peer cancelled with
+/// [`cancel`](Self::cancel). Dropping it without answering is not a leak: the
 /// `Drop` impl sends [`ResponseError::method_not_found`], because a peer left
 /// waiting is a worse outcome than a wrong answer and discipline is not a
-/// mechanism. Answering twice is impossible — every method consumes `self`.
+/// mechanism — but it *is* a wrong answer, so drop only by accident. Answering twice is impossible — every method consumes `self`.
 #[derive(Debug)]
 pub struct Responder {
     id: Value,
@@ -70,8 +71,11 @@ impl Responder {
     /// The peer's request id, echoed verbatim in the reply.
     ///
     /// Exposed so a consumer can correlate a cancellation — LSP's
-    /// `$/cancelRequest`, say — with the responder to drop. The id is opaque:
-    /// a peer may use a number, a string, or (degenerately) null.
+    /// `$/cancelRequest`, say — with the responder to answer through
+    /// [`cancel`](Self::cancel). Do not just drop it: that answers
+    /// `-32601` (method not found), which a peer reads as "this side does not
+    /// implement the method" and may stop offering the feature. The id is
+    /// opaque: a peer may use a number, a string, or (degenerately) null.
     #[must_use]
     pub fn id(&self) -> &Value {
         &self.id
@@ -96,6 +100,36 @@ impl Responder {
     /// Answer the request with a failure.
     pub fn error(self, error: ResponseError) {
         self.respond(Err(error));
+    }
+
+    /// Answer a request the peer has cancelled, with the error the protocol
+    /// on top prescribes for one.
+    ///
+    /// A cancelled request still needs an answer — JSON-RPC has no notion of
+    /// cancellation, so the peer's request stays pending until one arrives.
+    /// The code is the caller's because JSON-RPC 2.0 defines none for
+    /// cancellation; each protocol reserves its own. LSP's is
+    /// `RequestCancelled`, `-32800`:
+    ///
+    /// ```
+    /// # fn on_cancel(responder: karet_jsonrpc::Responder) {
+    /// use karet_jsonrpc::ResponseError;
+    ///
+    /// responder.cancel(ResponseError::new(-32800, "request cancelled"));
+    /// # }
+    /// ```
+    ///
+    /// Prefer this to dropping the responder, whose fallback answer is
+    /// `-32601` (method not found) — the wrong thing to tell a peer about a
+    /// method it has every reason to think is implemented.
+    pub fn cancel(self, error: ResponseError) {
+        tracing::debug!(
+            peer = self.peer,
+            method = %self.method,
+            code = error.code,
+            "answering a cancelled peer request"
+        );
+        self.error(error);
     }
 
     /// Encode and hand the reply to the writer, marking this responder used.
