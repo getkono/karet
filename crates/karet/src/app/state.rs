@@ -376,6 +376,9 @@ pub(crate) struct DocState {
     /// When each recently edited document will have been quiet long enough to
     /// ask about; its hint requests wait until then.
     pub(crate) inlay_quiet_until: HashMap<DocumentId, Instant>,
+    /// How many hint requests in a row each document's server has left
+    /// unanswered, which sets how long the next re-ask waits.
+    pub(crate) inlay_failures: HashMap<DocumentId, u32>,
     /// Latest language-server symbol tree for each open document.
     pub(crate) symbols: HashMap<DocumentId, Vec<Symbol>>,
     /// Buffer version represented by each cached symbol tree.

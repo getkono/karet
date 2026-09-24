@@ -36,6 +36,23 @@ use crate::tab::TabKind;
 /// ordinary scrolling stays inside the covered range and asks for nothing.
 const OVERSCAN: u32 = 64;
 
+/// The longest a document waits to be re-asked after its hint requests keep
+/// going unanswered.
+///
+/// The wait doubles from [`LSP_CHANGE_DEBOUNCE`] with each failure in a row, so
+/// a server that rejects every request is asked a handful of times and then
+/// twice a minute, rather than seven times a second forever.
+pub(crate) const INLAY_RETRY_MAX: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long to wait before re-asking after `failures` unanswered requests in a
+/// row: the edit pause, doubled per failure after the first, capped.
+pub(crate) fn inlay_retry_delay(failures: u32) -> std::time::Duration {
+    let doublings = failures.saturating_sub(1).min(16);
+    LSP_CHANGE_DEBOUNCE
+        .saturating_mul(1 << doublings)
+        .min(INLAY_RETRY_MAX)
+}
+
 /// A span of a document at one revision — the unit a hint set is asked for and
 /// answered over.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -266,6 +283,7 @@ impl App {
         {
             return; // the buffer moved on while the server was thinking
         }
+        self.docs.inlay_failures.remove(&doc);
         self.docs.inlay_hints.insert(doc, hints);
         self.docs.inlay_version.insert(doc, version);
         // Coverage only from the current epoch. An answer from before the last
@@ -294,9 +312,10 @@ impl App {
     /// nothing counts as covered. Adopting the failure as an empty set is what
     /// made hints vanish from an idle pane whenever rust-analyzer cancelled its
     /// request for an edit elsewhere -- and then stay gone, because the empty
-    /// set covered the range. The re-ask waits out the same pause an edit does
-    /// (`inlay_next_wake` wakes for it), so a server failing every request is
-    /// asked once per pause rather than once per frame.
+    /// set covered the range. The re-ask waits (`inlay_next_wake` wakes for
+    /// it): the edit pause after one failure, doubling with each further
+    /// failure in a row up to [`INLAY_RETRY_MAX`], so a server that fails every
+    /// request is not re-asked every pause forever.
     pub(crate) fn on_inlay_hints_failed_at(
         &mut self,
         id: Option<RequestId>,
@@ -311,7 +330,10 @@ impl App {
             return; // superseded
         }
         self.docs.inlay_pending.remove(&doc);
-        self.note_inlay_edit(doc, now);
+        let failures = self.docs.inlay_failures.entry(doc).or_insert(0);
+        *failures = failures.saturating_add(1);
+        let retry_at = now + inlay_retry_delay(*failures);
+        self.docs.inlay_quiet_until.insert(doc, retry_at);
     }
 
     /// Drop everything cached for `doc`, on close or on a language change.
@@ -320,6 +342,7 @@ impl App {
         self.docs.inlay_version.remove(&doc);
         self.docs.inlay_covered.remove(&doc);
         self.docs.inlay_pending.remove(&doc);
+        self.docs.inlay_failures.remove(&doc);
     }
 
     /// Drop every document's hints and every request for them, when they are
@@ -336,6 +359,7 @@ impl App {
         self.docs.inlay_covered.clear();
         self.docs.inlay_pending.clear();
         self.docs.inlay_quiet_until.clear();
+        self.docs.inlay_failures.clear();
     }
 
     /// Forget what every document is covered for, without dropping what is on
@@ -349,6 +373,14 @@ impl App {
     /// ready, and its empty answer would otherwise be cached forever.
     pub(crate) fn invalidate_inlay_coverage(&mut self) {
         self.docs.inlay_covered.clear();
+        // A failure back-off was a verdict on the providers as they were; this
+        // is news that one changed -- typically a server back from a restart.
+        // Which one is not tracked here, so every document's back-off ends and
+        // is asked on the next frame; a server still failing earns its back-off
+        // again, and state changes come at most at its restart rate.
+        for doc in std::mem::take(&mut self.docs.inlay_failures).into_keys() {
+            self.docs.inlay_quiet_until.remove(&doc);
+        }
         // The epoch moves rather than the pending map being cleared. An
         // in-flight request is not abandoned -- clearing it would discard an
         // answer that is about to arrive, and during startup these events land
@@ -367,6 +399,9 @@ impl App {
     /// it every keystroke asked the server to re-infer the viewport, and each
     /// answer was obsolete before it arrived.
     pub(crate) fn note_inlay_edit(&mut self, doc: DocumentId, now: Instant) {
+        // New text is a new question: the pause, not a back-off earned on the
+        // old one, decides when it is asked.
+        self.docs.inlay_failures.remove(&doc);
         self.docs
             .inlay_quiet_until
             .insert(doc, now + LSP_CHANGE_DEBOUNCE);

@@ -631,3 +631,96 @@ fn an_answer_arriving_after_hints_are_turned_off_is_discarded() {
         "a late answer was painted with hints turned off"
     );
 }
+
+#[test]
+fn the_retry_wait_doubles_per_failure_and_is_capped() {
+    use crate::app::inlay::INLAY_RETRY_MAX;
+    use crate::app::inlay::inlay_retry_delay;
+
+    assert_eq!(inlay_retry_delay(1), LSP_CHANGE_DEBOUNCE);
+    assert_eq!(inlay_retry_delay(2), LSP_CHANGE_DEBOUNCE * 2);
+    assert_eq!(inlay_retry_delay(3), LSP_CHANGE_DEBOUNCE * 4);
+    assert_eq!(inlay_retry_delay(50), INLAY_RETRY_MAX);
+    assert_eq!(inlay_retry_delay(u32::MAX), INLAY_RETRY_MAX);
+}
+
+/// Ask, fail at `now`, and return the id of the request that failed.
+fn ask_and_fail(backend: &RecordingBackend, app: &mut App, now: Instant) -> Option<RequestId> {
+    app.request_inlay_hints_at(now);
+    let &(id, ..) = inlay_requests(backend).last()?;
+    app.on_inlay_hints_failed_at(Some(id), DocumentId(9), 0, now);
+    Some(id)
+}
+
+#[test]
+fn a_server_that_keeps_failing_is_asked_less_and_less_often() {
+    // Re-asking at a fixed pause made a server that rejects every request
+    // take ~7 requests a second, forever.
+    let (backend, mut app) = hinted_app("let a = 1;\n");
+    let mut now = Instant::now();
+    let mut waits = Vec::new();
+    for _ in 0..10 {
+        let _ = ask_and_fail(&backend, &mut app, now);
+        let wait = app.inlay_next_wake(now).unwrap_or_default();
+        waits.push(wait);
+        now += wait + Duration::from_millis(1);
+    }
+    assert!(
+        waits.windows(2).all(|pair| pair[1] >= pair[0]),
+        "the wait shrank: {waits:?}"
+    );
+    assert_eq!(
+        waits.last().copied(),
+        Some(crate::app::inlay::INLAY_RETRY_MAX),
+        "the wait never reached its cap: {waits:?}"
+    );
+    assert_eq!(inlay_requests(&backend).len(), 10, "one ask per wait");
+}
+
+#[test]
+fn a_provider_change_ends_a_failure_back_off() {
+    // A server back from a restart must not wait out a back-off earned while
+    // it was away.
+    let (backend, mut app) = hinted_app("let a = 1;\n");
+    let now = Instant::now();
+    for step in 0..5 {
+        let _ = ask_and_fail(&backend, &mut app, now + INLAY_STEP * step);
+    }
+    let last = now + INLAY_STEP * 4;
+    let asked = inlay_requests(&backend).len();
+    // Still inside the back-off the last failure earned: nothing is asked.
+    app.request_inlay_hints_at(last);
+    assert_eq!(inlay_requests(&backend).len(), asked, "asked mid back-off");
+    app.invalidate_inlay_coverage();
+    app.request_inlay_hints_at(last);
+    assert_eq!(
+        inlay_requests(&backend).len(),
+        asked + 1,
+        "a provider change did not end the back-off"
+    );
+}
+
+#[test]
+fn an_answer_ends_a_failure_back_off() {
+    let (backend, mut app) = hinted_app("let a = 1;\n");
+    let now = Instant::now();
+    for step in 0..5 {
+        let _ = ask_and_fail(&backend, &mut app, now + INLAY_STEP * step);
+    }
+    assert!(app.docs.inlay_failures.contains_key(&DocumentId(9)));
+    app.invalidate_inlay_coverage();
+    app.request_inlay_hints_at(now + INLAY_STEP * 5);
+    let Some(&(id, ..)) = inlay_requests(&backend).last() else {
+        unreachable!("a request was just issued");
+    };
+    app.on_inlay_hints(Some(id), DocumentId(9), 0, vec![hint(0, 5, ": i32")]);
+    assert_eq!(
+        app.docs.inlay_failures.get(&DocumentId(9)),
+        None,
+        "an answer left the failure streak standing"
+    );
+}
+
+/// Far enough apart that every failure's back-off has expired, so each step
+/// asks.
+const INLAY_STEP: Duration = Duration::from_secs(31);

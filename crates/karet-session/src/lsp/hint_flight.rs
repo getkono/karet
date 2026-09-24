@@ -270,8 +270,14 @@ pub(super) fn deliver(
         // Any other error is neutral like an answer: `note` would reset the
         // streak, letting a hint the server cancelled (rust-analyzer's
         // `ContentModified` while typing) excuse hover timeouts around it.
+        Err(error) if is_cancellation(&error) => {
+            tracing::debug!(language = %key, %error, "inlay-hint request cancelled; not charged");
+            None
+        },
+        // Visible by default: the editor re-asks after a failure, so a server
+        // that rejects every hint request would otherwise fail quietly forever.
         Err(error) => {
-            tracing::debug!(language = %key, %error, "inlay-hint request failed; not charged");
+            tracing::warn!(language = %key, %error, "inlay-hint request failed; not charged");
             None
         },
     };
@@ -291,6 +297,17 @@ pub(super) fn deliver(
         version,
         hints,
     });
+}
+
+/// Whether `error` is the server abandoning a request because its input moved
+/// on -- LSP's `ContentModified` (`-32801`) or `RequestCancelled` (`-32800`).
+///
+/// Routine while typing, so not worth a warning. The code survives only in the
+/// message `karet-lsp` formats for a peer error (`"... failed with code N: ..."`),
+/// which is what this reads.
+fn is_cancellation(error: &LspError) -> bool {
+    matches!(error, LspError::Server(message)
+        if message.contains("code -32801") || message.contains("code -32800"))
 }
 
 /// Report the request `tag` echoes as unanswered.
@@ -586,6 +603,21 @@ mod tests {
             .map(|(_, count)| count)
             .collect();
         assert_eq!(counts, [Some(1), Some(0), None, None, None]);
+    }
+
+    #[test]
+    fn only_lsp_cancellation_codes_read_as_cancellation() {
+        let peer = |code: i64| {
+            LspError::Server(format!(
+                "textDocument/inlayHint failed with code {code}: whatever"
+            ))
+        };
+        assert!(is_cancellation(&peer(-32801)));
+        assert!(is_cancellation(&peer(-32800)));
+        assert!(!is_cancellation(&peer(-32602)));
+        assert!(!is_cancellation(&LspError::Protocol(
+            "code -32801".to_owned()
+        )));
     }
 
     #[test]
