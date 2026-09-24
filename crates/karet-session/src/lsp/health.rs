@@ -147,12 +147,16 @@ pub(super) fn charge_disconnect(
     key: &SlotKey,
 ) -> (Duration, LanguageServerRuntimeState) {
     // A silent connection is counted separately from the sliding failure window,
-    // because it cannot be caught by it. Condemning one takes three request
-    // timeouts -- at least 90 seconds -- while the window is 60, so the previous
-    // charge has always expired before the next lands: the budget never reaches
-    // two, `RESTART_LIMIT` is unreachable, and the kill-and-respawn loop runs
-    // forever at one cycle per 90 seconds. A straight count of consecutive silent
-    // deaths has no such hole.
+    // because it cannot be caught by it. Condemning one takes three consecutive
+    // 30-second request timeouts, and only requests the server task awaits one
+    // at a time count toward them -- background inlay-hint requests, which run
+    // concurrently and could time out together, are never charged (see
+    // `hint_flight::deliver`). So a condemnation lands at least 90 seconds after
+    // the last one, while the window is 60: the previous charge has always
+    // expired before the next lands, the budget never reaches two,
+    // `RESTART_LIMIT` is unreachable, and the kill-and-respawn loop runs forever
+    // at one cycle per 90 seconds. A straight count of consecutive silent deaths
+    // has no such hole.
     if hung {
         let now = Instant::now();
         while hangs

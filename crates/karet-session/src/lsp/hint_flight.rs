@@ -216,6 +216,16 @@ impl HintFlight {
 ///
 /// An [`LspError::Unsupported`] refusal is neither: `note` leaves the tally
 /// exactly as it was, and the answer is empty like any other failure.
+///
+/// Neither is a timeout. The hang streak exists to catch a server that has
+/// stopped answering *what the user is waiting on*, and it is calibrated for
+/// requests the server task awaits one at a time: three in a row take at least
+/// 90 seconds. Hint requests run beside those, several documents at once, so
+/// three of them can time out together inside one 30-second window -- and a
+/// server slow to infer types for a large file is slow, not hung. Charging
+/// them condemned such a server, killing it mid-analysis for background work
+/// nobody was waiting on. A successful answer still counts: it is a real reply
+/// to a real request, and proof the server is talking.
 pub(super) fn deliver(
     answer: HintAnswer,
     tally: &mut FailureTally,
@@ -227,6 +237,10 @@ pub(super) fn deliver(
 ) {
     let hints = match tally.observe(answer.result) {
         Ok(hints) => hints,
+        Err(LspError::Timeout) => {
+            tracing::debug!(language = %key, "inlay-hint request timed out; not charged");
+            Vec::new()
+        },
         Err(error) => {
             tally.note::<()>(Err(error), dead, updates, key, token);
             Vec::new()
@@ -262,6 +276,7 @@ mod tests {
 
     use tokio::sync::oneshot;
 
+    use super::super::health;
     use super::*;
 
     type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
@@ -382,6 +397,87 @@ mod tests {
             "the ended task was not forgotten"
         );
         Ok(())
+    }
+
+    fn key() -> SlotKey {
+        SlotKey::new(crate::api::LanguageServerId::new("rust"), "/w")
+    }
+
+    /// Deliver one finished hint request with `result`, as the task loop does.
+    fn deliver_one(
+        tally: &mut FailureTally,
+        dead: &mut bool,
+        tx: &mpsc::UnboundedSender<LspUpdate>,
+        result: Result<Vec<InlayHint>, LspError>,
+    ) {
+        let answer = HintAnswer {
+            tag: ask(1, 7).tag,
+            result,
+        };
+        deliver(answer, tally, dead, tx, &key(), SlotToken::FIRST, 0);
+    }
+
+    /// Charge one timed-out request the task awaited in line -- a hover, say.
+    fn serial_timeout(
+        tally: &mut FailureTally,
+        dead: &mut bool,
+        tx: &mpsc::UnboundedSender<LspUpdate>,
+    ) {
+        tally.note::<()>(Err(LspError::Timeout), dead, tx, &key(), SlotToken::FIRST);
+    }
+
+    fn died(rx: &mut mpsc::UnboundedReceiver<LspUpdate>) -> bool {
+        std::iter::from_fn(|| rx.try_recv().ok())
+            .any(|update| matches!(update, LspUpdate::ServerDied { .. }))
+    }
+
+    #[test]
+    fn hint_timeouts_never_mark_a_server_hung() {
+        // Background requests running side by side can time out together
+        // inside one window; a server slow to infer is not a server that has
+        // stopped answering.
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut tally = FailureTally::default();
+        let mut dead = false;
+        let _answered = tally.observe(Ok::<(), LspError>(()));
+        for _ in 0..health::TIMEOUT_DEATH_LIMIT.saturating_mul(3) {
+            deliver_one(&mut tally, &mut dead, &tx, Err(LspError::Timeout));
+        }
+        assert!(!dead, "hint timeouts condemned the connection");
+        assert!(!tally.hung());
+        assert_eq!(
+            answers(&mut rx).len(),
+            usize::try_from(health::TIMEOUT_DEATH_LIMIT.saturating_mul(3)).unwrap_or_default(),
+            "a timed-out hint request went unanswered"
+        );
+
+        // They did not advance the streak either: the serial requests still
+        // need the whole run to condemn it.
+        for _ in 0..health::TIMEOUT_DEATH_LIMIT.saturating_sub(1) {
+            serial_timeout(&mut tally, &mut dead, &tx);
+        }
+        assert!(!dead, "hint timeouts were counted toward the streak");
+        serial_timeout(&mut tally, &mut dead, &tx);
+        assert!(dead, "hover and completion timeouts must still condemn it");
+        assert!(tally.hung());
+        assert!(died(&mut rx));
+    }
+
+    #[test]
+    fn an_answered_hint_request_still_clears_the_streak() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut tally = FailureTally::default();
+        let mut dead = false;
+        let _answered = tally.observe(Ok::<(), LspError>(()));
+        for _ in 0..health::TIMEOUT_DEATH_LIMIT.saturating_sub(1) {
+            serial_timeout(&mut tally, &mut dead, &tx);
+        }
+        deliver_one(&mut tally, &mut dead, &tx, Ok(Vec::new()));
+        for _ in 0..health::TIMEOUT_DEATH_LIMIT.saturating_sub(1) {
+            serial_timeout(&mut tally, &mut dead, &tx);
+        }
+        assert!(!dead, "timeouts either side of a hint answer were summed");
+        assert!(!died(&mut rx));
     }
 
     #[tokio::test]
