@@ -530,3 +530,59 @@ async fn deferred_refusals_share_one_drainer_task() -> TestResult {
     assert_eq!(answered, (1..=BURST).collect::<Vec<_>>());
     Ok(())
 }
+
+#[tokio::test]
+async fn parked_refusals_are_still_written_after_the_adapter_stdout_ends() -> TestResult {
+    // An adapter that floods reverse requests and then closes its stdout
+    // while still reading its stdin. The reader hits EOF with most refusals
+    // parked; they must still be written, or the adapter -- alive, and
+    // blocked on its reverse requests -- waits on them forever.
+    use tokio::io::AsyncWriteExt;
+
+    // Far more refusals than a 128-byte pipe plus the outbound queue hold.
+    const BURST: i64 = 400;
+
+    let (client_end, server_end) = tokio::io::duplex(128);
+    let (server_read, mut server_write) = tokio::io::split(server_end);
+    let (read, write) = tokio::io::split(client_end);
+    let client = DapClient::connect(read, write);
+    let mut events = client.events();
+    let mut server_read = BufReader::new(server_read);
+
+    let flood = tokio::spawn(async move {
+        for seq in 1..=BURST {
+            let request = json!({"seq": seq, "type": "request", "command": "runInTerminal"});
+            let Ok(bytes) = serde_json::to_vec(&request) else {
+                return;
+            };
+            if codec::write_frame(&mut server_write, &bytes).await.is_err() {
+                return;
+            }
+        }
+        // EOF on the client's reader; the other direction stays open.
+        let _ = server_write.shutdown().await;
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(10), flood)
+        .await
+        .map_err(|_| "the client stopped reading the adapter")??;
+
+    // The synthesized `Terminated` is sent only once the reader has exited.
+    let event = tokio::time::timeout(std::time::Duration::from_secs(5), events.recv()).await;
+    assert!(matches!(event, Ok(Ok(DebugEvent::Terminated))), "{event:?}");
+    assert!(client.conn.is_closed(), "the reader should have seen EOF");
+
+    let mut answered = Vec::new();
+    for _ in 1..=BURST {
+        let bytes = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            codec::read_frame(&mut server_read),
+        )
+        .await
+        .map_err(|_| "a refusal parked before EOF was never written")??
+        .ok_or("the client stopped writing at EOF")?;
+        let refusal: Value = serde_json::from_slice(&bytes)?;
+        answered.push(refusal["request_seq"].as_i64().unwrap_or_default());
+    }
+    assert_eq!(answered, (1..=BURST).collect::<Vec<_>>());
+    Ok(())
+}
