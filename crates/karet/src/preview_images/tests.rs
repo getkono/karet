@@ -292,3 +292,26 @@ fn the_receiver_is_handed_out_once() {
     assert!(images.take_receiver().is_some());
     assert!(images.take_receiver().is_none());
 }
+
+#[test]
+fn a_jpeg_whose_frame_header_lies_past_the_probe_is_still_queued() {
+    // SOI, then an APP1 segment run longer than the probe reads, then no frame at all.
+    let mut bytes = b"\xff\xd8".to_vec();
+    for _ in 0..2 {
+        bytes.extend_from_slice(&[0xff, 0xe1, 0xff, 0xff]);
+        bytes.extend(std::iter::repeat_n(0u8, 0xfffd));
+    }
+    let dir = workspace(&[("big-exif.jpg", &bytes)]);
+    let images = PreviewImages::default();
+    assert_eq!(
+        size(&images, dir.path(), "big-exif.jpg"),
+        None,
+        "no rows yet"
+    );
+    assert_eq!(images.pendings().len(), 1, "but the decode is queued");
+    images.settle();
+    assert!(matches!(
+        lookup(&images, dir.path(), "big-exif.jpg"),
+        Lookup::Missing
+    ));
+}

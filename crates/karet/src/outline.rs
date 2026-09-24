@@ -116,6 +116,7 @@ fn inline_text(content: &[Inline]) -> String {
                 text.push_str(&inline_text(children));
             },
             Inline::Link { text: value, .. } => text.push_str(value),
+            Inline::Image(image) => text.push_str(&image.alt),
             _ => {},
         }
     }
@@ -200,6 +201,15 @@ mod tests {
             Some(OutlineTarget::Text(LineCol::new(2, 0)))
         );
         assert_eq!((rows[1].depth, rows[1].label.as_str()), (1, "Sub"));
+    }
+
+    #[test]
+    fn an_image_in_a_heading_labels_it_by_its_alt_text() {
+        let rows = flatten(&from_markdown("# ![logo](l.png) Project\n"));
+        assert_eq!(
+            rows.first().map(|row| row.label.as_str()),
+            Some("logo Project")
+        );
     }
 
     #[cfg(feature = "pdf")]

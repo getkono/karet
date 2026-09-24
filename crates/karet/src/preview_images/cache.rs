@@ -244,8 +244,10 @@ impl PreviewImages {
         let dims = image::probe_dimensions(&head);
         let over_cap = dims.is_some_and(|(w, h)| u64::from(w) * u64::from(h) > MAX_PIXELS);
         // Only a format the decoder knows is worth a decode: TIFF has no header size to
-        // probe, but decodes; anything else (SVG, GIF, …) is a chip straight away.
-        let decodable = dims.is_some() || is_tiff(&head);
+        // probe, and a JPEG's frame header can lie past the bytes read (behind a large
+        // EXIF or ICC segment), but both decode; anything else (SVG, GIF, …) is a chip
+        // straight away.
+        let decodable = dims.is_some() || is_tiff(&head) || head.starts_with(b"\xff\xd8\xff");
         let load = if over_cap || !decodable {
             Load::Failed
         } else {
