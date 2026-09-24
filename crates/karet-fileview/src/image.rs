@@ -371,19 +371,31 @@ fn is_tiff(bytes: &[u8]) -> bool {
 }
 
 /// Read just the pixel dimensions of `bytes` without fully decoding it (used for
-/// placeholders), or `None` if the format cannot be determined.
+/// placeholders), or `None` if the bytes do not decode.
+///
+/// Tries the header probe ([`probe_dimensions`]) first; when it has no answer —
+/// TIFF, an extended WebP it will not vouch for, a header it cannot read — this
+/// falls back to a full [`decode`], so the cost is unbounded for such input. A caller
+/// enforcing a pixel budget before decoding should use [`probe_dimensions`] alone.
+/// When that decode fails too, an extended WebP's declared canvas is still returned
+/// (an animated WebP, say), since a placeholder only labels the size.
 #[cfg(feature = "images")]
 #[must_use]
 pub fn dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
-    probe_dimensions(bytes).or_else(|| decode(bytes).ok().map(|image| (image.width, image.height)))
+    probe_dimensions(bytes)
+        .or_else(|| decode(bytes).ok().map(|image| (image.width, image.height)))
+        .or_else(|| webp_canvas(bytes))
 }
 
 /// Read the pixel dimensions from the header at the start of an image file, never
 /// decoding pixels — `head` may be just the file's first few kilobytes.
 ///
 /// Knows PNG (`IHDR`), JPEG (the frame header, wherever the markers before it put
-/// it) and WebP (`VP8 `, `VP8L` and `VP8X`). `None` for TIFF, whose header points
-/// elsewhere in the file, for anything unrecognised, and for a header cut short.
+/// it) and WebP (`VP8 `, `VP8L` and `VP8X`). A size returned is the size [`decode`]
+/// would produce, so it can gate a pixel budget. `None` for TIFF, whose header points
+/// elsewhere in the file, for anything unrecognised, for a header cut short, and for
+/// an extended WebP that is animated or whose frame is not within `head` or does not
+/// match its canvas.
 #[cfg(feature = "images")]
 #[must_use]
 pub fn probe_dimensions(head: &[u8]) -> Option<(u32, u32)> {
@@ -403,37 +415,103 @@ pub fn probe_dimensions(head: &[u8]) -> Option<(u32, u32)> {
     (width > 0 && height > 0).then_some((width, height))
 }
 
-/// The canvas size a WebP file's first chunk declares.
+/// The first RIFF chunk of a WebP file, just past the 12-byte `RIFF`/size/`WEBP` header.
+#[cfg(feature = "images")]
+const WEBP_FIRST_CHUNK: usize = 12;
+
+/// The size a WebP file decodes to.
+///
+/// A simple file's first chunk is its frame. An extended (`VP8X`) file declares a
+/// canvas, but the decoder only checks that header and then decodes the first
+/// `VP8 `/`VP8L` chunk at that frame's own size — so the canvas alone is no bound on
+/// what decoding allocates. The chunks are walked to that frame, and the size is
+/// trusted only when the frame is within `head` and agrees with the canvas.
+///
+/// An animated file (the `VP8X` animation flag) is refused outright: its frames sit in
+/// `ANMF` chunks the still decoder skips, so it either fails to decode or decodes some
+/// stray top-level frame the canvas says nothing about.
 #[cfg(feature = "images")]
 fn webp_dimensions(head: &[u8]) -> Option<(u32, u32)> {
-    let le24 = |at: usize| -> Option<u32> {
-        let b = head.get(at..at + 3)?;
-        Some(u32::from(b[0]) | u32::from(b[1]) << 8 | u32::from(b[2]) << 16)
-    };
-    match head.get(12..16)? {
-        // Extended: 24-bit canvas width and height, each stored minus one.
-        b"VP8X" => Some((le24(24)? + 1, le24(27)? + 1)),
+    if head.get(WEBP_FIRST_CHUNK..WEBP_FIRST_CHUNK + 4)? != b"VP8X" {
+        return webp_frame_dimensions(head, WEBP_FIRST_CHUNK);
+    }
+    let payload = WEBP_FIRST_CHUNK + 8;
+    if head.get(payload)? & 0x02 != 0 {
+        return None;
+    }
+    let canvas = webp_canvas(head)?;
+    // Every step passes at least a chunk header, and `head` bounds the walk.
+    let mut at = WEBP_FIRST_CHUNK;
+    loop {
+        if matches!(head.get(at..at + 4)?, b"VP8 " | b"VP8L") {
+            return (webp_frame_dimensions(head, at)? == canvas).then_some(canvas);
+        }
+        let size = usize::try_from(le_u32(head, at + 4)?).ok()?;
+        at = at
+            .checked_add(8)?
+            .checked_add(size)?
+            .checked_add(size & 1)?;
+        // Past the bytes read, the frame is not within `head`; stopping here also keeps
+        // `at` small enough that the reads above cannot overflow on 32-bit targets.
+        if at > head.len() {
+            return None;
+        }
+    }
+}
+
+/// The canvas an extended (`VP8X`) WebP file declares — not necessarily the size its
+/// frame decodes to (see [`webp_dimensions`]).
+#[cfg(feature = "images")]
+fn webp_canvas(head: &[u8]) -> Option<(u32, u32)> {
+    if !head.starts_with(b"RIFF")
+        || head.get(8..12)? != b"WEBP"
+        || head.get(WEBP_FIRST_CHUNK..WEBP_FIRST_CHUNK + 4)? != b"VP8X"
+    {
+        return None;
+    }
+    let payload = WEBP_FIRST_CHUNK + 8;
+    Some((le24(head, payload + 4)? + 1, le24(head, payload + 7)? + 1))
+}
+
+/// The size a `VP8 ` or `VP8L` frame chunk starting at byte `at` declares.
+#[cfg(feature = "images")]
+fn webp_frame_dimensions(head: &[u8], at: usize) -> Option<(u32, u32)> {
+    let payload = at + 8;
+    match head.get(at..at + 4)? {
         // Lossless: after the 0x2f signature, 14-bit width and height, minus one.
         b"VP8L" => {
-            if head.get(20) != Some(&0x2f) {
+            if head.get(payload) != Some(&0x2f) {
                 return None;
             }
-            let bits = u32::from_le_bytes(head.get(21..25)?.try_into().ok()?);
+            let bits = le_u32(head, payload + 1)?;
             Some(((bits & 0x3fff) + 1, ((bits >> 14) & 0x3fff) + 1))
         },
         // Lossy: a 3-byte frame tag and the 9d 01 2a start code, then 14-bit sizes.
         b"VP8 " => {
-            if head.get(23..26) != Some(&[0x9d, 0x01, 0x2a]) {
+            if head.get(payload + 3..payload + 6) != Some(&[0x9d, 0x01, 0x2a]) {
                 return None;
             }
             let le14 = |at: usize| -> Option<u32> {
                 let b = head.get(at..at + 2)?;
                 Some(u32::from(u16::from_le_bytes([b[0], b[1]]) & 0x3fff))
             };
-            Some((le14(26)?, le14(28)?))
+            Some((le14(payload + 6)?, le14(payload + 8)?))
         },
         _ => None,
     }
+}
+
+/// The little-endian 24-bit integer at byte `at`, if `bytes` reaches that far.
+#[cfg(feature = "images")]
+fn le24(bytes: &[u8], at: usize) -> Option<u32> {
+    let b = bytes.get(at..at + 3)?;
+    Some(u32::from(b[0]) | u32::from(b[1]) << 8 | u32::from(b[2]) << 16)
+}
+
+/// The little-endian `u32` at byte `at`, if `bytes` reaches that far.
+#[cfg(feature = "images")]
+fn le_u32(bytes: &[u8], at: usize) -> Option<u32> {
+    Some(u32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?))
 }
 
 /// The big-endian `u32` at byte `at`, if `bytes` reaches that far.
@@ -488,288 +566,4 @@ impl Widget for ImageWidget<'_> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[cfg(feature = "images")]
-    fn rgba_fixture(encoder: impl gamut::core::EncodeImage<Rgba8>) -> Vec<u8> {
-        use gamut::core::Dimensions;
-        use gamut::core::ImageRef;
-
-        let rgba = [
-            255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 128,
-        ];
-        let Ok(dimensions) = Dimensions::new(2, 2) else {
-            return Vec::new();
-        };
-        let Ok(image) = ImageRef::<Rgba8>::new(&rgba, dimensions) else {
-            return Vec::new();
-        };
-        encoder.encode_to_vec(image).unwrap_or_default()
-    }
-
-    #[cfg(feature = "images")]
-    fn jpeg_fixture() -> Vec<u8> {
-        use gamut::core::Dimensions;
-        use gamut::core::EncodeImage as _;
-        use gamut::core::ImageRef;
-
-        let rgb = [255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255];
-        let Ok(dimensions) = Dimensions::new(2, 2) else {
-            return Vec::new();
-        };
-        let Ok(image) = ImageRef::<Rgb8>::new(&rgb, dimensions) else {
-            return Vec::new();
-        };
-        gamut::jpeg::JpegEncoder::new()
-            .encode_to_vec(image)
-            .unwrap_or_default()
-    }
-
-    #[cfg(feature = "images")]
-    fn empty() -> Image {
-        Image {
-            rgba: Vec::new(),
-            width: 0,
-            height: 0,
-        }
-    }
-
-    #[cfg(feature = "images")]
-    #[test]
-    fn decode_and_dimensions() {
-        let png = test_png();
-        assert_eq!(dimensions(&png), Some((2, 2)));
-        assert_eq!(dimensions(&png[..24]), Some((2, 2)));
-        assert!(decode(&png[..24]).is_err());
-        let img = decode(&png);
-        assert!(img.is_ok());
-        let img = img.unwrap_or_else(|_| empty());
-        assert_eq!((img.width(), img.height()), (2, 2));
-    }
-
-    #[cfg(feature = "images")]
-    #[test]
-    fn gamut_decodes_all_supported_formats_to_the_shared_rgba_model() {
-        let png = test_png();
-        let jpeg = jpeg_fixture();
-        let webp = rgba_fixture(gamut::webp::WebpEncoder::lossless());
-        let tiff = rgba_fixture(gamut::tiff::TiffEncoder::new());
-        assert!(is_png(&png));
-        assert!(is_jpeg(&jpeg));
-        assert!(is_webp(&webp));
-        assert!(is_tiff(&tiff));
-        for encoded in [&png, &jpeg, &webp, &tiff] {
-            assert_eq!(dimensions(encoded), Some((2, 2)));
-            let decoded = decode(encoded);
-            assert!(decoded.is_ok());
-            let image = decoded.unwrap_or_else(|_| empty());
-            assert_eq!((image.width(), image.height()), (2, 2));
-            assert_eq!(image.rgba.len(), 16);
-            if is_jpeg(encoded) {
-                assert!(image.rgba.chunks_exact(4).all(|pixel| pixel[3] == 255));
-            }
-        }
-    }
-
-    #[cfg(feature = "images")]
-    #[test]
-    fn decode_rejects_garbage() {
-        assert!(matches!(decode(b"not an image"), Err(ImageError::Decode)));
-    }
-
-    #[cfg(feature = "raster")]
-    #[test]
-    fn from_rgba_keeps_dimensions_and_feeds_kitty() {
-        // A 2×1 image supplied as raw RGBA reuses the Kitty escape path.
-        let img = Image::from_rgba(vec![1, 2, 3, 4, 5, 6, 7, 8], 2, 1);
-        assert_eq!((img.width(), img.height()), (2, 1));
-        let esc = img.kitty_escape(2, 1);
-        assert!(esc.contains("s=2"));
-        assert!(esc.contains("v=1"));
-    }
-
-    #[cfg(feature = "raster")]
-    #[test]
-    fn from_rgba_pads_short_buffers_to_declared_size() {
-        // Fewer bytes than width*height*4 are padded so the buffer stays valid.
-        let img = Image::from_rgba(vec![255, 0, 0, 255], 2, 2);
-        assert_eq!((img.width(), img.height()), (2, 2));
-        let area = Rect::new(0, 0, 2, 2);
-        let mut buf = Buffer::empty(area);
-        ImageWidget::new(&img).render(area, &mut buf);
-        assert!(buf.content().iter().any(|c| c.symbol() == "▀"));
-    }
-
-    #[cfg(feature = "raster")]
-    #[test]
-    fn built_in_resampler_bilinearly_blends_pixel_centers() {
-        let pixel = |value: u8| [value, value, value, 255];
-        let rgba = [pixel(0), pixel(100), pixel(200), pixel(255)].concat();
-        let image = Image::from_rgba(rgba, 2, 2);
-        assert_eq!(image.sample_resized(1, 1, 3, 3), [139, 139, 139, 255]);
-    }
-
-    #[cfg(feature = "images")]
-    #[test]
-    fn halfblocks_fill_cells() {
-        let img = decode(&test_png()).unwrap_or_else(|_| empty());
-        let area = Rect::new(0, 0, 4, 2);
-        let mut buf = Buffer::empty(area);
-        ImageWidget::new(&img).render(area, &mut buf);
-        assert!(buf.content().iter().any(|c| c.symbol() == "▀"));
-    }
-
-    #[cfg(feature = "images")]
-    #[test]
-    fn kitty_escape_has_header_and_terminators() {
-        let img = decode(&test_png()).unwrap_or_else(|_| empty());
-        let esc = img.kitty_escape(4, 2);
-        assert!(esc.starts_with("\x1b_G"));
-        assert!(esc.ends_with("\x1b\\"));
-        assert!(esc.contains("a=T"));
-        assert!(esc.contains("f=32"));
-        assert!(esc.contains("c=4"));
-        assert!(esc.contains("r=2"));
-    }
-
-    #[cfg(feature = "images")]
-    #[test]
-    fn probe_reads_png_jpeg_and_webp_headers_from_a_prefix() {
-        let png = test_png();
-        assert_eq!(probe_dimensions(&png[..24]), Some((2, 2)));
-        let webp = rgba_fixture(gamut::webp::WebpEncoder::lossless());
-        assert_eq!(probe_dimensions(&webp[..25.min(webp.len())]), Some((2, 2)));
-        let lossy = rgba_fixture(gamut::webp::WebpEncoder::lossy(80));
-        assert_eq!(
-            probe_dimensions(&lossy[..30.min(lossy.len())]),
-            Some((2, 2))
-        );
-        // The JPEG frame header sits past the tables; the prefix need only reach the
-        // end of its segment (marker, 2-byte length, then that many bytes less two).
-        let jpeg = jpeg_fixture();
-        let sof = jpeg
-            .windows(2)
-            .position(|w| w == [0xff, 0xc0] || w == [0xff, 0xc2])
-            .unwrap_or(jpeg.len());
-        let length = jpeg
-            .get(sof + 2..sof + 4)
-            .map_or(0, |b| usize::from(u16::from_be_bytes([b[0], b[1]])));
-        let end = (sof + 2 + length).min(jpeg.len());
-        assert!(end < jpeg.len(), "the probe must not need the scan data");
-        assert_eq!(probe_dimensions(&jpeg[..end]), Some((2, 2)));
-    }
-
-    #[cfg(feature = "images")]
-    #[test]
-    fn probe_reads_an_extended_webp_canvas() {
-        // RIFF header, then a VP8X chunk: flags, reserved, canvas 300×200 minus one.
-        let mut vp8x = b"RIFF\0\0\0\0WEBPVP8X\x0a\0\0\0\0\0\0\0".to_vec();
-        vp8x.extend_from_slice(&[43, 1, 0, 199, 0, 0]);
-        assert_eq!(probe_dimensions(&vp8x), Some((300, 200)));
-    }
-
-    #[cfg(feature = "images")]
-    #[test]
-    fn probe_refuses_tiff_garbage_and_cut_headers() {
-        let tiff = rgba_fixture(gamut::tiff::TiffEncoder::new());
-        assert_eq!(probe_dimensions(&tiff), None);
-        assert_eq!(probe_dimensions(b"not an image"), None);
-        assert_eq!(probe_dimensions(&test_png()[..20]), None);
-        assert_eq!(probe_dimensions(b"RIFF\0\0\0\0WEBPVP8L\0\0\0\0\x2f"), None);
-        assert_eq!(
-            probe_dimensions(b"RIFF\0\0\0\0WEBPVP8 \0\0\0\0\0\0\0\0\0\0"),
-            None
-        );
-        // A zero-sized PNG is no image.
-        let mut png = test_png();
-        png[16..24].fill(0);
-        assert_eq!(probe_dimensions(&png), None);
-        // `dimensions` still gets TIFF right, by decoding.
-        assert_eq!(dimensions(&tiff), Some((2, 2)));
-    }
-
-    /// A 3×4 image whose every pixel is distinct, so a misplaced row shows.
-    #[cfg(feature = "raster")]
-    fn gradient() -> Image {
-        let rgba = (0..12u8)
-            .flat_map(|i| [i * 20, 255 - i * 20, i, 255])
-            .collect();
-        Image::from_rgba(rgba, 3, 4)
-    }
-
-    #[cfg(feature = "raster")]
-    #[test]
-    fn a_row_window_paints_exactly_the_rows_a_whole_render_paints_there() {
-        let image = gradient();
-        let whole_area = Rect::new(0, 0, 6, 5);
-        let mut whole = Buffer::empty(whole_area);
-        image.render_halfblocks_rows(6, 5, 0, whole_area, &mut whole);
-        for first in 0..5u16 {
-            let window_area = Rect::new(10, 20, 6, 2);
-            let mut window = Buffer::empty(Rect::new(10, 20, 6, 2));
-            image.render_halfblocks_rows(6, 5, first, window_area, &mut window);
-            for dy in 0..2u16 {
-                for x in 0..6u16 {
-                    let expected = whole.cell((x, first + dy)).cloned().unwrap_or_default();
-                    let got = window.cell((10 + x, 20 + dy)).cloned().unwrap_or_default();
-                    assert_eq!(got, expected, "row {first}+{dy}, column {x}");
-                }
-            }
-        }
-        // The whole box is painted, and nothing past it.
-        assert!(whole.content().iter().all(|cell| cell.symbol() == "▀"));
-    }
-
-    #[cfg(feature = "raster")]
-    #[test]
-    fn a_row_window_is_clipped_to_its_area_and_the_box() {
-        let image = gradient();
-        // Narrower than the box: only the columns that fit.
-        let area = Rect::new(0, 0, 2, 1);
-        let mut buf = Buffer::empty(Rect::new(0, 0, 4, 1));
-        image.render_halfblocks_rows(4, 2, 0, area, &mut buf);
-        assert_eq!(
-            buf.cell((1, 0)).map(|c| c.symbol().to_owned()).as_deref(),
-            Some("▀")
-        );
-        assert_eq!(
-            buf.cell((2, 0)).map(|c| c.symbol().to_owned()).as_deref(),
-            Some(" ")
-        );
-        // A window starting past the box paints nothing.
-        let mut buf = Buffer::empty(Rect::new(0, 0, 4, 2));
-        image.render_halfblocks_rows(4, 2, 2, Rect::new(0, 0, 4, 2), &mut buf);
-        assert!(buf.content().iter().all(|cell| cell.symbol() == " "));
-        // A degenerate box paints nothing.
-        image.render_halfblocks_rows(0, 2, 0, Rect::new(0, 0, 4, 2), &mut buf);
-        assert!(buf.content().iter().all(|cell| cell.symbol() == " "));
-    }
-
-    #[test]
-    fn fit_rect_preserves_aspect_and_centers() {
-        // A tall page (612×792 px) into a wide area keeps its portrait aspect and
-        // never exceeds the area.
-        let area = Rect::new(0, 0, 80, 24);
-        let fit = fit_rect(area, 612, 792);
-        assert!(fit.width <= area.width && fit.height <= area.height);
-        assert!(fit.width > 0 && fit.height > 0);
-        // Portrait page → height should hit the limiting dimension.
-        assert_eq!(fit.height, area.height);
-        // Centered within the area (±1 cell from integer rounding on odd sizes).
-        let fit_center = i32::from(fit.x) + i32::from(fit.width) / 2;
-        let area_center = i32::from(area.x) + i32::from(area.width) / 2;
-        assert!((fit_center - area_center).abs() <= 1);
-        // Degenerate inputs fall back to the whole area.
-        assert_eq!(fit_rect(area, 0, 10), area);
-    }
-
-    #[test]
-    fn detect_protocol_returns_a_variant() {
-        assert!(matches!(
-            detect_protocol(),
-            GraphicsProtocol::Kitty | GraphicsProtocol::Halfblocks
-        ));
-        assert_eq!(kitty_delete_all(), "\x1b_Ga=d\x1b\\");
-    }
-}
+mod tests;
