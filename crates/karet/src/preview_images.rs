@@ -15,12 +15,18 @@
 //!   repaints; files over the size guard or the pixel cap stay chips, and a file that
 //!   has since become a symlink is refused, not followed;
 //! - decoded pixels are budgeted, oldest-first, and an evicted image reloads on sight;
-//!   the images on screen are never evicted, so a screen over budget runs over it.
+//!   the images on screen are never evicted, so a screen over budget runs over it;
+//! - an image takes its native size on the terminal's real cell size; on a terminal
+//!   with Kitty unicode placeholders it is transmitted once at full resolution and
+//!   drawn by placeholder cells ([`kitty`]), and elsewhere it is resampled once per
+//!   cell box into truecolor halfblocks.
 //!
 //! Built without the `images` feature, nothing is ever sized, so every image is a chip.
 
 #[cfg(feature = "images")]
 pub(crate) mod cache;
+#[cfg(feature = "images")]
+pub(crate) mod kitty;
 #[cfg(all(test, feature = "images"))]
 pub(crate) mod tests;
 
@@ -28,6 +34,8 @@ pub(crate) mod tests;
 pub(crate) use cache::Decoded;
 #[cfg(feature = "images")]
 pub(crate) use cache::Lookup;
+#[cfg(feature = "images")]
+pub(crate) use cache::Paint;
 #[cfg(feature = "images")]
 pub(crate) use cache::PreviewImages;
 
@@ -55,6 +63,19 @@ impl PreviewImages {
 
     /// Nothing is ever decoded, so nothing is evicted.
     pub(crate) fn end_frame(&self) {}
+
+    /// Nothing is ever painted, so there is nothing to configure.
+    pub(crate) fn configure(&self, _kitty: bool, _cell_px: (u32, u32)) {}
+
+    /// Nothing is ever transmitted.
+    pub(crate) fn take_output(&self) -> String {
+        String::new()
+    }
+
+    /// Nothing is ever transmitted.
+    pub(crate) fn teardown(&self) -> String {
+        String::new()
+    }
 }
 
 /// Sizes nothing.

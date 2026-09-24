@@ -25,8 +25,8 @@ use crate::links::LinkTarget;
 /// The largest image file the preview loads — the same guard that keeps any file
 /// from opening as an image tab.
 const MAX_FILE_BYTES: u64 = karet_filetype::SIZE_GUARD;
-/// The most pixels an image may have; a larger one would cost its decode and its
-/// memory for a picture at most a few dozen cells across.
+/// The most pixels an image may have: a larger one would cost its decode, its memory
+/// and its transmission to the terminal before a single cell of it showed.
 const MAX_PIXELS: u64 = 4096 * 4096;
 /// The decoded bytes kept before the least-recently-seen images are dropped.
 const READY_BUDGET: u64 = 256 * 1024 * 1024;
@@ -45,11 +45,27 @@ const RESTAT_INTERVAL: Duration = Duration::from_secs(1);
 #[derive(Clone, Debug)]
 pub(crate) enum Lookup {
     /// Decoded and ready.
-    Ready(Arc<Image>),
+    Ready(Paint),
     /// Still decoding, since this moment.
     Loading(Pending),
     /// Never going to be painted: refused, unreadable, or undecodable.
     Missing,
+}
+
+/// How a ready image is painted into the cell box it was looked up for.
+#[derive(Clone, Debug)]
+pub(crate) enum Paint {
+    /// As halfblocks: the image already resampled to the box — its columns wide and
+    /// twice its rows tall — so the painter maps it one to one.
+    Pixels(Arc<Image>),
+    /// As Kitty unicode placeholders naming the image the terminal holds at full
+    /// resolution, and its placement sized to the box (see [`super::kitty`]).
+    Placeholder {
+        /// The image id.
+        id: u32,
+        /// The placement id.
+        placement: u32,
+    },
 }
 
 /// A file's identity for caching: a changed file gets a new stamp and reloads.
@@ -74,12 +90,54 @@ pub(crate) struct Decoded {
     path: PathBuf,
     stamp: Stamp,
     image: Option<Arc<Image>>,
+    /// The escapes transmitting the image to a Kitty terminal, built off the UI
+    /// thread when the job asked for them.
+    payload: Option<String>,
 }
 
 /// A decode for the worker.
 struct Job {
     path: PathBuf,
     stamp: Stamp,
+    /// The id to build the Kitty transmission under, when the terminal takes one.
+    kitty_id: Option<u32>,
+}
+
+/// A decoded image, and what painting it has derived from it.
+#[derive(Debug)]
+struct Ready {
+    image: Arc<Image>,
+    /// The Kitty transmission, until it is sent.
+    payload: Option<String>,
+    /// The halfblock resamples for the boxes it was last painted in, most recent
+    /// last: a few, so two panes showing it at different widths do not thrash.
+    resampled: Vec<((u16, u16), Arc<Image>)>,
+}
+
+/// How many halfblock resamples of one image are kept.
+const RESAMPLES_KEPT: usize = 4;
+
+impl Ready {
+    /// The image resampled to `(cols, rows)` halfblock cells, resampled only when the
+    /// box changes rather than on every frame.
+    fn resampled(&mut self, (cols, rows): (u16, u16)) -> Arc<Image> {
+        if let Some(index) = self
+            .resampled
+            .iter()
+            .position(|(cells, _)| *cells == (cols, rows))
+        {
+            let hit = self.resampled.remove(index);
+            let image = Arc::clone(&hit.1);
+            self.resampled.push(hit);
+            return image;
+        }
+        let image = Arc::new(self.image.resized(u32::from(cols), u32::from(rows) * 2));
+        if self.resampled.len() == RESAMPLES_KEPT {
+            self.resampled.remove(0);
+        }
+        self.resampled.push(((cols, rows), Arc::clone(&image)));
+        image
+    }
 }
 
 #[derive(Debug)]
@@ -89,7 +147,7 @@ enum Load {
     /// document decodes only the images the reader actually scrolls to.
     Unrequested,
     Queued(Pending),
-    Ready(Arc<Image>),
+    Ready(Ready),
     /// Dropped to stay within [`READY_BUDGET`]; decoded again when next painted.
     Evicted,
     Failed,
@@ -107,6 +165,8 @@ struct Entry {
     seen: Option<u64>,
     /// When the file was last stat'ed and checked, for [`RESTAT_INTERVAL`].
     checked: Instant,
+    /// The image's Kitty id, unique to this entry (a changed file gets a new one).
+    id: u32,
 }
 
 #[derive(Debug, Default)]
@@ -126,6 +186,48 @@ struct State {
     /// canonical, unreadable), with when they were checked: a broken image link is
     /// not re-checked on every keystroke either, for [`RESTAT_INTERVAL`].
     refused: HashMap<PathBuf, Instant>,
+    /// The last Kitty image id handed out.
+    last_id: u32,
+    kitty: Kitty,
+}
+
+/// What a Kitty terminal holds of the preview's images, and what it still needs told.
+#[derive(Debug, Default)]
+struct Kitty {
+    /// Whether images are painted as Kitty unicode placeholders.
+    enabled: bool,
+    /// The images transmitted, each with the cell boxes placed for it — the `n`th
+    /// box is placement `n + 1`.
+    sent: HashMap<u32, Vec<(u16, u16)>>,
+    /// Escapes to write after the frame is drawn.
+    output: String,
+}
+
+impl Kitty {
+    /// Tell the terminal to drop image `id`, if it holds it.
+    fn forget(&mut self, id: u32) {
+        if self.sent.remove(&id).is_some() {
+            self.output.push_str(&image::kitty_delete_image(id));
+        }
+    }
+}
+
+impl State {
+    /// A fresh Kitty image id: 24 bits, as a placeholder's colour carries it, and
+    /// never 0.
+    fn next_id(&mut self) -> u32 {
+        self.last_id = self.last_id % 0x00ff_ffff + 1;
+        self.last_id
+    }
+
+    /// Forget a removed entry: its decoded bytes stop counting against the budget,
+    /// and a Kitty terminal drops its image.
+    fn release(&mut self, entry: &Entry) {
+        if let Load::Ready(ready) = &entry.load {
+            self.ready_bytes = self.ready_bytes.saturating_sub(image_bytes(&ready.image));
+        }
+        self.kitty.forget(entry.id);
+    }
 }
 
 /// The markdown preview's image cache. Interior mutability lets the draw path —
@@ -144,6 +246,8 @@ pub(crate) struct PreviewImages {
     budget: u64,
     /// How long a sized image goes unchecked: [`RESTAT_INTERVAL`], but for tests.
     restat: Duration,
+    /// The pixel size of one terminal cell, which sizes every image.
+    cell_px: Cell<(u32, u32)>,
 }
 
 impl Default for PreviewImages {
@@ -157,6 +261,7 @@ impl Default for PreviewImages {
             receiver: RefCell::new(Some(receiver)),
             budget: READY_BUDGET,
             restat: RESTAT_INTERVAL,
+            cell_px: Cell::new(karet_markdown::DEFAULT_CELL_PIXELS),
         }
     }
 }
@@ -165,6 +270,33 @@ impl PreviewImages {
     /// The receiver of finished decodes, for the event loop. `None` after the first call.
     pub(crate) fn take_receiver(&self) -> Option<mpsc::UnboundedReceiver<Decoded>> {
         self.receiver.borrow_mut().take()
+    }
+
+    /// Paint images as Kitty unicode placeholders (`kitty`) or as halfblocks, on cells
+    /// of `cell_px` pixels. A new cell size changes every image's box, so it bumps the
+    /// generation and every preview re-wraps.
+    pub(crate) fn configure(&self, kitty: bool, cell_px: (u32, u32)) {
+        self.state.borrow_mut().kitty.enabled = kitty;
+        if self.cell_px.replace(cell_px) != cell_px {
+            self.generation.set(self.generation.get().wrapping_add(1));
+        }
+    }
+
+    /// The Kitty escapes the frame just drawn needs written after it: transmissions,
+    /// placements, and deletions.
+    pub(crate) fn take_output(&self) -> String {
+        std::mem::take(&mut self.state.borrow_mut().kitty.output)
+    }
+
+    /// The escapes deleting every image a Kitty terminal holds for the preview, for
+    /// when the editor exits.
+    pub(crate) fn teardown(&self) -> String {
+        let mut state = self.state.borrow_mut();
+        let ids: Vec<u32> = state.kitty.sent.keys().copied().collect();
+        for id in ids {
+            state.kitty.forget(id);
+        }
+        std::mem::take(&mut state.kitty.output)
     }
 
     /// Changes whenever a reserved image size does; part of every preview's cache key.
@@ -194,31 +326,43 @@ impl PreviewImages {
         }
     }
 
-    /// What to paint for `src` in the document at `source` — called by the draw path
-    /// for the visible image rows only. An image not decoded yet (never painted, or
-    /// evicted) is queued to decode here, and its reveal delay runs from now.
-    pub(crate) fn lookup(&self, source: &Path, root: &Path, src: &str) -> Lookup {
+    /// What to paint for `src` in the document at `source`, in a box of `cells`
+    /// `(columns, rows)` — called by the draw path for the visible image rows only. An
+    /// image not decoded yet (never painted, or evicted) is queued to decode here, and
+    /// its reveal delay runs from now. On a Kitty terminal, a ready image's first
+    /// lookup queues its transmission, and a box new to it queues a placement.
+    pub(crate) fn lookup(
+        &self,
+        source: &Path,
+        root: &Path,
+        src: &str,
+        cells: (u16, u16),
+    ) -> Lookup {
         let Some(path) = self.resolve(source, root, src) else {
             return Lookup::Missing;
         };
         let mut state = self.state.borrow_mut();
         state.clock += 1;
         let (now, epoch) = (state.clock, state.epoch);
-        let Some(entry) = state.entries.get_mut(&path) else {
+        let State { entries, kitty, .. } = &mut *state;
+        let Some(entry) = entries.get_mut(&path) else {
             return Lookup::Missing;
         };
         entry.last_used = now;
         entry.seen = Some(epoch);
-        match &entry.load {
-            Load::Ready(image) => Lookup::Ready(Arc::clone(image)),
+        match &mut entry.load {
+            Load::Ready(ready) if kitty.enabled => {
+                Lookup::Ready(place(kitty, entry.id, ready, cells))
+            },
+            Load::Ready(ready) => Lookup::Ready(Paint::Pixels(ready.resampled(cells))),
             Load::Queued(pending) => Lookup::Loading(*pending),
             Load::Failed => Lookup::Missing,
             Load::Unrequested | Load::Evicted => {
                 let pending = Pending::start();
                 entry.load = Load::Queued(pending);
-                let stamp = entry.stamp;
+                let (stamp, id) = (entry.stamp, entry.id);
                 drop(state);
-                self.queue(path, stamp);
+                self.queue(path, stamp, id);
                 Lookup::Loading(pending)
             },
         }
@@ -239,7 +383,11 @@ impl PreviewImages {
             Some(image) => {
                 entry.dims = Some((image.width(), image.height()));
                 let bytes = image_bytes(&image);
-                entry.load = Load::Ready(image);
+                entry.load = Load::Ready(Ready {
+                    image,
+                    payload: decoded.payload,
+                    resampled: Vec::new(),
+                });
                 bytes
             },
             None => {
@@ -341,6 +489,7 @@ impl PreviewImages {
         let queue = matches!(load, Load::Queued(_));
         let dims = dims.filter(|_| !matches!(load, Load::Failed));
         state.refused.remove(&path);
+        let id = state.next_id();
         let previous = state.entries.insert(
             path.clone(),
             Entry {
@@ -350,14 +499,15 @@ impl PreviewImages {
                 last_used: now,
                 seen: None,
                 checked,
+                id,
             },
         );
         if let Some(previous) = previous {
-            release(&mut state, &previous);
+            state.release(&previous);
         }
         drop(state);
         if queue {
-            self.queue(path, stamp);
+            self.queue(path, stamp, id);
         }
         dims
     }
@@ -385,14 +535,16 @@ impl PreviewImages {
     fn refuse(&self, path: &Path, checked: Instant) {
         let mut state = self.state.borrow_mut();
         if let Some(entry) = state.entries.remove(path) {
-            release(&mut state, &entry);
+            state.release(&entry);
         }
         state.refused.insert(path.to_path_buf(), checked);
     }
 
-    /// Hand a decode to the worker, starting it on first use. A worker that cannot be
+    /// Hand a decode to the worker, starting it on first use — with the Kitty id to
+    /// build its transmission under, on a Kitty terminal. A worker that cannot be
     /// started (or has gone) fails the image, so it settles as a chip.
-    fn queue(&self, path: PathBuf, stamp: Stamp) {
+    fn queue(&self, path: PathBuf, stamp: Stamp, id: u32) {
+        let kitty_id = self.state.borrow().kitty.enabled.then_some(id);
         let mut jobs = self.jobs.borrow_mut();
         if jobs.is_none() {
             *jobs = spawn_worker(self.results.clone());
@@ -400,6 +552,7 @@ impl PreviewImages {
         let job = Job {
             path: path.clone(),
             stamp,
+            kitty_id,
         };
         if jobs.as_ref().is_some_and(|jobs| jobs.send(job).is_ok()) {
             return;
@@ -410,15 +563,36 @@ impl PreviewImages {
             path,
             stamp,
             image: None,
+            payload: None,
         });
     }
 }
 
-/// Stop counting a removed entry's decoded bytes against the budget.
-fn release(state: &mut State, entry: &Entry) {
-    if let Load::Ready(image) = &entry.load {
-        state.ready_bytes = state.ready_bytes.saturating_sub(image_bytes(image));
-    }
+/// Queue what a Kitty terminal needs to show image `id` in a `cells` box — its
+/// transmission, the first time, and a placement for a box new to it — and name the
+/// placement to paint.
+fn place(kitty: &mut Kitty, id: u32, ready: &mut Ready, cells: (u16, u16)) -> Paint {
+    let Kitty { sent, output, .. } = kitty;
+    let boxes = sent.entry(id).or_insert_with(|| {
+        let payload = ready
+            .payload
+            .take()
+            .unwrap_or_else(|| super::kitty::transmit(&ready.image, id));
+        output.push_str(&payload);
+        Vec::new()
+    });
+    let index = boxes
+        .iter()
+        .position(|&placed| placed == cells)
+        .unwrap_or_else(|| {
+            boxes.push(cells);
+            let index = boxes.len() - 1;
+            let placement = u32::try_from(index + 1).unwrap_or(u32::MAX);
+            output.push_str(&super::kitty::place(id, placement, cells.0, cells.1));
+            index
+        });
+    let placement = u32::try_from(index + 1).unwrap_or(u32::MAX);
+    Paint::Placeholder { id, placement }
 }
 
 /// The decoded size of `image`: RGBA, four bytes a pixel.
@@ -436,8 +610,13 @@ fn image_bytes(image: &Image) -> u64 {
 fn evict_over_budget(state: &mut State, budget: u64, accepted: Option<&Path>) {
     let recent = state.epoch.saturating_sub(1);
     while state.ready_bytes > budget {
-        let oldest = state
-            .entries
+        let State {
+            entries,
+            kitty,
+            ready_bytes,
+            ..
+        } = &mut *state;
+        let oldest = entries
             .iter_mut()
             .filter(|(path, entry)| {
                 matches!(entry.load, Load::Ready(_))
@@ -448,9 +627,11 @@ fn evict_over_budget(state: &mut State, budget: u64, accepted: Option<&Path>) {
         let Some((_, entry)) = oldest else {
             return;
         };
-        if let Load::Ready(image) = std::mem::replace(&mut entry.load, Load::Evicted) {
-            state.ready_bytes = state.ready_bytes.saturating_sub(image_bytes(&image));
+        if let Load::Ready(ready) = std::mem::replace(&mut entry.load, Load::Evicted) {
+            *ready_bytes = ready_bytes.saturating_sub(image_bytes(&ready.image));
         }
+        // An evicted image is decoded and transmitted again when next painted.
+        kitty.forget(entry.id);
     }
 }
 
@@ -482,10 +663,15 @@ fn decode_file(job: Job) -> Decoded {
         .and_then(|bytes| image::decode(&bytes).ok())
         .filter(|image| u64::from(image.width()) * u64::from(image.height()) <= MAX_PIXELS)
         .map(Arc::new);
+    let payload = job
+        .kitty_id
+        .zip(image.as_deref())
+        .map(|(id, image)| super::kitty::transmit(image, id));
     Decoded {
         path: job.path,
         stamp: job.stamp,
         image,
+        payload,
     }
 }
 
@@ -543,6 +729,10 @@ impl ImageSizer for Sizer<'_> {
     fn dimensions(&self, image: &ImageRef) -> Option<(u32, u32)> {
         self.images.dimensions(self.source, self.root, &image.src)
     }
+
+    fn cell_pixels(&self) -> (u32, u32) {
+        self.images.cell_px.get()
+    }
 }
 
 /// Decode `path` now, stamped with `meta`, as the worker would.
@@ -551,6 +741,7 @@ pub(crate) fn decode_now(path: PathBuf, meta: &std::fs::Metadata) -> Decoded {
     decode_file(Job {
         path,
         stamp: Stamp::of(meta),
+        kitty_id: None,
     })
 }
 
@@ -563,17 +754,22 @@ impl PreviewImages {
     pub(crate) fn settle(&self) {
         let mut state = self.state.borrow_mut();
         let mut wanted = Vec::new();
+        let kitty = state.kitty.enabled;
         for (path, entry) in &mut state.entries {
             if matches!(entry.load, Load::Unrequested) {
                 entry.load = Load::Queued(Pending::start());
             }
             if matches!(entry.load, Load::Queued(_)) {
-                wanted.push((path.clone(), entry.stamp));
+                wanted.push((path.clone(), entry.stamp, kitty.then_some(entry.id)));
             }
         }
         drop(state);
-        for (path, stamp) in wanted {
-            self.accept(decode_file(Job { path, stamp }));
+        for (path, stamp, kitty_id) in wanted {
+            self.accept(decode_file(Job {
+                path,
+                stamp,
+                kitty_id,
+            }));
         }
     }
 

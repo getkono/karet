@@ -1,9 +1,10 @@
 //! Painting the images a markdown preview reserved rows for.
 //!
-//! The wrapped document carries an [`ImageSlice`] on each row an image occupies; the
-//! pixels come from the app's [`PreviewImages`] cache as truecolor halfblocks, so an
-//! image scrolled half out of view paints just its visible rows. (Kitty graphics are
-//! not used here: a placement cannot be clipped to a scrolling pane's rows.)
+//! The wrapped document carries an [`ImageSlice`] on each row an image occupies, and
+//! only its visible rows are painted, so an image scrolled half out of view shows just
+//! those. On a Kitty terminal they are unicode-placeholder cells the terminal fills
+//! with the image at full resolution; elsewhere they are truecolor halfblocks, from
+//! the app's [`PreviewImages`] cache.
 
 use std::path::Path;
 
@@ -58,6 +59,10 @@ impl ImageSizer for StyledSizer<'_> {
 
     fn chip_glyph(&self) -> &str {
         &self.glyph
+    }
+
+    fn cell_pixels(&self) -> (u32, u32) {
+        self.inner.cell_pixels()
     }
 }
 
@@ -140,20 +145,37 @@ pub(super) fn paint(
     use ratatui::text::Span;
 
     use crate::preview_images::Lookup;
+    use crate::preview_images::Paint;
 
     for run in visible_runs(wrapped, area, scroll) {
         let Some(rect) = run_rect(&run, area) else {
             continue;
         };
         let slice = run.slice;
-        match from.images.lookup(from.source, from.root, &slice.src) {
-            Lookup::Ready(image) => image.render_halfblocks_rows(
+        match from
+            .images
+            .lookup(from.source, from.root, &slice.src, (slice.cols, slice.rows))
+        {
+            Lookup::Ready(Paint::Pixels(image)) => image.render_halfblocks_rows(
                 slice.cols,
                 slice.rows,
                 slice.row,
                 rect,
                 f.buffer_mut(),
             ),
+            Lookup::Ready(Paint::Placeholder { id, placement }) => {
+                // Transparent pixels show the theme's background, as they do between
+                // the halfblocks of a non-Kitty terminal's image.
+                let bg = theme.role(ThemeRole::Background).to_ratatui();
+                crate::preview_images::kitty::paint(
+                    f.buffer_mut(),
+                    rect,
+                    id,
+                    placement,
+                    slice.row,
+                    bg,
+                );
+            },
             Lookup::Loading(pending) if pending.visible() => {
                 let label = if slice.alt.is_empty() {
                     "image"
@@ -267,6 +289,17 @@ mod tests {
         wrapped: &WrappedDocument,
         scroll: u16,
     ) -> usize {
+        painted_as(dir, images, wrapped, scroll, "▀")
+    }
+
+    /// As [`painted`], counting the cells whose symbol starts with `glyph`.
+    fn painted_as(
+        dir: &Path,
+        images: &PreviewImages,
+        wrapped: &WrappedDocument,
+        scroll: u16,
+        glyph: &str,
+    ) -> usize {
         let Ok(mut terminal) = Terminal::new(TestBackend::new(30, 10));
         let theme = karet_theme::Theme::default();
         let source = dir.join("README.md");
@@ -291,7 +324,7 @@ mod tests {
                 .buffer
                 .content()
                 .iter()
-                .filter(|cell| cell.symbol() == "▀")
+                .filter(|cell| cell.symbol().starts_with(glyph))
                 .count()
         })
     }
@@ -315,6 +348,33 @@ mod tests {
             painted(dir.path(), &images, &wrapped, 12),
             0,
             "scrolled past"
+        );
+    }
+
+    #[test]
+    fn on_a_kitty_terminal_the_visible_rows_are_placeholders_and_no_halfblocks() {
+        let (dir, images, wrapped) = tall_image();
+        images.configure(true, karet_markdown::DEFAULT_CELL_PIXELS);
+        let placeholder = crate::preview_images::kitty::PLACEHOLDER.to_string();
+        assert_eq!(
+            painted_as(dir.path(), &images, &wrapped, 0, &placeholder),
+            4
+        );
+        assert_eq!(
+            painted_as(dir.path(), &images, &wrapped, 7, &placeholder),
+            5
+        );
+        assert_eq!(painted(dir.path(), &images, &wrapped, 7), 0);
+        let output = images.take_output();
+        assert_eq!(
+            output.matches("a=t,").count(),
+            1,
+            "sent once, however it scrolls"
+        );
+        assert_eq!(
+            output.matches("a=p,U=1,").count(),
+            1,
+            "one box, one placement"
         );
     }
 

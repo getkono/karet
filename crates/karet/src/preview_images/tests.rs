@@ -5,6 +5,8 @@ use karet_markdown::ImageSizer as _;
 
 use super::*;
 
+mod kitty;
+
 /// A valid PNG of `width`×`height` opaque pixels, all `rgb` — encoded here (stored
 /// deflate blocks, no compression) so the tests need no image codec of their own.
 pub(crate) fn png(width: u32, height: u32, rgb: [u8; 3]) -> Vec<u8> {
@@ -136,7 +138,12 @@ fn size(images: &PreviewImages, root: &Path, src: &str) -> Option<(u32, u32)> {
 }
 
 fn lookup(images: &PreviewImages, root: &Path, src: &str) -> Lookup {
-    images.lookup(&root.join("README.md"), root, src)
+    lookup_in(images, root, src, (4, 2))
+}
+
+/// Look `src` up for a box of `cells` `(columns, rows)`.
+fn lookup_in(images: &PreviewImages, root: &Path, src: &str, cells: (u16, u16)) -> Lookup {
+    images.lookup(&root.join("README.md"), root, src, cells)
 }
 
 #[test]
@@ -195,7 +202,7 @@ fn a_decoded_image_is_ready_and_leaves_the_layout_alone() {
     images.settle();
     assert!(matches!(
         lookup(&images, dir.path(), "logo.png"),
-        Lookup::Ready(image) if (image.width(), image.height()) == (4, 4)
+        Lookup::Ready(Paint::Pixels(image)) if (image.width(), image.height()) == (4, 4)
     ));
     assert_eq!(images.generation(), before, "the reserved size was right");
     assert!(images.pendings().is_empty());
@@ -670,8 +677,8 @@ fn an_extended_webp_whose_frame_lies_past_the_probe_is_queued_and_decodes() {
     );
     assert_eq!(size(&images, dir.path(), "wide.webp"), Some((4, 2)));
     assert!(matches!(
-        lookup(&images, dir.path(), "wide.webp"),
-        Lookup::Ready(image) if (image.width(), image.height()) == (4, 2)
+        lookup_in(&images, dir.path(), "wide.webp", (4, 1)),
+        Lookup::Ready(Paint::Pixels(image)) if (image.width(), image.height()) == (4, 2)
     ));
 }
 

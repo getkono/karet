@@ -108,6 +108,7 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
     if crate::term_caps::probe_kitty_graphics(crate::term_caps::PROBE_TIMEOUT) == Some(true) {
         app.caps.graphics = GraphicsProtocol::Kitty;
         app.caps.kitty_graphics = true;
+        app.caps.placeholders = super::state::unicode_placeholders();
     }
     // Same handshake for OSC 22 pointer-shape hints (col-resize/row-resize over
     // the sidebar/SCM dividers) — confirmed support only, never assumed.
@@ -167,6 +168,7 @@ async fn event_loop(
     let mut decoded_images = preview_image_results(app);
 
     loop {
+        app.sync_preview_graphics();
         terminal.draw(|f| ui::draw(f, app))?;
         app.flush_graphics();
         // The graph view only learns its viewport height by being painted; top its
@@ -221,6 +223,7 @@ async fn event_loop(
         }
 
         if app.should_quit {
+            app.release_preview_graphics();
             return Ok(());
         }
     }

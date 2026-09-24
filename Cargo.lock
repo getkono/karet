@@ -3312,6 +3312,7 @@ dependencies = [
  "color-eyre",
  "crossterm",
  "directories",
+ "flate2",
  "gix",
  "ignore",
  "karet-core",
