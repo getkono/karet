@@ -220,9 +220,9 @@ provider, path, and document version, then sorted and deduplicated.
 | Capability | Owner and behavior |
 |---|---|
 | Parsing, syntax colours, folds, brackets, structural selection, injections | Tree-sitter, always the baseline |
-| Completion, hover, symbols, rename, signature help, code actions | first capable LSP in the language's ordered `servers` list |
-| Inlay hints (inferred types, parameter names) | first capable LSP in the language's ordered `servers` list; requested for the visible range with overscan, re-asked when the buffer or the viewport moves past it, and drawn as virtual text the caret steps over rather than into. `editor.inlayHints.enabled` turns them off |
-| Definition (`F12` / `Ctrl+Click`, with `Ctrl`-hover underline and Go Back) | first capable LSP in the language's ordered `servers` list; a `LocationLink` reply lands the caret on the definition's *name*, a plain `Location` on whatever the server calls its start |
+| Completion, hover, symbols, rename, signature help, code actions | the language's primary server — the first in its ordered `servers` list. A request the primary does not offer is refused, not passed on to a companion |
+| Inlay hints (inferred types, parameter names) | the language's primary server, as above. Requested for the front tab of each visible pane, over its viewport with overscan; re-asked when the viewport leaves what was covered, once an edit has been quiet for the `didChange` debounce (150 ms), and when the server sends `workspace/inlayHint/refresh`. Until the replacement arrives the hints on screen move with the text, and one whose anchor an edit replaced is dropped. Drawn as virtual text the caret steps over rather than into. `editor.inlayHints.enabled` (default `true`) turns them off |
+| Definition (`F12` / `Ctrl+Click`, with `Ctrl`-hover underline and Go Back) | the language's primary server, as above; a `LocationLink` reply lands the caret on the definition's *name*, a plain `Location` on whatever the server calls its start |
 | Semantic tokens | Tree-sitter owns highlighting today; `semanticTokens` reserves one future LSP overlay owner and is never allowed to replace parsing |
 | Diagnostics | every provider in `diagnostics`, version-gated and merged |
 | Formatting | exactly one `formatter`; a user selection wins, then a repository-native provider, then the language default |
@@ -246,15 +246,42 @@ is not counted against the provider's failure budget, does not advance the
 "stopped answering" streak that declares a server dead, and does not satisfy
 the "has it ever answered" gate — because nothing reached the wire either way.
 
+For a request you make by hand — hover (`Ctrl+K Ctrl+I`) and go to
+definition; the backend treats rename and workspace symbol search the same
+way — a refusal says so. A notice reads "*server* does not support *feature*"
+in place of "no definition found" or "no hover information", which would be a
+claim about your code rather than about the provider. Requests karet makes on its own — inlay hints, completion as you
+type, the outline's document symbols, format-on-save — are refused silently,
+since a notice on every keystroke or save is noise (format-on-save falls back
+to the built-in formatter instead).
+
+What the client declares at the handshake is kept to what it honours:
+
+- `textDocument.inlayHint`, and `workspace.inlayHint.refreshSupport`. A server
+  sends `workspace/inlayHint/refresh` when something outside a document changes
+  its hints — edit a return type in one file and the `: u32` shown at a call
+  site in another is stale. karet answers it at once and re-asks for the hints
+  of every visible document.
+- `dynamicRegistration` for the gated requests whose registration carries
+  nothing karet reads beyond "on": hover, definition, implementation, type
+  hierarchy, document and workspace symbols, rename, formatting, range
+  formatting, and inlay hints. Completion, signature help and code actions are
+  deliberately not declared: their registrations carry trigger characters and
+  action kinds karet would drop, so a server should keep stating them in its
+  handshake.
+
 The reply is read from its JSON rather than through a typed mirror of one
 spec revision, so a capability karet learns about later needs no dependency
 bump: `typeHierarchyProvider`, which karet already issues requests against, has
 no field at all in the `lsp-types` release this workspace pins.
 
-Position encoding is negotiated with it. The protocol's default is UTF-16 and
-clangd prefers UTF-8; the two agree on every ASCII-only line, so a mismatch
-stays invisible until a line contains one non-ASCII character and then
-misplaces every position after it.
+Position encoding is *offered*, not negotiated: the client lists UTF-16 as the
+only encoding it speaks, which is also the protocol's default, and every
+position crosses the wire in UTF-16 code units. A server's `positionEncoding`
+reply is read and kept, but not yet acted on. The distinction matters because
+the encodings agree on every ASCII-only line, so a server that answered in
+another one anyway — clangd prefers UTF-8 — would look correct until a line
+contained one non-ASCII character, and then misplace every position after it.
 
 Tree-sitter and LSP are complementary. Tree-sitter is local, incremental, stable
 while a server restarts, and understands injected regions in Astro, Svelte, Vue,

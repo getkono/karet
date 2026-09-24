@@ -19,10 +19,11 @@
 //!
 //! Three protocol choices are deliberate and documented here once:
 //!
-//! - **Positions cross this API in UTF-16.** The client negotiates the LSP-default
-//!   `utf-16` position encoding and stays faithful to it: every [`LineCol`] and
-//!   [`Range`] passed to or returned from this crate counts columns in UTF-16 code
-//!   units. karet is internally UTF-32; the conversions live on
+//! - **Positions cross this API in UTF-16.** The client offers the LSP-default
+//!   `utf-16` as its only position encoding and stays faithful to it; a server's
+//!   `positionEncoding` reply is recorded in [`Capabilities`] but not yet acted
+//!   on. Every [`LineCol`] and [`Range`] passed to or returned from this crate
+//!   counts columns in UTF-16 code units. karet is internally UTF-32; the conversions live on
 //!   `karet_text::TextBuffer` (`line_col_to_utf16` / `utf16_to_line_col`) and are
 //!   applied by the consumer that owns the text (karet-session), not here.
 //! - **Document sync is full-text.** [`LspClient::did_change`] sends the whole
