@@ -6,6 +6,7 @@ use super::*;
 
 mod carets;
 mod inlay;
+mod reveal;
 
 #[test]
 fn inline_text_decoration_renders_after_the_line() {
@@ -356,12 +357,9 @@ fn overflow_scrolling_and_cursor_margin_are_clamped() {
     let mut buf = Buffer::empty(area);
     Editor::new(&buffer).render(area, &mut buf, &mut state);
 
-    // Horizontal reveal is resolved by the render that follows the motion.
     state.goto(&buffer, LineCol::new(0, 15));
-    Editor::new(&buffer).render(area, &mut buf, &mut state);
     assert_eq!(state.scroll_col, 4);
     state.goto(&buffer, LineCol::new(0, 2));
-    Editor::new(&buffer).render(area, &mut buf, &mut state);
     assert_eq!(state.scroll_col, 0);
 
     state.scroll_columns(&buffer, 3);

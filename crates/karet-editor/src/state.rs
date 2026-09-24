@@ -87,9 +87,12 @@ pub struct EditorState {
     /// Whether the next render should reveal a cursor moved by an editor
     /// command rather than preserve a manually-scrolled viewport.
     pub(super) follow_cursor: bool,
-    /// The position the next unwrapped render scrolls horizontally into view
-    /// while [`follow_cursor`](Self::follow_cursor) is set.
-    pub(super) follow_target: LineCol,
+    /// A horizontal reveal the next unwrapped render still owes: set only when
+    /// the scroll could not be resolved on the spot — [`scroll_to`] was given
+    /// no buffer, or the last frame was wrapped or never measured the viewport.
+    ///
+    /// [`scroll_to`]: Self::scroll_to
+    pub(super) follow_col: Option<LineCol>,
     /// Source lines currently occupying the sticky-scroll rows, outermost first.
     pub(super) sticky_rows: Vec<u32>,
     /// Rows reserved above the live document viewport by the last render.
@@ -118,7 +121,7 @@ impl Default for EditorState {
             last_unwrapped_lines: Vec::new(),
             last_hints: HintIndex::default(),
             follow_cursor: false,
-            follow_target: LineCol::new(0, 0),
+            follow_col: None,
             sticky_rows: Vec::new(),
             sticky_height: 0,
             last_visible_lines: 0,
@@ -152,16 +155,53 @@ impl EditorState {
         self.cursors.selections.len() > 1
     }
 
-    /// Scroll so that `pos` is within the viewport.
+    /// Scroll so that `pos` is within the viewport, when the buffer is not at
+    /// hand.
     ///
-    /// Vertical scroll is applied immediately. Horizontal scroll is resolved by
-    /// the next render, which has the line's text, tab width and inlay hints:
-    /// the caret is drawn in display cells, so revealing it by `char` count
-    /// alone would leave it clamped at the edge over the wrong glyph whenever
-    /// a tab, wide character or hint precedes it.
+    /// Vertical scroll is applied immediately. The horizontal reveal is measured
+    /// in the display cells the caret is drawn in — tabs, wide characters and
+    /// inlay hints ahead of it included — which needs the line's text, so
+    /// without a buffer it is left to the next render and
+    /// [`scroll_col`](Self::scroll_col) stays stale until then. Prefer
+    /// [`reveal`](Self::reveal), which resolves both axes now.
     pub fn scroll_to(&mut self, pos: LineCol) {
+        self.scroll_vertically_to(pos);
+        self.follow_col = Some(pos);
+    }
+
+    /// Scroll so that `pos` is within the viewport, resolving both axes
+    /// immediately.
+    ///
+    /// In an unwrapped view the horizontal scroll keeps up to a 10-cell margin
+    /// either side of the caret, measured in display cells against the last
+    /// frame's geometry: its content width, tab width and inlay hints. So
+    /// [`scroll_col`](Self::scroll_col) is already right when read before the
+    /// next render — as a view that mirrors this one's offset does. Soft-wrapped
+    /// views have no horizontal axis; their vertical reveal still completes on
+    /// the next render, which knows how the lines wrap. Before any render has
+    /// measured the viewport the horizontal part is deferred to the first one.
+    pub fn reveal(&mut self, buffer: &TextBuffer, pos: LineCol) {
+        self.scroll_vertically_to(pos);
+        if self.last_word_wrap || self.last_content_width == 0 {
+            // Wrapped: nothing to scroll, unless the next frame is unwrapped.
+            self.follow_col = Some(pos);
+            return;
+        }
+        self.follow_col = None;
+        self.scroll_col = reveal_column(
+            &line_chars(buffer, pos.line),
+            self.scroll_col,
+            pos.col,
+            u32::from(self.last_content_width),
+            self.last_tab_width,
+            self.hints_on(pos.line),
+        );
+    }
+
+    /// Bring `pos`'s line into the viewport and have the next render follow
+    /// the cursor.
+    fn scroll_vertically_to(&mut self, pos: LineCol) {
         self.follow_cursor = true;
-        self.follow_target = pos;
         let height = u32::from(self.last_height.max(1));
         if pos.line < self.scroll_line {
             self.scroll_line = pos.line;
@@ -403,24 +443,24 @@ impl EditorState {
 
     /// Move every caret's head with `motion`, then merge coincident carets and keep
     /// the primary head in view. This is how multi-caret motions stay consistent.
-    fn map_heads(&mut self, motion: impl Fn(LineCol) -> LineCol) {
+    fn map_heads(&mut self, buffer: &TextBuffer, motion: impl Fn(LineCol) -> LineCol) {
         for s in &mut self.cursors.selections {
             s.head = motion(s.head);
         }
-        self.after_motion();
+        self.after_motion(buffer);
     }
 
     /// Normalize the cursor set after a motion and scroll to the primary head.
-    fn after_motion(&mut self) {
+    fn after_motion(&mut self, buffer: &TextBuffer) {
         self.cursors.normalize();
         let head = self.cursor();
-        self.scroll_to(head);
+        self.reveal(buffer, head);
     }
 
     /// Move every caret down one line, clamping to the buffer and keeping the primary
     /// in view.
     pub fn move_down(&mut self, buffer: &TextBuffer) {
-        self.map_heads(|h| {
+        self.map_heads(buffer, |h| {
             let line = (h.line + 1).min(last_line(buffer));
             LineCol::new(line, h.col.min(line_len(buffer, line)))
         });
@@ -428,7 +468,7 @@ impl EditorState {
 
     /// Move every caret up one line.
     pub fn move_up(&mut self, buffer: &TextBuffer) {
-        self.map_heads(|h| {
+        self.map_heads(buffer, |h| {
             let line = h.line.saturating_sub(1);
             LineCol::new(line, h.col.min(line_len(buffer, line)))
         });
@@ -436,7 +476,7 @@ impl EditorState {
 
     /// Move every caret left one column, wrapping to the previous line's end.
     pub fn move_left(&mut self, buffer: &TextBuffer) {
-        self.map_heads(|h| {
+        self.map_heads(buffer, |h| {
             if h.col > 0 {
                 LineCol::new(h.line, h.col - 1)
             } else if h.line > 0 {
@@ -450,7 +490,7 @@ impl EditorState {
 
     /// Move every caret right one column, wrapping to the next line's start.
     pub fn move_right(&mut self, buffer: &TextBuffer) {
-        self.map_heads(|h| {
+        self.map_heads(buffer, |h| {
             if h.col < line_len(buffer, h.line) {
                 LineCol::new(h.line, h.col + 1)
             } else if h.line < last_line(buffer) {
@@ -464,7 +504,7 @@ impl EditorState {
     /// Move every caret down one page.
     pub fn page_down(&mut self, buffer: &TextBuffer) {
         let height = u32::from(self.last_height.max(1));
-        self.map_heads(|h| {
+        self.map_heads(buffer, |h| {
             let line = (h.line + height).min(last_line(buffer));
             LineCol::new(line, h.col.min(line_len(buffer, line)))
         });
@@ -473,42 +513,42 @@ impl EditorState {
     /// Move every caret up one page.
     pub fn page_up(&mut self, buffer: &TextBuffer) {
         let height = u32::from(self.last_height.max(1));
-        self.map_heads(|h| {
+        self.map_heads(buffer, |h| {
             let line = h.line.saturating_sub(height);
             LineCol::new(line, h.col.min(line_len(buffer, line)))
         });
     }
 
     /// Move every caret to the start of its line (column 0).
-    pub fn move_line_start(&mut self, _buffer: &TextBuffer) {
-        self.map_heads(|h| LineCol::new(h.line, 0));
+    pub fn move_line_start(&mut self, buffer: &TextBuffer) {
+        self.map_heads(buffer, |h| LineCol::new(h.line, 0));
     }
 
     /// Move every caret to the end of its line.
     pub fn move_line_end(&mut self, buffer: &TextBuffer) {
-        self.map_heads(|h| LineCol::new(h.line, line_len(buffer, h.line)));
+        self.map_heads(buffer, |h| LineCol::new(h.line, line_len(buffer, h.line)));
     }
 
     /// Move every caret to the start of the document.
-    pub fn move_doc_start(&mut self, _buffer: &TextBuffer) {
-        self.map_heads(|_| LineCol::new(0, 0));
+    pub fn move_doc_start(&mut self, buffer: &TextBuffer) {
+        self.map_heads(buffer, |_| LineCol::new(0, 0));
     }
 
     /// Move every caret to the end of the document.
     pub fn move_doc_end(&mut self, buffer: &TextBuffer) {
         let last = last_line(buffer);
         let end = LineCol::new(last, line_len(buffer, last));
-        self.map_heads(move |_| end);
+        self.map_heads(buffer, move |_| end);
     }
 
     /// Move every caret to the start of the previous word (wrapping across lines).
     pub fn move_word_left(&mut self, buffer: &TextBuffer) {
-        self.map_heads(|h| previous_word_boundary(buffer, h));
+        self.map_heads(buffer, |h| previous_word_boundary(buffer, h));
     }
 
     /// Move every caret to the end of the next word (wrapping across lines).
     pub fn move_word_right(&mut self, buffer: &TextBuffer) {
-        self.map_heads(|h| next_word_boundary(buffer, h));
+        self.map_heads(buffer, |h| next_word_boundary(buffer, h));
     }
 
     /// Select the entire buffer as a single selection, caret at the end (Ctrl+A).
@@ -519,7 +559,7 @@ impl EditorState {
             anchor: LineCol::new(0, 0),
             head: end,
         });
-        self.scroll_to(end);
+        self.reveal(buffer, end);
     }
 
     /// Jump the caret to `pos` (clamped), collapsing to a single bare caret there.
@@ -527,7 +567,7 @@ impl EditorState {
     pub fn goto(&mut self, buffer: &TextBuffer, pos: LineCol) {
         let p = clamp_to_buffer(buffer, pos);
         self.cursors = CursorState::single(Selection::caret(p));
-        self.scroll_to(p);
+        self.reveal(buffer, p);
     }
 
     /// Collapse every selection to a bare caret at its head (a non-extending motion).
@@ -582,7 +622,7 @@ impl EditorState {
         cursors.normalize();
         let head = cursors.primary().head;
         self.cursors = cursors;
-        self.scroll_to(head);
+        self.reveal(buffer, head);
     }
 
     /// Extend the primary selection so its moving end is `pos` (clamped), keeping the
@@ -592,7 +632,7 @@ impl EditorState {
         if let Some(s) = self.cursors.selections.get_mut(self.cursors.primary) {
             s.head = p;
         }
-        self.after_motion();
+        self.after_motion(buffer);
     }
 
     /// Collapse to a single selection spanning `anchor`..`head` (both clamped), with
@@ -601,7 +641,7 @@ impl EditorState {
         let anchor = clamp_to_buffer(buffer, anchor);
         let head = clamp_to_buffer(buffer, head);
         self.cursors = CursorState::single(Selection { anchor, head });
-        self.scroll_to(head);
+        self.reveal(buffer, head);
     }
 
     /// Collapse the cursor set to just the primary selection (the `Esc` fold-back).
@@ -618,7 +658,7 @@ impl EditorState {
         }
         let p = clamp_to_buffer(buffer, LineCol::new(h.line - 1, h.col));
         self.cursors.push(Selection::caret(p));
-        self.scroll_to(self.cursor());
+        self.reveal(buffer, self.cursor());
     }
 
     /// Add a bare caret one line below the primary. A no-op on the last line.
@@ -629,7 +669,7 @@ impl EditorState {
         }
         let p = clamp_to_buffer(buffer, LineCol::new(h.line + 1, h.col));
         self.cursors.push(Selection::caret(p));
-        self.scroll_to(self.cursor());
+        self.reveal(buffer, self.cursor());
     }
 
     /// Toggle a caret at `pos` (Alt+click): remove a coincident bare caret unless it is
@@ -648,7 +688,7 @@ impl EditorState {
             return;
         }
         self.cursors.push(Selection::caret(p));
-        self.scroll_to(p);
+        self.reveal(buffer, p);
     }
 
     /// `Ctrl+D`: if the primary is a bare caret, select the word under it; otherwise
@@ -661,7 +701,7 @@ impl EditorState {
             if let Some(s) = self.cursors.selections.get_mut(self.cursors.primary) {
                 *s = Selection { anchor, head };
             }
-            self.scroll_to(self.cursor());
+            self.reveal(buffer, self.cursor());
             return;
         }
         let Some(needle) = slice_text(buffer, primary.range()) else {
@@ -686,7 +726,7 @@ impl EditorState {
                 anchor: start,
                 head: end,
             });
-            self.scroll_to(self.cursor());
+            self.reveal(buffer, self.cursor());
         }
     }
 

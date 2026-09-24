@@ -620,10 +620,12 @@ impl StatefulWidget for Editor<'_> {
             unwrapped_lines: self.unwrapped_lines,
             hints: &hint_index,
         };
-        if !self.word_wrap && state.follow_cursor {
-            // Resolved here rather than in `scroll_to`: only the render knows
-            // the line's hints and tab width, and the caret is placed by them.
-            let target = state.follow_target;
+        if !self.word_wrap
+            && state.follow_cursor
+            && let Some(target) = state.follow_col
+        {
+            // Owed by a `scroll_to` that had no buffer, or by a reveal made
+            // before an unwrapped frame had measured the viewport.
             state.scroll_col = reveal_column(
                 &line_chars(self.buffer, target.line),
                 state.scroll_col,
@@ -659,6 +661,7 @@ impl StatefulWidget for Editor<'_> {
         state.scroll_line = anchor.line;
         state.scroll_subrow = if self.word_wrap { anchor.subrow } else { 0 };
         state.follow_cursor = false;
+        state.follow_col = None;
 
         let sticky = self.sticky_blocks(anchor, area.height);
         state.sticky_rows = sticky.iter().map(|block| block.header_start).collect();
