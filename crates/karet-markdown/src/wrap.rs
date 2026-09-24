@@ -266,7 +266,12 @@ fn wrap_block(
                 link: None,
             };
             let mut runs = vec![marker];
-            flatten(content, Some(StandardToken::MarkupHeading.id()), &mut runs);
+            flatten(
+                content,
+                Some(StandardToken::MarkupHeading.id()),
+                sizer.chip_glyph(),
+                &mut runs,
+            );
             wrap_runs(&runs, inner, prefix, out);
         },
         Block::Paragraph(content) => {
@@ -274,7 +279,7 @@ fn wrap_block(
                 return;
             }
             let mut runs = Vec::new();
-            flatten(content, None, &mut runs);
+            flatten(content, None, sizer.chip_glyph(), &mut runs);
             wrap_runs(&runs, inner, prefix, out);
         },
         Block::CodeBlock { lang, code } => {
@@ -323,7 +328,15 @@ fn wrap_block(
             header,
             alignments,
             rows,
-        } => wrap_table(header, alignments, rows, inner, prefix, out),
+        } => wrap_table(
+            header,
+            alignments,
+            rows,
+            inner,
+            prefix,
+            sizer.chip_glyph(),
+            out,
+        ),
         Block::Rule => out.push(prefixed_line(
             prefix,
             vec![TextSpan {
@@ -341,13 +354,13 @@ fn wrap_block(
 /// Every cell of `row`, flattened to styled runs and padded out to `columns` cells.
 ///
 /// `token` seeds the flatten, so a header row can render bold without overriding the
-/// tokens an inline sets for itself (a code span stays raw).
-fn row_runs(row: &Row, columns: usize, token: Option<TokenId>) -> Vec<Vec<TextSpan>> {
+/// tokens an inline sets for itself (a code span stays raw); `glyph` leads image chips.
+fn row_runs(row: &Row, columns: usize, token: Option<TokenId>, glyph: &str) -> Vec<Vec<TextSpan>> {
     let mut cells: Vec<Vec<TextSpan>> = row
         .iter()
         .map(|cell| {
             let mut runs = Vec::new();
-            flatten(cell, token, &mut runs);
+            flatten(cell, token, glyph, &mut runs);
             runs
         })
         .collect();
@@ -512,6 +525,7 @@ fn wrap_table(
     rows: &[Row],
     width: usize,
     prefix: &[TextSpan],
+    glyph: &str,
     out: &mut Vec<WrappedLine>,
 ) {
     let columns = header
@@ -521,10 +535,10 @@ fn wrap_table(
         return; // a table with no columns has nothing to draw
     }
     // A header cell renders bold unless one of its inlines claims a token of its own.
-    let header_cells = row_runs(header, columns, Some(StandardToken::MarkupBold.id()));
+    let header_cells = row_runs(header, columns, Some(StandardToken::MarkupBold.id()), glyph);
     let body_cells: Vec<Vec<Vec<TextSpan>>> = rows
         .iter()
-        .map(|row| row_runs(row, columns, None))
+        .map(|row| row_runs(row, columns, None, glyph))
         .collect();
 
     let measured =
@@ -590,8 +604,9 @@ fn prefixed_line(prefix: &[TextSpan], spans: Vec<TextSpan>) -> WrappedLine {
     }
 }
 
-/// Flatten inlines into styled runs, inheriting `token` where an inline sets none.
-fn flatten(inlines: &[Inline], token: Option<TokenId>, out: &mut Vec<TextSpan>) {
+/// Flatten inlines into styled runs, inheriting `token` where an inline sets none; an
+/// image becomes a chip led by `glyph`.
+fn flatten(inlines: &[Inline], token: Option<TokenId>, glyph: &str, out: &mut Vec<TextSpan>) {
     for inline in inlines {
         match inline {
             Inline::Text(text) => out.push(TextSpan {
@@ -609,12 +624,14 @@ fn flatten(inlines: &[Inline], token: Option<TokenId>, out: &mut Vec<TextSpan>) 
             Inline::Emphasis(children) => flatten(
                 children,
                 token.or(Some(StandardToken::MarkupItalic.id())),
+                glyph,
                 out,
             ),
             Inline::Strong(children) => {
                 flatten(
                     children,
                     token.or(Some(StandardToken::MarkupBold.id())),
+                    glyph,
                     out,
                 );
             },
@@ -622,6 +639,7 @@ fn flatten(inlines: &[Inline], token: Option<TokenId>, out: &mut Vec<TextSpan>) 
                 flatten(
                     children,
                     token.or(Some(StandardToken::MarkupStrikethrough.id())),
+                    glyph,
                     out,
                 );
             },
@@ -630,17 +648,20 @@ fn flatten(inlines: &[Inline], token: Option<TokenId>, out: &mut Vec<TextSpan>) 
                 token: Some(StandardToken::MarkupLink.id()),
                 link: Some(href.clone()),
             }),
-            Inline::Image(image) => out.push(image_chip(image)),
+            Inline::Image(image) => out.push(image_chip(image, glyph)),
         }
     }
 }
 
-/// The glyph leading an image chip.
+/// The default chip prefix — [`crate::DEFAULT_CHIP_GLYPH`] and its separating space —
+/// that tests of the default-glyph surfaces expect.
+#[cfg(test)]
 pub(crate) const IMAGE_CHIP: &str = "🖼 ";
 
-/// An image that is not painted as pixels: a link-styled chip naming it — its alt text,
-/// else the file name of its source — that links where the image does.
-pub(crate) fn image_chip(image: &ImageRef) -> TextSpan {
+/// An image that is not painted as pixels: a link-styled chip, led by `glyph` and a
+/// space, naming it — its alt text, else the file name of its source — that links where
+/// the image does.
+pub(crate) fn image_chip(image: &ImageRef, glyph: &str) -> TextSpan {
     let name = if image.alt.trim().is_empty() {
         // `docs/logo.png?raw=true` names `logo.png`: drop the query and fragment first.
         image
@@ -655,7 +676,7 @@ pub(crate) fn image_chip(image: &ImageRef) -> TextSpan {
         image.alt.as_str()
     };
     TextSpan {
-        text: format!("{IMAGE_CHIP}{name}"),
+        text: format!("{glyph} {name}"),
         token: Some(StandardToken::MarkupLink.id()),
         link: Some(image.link.clone().unwrap_or_else(|| image.src.clone())),
     }

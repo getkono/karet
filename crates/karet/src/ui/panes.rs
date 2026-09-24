@@ -42,6 +42,7 @@ pub(super) fn draw_panes(
     let preview = PreviewEnv {
         mermaid,
         images: &app.preview_images,
+        icon_style: app.icon_style,
     };
     let color_highlight = app.settings.editor.color_highlight.enabled;
     let language_servers = &app.lsp_runtime.servers;

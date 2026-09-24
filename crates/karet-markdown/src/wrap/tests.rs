@@ -375,7 +375,15 @@ fn split_to_width_never_exceeds_the_width_and_loses_nothing() {
 #[test]
 fn a_table_with_no_columns_draws_nothing() {
     let mut out = Vec::new();
-    wrap_table(&Vec::new(), &[], &[], 20, &[], &mut out);
+    wrap_table(
+        &Vec::new(),
+        &[],
+        &[],
+        20,
+        &[],
+        crate::DEFAULT_CHIP_GLYPH,
+        &mut out,
+    );
     assert!(out.is_empty());
 }
 

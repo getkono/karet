@@ -30,6 +30,14 @@ fn preview_lines(app: &App) -> Vec<karet_markdown::WrappedLine> {
         .unwrap_or_default()
 }
 
+/// The chip (or loading placeholder) naming `label` in the app's icon style.
+fn chip(app: &App, label: &str) -> String {
+    format!(
+        "{} {label}",
+        karet_widgets::UiIcon::Image.glyph(app.icon_style)
+    )
+}
+
 fn image_rows(app: &App) -> usize {
     preview_lines(app)
         .iter()
@@ -78,14 +86,14 @@ fn a_local_image_reserves_rows_at_once_and_paints_once_decoded() {
     assert_eq!(halfblocks(&mut app), 0, "no pixels until the decode lands");
     let screen_text = plain(&screen(&mut app, 100, 30).join("\n"));
     assert!(
-        !screen_text.contains("🖼 Logo"),
+        !screen_text.contains(&chip(&app, "Logo")),
         "no placeholder flashes before the reveal delay:\n{screen_text}"
     );
 
     app.preview_images.backdate_pending();
     let screen_text = plain(&screen(&mut app, 100, 30).join("\n"));
     assert!(
-        screen_text.contains("🖼 Logo"),
+        screen_text.contains(&chip(&app, "Logo")),
         "a slow decode shows a muted placeholder:\n{screen_text}"
     );
 
@@ -132,7 +140,38 @@ fn a_remote_image_is_a_chip_and_nothing_is_fetched() {
         .iter()
         .map(karet_markdown::WrappedLine::text)
         .collect();
-    assert!(text.contains("🖼 build"), "{text}");
+    assert!(text.contains(&chip(&app, "build")), "{text}");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn a_chip_follows_the_icon_style_and_a_style_change_rewraps_it() {
+    let (mut app, root) = previewing("![build](https://ci.example.com/badge.svg)\n", &[]);
+    let text = |app: &App| -> String {
+        preview_lines(app)
+            .iter()
+            .map(karet_markdown::WrappedLine::text)
+            .collect()
+    };
+    assert!(
+        !text(&app).contains('\u{1f5bc}'),
+        "no emoji glyph: {}",
+        text(&app)
+    );
+    for style in [
+        karet_filetype::IconStyle::Unicode,
+        karet_filetype::IconStyle::Ascii,
+        karet_filetype::IconStyle::NerdFont,
+    ] {
+        // A live settings reload changes the style without touching the document.
+        app.icon_style = style;
+        let _ = screen(&mut app, 100, 30);
+        assert!(
+            text(&app).contains(&chip(&app, "build")),
+            "{style:?}: {}",
+            text(&app)
+        );
+    }
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -149,7 +188,7 @@ fn an_image_that_fails_to_decode_turns_back_into_a_chip() {
         .iter()
         .map(karet_markdown::WrappedLine::text)
         .collect();
-    assert!(text.contains("🖼 cut"), "{text}");
+    assert!(text.contains(&chip(&app, "cut")), "{text}");
     let _ = std::fs::remove_dir_all(root);
 }
 

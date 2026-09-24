@@ -7,8 +7,12 @@
 
 use std::path::Path;
 
+use karet_filetype::IconStyle;
+use karet_markdown::ImageRef;
+use karet_markdown::ImageSizer;
 use karet_markdown::ImageSlice;
 use karet_markdown::WrappedDocument;
+use karet_widgets::UiIcon;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 
@@ -21,6 +25,40 @@ pub(super) struct PreviewEnv<'a> {
     pub(super) mermaid: Option<&'a [String]>,
     /// The local images the preview may paint.
     pub(super) images: &'a PreviewImages,
+    /// The icon set the user's terminal draws, which picks the image-chip glyph.
+    pub(super) icon_style: IconStyle,
+}
+
+/// The glyph leading an image's chip, and its loading placeholder, in `style`.
+pub(super) fn image_glyph(style: IconStyle) -> char {
+    UiIcon::Image.glyph(style)
+}
+
+/// A preview's image sizer, leading its chips with the icon style's image glyph instead
+/// of the markdown engine's default (a wide emoji outside every icon tier).
+pub(super) struct StyledSizer<'a> {
+    inner: &'a dyn ImageSizer,
+    glyph: String,
+}
+
+impl<'a> StyledSizer<'a> {
+    /// Size images as `inner` does, with chips drawn for `style`.
+    pub(super) fn new(inner: &'a dyn ImageSizer, style: IconStyle) -> Self {
+        Self {
+            inner,
+            glyph: image_glyph(style).to_string(),
+        }
+    }
+}
+
+impl ImageSizer for StyledSizer<'_> {
+    fn dimensions(&self, image: &ImageRef) -> Option<(u32, u32)> {
+        self.inner.dimensions(image)
+    }
+
+    fn chip_glyph(&self) -> &str {
+        &self.glyph
+    }
 }
 
 /// Where a preview's images come from: the cache, and the document they are relative to.
@@ -31,6 +69,8 @@ pub(super) struct Source<'a> {
     pub(super) images: &'a PreviewImages,
     pub(super) source: &'a Path,
     pub(super) root: &'a Path,
+    /// The icon set the loading placeholder's glyph is drawn from.
+    pub(super) icon_style: IconStyle,
 }
 
 /// A run of consecutive visible rows showing one image.
@@ -121,7 +161,7 @@ pub(super) fn paint(
                     slice.alt.as_str()
                 };
                 let line = Line::from(Span::styled(
-                    format!("🖼 {label}"),
+                    format!("{} {label}", image_glyph(from.icon_style)),
                     theme.style(ThemeRole::Muted),
                 ));
                 // The label may be wider than the image it stands in for.
@@ -172,6 +212,32 @@ pub(super) fn image_hits(
     hits
 }
 
+#[cfg(test)]
+mod glyph_tests {
+    use super::*;
+
+    const STYLES: [IconStyle; 3] = [IconStyle::NerdFont, IconStyle::Unicode, IconStyle::Ascii];
+
+    /// Sizes every image 8×16 and keeps the engine's default chip glyph.
+    struct Fixed;
+
+    impl ImageSizer for Fixed {
+        fn dimensions(&self, _image: &ImageRef) -> Option<(u32, u32)> {
+            Some((8, 16))
+        }
+    }
+
+    #[test]
+    fn a_styled_sizer_delegates_sizing_and_leads_chips_with_the_style_glyph() {
+        let image = ImageRef::default();
+        for style in STYLES {
+            let sizer = StyledSizer::new(&Fixed, style);
+            assert_eq!(sizer.dimensions(&image), Some((8, 16)));
+            assert_eq!(sizer.chip_glyph(), UiIcon::Image.glyph(style).to_string());
+        }
+    }
+}
+
 #[cfg(all(test, feature = "images"))]
 mod tests {
     use ratatui::Terminal;
@@ -216,6 +282,7 @@ mod tests {
                     images,
                     source: &source,
                     root: dir,
+                    icon_style: IconStyle::default(),
                 },
             );
         });

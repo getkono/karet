@@ -226,3 +226,39 @@ fn plain_wrap_paints_every_image_as_a_chip() {
     let doc = parse("![a](a.png)\n").wrap(40);
     assert_eq!(describe(&doc), vec![format!("{IMAGE_CHIP}a")]);
 }
+
+/// Sizes one image and leads every chip with its own glyph, as an icon-set consumer does.
+struct Glyphed;
+
+impl ImageSizer for Glyphed {
+    fn dimensions(&self, image: &ImageRef) -> Option<(u32, u32)> {
+        (image.src == "big.png").then_some((8, 16))
+    }
+
+    fn chip_glyph(&self) -> &str {
+        "[I]"
+    }
+}
+
+#[test]
+fn a_sizer_glyph_leads_every_chip_it_wraps() {
+    let text = |source: &str| describe(&parse(source).wrap_with(40, &Glyphed));
+    // Beside a sized image, among text, in a heading, and in a table cell alike.
+    assert_eq!(
+        text("![big](big.png) ![a](a.svg)\n"),
+        vec!["[big.png 0/1 @0 1]", "[I] a"]
+    );
+    assert_eq!(text("see ![a](a.svg) here\n"), vec!["see [I] a here"]);
+    assert_eq!(text("# ![a](a.svg)\n"), vec!["# [I] a"]);
+    assert!(
+        text("| h |\n| - |\n| ![a](a.svg) |\n")
+            .iter()
+            .any(|line| line.contains("[I] a")),
+    );
+}
+
+#[test]
+fn the_default_glyph_leads_a_chip_unless_the_sizer_overrides_it() {
+    assert_eq!(IMAGE_CHIP, format!("{} ", Sizes::of(&[]).chip_glyph()));
+    assert_eq!(IMAGE_CHIP, format!("{} ", crate::DEFAULT_CHIP_GLYPH));
+}

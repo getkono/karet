@@ -168,7 +168,7 @@ pub(super) fn markdown_preview_rect(area: Rect) -> Rect {
 pub(super) struct MarkdownPreviewRender<'a> {
     pub(super) buffer: &'a TextBuffer,
     pub(super) wrapped: &'a mut WrappedDocument,
-    pub(super) rendered: &'a mut Option<(u64, u16, u64)>,
+    pub(super) rendered: &'a mut Option<crate::tab::PreviewKey>,
     pub(super) scroll: &'a mut u16,
     pub(super) hover: Option<(u16, u16)>,
     pub(super) source: &'a Path,
@@ -196,13 +196,19 @@ pub(super) fn draw_markdown_preview(
     // re-wrap every frame — and every link hitbox would overhang the bar.
     let (area, tracks) = reserve_tracks(markdown_preview_rect(area), ScrollAxes::VERTICAL);
     let images = preview.env.images;
-    let key = (preview.buffer.version(), area.width, images.generation());
+    let key = (
+        preview.buffer.version(),
+        area.width,
+        images.generation(),
+        preview.env.icon_style,
+    );
     if *preview.rendered != Some(key) {
         let mut doc = karet_markdown::parse(&preview.buffer.text());
         if let Some(languages) = preview.env.mermaid {
             substitute_mermaid(&mut doc.blocks, languages);
         }
         let sizer = images.sizer(preview.source, preview.root);
+        let sizer = super::markdown_images::StyledSizer::new(&sizer, preview.env.icon_style);
         *preview.wrapped = doc.wrap_with(area.width, &sizer);
         // Keyed on the generation from *before* sizing: an image that failed while
         // being sized bumps it, and the next frame re-wraps it as a chip.
@@ -250,6 +256,7 @@ pub(super) fn draw_markdown_preview(
             images,
             source: preview.source,
             root: preview.root,
+            icon_style: preview.env.icon_style,
         },
     );
     let mut hits = markdown_link_hits(preview.wrapped, area, state.scroll);

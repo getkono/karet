@@ -36,6 +36,7 @@ pub(crate) use language_servers::LanguageServerPendingKind;
 pub(crate) use language_servers::LanguageServersViewState;
 use ratatui::layout::Rect;
 pub(crate) use view_state::MarkdownPreviewState;
+pub(crate) use view_state::PreviewKey;
 pub use view_state::ViewMode;
 
 use crate::app::Pending;
@@ -206,10 +207,9 @@ pub enum TabKind {
         buffer: TextBuffer,
         /// The parsed + wrapped render model, rebuilt only when `rendered` goes stale.
         wrapped: WrappedDocument,
-        /// The `(document version, wrap width, image generation)` `wrapped` was built
-        /// at, or `None` when it has never been built. A change in any rebuilds it on
-        /// the next draw.
-        rendered: Option<(u64, u16, u64)>,
+        /// The key `wrapped` was built at, or `None` when it has never been built. A
+        /// change in any part rebuilds it on the next draw.
+        rendered: Option<PreviewKey>,
         /// The backend conversion producing this preview's markdown
         /// (a reserved DOCX preview), or `None` for an ordinary source preview.
         pending_since: Option<Pending>,

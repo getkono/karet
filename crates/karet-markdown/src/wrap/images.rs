@@ -64,7 +64,7 @@ pub(super) fn wrap_image_paragraph(
             if !chips.is_empty() {
                 chips.push(space(1));
             }
-            chips.push(image_chip(image));
+            chips.push(image_chip(image, sizer.chip_glyph()));
             continue;
         };
         if !chips.is_empty() {

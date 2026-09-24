@@ -97,7 +97,19 @@ pub trait ImageSizer {
     /// The native `(width, height)` in pixels of `image`, or `None` to render it as a
     /// chip instead.
     fn dimensions(&self, image: &ImageRef) -> Option<(u32, u32)>;
+
+    /// The glyph leading the chip of an image rendered as text rather than pixels.
+    ///
+    /// The chip reads `{glyph} {name}`. Defaults to `🖼` (U+1F5BC, a wide non-BMP
+    /// symbol); a consumer following an icon set — a Nerd Font, a plain-Unicode or
+    /// ASCII fallback — overrides it with a glyph the user's terminal can draw.
+    fn chip_glyph(&self) -> &str {
+        DEFAULT_CHIP_GLYPH
+    }
 }
+
+/// The glyph [`ImageSizer::chip_glyph`] returns unless overridden.
+pub(crate) const DEFAULT_CHIP_GLYPH: &str = "🖼";
 
 /// One item of a [`Block::List`].
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
