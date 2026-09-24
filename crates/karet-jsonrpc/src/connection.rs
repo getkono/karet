@@ -256,7 +256,7 @@ impl<H: Handler> Connection<H> {
         let closed = Arc::new(AtomicBool::new(false));
         let (closed_signal, _) = watch::channel(false);
         let handler = Arc::new(handler);
-        let (replies, drainer_task) = Replies::start(outbound.clone());
+        let (replies, drainer_task) = Replies::start(outbound.clone(), H::PEER);
 
         let writer_closed = Arc::clone(&closed);
         let writer_signal = closed_signal.clone();

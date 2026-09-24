@@ -223,7 +223,10 @@ impl Replies {
     /// Must be called inside a Tokio runtime, as [`Connection::start`] is.
     ///
     /// [`Connection::start`]: crate::Connection::start
-    pub(crate) fn start(outbound: mpsc::Sender<Outbound>) -> (Self, JoinHandle<()>) {
+    pub(crate) fn start(
+        outbound: mpsc::Sender<Outbound>,
+        peer: &'static str,
+    ) -> (Self, JoinHandle<()>) {
         let (overflow, mut parked) = mpsc::unbounded_channel::<Outbound>();
         let backlog = Arc::new(AtomicUsize::new(0));
         let drainer_outbound = outbound.clone();
@@ -231,8 +234,10 @@ impl Replies {
         let drainer = tokio::spawn(async move {
             while let Some(item) = parked.recv().await {
                 // Resolves as soon as the writer drains one frame, or errors
-                // once the connection is gone -- nothing is left to answer then.
-                let _ = drainer_outbound.send(item).await;
+                // once the writer has stopped -- nothing is left to answer on.
+                if drainer_outbound.send(item).await.is_err() {
+                    tracing::debug!(peer, "writer stopped before a deferred reply could be sent");
+                }
                 drainer_backlog.fetch_sub(1, Ordering::SeqCst);
             }
         });
