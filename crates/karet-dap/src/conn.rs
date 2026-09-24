@@ -356,9 +356,23 @@ fn handle_frame<R>(bytes: &[u8], ctx: &ReadLoop<R>) {
 /// **one** drainer task per connection moves onto the outbound queue as
 /// capacity frees, in order; while anything is parked, later refusals park
 /// behind it rather than overtake it. Tasks are therefore O(1) per
-/// connection. Memory is bounded by the adapter -- at most one parked refusal
-/// per reverse request it sent -- not by a constant, because a hard cap would
-/// have to drop a refusal or block the reader, the two outcomes above.
+/// connection.
+///
+/// **Memory is not bounded by any constant.** The overflow queue holds one
+/// refusal per reverse request the adapter has sent and we have not yet
+/// written, so an adapter that floods reverse requests while never reading
+/// its own stdin grows it without limit, until it reads or the connection
+/// ends. That is deliberate: a cap would have to drop the refusal that meets
+/// it (the adapter blocks forever) or block the reader until the queue
+/// shrinks (the deadlock above). It is also the memory profile of the design
+/// this replaced, which spawned one detached task per deferred refusal and so
+/// held the same unbounded set of frames plus a task for each; only the task
+/// count changed.
+///
+/// Parked refusals outlive the reader: when the adapter's stdout hits EOF the
+/// reader drops its handle, but the drainer keeps moving what was already
+/// parked onto the outbound queue, and the writer keeps writing it for as
+/// long as the [`Connection`] is alive and the adapter's stdin accepts bytes.
 struct Refusals {
     outbound: mpsc::Sender<Vec<u8>>,
     overflow: mpsc::UnboundedSender<Vec<u8>>,
