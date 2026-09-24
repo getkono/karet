@@ -143,6 +143,23 @@ fn a_reveal_before_the_first_render_waits_for_its_geometry() {
 }
 
 #[test]
+fn a_reveal_is_a_fixed_point_when_a_hint_straddles_the_margin() {
+    // Ten-cell hints at columns 2 and 5 leave no origin with the caret at
+    // column 15 inside both 10-cell margins of a 30-cell view: origin 5 puts
+    // it 20 cells in (the right margin), origin 6 only 9 (the left). The
+    // render re-resolves every reveal, so the answer must not depend on
+    // which side it started from.
+    let chars: Vec<char> = "abcdefghijklmnopqrstuvwxyz".chars().collect();
+    let hints = [hint(2, "::::::::::"), hint(5, "++++++++++")];
+    let index = crate::hint::HintIndex::new(&hints);
+    let on = index.line(0);
+    let from_start = reveal_column(&chars, 0, 15, 30, 4, on);
+    assert_eq!(reveal_column(&chars, from_start, 15, 30, 4, on), from_start);
+    let from_past = reveal_column(&chars, 14, 15, 30, 4, on);
+    assert_eq!(from_past, from_start, "reached from the right");
+}
+
+#[test]
 fn a_reveal_is_rechecked_against_a_narrower_next_frame() {
     // The estimate uses the last frame's width. A pane that narrowed since
     // (a resize, a split, a background tab brought forward) must still show

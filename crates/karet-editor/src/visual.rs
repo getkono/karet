@@ -453,21 +453,35 @@ pub(super) fn reveal_column(
     let origins = cols.get(..=col).unwrap_or_default();
     let width = width.max(1);
     let margin = 10_u32.min((width - 1) / 2);
-    let offset = origins
-        .get(current as usize)
-        .map(|&origin| caret.saturating_sub(origin));
-    match offset {
+    let offset_at = |origin: usize| {
+        origins
+            .get(origin)
+            .map(|&origin| caret.saturating_sub(origin))
+    };
+    // The leftmost origin that leaves `margin` cells after the caret.
+    let rightward =
+        origins.partition_point(|&origin| caret.saturating_sub(origin) > width - margin - 1);
+    match offset_at(current as usize) {
         Some(offset) if offset >= margin && offset < width - margin => current,
-        // Too far right: the leftmost origin that leaves `margin` cells after
-        // the caret.
-        Some(offset) if offset >= width - margin => origins
-            .partition_point(|&origin| caret.saturating_sub(origin) > width - margin - 1)
-            as u32,
+        // Too far right.
+        Some(offset) if offset >= width - margin => rightward as u32,
         // Too far left (or scrolled past it): the rightmost origin that leaves
-        // `margin` cells before the caret, or the line start when none can.
-        _ => origins
-            .partition_point(|&origin| caret.saturating_sub(origin) >= margin)
-            .saturating_sub(1) as u32,
+        // `margin` cells before the caret, or the line start when none can --
+        // unless that breaks the right margin. A wide hint or character can
+        // leave no origin clear of both; the right one wins, since it keeps
+        // the caret on screen, and so the answer is the same whichever side
+        // it was reached from. Without that, re-resolving would flip between
+        // the two every time.
+        _ => {
+            let leftward = origins
+                .partition_point(|&origin| caret.saturating_sub(origin) >= margin)
+                .saturating_sub(1);
+            if offset_at(leftward).is_some_and(|offset| offset < width - margin) {
+                leftward as u32
+            } else {
+                rightward as u32
+            }
+        },
     }
 }
 
