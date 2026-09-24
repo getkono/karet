@@ -178,6 +178,38 @@ Other office documents (`doc`/`xlsx`/…), archives (`zip`/`tar`/…), fonts, au
 and video are given icons and labels but currently open as a binary hex view or
 placeholder.
 
+## Markdown preview
+
+`Markdown: Toggle Preview to the Side` (`Ctrl+K V`) renders CommonMark plus GitHub
+tables, task lists and strikethrough, with fenced code highlighted and
+[mermaid](configuration.md#markdown) diagrams drawn. Embedded HTML maps onto the same
+model through a curated subset; everything else is a deliberate non-goal recorded in
+[scope.md](scope.md#markdown-preview).
+
+| HTML | Renders as |
+|---|---|
+| `b`/`strong`, `i`/`em`, `s`/`del`/`strike`, `code`/`kbd`/`tt`/`samp` | bold, italic, struck-through, inline code |
+| `a href` | a link (Ctrl/Cmd-click, OSC 8) |
+| `img` | an image (below) |
+| `br`, `hr` | a line break, a rule |
+| `h1`–`h6`, `ul`/`ol` (`start`)/`li`, `blockquote` | their markdown equivalents |
+| `p`, `div`, `center`, `section`, `picture`, … with `align="center"`/`"right"` | the enclosed blocks centred or right-aligned (code blocks and tables keep their own layout) |
+| `details` / `summary` | always expanded, under a bold `▾` summary line |
+| `table`, `pre`, `sub`/`sup`, `span`, any other tag | its text only |
+| `script`, `style`, `iframe`, `object`, comments | nothing |
+
+An image — markdown `![alt](src)` or `<img>`, whose `width`/`height` are honoured —
+paints as truecolor half-blocks when it stands alone in its paragraph (as a
+`<p align="center"><img …></p>` logo does) and is a **local, decodable** file: a
+relative path to a regular file inside the workspace, in a format from the Gamut table
+above, under 10 MiB and 4096×4096 pixels. It is fitted to the preview's width, never
+enlarged past its native size, and capped at 20 lines. Its rows are reserved from the
+file's header at once; the pixels decode off the UI thread, behind a muted placeholder
+if that takes longer than a moment. Every other image — among text, in a table, remote
+(`http(s)`, never fetched), outside the workspace, or undecodable — is a `🖼 alt` chip
+linking to it. Ctrl/Cmd-click an image to open it in the image tab. Without the
+`images` feature every image is a chip.
+
 ## Planned / not yet supported
 
 - **Pkl highlighting** — pkl is recognized (icon + label) but there is no
