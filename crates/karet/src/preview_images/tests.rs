@@ -464,7 +464,8 @@ fn a_refused_image_is_not_checked_again_within_the_restat_interval() {
     std::fs::File::create(&path)
         .and_then(|file| file.set_len(karet_filetype::SIZE_GUARD + 1))
         .expect("a sparse oversized file");
-    let images = PreviewImages::default();
+    let restat = std::time::Duration::from_millis(100);
+    let images = PreviewImages::with_restat(restat);
     assert_eq!(size(&images, dir.path(), "late.png"), None);
     std::fs::write(&path, png(4, 2, [0, 0, 0])).expect("write");
     assert_eq!(
@@ -472,7 +473,9 @@ fn a_refused_image_is_not_checked_again_within_the_restat_interval() {
         None,
         "a re-wrap straight after reuses the refusal"
     );
-    let images = PreviewImages::with_restat(std::time::Duration::ZERO);
+    std::thread::sleep(restat * 2);
+    assert_eq!(size(&images, dir.path(), "late.png"), Some((4, 2)));
+    // Loaded, the refusal is gone: the entry answers from now on.
     assert_eq!(size(&images, dir.path(), "late.png"), Some((4, 2)));
 }
 
@@ -670,6 +673,11 @@ fn an_extended_webp_whose_canvas_disagrees_with_its_frame_is_refused() {
         let dir = workspace(&[("lying.webp", &bytes)]);
         let images = PreviewImages::default();
         assert_eq!(size(&images, dir.path(), "lying.webp"), None);
+        assert_eq!(
+            images.queued(),
+            usize::from(padding > 0),
+            "only a frame past the probe is worth reading whole, padding {padding}"
+        );
         images.settle();
         assert!(
             matches!(lookup(&images, dir.path(), "lying.webp"), Lookup::Missing),
@@ -677,4 +685,20 @@ fn an_extended_webp_whose_canvas_disagrees_with_its_frame_is_refused() {
         );
         assert_eq!(images.ready_bytes(), 0);
     }
+}
+
+#[test]
+fn an_animated_webp_is_a_chip_without_a_decode() {
+    let mut bytes = extended_webp((2, 2), [9, 9, 9], (2, 2), 0);
+    if let Some(flags) = bytes.get_mut(20) {
+        *flags |= 0x02;
+    }
+    let dir = workspace(&[("spin.webp", &bytes)]);
+    let images = PreviewImages::default();
+    assert_eq!(size(&images, dir.path(), "spin.webp"), None);
+    assert_eq!(images.queued(), 0);
+    assert!(matches!(
+        lookup(&images, dir.path(), "spin.webp"),
+        Lookup::Missing
+    ));
 }

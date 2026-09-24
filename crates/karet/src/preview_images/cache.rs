@@ -320,9 +320,13 @@ impl PreviewImages {
         // or `ICCP` chunk) — the probe vouches for its canvas only once it has seen
         // that frame — but all of them decode; anything else (SVG, GIF, …) is a chip
         // straight away. [`admissible`] re-probes the whole file before any decode, so
-        // the pixel cap holds for these too.
-        let decodable =
-            dims.is_some() || is_tiff(&head) || head.starts_with(b"\xff\xd8\xff") || is_webp(&head);
+        // the pixel cap holds for these too. A JPEG or WebP read whole, or an animated
+        // WebP, has nothing past the probe to vouch for it: the probe's refusal stands.
+        let cut = u64::try_from(head.len()).is_ok_and(|len| len == PROBE_BYTES);
+        let decodable = dims.is_some()
+            || is_tiff(&head)
+            || (cut && head.starts_with(b"\xff\xd8\xff"))
+            || (cut && is_webp(&head) && !is_animated_webp(&head));
         let load = if over_cap || !decodable {
             Load::Failed
         } else if dims.is_some() {
@@ -516,6 +520,12 @@ fn still_canonical(path: &Path) -> bool {
 
 fn is_webp(head: &[u8]) -> bool {
     head.starts_with(b"RIFF") && head.get(8..12) == Some(b"WEBP")
+}
+
+/// Whether `head` is an extended WebP flagged as animated, which the still decoder
+/// cannot decode.
+fn is_animated_webp(head: &[u8]) -> bool {
+    head.get(12..16) == Some(b"VP8X") && head.get(20).is_some_and(|flags| flags & 0x02 != 0)
 }
 
 fn is_tiff(head: &[u8]) -> bool {

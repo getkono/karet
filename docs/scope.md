@@ -64,8 +64,8 @@ Deliberately not built:
   placement cannot be clipped to the rows of a scrolling pane, and re-transmitting it
   on every scroll would stall the pane. Ctrl/Cmd-click an image to open it in the
   image tab, which keeps [Kitty](#terminal-graphics).
-- **Images the preview will not load** render as chips: SVG, GIF, BMP, ICO and any
-  other format Gamut does not decode; absolute paths and anything resolving outside
+- **Images the preview will not load** render as chips: SVG, GIF, BMP, ICO, animated
+  WebP and any other format Gamut does not decode; absolute paths and anything resolving outside
   the workspace (`../`, symlinks); files over the 10 MiB guard or images over
   4096×4096 pixels.
 - **Watching image files.** A changed image is picked up on the preview's next
