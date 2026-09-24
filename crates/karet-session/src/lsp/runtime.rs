@@ -2,6 +2,7 @@ use karet_core::ServerFeature;
 
 use super::commands::OpenDocument;
 use super::commands::answer_empty;
+use super::commands::answer_reconnecting;
 use super::commands::remember_document;
 use super::commands::report_unsupported;
 use super::forward::forward_diagnostics;
@@ -131,7 +132,7 @@ pub(super) async fn server_task(task: ServerTask) {
                             break;
                         };
                         remember_document(&mut documents, &cmd);
-                        answer_empty(&updates, cmd, generation);
+                        answer_reconnecting(&updates, cmd, generation);
                         continue;
                     },
                     () = &mut sleep => {},
@@ -363,7 +364,7 @@ pub(super) async fn server_task(task: ServerTask) {
         if let Some(cmd) = cmd {
             remember_document(&mut documents, &cmd);
             let Some(active) = client.as_deref() else {
-                answer_empty(&updates, cmd, generation);
+                answer_reconnecting(&updates, cmd, generation);
                 continue;
             };
             match cmd {
