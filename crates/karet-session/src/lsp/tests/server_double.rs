@@ -83,6 +83,9 @@ pub(super) enum Behavior {
     /// staying perfectly alive and serving everything else. A formatter wedged
     /// on one request is not a dead server, and must not be treated as one.
     FormatsNever,
+    /// Serve normally, but never answer `textDocument/inlayHint`: a server
+    /// slow to infer, which must not hold up anything else asked of it.
+    HintsNever,
     /// Serve normally, and ask the client to refresh its inlay hints
     /// (`workspace/inlayHint/refresh`) once it has opened a document.
     RefreshesHints,
@@ -212,6 +215,8 @@ pub(super) fn test_connector(
                             )
                             .await;
                         },
+                        Some("textDocument/inlayHint")
+                            if matches!(behavior, Behavior::HintsNever) => {},
                         Some("textDocument/inlayHint") => {
                             // One hint at UTF-16 character 4 on line 0, which
                             // is buffer column 3 once the emoji is accounted

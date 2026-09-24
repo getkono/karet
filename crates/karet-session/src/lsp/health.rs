@@ -27,6 +27,8 @@ use super::RESTART_LIMIT;
 use super::RESTART_MAX_DELAY;
 use super::RESTART_MIN_DELAY;
 use super::RESTART_WINDOW;
+use super::hint_flight::HintAnswer;
+use super::hint_flight::HintFlight;
 use super::message::LspUpdate;
 use super::message::ServerCmd;
 use super::slot::SlotKey;
@@ -77,10 +79,12 @@ pub(super) enum Wake {
     Quiet,
     /// The connection died.
     Lost,
+    /// A launched inlay-hint request finished.
+    Hint(HintAnswer),
 }
 
-/// Wait for whichever comes first: a command, a quiet debounce window, or the
-/// connection's death.
+/// Wait for whichever comes first: a command, a quiet debounce window, a
+/// launched hint request finishing, or the connection's death.
 ///
 /// The select is `biased` so liveness is polled first. With a dead connection
 /// and queued commands, taking a command would only drive it into a peer that is
@@ -91,14 +95,17 @@ pub(super) async fn next_wake(
     client: Option<&LspClient>,
     debounce: std::time::Duration,
     has_pending: bool,
+    hints: &mut HintFlight,
 ) -> Wake {
     let Some(client) = client else {
         return Wake::Command(rx.recv().await);
     };
+    let busy = hints.is_busy();
     if has_pending {
         tokio::select! {
             biased;
             () = client.closed() => Wake::Lost,
+            Some(answer) = hints.next(), if busy => Wake::Hint(answer),
             cmd = tokio::time::timeout(debounce, rx.recv()) => match cmd {
                 Ok(cmd) => Wake::Command(cmd),
                 Err(_quiet) => Wake::Quiet,
@@ -108,6 +115,7 @@ pub(super) async fn next_wake(
         tokio::select! {
             biased;
             () = client.closed() => Wake::Lost,
+            Some(answer) = hints.next(), if busy => Wake::Hint(answer),
             cmd = rx.recv() => Wake::Command(cmd),
         }
     }

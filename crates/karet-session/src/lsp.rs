@@ -18,6 +18,7 @@ mod commands;
 mod connector;
 mod forward;
 mod health;
+mod hint_flight;
 mod inventory;
 mod jdtls;
 mod lifecycle;
