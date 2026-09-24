@@ -26,6 +26,7 @@ mod logging;
 mod notify;
 mod outline;
 mod overlay;
+mod preview_images;
 mod remote;
 mod render;
 mod seam_query;

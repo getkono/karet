@@ -4,6 +4,12 @@
 //! render model decoupled from any renderer. Enable `view` for a ratatui renderer, and
 //! `highlight` to syntax-highlight code fences via `karet-syntax`.
 //!
+//! Embedded HTML maps onto the same model through a curated subset — text formatting,
+//! links, images, headings, lists, `<details>`, and `align="center"`/`"right"` on
+//! containers ([`Block::Aligned`]); other tags keep only their text, and `<script>`-like
+//! elements vanish with their content. There is no HTML layout engine: see
+//! `docs/scope.md` for what the preview deliberately does not render.
+//!
 //! Two stages. [`parse`] turns source into a tree of [`Block`]s and [`Inline`]s;
 //! [`MarkdownDocument::wrap`] soft-wraps that tree to a column width, producing
 //! [`WrappedLine`]s of [`TextSpan`]s tagged with a semantic
@@ -15,6 +21,7 @@
 //! markdown it was rendered from.
 
 pub mod edit;
+mod html;
 #[cfg(feature = "lint")]
 pub mod lint;
 #[cfg(feature = "mermaid")]
@@ -31,6 +38,7 @@ mod highlight;
 pub mod view;
 
 pub use wrap::Anchor;
+pub use wrap::ImageSlice;
 pub use wrap::TextSpan;
 pub use wrap::WrappedDocument;
 pub use wrap::WrappedLine;
@@ -56,7 +64,65 @@ pub enum Inline {
         /// The link target.
         href: String,
     },
+    /// An image: markdown `![alt](src "title")`, or an HTML `<img>`.
+    Image(ImageRef),
 }
+
+/// A referenced image, as written — nothing here has been resolved or loaded.
+///
+/// Whether it paints as pixels is the consumer's call (see [`ImageSizer`]); without one it
+/// renders as a chip carrying its alt text.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ImageRef {
+    /// The alternative text.
+    pub alt: String,
+    /// The image source, verbatim (a relative path, an absolute URL, …).
+    pub src: String,
+    /// The title, if one was given.
+    pub title: Option<String>,
+    /// The HTML `width` attribute in CSS pixels, if one was given.
+    pub width: Option<u32>,
+    /// The HTML `height` attribute in CSS pixels, if one was given.
+    pub height: Option<u32>,
+    /// The target of the link wrapping the image (`[![badge](b.svg)](https://ci)`), if any.
+    pub link: Option<String>,
+}
+
+/// Decides which images are painted as pixels, by knowing their size.
+///
+/// The model does no I/O: a consumer that can load an image reports its native pixel
+/// size here, and [`MarkdownDocument::wrap_with`] reserves rows for it. Resolving the
+/// source — and refusing one it will not load — is entirely the consumer's policy.
+pub trait ImageSizer {
+    /// The native `(width, height)` in pixels of `image`, or `None` to render it as a
+    /// chip instead.
+    fn dimensions(&self, image: &ImageRef) -> Option<(u32, u32)>;
+
+    /// The glyph leading the chip of an image rendered as text rather than pixels.
+    ///
+    /// The chip reads `{glyph} {name}`. Defaults to `🖼` (U+1F5BC, a wide non-BMP
+    /// symbol); a consumer following an icon set — a Nerd Font, a plain-Unicode or
+    /// ASCII fallback — overrides it with a glyph the user's terminal can draw.
+    fn chip_glyph(&self) -> &str {
+        DEFAULT_CHIP_GLYPH
+    }
+
+    /// The `(width, height)` in pixels of one terminal cell, which sizes an image at
+    /// its native resolution: an image of `w`×`h` pixels takes `w / width` columns
+    /// and `h / height` rows.
+    ///
+    /// Defaults to `8`×`16`, a common monospace cell; a consumer that can ask the
+    /// terminal for its real cell size overrides it.
+    fn cell_pixels(&self) -> (u32, u32) {
+        DEFAULT_CELL_PIXELS
+    }
+}
+
+/// The cell size [`ImageSizer::cell_pixels`] returns unless overridden.
+pub const DEFAULT_CELL_PIXELS: (u32, u32) = (8, 16);
+
+/// The glyph [`ImageSizer::chip_glyph`] returns unless overridden.
+pub(crate) const DEFAULT_CHIP_GLYPH: &str = "🖼";
 
 /// One item of a [`Block::List`].
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -134,6 +200,15 @@ pub enum Block {
     },
     /// A thematic break (horizontal rule).
     Rule,
+    /// Blocks an HTML container aligns (`<p align="center">`, `<center>`): each line
+    /// is padded to sit centered or right-aligned within the width. Code and tables
+    /// keep their own layout.
+    Aligned {
+        /// The declared alignment.
+        align: Alignment,
+        /// The aligned content.
+        blocks: Vec<Block>,
+    },
 }
 
 /// A parsed markdown document: an ordered sequence of blocks.
@@ -155,6 +230,18 @@ impl MarkdownDocument {
     #[must_use]
     pub fn wrap(&self, width: u16) -> WrappedDocument {
         wrap::wrap(self, width)
+    }
+
+    /// As [`wrap`](Self::wrap), but a paragraph holding only images gives every image
+    /// `sizer` sizes rows of its own, as [`ImageSlice`]s on the lines it reserves.
+    ///
+    /// An image takes its native size on the sizer's [cell](ImageSizer::cell_pixels) —
+    /// one image pixel per screen pixel — honouring its HTML `width`/`height`, never
+    /// upscaled, and shrunk only to fit the width. Images among text, in a table, or
+    /// left unsized render as chips.
+    #[must_use]
+    pub fn wrap_with(&self, width: u16, sizer: &dyn ImageSizer) -> WrappedDocument {
+        wrap::wrap_with(self, width, sizer)
     }
 
     /// The 0-based source line the top-level block at `index` begins on, or `None` when

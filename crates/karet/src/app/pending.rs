@@ -134,6 +134,8 @@ impl App {
         for page in self.github.pages() {
             pendings.extend(page.loading_since());
         }
+        // A preview's images decode off-thread; their placeholders reveal on schedule too.
+        pendings.extend(self.preview_images.pendings());
         pendings
     }
 }

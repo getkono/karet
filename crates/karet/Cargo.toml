@@ -26,7 +26,7 @@ path = "src/main.rs"
 default = ["images", "pdf", "docx", "notebook", "notebook-kernels", "mermaid", "aicommit"]
 # Decode & render raster image files (pulls the Gamut codec stack via
 # karet-fileview's `images` feature, which implies its shared `raster` primitives).
-images = ["karet-fileview/images"]
+images = ["karet-fileview/images", "dep:flate2"]
 # View PDF documents: rasterize pages (pulls `hayro` via karet-pdf) and display
 # them through karet-fileview's shared terminal-image primitives (`raster`).
 pdf = ["dep:karet-pdf", "karet-fileview/raster"]
@@ -74,6 +74,7 @@ karet-widgets = { workspace = true, features = ["hover"] }
 karet-editor.workspace = true
 karet-fileview.workspace = true       # read-only "render any file" primitives (hex/image/placeholder)
 karet-pdf = { workspace = true, optional = true }  # rasterize PDF pages (pure-Rust hayro); behind the `pdf` feature
+flate2 = { workspace = true, optional = true }     # zlib-compress preview images sent over Kitty graphics; behind `images`
 # External (app-level orchestration: runtime, CLI, plus the merged clipboard/input modules).
 ratatui.workspace = true
 crossterm.workspace = true

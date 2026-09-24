@@ -168,15 +168,15 @@ pub(super) fn markdown_preview_rect(area: Rect) -> Rect {
 pub(super) struct MarkdownPreviewRender<'a> {
     pub(super) buffer: &'a TextBuffer,
     pub(super) wrapped: &'a mut WrappedDocument,
-    pub(super) rendered: &'a mut Option<(u64, u16)>,
+    pub(super) rendered: &'a mut Option<crate::tab::PreviewKey>,
     pub(super) scroll: &'a mut u16,
     pub(super) hover: Option<(u16, u16)>,
     pub(super) source: &'a Path,
     pub(super) root: &'a Path,
     /// Source editor line to align with, for an in-editor preview.
     pub(super) source_scroll: Option<usize>,
-    /// Fence languages to render as mermaid diagrams (`None` = disabled).
-    pub(super) mermaid: Option<&'a [String]>,
+    /// Mermaid fences to render, and the images to paint.
+    pub(super) env: PreviewEnv<'a>,
     /// The live pointer selection to lay over the preview's rows, if any.
     pub(super) selection: Option<crate::app::SurfaceSelection>,
 }
@@ -195,13 +195,23 @@ pub(super) fn draw_markdown_preview(
     // wrapped width, so wrapping to the pane and painting to the reserved rect would
     // re-wrap every frame — and every link hitbox would overhang the bar.
     let (area, tracks) = reserve_tracks(markdown_preview_rect(area), ScrollAxes::VERTICAL);
-    let key = (preview.buffer.version(), area.width);
+    let images = preview.env.images;
+    let key = (
+        preview.buffer.version(),
+        area.width,
+        images.generation(),
+        preview.env.icon_style,
+    );
     if *preview.rendered != Some(key) {
         let mut doc = karet_markdown::parse(&preview.buffer.text());
-        if let Some(languages) = preview.mermaid {
+        if let Some(languages) = preview.env.mermaid {
             substitute_mermaid(&mut doc.blocks, languages);
         }
-        *preview.wrapped = doc.wrap(area.width);
+        let sizer = images.sizer(preview.source, preview.root);
+        let sizer = super::markdown_images::StyledSizer::new(&sizer, preview.env.icon_style);
+        *preview.wrapped = doc.wrap_with(area.width, &sizer);
+        // Keyed on the generation from *before* sizing: an image that failed while
+        // being sized bumps it, and the next frame re-wraps it as a chip.
         *preview.rendered = Some(key);
     }
     if let Some(source_line) = preview.source_scroll {
@@ -236,7 +246,24 @@ pub(super) fn draw_markdown_preview(
         preview.wrapped,
         state.scroll,
     );
-    let hits = markdown_link_hits(preview.wrapped, area, state.scroll);
+    super::markdown_images::paint(
+        f,
+        theme,
+        preview.wrapped,
+        area,
+        state.scroll,
+        super::markdown_images::Source {
+            images,
+            source: preview.source,
+            root: preview.root,
+            icon_style: preview.env.icon_style,
+        },
+    );
+    let mut hits = markdown_link_hits(preview.wrapped, area, state.scroll);
+    // An image is clickable and hyperlinked like a link, but not underlined on hover:
+    // an underline across every row of a picture only defaces it.
+    let image_hits = super::markdown_images::image_hits(preview.wrapped, area, state.scroll);
+    apply_markdown_osc8(f, &image_hits, preview.source, preview.root);
     apply_markdown_osc8(f, &hits, preview.source, preview.root);
     if let Some(point) = preview.hover {
         for hit in hits.iter().filter(|hit| {
@@ -254,6 +281,7 @@ pub(super) fn draw_markdown_preview(
             }
         }
     }
+    hits.extend(image_hits);
     (hits, region)
 }
 
@@ -422,7 +450,7 @@ pub(super) fn render_hints(
 }
 
 /// Replace mermaid fences with their rendered diagrams, recursing into
-/// quotes and list items. Unsupported or unparsable diagrams keep their
+/// quotes, list items and aligned HTML containers. Unsupported or unparsable diagrams keep their
 /// source under a one-line note. The renderer (parser + layout engine) is
 /// reused across fences and frames.
 #[cfg(feature = "mermaid")]
@@ -462,7 +490,9 @@ fn substitute_mermaid(blocks: &mut Vec<karet_markdown::Block>, languages: &[Stri
                     },
                 }
             },
-            Block::Quote(inner) => substitute_mermaid(inner, languages),
+            Block::Quote(inner) | Block::Aligned { blocks: inner, .. } => {
+                substitute_mermaid(inner, languages);
+            },
             Block::List { items, .. } => {
                 for item in items {
                     substitute_mermaid(&mut item.blocks, languages);
@@ -547,6 +577,20 @@ mod mermaid_tests {
             !code.contains("mermaid:"),
             "the reason must not be inside the block: {code}"
         );
+    }
+
+    #[test]
+    fn a_diagram_inside_an_aligned_html_container_is_substituted() {
+        let mut blocks = vec![Block::Aligned {
+            align: karet_markdown::Alignment::Center,
+            blocks: vec![fence("mermaid", "flowchart TD\n    A --> B\n")],
+        }];
+        substitute_mermaid(&mut blocks, &["mermaid".to_owned()]);
+        assert!(matches!(
+            blocks.first(),
+            Some(Block::Aligned { blocks: inner, .. })
+                if matches!(inner.first(), Some(Block::CodeBlock { lang: None, .. }))
+        ));
     }
 
     #[test]

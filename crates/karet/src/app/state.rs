@@ -20,6 +20,11 @@ pub(crate) struct TerminalCaps {
     /// The last OSC 22 pointer shape sent (so hover doesn't re-send every
     /// mouse event), or `None` for the terminal's default shape.
     pub(crate) pointer_shape: Option<&'static str>,
+    /// Whether the Kitty graphics terminal also draws unicode placeholders, which
+    /// the markdown preview paints its images with.
+    pub(crate) placeholders: bool,
+    /// The pixel size of one terminal cell, as the terminal last reported it.
+    pub(crate) cell_px: (u32, u32),
 }
 
 impl TerminalCaps {
@@ -33,8 +38,26 @@ impl TerminalCaps {
             kitty_keyboard: false,
             pointer_shapes: false,
             pointer_shape: None,
+            placeholders: graphics == GraphicsProtocol::Kitty && unicode_placeholders(),
+            cell_px: karet_markdown::DEFAULT_CELL_PIXELS,
         }
     }
+}
+
+/// Whether a terminal speaking the Kitty graphics protocol draws its unicode
+/// placeholders too. WezTerm and Konsole transmit and place Kitty images but draw no
+/// placeholders, and tmux drops the transmissions (its passthrough is off by default)
+/// while forwarding the placeholder cells — either way the image would be blank, so
+/// they keep halfblocks.
+pub(crate) fn unicode_placeholders() -> bool {
+    placeholders_in(|key| std::env::var(key).ok())
+}
+
+/// [`unicode_placeholders`], reading the environment through `var`.
+pub(crate) fn placeholders_in(var: impl Fn(&str) -> Option<String>) -> bool {
+    let wezterm =
+        var("TERM_PROGRAM").is_some_and(|program| program.eq_ignore_ascii_case("wezterm"));
+    !wezterm && var("TMUX").is_none() && var("KONSOLE_VERSION").is_none()
 }
 
 /// The right-side outline panel: visibility, selection, and last-frame

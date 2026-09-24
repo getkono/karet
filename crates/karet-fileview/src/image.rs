@@ -9,8 +9,8 @@
 //! only) for now; Sixel/iTerm2 protocols and PDF rasterization are out of scope.
 //!
 //! Pixel work sits behind two features so a lean build pulls no codec tree: the
-//! shared primitives ([`Image`], [`ImageWidget`]) and their built-in bilinear
-//! resampler require `raster` (enabled by both `images` and `pdf`), while the
+//! shared primitives ([`Image`], [`ImageWidget`]) and their built-in resampler
+//! (area-averaging when shrinking, bilinear when enlarging) require `raster` (enabled by both `images` and `pdf`), while the
 //! image-file decoders ([`decode`], [`dimensions`]) require `images`. Gamut owns
 //! every supported codec. Protocol detection ([`GraphicsProtocol`],
 //! [`detect_protocol`], [`fit_rect`]) carries no codec dependency and is always
@@ -35,6 +35,26 @@ use ratatui::widgets::Widget;
 /// The maximum base64 payload per Kitty escape chunk.
 #[cfg(feature = "raster")]
 const KITTY_CHUNK: usize = 4096;
+
+/// The most source pixels a side the per-frame halfblock painters average for one
+/// destination pixel (see [`Image::sample_resized`]).
+#[cfg(feature = "raster")]
+const PAINT_TAPS: u32 = 4;
+
+/// The source pixels, with their overlap, that destination pixel `at` of `dest`
+/// covers along an axis `source` pixels long.
+#[cfg(feature = "raster")]
+fn covered(at: u32, dest: u32, source: u32) -> Vec<(u32, f64)> {
+    let scale = f64::from(source) / f64::from(dest);
+    let (start, end) = (f64::from(at) * scale, (f64::from(at) + 1.0) * scale);
+    ((start.floor() as u32)..(end.ceil() as u32).min(source))
+        .map(|pixel| {
+            let overlap = (f64::from(pixel) + 1.0).min(end) - f64::from(pixel).max(start);
+            (pixel, overlap)
+        })
+        .filter(|&(_, overlap)| overlap > 0.0)
+        .collect()
+}
 
 /// Errors decoding or rendering an image.
 #[cfg(feature = "images")]
@@ -79,6 +99,13 @@ pub fn detect_protocol() -> GraphicsProtocol {
 #[must_use]
 pub fn kitty_delete_all() -> String {
     "\x1b_Ga=d\x1b\\".to_string()
+}
+
+/// The Kitty escape that deletes image `id` — its placements and its pixel data —
+/// leaving every other image on screen alone.
+#[must_use]
+pub fn kitty_delete_image(id: u32) -> String {
+    format!("\x1b_Ga=d,d=I,i={id},q=2\x1b\\")
 }
 
 /// Approximate terminal cell aspect ratio (height ÷ width). A monospace cell is
@@ -148,11 +175,36 @@ impl Image {
         self.height
     }
 
+    /// The raw RGBA pixels, row-major, 4 bytes per pixel.
+    #[must_use]
+    pub fn rgba(&self) -> &[u8] {
+        &self.rgba
+    }
+
     /// Build the Kitty graphics escape that transmits and displays this image
     /// scaled into a `cols`×`rows` cell box. The application positions the cursor
     /// at the target cell and writes this sequence after drawing the frame.
     #[must_use]
     pub fn kitty_escape(&self, cols: u16, rows: u16) -> String {
+        self.kitty_escape_keys(&format!(
+            "a=T,f=32,s={},v={},c={cols},r={rows}",
+            self.width, self.height
+        ))
+    }
+
+    /// Like [`Image::kitty_escape`], but under image id `id` (and with the
+    /// terminal's replies silenced), so [`kitty_delete_image`] can remove exactly
+    /// this image without touching any other placement on screen.
+    #[must_use]
+    pub fn kitty_escape_with_id(&self, id: u32, cols: u16, rows: u16) -> String {
+        self.kitty_escape_keys(&format!(
+            "a=T,i={id},f=32,s={},v={},c={cols},r={rows},q=2",
+            self.width, self.height
+        ))
+    }
+
+    /// Chunk the base64 pixels into escapes, `keys` leading the first.
+    fn kitty_escape_keys(&self, keys: &str) -> String {
         let payload = base64::engine::general_purpose::STANDARD.encode(&self.rgba);
         let chunks: Vec<&[u8]> = payload.as_bytes().chunks(KITTY_CHUNK).collect();
         let mut out = String::new();
@@ -160,15 +212,36 @@ impl Image {
             let more = u8::from(i + 1 != chunks.len());
             let data = std::str::from_utf8(chunk).unwrap_or("");
             if i == 0 {
-                out.push_str(&format!(
-                    "\x1b_Ga=T,f=32,s={},v={},c={},r={},m={more};{data}\x1b\\",
-                    self.width, self.height, cols, rows
-                ));
+                out.push_str(&format!("\x1b_G{keys},m={more};{data}\x1b\\"));
             } else {
                 out.push_str(&format!("\x1b_Gm={more};{data}\x1b\\"));
             }
         }
         out
+    }
+
+    /// This image resampled to `width`×`height` pixels: an exact area average when
+    /// shrinking, so no source pixel is skipped, and bilinear when enlarging.
+    ///
+    /// The halfblock painters resample on every frame, so they bound the average's
+    /// cost; a caller that paints the same box every frame can resample once here,
+    /// exactly, and paint the result 1:1.
+    #[must_use]
+    pub fn resized(&self, width: u32, height: u32) -> Self {
+        if self.width == 0 || self.height == 0 || width == 0 || height == 0 {
+            return Self::from_rgba(Vec::new(), width, height);
+        }
+        let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
+        for y in 0..height {
+            for x in 0..width {
+                rgba.extend_from_slice(&self.sample_resized(x, y, width, height, u32::MAX));
+            }
+        }
+        Self {
+            rgba,
+            width,
+            height,
+        }
     }
 
     /// Render the image as truecolor halfblocks into `area` (two vertically
@@ -184,17 +257,70 @@ impl Image {
         let target_w = ((f64::from(self.width) * scale) as u32).clamp(1, u32::from(area.width));
         let target_h =
             ((f64::from(self.height) * scale) as u32).clamp(1, u32::from(area.height) * 2);
-        for cy in 0..target_h.div_ceil(2) {
-            for cx in 0..target_w {
-                let top = self.sample_resized(cx, (cy * 2).min(target_h - 1), target_w, target_h);
+        self.paint_halfblocks(target_w, target_h, 0, area, buf);
+    }
+
+    /// Render a window of the image scaled into a `cols`×`rows` halfblock box: the
+    /// box's cell rows from `first_row` on, as many as fit in `area`, clipped to its
+    /// width.
+    ///
+    /// The box is taken as given — the caller chose its aspect — so a view scrolling
+    /// past a tall image can paint just the rows on screen, each row identical to the
+    /// one a whole-box render would paint there.
+    pub fn render_halfblocks_rows(
+        &self,
+        cols: u16,
+        rows: u16,
+        first_row: u16,
+        area: Rect,
+        buf: &mut Buffer,
+    ) {
+        if cols == 0 || rows == 0 || area.width == 0 || area.height == 0 {
+            return;
+        }
+        if self.width == 0 || self.height == 0 {
+            return;
+        }
+        self.paint_halfblocks(
+            u32::from(cols),
+            u32::from(rows) * 2,
+            u32::from(first_row),
+            area,
+            buf,
+        );
+    }
+
+    /// Paint this image resampled to `target_w`×`target_h` pixels, two pixels per
+    /// cell, starting at cell row `first_row` of the result, into `area`.
+    fn paint_halfblocks(
+        &self,
+        target_w: u32,
+        target_h: u32,
+        first_row: u32,
+        area: Rect,
+        buf: &mut Buffer,
+    ) {
+        let last_row = target_h
+            .div_ceil(2)
+            .min(first_row.saturating_add(u32::from(area.height)));
+        let cols = target_w.min(u32::from(area.width));
+        for cy in first_row..last_row {
+            for cx in 0..cols {
+                let top = self.sample_resized(
+                    cx,
+                    (cy * 2).min(target_h - 1),
+                    target_w,
+                    target_h,
+                    PAINT_TAPS,
+                );
                 let bottom_y = cy * 2 + 1;
                 let bottom = if bottom_y < target_h {
-                    self.sample_resized(cx, bottom_y, target_w, target_h)
+                    self.sample_resized(cx, bottom_y, target_w, target_h, PAINT_TAPS)
                 } else {
                     top
                 };
                 let x = area.x + cx as u16;
-                let y = area.y + cy as u16;
+                let y = area.y + (cy - first_row) as u16;
                 if let Some(cell) = buf.cell_mut((x, y)) {
                     cell.set_char('▀');
                     cell.set_fg(Color::Rgb(top[0], top[1], top[2]));
@@ -204,9 +330,89 @@ impl Image {
         }
     }
 
+    /// Sample one destination pixel of this image resampled to `width`×`height`,
+    /// reading at most `taps` source pixels a side.
+    ///
+    /// Shrinking on both axes averages the source pixels the destination pixel
+    /// covers, weighted by their overlap and by their alpha (a transparent pixel's
+    /// colour must not bleed into its neighbours): a four-tap bilinear read would see
+    /// four of the k² pixels a k-times shrink folds together and drop the rest, so
+    /// thin lines and text would vanish or alias. Past `taps` pixels a side it reads
+    /// `taps` evenly spread ones instead, bounding the cost of a painter that
+    /// resamples on every frame. Anything else is bilinear.
+    fn sample_resized(&self, x: u32, y: u32, width: u32, height: u32, taps: u32) -> [u8; 4] {
+        if width > self.width
+            || height > self.height
+            || (width, height) == (self.width, self.height)
+        {
+            return self.sample_bilinear(x, y, width, height);
+        }
+        let scale_x = f64::from(self.width) / f64::from(width);
+        let scale_y = f64::from(self.height) / f64::from(height);
+        let averaged = if scale_x > f64::from(taps) || scale_y > f64::from(taps) {
+            self.average(self.spread(x, y, (scale_x, scale_y), taps))
+        } else {
+            let columns = covered(x, width, self.width);
+            let rows = covered(y, height, self.height);
+            self.average(
+                rows.iter()
+                    .flat_map(|&(sy, wy)| columns.iter().map(move |&(sx, wx)| (sx, sy, wx * wy))),
+            )
+        };
+        averaged.unwrap_or_else(|| self.sample_bilinear(x, y, width, height))
+    }
+
+    /// `taps`² source pixels spread over the area destination pixel `(x, y)` covers
+    /// at `scale`, equally weighted: a grid whose every row is shifted by a further
+    /// `1 / taps` of a column, so it reads every phase of a fine regular pattern — a
+    /// one-pixel checkerboard averages to grey — instead of one.
+    fn spread(
+        &self,
+        x: u32,
+        y: u32,
+        (scale_x, scale_y): (f64, f64),
+        taps: u32,
+    ) -> impl Iterator<Item = (u32, u32, f64)> {
+        let (left, top) = (f64::from(x) * scale_x, f64::from(y) * scale_y);
+        let (last_x, last_y) = (self.width.saturating_sub(1), self.height.saturating_sub(1));
+        let n = f64::from(taps);
+        (0..taps).flat_map(move |j| {
+            let sy = ((top + (f64::from(j) + 0.5) * scale_y / n) as u32).min(last_y);
+            (0..taps).map(move |k| {
+                let offset = (f64::from(k) + (f64::from(j) + 0.5) / n) * scale_x / n;
+                (((left + offset) as u32).min(last_x), sy, 1.0)
+            })
+        })
+    }
+
+    /// The alpha-weighted average of `samples`, each a source pixel and its weight.
+    fn average(&self, samples: impl Iterator<Item = (u32, u32, f64)>) -> Option<[u8; 4]> {
+        let (mut rgb, mut alpha, mut total) = ([0.0_f64; 3], 0.0_f64, 0.0_f64);
+        for (sx, sy, weight) in samples {
+            let pixel = self.pixel(sx, sy);
+            let covered = weight * f64::from(pixel[3]);
+            for (sum, &channel) in rgb.iter_mut().zip(&pixel[..3]) {
+                *sum += f64::from(channel) * covered;
+            }
+            alpha += covered;
+            total += weight;
+        }
+        if total <= 0.0 {
+            return None;
+        }
+        let byte = |value: f64| value.round().clamp(0.0, 255.0) as u8;
+        let colour = |sum: f64| if alpha > 0.0 { byte(sum / alpha) } else { 0 };
+        Some([
+            colour(rgb[0]),
+            colour(rgb[1]),
+            colour(rgb[2]),
+            byte(alpha / total),
+        ])
+    }
+
     /// Bilinearly sample one destination pixel. Mapping pixel centers instead of
     /// corners avoids a half-pixel drift while scaling both up and down.
-    fn sample_resized(&self, x: u32, y: u32, width: u32, height: u32) -> [u8; 4] {
+    fn sample_bilinear(&self, x: u32, y: u32, width: u32, height: u32) -> [u8; 4] {
         let source_x = ((x as f64 + 0.5) * f64::from(self.width) / f64::from(width) - 0.5)
             .clamp(0.0, f64::from(self.width - 1));
         let source_y = ((y as f64 + 0.5) * f64::from(self.height) / f64::from(height) - 0.5)
@@ -324,23 +530,153 @@ fn is_tiff(bytes: &[u8]) -> bool {
 }
 
 /// Read just the pixel dimensions of `bytes` without fully decoding it (used for
-/// placeholders), or `None` if the format cannot be determined.
+/// placeholders), or `None` if the bytes do not decode.
+///
+/// Tries the header probe ([`probe_dimensions`]) first; when it has no answer —
+/// TIFF, an extended WebP it will not vouch for, a header it cannot read — this
+/// falls back to a full [`decode`], so the cost is unbounded for such input. A caller
+/// enforcing a pixel budget before decoding should use [`probe_dimensions`] alone.
+/// When that decode fails too, an extended WebP's declared canvas is still returned
+/// (an animated WebP, say), since a placeholder only labels the size.
 #[cfg(feature = "images")]
 #[must_use]
 pub fn dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
-    if is_png(bytes) && bytes.get(12..16) == Some(b"IHDR") {
-        let header = bytes.get(16..24)?;
-        let width = u32::from_be_bytes(header.get(..4)?.try_into().ok()?);
-        let height = u32::from_be_bytes(header.get(4..)?.try_into().ok()?);
-        return (width > 0 && height > 0).then_some((width, height));
+    probe_dimensions(bytes)
+        .or_else(|| decode(bytes).ok().map(|image| (image.width, image.height)))
+        .or_else(|| webp_canvas(bytes))
+}
+
+/// Read the pixel dimensions from the header at the start of an image file, never
+/// decoding pixels — `head` may be just the file's first few kilobytes.
+///
+/// Knows PNG (`IHDR`), JPEG (the frame header, wherever the markers before it put
+/// it) and WebP (`VP8 `, `VP8L` and `VP8X`). A size returned is the size [`decode`]
+/// would produce, so it can gate a pixel budget. `None` for TIFF, whose header points
+/// elsewhere in the file, for anything unrecognised, for a header cut short, and for
+/// an extended WebP that is animated or whose frame is not within `head` or does not
+/// match its canvas.
+#[cfg(feature = "images")]
+#[must_use]
+pub fn probe_dimensions(head: &[u8]) -> Option<(u32, u32)> {
+    let (width, height) = if is_png(head) {
+        if head.get(12..16) != Some(b"IHDR") {
+            return None;
+        }
+        (be_u32(head, 16)?, be_u32(head, 20)?)
+    } else if is_jpeg(head) {
+        let info = gamut::jpeg::info(head).ok()?;
+        (info.width, info.height)
+    } else if is_webp(head) {
+        webp_dimensions(head)?
+    } else {
+        return None;
+    };
+    (width > 0 && height > 0).then_some((width, height))
+}
+
+/// The first RIFF chunk of a WebP file, just past the 12-byte `RIFF`/size/`WEBP` header.
+#[cfg(feature = "images")]
+const WEBP_FIRST_CHUNK: usize = 12;
+
+/// The size a WebP file decodes to.
+///
+/// A simple file's first chunk is its frame. An extended (`VP8X`) file declares a
+/// canvas, but the decoder only checks that header and then decodes the first
+/// `VP8 `/`VP8L` chunk at that frame's own size — so the canvas alone is no bound on
+/// what decoding allocates. The chunks are walked to that frame, and the size is
+/// trusted only when the frame is within `head` and agrees with the canvas.
+///
+/// An animated file (the `VP8X` animation flag) is refused outright: its frames sit in
+/// `ANMF` chunks the still decoder skips, so it either fails to decode or decodes some
+/// stray top-level frame the canvas says nothing about.
+#[cfg(feature = "images")]
+fn webp_dimensions(head: &[u8]) -> Option<(u32, u32)> {
+    if head.get(WEBP_FIRST_CHUNK..WEBP_FIRST_CHUNK + 4)? != b"VP8X" {
+        return webp_frame_dimensions(head, WEBP_FIRST_CHUNK);
     }
-    if is_jpeg(bytes) {
-        let info = gamut::jpeg::info(bytes).ok()?;
-        if info.width > 0 && info.height > 0 {
-            return Some((info.width, info.height));
+    let payload = WEBP_FIRST_CHUNK + 8;
+    if head.get(payload)? & 0x02 != 0 {
+        return None;
+    }
+    let canvas = webp_canvas(head)?;
+    // Every step passes at least a chunk header, and `head` bounds the walk.
+    let mut at = WEBP_FIRST_CHUNK;
+    loop {
+        if matches!(head.get(at..at + 4)?, b"VP8 " | b"VP8L") {
+            return (webp_frame_dimensions(head, at)? == canvas).then_some(canvas);
+        }
+        let size = usize::try_from(le_u32(head, at + 4)?).ok()?;
+        at = at
+            .checked_add(8)?
+            .checked_add(size)?
+            .checked_add(size & 1)?;
+        // Past the bytes read, the frame is not within `head`; stopping here also keeps
+        // `at` small enough that the reads above cannot overflow on 32-bit targets.
+        if at > head.len() {
+            return None;
         }
     }
-    decode(bytes).ok().map(|image| (image.width, image.height))
+}
+
+/// The canvas an extended (`VP8X`) WebP file declares — not necessarily the size its
+/// frame decodes to (see [`webp_dimensions`]).
+#[cfg(feature = "images")]
+fn webp_canvas(head: &[u8]) -> Option<(u32, u32)> {
+    if !head.starts_with(b"RIFF")
+        || head.get(8..12)? != b"WEBP"
+        || head.get(WEBP_FIRST_CHUNK..WEBP_FIRST_CHUNK + 4)? != b"VP8X"
+    {
+        return None;
+    }
+    let payload = WEBP_FIRST_CHUNK + 8;
+    Some((le24(head, payload + 4)? + 1, le24(head, payload + 7)? + 1))
+}
+
+/// The size a `VP8 ` or `VP8L` frame chunk starting at byte `at` declares.
+#[cfg(feature = "images")]
+fn webp_frame_dimensions(head: &[u8], at: usize) -> Option<(u32, u32)> {
+    let payload = at + 8;
+    match head.get(at..at + 4)? {
+        // Lossless: after the 0x2f signature, 14-bit width and height, minus one.
+        b"VP8L" => {
+            if head.get(payload) != Some(&0x2f) {
+                return None;
+            }
+            let bits = le_u32(head, payload + 1)?;
+            Some(((bits & 0x3fff) + 1, ((bits >> 14) & 0x3fff) + 1))
+        },
+        // Lossy: a 3-byte frame tag and the 9d 01 2a start code, then 14-bit sizes.
+        b"VP8 " => {
+            if head.get(payload + 3..payload + 6) != Some(&[0x9d, 0x01, 0x2a]) {
+                return None;
+            }
+            let le14 = |at: usize| -> Option<u32> {
+                let b = head.get(at..at + 2)?;
+                Some(u32::from(u16::from_le_bytes([b[0], b[1]]) & 0x3fff))
+            };
+            Some((le14(payload + 6)?, le14(payload + 8)?))
+        },
+        _ => None,
+    }
+}
+
+/// The little-endian 24-bit integer at byte `at`, if `bytes` reaches that far.
+#[cfg(feature = "images")]
+fn le24(bytes: &[u8], at: usize) -> Option<u32> {
+    let b = bytes.get(at..at + 3)?;
+    Some(u32::from(b[0]) | u32::from(b[1]) << 8 | u32::from(b[2]) << 16)
+}
+
+/// The little-endian `u32` at byte `at`, if `bytes` reaches that far.
+#[cfg(feature = "images")]
+fn le_u32(bytes: &[u8], at: usize) -> Option<u32> {
+    Some(u32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?))
+}
+
+/// The big-endian `u32` at byte `at`, if `bytes` reaches that far.
+#[cfg(feature = "images")]
+fn be_u32(bytes: &[u8], at: usize) -> Option<u32> {
+    Some(u32::from_be_bytes(bytes.get(at..at + 4)?.try_into().ok()?))
 }
 
 #[cfg(all(test, feature = "images"))]
@@ -389,175 +725,4 @@ impl Widget for ImageWidget<'_> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[cfg(feature = "images")]
-    fn rgba_fixture(encoder: impl gamut::core::EncodeImage<Rgba8>) -> Vec<u8> {
-        use gamut::core::Dimensions;
-        use gamut::core::ImageRef;
-
-        let rgba = [
-            255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 128,
-        ];
-        let Ok(dimensions) = Dimensions::new(2, 2) else {
-            return Vec::new();
-        };
-        let Ok(image) = ImageRef::<Rgba8>::new(&rgba, dimensions) else {
-            return Vec::new();
-        };
-        encoder.encode_to_vec(image).unwrap_or_default()
-    }
-
-    #[cfg(feature = "images")]
-    fn jpeg_fixture() -> Vec<u8> {
-        use gamut::core::Dimensions;
-        use gamut::core::EncodeImage as _;
-        use gamut::core::ImageRef;
-
-        let rgb = [255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255];
-        let Ok(dimensions) = Dimensions::new(2, 2) else {
-            return Vec::new();
-        };
-        let Ok(image) = ImageRef::<Rgb8>::new(&rgb, dimensions) else {
-            return Vec::new();
-        };
-        gamut::jpeg::JpegEncoder::new()
-            .encode_to_vec(image)
-            .unwrap_or_default()
-    }
-
-    #[cfg(feature = "images")]
-    fn empty() -> Image {
-        Image {
-            rgba: Vec::new(),
-            width: 0,
-            height: 0,
-        }
-    }
-
-    #[cfg(feature = "images")]
-    #[test]
-    fn decode_and_dimensions() {
-        let png = test_png();
-        assert_eq!(dimensions(&png), Some((2, 2)));
-        assert_eq!(dimensions(&png[..24]), Some((2, 2)));
-        assert!(decode(&png[..24]).is_err());
-        let img = decode(&png);
-        assert!(img.is_ok());
-        let img = img.unwrap_or_else(|_| empty());
-        assert_eq!((img.width(), img.height()), (2, 2));
-    }
-
-    #[cfg(feature = "images")]
-    #[test]
-    fn gamut_decodes_all_supported_formats_to_the_shared_rgba_model() {
-        let png = test_png();
-        let jpeg = jpeg_fixture();
-        let webp = rgba_fixture(gamut::webp::WebpEncoder::lossless());
-        let tiff = rgba_fixture(gamut::tiff::TiffEncoder::new());
-        assert!(is_png(&png));
-        assert!(is_jpeg(&jpeg));
-        assert!(is_webp(&webp));
-        assert!(is_tiff(&tiff));
-        for encoded in [&png, &jpeg, &webp, &tiff] {
-            assert_eq!(dimensions(encoded), Some((2, 2)));
-            let decoded = decode(encoded);
-            assert!(decoded.is_ok());
-            let image = decoded.unwrap_or_else(|_| empty());
-            assert_eq!((image.width(), image.height()), (2, 2));
-            assert_eq!(image.rgba.len(), 16);
-            if is_jpeg(encoded) {
-                assert!(image.rgba.chunks_exact(4).all(|pixel| pixel[3] == 255));
-            }
-        }
-    }
-
-    #[cfg(feature = "images")]
-    #[test]
-    fn decode_rejects_garbage() {
-        assert!(matches!(decode(b"not an image"), Err(ImageError::Decode)));
-    }
-
-    #[cfg(feature = "raster")]
-    #[test]
-    fn from_rgba_keeps_dimensions_and_feeds_kitty() {
-        // A 2×1 image supplied as raw RGBA reuses the Kitty escape path.
-        let img = Image::from_rgba(vec![1, 2, 3, 4, 5, 6, 7, 8], 2, 1);
-        assert_eq!((img.width(), img.height()), (2, 1));
-        let esc = img.kitty_escape(2, 1);
-        assert!(esc.contains("s=2"));
-        assert!(esc.contains("v=1"));
-    }
-
-    #[cfg(feature = "raster")]
-    #[test]
-    fn from_rgba_pads_short_buffers_to_declared_size() {
-        // Fewer bytes than width*height*4 are padded so the buffer stays valid.
-        let img = Image::from_rgba(vec![255, 0, 0, 255], 2, 2);
-        assert_eq!((img.width(), img.height()), (2, 2));
-        let area = Rect::new(0, 0, 2, 2);
-        let mut buf = Buffer::empty(area);
-        ImageWidget::new(&img).render(area, &mut buf);
-        assert!(buf.content().iter().any(|c| c.symbol() == "▀"));
-    }
-
-    #[cfg(feature = "raster")]
-    #[test]
-    fn built_in_resampler_bilinearly_blends_pixel_centers() {
-        let pixel = |value: u8| [value, value, value, 255];
-        let rgba = [pixel(0), pixel(100), pixel(200), pixel(255)].concat();
-        let image = Image::from_rgba(rgba, 2, 2);
-        assert_eq!(image.sample_resized(1, 1, 3, 3), [139, 139, 139, 255]);
-    }
-
-    #[cfg(feature = "images")]
-    #[test]
-    fn halfblocks_fill_cells() {
-        let img = decode(&test_png()).unwrap_or_else(|_| empty());
-        let area = Rect::new(0, 0, 4, 2);
-        let mut buf = Buffer::empty(area);
-        ImageWidget::new(&img).render(area, &mut buf);
-        assert!(buf.content().iter().any(|c| c.symbol() == "▀"));
-    }
-
-    #[cfg(feature = "images")]
-    #[test]
-    fn kitty_escape_has_header_and_terminators() {
-        let img = decode(&test_png()).unwrap_or_else(|_| empty());
-        let esc = img.kitty_escape(4, 2);
-        assert!(esc.starts_with("\x1b_G"));
-        assert!(esc.ends_with("\x1b\\"));
-        assert!(esc.contains("a=T"));
-        assert!(esc.contains("f=32"));
-        assert!(esc.contains("c=4"));
-        assert!(esc.contains("r=2"));
-    }
-
-    #[test]
-    fn fit_rect_preserves_aspect_and_centers() {
-        // A tall page (612×792 px) into a wide area keeps its portrait aspect and
-        // never exceeds the area.
-        let area = Rect::new(0, 0, 80, 24);
-        let fit = fit_rect(area, 612, 792);
-        assert!(fit.width <= area.width && fit.height <= area.height);
-        assert!(fit.width > 0 && fit.height > 0);
-        // Portrait page → height should hit the limiting dimension.
-        assert_eq!(fit.height, area.height);
-        // Centered within the area (±1 cell from integer rounding on odd sizes).
-        let fit_center = i32::from(fit.x) + i32::from(fit.width) / 2;
-        let area_center = i32::from(area.x) + i32::from(area.width) / 2;
-        assert!((fit_center - area_center).abs() <= 1);
-        // Degenerate inputs fall back to the whole area.
-        assert_eq!(fit_rect(area, 0, 10), area);
-    }
-
-    #[test]
-    fn detect_protocol_returns_a_variant() {
-        assert!(matches!(
-            detect_protocol(),
-            GraphicsProtocol::Kitty | GraphicsProtocol::Halfblocks
-        ));
-        assert_eq!(kitty_delete_all(), "\x1b_Ga=d\x1b\\");
-    }
-}
+mod tests;

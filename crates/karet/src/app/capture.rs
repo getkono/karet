@@ -82,6 +82,8 @@ async fn settle(
     spec: CaptureSpec,
 ) -> color_eyre::Result<()> {
     let deadline = Instant::now() + spec.timeout;
+    // Preview images decode off-thread; a decode landing is progress like any event.
+    let mut decoded_images = super::runtime::preview_image_results(app);
     loop {
         terminal.draw(|f| ui::draw(f, app))?;
         // A capture never calls `App::flush_graphics`: it writes Kitty escapes
@@ -104,6 +106,11 @@ async fn settle(
             snap = snaps.recv() => match snap {
                 Some((doc, snap)) => { app.on_snapshot(doc, &snap); true },
                 None => false,
+            },
+            image = super::runtime::recv_decoded(&mut decoded_images) => {
+                let landed = image.is_some();
+                super::runtime::accept_decoded(app, image);
+                landed
             },
             () = tokio::time::sleep(quiet) => false,
         };

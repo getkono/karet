@@ -4,6 +4,8 @@
 //! semantic [`TokenId`], which a consumer resolves to a color (and bold/italic) through
 //! `karet-theme`. Widths are measured in terminal columns, not bytes or `char`s.
 
+mod align;
+mod images;
 #[cfg(test)]
 mod tests;
 
@@ -14,6 +16,8 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::Alignment;
 use crate::Block;
+use crate::ImageRef;
+use crate::ImageSizer;
 use crate::Inline;
 use crate::ListItem;
 use crate::MarkdownDocument;
@@ -36,8 +40,34 @@ pub struct TextSpan {
 /// One wrapped, painted line.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WrappedLine {
-    /// The styled runs, left to right.
+    /// The styled runs, left to right. On an image row, only the prefix (a quote
+    /// gutter, a list indent) the image sits behind.
     pub spans: Vec<TextSpan>,
+    /// The slice of an image this line paints, when it is one of an image's rows.
+    pub image: Option<ImageSlice>,
+}
+
+/// One row of an image reserved in the wrapped output.
+///
+/// An image the consumer's [`ImageSizer`] sized occupies `rows` consecutive lines, each
+/// carrying the slice it paints. Nothing is decoded here: the consumer paints the
+/// pixels, clipping to whatever part of the image is scrolled into view.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImageSlice {
+    /// The image source, verbatim.
+    pub src: String,
+    /// The target of the link wrapping the image, if any.
+    pub link: Option<String>,
+    /// The alternative text.
+    pub alt: String,
+    /// Which of the image's rows this line paints, from `0`.
+    pub row: u16,
+    /// The image's height in lines.
+    pub rows: u16,
+    /// The image's width in columns.
+    pub cols: u16,
+    /// The column the image starts at, past the prefix and any alignment padding.
+    pub col: u16,
 }
 
 impl WrappedLine {
@@ -148,8 +178,26 @@ const BAR: char = '│';
 /// The gutter drawn to the left of a block quote.
 const QUOTE_GUTTER: &str = "▌ ";
 
-/// Wrap `doc` to `width` terminal columns.
+/// Wrap `doc` to `width` terminal columns, painting every image as a chip.
 pub(crate) fn wrap(doc: &MarkdownDocument, width: u16) -> WrappedDocument {
+    wrap_with(doc, width, &NoImages)
+}
+
+/// An [`ImageSizer`] that sizes nothing, so every image renders as a chip.
+struct NoImages;
+
+impl ImageSizer for NoImages {
+    fn dimensions(&self, _image: &ImageRef) -> Option<(u32, u32)> {
+        None
+    }
+}
+
+/// Wrap `doc` to `width` terminal columns, reserving rows for the images `sizer` sizes.
+pub(crate) fn wrap_with(
+    doc: &MarkdownDocument,
+    width: u16,
+    sizer: &dyn ImageSizer,
+) -> WrappedDocument {
     // A zero-width viewport would make every wrap loop spin; one column always
     // terminates, and the caller sees (unhelpful but finite) output.
     let width = usize::from(width).max(1);
@@ -168,10 +216,13 @@ pub(crate) fn wrap(doc: &MarkdownDocument, width: u16) -> WrappedDocument {
                 wrapped_line: lines.len(),
             });
         }
-        wrap_block(block, width, &[], &mut lines);
+        wrap_block(block, width, &[], sizer, &mut lines);
     }
     // A trailing blank line is an artifact of the between-blocks separator.
-    while lines.last().is_some_and(|l| l.spans.is_empty()) {
+    while lines
+        .last()
+        .is_some_and(|l| l.spans.is_empty() && l.image.is_none())
+    {
         lines.pop();
     }
     WrappedDocument { lines, anchors }
@@ -179,7 +230,13 @@ pub(crate) fn wrap(doc: &MarkdownDocument, width: u16) -> WrappedDocument {
 
 /// Wrap a sequence of blocks, each prefixed by `prefix` (a quote gutter, a list
 /// indent), separated by a blank line.
-fn wrap_blocks(blocks: &[Block], width: usize, prefix: &[TextSpan], out: &mut Vec<WrappedLine>) {
+fn wrap_blocks(
+    blocks: &[Block],
+    width: usize,
+    prefix: &[TextSpan],
+    sizer: &dyn ImageSizer,
+    out: &mut Vec<WrappedLine>,
+) {
     for (index, block) in blocks.iter().enumerate() {
         // A nested list hugs the item that introduces it: a blank line between `- one`
         // and its sub-list would read as a break between two unrelated lists.
@@ -187,11 +244,17 @@ fn wrap_blocks(blocks: &[Block], width: usize, prefix: &[TextSpan], out: &mut Ve
         if separated {
             out.push(prefixed_line(prefix, Vec::new()));
         }
-        wrap_block(block, width, prefix, out);
+        wrap_block(block, width, prefix, sizer, out);
     }
 }
 
-fn wrap_block(block: &Block, width: usize, prefix: &[TextSpan], out: &mut Vec<WrappedLine>) {
+fn wrap_block(
+    block: &Block,
+    width: usize,
+    prefix: &[TextSpan],
+    sizer: &dyn ImageSizer,
+    out: &mut Vec<WrappedLine>,
+) {
     let indent = prefix_width(prefix);
     let inner = width.saturating_sub(indent).max(1);
 
@@ -203,12 +266,20 @@ fn wrap_block(block: &Block, width: usize, prefix: &[TextSpan], out: &mut Vec<Wr
                 link: None,
             };
             let mut runs = vec![marker];
-            flatten(content, Some(StandardToken::MarkupHeading.id()), &mut runs);
+            flatten(
+                content,
+                Some(StandardToken::MarkupHeading.id()),
+                sizer.chip_glyph(),
+                &mut runs,
+            );
             wrap_runs(&runs, inner, prefix, out);
         },
         Block::Paragraph(content) => {
+            if images::wrap_image_paragraph(content, inner, prefix, sizer, out) {
+                return;
+            }
             let mut runs = Vec::new();
-            flatten(content, None, &mut runs);
+            flatten(content, None, sizer.chip_glyph(), &mut runs);
             wrap_runs(&runs, inner, prefix, out);
         },
         Block::CodeBlock { lang, code } => {
@@ -237,7 +308,7 @@ fn wrap_block(block: &Block, width: usize, prefix: &[TextSpan], out: &mut Vec<Wr
                 });
 
                 let first_line = out.len();
-                wrap_blocks(&item.blocks, width, &continuation, out);
+                wrap_blocks(&item.blocks, width, &continuation, sizer, out);
                 // Swap the continuation indent on the item's first line for the marker.
                 if let Some(first) = out.get_mut(first_line) {
                     replace_prefix(first, prefix.len(), &marked);
@@ -251,13 +322,21 @@ fn wrap_block(block: &Block, width: usize, prefix: &[TextSpan], out: &mut Vec<Wr
                 token: Some(StandardToken::MarkupQuote.id()),
                 link: None,
             });
-            wrap_blocks(blocks, width, &gutter, out);
+            wrap_blocks(blocks, width, &gutter, sizer, out);
         },
         Block::Table {
             header,
             alignments,
             rows,
-        } => wrap_table(header, alignments, rows, inner, prefix, out),
+        } => wrap_table(
+            header,
+            alignments,
+            rows,
+            inner,
+            prefix,
+            sizer.chip_glyph(),
+            out,
+        ),
         Block::Rule => out.push(prefixed_line(
             prefix,
             vec![TextSpan {
@@ -266,19 +345,22 @@ fn wrap_block(block: &Block, width: usize, prefix: &[TextSpan], out: &mut Vec<Wr
                 link: None,
             }],
         )),
+        Block::Aligned { align, blocks } => {
+            align::wrap_aligned(*align, blocks, width, prefix, sizer, out);
+        },
     }
 }
 
 /// Every cell of `row`, flattened to styled runs and padded out to `columns` cells.
 ///
 /// `token` seeds the flatten, so a header row can render bold without overriding the
-/// tokens an inline sets for itself (a code span stays raw).
-fn row_runs(row: &Row, columns: usize, token: Option<TokenId>) -> Vec<Vec<TextSpan>> {
+/// tokens an inline sets for itself (a code span stays raw); `glyph` leads image chips.
+fn row_runs(row: &Row, columns: usize, token: Option<TokenId>, glyph: &str) -> Vec<Vec<TextSpan>> {
     let mut cells: Vec<Vec<TextSpan>> = row
         .iter()
         .map(|cell| {
             let mut runs = Vec::new();
-            flatten(cell, token, &mut runs);
+            flatten(cell, token, glyph, &mut runs);
             runs
         })
         .collect();
@@ -443,6 +525,7 @@ fn wrap_table(
     rows: &[Row],
     width: usize,
     prefix: &[TextSpan],
+    glyph: &str,
     out: &mut Vec<WrappedLine>,
 ) {
     let columns = header
@@ -452,10 +535,10 @@ fn wrap_table(
         return; // a table with no columns has nothing to draw
     }
     // A header cell renders bold unless one of its inlines claims a token of its own.
-    let header_cells = row_runs(header, columns, Some(StandardToken::MarkupBold.id()));
+    let header_cells = row_runs(header, columns, Some(StandardToken::MarkupBold.id()), glyph);
     let body_cells: Vec<Vec<Vec<TextSpan>>> = rows
         .iter()
-        .map(|row| row_runs(row, columns, None))
+        .map(|row| row_runs(row, columns, None, glyph))
         .collect();
 
     let measured =
@@ -515,11 +598,15 @@ fn prefix_width(prefix: &[TextSpan]) -> usize {
 fn prefixed_line(prefix: &[TextSpan], spans: Vec<TextSpan>) -> WrappedLine {
     let mut all = prefix.to_vec();
     all.extend(spans);
-    WrappedLine { spans: all }
+    WrappedLine {
+        spans: all,
+        image: None,
+    }
 }
 
-/// Flatten inlines into styled runs, inheriting `token` where an inline sets none.
-fn flatten(inlines: &[Inline], token: Option<TokenId>, out: &mut Vec<TextSpan>) {
+/// Flatten inlines into styled runs, inheriting `token` where an inline sets none; an
+/// image becomes a chip led by `glyph`.
+fn flatten(inlines: &[Inline], token: Option<TokenId>, glyph: &str, out: &mut Vec<TextSpan>) {
     for inline in inlines {
         match inline {
             Inline::Text(text) => out.push(TextSpan {
@@ -537,12 +624,14 @@ fn flatten(inlines: &[Inline], token: Option<TokenId>, out: &mut Vec<TextSpan>) 
             Inline::Emphasis(children) => flatten(
                 children,
                 token.or(Some(StandardToken::MarkupItalic.id())),
+                glyph,
                 out,
             ),
             Inline::Strong(children) => {
                 flatten(
                     children,
                     token.or(Some(StandardToken::MarkupBold.id())),
+                    glyph,
                     out,
                 );
             },
@@ -550,6 +639,7 @@ fn flatten(inlines: &[Inline], token: Option<TokenId>, out: &mut Vec<TextSpan>) 
                 flatten(
                     children,
                     token.or(Some(StandardToken::MarkupStrikethrough.id())),
+                    glyph,
                     out,
                 );
             },
@@ -558,7 +648,37 @@ fn flatten(inlines: &[Inline], token: Option<TokenId>, out: &mut Vec<TextSpan>) 
                 token: Some(StandardToken::MarkupLink.id()),
                 link: Some(href.clone()),
             }),
+            Inline::Image(image) => out.push(image_chip(image, glyph)),
         }
+    }
+}
+
+/// The default chip prefix — [`crate::DEFAULT_CHIP_GLYPH`] and its separating space —
+/// that tests of the default-glyph surfaces expect.
+#[cfg(test)]
+pub(crate) const IMAGE_CHIP: &str = "🖼 ";
+
+/// An image that is not painted as pixels: a link-styled chip, led by `glyph` and a
+/// space, naming it — its alt text, else the file name of its source — that links where
+/// the image does.
+pub(crate) fn image_chip(image: &ImageRef, glyph: &str) -> TextSpan {
+    let name = if image.alt.trim().is_empty() {
+        // `docs/logo.png?raw=true` names `logo.png`: drop the query and fragment first.
+        image
+            .src
+            .split(['?', '#'])
+            .next()
+            .unwrap_or_default()
+            .rsplit('/')
+            .find(|segment| !segment.is_empty())
+            .unwrap_or("image")
+    } else {
+        image.alt.as_str()
+    };
+    TextSpan {
+        text: format!("{glyph} {name}"),
+        token: Some(StandardToken::MarkupLink.id()),
+        link: Some(image.link.clone().unwrap_or_else(|| image.src.clone())),
     }
 }
 

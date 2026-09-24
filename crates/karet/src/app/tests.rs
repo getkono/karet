@@ -28,6 +28,8 @@ mod language_servers;
 mod lifecycle;
 mod markdown_edit;
 mod preview;
+#[cfg(feature = "images")]
+mod preview_images;
 mod remote;
 mod review;
 mod save;

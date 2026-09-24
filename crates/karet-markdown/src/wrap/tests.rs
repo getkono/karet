@@ -375,7 +375,15 @@ fn split_to_width_never_exceeds_the_width_and_loses_nothing() {
 #[test]
 fn a_table_with_no_columns_draws_nothing() {
     let mut out = Vec::new();
-    wrap_table(&Vec::new(), &[], &[], 20, &[], &mut out);
+    wrap_table(
+        &Vec::new(),
+        &[],
+        &[],
+        20,
+        &[],
+        crate::DEFAULT_CHIP_GLYPH,
+        &mut out,
+    );
     assert!(out.is_empty());
 }
 
@@ -583,4 +591,101 @@ fn a_zero_width_wrap_still_projects_without_panicking() {
     let doc = wrapped("# H\n\ntext\n", 0);
     let _ = doc.wrapped_line_for_source(usize::MAX);
     let _ = doc.source_line_for_wrapped(usize::MAX);
+}
+
+/// Every span of the wrapped document, in order.
+fn spans(source: &str, width: u16) -> Vec<TextSpan> {
+    wrap(&parse::parse(source), width)
+        .lines
+        .into_iter()
+        .flat_map(|l| l.spans)
+        .collect()
+}
+
+#[test]
+fn an_image_renders_as_a_link_styled_chip_that_links_to_its_source() {
+    let chip = spans("![Logo](docs/logo.png)\n", 40);
+    assert_eq!(
+        chip,
+        vec![TextSpan {
+            text: format!("{IMAGE_CHIP}Logo"),
+            token: Some(StandardToken::MarkupLink.id()),
+            link: Some("docs/logo.png".to_owned()),
+        }]
+    );
+}
+
+#[test]
+fn a_linked_image_chip_links_where_the_link_does() {
+    let chip = spans("[![ci](ci.svg)](https://ci.example)\n", 40);
+    assert_eq!(
+        chip.first().and_then(|s| s.link.as_deref()),
+        Some("https://ci.example")
+    );
+}
+
+#[test]
+fn an_image_without_alt_text_is_named_by_its_file() {
+    assert_eq!(
+        lines("![](docs/logo.png?raw=true#top)\n", 40),
+        vec![format!("{IMAGE_CHIP}logo.png")]
+    );
+    assert_eq!(lines("![]()\n", 40), vec![format!("{IMAGE_CHIP}image")]);
+    assert_eq!(lines("![ ](a/b/)\n", 40), vec![format!("{IMAGE_CHIP}b")]);
+}
+
+#[test]
+fn a_centered_block_is_padded_to_the_middle_and_a_right_one_to_the_edge() {
+    assert_eq!(lines("<center>abcd</center>\n", 10), vec!["   abcd"]);
+    assert_eq!(lines("<p align=right>abcd</p>\n", 10), vec!["      abcd"]);
+    // Every soft-wrapped line is aligned on its own width.
+    assert_eq!(
+        lines("<center>aaaa bb</center>\n", 6),
+        vec![" aaaa", "  bb"]
+    );
+}
+
+#[test]
+fn an_aligned_line_that_fills_the_width_is_not_padded() {
+    assert_eq!(lines("<center>abcdefgh</center>\n", 4), vec!["abcdefgh"]);
+}
+
+#[test]
+fn an_aligned_heading_keeps_its_marker_and_token() {
+    let doc = wrap(&parse::parse("<h1 align=center>T</h1>\n"), 9);
+    assert_eq!(
+        doc.lines.first().map(WrappedLine::text).as_deref(),
+        Some("   # T")
+    );
+    assert!(doc.lines.first().is_some_and(|line| {
+        line.spans
+            .iter()
+            .any(|s| s.text.starts_with("# ") && s.token == Some(StandardToken::MarkupHeading.id()))
+    }));
+}
+
+#[test]
+fn code_and_tables_keep_their_own_layout_inside_an_aligned_container() {
+    assert_eq!(
+        lines("<div align=center>\n\n```\nx\n```\n\n</div>\n", 20),
+        vec!["x"]
+    );
+    let table = lines("<div align=center>\n\n| a |\n| - |\n| 1 |\n\n</div>\n", 20);
+    assert!(table.iter().all(|line| !line.starts_with(' ')), "{table:?}");
+}
+
+#[test]
+fn alignment_inside_a_quote_keeps_the_gutter_first() {
+    assert_eq!(
+        lines("> <center>ab</center>\n", 8),
+        vec![format!("{QUOTE_GUTTER}  ab")]
+    );
+}
+
+#[test]
+fn nested_alignment_is_applied_once() {
+    assert_eq!(
+        lines("<center><div align=right>ab</div></center>\n", 6),
+        vec!["    ab"]
+    );
 }

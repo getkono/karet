@@ -9,6 +9,7 @@ mod content;
 mod github;
 mod language_servers;
 mod lsp_badge;
+mod markdown_images;
 mod osc8;
 mod panes;
 mod scm;
@@ -65,6 +66,7 @@ use karet_widgets::SplitAxis;
 use karet_widgets::Toasts;
 use karet_widgets::UiIcon;
 use language_servers::*;
+use markdown_images::PreviewEnv;
 use panes::*;
 use ratatui::Frame;
 use ratatui::layout::Alignment;
@@ -287,6 +289,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     draw_toasts(f, app, &theme, area);
 
     app.scroll_hits = hits;
+    // Every preview has looked up the images it shows: the rest may be evicted.
+    app.preview_images.end_frame();
 }
 
 /// Draw the modal explaining why a destructive operation is delaying shutdown.
@@ -407,9 +411,8 @@ struct PaneCtx<'a> {
     selection: Option<crate::app::SurfaceSelection>,
     /// Mouse position over a format-specific pane action.
     pane_action_hover: Option<(u16, u16)>,
-    /// Fence languages the markdown preview renders as mermaid diagrams
-    /// (`None` = rendering disabled or compiled out).
-    mermaid: Option<&'a [String]>,
+    /// What the markdown preview renders beyond text: mermaid fences and images.
+    preview: PreviewEnv<'a>,
     /// Whether to tint visible color literals with their own color.
     color_highlight: bool,
     /// Dependency-freshness hints per open manifest.

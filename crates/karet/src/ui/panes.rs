@@ -39,6 +39,11 @@ pub(super) fn draw_panes(
         .then_some(app.settings.markdown.mermaid.fence_languages.as_slice());
     #[cfg(not(feature = "mermaid"))]
     let mermaid: Option<&[String]> = None;
+    let preview = PreviewEnv {
+        mermaid,
+        images: &app.preview_images,
+        icon_style: app.icon_style,
+    };
     let color_highlight = app.settings.editor.color_highlight.enabled;
     let language_servers = &app.lsp_runtime.servers;
     let editor_focused = app.focus == Focus::Editor;
@@ -99,7 +104,7 @@ pub(super) fn draw_panes(
             let ctx = PaneCtx {
                 theme,
                 root: &app.root,
-                mermaid,
+                preview,
                 color_highlight,
                 manifest_hints: &app.docs.manifest_hints,
                 breakpoints: &app.breakpoints,
@@ -147,7 +152,7 @@ pub(super) fn draw_panes(
             let ctx = PaneCtx {
                 theme,
                 root: &app.root,
-                mermaid,
+                preview,
                 color_highlight,
                 manifest_hints: &app.docs.manifest_hints,
                 breakpoints: &app.breakpoints,
