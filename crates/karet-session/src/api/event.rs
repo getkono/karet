@@ -118,6 +118,44 @@ pub enum Event {
         /// The completion items, with edit ranges in buffer (UTF-32) columns.
         items: Vec<CompletionItem>,
     },
+    /// Inlay hints answering a [`Command::InlayHints`].
+    ///
+    /// `version` echoes the request's target so a client can drop a set the
+    /// buffer has already been edited past -- a hint positioned against stale
+    /// text would annotate the wrong column.
+    InlayHints {
+        /// The document the hints are for.
+        doc: DocumentId,
+        /// The document version the request was made against.
+        version: u64,
+        /// The hints, positioned in buffer (UTF-32) columns.
+        hints: Vec<InlayHint>,
+    },
+    /// A [`Command::InlayHints`] went unanswered: the server failed or timed
+    /// out on it, a newer request replaced it, or the server went away.
+    ///
+    /// Not an empty [`Event::InlayHints`]: nothing was learned about the
+    /// document, so a client should keep the hints it already shows and ask
+    /// again later rather than treat the range as having none.
+    InlayHintsFailed {
+        /// The document the request was for.
+        doc: DocumentId,
+        /// The document version the request was made against.
+        version: u64,
+    },
+    /// A language server said every inlay hint it answered may be stale
+    /// (`workspace/inlayHint/refresh`), so a client should drop what it
+    /// holds as covered and re-issue [`Command::InlayHints`] for what it
+    /// shows.
+    ///
+    /// Unsolicited, and about the server rather than one document: an edit
+    /// in one file changes the hints the server computed for others -- a
+    /// function's return type is shown at every call site that binds it.
+    /// The server has already been answered.
+    InlayHintsRefresh {
+        /// The provider that asked.
+        server: LanguageServerId,
+    },
     /// An open document needs a managed server that is not installed.
     ///
     /// This event is local-only: emitting it performs no metadata request or
@@ -216,6 +254,25 @@ pub enum Event {
         state: LanguageServerRuntimeState,
         /// Most recent concise failure, when applicable.
         error: Option<String>,
+    },
+    /// The language server serving a request does not offer what it asked
+    /// for, so the request was never issued.
+    ///
+    /// A fact about the provider, not a failure: the server is healthy, and
+    /// this is kept out of its failure record. Delivered with the request's
+    /// [`RequestId`], *before* the request's own (empty) answer, so a client
+    /// can say "this server does not support X" instead of "nothing found".
+    ///
+    /// Emitted only for requests a user asks for by hand --
+    /// [`Command::Hover`], [`Command::Definition`], [`Command::Rename`],
+    /// [`Command::WorkspaceSymbols`]. Background requests (inlay hints,
+    /// completion, document symbols, format-on-save) are refused silently: a
+    /// notice nobody asked for, repeated on every keystroke or save, is noise.
+    FeatureUnsupported {
+        /// The provider that was asked.
+        server: LanguageServerId,
+        /// What it does not offer.
+        feature: ServerFeature,
     },
     /// Hover result answering a [`Command::Hover`].
     HoverResult {

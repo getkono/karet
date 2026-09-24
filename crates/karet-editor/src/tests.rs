@@ -5,6 +5,8 @@ use super::text::*;
 use super::*;
 
 mod carets;
+mod inlay;
+mod reveal;
 
 #[test]
 fn inline_text_decoration_renders_after_the_line() {

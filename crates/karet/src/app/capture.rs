@@ -86,6 +86,13 @@ async fn settle(
         terminal.draw(|f| ui::draw(f, app))?;
         // A capture never calls `App::flush_graphics`: it writes Kitty escapes
         // straight to stdout, which is where the captured grid is going.
+        //
+        // It does ask for inlay hints, exactly as the interactive loop does
+        // after its own draw. Without this a capture could never contain one,
+        // since the request is a function of the painted viewport -- and a
+        // settled frame that is missing an annotation the real editor shows is
+        // not a capture of the same UI.
+        app.request_inlay_hints();
 
         let now = Instant::now();
         let Some(remaining) = deadline.checked_duration_since(now) else {

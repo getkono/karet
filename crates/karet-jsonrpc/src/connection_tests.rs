@@ -9,6 +9,7 @@ use tokio::io::ReadHalf;
 use tokio::io::WriteHalf;
 
 use super::*;
+use crate::INTERNAL_ERROR;
 use crate::METHOD_NOT_FOUND;
 use crate::framing::content_length;
 use crate::framing::content_length::ContentLength;
@@ -482,5 +483,397 @@ async fn closed_resolves_when_framing_is_lost_rather_than_at_eof() -> TestResult
     tokio::time::timeout(Duration::from_secs(5), connection.closed())
         .await
         .map_err(|_| "closed() did not resolve after the stream lost framing")?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_consumer_answers_peer_requests_with_a_verbatim_id() -> TestResult {
+    let ((read, write), mut peer) = wire();
+    let connection = Connection::start(TestHandler, read, write);
+    let mut requests = connection
+        .inbound_requests()
+        .ok_or("the peer-request stream was already taken")?;
+
+    // A second take must not hand out the same stream: a request has exactly
+    // one answerer, and two receivers would race for it.
+    assert!(connection.inbound_requests().is_none());
+
+    peer.send(&json!({"jsonrpc": "2.0", "id": "peer-1",
+                      "method": "workspace/applyEdit", "params": {"edit": 1}}))
+        .await;
+    let request = requests.recv().await.ok_or("no peer request arrived")?;
+    assert_eq!(request.method, "workspace/applyEdit");
+    assert_eq!(request.params, json!({"edit": 1}));
+    assert_eq!(request.responder.id(), &json!("peer-1"));
+    request.responder.ok(json!({"applied": true}));
+
+    let answered = peer.recv().await;
+    assert_eq!(
+        answered,
+        json!({"jsonrpc": "2.0", "id": "peer-1", "result": {"applied": true}})
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_dropped_responder_still_answers_the_peer() -> TestResult {
+    // Discipline is not a mechanism: a consumer that forgets to answer must
+    // not leave the peer blocked forever.
+    let ((read, write), mut peer) = wire();
+    let connection = Connection::start(TestHandler, read, write);
+    let mut requests = connection
+        .inbound_requests()
+        .ok_or("the peer-request stream was already taken")?;
+
+    peer.send(&json!({"jsonrpc": "2.0", "id": 7, "method": "window/showDocument"}))
+        .await;
+    let request = requests.recv().await.ok_or("no peer request arrived")?;
+    drop(request);
+
+    let answered = peer.recv().await;
+    assert_eq!(answered["id"], json!(7));
+    assert_eq!(answered["error"]["code"], json!(METHOD_NOT_FOUND));
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_cancelled_request_is_answered_with_the_callers_error() -> TestResult {
+    // Dropping the responder on cancellation answered `-32601`, and a peer
+    // told "method not found" may stop offering the feature. The protocol on
+    // top chooses the code; LSP's `RequestCancelled` stands in here.
+    const REQUEST_CANCELLED: i64 = -32800;
+
+    let ((read, write), mut peer) = wire();
+    let connection = Connection::start(TestHandler, read, write);
+    let mut requests = connection
+        .inbound_requests()
+        .ok_or("the peer-request stream was already taken")?;
+
+    peer.send(&json!({"jsonrpc": "2.0", "id": "c-1", "method": "workspace/applyEdit"}))
+        .await;
+    let request = requests.recv().await.ok_or("no peer request arrived")?;
+    request.responder.cancel(
+        ResponseError::new(REQUEST_CANCELLED, "request cancelled").with_data(json!({"why": 1})),
+    );
+
+    let answered = peer.recv().await;
+    assert_eq!(
+        answered,
+        json!({"jsonrpc": "2.0", "id": "c-1", "error": {
+            "code": REQUEST_CANCELLED,
+            "message": "request cancelled",
+            "data": {"why": 1},
+        }})
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_slow_consumer_does_not_block_the_rest_of_the_connection() -> TestResult {
+    // The whole reason the stream exists. `Handler::answer` ran on the reader
+    // task, so an answer that awaited anything stalled every other message.
+    // Here a peer request is held unanswered while a client request completes.
+    let ((read, write), mut peer) = wire();
+    let connection = Connection::start(TestHandler, read, write);
+    let mut requests = connection
+        .inbound_requests()
+        .ok_or("the peer-request stream was already taken")?;
+
+    peer.send(&json!({"jsonrpc": "2.0", "id": "slow", "method": "window/showMessageRequest"}))
+        .await;
+    let held = requests.recv().await.ok_or("no peer request arrived")?;
+
+    let peer_task = tokio::spawn(async move {
+        let outgoing = peer.recv().await;
+        let id = outgoing["id"].clone();
+        peer.respond(&id, json!("answered anyway")).await;
+        peer
+    });
+
+    // Completes while `held` is still unanswered, which is the assertion.
+    let reply: String = tokio::time::timeout(
+        Duration::from_secs(5),
+        connection.request("test/while-busy", Value::Null),
+    )
+    .await
+    .map_err(|_| "a held peer request blocked an unrelated client request")??;
+    assert_eq!(reply, "answered anyway");
+
+    let mut peer = peer_task.await?;
+    held.responder.ok(json!(null));
+    assert_eq!(peer.recv().await["id"], json!("slow"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_overflowing_peer_request_queue_answers_rather_than_drops() -> TestResult {
+    struct OneDeepHandler;
+
+    impl Handler for OneDeepHandler {
+        type Framing = ContentLength;
+        type Push = (String, Value);
+
+        const INBOUND_REQUEST_CAPACITY: usize = 1;
+
+        fn push_payload(&self, _method: &str, _params: &Value) -> Option<Self::Push> {
+            None
+        }
+    }
+
+    let ((read, write), mut peer) = wire();
+    let connection = Connection::start(OneDeepHandler, read, write);
+    // Taken but deliberately never drained, so the queue fills and stays full.
+    let _requests = connection
+        .inbound_requests()
+        .ok_or("the peer-request stream was already taken")?;
+
+    for id in 1..=3 {
+        peer.send(&json!({"jsonrpc": "2.0", "id": id, "method": "workspace/configuration"}))
+            .await;
+    }
+
+    // The first fills the one slot; the two that overflow are answered here
+    // rather than discarded. A broadcast channel would have dropped them.
+    let first = peer.recv().await;
+    let second = peer.recv().await;
+    assert_eq!(first["id"], json!(2));
+    assert_eq!(second["id"], json!(3));
+    // `-32603`, not `-32601`. Back-pressure is a transient condition; a peer
+    // told "method not found" concludes the client does not implement the
+    // method at all and stops offering the feature.
+    assert_eq!(first["error"]["code"], json!(INTERNAL_ERROR));
+    assert_eq!(second["error"]["code"], json!(INTERNAL_ERROR));
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_handler_still_answers_while_nobody_holds_the_stream() -> TestResult {
+    // The compatibility guarantee: a consumer that never takes the stream sees
+    // exactly the behaviour it had before the stream existed.
+    let ((read, write), mut peer) = wire();
+    let _connection = Connection::start(TestHandler, read, write);
+    peer.send(&json!({"jsonrpc": "2.0", "id": 1, "method": "test/answer", "params": {"a": 2}}))
+        .await;
+    assert_eq!(peer.recv().await["result"], json!({"echoed": {"a": 2}}));
+    Ok(())
+}
+
+#[tokio::test]
+async fn dropping_the_stream_falls_back_to_the_handler() -> TestResult {
+    // A consumer that takes the stream and then goes away -- finished,
+    // cancelled, panicked -- must not permanently disable `Handler::answer`.
+    // Tracking only "was it ever taken" meant every later peer request was
+    // refused, including the constant answers the handler implements.
+    let ((read, write), mut peer) = wire();
+    let connection = Connection::start(TestHandler, read, write);
+    let requests = connection
+        .inbound_requests()
+        .ok_or("the peer-request stream was already taken")?;
+    drop(requests);
+
+    peer.send(&json!({"jsonrpc": "2.0", "id": 1, "method": "test/answer", "params": {"a": 1}}))
+        .await;
+    let answered = peer.recv().await;
+    assert_eq!(
+        answered["result"],
+        json!({"echoed": {"a": 1}}),
+        "the handler should answer once nobody holds the stream"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_full_outbound_queue_delays_a_reply_instead_of_dropping_it() -> TestResult {
+    struct NarrowHandler;
+
+    impl Handler for NarrowHandler {
+        type Framing = ContentLength;
+        type Push = (String, Value);
+
+        const OUTBOUND_CHANNEL_CAPACITY: usize = 1;
+
+        fn push_payload(&self, _method: &str, _params: &Value) -> Option<Self::Push> {
+            None
+        }
+
+        fn answer(&self, _method: &str, _params: &Value) -> Result<Value, ResponseError> {
+            Ok(json!("ok"))
+        }
+    }
+
+    // A pipe too narrow to absorb the replies, so the writer stalls and the
+    // one-slot outbound queue fills up behind it.
+    let (client_end, peer_end) = tokio::io::duplex(64);
+    let (client_read, client_write) = tokio::io::split(client_end);
+    let (peer_read, peer_write) = tokio::io::split(peer_end);
+    let mut peer = FakePeer {
+        reader: BufReader::new(peer_read),
+        writer: peer_write,
+    };
+    let _connection = Connection::start(NarrowHandler, client_read, client_write);
+
+    for id in 1..=4 {
+        peer.send(&json!({"jsonrpc": "2.0", "id": id, "method": "test/x"}))
+            .await;
+    }
+
+    // Every reply arrives once the peer starts draining. `try_send` alone
+    // discarded the ones that found the queue full, and the peer then waited
+    // on them forever.
+    let mut seen = Vec::new();
+    for _ in 1..=4 {
+        let reply = tokio::time::timeout(Duration::from_secs(5), peer.recv())
+            .await
+            .map_err(|_| "a reply was dropped when the outbound queue filled")?;
+        seen.push(reply["id"].clone());
+    }
+    seen.sort_by_key(serde_json::Value::to_string);
+    assert_eq!(seen, vec![json!(1), json!(2), json!(3), json!(4)]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn deferred_replies_share_one_drainer_and_keep_their_order() -> TestResult {
+    // A peer that floods requests while never reading its stdin. Each reply
+    // that met the full outbound queue used to get a detached task of its
+    // own, so the task count -- and the memory behind it -- grew with the
+    // flood rather than staying per-connection.
+    struct NarrowHandler;
+
+    impl Handler for NarrowHandler {
+        type Framing = ContentLength;
+        type Push = (String, Value);
+
+        const OUTBOUND_CHANNEL_CAPACITY: usize = 1;
+
+        fn push_payload(&self, _method: &str, _params: &Value) -> Option<Self::Push> {
+            None
+        }
+
+        fn answer(&self, _method: &str, _params: &Value) -> Result<Value, ResponseError> {
+            Ok(json!("ok"))
+        }
+    }
+
+    const BURST: i64 = 200;
+
+    let (client_end, peer_end) = tokio::io::duplex(64);
+    let (client_read, client_write) = tokio::io::split(client_end);
+    let (peer_read, peer_write) = tokio::io::split(peer_end);
+    let mut peer = FakePeer {
+        reader: BufReader::new(peer_read),
+        writer: peer_write,
+    };
+    let _connection = Connection::start(NarrowHandler, client_read, client_write);
+
+    // Writes into a 64-byte pipe, so the flood completes only once the reader
+    // has consumed (and answered) nearly all of it -- while nothing drains
+    // the replies.
+    let flood = tokio::spawn(async move {
+        for id in 1..=BURST {
+            peer.send(&json!({"jsonrpc": "2.0", "id": id, "method": "test/x"}))
+                .await;
+        }
+        peer
+    });
+    let mut peer = tokio::time::timeout(Duration::from_secs(10), flood)
+        .await
+        .map_err(|_| "the reader stopped draining the peer")??;
+
+    // Reader, writer, drainer -- and nothing per deferred reply.
+    let alive = tokio::runtime::Handle::current()
+        .metrics()
+        .num_alive_tasks();
+    assert!(
+        alive <= 3,
+        "{alive} tasks alive with ~{BURST} replies deferred"
+    );
+
+    // One FIFO drainer, and no fast-path overtaking while anything is parked:
+    // the replies arrive in the order the requests did.
+    let mut seen = Vec::new();
+    for _ in 1..=BURST {
+        let reply = tokio::time::timeout(Duration::from_secs(5), peer.recv())
+            .await
+            .map_err(|_| "a deferred reply was dropped")?;
+        seen.push(reply["id"].as_i64().unwrap_or_default());
+    }
+    assert_eq!(seen, (1..=BURST).collect::<Vec<_>>());
+    Ok(())
+}
+
+#[tokio::test]
+async fn close_writes_replies_deferred_before_it_ahead_of_the_close() -> TestResult {
+    // Replies answered before `close()` but parked behind a full outbound
+    // queue must still reach the peer: the close signal queues behind them on
+    // the same ordered path, rather than overtaking them on the outbound
+    // queue and stopping the writer with the replies still parked.
+    struct NarrowHandler;
+
+    impl Handler for NarrowHandler {
+        type Framing = ContentLength;
+        type Push = (String, Value);
+
+        const OUTBOUND_CHANNEL_CAPACITY: usize = 1;
+
+        fn push_payload(&self, _method: &str, _params: &Value) -> Option<Self::Push> {
+            None
+        }
+    }
+
+    // Far more replies than a 64-byte pipe plus a one-slot queue can hold, so
+    // most of them are parked when `close()` is called.
+    const BURST: i64 = 40;
+
+    let (client_end, peer_end) = tokio::io::duplex(64);
+    let (client_read, client_write) = tokio::io::split(client_end);
+    let (peer_read, peer_write) = tokio::io::split(peer_end);
+    let mut peer = FakePeer {
+        reader: BufReader::new(peer_read),
+        writer: peer_write,
+    };
+    let mut connection = Connection::start(NarrowHandler, client_read, client_write);
+    let mut requests = connection
+        .inbound_requests()
+        .ok_or("the peer-request stream was already taken")?;
+
+    // The peer floods requests and reads nothing back until the close.
+    let flood = tokio::spawn(async move {
+        for id in 1..=BURST {
+            peer.send(&json!({"jsonrpc": "2.0", "id": id, "method": "test/x"}))
+                .await;
+        }
+        peer
+    });
+    // Every request is answered before the close, so every reply is owed.
+    for _ in 1..=BURST {
+        let request = tokio::time::timeout(Duration::from_secs(5), requests.recv())
+            .await
+            .map_err(|_| "the reader stopped delivering peer requests")?
+            .ok_or("the peer-request stream ended early")?;
+        request.responder.ok(json!("ok"));
+    }
+    let mut peer = tokio::time::timeout(Duration::from_secs(5), flood)
+        .await
+        .map_err(|_| "the reader stopped draining the peer")??;
+
+    let closing = tokio::spawn(async move {
+        connection.close().await;
+    });
+
+    let mut seen = Vec::new();
+    for _ in 1..=BURST {
+        let reply = tokio::time::timeout(Duration::from_secs(5), peer.recv())
+            .await
+            .map_err(|_| "a reply deferred before close() never arrived")?;
+        seen.push(reply["id"].as_i64().unwrap_or_default());
+    }
+    assert_eq!(seen, (1..=BURST).collect::<Vec<_>>());
+    closing.await?;
+    // And the close really did end the connection after them.
+    let after = tokio::time::timeout(Duration::from_secs(5), peer.recv())
+        .await
+        .map_err(|_| "the connection stayed open after close()")?;
+    assert_eq!(after, Value::Null, "nothing may follow the close");
     Ok(())
 }

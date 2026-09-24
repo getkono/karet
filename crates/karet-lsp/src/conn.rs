@@ -7,6 +7,8 @@
 //! server→client requests a headless client must not leave hanging, and the
 //! bridge that turns [`karet_jsonrpc::RpcError`] into [`LspError`].
 
+use std::sync::Arc;
+use std::sync::RwLock;
 use std::time::Duration;
 
 use serde::Serialize;
@@ -19,7 +21,11 @@ use tokio::sync::broadcast;
 use crate::LspError;
 use crate::PublishedDiagnostics;
 use crate::RawNotification;
+use crate::ServerRefresh;
+use crate::capability;
 use crate::convert;
+use crate::gate::Gate;
+use crate::selector::Selector;
 use crate::uri;
 
 /// The (shorter) deadline for the `shutdown` handshake and process exit.
@@ -27,6 +33,10 @@ pub(crate) const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Diagnostics broadcast capacity; slow subscribers drop the oldest sets.
 const DIAGNOSTICS_CHANNEL_CAPACITY: usize = 64;
+
+/// Refresh broadcast capacity. A refresh carries no payload, so a subscriber
+/// that lags has lost nothing but duplicates of a signal it will still see.
+const REFRESH_CHANNEL_CAPACITY: usize = 16;
 
 /// Every user-visible `LspError` string is produced here, so the shared actor
 /// stays protocol-neutral while this crate's error surface is unchanged.
@@ -58,12 +68,92 @@ impl From<karet_jsonrpc::RpcError> for LspError {
 /// server→client requests a headless client must not leave hanging.
 pub(crate) struct LspHandler {
     diagnostics: broadcast::Sender<PublishedDiagnostics>,
+    /// Server requests to re-fetch something it answered before
+    /// (`workspace/inlayHint/refresh`), fanned out to every subscriber.
+    refreshes: broadcast::Sender<ServerRefresh>,
+    /// What the server supports and for which documents, shared with the
+    /// [`LspClient`] that gates on it.
+    ///
+    /// Shared rather than copied because `client/registerCapability` arrives
+    /// *here*, on the handler, and has to be visible to the gate immediately.
+    ///
+    /// [`LspClient`]: crate::LspClient
+    gate: Arc<RwLock<Gate>>,
 }
 
 impl Default for LspHandler {
     fn default() -> Self {
         let (diagnostics, _) = broadcast::channel(DIAGNOSTICS_CHANNEL_CAPACITY);
-        Self { diagnostics }
+        let (refreshes, _) = broadcast::channel(REFRESH_CHANNEL_CAPACITY);
+        Self {
+            diagnostics,
+            refreshes,
+            gate: Arc::default(),
+        }
+    }
+}
+
+impl LspHandler {
+    /// Turn on everything a `client/registerCapability` asks for, for the
+    /// documents each registration's selector covers.
+    fn register(&self, params: &Value) {
+        let Some(items) = params.get("registrations").and_then(Value::as_array) else {
+            return;
+        };
+        for item in items {
+            let (Some(id), Some(method)) = (
+                item.get("id").and_then(Value::as_str),
+                item.get("method").and_then(Value::as_str),
+            ) else {
+                continue;
+            };
+            let Some(feature) = capability::feature_for_method(method) else {
+                // A method karet does not gate on. Acknowledged, as before.
+                continue;
+            };
+            let selector = Selector::from_register_options(item.get("registerOptions"));
+            tracing::debug!(
+                method,
+                ?feature,
+                ?selector,
+                "server registered a capability"
+            );
+            if let Ok(mut gate) = self.gate.write() {
+                gate.register(id.to_owned(), feature, selector);
+            }
+        }
+    }
+
+    /// Turn off everything a `client/unregisterCapability` withdraws.
+    ///
+    /// Only the named registration goes: another registration of the same
+    /// method, or the handshake having advertised it, keeps the feature on.
+    fn unregister(&self, params: &Value) {
+        // The spec's own field name is misspelled, and servers send it that
+        // way; accept the corrected spelling too rather than ignore either.
+        let items = params
+            .get("unregisterations")
+            .or_else(|| params.get("unregistrations"))
+            .and_then(Value::as_array);
+        let Some(items) = items else { return };
+        for item in items {
+            let Some(id) = item.get("id").and_then(Value::as_str) else {
+                continue;
+            };
+            let feature = self
+                .gate
+                .write()
+                .ok()
+                .and_then(|mut gate| gate.unregister(id));
+            if let Some(feature) = feature {
+                tracing::debug!(?feature, "server unregistered a capability");
+            }
+        }
+    }
+
+    /// The shared gate, for the client that gates on it.
+    pub(crate) fn gate(&self) -> Arc<RwLock<Gate>> {
+        Arc::clone(&self.gate)
     }
 }
 
@@ -97,7 +187,26 @@ impl karet_jsonrpc::Handler for LspHandler {
     }
 
     fn answer(&self, method: &str, params: &Value) -> Result<Value, karet_jsonrpc::ResponseError> {
-        answer_server_request(method, params)
+        match method {
+            "client/registerCapability" => {
+                self.register(params);
+                Ok(Value::Null)
+            },
+            "client/unregisterCapability" => {
+                self.unregister(params);
+                Ok(Value::Null)
+            },
+            // Answered at once, before anyone has re-asked: the request only
+            // tells the client its hints may be stale, and holding the reply
+            // until the editor re-requests would stall the server on a
+            // client that may have nothing on screen to re-ask about. No
+            // subscriber is fine -- nothing is showing hints to refresh.
+            "workspace/inlayHint/refresh" => {
+                let _ = self.refreshes.send(ServerRefresh::InlayHints);
+                Ok(Value::Null)
+            },
+            _ => answer_server_request(method, params),
+        }
     }
 }
 
@@ -105,6 +214,14 @@ impl karet_jsonrpc::Handler for LspHandler {
 pub(crate) struct Connection(karet_jsonrpc::Connection<LspHandler>);
 
 impl Connection {
+    /// The live gate this connection's handler maintains.
+    ///
+    /// Shared with the handler, not a copy, so a capability registered after
+    /// the handshake is visible to the gate the moment it arrives.
+    pub(crate) fn gate(&self) -> Arc<RwLock<Gate>> {
+        self.0.handler().gate()
+    }
+
     /// Start the reader/writer tasks over an arbitrary I/O pair.
     pub(crate) fn start<R, W>(read: R, write: W) -> Self
     where
@@ -152,6 +269,11 @@ impl Connection {
         self.0.handler().diagnostics.subscribe()
     }
 
+    /// Subscribe to the server's refresh requests.
+    pub(crate) fn refreshes(&self) -> broadcast::Receiver<ServerRefresh> {
+        self.0.handler().refreshes.subscribe()
+    }
+
     /// Subscribe to every server-initiated notification, undecoded.
     pub(crate) fn raw_notifications(&self) -> broadcast::Receiver<RawNotification> {
         self.0.subscribe()
@@ -184,13 +306,13 @@ fn answer_server_request(
         },
         // Acknowledge without acting; dynamic registration and progress tokens
         // carry no state a headless completion client needs.
-        "client/registerCapability"
-        | "client/unregisterCapability"
-        | "window/workDoneProgress/create" => Ok(Value::Null),
-        _ => Err(karet_jsonrpc::ResponseError {
-            code: karet_jsonrpc::METHOD_NOT_FOUND,
-            message: format!("karet-lsp does not implement {method}"),
-        }),
+        // Dynamic registration is handled by `LspHandler::answer` before it
+        // reaches here, because it mutates the capability set.
+        "window/workDoneProgress/create" => Ok(Value::Null),
+        _ => Err(karet_jsonrpc::ResponseError::new(
+            karet_jsonrpc::METHOD_NOT_FOUND,
+            format!("karet-lsp does not implement {method}"),
+        )),
     }
 }
 

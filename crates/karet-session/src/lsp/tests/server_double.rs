@@ -83,6 +83,54 @@ pub(super) enum Behavior {
     /// staying perfectly alive and serving everything else. A formatter wedged
     /// on one request is not a dead server, and must not be treated as one.
     FormatsNever,
+    /// Serve normally, but never answer `textDocument/inlayHint`: a server
+    /// slow to infer, which must not hold up anything else asked of it.
+    HintsNever,
+    /// Serve normally, but hang up on receiving `textDocument/inlayHint`: the
+    /// connection is lost with that request in flight.
+    DiesOnHint,
+    /// Serve normally, and ask the client to refresh its inlay hints
+    /// (`workspace/inlayHint/refresh`) once it has opened a document.
+    RefreshesHints,
+    /// Advertise nothing but document sync, so every gated request is
+    /// refused before it reaches the wire.
+    Bare,
+}
+
+/// What the scripted server advertises at the handshake.
+///
+/// It has to advertise something: karet refuses a request the server never
+/// said it could answer, so a double that advertised `{}` and answered anyway
+/// would have every request refused before reaching it. That gap is the point
+/// of the gate; see issue #279.
+///
+/// `textDocument/formatting` is the one exception, advertised only by the
+/// formatting behaviours: whether a server formats decides between it and the
+/// built-in formatter at save, and the tests of that choice need a server that
+/// does not.
+fn advertised_capabilities(behavior: Behavior) -> Value {
+    if matches!(behavior, Behavior::Bare) {
+        return json!({"textDocumentSync": 1});
+    }
+    let mut capabilities = json!({
+        "textDocumentSync": 1,
+        "hoverProvider": true,
+        "completionProvider": {"resolveProvider": true},
+        "definitionProvider": true,
+        "documentSymbolProvider": true,
+        "workspaceSymbolProvider": true,
+        "renameProvider": true,
+        "documentRangeFormattingProvider": true,
+        "codeActionProvider": true,
+        "signatureHelpProvider": {},
+        "inlayHintProvider": true,
+        "implementationProvider": true,
+        "typeHierarchyProvider": true,
+    });
+    if matches!(behavior, Behavior::Formats | Behavior::FormatsNever) {
+        capabilities["documentFormattingProvider"] = json!(true);
+    }
+    capabilities
 }
 
 /// A connector that runs a scripted in-memory server per "spawn".
@@ -109,18 +157,10 @@ pub(super) fn test_connector(
                 let Some(init) = read_msg(&mut reader).await else {
                     return;
                 };
-                // Only the formatting behaviour advertises the method, so every
-                // other test's handshake is byte-for-byte what it always was.
-                let capabilities = if matches!(behavior, Behavior::Formats | Behavior::FormatsNever)
-                {
-                    json!({"documentFormattingProvider": true})
-                } else {
-                    json!({})
-                };
                 write_msg(
                     &mut server_write,
                     &json!({"jsonrpc": "2.0", "id": init["id"],
-                                "result": {"capabilities": capabilities}}),
+                                "result": {"capabilities": advertised_capabilities(behavior)}}),
                 )
                 .await;
                 let _initialized = read_msg(&mut reader).await;
@@ -178,6 +218,37 @@ pub(super) fn test_connector(
                             )
                             .await;
                         },
+                        Some("textDocument/inlayHint")
+                            if matches!(behavior, Behavior::HintsNever) => {},
+                        Some("textDocument/inlayHint")
+                            if matches!(behavior, Behavior::DiesOnHint) =>
+                        {
+                            break; // both halves drop: the client sees EOF
+                        },
+                        Some("textDocument/inlayHint") => {
+                            // One hint at UTF-16 character 4 on line 0, which
+                            // is buffer column 3 once the emoji is accounted
+                            // for.
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": [{
+                                    "position": {"line": 0, "character": 4},
+                                    "label": ": i32",
+                                    "kind": 1,
+                                    "paddingLeft": false,
+                                    "paddingRight": false
+                                }]}),
+                            )
+                            .await;
+                        },
+                        // Nothing to say, which is still an answer.
+                        Some("textDocument/hover") => {
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": null}),
+                            )
+                            .await;
+                        },
                         Some("textDocument/documentSymbol") => {
                             write_msg(
                                 &mut server_write,
@@ -200,6 +271,14 @@ pub(super) fn test_connector(
                             let uri = msg["params"]["textDocument"]["uri"]
                                 .as_str()
                                 .unwrap_or_default();
+                            if matches!(behavior, Behavior::RefreshesHints) {
+                                write_msg(
+                                    &mut server_write,
+                                    &json!({"jsonrpc": "2.0", "id": "refresh-1",
+                                        "method": "workspace/inlayHint/refresh"}),
+                                )
+                                .await;
+                            }
                             if uri.ends_with("Status.java") {
                                 write_msg(
                                     &mut server_write,

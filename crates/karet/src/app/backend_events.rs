@@ -27,6 +27,9 @@ impl App {
             .filter_map(|pending| pending.wake(now))
             .min();
         let nested_repositories = self.nested_repository_next_wake(now);
+        // An edited document's hint request goes out once typing pauses, and
+        // has to without another keystroke to wake the loop.
+        let inlay = self.inlay_next_wake(now);
         // Generation runs for seconds with no output to stream, so its spinner is
         // the only progress there is — it has to keep animating without input.
         let ai_commit = self.ai_commit_next_wake(now);
@@ -49,6 +52,7 @@ impl App {
             caret,
             loading,
             nested_repositories,
+            inlay,
             ai_commit,
             operation,
             reveal,
@@ -152,7 +156,24 @@ impl App {
                 version,
                 items,
             } => self.on_completions(id, doc, version, items),
+            SessionEvent::InlayHints {
+                doc,
+                version,
+                hints,
+            } => self.on_inlay_hints(id, doc, version, hints),
+            SessionEvent::InlayHintsFailed { doc, version } => {
+                self.on_inlay_hints_failed(id, doc, version);
+            },
+            // The server said its hints went stale somewhere the buffer
+            // version cannot see -- an edit in another file. Every document
+            // is re-asked rather than only the ones it serves: only visible
+            // ones are, and the answer from a server that did not change is
+            // the same set, arriving in place of itself.
+            SessionEvent::InlayHintsRefresh { .. } => self.invalidate_inlay_coverage(),
             SessionEvent::HoverResult { hover } => self.on_hover_result(id, hover),
+            SessionEvent::FeatureUnsupported { server, feature } => {
+                self.on_feature_unsupported(id, server, feature);
+            },
             SessionEvent::WakatimeStatus { text } => self.wakatime_status = Some(text),
             SessionEvent::DebugState {
                 state,
@@ -262,7 +283,15 @@ impl App {
                 root,
                 state,
                 error,
-            } => self.update_language_server_runtime(server, root, state, error),
+            } => {
+                self.update_language_server_runtime(server, root, state, error);
+                // A provider that has just come up can answer things it could
+                // not a moment ago. Anything already answered *because no
+                // server was running* is not a real answer, and without this
+                // the empty set returned during startup would be cached as
+                // authoritative and never re-asked.
+                self.invalidate_inlay_coverage();
+            },
             SessionEvent::Saved { doc } => {
                 self.reindex_saved_seam(doc);
                 self.on_saved(doc);

@@ -15,7 +15,7 @@ mod load_vscode;
 /// Number of [`StandardToken`](karet_core::StandardToken) classes (token id space).
 pub(crate) const TOKEN_COUNT: usize = 32;
 /// Number of [`ThemeRole`] variants.
-pub(crate) const ROLE_COUNT: usize = 31;
+pub(crate) const ROLE_COUNT: usize = 32;
 
 /// Errors produced while loading a theme.
 #[derive(Debug, thiserror::Error)]

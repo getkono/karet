@@ -407,6 +407,13 @@
             "enabled": true
           }
         },
+        "inlayHints": {
+          "description": "`editor.inlayHints.*` — inferred types and parameter names drawn inline.",
+          "$ref": "#/$defs/InlayHints",
+          "default": {
+            "enabled": true
+          }
+        },
         "insertFinalNewline": {
           "description": "Ensure the file ends with a single trailing newline on save.",
           "type": "boolean",
@@ -786,6 +793,18 @@
           "const": "ascii"
         }
       ]
+    },
+    "InlayHints": {
+      "description": "`editor.inlayHints.*` — the inferred types and parameter names a language\nserver supplies, drawn between characters.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Draw inlay hints for languages whose server supplies them.",
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "additionalProperties": false
     },
     "Latex": {
       "description": "`latex.*` — external LaTeX compilation and preview behavior.",

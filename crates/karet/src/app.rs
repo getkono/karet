@@ -21,6 +21,7 @@ mod graphics;
 mod history;
 mod hit;
 mod hover;
+mod inlay;
 mod inline_macros;
 mod input;
 mod language_servers;
@@ -46,6 +47,7 @@ mod startup;
 mod state;
 mod tabs;
 mod todos;
+mod unsupported;
 mod util;
 
 #[cfg(test)]

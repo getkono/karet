@@ -5,15 +5,81 @@
 //! is nothing. `remember_document` maintains the task's authoritative copy of the
 //! open-document set, which is what a reconnect replays; a document missing from
 //! it is one the server never learns about again.
+//!
+//! `report_unsupported` sits beside them because it is the other half of
+//! answering: when the answer is empty because the server does not offer the
+//! feature, the user who asked is told so rather than left to read "nothing".
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use karet_core::ServerFeature;
 use karet_core::WorkspaceEdit;
+use karet_lsp::LspError;
 use tokio::sync::mpsc;
 
 use super::message::LspUpdate;
 use super::message::ServerCmd;
+use super::slot::SlotKey;
+use crate::RequestId;
+
+/// Tell the client a request it asked for by hand was refused because the
+/// server never offered `feature` -- ahead of the empty answer that follows.
+///
+/// Issue #279 asked for exactly this distinction: "this server does not
+/// support X" read the same as "this server found nothing", and the first is
+/// a fact the user can act on (use another provider) while the second is not.
+/// Only for requests a user asks for by hand; the server task calls it for
+/// nothing else.
+pub(super) fn report_unsupported<T>(
+    result: &Result<T, LspError>,
+    updates: &mpsc::UnboundedSender<LspUpdate>,
+    generation: u64,
+    request: RequestId,
+    key: &SlotKey,
+    feature: ServerFeature,
+) {
+    if matches!(result, Err(LspError::Unsupported { .. })) {
+        let _ = updates.send(LspUpdate::Unsupported {
+            generation,
+            request,
+            server: key.provider.clone(),
+            feature,
+        });
+    }
+}
+
+/// Answer a request command that arrived while the connection is down but a
+/// reconnect is coming.
+///
+/// As [`answer_empty`], except an inlay-hint request is reported unanswered
+/// rather than answered with none: the hints the editor shows are still the
+/// best it has until the server is back, and an empty set would blank them for
+/// the whole reconnect back-off. Only for a *transient* outage -- a server that
+/// is gone for good really has no hints to offer, and being re-asked forever
+/// would be the only effect of saying otherwise.
+pub(super) fn answer_reconnecting(
+    updates: &mpsc::UnboundedSender<LspUpdate>,
+    cmd: ServerCmd,
+    generation: u64,
+) {
+    match cmd {
+        ServerCmd::InlayHints {
+            request,
+            doc,
+            version,
+            ..
+        } => {
+            let _ = updates.send(LspUpdate::InlayHintsFailed {
+                generation,
+                request,
+                doc,
+                version,
+            });
+        },
+        cmd => answer_empty(updates, cmd, generation),
+    }
+}
 
 /// Answer a request command with an empty set (used whenever no live server can
 /// answer, so the client is never left waiting).
@@ -35,6 +101,20 @@ pub(super) fn answer_empty(
                 doc,
                 version,
                 items: Vec::new(),
+            });
+        },
+        ServerCmd::InlayHints {
+            request,
+            doc,
+            version,
+            ..
+        } => {
+            let _ = updates.send(LspUpdate::InlayHints {
+                generation,
+                request,
+                doc,
+                version,
+                hints: Vec::new(),
             });
         },
         ServerCmd::DocumentSymbols {
@@ -162,6 +242,7 @@ pub(super) fn remember_document(documents: &mut HashMap<PathBuf, OpenDocument>, 
             documents.remove(path);
         },
         ServerCmd::Completion { .. }
+        | ServerCmd::InlayHints { .. }
         | ServerCmd::DocumentSymbols { .. }
         | ServerCmd::Hover { .. }
         | ServerCmd::Definition { .. }
@@ -215,5 +296,69 @@ mod tests {
             ),
             "an unreachable server must not be reported as having formatted the file"
         );
+    }
+
+    fn hint_request() -> ServerCmd {
+        ServerCmd::InlayHints {
+            request: RequestId(4),
+            doc: DocumentId(5),
+            version: 6,
+            path: PathBuf::from("main.rs"),
+            range: karet_core::Range::default(),
+        }
+    }
+
+    /// A server that is gone for good has no hints: the editor may clear them
+    /// and stop asking.
+    #[test]
+    fn a_server_that_is_gone_answers_a_hint_request_with_none() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        answer_empty(&tx, hint_request(), 7);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(LspUpdate::InlayHints { ref hints, .. }) if hints.is_empty()
+        ));
+    }
+
+    /// A server that is reconnecting has said nothing about the document, so
+    /// the hints on screen must survive the back-off.
+    #[test]
+    fn a_reconnecting_server_reports_a_hint_request_unanswered() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        answer_reconnecting(&tx, hint_request(), 7);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(LspUpdate::InlayHintsFailed {
+                generation: 7,
+                request: RequestId(4),
+                doc: DocumentId(5),
+                version: 6,
+            })
+        ));
+    }
+
+    /// Everything but a hint request is answered exactly as [`answer_empty`]
+    /// answers it -- formatting included, which must still fall back.
+    #[test]
+    fn a_reconnecting_server_answers_other_requests_empty() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        answer_reconnecting(
+            &tx,
+            ServerCmd::Formatting {
+                request: RequestId(1),
+                doc: DocumentId(2),
+                version: 3,
+                path: PathBuf::from("Cargo.toml"),
+                indentation: karet_lsp::Indentation::default(),
+            },
+            7,
+        );
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(LspUpdate::Formatting {
+                formatted: false,
+                ..
+            })
+        ));
     }
 }

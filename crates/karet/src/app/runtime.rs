@@ -171,6 +171,10 @@ async fn event_loop(
         // history up once that is known, so the first screen is already backed by more
         // history than it shows.
         app.graph_prefetch();
+        // Inlay hints need the painted viewport for the same reason the graph
+        // does: the range worth annotating is only known once a frame has said
+        // how much of the document is on screen.
+        app.request_inlay_hints();
 
         // Wake for notification expiry or a save-spinner frame; park on the event
         // sources when nothing time-based is pending (no idle repaints).

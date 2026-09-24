@@ -5,6 +5,7 @@
 //! language, and did the command reach it -- and returns `false` when there is
 //! not, so the caller answers the request itself rather than leaving it hanging.
 
+use karet_core::Range;
 use karet_lsp::Indentation;
 
 use super::*;
@@ -54,6 +55,31 @@ impl LspManager {
             doc,
             version,
             path,
+        })
+        .is_ok()
+    }
+
+    /// Forward an inlay-hint request (`range` already in UTF-16 columns).
+    /// Returns whether a live server accepted it.
+    pub(crate) fn inlay_hints(
+        &self,
+        language: Option<&str>,
+        request: RequestId,
+        doc: DocumentId,
+        version: u64,
+        path: &Path,
+        range: Range,
+    ) -> bool {
+        let path = absolute_path(path);
+        let Some(tx) = self.existing_server(language, &path) else {
+            return false;
+        };
+        tx.try_send(ServerCmd::InlayHints {
+            request,
+            doc,
+            version,
+            path,
+            range,
         })
         .is_ok()
     }

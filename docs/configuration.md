@@ -61,6 +61,7 @@ Keys use the VS Code / Zed camelCase style. Defaults shown.
 | `semanticComments` | object | enabled | Codetag highlighting (`enabled`, `tags`). |
 | `completion` | object | enabled | LSP completion (`enabled`, `autoTrigger`). |
 | `hover` | object | enabled | The hover popup (`Ctrl+K Ctrl+I`): LSP documentation plus the diagnostics under the caret (`enabled`). |
+| `inlayHints` | object | enabled | Inferred types and parameter names drawn between characters, from the language's primary server (`enabled`, default `true`). Servers that offer none cost nothing. Turning it off takes effect at once: hints already shown are cleared. |
 | `colorHighlight` | object | enabled | Tint color literals (hex, `rgb()`, `hsl()`) with their own color on visible lines (`enabled`). |
 | `prettyErrors` | bool | `true` | Re-render TypeScript diagnostics as markdown — quoted types become highlighted code blocks — in the hover popup and the diagnostic view (`Ctrl+K Ctrl+M`). |
 

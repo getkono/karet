@@ -610,6 +610,7 @@ impl Session {
                 },
             ),
             Command::Completion { doc, position } => self.completion(id, doc, position),
+            Command::InlayHints { doc, range } => self.inlay_hints(id, doc, range),
             Command::Hover { doc, position } => self.hover(id, doc, position),
             Command::Definition { doc, position } => self.definition(id, doc, position),
             Command::DocumentSymbols { doc } => self.document_symbols(id, doc),

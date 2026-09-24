@@ -242,6 +242,9 @@ impl App {
             }
         }
 
+        if !settings.editor.inlay_hints.enabled {
+            self.forget_all_inlay_hints();
+        }
         self.settings = settings;
         self.reconcile_auto_save_settings(Instant::now());
     }

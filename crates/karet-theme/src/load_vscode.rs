@@ -57,6 +57,7 @@ const ROLE_KEYS: &[(&str, ThemeRole)] = &[
         ThemeRole::LineNumberActive,
     ),
     ("editorBracketMatch.background", ThemeRole::MatchingBracket),
+    ("editorInlayHint.foreground", ThemeRole::InlayHint),
     ("diffEditor.insertedTextBackground", ThemeRole::DiffAdded),
     ("diffEditor.removedTextBackground", ThemeRole::DiffRemoved),
     ("statusBar.background", ThemeRole::StatusBarBackground),

@@ -13,9 +13,12 @@ use karet_core::CompletionItem;
 use karet_core::CursorState;
 use karet_core::Diagnostic;
 use karet_core::Hover;
+use karet_core::InlayHint;
 use karet_core::LineCol;
 use karet_core::Location;
 use karet_core::NotificationKind;
+use karet_core::Range;
+use karet_core::ServerFeature;
 use karet_core::Severity;
 use karet_core::Symbol;
 use karet_core::WorkspaceEdit;
@@ -348,6 +351,17 @@ pub enum Command {
         doc: DocumentId,
         /// The position to complete at.
         position: LineCol,
+    },
+    /// Request inlay hints for a range of a document.
+    ///
+    /// Ranged rather than whole-document because a hint set is a function of
+    /// what is on screen: asking for a 10,000-line file to annotate a 40-line
+    /// viewport costs the server the whole file's inference.
+    InlayHints {
+        /// The target document.
+        doc: DocumentId,
+        /// The range to annotate, usually the visible viewport.
+        range: Range,
     },
     /// Request hover information at a position.
     Hover {

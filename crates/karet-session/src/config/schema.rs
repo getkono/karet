@@ -323,6 +323,8 @@ pub struct Editor {
     pub completion: Completion,
     /// The hover popup (documentation + diagnostics at the caret).
     pub hover: HoverPopup,
+    /// `editor.inlayHints.*` — inferred types and parameter names drawn inline.
+    pub inlay_hints: InlayHints,
     /// Inline swatches on color literals (hex, `rgb()`, `hsl()`).
     pub color_highlight: ColorHighlight,
     /// Per-language patches keyed by selectors such as `[rust]`.
@@ -357,6 +359,7 @@ impl Default for Editor {
             pretty_errors: true,
             completion: Completion::default(),
             hover: HoverPopup::default(),
+            inlay_hints: InlayHints::default(),
             color_highlight: ColorHighlight::default(),
             language_overrides: BTreeMap::new(),
         }
@@ -414,6 +417,24 @@ impl Default for Completion {
             enabled: true,
             auto_trigger: true,
         }
+    }
+}
+
+/// `editor.inlayHints.*` — the inferred types and parameter names a language
+/// server supplies, drawn between characters.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct InlayHints {
+    /// Draw inlay hints for languages whose server supplies them.
+    pub enabled: bool,
+}
+
+impl Default for InlayHints {
+    /// On by default: the annotation is the point of running a server that
+    /// infers types, and a server that offers none costs nothing.
+    fn default() -> Self {
+        Self { enabled: true }
     }
 }
 

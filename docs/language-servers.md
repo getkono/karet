@@ -220,11 +220,82 @@ provider, path, and document version, then sorted and deduplicated.
 | Capability | Owner and behavior |
 |---|---|
 | Parsing, syntax colours, folds, brackets, structural selection, injections | Tree-sitter, always the baseline |
-| Completion, hover, symbols, rename, signature help, code actions, inlay hints | first capable LSP in the language's ordered `servers` list |
-| Definition (`F12` / `Ctrl+Click`, with `Ctrl`-hover underline and Go Back) | first capable LSP in the language's ordered `servers` list; a `LocationLink` reply lands the caret on the definition's *name*, a plain `Location` on whatever the server calls its start |
+| Completion, hover, symbols, rename, signature help, code actions | the language's primary server — the first in its ordered `servers` list. A request the primary does not offer is refused, not passed on to a companion |
+| Inlay hints (inferred types, parameter names) | the language's primary server, as above. Requested for the front tab of each visible pane, over its viewport with overscan; re-asked when the viewport leaves what was covered, once an edit has been quiet for the `didChange` debounce (150 ms), and when the server sends `workspace/inlayHint/refresh`. At most one hint request per document is in flight: a newer one waits for the running one to return, and only the newest of those waiting is then sent, so re-asking on every scroll never stacks inference passes on a slow server. Until the replacement arrives the hints on screen move with the text, and one whose anchor an edit replaced is dropped. A request the server fails, times out on, or never answers because it is restarting leaves the hints on screen as they are and is re-asked after the same pause, the wait doubling with each failure in a row up to 30 seconds (a server coming back, an answer, or an edit resets it); only a server that does not offer hints, one that is unavailable for good, or one whose restart circuit has opened clears them. Drawn as virtual text the caret steps over rather than into. `editor.inlayHints.enabled` (default `true`) turns them off |
+| Definition (`F12` / `Ctrl+Click`, with `Ctrl`-hover underline and Go Back) | the language's primary server, as above; a `LocationLink` reply lands the caret on the definition's *name*, a plain `Location` on whatever the server calls its start |
 | Semantic tokens | Tree-sitter owns highlighting today; `semanticTokens` reserves one future LSP overlay owner and is never allowed to replace parsing |
 | Diagnostics | every provider in `diagnostics`, version-gated and merged |
 | Formatting | exactly one `formatter`; a user selection wins, then a repository-native provider, then the language default |
+
+### Capability negotiation
+
+A server is asked only for what it said it can do. karet keeps the capability
+set from the `initialize` reply, updates it as the server registers or
+unregisters capabilities afterwards (`client/registerCapability`), and refuses
+a request the server does not currently offer, **without putting it on the
+wire**.
+
+This matters because the sets differ enormously — no two of rust-analyzer,
+gopls, jdtls and `vscode-json-language-server` implement the same one — and an
+un-negotiated request comes back as a protocol error indistinguishable from a
+failure. A missing feature then reads as a broken server rather than an absent
+capability.
+
+A refusal is therefore reported as a *fact about the provider*, not a fault. It
+is not counted against the provider's failure budget, does not advance the
+"stopped answering" streak that declares a server dead, and does not satisfy
+the "has it ever answered" gate — because nothing reached the wire either way.
+
+For a request you make by hand — hover (`Ctrl+K Ctrl+I`) and go to
+definition; the backend treats rename and workspace symbol search the same
+way — a refusal says so. A notice reads "*server* does not support *feature*"
+in place of "no definition found" or "no hover information", which would be a
+claim about your code rather than about the provider. Requests karet makes on its own — inlay hints, completion as you
+type, the outline's document symbols, format-on-save — are refused silently,
+since a notice on every keystroke or save is noise (format-on-save falls back
+to the built-in formatter instead).
+
+What the client declares at the handshake is kept to what it honours:
+
+- `textDocument.inlayHint`, and `workspace.inlayHint.refreshSupport`. A server
+  sends `workspace/inlayHint/refresh` when something outside a document changes
+  its hints — edit a return type in one file and the `: u32` shown at a call
+  site in another is stale. karet answers it at once and re-asks for the hints
+  of every visible document.
+- `dynamicRegistration` for the gated requests whose registration carries
+  nothing karet reads beyond "on": hover, definition, implementation, type
+  hierarchy, document and workspace symbols, rename, formatting, range
+  formatting, and inlay hints. Completion, signature help and code actions are
+  deliberately not declared: their registrations carry trigger characters and
+  action kinds karet would drop, so a server should keep stating them in its
+  handshake.
+
+A registration applies only to the documents its `registerOptions.documentSelector`
+covers; an absent or `null` selector covers every document, and so does one
+karet cannot read — a selector of an unrecognised shape, or a filter pattern whose
+braces do not balance or expand too far (the filter's other fields still apply).
+A broken registration fails open, so it never silently disables a feature the
+server has. A filter matches on
+the language id the document was opened with, its scheme (every karet document is
+a `file` URI), and its glob `pattern` — a plain glob over the absolute path, or a
+relative pattern under a base URI. A request for a document that no active
+registration covers, and that the handshake did not advertise, is refused like
+any other unoffered request. Withdrawing a registration removes exactly its own
+scope: another registration of the same method, or the handshake having
+advertised it, keeps the feature on.
+
+The reply is read from its JSON rather than through a typed mirror of one
+spec revision, so a capability karet learns about later needs no dependency
+bump: `typeHierarchyProvider`, which karet already issues requests against, has
+no field at all in the `lsp-types` release this workspace pins.
+
+Position encoding is *offered*, not negotiated: the client lists UTF-16 as the
+only encoding it speaks, which is also the protocol's default, and every
+position crosses the wire in UTF-16 code units. A server's `positionEncoding`
+reply is read and kept, but not yet acted on. The distinction matters because
+the encodings agree on every ASCII-only line, so a server that answered in
+another one anyway — clangd prefers UTF-8 — would look correct until a line
+contained one non-ASCII character, and then misplace every position after it.
 
 Tree-sitter and LSP are complementary. Tree-sitter is local, incremental, stable
 while a server restarts, and understands injected regions in Astro, Svelte, Vue,
@@ -300,6 +371,15 @@ Two silent deaths in a row put the provider behind the circuit; they are counted
 directly rather than through the sliding failure window, because establishing each
 one costs at least three 30-second timeouts and the window always expires between
 them.
+
+Only requests the server task waits on one at a time count toward that streak.
+Inlay-hint requests run in the background, several documents at once, so three can
+time out together inside one 30-second window, and a server slow to infer types
+for a large file is slow rather than hung — so a timed-out or failed hint request
+never counts toward declaring the server dead. An answered hint request is neutral
+too: it does not clear the streak, so a server that keeps answering hints while
+hover and completion time out is still caught. It does count as the server having
+answered, so one whose only answers so far were hints can still be declared hung.
 
 A connection that dies without having lasted ten seconds is charged against the
 restart budget, so five such cycles in a minute open the circuit. Connecting is

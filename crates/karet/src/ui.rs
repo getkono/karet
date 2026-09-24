@@ -32,6 +32,7 @@ use content::*;
 use github::*;
 use karet_core::Decoration;
 use karet_core::Diagnostic;
+use karet_core::InlayHint;
 use karet_core::Severity;
 use karet_core::ThemeRole;
 use karet_editor::Editor;
@@ -386,6 +387,8 @@ struct PaneCtx<'a> {
     tab_width: u16,
     /// Complete diagnostic sets keyed by backend document.
     diagnostics: &'a HashMap<DocumentId, Vec<Diagnostic>>,
+    /// Inlay hints keyed by backend document, in buffer columns.
+    inlay_hints: &'a HashMap<DocumentId, Vec<InlayHint>>,
     /// The client's one copy of the language-server inventory, which the manager
     /// tab draws from. Held on the app rather than the view, so a background
     /// pane's manager tab and the focused one cannot disagree.

@@ -135,6 +135,15 @@ pub(super) fn line_len(buffer: &TextBuffer, line: u32) -> u32 {
         .map_or(0, |s| s.chars().count() as u32)
 }
 
+/// The `char`s of line `line` in `buffer` (empty past the end).
+pub(super) fn line_chars(buffer: &TextBuffer, line: u32) -> Vec<char> {
+    buffer
+        .line(line as usize)
+        .unwrap_or_default()
+        .chars()
+        .collect()
+}
+
 /// The number of decimal digits needed to print `n`.
 pub(super) fn digit_count(n: u32) -> usize {
     if n < 10 { 1 } else { (n.ilog10() + 1) as usize }

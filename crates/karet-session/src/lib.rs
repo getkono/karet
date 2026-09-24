@@ -126,6 +126,7 @@ pub use config::schema::AiCommitAgent;
 pub use config::schema::AiCommitEffort;
 pub use local::DocSnapshot;
 pub use local::SnapshotRx;
+pub use lsp::CHANGE_DEBOUNCE as LSP_CHANGE_DEBOUNCE;
 pub use session::EventRx;
 pub use session::Session;
 pub use session::SessionConfig;

@@ -10,8 +10,11 @@ use std::path::PathBuf;
 use karet_core::CompletionItem;
 use karet_core::Diagnostic;
 use karet_core::Hover;
+use karet_core::InlayHint;
 use karet_core::LineCol;
 use karet_core::Location;
+use karet_core::Range;
+use karet_core::ServerFeature;
 use karet_core::Symbol;
 use karet_core::TextEdit;
 use karet_core::WorkspaceEdit;
@@ -82,6 +85,19 @@ pub(crate) enum ServerCmd {
         /// The document path.
         path: PathBuf,
     },
+    /// Request inlay hints for a range.
+    InlayHints {
+        /// The originating request, echoed on the answer.
+        request: RequestId,
+        /// The target document, echoed on the answer.
+        doc: DocumentId,
+        /// The buffer version at request time, echoed on the answer.
+        version: u64,
+        /// The document path.
+        path: PathBuf,
+        /// The range, already converted to UTF-16 columns.
+        range: Range,
+    },
     /// Request hover information.
     Hover {
         request: RequestId,
@@ -136,6 +152,17 @@ pub(crate) enum LspUpdate {
         /// The human-readable status message.
         message: String,
     },
+    /// The server asked for every inlay hint it answered to be re-fetched
+    /// (`workspace/inlayHint/refresh`).
+    ///
+    /// Fenced on the slot like the other reports a task makes about itself: a
+    /// retired task's refresh describes a server nobody is asking any more.
+    InlayHintsRefresh {
+        /// The incarnation of the slot whose server asked.
+        token: SlotToken,
+        /// The slot whose server asked.
+        key: SlotKey,
+    },
     /// Completion items answering a [`ServerCmd::Completion`] (ranges still in
     /// UTF-16 columns; the session converts them against the buffer).
     Completions {
@@ -150,6 +177,33 @@ pub(crate) enum LspUpdate {
         /// The mapped items.
         items: Vec<CompletionItem>,
     },
+    /// Inlay hints answering a [`ServerCmd::InlayHints`] request. Positions
+    /// remain in UTF-16 until the session adopts the update.
+    InlayHints {
+        /// The manager generation that spawned the server task.
+        generation: u64,
+        /// The originating request.
+        request: RequestId,
+        /// The target document.
+        doc: DocumentId,
+        /// The buffer version the request was made against.
+        version: u64,
+        /// The mapped hints.
+        hints: Vec<InlayHint>,
+    },
+    /// A [`ServerCmd::InlayHints`] request a server existed for but did not
+    /// answer: it failed, timed out, was superseded, or its slot retired.
+    /// Distinct from an empty [`Self::InlayHints`], which says there are none.
+    InlayHintsFailed {
+        /// The manager generation that spawned the server task.
+        generation: u64,
+        /// The originating request.
+        request: RequestId,
+        /// The target document.
+        doc: DocumentId,
+        /// The buffer version the request was made against.
+        version: u64,
+    },
     /// Document symbols answering a [`ServerCmd::DocumentSymbols`] request. Ranges
     /// remain in UTF-16 until the session adopts the update.
     Symbols {
@@ -163,6 +217,21 @@ pub(crate) enum LspUpdate {
         version: u64,
         /// The mapped symbol tree.
         symbols: Vec<Symbol>,
+    },
+    /// A request was refused because the server never offered `feature`.
+    ///
+    /// Sent only for requests a user asks for by hand, and always *before*
+    /// the request's own empty answer, so the client can explain the empty
+    /// answer rather than report it as nothing found.
+    Unsupported {
+        /// The manager generation that spawned the server task.
+        generation: u64,
+        /// The refused request.
+        request: RequestId,
+        /// The provider that was asked.
+        server: LanguageServerId,
+        /// What it does not offer.
+        feature: ServerFeature,
     },
     /// Hover response in UTF-16 coordinates.
     Hover {

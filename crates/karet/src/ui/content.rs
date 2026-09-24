@@ -157,12 +157,16 @@ pub(super) fn draw_pane_content(
                 let diagnostics = doc
                     .and_then(|doc| ctx.diagnostics.get(&doc))
                     .map_or(&[][..], Vec::as_slice);
+                let inlay_hints = doc
+                    .and_then(|doc| ctx.inlay_hints.get(&doc))
+                    .map_or(&[][..], Vec::as_slice);
                 let editor = Editor::new(buffer)
                     .highlights(highlights)
                     .semantic_blocks(semantic_blocks)
                     .theme(theme)
                     .decorations(&combined)
                     .diagnostics(diagnostics)
+                    .inlay_hints(inlay_hints)
                     .folds(&fold_lines)
                     .focused(ctx.editor_focused)
                     .cell_caret(!ctx.graphical_cursor)

@@ -27,6 +27,9 @@ pub(crate) struct PendingHover {
     /// The caret position the request was made at; the answer is dropped if
     /// the caret has moved on.
     pub at: LineCol,
+    /// Whether the server said it does not offer hover, so an empty answer
+    /// has already been explained and must not be reported again.
+    pub refused: bool,
 }
 
 /// The open hover popup.

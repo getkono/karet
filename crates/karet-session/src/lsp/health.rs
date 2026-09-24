@@ -27,6 +27,8 @@ use super::RESTART_LIMIT;
 use super::RESTART_MAX_DELAY;
 use super::RESTART_MIN_DELAY;
 use super::RESTART_WINDOW;
+use super::hint_flight::HintAnswer;
+use super::hint_flight::HintFlight;
 use super::message::LspUpdate;
 use super::message::ServerCmd;
 use super::slot::SlotKey;
@@ -77,10 +79,12 @@ pub(super) enum Wake {
     Quiet,
     /// The connection died.
     Lost,
+    /// A launched inlay-hint request finished.
+    Hint(HintAnswer),
 }
 
-/// Wait for whichever comes first: a command, a quiet debounce window, or the
-/// connection's death.
+/// Wait for whichever comes first: a command, the pending edit's flush deadline, a
+/// launched hint request finishing, or the connection's death.
 ///
 /// The select is `biased` so liveness is polled first. With a dead connection
 /// and queued commands, taking a command would only drive it into a peer that is
@@ -89,25 +93,30 @@ pub(super) enum Wake {
 pub(super) async fn next_wake(
     rx: &mut mpsc::Receiver<ServerCmd>,
     client: Option<&LspClient>,
-    debounce: std::time::Duration,
-    has_pending: bool,
+    flush_at: Option<Instant>,
+    hints: &mut HintFlight,
 ) -> Wake {
     let Some(client) = client else {
         return Wake::Command(rx.recv().await);
     };
-    if has_pending {
+    let busy = hints.is_busy();
+    if let Some(flush_at) = flush_at {
+        // A deadline rather than a timeout on the next command: the debounce
+        // measures quiet since the last *edit*, and a command that does not
+        // flush -- an inlay-hint request waiting on this very flush -- must
+        // not restart it.
         tokio::select! {
             biased;
             () = client.closed() => Wake::Lost,
-            cmd = tokio::time::timeout(debounce, rx.recv()) => match cmd {
-                Ok(cmd) => Wake::Command(cmd),
-                Err(_quiet) => Wake::Quiet,
-            },
+            () = tokio::time::sleep_until(tokio::time::Instant::from_std(flush_at)) => Wake::Quiet,
+            Some(answer) = hints.next(), if busy => Wake::Hint(answer),
+            cmd = rx.recv() => Wake::Command(cmd),
         }
     } else {
         tokio::select! {
             biased;
             () = client.closed() => Wake::Lost,
+            Some(answer) = hints.next(), if busy => Wake::Hint(answer),
             cmd = rx.recv() => Wake::Command(cmd),
         }
     }
@@ -138,12 +147,16 @@ pub(super) fn charge_disconnect(
     key: &SlotKey,
 ) -> (Duration, LanguageServerRuntimeState) {
     // A silent connection is counted separately from the sliding failure window,
-    // because it cannot be caught by it. Condemning one takes three request
-    // timeouts -- at least 90 seconds -- while the window is 60, so the previous
-    // charge has always expired before the next lands: the budget never reaches
-    // two, `RESTART_LIMIT` is unreachable, and the kill-and-respawn loop runs
-    // forever at one cycle per 90 seconds. A straight count of consecutive silent
-    // deaths has no such hole.
+    // because it cannot be caught by it. Condemning one takes three consecutive
+    // 30-second request timeouts, and only requests the server task awaits one
+    // at a time count toward them -- background inlay-hint requests, which run
+    // concurrently and could time out together, are never charged (see
+    // `hint_flight::deliver`). So a condemnation lands at least 90 seconds after
+    // the last one, while the window is 60: the previous charge has always
+    // expired before the next lands, the budget never reaches two,
+    // `RESTART_LIMIT` is unreachable, and the kill-and-respawn loop runs forever
+    // at one cycle per 90 seconds. A straight count of consecutive silent deaths
+    // has no such hole.
     if hung {
         let now = Instant::now();
         while hangs
@@ -258,6 +271,19 @@ impl FailureTally {
                     );
                 }
             },
+            // Neither a failure nor an answer: no request reached the wire,
+            // because the server never advertised the capability. Counting it
+            // as a failure would slander a perfectly healthy server; counting
+            // it as an answer would satisfy the liveness gate below without
+            // the server having said anything at all. The timeout streak is
+            // left exactly as it was, since nothing happened to inform it.
+            Err(LspError::Unsupported { method }) => {
+                tracing::debug!(
+                    language = %key,
+                    method,
+                    "skipped a request this server does not support"
+                );
+            },
             Err(e) => {
                 self.consecutive_timeouts = 0;
                 tracing::warn!(language = %key, error = %e, "language server call failed");
@@ -300,6 +326,16 @@ impl FailureTally {
             self.answered = true;
         }
         result
+    }
+
+    /// Record that the server answered a *background* request, without letting
+    /// the answer excuse a timeout.
+    ///
+    /// A background answer proves the server has finished starting up, so it
+    /// arms the gate above; it says nothing about the requests the user is
+    /// waiting on, so it leaves the streak where it was.
+    pub(super) fn note_background_answer(&mut self) {
+        self.answered = true;
     }
 
     /// Whether this connection was condemned for going silent.
@@ -752,5 +788,55 @@ mod tests {
         }
         assert!(!dead);
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn a_capability_refusal_touches_neither_the_streak_nor_the_connection() {
+        // A refusal never reached the wire, so it carries no evidence either
+        // way. Counted as a failure it would condemn a healthy server; counted
+        // as an answer it would satisfy the liveness gate on the strength of a
+        // request that was never sent. It must do neither -- including leaving
+        // a timeout streak already in progress exactly where it was.
+        let (mut tally, tx, mut rx) = tally();
+        let mut dead = false;
+        let _answered = tally.observe(Ok::<(), LspError>(()));
+
+        for _ in 0..TIMEOUT_DEATH_LIMIT.saturating_sub(1) {
+            tally.note::<()>(
+                Err(LspError::Timeout),
+                &mut dead,
+                &tx,
+                &key("rust"),
+                SlotToken::FIRST,
+            );
+        }
+        assert!(!dead, "the streak should not have reached the limit yet");
+
+        // Interleaving refusals must not reset the streak the way an ordinary
+        // error does, nor advance it.
+        for _ in 0..TIMEOUT_DEATH_LIMIT.saturating_mul(3) {
+            tally.note::<()>(
+                Err(LspError::Unsupported {
+                    method: "textDocument/inlayHint",
+                }),
+                &mut dead,
+                &tx,
+                &key("rust"),
+                SlotToken::FIRST,
+            );
+        }
+        assert!(!dead, "refusals must not condemn the connection");
+        assert!(rx.try_recv().is_err());
+
+        // The streak resumes where it left off: one more real timeout still
+        // reaches the limit, proving the refusals were genuinely inert.
+        tally.note::<()>(
+            Err(LspError::Timeout),
+            &mut dead,
+            &tx,
+            &key("rust"),
+            SlotToken::FIRST,
+        );
+        assert!(dead, "a refusal silently reset a real timeout streak");
     }
 }

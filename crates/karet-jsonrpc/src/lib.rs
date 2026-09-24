@@ -42,17 +42,24 @@
 mod connection;
 pub mod framing;
 mod message;
+mod peer;
 
 pub use connection::Connection;
 pub use connection::Handler;
 pub use connection::RpcError;
 pub use framing::Framing;
+pub use message::INTERNAL_ERROR;
+pub use message::INVALID_PARAMS;
+pub use message::INVALID_REQUEST;
 pub use message::Incoming;
 pub use message::JSONRPC_VERSION;
 pub use message::METHOD_NOT_FOUND;
 pub use message::OutgoingNotification;
 pub use message::OutgoingRequest;
 pub use message::OutgoingResponse;
+pub use message::PARSE_ERROR;
 pub use message::RequestId;
 pub use message::ResponseError;
 pub use message::classify;
+pub use peer::PeerRequest;
+pub use peer::Responder;

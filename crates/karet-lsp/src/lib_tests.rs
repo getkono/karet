@@ -53,17 +53,62 @@ impl FakeServer {
             .await;
     }
 
-    /// Serve the `initialize`/`initialized` handshake, returning the
-    /// `initialize` params for assertions.
+    /// Serve the `initialize`/`initialized` handshake advertising everything
+    /// karet gates on, returning the `initialize` params for assertions.
+    ///
+    /// Broad on purpose: a test about what `completion` *returns* should not
+    /// have to restate the handshake, while a test about a refusal says
+    /// exactly what it withholds. The old fake advertised `{}` and answered
+    /// every request anyway, which is why nothing noticed that karet issued
+    /// requests no server had agreed to — see `handshake_with`.
     async fn handshake(&mut self) -> Value {
+        self.handshake_with(everything()).await
+    }
+
+    /// Serve the handshake advertising exactly `capabilities`.
+    async fn handshake_with(&mut self, capabilities: Value) -> Value {
         let init = self.recv().await;
         assert_eq!(init["method"], "initialize");
         let id = init["id"].clone();
-        self.respond(&id, json!({"capabilities": {}})).await;
+        self.respond(&id, json!({ "capabilities": capabilities }))
+            .await;
         let initialized = self.recv().await;
         assert_eq!(initialized["method"], "initialized");
         init["params"].clone()
     }
+}
+
+/// Every capability karet currently gates a request on.
+fn everything() -> Value {
+    json!({
+        "textDocumentSync": 1,
+        "hoverProvider": true,
+        "completionProvider": {"resolveProvider": true, "triggerCharacters": ["."]},
+        "signatureHelpProvider": {"triggerCharacters": ["("]},
+        "declarationProvider": true,
+        "definitionProvider": true,
+        "typeDefinitionProvider": true,
+        "implementationProvider": true,
+        "referencesProvider": true,
+        "documentHighlightProvider": true,
+        "documentSymbolProvider": true,
+        "workspaceSymbolProvider": true,
+        "codeActionProvider": true,
+        "codeLensProvider": {"resolveProvider": true},
+        "documentLinkProvider": {"resolveProvider": true},
+        "colorProvider": true,
+        "documentFormattingProvider": true,
+        "documentRangeFormattingProvider": true,
+        "renameProvider": {"prepareProvider": true},
+        "foldingRangeProvider": true,
+        "selectionRangeProvider": true,
+        "callHierarchyProvider": true,
+        "typeHierarchyProvider": true,
+        "linkedEditingRangeProvider": true,
+        "inlayHintProvider": {"resolveProvider": true},
+        "inlineValueProvider": true,
+        "executeCommandProvider": {"commands": []},
+    })
 }
 
 #[tokio::test]
@@ -843,79 +888,14 @@ async fn a_server_that_really_exited_still_reports_exited() -> TestResult {
     Ok(())
 }
 
-/// LSP types `documentFormattingProvider` as `boolean | DocumentFormattingOptions`,
-/// and treats an unadvertised capability as absent. Getting any of these wrong
-/// costs a user their formatter, or costs every save a pointless round trip.
-#[test]
-fn formatting_capability_reads_every_shape_the_spec_allows() {
-    let reads = |capabilities: Value| advertises_formatting(&json!({"capabilities": capabilities}));
+#[path = "gating_tests.rs"]
+mod gating;
 
-    assert!(reads(json!({"documentFormattingProvider": true})));
-    assert!(
-        reads(json!({"documentFormattingProvider": {}})),
-        "an options object is how a server with work-done support answers"
-    );
-    assert!(reads(
-        json!({"documentFormattingProvider": {"workDoneProgress": true}})
-    ));
+#[path = "formatting_tests.rs"]
+mod formatting;
 
-    assert!(!reads(json!({"documentFormattingProvider": false})));
-    assert!(!reads(json!({"documentFormattingProvider": null})));
-    assert!(
-        !reads(json!({})),
-        "an unadvertised capability is not a supported one"
-    );
-    assert!(
-        !advertises_formatting(&json!({})),
-        "a result with no capabilities at all supports nothing"
-    );
-}
+#[path = "registration_tests.rs"]
+mod registration;
 
-/// The handshake is the only chance to learn this: the field is never sent
-/// again, so a client that drops it has to guess for the rest of the session.
-#[tokio::test]
-async fn the_handshake_records_whether_the_server_formats() -> TestResult {
-    async fn connect_advertising(
-        provider: Value,
-    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-        let ((read, write), mut server) = wire();
-        let server_task = tokio::spawn(async move {
-            let init = server.recv().await;
-            let id = init["id"].clone();
-            server
-                .respond(
-                    &id,
-                    json!({"capabilities": {"documentFormattingProvider": provider}}),
-                )
-                .await;
-            let _initialized = server.recv().await;
-        });
-        let client = LspClient::connect(read, write, Path::new("/tmp")).await?;
-        server_task.await?;
-        Ok(client.supports_formatting())
-    }
-
-    assert!(connect_advertising(json!(true)).await?);
-    assert!(connect_advertising(json!({})).await?);
-    assert!(!connect_advertising(json!(false)).await?);
-    Ok(())
-}
-
-/// `FormattingOptions` is the only place the request states how the buffer is
-/// indented, and a server that honours it reindents the whole file to match.
-/// Building it from a constant therefore rewrote every formatted file to four
-/// spaces regardless of `editor.tabSize` / `editor.insertSpaces`; these values
-/// must be the caller's, passed through unchanged.
-#[test]
-fn formatting_options_state_the_caller_s_indentation() {
-    let tabs = formatting_options(Indentation {
-        tab_size: 2,
-        insert_spaces: false,
-    });
-    assert_eq!(tabs.tab_size, 2);
-    assert!(!tabs.insert_spaces);
-
-    let fallback = formatting_options(Indentation::default());
-    assert_eq!(fallback.tab_size, 4);
-    assert!(fallback.insert_spaces);
-}
+#[path = "client_capability_tests.rs"]
+mod client_capability;

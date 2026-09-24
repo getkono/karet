@@ -18,6 +18,7 @@ mod commands;
 mod connector;
 mod forward;
 mod health;
+mod hint_flight;
 mod inventory;
 mod jdtls;
 mod lifecycle;
@@ -75,8 +76,14 @@ use crate::config::schema::Lsp as LspSettings;
 
 /// How long an edited document may sit before its full text is forwarded as
 /// `didChange`. A pending forward is also flushed immediately ahead of any
-/// request, so completions never see stale text.
-const CHANGE_DEBOUNCE: Duration = Duration::from_millis(150);
+/// request the user is waiting on, so completions never see stale text; an
+/// inlay-hint request waits for the debounced flush instead (see
+/// `hint_flight`).
+///
+/// Public so a client can pace its own background requests to it: a request
+/// issued once an edit has been quiet this long reaches a server that already
+/// has the edit.
+pub const CHANGE_DEBOUNCE: Duration = Duration::from_millis(150);
 const SERVER_COMMAND_CAPACITY: usize = 256;
 const RESTART_MIN_DELAY: Duration = Duration::from_millis(250);
 const RESTART_MAX_DELAY: Duration = Duration::from_secs(30);
@@ -206,6 +213,7 @@ impl LspManager {
     pub(crate) fn accepts(&self, update: &LspUpdate) -> bool {
         match update {
             LspUpdate::ServerStatus { token, key, .. }
+            | LspUpdate::InlayHintsRefresh { token, key }
             | LspUpdate::Diagnostics {
                 token, server: key, ..
             }
@@ -219,8 +227,11 @@ impl LspManager {
                 .get(key)
                 .is_some_and(|slot| slot.token == *token),
             LspUpdate::Completions { generation, .. }
+            | LspUpdate::InlayHints { generation, .. }
+            | LspUpdate::InlayHintsFailed { generation, .. }
             | LspUpdate::Symbols { generation, .. }
             | LspUpdate::Hover { generation, .. }
+            | LspUpdate::Unsupported { generation, .. }
             | LspUpdate::Definitions { generation, .. }
             | LspUpdate::WorkspaceSymbols { generation, .. }
             | LspUpdate::WorkspaceEdit { generation, .. }

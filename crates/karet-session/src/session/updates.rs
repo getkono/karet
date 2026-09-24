@@ -104,6 +104,36 @@ impl Session {
                     },
                 );
             },
+            LspUpdate::InlayHints {
+                request,
+                doc,
+                version,
+                mut hints,
+                ..
+            } => {
+                let Some(d) = self.store.docs.get(&doc) else {
+                    return; // closed since the request: stale by definition
+                };
+                for hint in &mut hints {
+                    hint.position = d
+                        .buffer
+                        .utf16_to_line_col(hint.position.line, hint.position.col);
+                }
+                self.emit(
+                    Some(request),
+                    Event::InlayHints {
+                        doc,
+                        version,
+                        hints,
+                    },
+                );
+            },
+            LspUpdate::InlayHintsFailed {
+                request,
+                doc,
+                version,
+                ..
+            } => self.emit(Some(request), Event::InlayHintsFailed { doc, version }),
             LspUpdate::Symbols {
                 request,
                 doc,
@@ -217,6 +247,18 @@ impl Session {
                 }
                 let _ = self.finish_format_on_save(request, doc, version, edits);
             },
+            LspUpdate::Unsupported {
+                request,
+                server,
+                feature,
+                ..
+            } => self.emit(Some(request), Event::FeatureUnsupported { server, feature }),
+            LspUpdate::InlayHintsRefresh { key, .. } => self.emit(
+                None,
+                Event::InlayHintsRefresh {
+                    server: key.provider,
+                },
+            ),
             LspUpdate::ServerStatus { key, message, .. } => {
                 let server = key.provider.display_name();
                 // Progress rather than a notification: the client shows these under

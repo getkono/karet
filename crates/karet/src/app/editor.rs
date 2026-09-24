@@ -773,9 +773,15 @@ impl App {
             }
             editor.set_carets(&carets);
             let head = editor.cursor();
-            editor.scroll_to(head);
+            // `reveal`, not `scroll_to`: the merge-conflict panes copy this
+            // editor's `scroll_col` before it next renders.
+            editor.reveal(buffer, head);
         }
         if let Some(version) = auto_save_version {
+            // The hints on screen move with the text until the server's
+            // replacement for this version arrives.
+            self.shift_inlay_hints(doc, base, version, &change.edits);
+            self.note_inlay_edit(doc, Instant::now());
             self.schedule_auto_save(doc, version, Instant::now());
         }
     }
