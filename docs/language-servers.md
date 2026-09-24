@@ -271,7 +271,11 @@ What the client declares at the handshake is kept to what it honours:
   handshake.
 
 A registration applies only to the documents its `registerOptions.documentSelector`
-covers; an absent or `null` selector covers every document. A filter matches on
+covers; an absent or `null` selector covers every document, and so does one
+karet cannot read — a selector of an unrecognised shape, or a filter pattern whose
+braces do not balance or expand too far (the filter's other fields still apply).
+A broken registration fails open, so it never silently disables a feature the
+server has. A filter matches on
 the language id the document was opened with, its scheme (every karet document is
 a `file` URI), and its glob `pattern` — a plain glob over the absolute path, or a
 relative pattern under a base URI. A request for a document that no active

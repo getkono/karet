@@ -111,7 +111,23 @@ impl Filter {
 }
 
 impl Pattern {
+    /// `None` for a pattern karet cannot use -- an unrecognised shape, or a glob
+    /// whose braces do not balance or expand too far. The filter then has no
+    /// pattern and covers every document its other fields allow, failing open
+    /// for the same reason an unrecognised selector does.
     fn parse(value: &Value) -> Option<Self> {
+        let pattern = Self::parse_shape(value)?;
+        let glob = match &pattern {
+            Self::Glob(glob) | Self::Relative { glob, .. } => glob,
+        };
+        if !expand_braces(glob, &mut Vec::new()) {
+            tracing::debug!(pattern = %glob, "unusable glob in a documentSelector; ignoring it");
+            return None;
+        }
+        Some(pattern)
+    }
+
+    fn parse_shape(value: &Value) -> Option<Self> {
         if let Some(glob) = value.as_str() {
             return Some(Self::Glob(glob.to_owned()));
         }
@@ -142,7 +158,8 @@ fn slashed(path: &Path) -> String {
 ///
 /// Braces are expanded first into plain alternatives, which the matcher then
 /// tries one by one. A pattern whose braces do not balance, or that expands to
-/// more than [`MAX_ALTERNATIVES`], matches nothing.
+/// more than [`MAX_ALTERNATIVES`], matches nothing here; a selector never asks,
+/// because `Pattern::parse` drops such a pattern and so covers every document.
 pub(crate) fn glob_matches(pattern: &str, text: &str) -> bool {
     let text: Vec<char> = text.chars().collect();
     let mut alternatives = Vec::new();
@@ -160,7 +177,7 @@ pub(crate) fn glob_matches(pattern: &str, text: &str) -> bool {
 ///
 /// Each `{a,b}` group doubles the count, so a pattern of twenty groups is a
 /// million alternatives. No real selector comes close; the cap is there so a
-/// hostile or broken one costs a refusal rather than the gate's lock.
+/// hostile or broken one is ignored rather than holding the gate's lock.
 const MAX_ALTERNATIVES: usize = 256;
 
 /// Push every alternative a brace pattern stands for onto `out`, returning

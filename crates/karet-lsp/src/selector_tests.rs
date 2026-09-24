@@ -53,6 +53,30 @@ fn unbalanced_braces_match_nothing() {
 }
 
 #[test]
+fn an_unusable_pattern_fails_open_like_an_unrecognised_selector() -> Result<(), String> {
+    // Both directions of a broken registration enable the feature: an
+    // unrecognised selector covers everything, and so does a filter whose
+    // glob karet cannot use -- limited only by the filter's other fields.
+    assert!(
+        selector(json!("not-an-array")).is_none(),
+        "covers every document"
+    );
+
+    let unbalanced = selector(json!([{"pattern": "**/*.{ts"}])).ok_or("no selector")?;
+    assert!(unbalanced.matches(Path::new("/w/a.rs"), None));
+
+    let groups = "{a,b}".repeat(20);
+    let exploding =
+        selector(json!([{"language": "rust", "pattern": groups}])).ok_or("no selector")?;
+    assert!(exploding.matches(Path::new("/w/a.rs"), Some("rust")));
+    assert!(
+        !exploding.matches(Path::new("/w/a.rs"), Some("toml")),
+        "the filter's other fields still apply"
+    );
+    Ok(())
+}
+
+#[test]
 fn character_classes_take_ranges_and_negation() {
     assert!(glob_matches("[a-c]x", "bx"));
     assert!(!glob_matches("[a-c]x", "dx"));
