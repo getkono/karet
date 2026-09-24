@@ -13,7 +13,9 @@
 //! tests and embedders use. A reader task correlates responses by id, broadcasts
 //! pushed diagnostics, and answers the few server→client requests a headless
 //! client must not leave hanging (`workspace/configuration`,
-//! `client/registerCapability`, `window/workDoneProgress/create`).
+//! `client/registerCapability`, `window/workDoneProgress/create`,
+//! `workspace/inlayHint/refresh` -- the last also surfaced through
+//! [`LspClient::refreshes`]).
 //!
 //! Three protocol choices are deliberate and documented here once:
 //!
@@ -241,6 +243,23 @@ pub struct RawNotification {
     pub params: serde_json::Value,
 }
 
+/// A server's request that the client re-fetch something it answered before.
+///
+/// Delivered through [`LspClient::refreshes`]. The client has already answered
+/// the request by the time a subscriber sees it; what remains is the
+/// subscriber's half -- dropping what it cached and asking again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum ServerRefresh {
+    /// `workspace/inlayHint/refresh`: every inlay hint this server has
+    /// answered, for any document, may now be stale.
+    ///
+    /// Sent when something *outside* the requested document changed the
+    /// answer -- editing a function's return type in one file changes the
+    /// hints shown at its call sites in every other.
+    InlayHints,
+}
+
 /// An async client for a single language server.
 ///
 /// Dropping the client tears the connection down ungracefully (a spawned
@@ -412,8 +431,10 @@ impl LspClient {
     /// in-process or remote byte stream.
     ///
     /// The handshake advertises the `utf-16` position encoding, completion
-    /// without snippet support, and diagnostics with related information; it
-    /// then sends `initialized`.
+    /// without snippet support, diagnostics with related information, inlay
+    /// hints with `workspace/inlayHint/refresh` support, and dynamic
+    /// registration for the gated requests whose registration the client
+    /// honours; it then sends `initialized`.
     ///
     /// # Errors
     /// Returns [`LspError::Protocol`] when `root` cannot form a `file://` URI,
@@ -982,6 +1003,16 @@ impl LspClient {
         self.conn.diagnostics()
     }
 
+    /// Subscribe to the server's refresh requests (see [`ServerRefresh`]).
+    ///
+    /// The request itself is answered by the client; a subscriber only has to
+    /// drop what it cached. A slow subscriber loses only duplicates: every
+    /// entry means the same thing.
+    #[must_use]
+    pub fn refreshes(&self) -> broadcast::Receiver<ServerRefresh> {
+        self.conn.refreshes()
+    }
+
     /// Subscribe to every server-initiated notification, undecoded (see
     /// [`RawNotification`]). Slow subscribers drop the oldest entries.
     #[must_use]
@@ -1070,6 +1101,19 @@ fn initialize_params(root: &Path) -> Result<lsp_types::InitializeParams, LspErro
         || "workspace".to_owned(),
         |n| n.to_string_lossy().into_owned(),
     );
+    // `dynamicRegistration` is declared exactly where the registration handler
+    // honours it: a gated request whose registration carries nothing karet
+    // reads beyond "on". Completion, signature help and code actions are left
+    // out on purpose -- their registrations carry trigger characters and
+    // action kinds the handler would drop, so a server switching to dynamic
+    // registration for them would lose what its handshake would have said.
+    let dynamic = lsp_types::DynamicRegistrationClientCapabilities {
+        dynamic_registration: Some(true),
+    };
+    let goto = lsp_types::GotoCapability {
+        dynamic_registration: Some(true),
+        link_support: None,
+    };
     let capabilities = lsp_types::ClientCapabilities {
         general: Some(lsp_types::GeneralClientCapabilities {
             position_encodings: Some(vec![lsp_types::PositionEncodingKind::UTF16]),
@@ -1089,7 +1133,41 @@ fn initialize_params(root: &Path) -> Result<lsp_types::InitializeParams, LspErro
                 related_information: Some(true),
                 ..lsp_types::PublishDiagnosticsClientCapabilities::default()
             }),
+            // Declared at all so a server knows the client renders hints;
+            // some only compute them for a client that says so.
+            inlay_hint: Some(lsp_types::InlayHintClientCapabilities {
+                dynamic_registration: Some(true),
+                resolve_support: None,
+            }),
+            hover: Some(lsp_types::HoverClientCapabilities {
+                dynamic_registration: Some(true),
+                content_format: None,
+            }),
+            definition: Some(goto),
+            implementation: Some(goto),
+            type_hierarchy: Some(dynamic),
+            document_symbol: Some(lsp_types::DocumentSymbolClientCapabilities {
+                dynamic_registration: Some(true),
+                ..lsp_types::DocumentSymbolClientCapabilities::default()
+            }),
+            rename: Some(lsp_types::RenameClientCapabilities {
+                dynamic_registration: Some(true),
+                ..lsp_types::RenameClientCapabilities::default()
+            }),
+            formatting: Some(dynamic),
+            range_formatting: Some(dynamic),
             ..lsp_types::TextDocumentClientCapabilities::default()
+        }),
+        workspace: Some(lsp_types::WorkspaceClientCapabilities {
+            symbol: Some(lsp_types::WorkspaceSymbolClientCapabilities {
+                dynamic_registration: Some(true),
+                ..lsp_types::WorkspaceSymbolClientCapabilities::default()
+            }),
+            // Answered, and relayed through `LspClient::refreshes`.
+            inlay_hint: Some(lsp_types::InlayHintWorkspaceClientCapabilities {
+                refresh_support: Some(true),
+            }),
+            ..lsp_types::WorkspaceClientCapabilities::default()
         }),
         ..lsp_types::ClientCapabilities::default()
     };

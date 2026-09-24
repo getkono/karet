@@ -25,6 +25,7 @@ use tokio::sync::broadcast;
 use crate::LspError;
 use crate::PublishedDiagnostics;
 use crate::RawNotification;
+use crate::ServerRefresh;
 use crate::capability;
 use crate::convert;
 use crate::uri;
@@ -34,6 +35,10 @@ pub(crate) const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Diagnostics broadcast capacity; slow subscribers drop the oldest sets.
 const DIAGNOSTICS_CHANNEL_CAPACITY: usize = 64;
+
+/// Refresh broadcast capacity. A refresh carries no payload, so a subscriber
+/// that lags has lost nothing but duplicates of a signal it will still see.
+const REFRESH_CHANNEL_CAPACITY: usize = 16;
 
 /// Every user-visible `LspError` string is produced here, so the shared actor
 /// stays protocol-neutral while this crate's error surface is unchanged.
@@ -65,6 +70,9 @@ impl From<karet_jsonrpc::RpcError> for LspError {
 /// server→client requests a headless client must not leave hanging.
 pub(crate) struct LspHandler {
     diagnostics: broadcast::Sender<PublishedDiagnostics>,
+    /// Server requests to re-fetch something it answered before
+    /// (`workspace/inlayHint/refresh`), fanned out to every subscriber.
+    refreshes: broadcast::Sender<ServerRefresh>,
     /// The live capability set, shared with the [`LspClient`] that gates on it.
     ///
     /// Shared rather than copied because `client/registerCapability` arrives
@@ -83,8 +91,10 @@ pub(crate) struct LspHandler {
 impl Default for LspHandler {
     fn default() -> Self {
         let (diagnostics, _) = broadcast::channel(DIAGNOSTICS_CHANNEL_CAPACITY);
+        let (refreshes, _) = broadcast::channel(REFRESH_CHANNEL_CAPACITY);
         Self {
             diagnostics,
+            refreshes,
             capabilities: Arc::default(),
             registrations: Mutex::default(),
         }
@@ -198,6 +208,15 @@ impl karet_jsonrpc::Handler for LspHandler {
                 self.unregister(params);
                 Ok(Value::Null)
             },
+            // Answered at once, before anyone has re-asked: the request only
+            // tells the client its hints may be stale, and holding the reply
+            // until the editor re-requests would stall the server on a
+            // client that may have nothing on screen to re-ask about. No
+            // subscriber is fine -- nothing is showing hints to refresh.
+            "workspace/inlayHint/refresh" => {
+                let _ = self.refreshes.send(ServerRefresh::InlayHints);
+                Ok(Value::Null)
+            },
             _ => answer_server_request(method, params),
         }
     }
@@ -207,7 +226,6 @@ impl karet_jsonrpc::Handler for LspHandler {
 pub(crate) struct Connection(karet_jsonrpc::Connection<LspHandler>);
 
 impl Connection {
-    /// Start the reader/writer tasks over an arbitrary I/O pair.
     /// The live capability set this connection's handler maintains.
     ///
     /// Shared with the handler, not a copy, so a capability registered after
@@ -216,6 +234,7 @@ impl Connection {
         self.0.handler().capabilities()
     }
 
+    /// Start the reader/writer tasks over an arbitrary I/O pair.
     pub(crate) fn start<R, W>(read: R, write: W) -> Self
     where
         R: AsyncRead + Send + Unpin + 'static,
@@ -260,6 +279,11 @@ impl Connection {
     /// Subscribe to server-pushed diagnostics.
     pub(crate) fn diagnostics(&self) -> broadcast::Receiver<PublishedDiagnostics> {
         self.0.handler().diagnostics.subscribe()
+    }
+
+    /// Subscribe to the server's refresh requests.
+    pub(crate) fn refreshes(&self) -> broadcast::Receiver<ServerRefresh> {
+        self.0.handler().refreshes.subscribe()
     }
 
     /// Subscribe to every server-initiated notification, undecoded.
