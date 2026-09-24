@@ -586,6 +586,21 @@ impl PreviewImages {
         }
     }
 
+    /// Age every disk check past the restat interval, as if it had just elapsed.
+    pub(crate) fn backdate_checks(&self) {
+        let mut state = self.state.borrow_mut();
+        let past = Instant::now().checked_sub(self.restat);
+        let Some(past) = past else {
+            return;
+        };
+        for entry in state.entries.values_mut() {
+            entry.checked = past;
+        }
+        for checked in state.refused.values_mut() {
+            *checked = past;
+        }
+    }
+
     /// The decoded bytes currently held.
     pub(crate) fn ready_bytes(&self) -> u64 {
         self.state.borrow().ready_bytes

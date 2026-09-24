@@ -464,8 +464,7 @@ fn a_refused_image_is_not_checked_again_within_the_restat_interval() {
     std::fs::File::create(&path)
         .and_then(|file| file.set_len(karet_filetype::SIZE_GUARD + 1))
         .expect("a sparse oversized file");
-    let restat = std::time::Duration::from_millis(100);
-    let images = PreviewImages::with_restat(restat);
+    let images = PreviewImages::default();
     assert_eq!(size(&images, dir.path(), "late.png"), None);
     std::fs::write(&path, png(4, 2, [0, 0, 0])).expect("write");
     assert_eq!(
@@ -473,7 +472,7 @@ fn a_refused_image_is_not_checked_again_within_the_restat_interval() {
         None,
         "a re-wrap straight after reuses the refusal"
     );
-    std::thread::sleep(restat * 2);
+    images.backdate_checks();
     assert_eq!(size(&images, dir.path(), "late.png"), Some((4, 2)));
     // Loaded, the refusal is gone: the entry answers from now on.
     assert_eq!(size(&images, dir.path(), "late.png"), Some((4, 2)));
@@ -599,6 +598,17 @@ fn a_jpeg_whose_frame_header_lies_past_the_probe_is_still_queued() {
     ));
 }
 
+#[test]
+fn a_jpeg_read_whole_without_a_frame_is_a_chip_without_a_decode() {
+    // SOI and one short APP1 segment: the probe saw the whole file and found no frame.
+    let mut bytes = b"\xff\xd8\xff\xe1\x00\x10".to_vec();
+    bytes.extend(std::iter::repeat_n(0u8, 14));
+    let dir = workspace(&[("no-frame.jpg", &bytes)]);
+    let images = PreviewImages::default();
+    assert_eq!(size(&images, dir.path(), "no-frame.jpg"), None);
+    assert_eq!(images.queued(), 0);
+}
+
 /// A JPEG whose frame header — past the probe, behind a long APP1 segment — claims
 /// `width`×`height`, with no scan after it.
 fn jpeg_claiming(width: u16, height: u16) -> Vec<u8> {
@@ -689,7 +699,9 @@ fn an_extended_webp_whose_canvas_disagrees_with_its_frame_is_refused() {
 
 #[test]
 fn an_animated_webp_is_a_chip_without_a_decode() {
-    let mut bytes = extended_webp((2, 2), [9, 9, 9], (2, 2), 0);
+    // Its frame past the probe, so only the animation flag keeps it from a read.
+    let padding = usize::try_from(super::PROBE_BYTES).unwrap_or(0) + 16;
+    let mut bytes = extended_webp((2, 2), [9, 9, 9], (2, 2), padding);
     if let Some(flags) = bytes.get_mut(20) {
         *flags |= 0x02;
     }
