@@ -79,21 +79,49 @@ fn without_hints_nothing_about_the_row_changes() {
 }
 
 #[test]
-fn the_caret_sits_after_the_hint_not_inside_it() {
+fn the_caret_at_a_hints_anchor_sits_before_the_hint() {
     let text = "let count = items.len();\n";
     let hints = [hint(0, 9, ": i32")];
 
-    // Column 8 is the last `t` of `count`, still ahead of the hint.
-    let (before, ..) = geometry(text, &hints, LineCol::new(0, 8), 40);
-    // Column 9 is the space, which now renders after five cells of hint.
-    let (after, ..) = geometry(text, &hints, LineCol::new(0, 9), 40);
+    // Column 8 is the last `t` of `count`.
+    let (last_t, ..) = geometry(text, &hints, LineCol::new(0, 8), 40);
+    // Column 9 is the hint's anchor: the end of `count`, where typing extends
+    // the identifier. The caret belongs against that text, not past `: i32`.
+    let (anchor, ..) = geometry(text, &hints, LineCol::new(0, 9), 40);
+    // Column 10 is past the space the hint precedes.
+    let (past, ..) = geometry(text, &hints, LineCol::new(0, 10), 40);
 
-    let (Some((before_x, _)), Some((after_x, _))) = (before, after) else {
-        unreachable!("both columns are on screen in a 40-wide viewport");
+    let (Some((last_t_x, _)), Some((anchor_x, _)), Some((past_x, _))) = (last_t, anchor, past)
+    else {
+        unreachable!("every column is on screen in a 40-wide viewport");
     };
-    // One character of `t` plus five of `: i32`: the caret steps over the hint
-    // rather than into it.
-    assert_eq!(after_x - before_x, 6, "caret did not clear the hint");
+    // Gutter is 3 cells, so `count` ends at screen 12: the caret sits right
+    // after the `t`, on the first cell of the hint.
+    assert_eq!(anchor_x, 12);
+    assert_eq!(anchor_x - last_t_x, 1, "caret at the anchor left its text");
+    // Stepping right clears the five cells of hint and the space together.
+    assert_eq!(past_x - anchor_x, 6, "caret did not step over the hint");
+}
+
+#[test]
+fn the_caret_at_a_trailing_hints_anchor_sits_before_it() {
+    // End of line is the common case: a return-type hint after `fn f()`, and
+    // the caret where the next typed character will go.
+    let (cell, ..) = geometry("fn f()\n", &[hint(0, 6, " -> i32")], LineCol::new(0, 6), 40);
+    assert_eq!(cell, Some((9, 0)));
+}
+
+#[test]
+fn typing_at_a_hints_anchor_lands_where_the_caret_is_drawn() {
+    // The user-visible contract: the character typed appears in the cell the
+    // caret occupied, pushing the hint right, not on the far side of it.
+    let hints = [hint(0, 9, ": i32")];
+    let (before, ..) = geometry("let count = 1;\n", &hints, LineCol::new(0, 9), 40);
+    let row = painted("let countx = 1;\n", &[hint(0, 10, ": i32")], 40);
+    let Some((x, _)) = before else {
+        unreachable!("the caret is on screen in a 40-wide viewport");
+    };
+    assert_eq!(row.chars().nth(usize::from(x)), Some('x'), "got {row:?}");
 }
 
 #[test]
@@ -105,13 +133,16 @@ fn a_click_inside_a_hint_lands_on_the_column_it_annotates() {
 
     // The gutter is `marker + one digit + space` = 3 columns, so buffer column
     // 0 starts at screen 3. `let count` fills screen 3..12, the hint occupies
-    // screen 12..17, and the space it annotates lands at 17.
-    let inside = state.pos_at(area, &buffer, &[], 14, 0);
-    assert_eq!(
-        inside,
-        LineCol::new(0, 9),
-        "a click on the annotation should select the column it annotates"
-    );
+    // screen 12..17, and the space it annotates lands at 17. Every hint cell
+    // resolves to the anchor, whose caret is drawn at 12 -- the hint's first
+    // cell -- so a click on an annotation never moves the caret past it.
+    for x in 12..17 {
+        assert_eq!(
+            state.pos_at(area, &buffer, &[], x, 0),
+            LineCol::new(0, 9),
+            "a click on hint cell {x} should select the column it annotates"
+        );
+    }
 
     // Immediately left of the hint is still `count`'s last character.
     let before = state.pos_at(area, &buffer, &[], 11, 0);
@@ -222,11 +253,10 @@ fn wrapping_counts_the_cells_a_hint_consumes() {
 }
 
 #[test]
-fn a_hint_on_a_wrap_boundary_does_not_sit_under_the_caret() {
-    // The subtlest case in the mapping. A row paints the hint anchored at its
-    // own first column, and `display_col(start)` has already counted that hint
-    // -- so a naive `display_col(c) - display_col(start)` puts the caret at
-    // offset 0, on top of the annotation it should follow.
+fn a_hint_on_a_wrap_boundary_belongs_to_the_row_it_starts() {
+    // The row that begins at a hinted column paints that hint first, after the
+    // caret slot of its anchor. So the caret for the row's first column sits
+    // at offset 0, and the row's first character follows the hint.
     let buffer = TextBuffer::from_text("aaaa bbbb cccc\n");
     let index = crate::hint::HintIndex::new(&[hint(0, 5, ">>")]);
     let layout = Layout {
@@ -244,25 +274,33 @@ fn a_hint_on_a_wrap_boundary_does_not_sit_under_the_caret() {
 
     let chars: Vec<char> = "aaaa bbbb cccc".chars().collect();
     let hints = index.line(0);
-    // Two cells of hint precede the row's first character, so the caret for
-    // that character sits after them rather than on them.
-    assert_eq!(offset_within_row(&chars, 5, 5, 4, hints), 2);
-    // And the next column is one character further along.
+    // The anchor's caret opens the row, ahead of the hint.
+    assert_eq!(offset_within_row(&chars, 5, 5, 4, hints), 0);
+    // The next column is past two cells of hint and the `b` at column 5.
     assert_eq!(offset_within_row(&chars, 5, 6, 4, hints), 3);
+    // And both invert: offset 0 and every hint cell resolve to the anchor.
+    for offset in 0..3 {
+        assert_eq!(
+            source_col_at_display_offset(&chars, 5, 10, offset, 4, hints),
+            5,
+            "offset {offset} left the anchor"
+        );
+    }
 }
 
 #[test]
 fn a_hint_at_column_zero_still_round_trips() {
-    // Column 0 is the one place where "hints at or before `col`" and "hints
-    // strictly before `col`" differ most visibly: the hint renders at the very
-    // start of the line, and the caret at column 0 must follow it.
+    // Column 0 is where the caret-before-hint convention is most visible: the
+    // hint renders at the very start of the line, and the caret at column 0
+    // sits ahead of it, in the line's first cell.
     let chars: Vec<char> = "value".chars().collect();
     let index = crate::hint::HintIndex::new(&[hint(0, 0, "let ")]);
     let hints = index.line(0);
 
-    assert_eq!(display_col(&chars, 0, 4, hints), 4);
-    // Row-relative: the caret for column 0 sits four cells in, after the hint.
-    assert_eq!(offset_within_row(&chars, 0, 0, 4, hints), 4);
+    assert_eq!(display_col(&chars, 0, 4, hints), 0);
+    assert_eq!(offset_within_row(&chars, 0, 0, 4, hints), 0);
+    // Column 1 follows the four cells of hint and the `v`.
+    assert_eq!(display_col(&chars, 1, 4, hints), 5);
     for col in 0..=chars.len() as u32 {
         let screen = offset_within_row(&chars, 0, col, 4, hints);
         let back = source_col_at_display_offset(&chars, 0, chars.len() as u32, screen, 4, hints);

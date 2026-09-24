@@ -62,10 +62,13 @@ pub(super) fn character_width(ch: char, display_col: u32, tab_width: u16) -> u32
 
 /// The screen column a buffer column renders at.
 ///
-/// Characters *before* `source_col` and hints *at or before* it: a hint
-/// anchored at `c` renders ahead of the character there, so a caret at `c`
-/// sits past it. A tab's width is measured against the running screen column,
-/// hints included, because a tab stops at a real screen position.
+/// Characters *and* hints strictly before `source_col`: a hint anchored at `c`
+/// renders between the caret slot of `c` and the character there, so a caret
+/// at `c` sits *before* it, adjacent to the text it edits. Typing at the end of
+/// `count` in `let count: i32 = …` therefore inserts exactly where the caret
+/// is drawn, left of the annotation. A tab's width is measured against the
+/// running screen column, hints included, because a tab stops at a real
+/// screen position.
 pub(super) fn display_col(
     chars: &[char],
     source_col: u32,
@@ -80,6 +83,8 @@ pub(super) fn display_col(
                 col.saturating_add(character_width(*ch, col, tab_width))
             });
     }
+    // Clamped to the line: past its end there are no characters left to walk,
+    // so a hint anchored beyond it cannot shift anything.
     let limit = source_col.min(chars.len() as u32);
     let mut col = 0_u32;
     for index in 0..limit {
@@ -88,24 +93,21 @@ pub(super) fn display_col(
             col = col.saturating_add(character_width(*ch, col, tab_width));
         }
     }
-    // Clamped to `limit`, not `source_col`: past the end of the line there are
-    // no characters left to walk, so adding a hint anchored beyond it would
-    // make this non-monotonic in `source_col`.
-    col.saturating_add(hints.width_at(limit))
+    col
 }
 
 /// The buffer column `offset` screen cells into the row starting at `start`.
 ///
 /// `offset` is measured from the row's own first cell — the same origin
 /// [`offset_within_row`] produces and the same one a mouse click arrives in —
-/// so the two are exact inverses. The row paints the hint anchored at `start`,
-/// which is why the walk begins *before* it rather than at
-/// `display_col(start)`: that value already counts it.
+/// so the two are exact inverses. The row begins at `display_col(start)`,
+/// which is also where the hint anchored at `start` paints: that hint belongs
+/// to the row that starts at its column.
 ///
-/// A cell inside a hint resolves to the hint's own column — the position it
-/// renders ahead of — rather than to the character before it. Clicking an
-/// annotation therefore puts the caret where it appears to be, instead of
-/// several cells to the left.
+/// A cell inside a hint resolves to the hint's own anchor column, where the
+/// caret is drawn immediately left of the annotation. Clicking an annotation
+/// therefore puts the caret against the text the hint describes rather than
+/// past the character that follows it.
 pub(super) fn source_col_at_display_offset(
     chars: &[char],
     start: u32,
@@ -116,15 +118,14 @@ pub(super) fn source_col_at_display_offset(
 ) -> u32 {
     let mut source = start.min(chars.len() as u32);
     let end = end.min(chars.len() as u32);
-    let mut absolute =
-        display_col(chars, source, tab_width, hints).saturating_sub(hints.width_at(source));
+    let mut absolute = display_col(chars, source, tab_width, hints);
     let target = absolute.saturating_add(offset);
     while source < end {
         let Some(ch) = chars.get(source as usize) else {
             break;
         };
-        // The hint anchored at `source` paints before the character there, so
-        // its cells belong to this column.
+        // The hint anchored at `source` paints between its caret slot and the
+        // character there, so its cells belong to this column.
         let after_hint = absolute.saturating_add(hints.width_at(source));
         if target < after_hint {
             return source;
@@ -167,10 +168,9 @@ pub(super) fn visual_ranges(
     while start < len {
         let mut hard_end = start;
         let mut used = 0_u32;
-        // Back off the hint at `start`: this row paints it, so its cells are
-        // counted below rather than inherited from the column's screen origin.
-        let mut absolute = display_col(&chars, start, layout.tab_width, hints)
-            .saturating_sub(hints.width_at(start));
+        // `display_col(start)` stops short of the hint at `start`: this row
+        // paints it, so its cells are counted below.
+        let mut absolute = display_col(&chars, start, layout.tab_width, hints);
         while hard_end < len {
             let hint = hints.width_at(hard_end);
             let char_width = character_width(
@@ -369,10 +369,10 @@ pub(super) fn reveal_visual_anchor(
 
 /// The screen offset of `col` within the row that begins at `row_start`.
 ///
-/// Not simply the difference of two [`display_col`]s: the row paints the hint
-/// anchored at its own first column, which `display_col(row_start)` has
-/// already counted. Adding it back puts the caret after that leading hint
-/// rather than on top of it.
+/// The row's origin is `display_col(row_start)`, which excludes the hint
+/// anchored at `row_start` because that hint paints inside this row, after the
+/// caret slot of its anchor. So a caret at the row's first column sits at
+/// offset 0, ahead of any leading hint.
 pub(super) fn offset_within_row(
     chars: &[char],
     row_start: u32,
@@ -382,7 +382,6 @@ pub(super) fn offset_within_row(
 ) -> u32 {
     display_col(chars, col, tab_width, hints)
         .saturating_sub(display_col(chars, row_start, tab_width, hints))
-        .saturating_add(hints.width_at(row_start))
 }
 
 pub(super) fn caret_cell(

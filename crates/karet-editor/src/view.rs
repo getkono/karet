@@ -295,8 +295,9 @@ impl Editor<'_> {
             if col >= range.end {
                 break;
             }
-            // The hint anchored here renders *before* this character, which is
-            // what puts the caret at this column after it.
+            // The hint anchored here renders *before* this character but after
+            // the caret slot of this column, so the caret stays against the
+            // text the hint describes.
             if !hints.is_empty() {
                 self.push_hint_spans(spans, &mut run, &mut run_style, hints, col, theme);
                 display_col = display_col.saturating_add(hints.width_at(col));

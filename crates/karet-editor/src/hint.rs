@@ -8,13 +8,16 @@
 //! The model, in one line:
 //!
 //! ```text
-//! display_col(c) = width of characters before c + width of hints at columns <= c
+//! display_col(c) = width of characters before c + width of hints at columns < c
 //! ```
 //!
 //! A hint anchored at column `c` renders immediately *before* the character at
-//! `c`, so a caret at `c` sits **after** it. The hint occupies cells the caret
-//! steps over rather than into, which is what makes `Right` from `count` in
-//! `let count: i32 = …` land on the space and not inside the annotation.
+//! `c`, but *after* the caret slot of `c`: a caret at `c` sits **before** the
+//! hint, against the text it edits. With the caret at the end of `count` in
+//! `let count: i32 = …`, typing inserts exactly where the caret is drawn, left
+//! of the annotation, and `Right` steps over both the hint and the space. A
+//! click on a hint cell resolves to `c`, so it puts the caret where that same
+//! hint begins.
 
 use karet_core::InlayHint;
 
@@ -162,9 +165,9 @@ mod tests {
 
     #[test]
     fn a_hint_is_found_only_at_the_column_it_annotates() {
-        // The load-bearing asymmetry: characters *before* `col`, hints *at or
-        // before* it, because the hint renders ahead of the character and the
-        // caret sits after it.
+        // A hint is found only at its own anchor, never at its neighbours:
+        // the mappings decide which side of the caret it falls on, not the
+        // index.
         let index = HintIndex::new(&[hint(0, 9, ": i32")]);
         let line = index.line(0);
         assert_eq!(line.width_at(9), 5);
