@@ -13,13 +13,17 @@
 //! [`LSP_CHANGE_DEBOUNCE`], so typing costs the server one request per pause
 //! rather than one per keystroke.
 
+mod shift;
+
 use karet_core::InlayHint;
 use karet_core::LineCol;
 use karet_core::Range;
+use karet_core::TextEdit;
 use karet_session::LSP_CHANGE_DEBOUNCE;
 use karet_session::api::Command as SessionCommand;
 use karet_session::api::DocumentId;
 use karet_session::api::RequestId;
+pub(crate) use shift::diff_edit;
 
 use super::App;
 use super::Instant;
@@ -263,6 +267,7 @@ impl App {
             return; // the buffer moved on while the server was thinking
         }
         self.docs.inlay_hints.insert(doc, hints);
+        self.docs.inlay_version.insert(doc, version);
         // Coverage only from the current epoch. An answer from before the last
         // invalidation is worth painting, but it was produced under conditions
         // that have since changed -- during startup, by a provider that was not
@@ -275,6 +280,7 @@ impl App {
     /// Drop everything cached for `doc`, on close or on a language change.
     pub(crate) fn forget_inlay_hints(&mut self, doc: DocumentId) {
         self.docs.inlay_hints.remove(&doc);
+        self.docs.inlay_version.remove(&doc);
         self.docs.inlay_covered.remove(&doc);
         self.docs.inlay_pending.remove(&doc);
     }
@@ -311,6 +317,34 @@ impl App {
         self.docs
             .inlay_quiet_until
             .insert(doc, now + LSP_CHANGE_DEBOUNCE);
+    }
+
+    /// Carry `doc`'s held hints across `edits`, which took its text from
+    /// version `from` to `to`.
+    ///
+    /// Only a set positioned against `from` is moved: a document shown in two
+    /// panes reaches each through a different path -- the local apply in one,
+    /// the snapshot in the other -- and shifting the set once per path would
+    /// move it twice.
+    pub(crate) fn shift_inlay_hints(
+        &mut self,
+        doc: DocumentId,
+        from: u64,
+        to: u64,
+        edits: &[TextEdit],
+    ) {
+        if self.docs.inlay_version.get(&doc) != Some(&from) {
+            return;
+        }
+        if let Some(hints) = self.docs.inlay_hints.get_mut(&doc) {
+            shift::shift_hints(hints, edits);
+        }
+        self.docs.inlay_version.insert(doc, to);
+    }
+
+    /// The version `doc`'s held hints are positioned against, when it has any.
+    pub(crate) fn inlay_hint_version(&self, doc: DocumentId) -> Option<u64> {
+        self.docs.inlay_version.get(&doc).copied()
     }
 
     /// How long until a document being edited has been quiet long enough to

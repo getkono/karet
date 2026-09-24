@@ -362,6 +362,9 @@ pub(crate) struct DocState {
     pub(crate) diagnostics: HashMap<DocumentId, Vec<Diagnostic>>,
     /// Latest inlay-hint set per document, positioned in buffer columns.
     pub(crate) inlay_hints: HashMap<DocumentId, Vec<InlayHint>>,
+    /// The buffer version each held hint set is positioned against: the
+    /// version it was answered for, then each version an edit carried it to.
+    pub(crate) inlay_version: HashMap<DocumentId, u64>,
     /// What each cached hint set covers, so an unchanged viewport asks again
     /// for nothing.
     pub(crate) inlay_covered: HashMap<DocumentId, HintRange>,

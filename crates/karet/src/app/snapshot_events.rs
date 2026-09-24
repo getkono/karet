@@ -9,6 +9,12 @@ impl App {
         // the same version -- and those must not re-ask for hints. One that
         // does holds the next request until the edits pause.
         let mut advanced = false;
+        // The edit that carries the held hints to this version, found against
+        // the one tab still showing the version they are positioned for. The
+        // snapshot does not say what changed -- an undo, a formatter, a
+        // reload -- so it is recovered from the two texts.
+        let held = self.inlay_hint_version(doc);
+        let mut carried: Option<(u64, Option<karet_core::TextEdit>)> = None;
         for tab in self.all_tabs_mut() {
             let matches = matches!(&tab.kind, TabKind::Code { doc: Some(d), .. } if *d == doc);
             if !matches {
@@ -31,9 +37,15 @@ impl App {
                 // only the buffer/text catch up when the snapshot is at least as
                 // new as what's already applied locally.
                 if snap.version >= buffer.version() {
-                    advanced |= snap.version > buffer.version();
+                    let old_version = buffer.version();
+                    advanced |= snap.version > old_version;
+                    let new_text = snap.buffer.text();
+                    if carried.is_none() && snap.version > old_version && held == Some(old_version)
+                    {
+                        carried = Some((old_version, super::inlay::diff_edit(text, &new_text)));
+                    }
                     *buffer = snap.buffer.clone();
-                    *text = snap.buffer.text();
+                    *text = new_text;
                 }
                 *highlights = (*snap.highlights).clone();
                 *semantic_blocks = (*snap.semantic_blocks).clone();
@@ -61,6 +73,9 @@ impl App {
                     tab.editor.scroll_to(cursor.primary().head);
                 }
             }
+        }
+        if let Some((from, edit)) = carried {
+            self.shift_inlay_hints(doc, from, snap.version, edit.as_slice());
         }
         if advanced {
             self.note_inlay_edit(doc, Instant::now());

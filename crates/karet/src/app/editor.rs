@@ -776,6 +776,9 @@ impl App {
             editor.scroll_to(head);
         }
         if let Some(version) = auto_save_version {
+            // The hints on screen move with the text until the server's
+            // replacement for this version arrives.
+            self.shift_inlay_hints(doc, base, version, &change.edits);
             self.note_inlay_edit(doc, Instant::now());
             self.schedule_auto_save(doc, version, Instant::now());
         }

@@ -419,3 +419,96 @@ fn a_servers_refresh_re_asks_for_a_covered_document() {
         "a refresh did not re-ask for a covered document"
     );
 }
+
+/// An app holding one answered hint at `(line, col)` of `text`, with the
+/// caret at `caret`.
+fn app_with_hint_at(text: &str, caret: LineCol, line: u32, col: u32) -> App {
+    let (backend, mut app) = completion_app(text, caret);
+    app.request_inlay_hints();
+    let Some(&(id, ..)) = inlay_requests(&backend).first() else {
+        unreachable!("a request was just issued");
+    };
+    app.on_inlay_hints(Some(id), DocumentId(9), 0, vec![hint(line, col, ": u32")]);
+    app
+}
+
+/// Where the held hints now sit.
+fn held_positions(app: &App) -> Vec<LineCol> {
+    app.docs
+        .inlay_hints
+        .get(&DocumentId(9))
+        .map(|hints| hints.iter().map(|hint| hint.position).collect())
+        .unwrap_or_default()
+}
+
+#[test]
+fn lines_inserted_above_a_hint_carry_it_down() {
+    let mut app = app_with_hint_at("fn f() {}\nlet a = f();\n", LineCol::new(0, 0), 1, 5);
+    type_text(&mut app, "use x;\nuse y;\n");
+    assert_eq!(held_positions(&app), vec![LineCol::new(3, 5)]);
+}
+
+#[test]
+fn typing_before_a_hint_on_its_line_shifts_its_column() {
+    let mut app = app_with_hint_at("let a = f();\n", LineCol::new(0, 4), 0, 5);
+    type_text(&mut app, "mut ");
+    assert_eq!(held_positions(&app), vec![LineCol::new(0, 9)]);
+}
+
+#[test]
+fn deleting_the_text_around_a_hint_drops_it() {
+    let mut app = app_with_hint_at("let a = f();\nlet b = 2;\n", LineCol::new(0, 0), 0, 5);
+    // Select the whole first line and delete it.
+    let active = app.active;
+    let buffer = match &app.tabs[active].kind {
+        TabKind::Code { buffer, .. } => buffer.clone(),
+        _ => unreachable!("a code tab"),
+    };
+    app.tabs[active]
+        .editor
+        .set_selection(&buffer, LineCol::new(0, 0), LineCol::new(1, 0));
+    type_text(&mut app, "");
+    assert!(
+        held_positions(&app).is_empty(),
+        "a hint outlived the text it annotated"
+    );
+}
+
+#[test]
+fn a_change_seen_only_as_a_snapshot_carries_the_hints_too() {
+    // An undo, a formatter, a reload: the app never saw the edits, only the
+    // text after them. The hints still move with it.
+    let mut app = app_with_hint_at("let a = f();\n", LineCol::new(0, 0), 0, 5);
+    let mut snapshot = snapshot_of(&app);
+    let inserted = karet_core::Change::new(
+        snapshot.version,
+        vec![karet_core::TextEdit {
+            range: karet_core::Range {
+                start: LineCol::new(0, 0),
+                end: LineCol::new(0, 0),
+            },
+            new_text: "// note\n".to_owned(),
+        }],
+    );
+    let applied = snapshot
+        .buffer
+        .apply(&inserted, karet_text::EditContext::default())
+        .map(|applied| applied.version)
+        .unwrap_or_default();
+    snapshot.version = applied;
+
+    app.on_snapshot(DocumentId(9), &snapshot);
+    assert_eq!(held_positions(&app), vec![LineCol::new(1, 5)]);
+}
+
+#[test]
+fn a_document_in_two_panes_is_carried_once_per_edit() {
+    // The edit reaches the focused pane by its local apply and the other by
+    // the snapshot echo. Shifting on both would move the hint twice.
+    let mut app = app_with_hint_at("fn f() {}\nlet a = f();\n", LineCol::new(0, 0), 1, 5);
+    app.split_focused(karet_widgets::SplitDir::Right);
+    type_text(&mut app, "use x;\n");
+    let echo = snapshot_of(&app);
+    app.on_snapshot(DocumentId(9), &echo);
+    assert_eq!(held_positions(&app), vec![LineCol::new(2, 5)]);
+}
