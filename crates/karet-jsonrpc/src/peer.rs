@@ -11,14 +11,20 @@
 //! pace through a [`Responder`]. The one invariant this module exists to hold
 //! is that **a peer request is always answered**: a responder that is dropped,
 //! a stream nobody is draining, and a full queue all produce a reply rather
-//! than silence. A peer that is never answered waits forever — JSON-RPC puts
+//! than silence. Replies that meet a full outbound queue wait on one
+//! per-connection overflow queue with a single drainer (see `Replies`). A peer that is never answered waits forever — JSON-RPC puts
 //! no timeout obligation on the requester, and most language servers have none.
 //!
 //! [`Handler::answer`]: crate::Handler::answer
 //! [`Connection::inbound_requests`]: crate::Connection::inbound_requests
 
+use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
+
 use serde_json::Value;
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 
 use crate::connection::Outbound;
 use crate::message;
@@ -47,21 +53,16 @@ pub struct Responder {
     id: Value,
     method: String,
     /// Taken when the reply is sent, so `Drop` can tell answered from not.
-    outbound: Option<mpsc::Sender<Outbound>>,
+    replies: Option<Replies>,
     peer: &'static str,
 }
 
 impl Responder {
-    pub(crate) fn new(
-        id: Value,
-        method: String,
-        outbound: mpsc::Sender<Outbound>,
-        peer: &'static str,
-    ) -> Self {
+    pub(crate) fn new(id: Value, method: String, replies: Replies, peer: &'static str) -> Self {
         Self {
             id,
             method,
-            outbound: Some(outbound),
+            replies: Some(replies),
             peer,
         }
     }
@@ -101,7 +102,7 @@ impl Responder {
     ///
     /// Takes `&mut self` rather than `self` so `Drop` can share it.
     fn send(&mut self, outcome: Result<Value, ResponseError>) {
-        let Some(outbound) = self.outbound.take() else {
+        let Some(replies) = self.replies.take() else {
             return; // already answered
         };
         let response = message::OutgoingResponse::new(self.id.clone(), outcome);
@@ -134,13 +135,13 @@ impl Responder {
                 }
             },
         };
-        deliver(outbound, frame, self.peer);
+        replies.deliver(Outbound::Frame(frame), self.peer);
     }
 }
 
 impl Drop for Responder {
     fn drop(&mut self) {
-        if self.outbound.is_none() {
+        if self.replies.is_none() {
             return;
         }
         let method = std::mem::take(&mut self.method);
@@ -149,39 +150,96 @@ impl Drop for Responder {
     }
 }
 
-/// Hand `frame` to the writer without ever dropping it and without ever
-/// blocking the caller.
+/// The one path every reply to a peer request takes to the writer.
 ///
-/// The caller is usually the reader task, which must not block on outbound
-/// capacity: the peer can be stalled writing to its own stdout precisely
-/// because we stopped reading it, and waiting here would close that loop into
-/// a deadlock. So a full queue is waited out on a detached task instead, which
-/// keeps the reader draining.
+/// A reply must never be dropped and must never block the caller — usually the
+/// reader task, which must not wait on outbound capacity: the peer can be
+/// stalled writing to its own stdout precisely because we stopped reading it,
+/// and waiting here would close that loop into a deadlock. (`try_send` alone
+/// dropped the reply, the one outcome a peer cannot recover from.)
 ///
-/// `try_send` alone was the old behaviour, and it *dropped* the reply — which
-/// is the one outcome a peer cannot recover from.
-pub(crate) fn deliver(outbound: mpsc::Sender<Outbound>, frame: Vec<u8>, peer: &'static str) {
-    let full = match outbound.try_send(Outbound::Frame(frame)) {
-        Ok(()) => return,
-        Err(mpsc::error::TrySendError::Closed(_)) => {
-            // Nothing to answer to; the connection is already gone.
-            tracing::debug!(peer, "connection closed before a reply could be sent");
-            return;
-        },
-        Err(mpsc::error::TrySendError::Full(item)) => item,
-    };
-    match tokio::runtime::Handle::try_current() {
-        Ok(handle) => {
-            handle.spawn(async move {
+/// So a reply that finds the bounded outbound queue full is parked on a
+/// per-connection overflow queue, and **one** drainer task (see
+/// [`Replies::start`]) moves parked items onto the outbound queue as capacity
+/// frees, in the order they were parked. While anything is parked, later
+/// items park behind it rather than overtake it through the fast path.
+///
+/// # What bounds it
+///
+/// Tasks are bounded: one drainer per connection, however many replies are
+/// deferred. Memory is bounded by the peer, not by a constant — the overflow
+/// queue holds at most one reply per request the peer has sent and we have
+/// answered but not yet written, so it grows only as fast as we *read* the
+/// peer's requests. A hard cap is not available without breaking the
+/// invariant: past it a reply would have to be dropped (the peer waits
+/// forever) or the reader would have to block (the deadlock above). The
+/// per-reply detached task this replaced had the same memory profile plus one
+/// task, and one scheduler slot, per deferred reply.
+#[derive(Clone, Debug)]
+pub(crate) struct Replies {
+    outbound: mpsc::Sender<Outbound>,
+    overflow: mpsc::UnboundedSender<Outbound>,
+    /// Items parked on `overflow` and not yet handed to `outbound`.
+    backlog: Arc<AtomicUsize>,
+}
+
+impl Replies {
+    /// Build the reply path over `outbound` and spawn its single drainer.
+    ///
+    /// Must be called inside a Tokio runtime, as [`Connection::start`] is.
+    ///
+    /// [`Connection::start`]: crate::Connection::start
+    pub(crate) fn start(outbound: mpsc::Sender<Outbound>) -> (Self, JoinHandle<()>) {
+        let (overflow, mut parked) = mpsc::unbounded_channel::<Outbound>();
+        let backlog = Arc::new(AtomicUsize::new(0));
+        let drainer_outbound = outbound.clone();
+        let drainer_backlog = Arc::clone(&backlog);
+        let drainer = tokio::spawn(async move {
+            while let Some(item) = parked.recv().await {
                 // Resolves as soon as the writer drains one frame, or errors
-                // once the connection dies — either way the reply is not lost
-                // silently.
-                let _ = outbound.send(full).await;
-            });
-        },
-        Err(_) => {
-            // A responder dropped outside any runtime. Nothing can await here.
-            tracing::warn!(peer, "no runtime to defer a reply onto; the peer will wait");
-        },
+                // once the connection is gone -- nothing is left to answer then.
+                let _ = drainer_outbound.send(item).await;
+                drainer_backlog.fetch_sub(1, Ordering::SeqCst);
+            }
+        });
+        (
+            Self {
+                outbound,
+                overflow,
+                backlog,
+            },
+            drainer,
+        )
+    }
+
+    /// Hand `item` to the writer without dropping it and without blocking.
+    ///
+    /// Synchronous and runtime-free, so a [`Responder`] dropped outside any
+    /// runtime still answers.
+    pub(crate) fn deliver(&self, item: Outbound, peer: &'static str) {
+        // The fast path only while nothing is parked, so an item never
+        // overtakes one deferred before it.
+        let item = if self.backlog.load(Ordering::SeqCst) == 0 {
+            match self.outbound.try_send(item) {
+                Ok(()) => return,
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    // Nothing to answer to; the connection is already gone.
+                    tracing::debug!(peer, "connection closed before a reply could be sent");
+                    return;
+                },
+                Err(mpsc::error::TrySendError::Full(item)) => item,
+            }
+        } else {
+            item
+        };
+        self.backlog.fetch_add(1, Ordering::SeqCst);
+        if self.overflow.send(item).is_err() {
+            // The drainer is gone, which only happens once the connection is.
+            self.backlog.fetch_sub(1, Ordering::SeqCst);
+            tracing::debug!(
+                peer,
+                "connection closed before a deferred reply could be sent"
+            );
+        }
     }
 }

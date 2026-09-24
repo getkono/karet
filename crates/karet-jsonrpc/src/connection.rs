@@ -37,6 +37,7 @@ use crate::message::Incoming;
 use crate::message::RequestId;
 use crate::message::ResponseError;
 use crate::peer::PeerRequest;
+use crate::peer::Replies;
 use crate::peer::Responder;
 
 /// The protocol-specific half of a connection: framing, the broadcast payload,
@@ -71,6 +72,12 @@ pub trait Handler: Send + Sync + 'static {
     const PUSH_CHANNEL_CAPACITY: usize = 64;
     /// Frames waiting to be written. A buggy producer cannot grow memory without
     /// bound; requests wait for capacity and notifications fail fast.
+    ///
+    /// Replies to peer requests are the exception, because none may be dropped
+    /// and the reader must not block: one that finds this queue full waits on
+    /// a per-connection overflow queue behind a single drainer task, so it
+    /// costs memory proportional to the unanswered requests the peer has sent
+    /// — never a task per reply.
     ///
     /// [`Connection::start`] clamps this to at least `1`, the minimum
     /// `tokio::sync::mpsc` accepts — an override of `0` degrades to `1` rather
@@ -175,7 +182,7 @@ struct Routes<H: Handler> {
     handler: Arc<H>,
     pending: Pending,
     push: broadcast::Sender<H::Push>,
-    outbound: mpsc::Sender<Outbound>,
+    replies: Replies,
     inbound: Inbound,
 }
 
@@ -219,8 +226,12 @@ pub struct Connection<H: Handler> {
     /// receiver yet" from "a consumer is listening" — the receiver exists from
     /// the moment the channel is built.
     inbound_active: Arc<AtomicBool>,
+    /// The ordered, never-dropping path for peer replies and the close signal.
+    replies: Replies,
     reader_task: JoinHandle<()>,
     writer_task: JoinHandle<()>,
+    /// The single task draining deferred replies; see [`Replies`].
+    drainer_task: JoinHandle<()>,
 }
 
 impl<H: Handler> Connection<H> {
@@ -245,6 +256,7 @@ impl<H: Handler> Connection<H> {
         let closed = Arc::new(AtomicBool::new(false));
         let (closed_signal, _) = watch::channel(false);
         let handler = Arc::new(handler);
+        let (replies, drainer_task) = Replies::start(outbound.clone());
 
         let writer_closed = Arc::clone(&closed);
         let writer_signal = closed_signal.clone();
@@ -269,7 +281,7 @@ impl<H: Handler> Connection<H> {
                 handler: Arc::clone(&handler),
                 pending: Arc::clone(&pending),
                 push: push.clone(),
-                outbound: outbound.clone(),
+                replies: replies.clone(),
                 inbound: Inbound {
                     tx: inbound_tx,
                     active: Arc::clone(&inbound_active),
@@ -289,8 +301,10 @@ impl<H: Handler> Connection<H> {
             closed_signal,
             inbound_rx: Mutex::new(Some(inbound_rx)),
             inbound_active,
+            replies,
             reader_task,
             writer_task,
+            drainer_task,
         }
     }
 
@@ -445,11 +459,15 @@ impl<H: Handler> Connection<H> {
     /// Drain the outbound queue (every already-enqueued frame is written and
     /// flushed), then stop both I/O tasks. Bounded by [`Handler::CLOSE_TIMEOUT`]
     /// in case the peer stops consuming.
+    ///
+    /// Replies to peer requests that were deferred behind a full queue are
+    /// written first too: the close signal takes the same ordered path they do.
     pub async fn close(&mut self) {
-        let _ = self.outbound.send(Outbound::Close).await;
+        self.replies.deliver(Outbound::Close, H::PEER);
         let _ = tokio::time::timeout(H::CLOSE_TIMEOUT, &mut self.writer_task).await;
         self.writer_task.abort(); // no-op when it drained cleanly
         self.reader_task.abort();
+        self.drainer_task.abort();
     }
 
     /// Drop the pending entry for `id` (on timeout or send failure).
@@ -464,6 +482,7 @@ impl<H: Handler> Drop for Connection<H> {
     fn drop(&mut self) {
         self.reader_task.abort();
         self.writer_task.abort();
+        self.drainer_task.abort();
     }
 }
 
@@ -509,7 +528,7 @@ fn handle_frame<H: Handler>(bytes: &[u8], routes: &Routes<H>) {
         handler,
         pending,
         push,
-        outbound,
+        replies,
         inbound,
     } = routes;
     let value: Value = match serde_json::from_slice(bytes) {
@@ -536,7 +555,7 @@ fn handle_frame<H: Handler>(bytes: &[u8], routes: &Routes<H>) {
             }
         },
         Some(Incoming::Request { id, method, params }) => {
-            let responder = Responder::new(id, method.clone(), outbound.clone(), H::PEER);
+            let responder = Responder::new(id, method.clone(), replies.clone(), H::PEER);
             // A consumer holding the stream owns every peer request, including
             // the ones `answer` used to field: splitting them by method would
             // make which path ran depend on timing.

@@ -699,3 +699,73 @@ async fn a_full_outbound_queue_delays_a_reply_instead_of_dropping_it() -> TestRe
     assert_eq!(seen, vec![json!(1), json!(2), json!(3), json!(4)]);
     Ok(())
 }
+
+#[tokio::test]
+async fn deferred_replies_share_one_drainer_and_keep_their_order() -> TestResult {
+    // A peer that floods requests while never reading its stdin. Each reply
+    // that met the full outbound queue used to get a detached task of its
+    // own, so the task count -- and the memory behind it -- grew with the
+    // flood rather than staying per-connection.
+    struct NarrowHandler;
+
+    impl Handler for NarrowHandler {
+        type Framing = ContentLength;
+        type Push = (String, Value);
+
+        const OUTBOUND_CHANNEL_CAPACITY: usize = 1;
+
+        fn push_payload(&self, _method: &str, _params: &Value) -> Option<Self::Push> {
+            None
+        }
+
+        fn answer(&self, _method: &str, _params: &Value) -> Result<Value, ResponseError> {
+            Ok(json!("ok"))
+        }
+    }
+
+    const BURST: i64 = 200;
+
+    let (client_end, peer_end) = tokio::io::duplex(64);
+    let (client_read, client_write) = tokio::io::split(client_end);
+    let (peer_read, peer_write) = tokio::io::split(peer_end);
+    let mut peer = FakePeer {
+        reader: BufReader::new(peer_read),
+        writer: peer_write,
+    };
+    let _connection = Connection::start(NarrowHandler, client_read, client_write);
+
+    // Writes into a 64-byte pipe, so the flood completes only once the reader
+    // has consumed (and answered) nearly all of it -- while nothing drains
+    // the replies.
+    let flood = tokio::spawn(async move {
+        for id in 1..=BURST {
+            peer.send(&json!({"jsonrpc": "2.0", "id": id, "method": "test/x"}))
+                .await;
+        }
+        peer
+    });
+    let mut peer = tokio::time::timeout(Duration::from_secs(10), flood)
+        .await
+        .map_err(|_| "the reader stopped draining the peer")??;
+
+    // Reader, writer, drainer -- and nothing per deferred reply.
+    let alive = tokio::runtime::Handle::current()
+        .metrics()
+        .num_alive_tasks();
+    assert!(
+        alive <= 3,
+        "{alive} tasks alive with ~{BURST} replies deferred"
+    );
+
+    // One FIFO drainer, and no fast-path overtaking while anything is parked:
+    // the replies arrive in the order the requests did.
+    let mut seen = Vec::new();
+    for _ in 1..=BURST {
+        let reply = tokio::time::timeout(Duration::from_secs(5), peer.recv())
+            .await
+            .map_err(|_| "a deferred reply was dropped")?;
+        seen.push(reply["id"].as_i64().unwrap_or_default());
+    }
+    assert_eq!(seen, (1..=BURST).collect::<Vec<_>>());
+    Ok(())
+}
