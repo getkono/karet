@@ -463,8 +463,24 @@ impl<H: Handler> Connection<H> {
     /// flushed), then stop both I/O tasks. Bounded by [`Handler::CLOSE_TIMEOUT`]
     /// in case the peer stops consuming.
     ///
-    /// Replies to peer requests that were deferred behind a full queue are
-    /// written first too: the close signal takes the same ordered path they do.
+    /// # Ordering against peer replies
+    ///
+    /// The close signal travels the same ordered path as replies to peer
+    /// requests, not the plain outbound queue:
+    ///
+    /// - **Replies deferred before `close()` are written first.** A reply that
+    ///   met a full outbound queue is parked behind the queue; the close
+    ///   signal parks behind *it*, so every reply answered before this call
+    ///   reaches the wire ahead of the close (within the timeout above).
+    /// - **`close()` never waits for queue capacity** to enqueue the signal: a
+    ///   full queue parks it like any deferred reply, and the wait is then the
+    ///   bounded one on the writer draining.
+    /// - **Replies after the close signal are dropped.** The writer stops at
+    ///   the signal, so a reply parked behind it — or sent later by a
+    ///   [`Responder`] still held by a consumer — is
+    ///   discarded and logged at `debug`. This is the one case in which a peer
+    ///   request goes unanswered; answer outstanding responders before calling
+    ///   `close()` if the peer must see those replies.
     pub async fn close(&mut self) {
         self.replies.deliver(Outbound::Close, H::PEER);
         let _ = tokio::time::timeout(H::CLOSE_TIMEOUT, &mut self.writer_task).await;
