@@ -7,6 +7,7 @@ use super::space;
 use super::wrap_block;
 use crate::Alignment;
 use crate::Block;
+use crate::ImageSizer;
 use crate::TextSpan;
 
 /// Wrap `blocks` as [`super::wrap_blocks`] does, then shift each line right so its
@@ -19,6 +20,7 @@ pub(super) fn wrap_aligned(
     blocks: &[Block],
     width: usize,
     prefix: &[TextSpan],
+    sizer: &dyn ImageSizer,
     out: &mut Vec<WrappedLine>,
 ) {
     let indent = prefix_width(prefix);
@@ -28,7 +30,7 @@ pub(super) fn wrap_aligned(
             out.push(prefixed_line(prefix, Vec::new()));
         }
         let first = out.len();
-        wrap_block(block, width, prefix, out);
+        wrap_block(block, width, prefix, sizer, out);
         if matches!(
             block,
             Block::CodeBlock { .. } | Block::Table { .. } | Block::Aligned { .. }
@@ -51,6 +53,14 @@ fn align_line(
     indent: usize,
     inner: usize,
 ) {
+    // An image row's content is the image: move its column, not its (empty) text.
+    if let Some(image) = &mut line.image {
+        let pad = offset(align, inner.saturating_sub(usize::from(image.cols)));
+        image.col = image
+            .col
+            .saturating_add(u16::try_from(pad).unwrap_or(u16::MAX));
+        return;
+    }
     let content = line.width().saturating_sub(indent);
     if content == 0 {
         return;

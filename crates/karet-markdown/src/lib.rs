@@ -38,6 +38,7 @@ mod highlight;
 pub mod view;
 
 pub use wrap::Anchor;
+pub use wrap::ImageSlice;
 pub use wrap::TextSpan;
 pub use wrap::WrappedDocument;
 pub use wrap::WrappedLine;
@@ -85,6 +86,17 @@ pub struct ImageRef {
     pub height: Option<u32>,
     /// The target of the link wrapping the image (`[![badge](b.svg)](https://ci)`), if any.
     pub link: Option<String>,
+}
+
+/// Decides which images are painted as pixels, by knowing their size.
+///
+/// The model does no I/O: a consumer that can load an image reports its native pixel
+/// size here, and [`MarkdownDocument::wrap_with`] reserves rows for it. Resolving the
+/// source — and refusing one it will not load — is entirely the consumer's policy.
+pub trait ImageSizer {
+    /// The native `(width, height)` in pixels of `image`, or `None` to render it as a
+    /// chip instead.
+    fn dimensions(&self, image: &ImageRef) -> Option<(u32, u32)>;
 }
 
 /// One item of a [`Block::List`].
@@ -193,6 +205,17 @@ impl MarkdownDocument {
     #[must_use]
     pub fn wrap(&self, width: u16) -> WrappedDocument {
         wrap::wrap(self, width)
+    }
+
+    /// As [`wrap`](Self::wrap), but a paragraph holding only images gives every image
+    /// `sizer` sizes rows of its own, as [`ImageSlice`]s on the lines it reserves.
+    ///
+    /// An image is fitted to the width at an assumed 8×16-pixel cell, honouring its
+    /// HTML `width`/`height`, never upscaled and never taller than 20 lines. Images
+    /// among text, in a table, or left unsized render as chips.
+    #[must_use]
+    pub fn wrap_with(&self, width: u16, sizer: &dyn ImageSizer) -> WrappedDocument {
+        wrap::wrap_with(self, width, sizer)
     }
 
     /// The 0-based source line the top-level block at `index` begins on, or `None` when
