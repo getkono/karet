@@ -471,9 +471,62 @@ async fn every_reverse_request_is_refused_even_once_the_queue_fills() -> TestRes
     }
     sender.await?;
 
-    // Order is not preserved once replies are deferred, and need not be: DAP
-    // correlates on `request_seq`. Every request being answered is the point.
-    answered.sort_unstable();
+    // Every request being answered is the point. Order is kept too: deferred
+    // refusals share one FIFO drainer and nothing overtakes them.
+    assert_eq!(answered, (1..=BURST).collect::<Vec<_>>());
+    Ok(())
+}
+
+#[tokio::test]
+async fn deferred_refusals_share_one_drainer_task() -> TestResult {
+    // An adapter that floods reverse requests while never reading its stdin.
+    // Each refusal that met the full outbound queue used to get a detached
+    // task of its own, so the task count grew with the flood.
+    const BURST: i64 = 400;
+
+    let (client_end, server_end) = tokio::io::duplex(128);
+    let (server_read, mut server_write) = tokio::io::split(server_end);
+    let (read, write) = tokio::io::split(client_end);
+    let _client = DapClient::connect(read, write);
+    let mut server_read = BufReader::new(server_read);
+
+    // Into a 128-byte pipe, so this completes only once the client has read
+    // (and refused) nearly the whole flood -- while nothing drains a refusal.
+    let flood = tokio::spawn(async move {
+        for seq in 1..=BURST {
+            let request = json!({"seq": seq, "type": "request", "command": "runInTerminal"});
+            let Ok(bytes) = serde_json::to_vec(&request) else {
+                return;
+            };
+            if codec::write_frame(&mut server_write, &bytes).await.is_err() {
+                return;
+            }
+        }
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(10), flood)
+        .await
+        .map_err(|_| "the client stopped reading the adapter")??;
+
+    let alive = tokio::runtime::Handle::current()
+        .metrics()
+        .num_alive_tasks();
+    assert!(
+        alive <= 3,
+        "{alive} tasks alive with ~{BURST} refusals deferred"
+    );
+
+    let mut answered = Vec::new();
+    for _ in 1..=BURST {
+        let bytes = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            codec::read_frame(&mut server_read),
+        )
+        .await
+        .map_err(|_| "a deferred refusal was dropped")??
+        .ok_or("the adapter stream ended early")?;
+        let refusal: Value = serde_json::from_slice(&bytes)?;
+        answered.push(refusal["request_seq"].as_i64().unwrap_or_default());
+    }
     assert_eq!(answered, (1..=BURST).collect::<Vec<_>>());
     Ok(())
 }

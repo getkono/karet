@@ -15,6 +15,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicI64;
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
@@ -85,6 +86,8 @@ pub(crate) struct Connection {
     closed: Arc<AtomicBool>,
     reader_task: JoinHandle<()>,
     writer_task: JoinHandle<()>,
+    /// The single task draining deferred refusals; see [`Refusals`].
+    drainer_task: JoinHandle<()>,
 }
 
 impl Connection {
@@ -100,6 +103,7 @@ impl Connection {
         let next_seq = Arc::new(AtomicI64::new(1));
         let initialized = Arc::new(InitializedLatch::default());
         let closed = Arc::new(AtomicBool::new(false));
+        let (refusals, drainer_task) = Refusals::start(outbound.clone());
 
         let writer_closed = Arc::clone(&closed);
         let writer_task = tokio::spawn(async move {
@@ -116,7 +120,7 @@ impl Connection {
             reader: BufReader::new(read),
             pending: Arc::clone(&pending),
             events: events.clone(),
-            outbound: outbound.clone(),
+            refusals,
             next_seq: Arc::clone(&next_seq),
             initialized: Arc::clone(&initialized),
             closed: Arc::clone(&closed),
@@ -131,6 +135,7 @@ impl Connection {
             closed,
             reader_task,
             writer_task,
+            drainer_task,
         }
     }
 
@@ -221,6 +226,7 @@ impl Drop for Connection {
     fn drop(&mut self) {
         self.reader_task.abort();
         self.writer_task.abort();
+        self.drainer_task.abort();
     }
 }
 
@@ -229,7 +235,7 @@ struct ReadLoop<R> {
     reader: BufReader<R>,
     pending: Pending,
     events: broadcast::Sender<DebugEvent>,
-    outbound: mpsc::Sender<Vec<u8>>,
+    refusals: Refusals,
     next_seq: Arc<AtomicI64>,
     initialized: Arc<InitializedLatch>,
     closed: Arc<AtomicBool>,
@@ -327,7 +333,7 @@ fn handle_frame<R>(bytes: &[u8], ctx: &ReadLoop<R>) {
                 "message": format!("karet does not support the {command} reverse request"),
             });
             match serde_json::to_vec(&refusal) {
-                Ok(frame) => defer_refusal(ctx.outbound.clone(), frame, command),
+                Ok(frame) => ctx.refusals.deliver(frame, command),
                 Err(e) => tracing::warn!(error = %e, "failed to encode a refusal"),
             }
         },
@@ -335,32 +341,75 @@ fn handle_frame<R>(bytes: &[u8], ctx: &ReadLoop<R>) {
     }
 }
 
-/// Hand a reverse-request refusal to the writer without dropping it, and
-/// without blocking the reader.
+/// The path every reverse-request refusal takes to the writer: never dropped,
+/// never blocking the reader.
 ///
 /// `try_send` alone discarded the refusal whenever the outbound queue was
 /// full, which is the one outcome that defeats the point of refusing at all:
 /// the adapter blocks on its reverse request forever, and `runInTerminal` is
-/// issued precisely when a session is trying to start.
+/// issued precisely when a session is trying to start. The wait cannot happen
+/// inline either: this runs on the reader task, and an adapter can be blocked
+/// writing to a stdout we have stopped draining -- waiting here would close
+/// that into a deadlock.
 ///
-/// The wait cannot happen inline. This runs on the reader task, and an adapter
-/// can be blocked writing to a stdout we have stopped draining -- waiting here
-/// would close that into a deadlock.
-fn defer_refusal(outbound: mpsc::Sender<Vec<u8>>, frame: Vec<u8>, command: &str) {
-    let full = match outbound.try_send(frame) {
-        Ok(()) => return,
-        Err(mpsc::error::TrySendError::Closed(_)) => {
+/// So a refusal that finds the queue full parks on an overflow queue that
+/// **one** drainer task per connection moves onto the outbound queue as
+/// capacity frees, in order; while anything is parked, later refusals park
+/// behind it rather than overtake it. Tasks are therefore O(1) per
+/// connection. Memory is bounded by the adapter -- at most one parked refusal
+/// per reverse request it sent -- not by a constant, because a hard cap would
+/// have to drop a refusal or block the reader, the two outcomes above.
+struct Refusals {
+    outbound: mpsc::Sender<Vec<u8>>,
+    overflow: mpsc::UnboundedSender<Vec<u8>>,
+    /// Frames parked on `overflow` and not yet handed to `outbound`.
+    backlog: Arc<AtomicUsize>,
+}
+
+impl Refusals {
+    /// Build the refusal path over `outbound` and spawn its single drainer.
+    fn start(outbound: mpsc::Sender<Vec<u8>>) -> (Self, JoinHandle<()>) {
+        let (overflow, mut parked) = mpsc::unbounded_channel::<Vec<u8>>();
+        let backlog = Arc::new(AtomicUsize::new(0));
+        let drainer_outbound = outbound.clone();
+        let drainer_backlog = Arc::clone(&backlog);
+        let drainer = tokio::spawn(async move {
+            while let Some(frame) = parked.recv().await {
+                // Errors only once the writer is gone: nothing to answer then.
+                let _ = drainer_outbound.send(frame).await;
+                drainer_backlog.fetch_sub(1, Ordering::SeqCst);
+            }
+        });
+        (
+            Self {
+                outbound,
+                overflow,
+                backlog,
+            },
+            drainer,
+        )
+    }
+
+    /// Hand `frame` to the writer without dropping it and without blocking.
+    fn deliver(&self, frame: Vec<u8>, command: &str) {
+        // The fast path only while nothing is parked, so a refusal never
+        // overtakes one deferred before it.
+        let frame = if self.backlog.load(Ordering::SeqCst) == 0 {
+            match self.outbound.try_send(frame) {
+                Ok(()) => return,
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    tracing::debug!(command, "adapter closed before its refusal could be sent");
+                    return;
+                },
+                Err(mpsc::error::TrySendError::Full(frame)) => frame,
+            }
+        } else {
+            frame
+        };
+        self.backlog.fetch_add(1, Ordering::SeqCst);
+        if self.overflow.send(frame).is_err() {
+            self.backlog.fetch_sub(1, Ordering::SeqCst);
             tracing::debug!(command, "adapter closed before its refusal could be sent");
-            return;
-        },
-        Err(mpsc::error::TrySendError::Full(frame)) => frame,
-    };
-    match tokio::runtime::Handle::try_current() {
-        Ok(handle) => {
-            handle.spawn(async move {
-                let _ = outbound.send(full).await;
-            });
-        },
-        Err(_) => tracing::warn!(command, "no runtime to defer a refusal onto"),
+        }
     }
 }
