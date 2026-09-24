@@ -184,3 +184,44 @@ impl Session {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clamp_to_document_brings_a_whole_line_request_inside_the_text() {
+        // `u32::MAX` is how a caller says "to the end of the line" without
+        // knowing the line's length. It has to become the real end, counted
+        // in characters -- the emoji is one column, not four bytes or two
+        // UTF-16 units.
+        let buffer = TextBuffer::from_text("ab\n😀c\n");
+        assert_eq!(
+            clamp_to_document(&buffer, LineCol::new(1, u32::MAX)),
+            LineCol::new(1, 2)
+        );
+        // Past the last line lands on the last line, at its own end.
+        let last = (buffer.line_count() as u32).saturating_sub(1);
+        let last_width = buffer
+            .line(last as usize)
+            .map_or(0, |text| text.chars().count() as u32);
+        assert_eq!(
+            clamp_to_document(&buffer, LineCol::new(u32::MAX, u32::MAX)),
+            LineCol::new(last, last_width)
+        );
+        // A position already inside the document is left alone.
+        assert_eq!(
+            clamp_to_document(&buffer, LineCol::new(0, 1)),
+            LineCol::new(0, 1)
+        );
+    }
+
+    #[test]
+    fn clamp_to_document_handles_an_empty_buffer() {
+        let buffer = TextBuffer::from_text("");
+        assert_eq!(
+            clamp_to_document(&buffer, LineCol::new(u32::MAX, u32::MAX)),
+            LineCol::new(0, 0)
+        );
+    }
+}

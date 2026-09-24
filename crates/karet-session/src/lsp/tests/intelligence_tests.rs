@@ -303,3 +303,39 @@ async fn a_supported_request_raises_no_notice() -> TestResult {
         }
     }
 }
+
+#[tokio::test]
+async fn a_to_end_of_line_hint_request_reaches_the_wire_as_the_real_end() -> TestResult {
+    // The editor asks through the end of its last visible line as
+    // `u32::MAX`. Converted verbatim that is a column no document has, and a
+    // server may reject the whole request; clamped, it is the line's end in
+    // UTF-16 units -- 4 here, since the leading emoji is two of them.
+    let dir = tempfile::tempdir()?;
+    let path = rust_file(&dir, "main.rs", "\u{1F600}ab\n").ok_or("write failed")?;
+    let (observed_tx, mut observed_rx) = mpsc::unbounded_channel();
+    let spawns = Arc::new(AtomicUsize::new(0));
+    let (session, mut events) =
+        session_with_connector(test_connector(Behavior::Normal, Some(observed_tx), spawns));
+    let backend = local_session(session, None);
+    let (doc, _) = open(&backend, &mut events, path).await?;
+
+    backend.send(
+        backend.next_id(),
+        Command::InlayHints {
+            doc,
+            range: whole_first_line(),
+        },
+    )?;
+    loop {
+        let msg = tokio::time::timeout(Duration::from_secs(5), observed_rx.recv())
+            .await?
+            .ok_or("server stream ended")?;
+        if msg["method"] == "textDocument/inlayHint" {
+            assert_eq!(
+                msg["params"]["range"]["end"],
+                json!({"line": 0, "character": 4})
+            );
+            return Ok(());
+        }
+    }
+}
