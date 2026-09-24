@@ -69,7 +69,7 @@ async fn the_handshake_records_whether_the_server_formats() -> TestResult {
         });
         let client = LspClient::connect(read, write, Path::new("/tmp")).await?;
         server_task.await?;
-        Ok(client.supports_formatting())
+        Ok(client.supports_formatting(Path::new("/tmp/a.rs")))
     }
 
     assert!(connect_advertising(json!(true)).await?);

@@ -721,7 +721,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     // "method not found". Asking anyway would spend a round trip --
                     // on every save, once format-on-save is on -- to learn what the
                     // negotiated capabilities already say.
-                    let advertised = !dead && active.supports_formatting();
+                    let advertised = !dead && active.supports_formatting(&path);
                     // Every ending but a successful reply leaves the file unformatted,
                     // and each one is reported as such so the session can fall back on
                     // its own formatter. A connection that died, and a request that

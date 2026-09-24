@@ -894,5 +894,8 @@ mod gating;
 #[path = "formatting_tests.rs"]
 mod formatting;
 
+#[path = "registration_tests.rs"]
+mod registration;
+
 #[path = "client_capability_tests.rs"]
 mod client_capability;

@@ -7,14 +7,10 @@
 //! server→client requests a headless client must not leave hanging, and the
 //! bridge that turns [`karet_jsonrpc::RpcError`] into [`LspError`].
 
-use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::RwLock;
 use std::time::Duration;
 
-use karet_core::Capabilities;
-use karet_core::ServerFeature;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -28,6 +24,8 @@ use crate::RawNotification;
 use crate::ServerRefresh;
 use crate::capability;
 use crate::convert;
+use crate::gate::Gate;
+use crate::selector::Selector;
 use crate::uri;
 
 /// The (shorter) deadline for the `shutdown` handshake and process exit.
@@ -73,19 +71,14 @@ pub(crate) struct LspHandler {
     /// Server requests to re-fetch something it answered before
     /// (`workspace/inlayHint/refresh`), fanned out to every subscriber.
     refreshes: broadcast::Sender<ServerRefresh>,
-    /// The live capability set, shared with the [`LspClient`] that gates on it.
+    /// What the server supports and for which documents, shared with the
+    /// [`LspClient`] that gates on it.
     ///
     /// Shared rather than copied because `client/registerCapability` arrives
     /// *here*, on the handler, and has to be visible to the gate immediately.
     ///
     /// [`LspClient`]: crate::LspClient
-    capabilities: Arc<RwLock<Capabilities>>,
-    /// Which feature each live registration turned on, so an unregister
-    /// disables exactly what its id enabled.
-    ///
-    /// Keyed by the server's registration id: two registrations can name the
-    /// same method, and unregistering one must not disable the other.
-    registrations: Mutex<HashMap<String, ServerFeature>>,
+    gate: Arc<RwLock<Gate>>,
 }
 
 impl Default for LspHandler {
@@ -95,14 +88,14 @@ impl Default for LspHandler {
         Self {
             diagnostics,
             refreshes,
-            capabilities: Arc::default(),
-            registrations: Mutex::default(),
+            gate: Arc::default(),
         }
     }
 }
 
 impl LspHandler {
-    /// Turn on everything a `client/registerCapability` asks for.
+    /// Turn on everything a `client/registerCapability` asks for, for the
+    /// documents each registration's selector covers.
     fn register(&self, params: &Value) {
         let Some(items) = params.get("registrations").and_then(Value::as_array) else {
             return;
@@ -118,17 +111,23 @@ impl LspHandler {
                 // A method karet does not gate on. Acknowledged, as before.
                 continue;
             };
-            if let Ok(mut caps) = self.capabilities.write() {
-                caps.enable(feature);
+            let selector = Selector::from_register_options(item.get("registerOptions"));
+            tracing::debug!(
+                method,
+                ?feature,
+                ?selector,
+                "server registered a capability"
+            );
+            if let Ok(mut gate) = self.gate.write() {
+                gate.register(id.to_owned(), feature, selector);
             }
-            if let Ok(mut live) = self.registrations.lock() {
-                live.insert(id.to_owned(), feature);
-            }
-            tracing::debug!(method, ?feature, "server registered a capability");
         }
     }
 
     /// Turn off everything a `client/unregisterCapability` withdraws.
+    ///
+    /// Only the named registration goes: another registration of the same
+    /// method, or the handshake having advertised it, keeps the feature on.
     fn unregister(&self, params: &Value) {
         // The spec's own field name is misspelled, and servers send it that
         // way; accept the corrected spelling too rather than ignore either.
@@ -141,31 +140,20 @@ impl LspHandler {
             let Some(id) = item.get("id").and_then(Value::as_str) else {
                 continue;
             };
-            let Some(feature) = self
-                .registrations
-                .lock()
+            let feature = self
+                .gate
+                .write()
                 .ok()
-                .and_then(|mut live| live.remove(id))
-            else {
-                continue;
-            };
-            // Only if no other live registration still provides it: two
-            // registrations may cover one method, and withdrawing one of them
-            // must not disable a feature the other still supplies.
-            let still_registered = self
-                .registrations
-                .lock()
-                .is_ok_and(|live| live.values().any(|other| *other == feature));
-            if !still_registered && let Ok(mut caps) = self.capabilities.write() {
-                caps.disable(feature);
+                .and_then(|mut gate| gate.unregister(id));
+            if let Some(feature) = feature {
+                tracing::debug!(?feature, "server unregistered a capability");
             }
-            tracing::debug!(?feature, "server unregistered a capability");
         }
     }
 
-    /// The shared capability set, for the client that gates on it.
-    pub(crate) fn capabilities(&self) -> Arc<RwLock<Capabilities>> {
-        Arc::clone(&self.capabilities)
+    /// The shared gate, for the client that gates on it.
+    pub(crate) fn gate(&self) -> Arc<RwLock<Gate>> {
+        Arc::clone(&self.gate)
     }
 }
 
@@ -226,12 +214,12 @@ impl karet_jsonrpc::Handler for LspHandler {
 pub(crate) struct Connection(karet_jsonrpc::Connection<LspHandler>);
 
 impl Connection {
-    /// The live capability set this connection's handler maintains.
+    /// The live gate this connection's handler maintains.
     ///
     /// Shared with the handler, not a copy, so a capability registered after
     /// the handshake is visible to the gate the moment it arrives.
-    pub(crate) fn capabilities(&self) -> Arc<RwLock<Capabilities>> {
-        self.0.handler().capabilities()
+    pub(crate) fn gate(&self) -> Arc<RwLock<Gate>> {
+        self.0.handler().gate()
     }
 
     /// Start the reader/writer tasks over an arbitrary I/O pair.
