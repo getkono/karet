@@ -620,6 +620,19 @@ impl StatefulWidget for Editor<'_> {
             unwrapped_lines: self.unwrapped_lines,
             hints: &hint_index,
         };
+        if !self.word_wrap && state.follow_cursor {
+            // Resolved here rather than in `scroll_to`: only the render knows
+            // the line's hints and tab width, and the caret is placed by them.
+            let target = state.follow_target;
+            state.scroll_col = reveal_column(
+                &line_chars(self.buffer, target.line),
+                state.scroll_col,
+                target.col,
+                width,
+                self.tab_width,
+                layout.hints_on(target.line),
+            );
+        }
         let mut anchor = normalize_visual_anchor(
             self.buffer,
             self.folds,
@@ -693,7 +706,12 @@ impl StatefulWidget for Editor<'_> {
             let l = anchor.line;
             last_painted = Some(l);
             if !self.word_wrap {
-                widest_visible = widest_visible.max(line_len(self.buffer, l));
+                widest_visible = widest_visible.max(horizontal_extent(
+                    &line_chars(self.buffer, l),
+                    width,
+                    self.tab_width,
+                    layout.hints_on(l),
+                ));
             }
             let y = area
                 .y

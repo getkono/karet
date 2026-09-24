@@ -350,3 +350,115 @@ fn a_tab_after_the_row_start_lands_where_the_mapping_says() {
     // row carries no leading hint of its own).
     assert_eq!(offset_within_row(&chars, 1, 4, 4, hints), 5);
 }
+
+/// Render one unwrapped row `width` cells wide with the caret at `at`, after
+/// `goto` asked for it to be revealed. Returns the state and the painted row.
+fn revealed(
+    text: &str,
+    hints: &[InlayHint],
+    at: LineCol,
+    width: u16,
+) -> (EditorState, TextBuffer, Buffer) {
+    let buffer = TextBuffer::from_text(text);
+    let mut state = EditorState::new();
+    let area = Rect::new(0, 0, width, 1);
+    let mut target = Buffer::empty(area);
+    let editor = || Editor::new(&buffer).inlay_hints(hints).focused(true);
+    // The first render records the viewport width the reveal measures against.
+    editor().render(area, &mut target, &mut state);
+    state.goto(&buffer, at);
+    editor().render(area, &mut target, &mut state);
+    (state, buffer, target)
+}
+
+#[test]
+fn hints_before_the_caret_scroll_it_into_view_over_its_own_glyph() {
+    // 33 cells less a 3-cell gutter leaves 30, with a 10-cell margin. Column
+    // 15 is inside the margin by `char` count, but twenty cells of hint ahead
+    // of it draw it at cell 35 -- past the right edge. Measured in `char`s the
+    // view never scrolled, and the caret was clamped onto the wrong letter.
+    let hints = [hint(0, 2, "::::::::::"), hint(0, 5, "++++++++++")];
+    let at = LineCol::new(0, 15);
+    let (state, buffer, target) = revealed("abcdefghijklmnopqrstuvwxyz\n", &hints, at, 33);
+
+    assert!(state.scroll_col > 0, "the view did not scroll");
+    let area = Rect::new(0, 0, 33, 1);
+    let Some((x, y)) = caret_cell(area, &buffer, &[], &state, at) else {
+        unreachable!("a revealed caret is on screen");
+    };
+    // Inside the viewport and clear of the right margin...
+    assert!((3..=22).contains(&x), "caret at cell {x}");
+    // ...and over the character at column 15, which is where it was painted.
+    let cell = &target[(x, y)];
+    assert_eq!(cell.symbol(), "p");
+    assert!(cell.modifier.contains(Modifier::REVERSED));
+}
+
+#[test]
+fn wide_characters_before_the_caret_scroll_it_into_view() {
+    // Same root cause without any hint: fifteen double-width characters put
+    // column 15 at cell 30 of a 30-cell viewport.
+    let text = format!("{}x\n", "日".repeat(15));
+    let at = LineCol::new(0, 15);
+    let (state, buffer, target) = revealed(&text, &[], at, 33);
+    let area = Rect::new(0, 0, 33, 1);
+    let Some((x, y)) = caret_cell(area, &buffer, &[], &state, at) else {
+        unreachable!("a revealed caret is on screen");
+    };
+    assert!((3..=22).contains(&x), "caret at cell {x}");
+    assert_eq!(target[(x, y)].symbol(), "x");
+}
+
+#[test]
+fn a_hinted_tail_is_reachable_by_scrolling() {
+    // Twenty characters plus a thirty-cell trailing hint: measured in `char`s
+    // the line fit the 30-cell viewport, so scrolling stopped at zero and the
+    // end of the hint could never be shown.
+    let label = format!(" -> {}END", "T".repeat(23));
+    let hints = [hint(0, 20, &label)];
+    let buffer = TextBuffer::from_text("fn twenty_chars_x() \n");
+    let mut state = EditorState::new();
+    let area = Rect::new(0, 0, 33, 1);
+    let mut target = Buffer::empty(area);
+    Editor::new(&buffer)
+        .inlay_hints(&hints)
+        .render(area, &mut target, &mut state);
+    state.scroll_columns(&buffer, i32::MAX);
+
+    // The clamp and the extent agree, so a scrollbar built on them ends here.
+    assert_eq!(
+        state.scroll_col,
+        state.longest_col() + 1 - u32::from(state.content_width())
+    );
+    Editor::new(&buffer)
+        .inlay_hints(&hints)
+        .render(area, &mut target, &mut state);
+    let row: String = (0..area.width)
+        .map(|x| target[(x, 0)].symbol().chars().next().unwrap_or(' '))
+        .collect();
+    assert!(
+        row.contains("END"),
+        "the hint's tail stayed hidden: {row:?}"
+    );
+}
+
+#[test]
+fn plain_text_extent_and_reveal_are_unchanged() {
+    // The regression guard: with no tabs, wide characters or hints the
+    // extent is exactly the `char` count it used to be.
+    let chars: Vec<char> = "abcdefghijklmnopqrstuvwxyz".chars().collect();
+    let none = crate::hint::HintIndex::new(&[]);
+    for width in [1, 5, 22, 26, 27, 40] {
+        assert_eq!(
+            horizontal_extent(&chars, width, 4, none.line(0)),
+            26,
+            "width {width}"
+        );
+    }
+    // And the reveal still places a far-right caret `margin` cells from the
+    // edge: 22 cells, margin 10, caret at 15 -> scroll 4.
+    assert_eq!(reveal_column(&chars, 0, 15, 22, 4, none.line(0)), 4);
+    assert_eq!(reveal_column(&chars, 4, 15, 22, 4, none.line(0)), 4);
+    assert_eq!(reveal_column(&chars, 4, 2, 22, 4, none.line(0)), 0);
+    assert_eq!(reveal_column(&chars, 20, 12, 22, 4, none.line(0)), 2);
+}

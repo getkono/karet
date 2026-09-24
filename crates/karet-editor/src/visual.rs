@@ -384,6 +384,93 @@ pub(super) fn offset_within_row(
         .saturating_sub(display_col(chars, row_start, tab_width, hints))
 }
 
+/// [`display_col`] for every column `0..=len` of one line, in a single pass.
+///
+/// Non-decreasing, so the horizontal-scroll searches below can bisect it.
+fn display_cols(chars: &[char], tab_width: u16, hints: LineHints<'_>) -> Vec<u32> {
+    let mut cols = Vec::with_capacity(chars.len().saturating_add(1));
+    let mut col = 0_u32;
+    cols.push(col);
+    for (index, ch) in (0_u32..).zip(chars) {
+        col = col.saturating_add(hints.width_at(index));
+        col = col.saturating_add(character_width(*ch, col, tab_width));
+        cols.push(col);
+    }
+    cols
+}
+
+/// How far an unwrapped line reaches horizontally, in the units of
+/// `EditorState::scroll_col`.
+///
+/// `scroll_col` is a *buffer* column — the column a scrolled row starts
+/// painting at — while the viewport is `width` screen cells, and tabs, wide
+/// characters and hints make the two diverge. The extent is therefore the
+/// leftmost `scroll_col` that shows the line's last cell (a trailing hint, or
+/// the end-of-line caret slot), plus `width - 1`, so that the usual clamp
+/// `extent + 1 - width` is exactly the scroll that reveals the tail. A line
+/// that fits reports its last cell instead; with no tabs, wide characters or
+/// hints both cases reduce to the line's length in `char`s.
+pub(super) fn horizontal_extent(
+    chars: &[char],
+    width: u32,
+    tab_width: u16,
+    hints: LineHints<'_>,
+) -> u32 {
+    let cols = display_cols(chars, tab_width, hints);
+    let end = cols.last().copied().unwrap_or(0);
+    let trailing = hints.width_at(chars.len() as u32);
+    // The caret slot at end-of-line takes a cell even when no hint follows it.
+    let needed = end.saturating_add(trailing.max(1));
+    let width = width.max(1);
+    let first = cols.partition_point(|&origin| needed.saturating_sub(origin) > width) as u32;
+    if first == 0 {
+        needed.saturating_sub(1)
+    } else {
+        first.saturating_add(width).saturating_sub(1)
+    }
+}
+
+/// The `scroll_col` that brings the caret at `col` into an unwrapped viewport
+/// of `width` cells, keeping a margin of up to 10 cells on either side.
+///
+/// Measured in screen cells from the scrolled row's origin — the same
+/// [`offset_within_row`] the caret is placed with — so a line whose tabs,
+/// wide characters or hints push the caret right scrolls as far as it is
+/// drawn, rather than as far as its `char` count suggests. Returns `current`
+/// when the caret is already inside the margins.
+pub(super) fn reveal_column(
+    chars: &[char],
+    current: u32,
+    col: u32,
+    width: u32,
+    tab_width: u16,
+    hints: LineHints<'_>,
+) -> u32 {
+    let cols = display_cols(chars, tab_width, hints);
+    let col = col.min(chars.len() as u32) as usize;
+    let caret = cols.get(col).copied().unwrap_or(0);
+    // Candidate origins are the columns up to the caret's own.
+    let origins = cols.get(..=col).unwrap_or_default();
+    let width = width.max(1);
+    let margin = 10_u32.min((width - 1) / 2);
+    let offset = origins
+        .get(current as usize)
+        .map(|&origin| caret.saturating_sub(origin));
+    match offset {
+        Some(offset) if offset >= margin && offset < width - margin => current,
+        // Too far right: the leftmost origin that leaves `margin` cells after
+        // the caret.
+        Some(offset) if offset >= width - margin => origins
+            .partition_point(|&origin| caret.saturating_sub(origin) > width - margin - 1)
+            as u32,
+        // Too far left (or scrolled past it): the rightmost origin that leaves
+        // `margin` cells before the caret, or the line start when none can.
+        _ => origins
+            .partition_point(|&origin| caret.saturating_sub(origin) >= margin)
+            .saturating_sub(1) as u32,
+    }
+}
+
 pub(super) fn caret_cell(
     area: Rect,
     buffer: &TextBuffer,

@@ -53,7 +53,13 @@ pub fn resolve_folds(
 pub struct EditorState {
     /// The first visible buffer line (top of the viewport).
     pub scroll_line: u32,
-    /// The first visible column (horizontal scroll, counted in `char`s).
+    /// The first visible column (horizontal scroll), as a **buffer** column
+    /// counted in `char`s: an unwrapped row starts painting at this column.
+    ///
+    /// Screen positions within the row are then measured in display cells
+    /// from there — tabs, wide characters and inlay hints included — which is
+    /// how the caret, mouse clicks, cursor reveal and
+    /// [`longest_col`](Self::longest_col) all read it.
     pub scroll_col: u32,
     /// The cursor/selection set (never empty). The moving end of each selection is its
     /// `head`; the primary selection's head is the main caret.
@@ -78,9 +84,12 @@ pub struct EditorState {
     /// click resolved against hints the frame did not paint would select the
     /// wrong character.
     pub(super) last_hints: HintIndex,
-    /// Whether the next wrapped render should reveal a cursor moved by an editor
+    /// Whether the next render should reveal a cursor moved by an editor
     /// command rather than preserve a manually-scrolled viewport.
     pub(super) follow_cursor: bool,
+    /// The position the next unwrapped render scrolls horizontally into view
+    /// while [`follow_cursor`](Self::follow_cursor) is set.
+    pub(super) follow_target: LineCol,
     /// Source lines currently occupying the sticky-scroll rows, outermost first.
     pub(super) sticky_rows: Vec<u32>,
     /// Rows reserved above the live document viewport by the last render.
@@ -109,6 +118,7 @@ impl Default for EditorState {
             last_unwrapped_lines: Vec::new(),
             last_hints: HintIndex::default(),
             follow_cursor: false,
+            follow_target: LineCol::new(0, 0),
             sticky_rows: Vec::new(),
             sticky_height: 0,
             last_visible_lines: 0,
@@ -142,9 +152,16 @@ impl EditorState {
         self.cursors.selections.len() > 1
     }
 
-    /// Scroll vertically so that `pos` is within the viewport.
+    /// Scroll so that `pos` is within the viewport.
+    ///
+    /// Vertical scroll is applied immediately. Horizontal scroll is resolved by
+    /// the next render, which has the line's text, tab width and inlay hints:
+    /// the caret is drawn in display cells, so revealing it by `char` count
+    /// alone would leave it clamped at the edge over the wrong glyph whenever
+    /// a tab, wide character or hint precedes it.
     pub fn scroll_to(&mut self, pos: LineCol) {
         self.follow_cursor = true;
+        self.follow_target = pos;
         let height = u32::from(self.last_height.max(1));
         if pos.line < self.scroll_line {
             self.scroll_line = pos.line;
@@ -152,22 +169,6 @@ impl EditorState {
         } else if pos.line >= self.scroll_line + height {
             self.scroll_line = pos.line + 1 - height;
             self.scroll_subrow = 0;
-        }
-
-        if !self.last_word_wrap && self.last_content_width > 0 {
-            let width = u32::from(self.last_content_width);
-            let margin = 10_u32.min(width.saturating_sub(1) / 2);
-            let left_guard = self.scroll_col.saturating_add(margin);
-            let right_guard = self.scroll_col.saturating_add(width.saturating_sub(margin));
-            if pos.col < left_guard {
-                self.scroll_col = pos.col.saturating_sub(margin);
-            } else if pos.col >= right_guard {
-                self.scroll_col = pos
-                    .col
-                    .saturating_add(margin)
-                    .saturating_add(1)
-                    .saturating_sub(width);
-            }
         }
     }
 
@@ -230,14 +231,21 @@ impl EditorState {
             self.scroll_col = 0;
             return;
         }
-        let longest = (0..buffer.line_count())
-            .map(|line| line_len(buffer, line as u32))
+        let width = u32::from(self.last_content_width.max(1));
+        let longest = (0..buffer.line_count() as u32)
+            .map(|line| {
+                horizontal_extent(
+                    &line_chars(buffer, line),
+                    width,
+                    self.last_tab_width,
+                    self.hints_on(line),
+                )
+            })
             .max()
             .unwrap_or(0);
         // The scan is already paid for here, so keep the answer for the horizontal
         // scrollbar rather than making the render pay for it again every frame.
         self.last_longest_col = longest;
-        let width = u32::from(self.last_content_width.max(1));
         let max = longest.saturating_add(1).saturating_sub(width);
         self.scroll_col =
             (i64::from(self.scroll_col) + i64::from(delta)).clamp(0, i64::from(max)) as u32;
@@ -292,10 +300,15 @@ impl EditorState {
         self.last_content_width
     }
 
-    /// The longest line seen so far, in `char`s — the horizontal scroll extent.
+    /// The longest line seen so far — the horizontal scroll extent, in the
+    /// buffer-column units of [`scroll_col`](Self::scroll_col).
+    ///
+    /// Measured so that `longest_col + 1 - content_width` is the scroll that
+    /// shows the widest line's last cell, tabs, wide characters and inlay hints
+    /// included; for plain text it is the longest line's length in `char`s.
     ///
     /// A high-water mark rather than a live measurement: an exact answer costs a
-    /// full-document scan (every line's char count), which is affordable on a scroll
+    /// full-document scan (every line's width), which is affordable on a scroll
     /// event but not on every frame. It is exact right after
     /// [`scroll_columns`](Self::scroll_columns) and never *under*-reports, so a
     /// scrollbar built on it never claims the whole line is on screen when it is not.
