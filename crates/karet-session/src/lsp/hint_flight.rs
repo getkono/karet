@@ -18,8 +18,20 @@
 //! for the flush the debounce was going to do anyway. The second half is what
 //! keeps it out of the way: its answer comes back through the task's wake
 //! loop, so the connection's health still hears about it.
+//!
+//! At most one request per document is ever launched at a time. A newer one
+//! for a document whose request is still running stays deferred until that
+//! one returns, and only the newest deferred request is then launched -- each
+//! one it replaced is answered empty. The alternative, cancelling the running
+//! request, is not available: `karet-jsonrpc` does not hand the request id to
+//! its caller, so `$/cancelRequest` cannot be sent, and dropping the future
+//! only stops karet listening -- the server keeps computing. Without the
+//! one-per-document rule, an editor re-asking on every scroll or keystroke
+//! stacked up a full inference pass per ask on a server that was already the
+//! slowest thing in the loop.
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -103,19 +115,38 @@ impl HintFlight {
     }
 
     /// Launch every deferred request the server can now answer correctly: all
-    /// of them but those for `pending`, the one path with an edit not yet sent.
+    /// of them but those for `pending`, the one path with an edit not yet sent,
+    /// and those for a document whose previous request is still running.
     pub(super) fn launch_ready(&mut self, client: &Arc<LspClient>, pending: Option<&Path>) {
+        self.launch_ready_with(pending, |ask| {
+            let client = Arc::clone(client);
+            async move { client.inlay_hints(&ask.path, ask.range).await }
+        });
+    }
+
+    /// [`Self::launch_ready`], with how a request is issued left to `start`.
+    ///
+    /// Separate so the bookkeeping can be tested without a server.
+    fn launch_ready_with<F, Fut>(&mut self, pending: Option<&Path>, mut start: F)
+    where
+        F: FnMut(HintAsk) -> Fut,
+        Fut: Future<Output = Result<Vec<InlayHint>, LspError>> + Send + 'static,
+    {
+        let running = &self.running;
         let (waiting, ready): (Vec<_>, Vec<_>) = std::mem::take(&mut self.deferred)
             .into_iter()
-            .partition(|ask| pending == Some(ask.path.as_path()));
+            .partition(|ask| {
+                pending == Some(ask.path.as_path())
+                    || running.values().any(|tag| tag.doc == ask.tag.doc)
+            });
         self.deferred = waiting;
         for ask in ready {
-            let client = Arc::clone(client);
             let tag = ask.tag;
+            let request = start(ask);
             let handle = self.tasks.spawn(async move {
                 HintAnswer {
                     tag,
-                    result: client.inlay_hints(&ask.path, ask.range).await,
+                    result: request.await,
                 }
             });
             self.running.insert(handle.id(), tag);
@@ -155,14 +186,7 @@ impl HintFlight {
         // Dropping the set aborts its tasks, which releases the client they
         // hold -- and with it, for a spawned server, the process.
         self.tasks = JoinSet::new();
-        let tags = self
-            .deferred
-            .drain(..)
-            .map(|ask| ask.tag)
-            .chain(self.running.drain().map(|(_, tag)| tag));
-        for tag in tags {
-            answer_empty(updates, tag, generation);
-        }
+        self.answer_all_empty(updates, generation);
     }
 
     /// Stop every running request and wait until each has released the client,
@@ -171,6 +195,19 @@ impl HintFlight {
         self.deferred.clear();
         self.running.clear();
         self.tasks.shutdown().await;
+    }
+
+    /// Answer every deferred and running request with an empty set, forgetting
+    /// them all.
+    fn answer_all_empty(&mut self, updates: &mpsc::UnboundedSender<LspUpdate>, generation: u64) {
+        let tags = self
+            .deferred
+            .drain(..)
+            .map(|ask| ask.tag)
+            .chain(self.running.drain().map(|(_, tag)| tag));
+        for tag in tags {
+            answer_empty(updates, tag, generation);
+        }
     }
 }
 
@@ -217,4 +254,147 @@ fn answer_empty(updates: &mpsc::UnboundedSender<LspUpdate>, tag: HintTag, genera
         version: tag.version,
         hints: Vec::new(),
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use std::pin::Pin;
+
+    use tokio::sync::oneshot;
+
+    use super::*;
+
+    type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
+    type Reply = Pin<Box<dyn Future<Output = Result<Vec<InlayHint>, LspError>> + Send>>;
+
+    fn ask(request: u64, doc: u64) -> HintAsk {
+        HintAsk {
+            tag: HintTag {
+                request: RequestId(request),
+                doc: DocumentId(doc),
+                version: 1,
+            },
+            path: PathBuf::from(format!("/w/{doc}.rs")),
+            range: Range::default(),
+        }
+    }
+
+    /// Every answer sent so far, as `(request, hint count)`.
+    fn answers(rx: &mut mpsc::UnboundedReceiver<LspUpdate>) -> Vec<(u64, usize)> {
+        std::iter::from_fn(|| rx.try_recv().ok())
+            .filter_map(|update| match update {
+                LspUpdate::InlayHints { request, hints, .. } => Some((request.0, hints.len())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn requests<'a>(tags: impl Iterator<Item = &'a HintTag>) -> Vec<u64> {
+        let mut out: Vec<u64> = tags.map(|tag| tag.request.0).collect();
+        out.sort_unstable();
+        out
+    }
+
+    /// Launch whatever is ready with a request that never answers.
+    fn launch_never(flight: &mut HintFlight) {
+        flight.launch_ready_with(None, |_| {
+            std::future::pending::<Result<Vec<InlayHint>, LspError>>()
+        });
+    }
+
+    #[test]
+    fn a_replaced_deferred_request_is_answered_empty() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut flight = HintFlight::default();
+        flight.ask(ask(1, 7), &tx, 0);
+        flight.ask(ask(2, 8), &tx, 0);
+        assert!(
+            answers(&mut rx).is_empty(),
+            "another document's ask is not a replacement"
+        );
+        flight.ask(ask(3, 7), &tx, 0);
+        assert_eq!(
+            answers(&mut rx),
+            vec![(1, 0)],
+            "the replaced ask went unanswered"
+        );
+        assert_eq!(requests(flight.deferred.iter().map(|ask| &ask.tag)), [2, 3]);
+    }
+
+    #[tokio::test]
+    async fn a_document_never_has_two_requests_running() {
+        // A newer ask for a document whose request is still running waits for
+        // it, and only the newest of those waiting is launched when it returns.
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut flight = HintFlight::default();
+        let (reply, answer) = oneshot::channel::<Vec<InlayHint>>();
+        let mut replies =
+            vec![Box::pin(async move { answer.await.map_err(|_| LspError::Closed) }) as Reply];
+        flight.ask(ask(1, 7), &tx, 0);
+        flight.launch_ready_with(None, |_| {
+            replies
+                .pop()
+                .unwrap_or_else(|| Box::pin(std::future::pending()))
+        });
+        assert_eq!(requests(flight.running.values()), [1]);
+
+        flight.ask(ask(2, 7), &tx, 0);
+        flight.ask(ask(3, 7), &tx, 0);
+        flight.ask(ask(4, 9), &tx, 0);
+        launch_never(&mut flight);
+        assert_eq!(
+            requests(flight.running.values()),
+            [1, 4],
+            "a second request ran for one document, or another document's waited"
+        );
+        assert_eq!(requests(flight.deferred.iter().map(|ask| &ask.tag)), [3]);
+        assert_eq!(
+            answers(&mut rx),
+            vec![(2, 0)],
+            "the replaced ask went unanswered"
+        );
+
+        let _ = reply.send(Vec::new());
+        let finished = flight.next().await.map(|answer| answer.tag.request.0);
+        assert_eq!(finished, Some(1));
+        launch_never(&mut flight);
+        assert!(
+            flight.deferred.is_empty(),
+            "the newest ask was not launched"
+        );
+        assert_eq!(requests(flight.running.values()), [3, 4]);
+    }
+
+    #[tokio::test]
+    async fn a_task_that_ends_without_answering_is_answered_anyway() -> TestResult {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut flight = HintFlight::default();
+        flight.ask(ask(5, 7), &tx, 0);
+        launch_never(&mut flight);
+        // Ended from outside, the way a panic ends it: the task never produces
+        // a `HintAnswer` of its own.
+        flight.tasks.abort_all();
+        let answer = flight.next().await.ok_or("no fallback answer")?;
+        assert_eq!(answer.tag.request, RequestId(5));
+        assert!(matches!(answer.result, Err(LspError::Protocol(_))));
+        assert!(
+            flight.running.is_empty(),
+            "the ended task was not forgotten"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn abandoning_answers_running_and_deferred_requests_empty() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut flight = HintFlight::default();
+        flight.ask(ask(1, 7), &tx, 0);
+        launch_never(&mut flight);
+        flight.ask(ask(2, 7), &tx, 0);
+        flight.abandon(&tx, 0);
+        let mut answered = answers(&mut rx);
+        answered.sort_unstable();
+        assert_eq!(answered, vec![(1, 0), (2, 0)]);
+        assert!(!flight.is_busy());
+    }
 }

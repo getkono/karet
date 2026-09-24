@@ -773,8 +773,9 @@ pub(super) async fn server_task(task: ServerTask) {
                 },
             }
         }
-        // Any command may have flushed the pending edit, and a hint request
-        // may have just arrived for a path with none: launch what is ready.
+        // Any command may have flushed the pending edit, a hint request may
+        // have just arrived for a path with none, and a finished one frees its
+        // document for the next: launch what is ready.
         if !dead && let Some(active) = client.as_ref() {
             hints.launch_ready(active, pending.as_ref().map(|(path, ..)| path.as_path()));
         }
