@@ -86,6 +86,9 @@ pub(super) enum Behavior {
     /// Serve normally, but never answer `textDocument/inlayHint`: a server
     /// slow to infer, which must not hold up anything else asked of it.
     HintsNever,
+    /// Serve normally, but hang up on receiving `textDocument/inlayHint`: the
+    /// connection is lost with that request in flight.
+    DiesOnHint,
     /// Serve normally, and ask the client to refresh its inlay hints
     /// (`workspace/inlayHint/refresh`) once it has opened a document.
     RefreshesHints,
@@ -217,6 +220,11 @@ pub(super) fn test_connector(
                         },
                         Some("textDocument/inlayHint")
                             if matches!(behavior, Behavior::HintsNever) => {},
+                        Some("textDocument/inlayHint")
+                            if matches!(behavior, Behavior::DiesOnHint) =>
+                        {
+                            break; // both halves drop: the client sees EOF
+                        },
                         Some("textDocument/inlayHint") => {
                             // One hint at UTF-16 character 4 on line 0, which
                             // is buffer column 3 once the emoji is accounted

@@ -10,12 +10,13 @@ use super::*;
 
 /// Open `path`, wait for the session to confirm it, and wait until the server
 /// has the document -- so a hint request sent next is launched, not deferred.
+/// Returns the document and its version.
 async fn open_served(
     backend: &impl Backend,
     events: &mut EventRx,
     observed: &mut mpsc::UnboundedReceiver<serde_json::Value>,
     path: PathBuf,
-) -> Result<DocumentId, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<(DocumentId, u64), Box<dyn std::error::Error + Send + Sync>> {
     backend.send(
         backend.next_id(),
         Command::OpenDocument {
@@ -23,9 +24,9 @@ async fn open_served(
             language: None,
         },
     )?;
-    let (doc, _) = await_opened(events).await.ok_or("no Opened")?;
+    let opened = await_opened(events).await.ok_or("no Opened")?;
     await_method(observed, "textDocument/didOpen").await?;
-    Ok(doc)
+    Ok(opened)
 }
 
 /// Wait until the server has received a message with `method`.
@@ -80,7 +81,7 @@ async fn a_restart_answers_a_running_hint_request_empty() -> TestResult {
         spawns,
     ));
     let backend = local_session(session, None);
-    let doc = open_served(&backend, &mut events, &mut observed, path).await?;
+    let (doc, _) = open_served(&backend, &mut events, &mut observed, path).await?;
 
     let request = backend.next_id();
     backend.send(
@@ -146,4 +147,108 @@ async fn closing_the_last_document_answers_a_running_hint_request() -> TestResul
             return Ok(());
         }
     }
+}
+
+/// The connection is lost with a hint request in flight; the request is
+/// answered empty, whichever notices first -- the liveness arm abandoning it,
+/// or the request itself failing on the closed connection.
+#[tokio::test]
+async fn a_lost_connection_answers_a_running_hint_request_empty() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let path = rust_file(&dir, "main.rs", "let a = 1;\n").ok_or("write failed")?;
+    let (observed_tx, mut observed) = mpsc::unbounded_channel();
+    let spawns = Arc::new(AtomicUsize::new(0));
+    let (session, mut events) = session_with_connector(test_connector(
+        Behavior::DiesOnHint,
+        Some(observed_tx),
+        spawns,
+    ));
+    let backend = local_session(session, None);
+    let (doc, _) = open_served(&backend, &mut events, &mut observed, path).await?;
+
+    let request = backend.next_id();
+    backend.send(
+        request,
+        Command::InlayHints {
+            doc,
+            range: whole_first_line(),
+        },
+    )?;
+    let hints = await_hint_answer(&mut events, request)
+        .await
+        .ok_or("the lost connection left the hint request unanswered")?;
+    assert!(hints.is_empty());
+    Ok(())
+}
+
+/// The pending `didChange` goes out once the last *edit* has been quiet for
+/// the debounce, however many non-flushing commands keep arriving.
+///
+/// The editor asks for hints once an edit has been quiet for the same 150 ms,
+/// and a hint request for the edited document waits for the flush rather than
+/// forcing it. When the window was timed from the last command of any kind,
+/// each such request restarted it -- so a steady stream of them, here one
+/// every 50 ms, held the edit back for as long as the stream lasted.
+///
+/// Falsified by: re-arming `flush_at` on every command in `server_task`, as
+/// the per-command timeout did -- the edit reaches the server only after the
+/// stream stops, well past the bound.
+#[tokio::test]
+async fn non_flushing_commands_do_not_postpone_the_debounced_flush() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let path = rust_file(&dir, "lib.rs", "fn a() {}\n").ok_or("write failed")?;
+    let (observed_tx, mut observed) = mpsc::unbounded_channel();
+    let spawns = Arc::new(AtomicUsize::new(0));
+    let (session, mut events) =
+        session_with_connector(test_connector(Behavior::Normal, Some(observed_tx), spawns));
+    let backend = local_session(session, None);
+    let (doc, version) = open_served(&backend, &mut events, &mut observed, path).await?;
+
+    let at = Range::new(LineCol::new(1, 0), LineCol::new(1, 0)).map_err(|e| format!("{e}"))?;
+    let edited = std::time::Instant::now();
+    backend.send(
+        backend.next_id(),
+        Command::ApplyChange {
+            doc,
+            change: Change::new(
+                version,
+                vec![TextEdit {
+                    range: at,
+                    new_text: "x".to_owned(),
+                }],
+            ),
+            cause: EditCause::Type,
+        },
+    )?;
+
+    // Far longer than the debounce, and far shorter than the stream: a flush
+    // that waited for the stream to stop lands after it, not inside it.
+    let bound = Duration::from_secs(1);
+    let stream = Duration::from_secs(3);
+    let mut flushed = None;
+    while flushed.is_none() && edited.elapsed() < stream {
+        backend.send(
+            backend.next_id(),
+            Command::InlayHints {
+                doc,
+                range: whole_first_line(),
+            },
+        )?;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        while let Ok(message) = observed.try_recv() {
+            if message["method"] == "textDocument/didChange" {
+                flushed = Some(edited.elapsed());
+            }
+        }
+    }
+    let flushed = flushed.ok_or("the edit was never flushed while commands kept arriving")?;
+    assert!(
+        flushed >= CHANGE_DEBOUNCE,
+        "the edit was flushed before the debounce elapsed: {flushed:?}"
+    );
+    assert!(
+        flushed < bound,
+        "non-flushing commands postponed the flush to {flushed:?}"
+    );
+    Ok(())
 }
