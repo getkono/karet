@@ -203,11 +203,15 @@ As in a browser, a `<p>` ends where its HTML block does, so markdown after a bla
 line is not inside it; to align markdown content, wrap it in `<div align="center">`.
 
 An image — markdown `![alt](src)` or `<img>`, whose `width`/`height` are honoured —
-paints as truecolor half-blocks when it stands alone in its paragraph (as a
+paints as pixels when it stands alone in its paragraph (as a
 `<p align="center"><img …></p>` logo does) and is a **local, decodable** file: a
 relative path to a regular file inside the workspace, in a format from the Gamut table
-above, under 10 MiB and 4096×4096 pixels. It is fitted to the preview's width, never
-enlarged past its native size, and capped at 20 lines. Its rows are reserved from the
+above, under 10 MiB and 4096×4096 pixels. It takes its native size on the terminal's
+real cell size — one image pixel per screen pixel — shrinking only to fit the
+preview's width, never enlarged. On a Kitty terminal (not WezTerm, Konsole or inside
+tmux) it is sent once at
+full resolution and drawn through unicode placeholders; elsewhere it is truecolor
+half-blocks, area-averaged, two pixels a cell. Its rows are reserved from the
 file's header at once; the pixels decode off the UI thread once the image is first
 scrolled into view, behind a muted placeholder if that takes longer than a moment.
 Decoded images share a 256 MiB budget; past it, images off screen give their pixels

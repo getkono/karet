@@ -60,10 +60,15 @@ Deliberately not built:
   network I/O, and a README must not be able to phone home through an image.
 - **Active content.** `<script>`, `<style>`, `<iframe>` and `<object>` vanish with
   their content; forms and embedded media are not interactive.
-- **Kitty graphics in the preview.** Preview images are truecolor half-blocks. A Kitty
-  placement cannot be clipped to the rows of a scrolling pane, and re-transmitting it
-  on every scroll would stall the pane. Ctrl/Cmd-click an image to open it in the
-  image tab, which keeps [Kitty](#terminal-graphics).
+- **Downscaled preview images.** An image is shown at its native resolution, one
+  image pixel per screen pixel on the terminal's real cell size, and shrinks only to
+  fit the pane's width. On a [Kitty](#terminal-graphics) terminal it is transmitted
+  once, in full, and drawn through unicode placeholders — ordinary cells, so it
+  scrolls, clips to its pane and sits under popups like text, and nothing is re-sent
+  as it moves. WezTerm and Konsole speak Kitty graphics but not its placeholders, tmux
+  drops the transmissions unless its passthrough is configured, and every other
+  terminal has neither, so there the image falls back to truecolor half-blocks: two
+  pixels a cell, area-averaged, the most a text grid can show.
 - **Images the preview will not load** render as chips: SVG, GIF, BMP, ICO, animated
   WebP and any other format Gamut does not decode; absolute paths and anything resolving outside
   the workspace (`../`, symlinks); files over the 10 MiB guard or images over
@@ -74,8 +79,11 @@ Deliberately not built:
 
 Accepted rough edges, not bugs:
 
-- An image takes up to 20 preview lines but a single source line, so the two panes'
-  scroll sync jumps across it.
+- An image takes as many preview lines as its height needs but a single source line,
+  so the two panes' scroll sync jumps across it.
+- An image taller than 297 lines — Kitty's placeholders address no more rows — is
+  shrunk to that height; only an image thousands of pixels tall at a small font
+  reaches it.
 - A TIFF — or a JPEG or extended WebP whose size lies past its first 64 KiB —
   reserves its rows only once decoded, so the layout shifts once; such an image
   decodes as soon as the document is laid out, not when it is scrolled into view.
