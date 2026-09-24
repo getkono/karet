@@ -14,6 +14,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::Alignment;
 use crate::Block;
+use crate::ImageRef;
 use crate::Inline;
 use crate::ListItem;
 use crate::MarkdownDocument;
@@ -558,7 +559,34 @@ fn flatten(inlines: &[Inline], token: Option<TokenId>, out: &mut Vec<TextSpan>) 
                 token: Some(StandardToken::MarkupLink.id()),
                 link: Some(href.clone()),
             }),
+            Inline::Image(image) => out.push(image_chip(image)),
         }
+    }
+}
+
+/// The glyph leading an image chip.
+pub(crate) const IMAGE_CHIP: &str = "🖼 ";
+
+/// An image that is not painted as pixels: a link-styled chip naming it — its alt text,
+/// else the file name of its source — that links where the image does.
+pub(crate) fn image_chip(image: &ImageRef) -> TextSpan {
+    let name = if image.alt.trim().is_empty() {
+        // `docs/logo.png?raw=true` names `logo.png`: drop the query and fragment first.
+        image
+            .src
+            .split(['?', '#'])
+            .next()
+            .unwrap_or_default()
+            .rsplit('/')
+            .find(|segment| !segment.is_empty())
+            .unwrap_or("image")
+    } else {
+        image.alt.as_str()
+    };
+    TextSpan {
+        text: format!("{IMAGE_CHIP}{name}"),
+        token: Some(StandardToken::MarkupLink.id()),
+        link: Some(image.link.clone().unwrap_or_else(|| image.src.clone())),
     }
 }
 

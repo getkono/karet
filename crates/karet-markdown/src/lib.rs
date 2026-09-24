@@ -56,6 +56,28 @@ pub enum Inline {
         /// The link target.
         href: String,
     },
+    /// An image: markdown `![alt](src "title")`, or an HTML `<img>`.
+    Image(ImageRef),
+}
+
+/// A referenced image, as written — nothing here has been resolved or loaded.
+///
+/// Whether it paints as pixels is the consumer's call (see [`ImageSizer`]); without one it
+/// renders as a chip carrying its alt text.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ImageRef {
+    /// The alternative text.
+    pub alt: String,
+    /// The image source, verbatim (a relative path, an absolute URL, …).
+    pub src: String,
+    /// The title, if one was given.
+    pub title: Option<String>,
+    /// The HTML `width` attribute in CSS pixels, if one was given.
+    pub width: Option<u32>,
+    /// The HTML `height` attribute in CSS pixels, if one was given.
+    pub height: Option<u32>,
+    /// The target of the link wrapping the image (`[![badge](b.svg)](https://ci)`), if any.
+    pub link: Option<String>,
 }
 
 /// One item of a [`Block::List`].

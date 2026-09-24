@@ -584,3 +584,44 @@ fn a_zero_width_wrap_still_projects_without_panicking() {
     let _ = doc.wrapped_line_for_source(usize::MAX);
     let _ = doc.source_line_for_wrapped(usize::MAX);
 }
+
+/// Every span of the wrapped document, in order.
+fn spans(source: &str, width: u16) -> Vec<TextSpan> {
+    wrap(&parse::parse(source), width)
+        .lines
+        .into_iter()
+        .flat_map(|l| l.spans)
+        .collect()
+}
+
+#[test]
+fn an_image_renders_as_a_link_styled_chip_that_links_to_its_source() {
+    let chip = spans("![Logo](docs/logo.png)\n", 40);
+    assert_eq!(
+        chip,
+        vec![TextSpan {
+            text: format!("{IMAGE_CHIP}Logo"),
+            token: Some(StandardToken::MarkupLink.id()),
+            link: Some("docs/logo.png".to_owned()),
+        }]
+    );
+}
+
+#[test]
+fn a_linked_image_chip_links_where_the_link_does() {
+    let chip = spans("[![ci](ci.svg)](https://ci.example)\n", 40);
+    assert_eq!(
+        chip.first().and_then(|s| s.link.as_deref()),
+        Some("https://ci.example")
+    );
+}
+
+#[test]
+fn an_image_without_alt_text_is_named_by_its_file() {
+    assert_eq!(
+        lines("![](docs/logo.png?raw=true#top)\n", 40),
+        vec![format!("{IMAGE_CHIP}logo.png")]
+    );
+    assert_eq!(lines("![]()\n", 40), vec![format!("{IMAGE_CHIP}image")]);
+    assert_eq!(lines("![ ](a/b/)\n", 40), vec![format!("{IMAGE_CHIP}b")]);
+}

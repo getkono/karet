@@ -14,6 +14,7 @@ use pulldown_cmark::TagEnd;
 use crate::Alignment;
 use crate::Block;
 use crate::Cell;
+use crate::ImageRef;
 use crate::Inline;
 use crate::ListItem;
 use crate::MarkdownDocument;
@@ -44,9 +45,18 @@ enum Frame {
     Emphasis(Vec<Inline>),
     Strong(Vec<Inline>),
     Strikethrough(Vec<Inline>),
+    /// A link. `image` holds an image that opened the link's label, so a linked image
+    /// (`[![badge](b.svg)](https://ci)`) stays an image rather than flattening to its alt.
     Link {
         href: String,
         text: String,
+        image: Option<ImageRef>,
+    },
+    /// An image; its alt text collects in `alt`.
+    Image {
+        src: String,
+        title: Option<String>,
+        alt: String,
     },
     CodeBlock {
         lang: Option<String>,
@@ -79,7 +89,8 @@ fn closes(frame: &Frame, tag: TagEnd) -> bool {
             | (Frame::Emphasis(_), TagEnd::Emphasis)
             | (Frame::Strong(_), TagEnd::Strong)
             | (Frame::Strikethrough(_), TagEnd::Strikethrough)
-            | (Frame::Link { .. }, TagEnd::Link | TagEnd::Image)
+            | (Frame::Link { .. }, TagEnd::Link)
+            | (Frame::Image { .. }, TagEnd::Image)
             | (Frame::Table { .. }, TagEnd::Table)
             // A header row and a body row share one frame; the two end tags never nest,
             // so either closing the row frame is unambiguous.
@@ -199,9 +210,17 @@ impl Builder {
             Tag::Emphasis => Frame::Emphasis(Vec::new()),
             Tag::Strong => Frame::Strong(Vec::new()),
             Tag::Strikethrough => Frame::Strikethrough(Vec::new()),
-            Tag::Link { dest_url, .. } | Tag::Image { dest_url, .. } => Frame::Link {
+            Tag::Link { dest_url, .. } => Frame::Link {
                 href: dest_url.to_string(),
                 text: String::new(),
+                image: None,
+            },
+            Tag::Image {
+                dest_url, title, ..
+            } => Frame::Image {
+                src: dest_url.to_string(),
+                title: (!title.is_empty()).then(|| title.to_string()),
+                alt: String::new(),
             },
             Tag::Table(alignments) => Frame::Table {
                 alignments: alignments.iter().copied().map(alignment).collect(),
@@ -263,7 +282,13 @@ impl Builder {
             Frame::Emphasis(content) => self.inline(Inline::Emphasis(content)),
             Frame::Strong(content) => self.inline(Inline::Strong(content)),
             Frame::Strikethrough(content) => self.inline(Inline::Strikethrough(content)),
-            Frame::Link { href, text } => self.inline(Inline::Link { text, href }),
+            Frame::Link { href, text, image } => self.inline(close_link(href, text, image)),
+            Frame::Image { src, title, alt } => self.inline(Inline::Image(ImageRef {
+                alt,
+                src,
+                title,
+                ..ImageRef::default()
+            })),
             Frame::Table {
                 alignments,
                 header,
@@ -314,8 +339,15 @@ impl Builder {
                 | Frame::TableCell(content),
             ) => content.push(inline),
             // A link's label is flattened to text: the model carries no nested inlines
-            // inside a link.
-            Some(Frame::Link { text, .. }) => flatten_into(&inline, text),
+            // inside a link — except an image opening the label, held aside so a linked
+            // image survives as one.
+            Some(Frame::Link { text, image, .. }) => match inline {
+                Inline::Image(img) if image.is_none() && text.trim().is_empty() => {
+                    *image = Some(img);
+                },
+                inline => flatten_into(&inline, text),
+            },
+            Some(Frame::Image { alt, .. }) => flatten_into(&inline, alt),
             _ => self.stack.push(Frame::Paragraph {
                 content: vec![inline],
                 implicit: true,
@@ -357,6 +389,23 @@ fn flatten_into(inline: &Inline, out: &mut String) {
             }
         },
         Inline::Link { text, .. } => out.push_str(text),
+        Inline::Image(image) => out.push_str(&image.alt),
+    }
+}
+
+/// The inline a closed link frame becomes: the image it wraps when its label is that
+/// image alone, else an ordinary link whose text leads with any held image's alt.
+fn close_link(href: String, mut text: String, image: Option<ImageRef>) -> Inline {
+    match image {
+        Some(mut image) if text.trim().is_empty() => {
+            image.link = Some(href);
+            Inline::Image(image)
+        },
+        Some(image) => {
+            text.insert_str(0, &image.alt);
+            Inline::Link { text, href }
+        },
+        None => Inline::Link { text, href },
     }
 }
 

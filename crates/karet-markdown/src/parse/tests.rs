@@ -342,3 +342,69 @@ fn block_lines_ascend() {
         "anchors must ascend: {lines:?}"
     );
 }
+
+/// The first inline of the first block, if it is a paragraph.
+fn first_inline(source: &str) -> Option<Inline> {
+    paragraph(&parse(source)).first().cloned()
+}
+
+#[test]
+fn an_image_keeps_its_alt_source_and_title() {
+    assert_eq!(
+        first_inline("![a *logo*](docs/x.png \"The logo\")\n"),
+        Some(Inline::Image(ImageRef {
+            alt: "a logo".to_owned(),
+            src: "docs/x.png".to_owned(),
+            title: Some("The logo".to_owned()),
+            ..ImageRef::default()
+        }))
+    );
+    // An image with no title has none, rather than an empty one.
+    assert!(matches!(
+        first_inline("![a](x.png)\n"),
+        Some(Inline::Image(ImageRef { title: None, .. }))
+    ));
+}
+
+#[test]
+fn a_linked_image_stays_an_image_and_remembers_the_link() {
+    assert_eq!(
+        first_inline("[![build](ci.svg)](https://ci.example)\n"),
+        Some(Inline::Image(ImageRef {
+            alt: "build".to_owned(),
+            src: "ci.svg".to_owned(),
+            link: Some("https://ci.example".to_owned()),
+            ..ImageRef::default()
+        }))
+    );
+}
+
+#[test]
+fn an_image_sharing_a_link_label_with_text_flattens_into_it_in_order() {
+    // Leading image: held aside, then its alt leads the label once text arrives.
+    assert_eq!(
+        first_inline("[![i](x.png) docs](h)\n"),
+        Some(Inline::Link {
+            text: "i docs".to_owned(),
+            href: "h".to_owned(),
+        })
+    );
+    // Trailing image: flattened where it stands.
+    assert_eq!(
+        first_inline("[see ![i](x.png)](h)\n"),
+        Some(Inline::Link {
+            text: "see i".to_owned(),
+            href: "h".to_owned(),
+        })
+    );
+}
+
+#[test]
+fn an_image_in_a_table_cell_is_an_image() {
+    let doc = parse("| a |\n| - |\n| ![i](x.png) |\n");
+    let (_, _, rows) = table(&doc);
+    assert!(matches!(
+        rows.first().and_then(|r| r.first()).and_then(|c| c.first()),
+        Some(Inline::Image(_))
+    ));
+}
