@@ -70,7 +70,11 @@ impl App {
                 let heads: Vec<LineCol> = cursor.selections.iter().map(|s| s.head).collect();
                 if !heads.is_empty() {
                     tab.editor.set_carets(&heads);
-                    tab.editor.scroll_to(cursor.primary().head);
+                    let head = cursor.primary().head;
+                    match &tab.kind {
+                        TabKind::Code { buffer, .. } => tab.editor.reveal(buffer, head),
+                        _ => tab.editor.scroll_to(head),
+                    }
                 }
             }
         }
