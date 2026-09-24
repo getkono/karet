@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0](https://github.com/getkono/karet/compare/karet-editor-v0.6.1...karet-editor-v0.7.0) - 2026-09-24
+
+### Added
+
+- *(editor)* render inlay hints as column-accurate virtual text
+
+### Fixed
+
+- *(editor)* give the horizontal reveal one answer when a hint straddles the margin
+- *(editor)* re-check a reveal against the frame that paints it
+- *(editor)* reveal the caret horizontally as the motion happens
+- *(editor)* scroll horizontally by the cells the caret is drawn in
+- *(editor)* draw the caret at a hint's anchor before the hint
+- honour dynamic registration, and close the review's mapping gaps
+- *(editor)* map a click against the row's origin, not the column's
+
 ## [0.6.0](https://github.com/getkono/karet/compare/karet-editor-v0.5.0...karet-editor-v0.6.0) - 2026-08-29
 
 ### Added

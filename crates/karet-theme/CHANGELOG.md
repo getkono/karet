@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0](https://github.com/getkono/karet/compare/karet-theme-v0.6.1...karet-theme-v0.7.0) - 2026-09-24
+
+### Added
+
+- *(editor)* render inlay hints as column-accurate virtual text
+
 ## [0.6.0](https://github.com/getkono/karet/compare/karet-theme-v0.5.0...karet-theme-v0.6.0) - 2026-08-29
 
 ### Added
