@@ -157,6 +157,12 @@ impl App {
                 version,
                 hints,
             } => self.on_inlay_hints(id, doc, version, hints),
+            // The server said its hints went stale somewhere the buffer
+            // version cannot see -- an edit in another file. Every document
+            // is re-asked rather than only the ones it serves: only visible
+            // ones are, and the answer from a server that did not change is
+            // the same set, arriving in place of itself.
+            SessionEvent::InlayHintsRefresh { .. } => self.invalidate_inlay_coverage(),
             SessionEvent::HoverResult { hover } => self.on_hover_result(id, hover),
             SessionEvent::WakatimeStatus { text } => self.wakatime_status = Some(text),
             SessionEvent::DebugState {

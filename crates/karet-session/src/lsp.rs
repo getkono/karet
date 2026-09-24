@@ -206,6 +206,7 @@ impl LspManager {
     pub(crate) fn accepts(&self, update: &LspUpdate) -> bool {
         match update {
             LspUpdate::ServerStatus { token, key, .. }
+            | LspUpdate::InlayHintsRefresh { token, key }
             | LspUpdate::Diagnostics {
                 token, server: key, ..
             }

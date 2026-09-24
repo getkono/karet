@@ -157,3 +157,41 @@ fn closing_a_document_forgets_everything_about_it() {
     assert!(!app.docs.inlay_covered.contains_key(&DocumentId(9)));
     assert!(!app.docs.inlay_pending.contains_key(&DocumentId(9)));
 }
+
+#[test]
+fn a_servers_refresh_re_asks_for_a_covered_document() {
+    // Editing `-> u32` to `-> u64` in another file changes the hints here
+    // without changing this buffer, so the version-keyed coverage cannot see
+    // it. The server's refresh is the only signal, and it has to re-ask.
+    let (backend, mut app) = hinted_app("let a = f();\n");
+    app.request_inlay_hints();
+    let Some(&(id, ..)) = inlay_requests(&backend).first() else {
+        unreachable!("a request was just issued");
+    };
+    app.on_inlay_hints(Some(id), DocumentId(9), 0, vec![hint(0, 5, ": u32")]);
+    app.request_inlay_hints();
+    assert_eq!(
+        inlay_requests(&backend).len(),
+        1,
+        "covered, so not re-asked"
+    );
+
+    app.on_backend_event(
+        None,
+        SessionEvent::InlayHintsRefresh {
+            server: karet_session::LanguageServerId::RustAnalyzer,
+        },
+    );
+    // The stale set stays up until its replacement lands -- blanking it
+    // would flash every annotation on screen -- but it is asked for again.
+    assert_eq!(
+        app.docs.inlay_hints.get(&DocumentId(9)).map(Vec::len),
+        Some(1)
+    );
+    app.request_inlay_hints();
+    assert_eq!(
+        inlay_requests(&backend).len(),
+        2,
+        "a refresh did not re-ask for a covered document"
+    );
+}

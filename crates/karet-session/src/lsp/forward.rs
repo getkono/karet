@@ -1,5 +1,6 @@
-//! Relaying what a connected server pushes: diagnostics, and the status
-//! notifications some servers use in place of them.
+//! Relaying what a connected server pushes: diagnostics, the status
+//! notifications some servers use in place of them, and its requests to
+//! refresh what it answered before.
 //!
 //! Split out of `runtime`, which owns the task's own lifecycle. This is the one
 //! piece that outlives a single loop iteration -- it runs as its own task for as
@@ -27,8 +28,35 @@ pub(super) fn forward_diagnostics(
 ) -> tokio::task::JoinHandle<()> {
     let mut diagnostic_rx = client.diagnostics();
     let mut raw_rx = client.raw_notifications();
+    let mut refresh_rx = client.refreshes();
     let status_updates = updates.clone();
     let status_key = key.clone();
+    let refresh_updates = updates.clone();
+    let refresh_key = key.clone();
+    // The server has already been answered; what is relayed is the other half
+    // of the promise `refreshSupport` made -- that the client re-asks.
+    tokio::spawn(async move {
+        loop {
+            match refresh_rx.recv().await {
+                Ok(karet_lsp::ServerRefresh::InlayHints)
+                | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    // A lag lost only duplicates of the one signal there is,
+                    // so it is relayed as that signal rather than dropped.
+                    if refresh_updates
+                        .send(LspUpdate::InlayHintsRefresh {
+                            token,
+                            key: refresh_key.clone(),
+                        })
+                        .is_err()
+                    {
+                        return;
+                    }
+                },
+                Ok(_) => {},
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+            }
+        }
+    });
     // jdtls-style `language/status` notifications carry the only feedback a
     // user gets during a 30–120 s first import; forward them for the status
     // bar rather than leaving the server looking hung.

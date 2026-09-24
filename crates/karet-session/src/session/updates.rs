@@ -241,6 +241,12 @@ impl Session {
                 }
                 let _ = self.finish_format_on_save(request, doc, version, edits);
             },
+            LspUpdate::InlayHintsRefresh { key, .. } => self.emit(
+                None,
+                Event::InlayHintsRefresh {
+                    server: key.provider,
+                },
+            ),
             LspUpdate::ServerStatus { key, message, .. } => {
                 let server = key.provider.display_name();
                 // Progress rather than a notification: the client shows these under

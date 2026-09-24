@@ -151,6 +151,17 @@ pub(crate) enum LspUpdate {
         /// The human-readable status message.
         message: String,
     },
+    /// The server asked for every inlay hint it answered to be re-fetched
+    /// (`workspace/inlayHint/refresh`).
+    ///
+    /// Fenced on the slot like the other reports a task makes about itself: a
+    /// retired task's refresh describes a server nobody is asking any more.
+    InlayHintsRefresh {
+        /// The incarnation of the slot whose server asked.
+        token: SlotToken,
+        /// The slot whose server asked.
+        key: SlotKey,
+    },
     /// Completion items answering a [`ServerCmd::Completion`] (ranges still in
     /// UTF-16 columns; the session converts them against the buffer).
     Completions {

@@ -131,6 +131,19 @@ pub enum Event {
         /// The hints, positioned in buffer (UTF-32) columns.
         hints: Vec<InlayHint>,
     },
+    /// A language server said every inlay hint it answered may be stale
+    /// (`workspace/inlayHint/refresh`), so a client should drop what it
+    /// holds as covered and re-issue [`Command::InlayHints`] for what it
+    /// shows.
+    ///
+    /// Unsolicited, and about the server rather than one document: an edit
+    /// in one file changes the hints the server computed for others -- a
+    /// function's return type is shown at every call site that binds it.
+    /// The server has already been answered.
+    InlayHintsRefresh {
+        /// The provider that asked.
+        server: LanguageServerId,
+    },
     /// An open document needs a managed server that is not installed.
     ///
     /// This event is local-only: emitting it performs no metadata request or

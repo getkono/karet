@@ -83,6 +83,12 @@ pub(super) enum Behavior {
     /// staying perfectly alive and serving everything else. A formatter wedged
     /// on one request is not a dead server, and must not be treated as one.
     FormatsNever,
+    /// Serve normally, and ask the client to refresh its inlay hints
+    /// (`workspace/inlayHint/refresh`) once it has opened a document.
+    RefreshesHints,
+    /// Advertise nothing but document sync, so every gated request is
+    /// refused before it reaches the wire.
+    Bare,
 }
 
 /// What the scripted server advertises at the handshake.
@@ -97,6 +103,9 @@ pub(super) enum Behavior {
 /// built-in formatter at save, and the tests of that choice need a server that
 /// does not.
 fn advertised_capabilities(behavior: Behavior) -> Value {
+    if matches!(behavior, Behavior::Bare) {
+        return json!({"textDocumentSync": 1});
+    }
     let mut capabilities = json!({
         "textDocumentSync": 1,
         "hoverProvider": true,
@@ -241,6 +250,14 @@ pub(super) fn test_connector(
                             let uri = msg["params"]["textDocument"]["uri"]
                                 .as_str()
                                 .unwrap_or_default();
+                            if matches!(behavior, Behavior::RefreshesHints) {
+                                write_msg(
+                                    &mut server_write,
+                                    &json!({"jsonrpc": "2.0", "id": "refresh-1",
+                                        "method": "workspace/inlayHint/refresh"}),
+                                )
+                                .await;
+                            }
                             if uri.ends_with("Status.java") {
                                 write_msg(
                                     &mut server_write,
