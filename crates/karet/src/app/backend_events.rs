@@ -76,34 +76,54 @@ impl App {
         }
         // A save's answering event clears its tab spinner. During "save all & quit",
         // only successful Saved responses may let the quit continue; a refused or
-        // failed save keeps the app open with the dirty buffer intact.
-        let mut save_failed = false;
+        // failed save keeps the app open with the dirty buffer intact. Which
+        // document failed is part of the answer: a parked close owes writes only
+        // for the documents it would drop.
+        let mut failed_save: Option<DocumentId> = None;
         if let Some(req) = id
             && let Some(pending) = self.pending_saves.remove(&req)
         {
             let doc = pending.doc;
-            save_failed = !matches!(event, SessionEvent::Saved { doc: saved } if saved == doc);
+            if !matches!(event, SessionEvent::Saved { doc: saved } if saved == doc) {
+                failed_save = Some(doc);
+            }
             for tab in self.all_tabs_mut() {
                 if matches!(&tab.kind, TabKind::Code { doc: Some(d), .. } if *d == doc) {
                     tab.saving_since = None;
                 }
             }
         }
-        if save_failed && let Some(request) = self.saving_close.take() {
+        // Cancel the parked close only for a write *it* would drop. A save deferred
+        // on a formatter answers seconds later and for any document, so a global
+        // "some save failed" read let document A's failure cancel the close of an
+        // unrelated tab B whose own save had already landed. This is the mirror of
+        // `saves_at_risk`, which scopes the *park* the same way.
+        if let Some(doc) = failed_save
+            && let Some(request) = self.saving_close
+            && self.fully_dropped_docs(request).contains(&doc)
+        {
+            self.saving_close = None;
             let verb = if matches!(request, CloseRequest::Quit) {
                 "quit"
             } else {
                 "close"
             };
-            // Untagged, so the batch's own card being retired below cannot take
-            // the reason the batch was abandoned down with it.
+            // The batch is over, so retire its progress card here: unrelated saves
+            // may still be in flight, and the blanket retirement below only fires
+            // once *nothing* is pending.
+            self.notifications.dismiss_tagged(Self::SAVE_BATCH_TAG);
+            // Untagged, so retiring the batch's own card cannot take the reason the
+            // batch was abandoned down with it.
             self.notify(
                 Report::Failure,
                 NotificationKind::Io,
                 format!("{verb} cancelled: save failed"),
             );
         }
-        if save_failed && self.vcs_after_save.take().is_some() {
+        // The branch switch stays scoped to every save: it rewrites the whole
+        // worktree, so any unwritten buffer is a buffer it would clobber -- there is
+        // no subset of documents it can be said not to own.
+        if failed_save.is_some() && self.vcs_after_save.take().is_some() {
             self.notify(
                 Report::Failure,
                 NotificationKind::Io,
@@ -217,6 +237,9 @@ impl App {
             },
             SessionEvent::LanguageServerStatus { servers } => {
                 self.show_language_server_status(id, servers);
+            },
+            SessionEvent::LanguageServerInventoryStale => {
+                self.language_server_inventory_stale();
             },
             SessionEvent::LanguageServerUpdatePlan { plan, changes } => {
                 self.prompt_language_server_updates(id, plan, changes);
@@ -510,8 +533,8 @@ impl App {
                 self.run_global_search();
             },
             // Events answering commands this client never sends (hover, workspace
-            // symbols, rename, format-on-save) fall through here until the
-            // corresponding UI exists.
+            // symbols, rename) fall through here until the corresponding UI
+            // exists.
             _ => {},
         }
         // A "save & close" runs the parked request once every issued save succeeds.
@@ -520,10 +543,32 @@ impl App {
         if self.pending_saves.is_empty() {
             self.notifications.dismiss_tagged(Self::SAVE_BATCH_TAG);
         }
-        if self.saving_close.is_some()
-            && self.pending_saves.is_empty()
-            && let Some(request) = self.saving_close.take()
+        // Release on the same set the park counted: the writes this request would
+        // drop. Waiting on `pending_saves` globally held a tab close hostage to a
+        // save for a document it never touches — a document whose formatter can
+        // keep it in flight for seconds.
+        if let Some(request) = self.saving_close
+            && self.saves_at_risk(request) == 0
         {
+            self.saving_close = None;
+            // One card carries this tag, so a parked close's card replaced the
+            // branch switch's if both were waiting. Retiring it here on the close
+            // alone would leave the switch -- which rewrites the whole worktree --
+            // running with no indicator at all, so restate what is still parked
+            // rather than dismissing what is still true.
+            if self.vcs_after_save.is_some() {
+                self.notify_progress(
+                    NotificationKind::Vcs,
+                    Self::SAVE_BATCH_TAG.to_string(),
+                    format!(
+                        "saving {} editor(s) before switching…",
+                        self.pending_saves.len()
+                    ),
+                    None,
+                );
+            } else {
+                self.notifications.dismiss_tagged(Self::SAVE_BATCH_TAG);
+            }
             self.execute_close(request);
         }
         if self.pending_saves.is_empty()

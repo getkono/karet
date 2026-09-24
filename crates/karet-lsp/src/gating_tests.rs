@@ -8,6 +8,7 @@ use serde_json::json;
 
 use super::TestResult;
 use super::wire;
+use crate::Indentation;
 use crate::LineCol;
 use crate::LspClient;
 use crate::LspError;
@@ -63,7 +64,9 @@ async fn an_unadvertised_capability_is_refused_without_issuing_a_request() -> Te
         Err(LspError::Unsupported { .. })
     ));
     assert!(matches!(
-        client.range_formatting(doc, range).await,
+        client
+            .range_formatting(doc, range, Indentation::default())
+            .await,
         Err(LspError::Unsupported { .. })
     ));
 
@@ -76,7 +79,12 @@ async fn an_unadvertised_capability_is_refused_without_issuing_a_request() -> Te
         let id = request["id"].clone();
         server.respond(&id, json!([])).await;
     });
-    assert!(client.formatting(doc).await?.is_empty());
+    assert!(
+        client
+            .formatting(doc, Indentation::default())
+            .await?
+            .is_empty()
+    );
     formatting.await?;
     Ok(())
 }

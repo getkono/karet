@@ -118,6 +118,11 @@ pub(super) fn answer_empty(
                 request,
                 doc,
                 version,
+                // There is no connection, so nothing formatted this file. Whether
+                // the server would have been able to is a different question, and
+                // not one the session needs answered: what it needs to know is
+                // whether to reach for its own formatter, and it should.
+                formatted: false,
                 edits: Vec::new(),
             });
         },
@@ -178,5 +183,52 @@ pub(super) fn remember_document(documents: &mut HashMap<PathBuf, OpenDocument>, 
         | ServerCmd::WorkspaceSymbols { .. }
         | ServerCmd::Rename { .. }
         | ServerCmd::Formatting { .. } => {},
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::DocumentId;
+    use crate::RequestId;
+
+    /// With no connection, nothing formatted the file — and the session has to
+    /// hear exactly that, because it is what sends it to its own formatter.
+    ///
+    /// Reporting the server's *capability* here instead answered a question this
+    /// path cannot know the answer to, and the session read it as "a server
+    /// handled this". TOML then lost its built-in taplo pass for as long as the
+    /// server was away: a whole 300s circuit-breaker cooldown, a retry backoff,
+    /// or the rest of the session for a server that never launched.
+    #[test]
+    fn an_unanswerable_formatting_request_reports_that_nothing_formatted() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        answer_empty(
+            &tx,
+            ServerCmd::Formatting {
+                request: RequestId(1),
+                doc: DocumentId(2),
+                version: 3,
+                path: PathBuf::from("Cargo.toml"),
+                indentation: karet_lsp::Indentation::default(),
+            },
+            7,
+        );
+
+        assert!(
+            matches!(
+                rx.try_recv(),
+                Ok(LspUpdate::Formatting {
+                    generation: 7,
+                    request: RequestId(1),
+                    doc: DocumentId(2),
+                    version: 3,
+                    formatted: false,
+                    ref edits,
+                }) if edits.is_empty()
+            ),
+            "an unreachable server must not be reported as having formatted the file"
+        );
     }
 }

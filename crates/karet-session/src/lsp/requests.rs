@@ -6,6 +6,7 @@
 //! not, so the caller answers the request itself rather than leaving it hanging.
 
 use karet_core::Range;
+use karet_lsp::Indentation;
 
 use super::*;
 
@@ -163,6 +164,12 @@ impl LspManager {
         .is_ok()
     }
 
+    /// Forward a `textDocument/formatting` request, indented as `indentation`
+    /// says.
+    ///
+    /// `indentation` is resolved by the caller against the *document's*
+    /// language, because that is where the selector lives; this manager only
+    /// knows languages by key. See [`ServerCmd::Formatting`].
     pub(crate) fn formatting(
         &self,
         language: Option<&str>,
@@ -170,7 +177,15 @@ impl LspManager {
         doc: DocumentId,
         version: u64,
         path: &Path,
+        indentation: Indentation,
     ) -> bool {
+        // Every other request reaches its server through `existing_server`, which
+        // declines when language servers are switched off. This one resolves its
+        // own slot to honour the per-language `formatter` preference, so it has to
+        // ask the same question itself.
+        if !self.settings.enabled {
+            return false;
+        }
         let Some(language_key) = language_key(language) else {
             return false;
         };
@@ -202,12 +217,9 @@ impl LspManager {
         let tx = selected
             .as_deref()
             .and_then(|provider| {
-                self.servers.values().find(|slot| {
-                    slot.documents.contains(&path)
-                        && slot
-                            .provider
-                            .as_ref()
-                            .is_some_and(|id| id.key() == provider)
+                self.servers.iter().find_map(|(key, slot)| {
+                    (slot.documents.contains(&path) && key.provider.key() == provider)
+                        .then_some(slot)
                 })
             })
             .or_else(|| {
@@ -224,6 +236,7 @@ impl LspManager {
             doc,
             version,
             path,
+            indentation,
         })
         .is_ok()
     }

@@ -142,6 +142,7 @@ use karet_session::PullRequestSummary;
 use karet_session::RangeSpec;
 use karet_session::RepositorySnapshot;
 use karet_session::RequestId;
+use karet_session::SaveCause;
 use karet_session::SearchHit;
 use karet_session::SessionConfig;
 use karet_session::Settings;
@@ -563,7 +564,7 @@ pub struct App {
     /// Per-document caches fed by backend events.
     pub(crate) docs: DocState,
     /// Repository-scoped lifecycle state used by every LSP presentation surface.
-    lsp_runtime: language_servers::LanguageServerRuntimeModel,
+    pub(crate) lsp_runtime: language_servers::LanguageServerRuntimeModel,
     /// Dirty document versions waiting for the configured automatic-save trigger.
     auto_save_pending: HashMap<DocumentId, PendingAutoSave>,
     /// The in-flight completion request, if any (see [`crate::completion`]).

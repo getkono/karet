@@ -9,15 +9,15 @@ use karet_core::Range;
 use karet_core::Symbol;
 use karet_core::TextEdit;
 use karet_text::EditCause;
-use serde_json::Value;
 use serde_json::json;
-use tokio::io::AsyncBufReadExt;
-use tokio::io::AsyncReadExt;
-use tokio::io::AsyncWriteExt;
+use server_double::Behavior;
+use server_double::failing_connector;
+// The framing helpers live with the double but belong to `lsp::tests`: a test
+// that scripts its own server inline speaks the same wire this one does.
+use server_double::read_msg;
+use server_double::test_connector;
+use server_double::write_msg;
 use tokio::io::BufReader;
-use tokio::io::DuplexStream;
-use tokio::io::ReadHalf;
-use tokio::io::WriteHalf;
 
 use super::*;
 use crate::api::Command;
@@ -48,10 +48,10 @@ fn reconfigure_retires_updates_from_old_server_tasks() {
         enabled: false,
         ..LspSettings::default()
     };
-    assert!(manager.reconfigure(settings.clone()));
+    assert!(manager.reconfigure(settings.clone()).is_some());
     assert!(!manager.accepts(&old));
     assert!(
-        !manager.reconfigure(settings),
+        manager.reconfigure(settings).is_none(),
         "an identical snapshot is a no-op"
     );
 }
@@ -65,11 +65,11 @@ async fn last_document_close_retires_the_server_slot() {
         Arc::new(AtomicUsize::new(0)),
     ));
     let path = PathBuf::from("/tmp/owned.rs");
-    manager.document_opened(Some("rust"), Some("rust"), &path, 1, || {
+    let _ = manager.document_opened(Some("rust"), Some("rust"), &path, 1, || {
         "fn main() {}".into()
     });
     assert!(manager.is_running(&LanguageServerId::RustAnalyzer));
-    manager.document_closed(Some("rust"), &path);
+    let _ = manager.document_closed(Some("rust"), &path);
     assert!(!manager.is_running(&LanguageServerId::RustAnalyzer));
 }
 
@@ -81,14 +81,14 @@ async fn javascript_and_typescript_share_one_builtin_process() {
         None,
         Arc::new(AtomicUsize::new(0)),
     ));
-    manager.document_opened(
+    let _ = manager.document_opened(
         Some("javascript"),
         Some("javascript"),
         Path::new("/tmp/a.js"),
         1,
         String::new,
     );
-    manager.document_opened(
+    let _ = manager.document_opened(
         Some("typescript"),
         Some("typescript"),
         Path::new("/tmp/b.ts"),
@@ -96,9 +96,9 @@ async fn javascript_and_typescript_share_one_builtin_process() {
         String::new,
     );
     assert_eq!(manager.servers.len(), 1);
-    manager.document_closed(Some("javascript"), Path::new("/tmp/a.js"));
+    let _ = manager.document_closed(Some("javascript"), Path::new("/tmp/a.js"));
     assert!(manager.is_running(&LanguageServerId::TypeScript));
-    manager.document_closed(Some("typescript"), Path::new("/tmp/b.ts"));
+    let _ = manager.document_closed(Some("typescript"), Path::new("/tmp/b.ts"));
     assert!(!manager.is_running(&LanguageServerId::TypeScript));
 }
 
@@ -111,7 +111,7 @@ async fn tsx_routes_to_typescript_with_protocol_specific_language_id() -> TestRe
         Some(observed_tx),
         Arc::new(AtomicUsize::new(0)),
     ));
-    manager.document_opened(
+    let _ = manager.document_opened(
         Some("tsx"),
         Some("typescriptreact"),
         Path::new("/tmp/component.tsx"),
@@ -147,12 +147,12 @@ async fn relative_root_and_document_paths_reach_lsp_as_absolute_uris() -> TestRe
         Arc::new(AtomicUsize::new(0)),
     ));
 
-    manager.document_opened(Some("rust"), Some("rust"), &path, 1, || {
+    let _ = manager.document_opened(Some("rust"), Some("rust"), &path, 1, || {
         "fn main() {}".into()
     });
-    manager.document_changed(Some("rust"), &path, 2, || "fn changed() {}".into());
+    let _ = manager.document_changed(Some("rust"), &path, 2, || "fn changed() {}".into());
     manager.document_saved(Some("rust"), &path, || "fn changed() {}".into());
-    manager.document_closed(Some("rust"), &path);
+    let _ = manager.document_closed(Some("rust"), &path);
 
     let mut methods = Vec::new();
     while methods
@@ -186,246 +186,6 @@ async fn relative_root_and_document_paths_reach_lsp_as_absolute_uris() -> TestRe
         ]
     );
     Ok(())
-}
-
-// --- a minimal LSP wire for the fake server (framing + JSON) -----------
-
-async fn read_msg(reader: &mut BufReader<ReadHalf<DuplexStream>>) -> Option<Value> {
-    let mut len: Option<usize> = None;
-    let mut line = Vec::new();
-    loop {
-        line.clear();
-        if reader.read_until(b'\n', &mut line).await.ok()? == 0 {
-            return None;
-        }
-        let text = String::from_utf8_lossy(&line);
-        let text = text.trim_end();
-        if text.is_empty() {
-            break;
-        }
-        if let Some(value) = text.strip_prefix("Content-Length:") {
-            len = value.trim().parse().ok();
-        }
-    }
-    let mut body = vec![0_u8; len?];
-    reader.read_exact(&mut body).await.ok()?;
-    serde_json::from_slice(&body).ok()
-}
-
-async fn write_msg(writer: &mut WriteHalf<DuplexStream>, message: &Value) {
-    let body = serde_json::to_vec(message).unwrap_or_default();
-    let head = format!("Content-Length: {}\r\n\r\n", body.len());
-    let _ = writer.write_all(head.as_bytes()).await;
-    let _ = writer.write_all(&body).await;
-    let _ = writer.flush().await;
-}
-
-/// What the scripted server should do after the initialize handshake.
-#[derive(Clone, Copy)]
-enum Behavior {
-    /// Serve completions; echo every received message to `observed`.
-    Normal,
-    /// Hang up right after the handshake (a crashing server).
-    DieAfterHandshake,
-    /// Crash the first process, then serve normally after the supervisor retries.
-    DieOnce,
-    /// Accept the document, then hang up with nothing outstanding.
-    ///
-    /// The only way to notice this death is to watch the connection: no request
-    /// is ever issued over it, and `didOpen` is a notification, so nothing the
-    /// client sends can come back failed.
-    DieWhenIdle,
-    /// Publish one diagnostic for the opened document, then hang up for good.
-    DieAfterDiagnostics,
-}
-
-/// What the scripted server advertises at the handshake.
-///
-/// It has to advertise something now: karet refuses a request the server never
-/// said it could answer, so a fake that advertised `{}` and answered anyway --
-/// which is what this one used to do -- would have every request refused
-/// before reaching it. That gap is the point of the gate; see issue #279.
-fn advertised_capabilities() -> Value {
-    json!({
-        "textDocumentSync": 1,
-        "hoverProvider": true,
-        "completionProvider": {"resolveProvider": true},
-        "definitionProvider": true,
-        "documentSymbolProvider": true,
-        "workspaceSymbolProvider": true,
-        "renameProvider": true,
-        "documentFormattingProvider": true,
-        "documentRangeFormattingProvider": true,
-        "codeActionProvider": true,
-        "signatureHelpProvider": {},
-        "inlayHintProvider": true,
-        "implementationProvider": true,
-        "typeHierarchyProvider": true,
-    })
-}
-
-/// A connector that runs a scripted in-memory server per "spawn".
-fn test_connector(
-    behavior: Behavior,
-    observed: Option<mpsc::UnboundedSender<Value>>,
-    spawns: Arc<AtomicUsize>,
-) -> Connector {
-    Arc::new(move |_spec, root| {
-        let observed = observed.clone();
-        let spawns = Arc::clone(&spawns);
-        Box::pin(async move {
-            let attempt = spawns.fetch_add(1, Ordering::SeqCst);
-            let behavior = if matches!(behavior, Behavior::DieOnce) && attempt > 0 {
-                Behavior::Normal
-            } else {
-                behavior
-            };
-            let (client_end, server_end) = tokio::io::duplex(1 << 20);
-            let (server_read, mut server_write) = tokio::io::split(server_end);
-            tokio::spawn(async move {
-                let mut reader = BufReader::new(server_read);
-                // Handshake.
-                let Some(init) = read_msg(&mut reader).await else {
-                    return;
-                };
-                write_msg(
-                    &mut server_write,
-                    &json!({"jsonrpc": "2.0", "id": init["id"],
-                                "result": {"capabilities": advertised_capabilities()}}),
-                )
-                .await;
-                let _initialized = read_msg(&mut reader).await;
-                if matches!(behavior, Behavior::DieAfterHandshake | Behavior::DieOnce) {
-                    return; // both halves drop: the client sees EOF
-                }
-                if matches!(
-                    behavior,
-                    Behavior::DieWhenIdle | Behavior::DieAfterDiagnostics
-                ) {
-                    let open = read_msg(&mut reader).await;
-                    if matches!(behavior, Behavior::DieAfterDiagnostics)
-                        && let Some(open) = open
-                        && let Some(uri) = open["params"]["textDocument"]["uri"].as_str()
-                    {
-                        write_msg(
-                            &mut server_write,
-                            &json!({"jsonrpc": "2.0",
-                            "method": "textDocument/publishDiagnostics",
-                            "params": {"uri": uri, "diagnostics": [{
-                                "range": {
-                                    "start": {"line": 0, "character": 0},
-                                    "end": {"line": 0, "character": 2}
-                                },
-                                "severity": 1,
-                                "message": "a marker that must not outlive its server"
-                            }]}}),
-                        )
-                        .await;
-                    }
-                    return;
-                }
-                while let Some(msg) = read_msg(&mut reader).await {
-                    if let Some(tx) = &observed {
-                        let _ = tx.send(msg.clone());
-                    }
-                    match msg["method"].as_str() {
-                        Some("textDocument/completion") => {
-                            // A fixed item whose textEdit range is in UTF-16:
-                            // chars 2..4 on the requested line.
-                            let line = msg["params"]["position"]["line"].clone();
-                            write_msg(
-                                &mut server_write,
-                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": [{
-                                    "label": "emoji_aware",
-                                    "kind": 5,
-                                    "textEdit": {
-                                        "range": {
-                                            "start": {"line": line, "character": 2},
-                                            "end": {"line": line, "character": 4}
-                                        },
-                                        "newText": "emoji_aware"
-                                    }
-                                }]}),
-                            )
-                            .await;
-                        },
-                        Some("textDocument/inlayHint") => {
-                            // One hint at UTF-16 character 4 on line 0, which
-                            // is buffer column 3 once the emoji is accounted
-                            // for.
-                            write_msg(
-                                &mut server_write,
-                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": [{
-                                    "position": {"line": 0, "character": 4},
-                                    "label": ": i32",
-                                    "kind": 1,
-                                    "paddingLeft": false,
-                                    "paddingRight": false
-                                }]}),
-                            )
-                            .await;
-                        },
-                        Some("textDocument/documentSymbol") => {
-                            write_msg(
-                                &mut server_write,
-                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": [{
-                                    "name": "emoji_name",
-                                    "kind": 12,
-                                    "range": {
-                                        "start": {"line": 0, "character": 0},
-                                        "end": {"line": 0, "character": 4}
-                                    },
-                                    "selectionRange": {
-                                        "start": {"line": 0, "character": 2},
-                                        "end": {"line": 0, "character": 4}
-                                    }
-                                }]}),
-                            )
-                            .await;
-                        },
-                        Some("textDocument/didOpen") => {
-                            let uri = msg["params"]["textDocument"]["uri"]
-                                .as_str()
-                                .unwrap_or_default();
-                            if uri.ends_with("Status.java") {
-                                write_msg(
-                                    &mut server_write,
-                                    &json!({"jsonrpc": "2.0", "method": "language/status",
-                                        "params": {"type": "Starting",
-                                            "message": "37% Importing projects"}}),
-                                )
-                                .await;
-                            }
-                        },
-                        Some("shutdown") => {
-                            write_msg(
-                                &mut server_write,
-                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": null}),
-                            )
-                            .await;
-                        },
-                        Some("exit") => break,
-                        _ => {},
-                    }
-                }
-            });
-            let (read, write) = tokio::io::split(client_end);
-            LspClient::connect(read, write, &root).await
-        })
-    })
-}
-
-/// A connector that always fails as if the binary were missing.
-fn failing_connector(spawns: Arc<AtomicUsize>) -> Connector {
-    Arc::new(move |spec, _root| {
-        spawns.fetch_add(1, Ordering::SeqCst);
-        let failure = karet_lsp::LaunchFailure::new(
-            spec.command.clone(),
-            spec.args.clone(),
-            karet_lsp::LaunchCause::NotFound,
-        );
-        Box::pin(async move { Err(LspError::Launch(Box::new(failure))) })
-    })
 }
 
 // --- session-level helpers ---------------------------------------------
@@ -499,7 +259,6 @@ async fn await_symbols(
     }
     None
 }
-
 fn session_with_connector(connector: Connector) -> (Session, EventRx) {
     let (mut session, events, _snaps) = Session::new(SessionConfig::default());
     session.set_lsp_connector(connector);
@@ -750,10 +509,15 @@ async fn crashed_server_restarts_and_replays_open_documents() -> TestResult {
 }
 
 mod disabled_tests;
+mod format_tests;
 mod inventory_tests;
 mod jdtls_tests;
 mod launch_tests;
 mod liveness_tests;
 mod manual_provider_tests;
+mod reopen_tests;
 mod restart_tests;
+mod retirement_tests;
 mod roundtrip_tests;
+mod routing_tests;
+mod server_double;

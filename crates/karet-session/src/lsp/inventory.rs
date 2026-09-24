@@ -66,7 +66,7 @@ impl LspManager {
         if let Some(root) = &self.root {
             known_roots.insert(root.clone());
         }
-        known_roots.extend(self.servers.values().map(|slot| slot.root.clone()));
+        known_roots.extend(self.servers.keys().map(|key| key.root.clone()));
         if known_roots.is_empty() {
             known_roots.insert(PathBuf::from("."));
         }
@@ -205,13 +205,12 @@ impl LspManager {
                 let fallback = builtin_spec(server, language)?;
                 self.resolve_builtin(server, language, root, fallback)
             });
-        let slot = self
-            .servers
-            .values()
-            .find(|slot| slot.provider.as_ref() == Some(server) && slot.root == root);
-        let runtime = self
-            .runtime_states
-            .get(&(server.clone(), root.to_path_buf()));
+        // Every field below that describes *this session* comes off the one slot.
+        // They used to come from two places -- `runtime`/`error` from a side map
+        // and `open_documents` from the slot -- which is precisely how one row
+        // could report a `Running` provider with no open documents and offer a
+        // Restart for a process that had already gone.
+        let slot = self.servers.get(&SlotKey::new(server.clone(), root));
         let (command, args, source) = resolved.map_or(
             (None, Vec::new(), LanguageServerSource::Unavailable),
             |(spec, source)| (Some(spec.command), spec.args, source),
@@ -221,18 +220,10 @@ impl LspManager {
             source,
             command,
             args,
-            runtime: runtime.map_or_else(
-                || {
-                    if slot.is_some() {
-                        LanguageServerRuntimeState::Starting
-                    } else {
-                        LanguageServerRuntimeState::Idle
-                    }
-                },
-                |(state, _)| *state,
-            ),
+            // No slot is idle, and nothing else can say otherwise.
+            runtime: slot.map_or(LanguageServerRuntimeState::Idle, |slot| slot.runtime),
             open_documents: slot.map_or(0, |slot| slot.documents.len()),
-            error: runtime.and_then(|(_, error)| error.clone()),
+            error: slot.and_then(|slot| slot.error.clone()),
         }
     }
 }

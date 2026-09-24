@@ -354,7 +354,7 @@ impl Default for Editor {
             sticky_scroll: true,
             trim_trailing_whitespace: true,
             insert_final_newline: true,
-            format_on_save: false,
+            format_on_save: true,
             semantic_comments: SemanticComments::default(),
             pretty_errors: true,
             completion: Completion::default(),

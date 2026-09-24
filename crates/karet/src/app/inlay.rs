@@ -250,7 +250,7 @@ impl App {
         // in-flight request is not abandoned -- clearing it would discard an
         // answer that is about to arrive, and during startup these events land
         // constantly -- but it stops counting as coverage, so a request that
-        // will never be answered (a provider restart bumps the manager
+        // will never be answered (a settings reload bumps the manager
         // generation, and `apply_lsp_update` drops updates from the previous
         // one) can no longer suppress the re-ask forever.
         self.docs.inlay_epoch = self.docs.inlay_epoch.saturating_add(1);

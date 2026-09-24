@@ -890,3 +890,6 @@ async fn a_server_that_really_exited_still_reports_exited() -> TestResult {
 
 #[path = "gating_tests.rs"]
 mod gating;
+
+#[path = "formatting_tests.rs"]
+mod formatting;

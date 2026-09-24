@@ -230,8 +230,10 @@ provider, path, and document version, then sorted and deduplicated.
 ### Capability negotiation
 
 A server is asked only for what it said it can do. karet keeps the capability
-set from the `initialize` reply and refuses a request the server never
-advertised, **without putting it on the wire**.
+set from the `initialize` reply, updates it as the server registers or
+unregisters capabilities afterwards (`client/registerCapability`), and refuses
+a request the server does not currently offer, **without putting it on the
+wire**.
 
 This matters because the sets differ enormously — no two of rust-analyzer,
 gopls, jdtls and `vscode-json-language-server` implement the same one — and an
@@ -342,12 +344,46 @@ usual death is followed by a reconnect at 250 ms, and clearing immediately would
 flicker every marker off and back on for an outage nobody would otherwise have
 noticed.
 
-This covers a server that *dies*. A provider **retired** outright -- turning LSP
-off, editing its settings, closing the last document that needed it -- keeps its
-markers until something republishes, as it always has. Clearing those safely means
-knowing which task owns a layer, because a retired task and its replacement can
-share a key, and getting that wrong wipes a live server's markers instead. That
-work is deliberately separate from this change.
+That covers a server that *dies*. A provider **retired** outright -- turning LSP
+off, editing its settings, closing the last document that needed it, asking for a
+restart -- is one operation with one meaning: its markers are cleared and its stop
+is reported, together, whichever of those four paths retired it.
+
+Retirement is safe against the case that makes it hard. A retired task and the one
+that replaces it hold the same provider at the same root, so they are
+indistinguishable by name; each slot therefore carries a token no other slot ever
+reuses, and a task's report about its own slot is accepted only while it still
+holds it. A task that has been retired cannot clear, overwrite, or publish over
+its replacement -- and the clear itself is not a message at all, but part of
+retiring the slot, so there is no window between the two.
+
+A provider retired by *any* path reports `idle` with no open documents, and the
+Language Servers panel offers **Restart** only where this session holds a process.
+
+Keeping the panel right takes one more thing, because the per-transition event
+carries a provider's *state* and nothing else: the open-document count has no
+event at all, so a client patching rows field by field finishes with one that
+reads `idle` and still offers a Restart for a process that is gone. So a
+retirement also tells the client its inventory is **stale**, and the client asks
+for a current one. The signal carries no rows deliberately -- building an
+inventory re-resolves every provider against the settings, the project and
+`PATH`, and most sessions have nobody looking at the result, so the session
+states the fact and the client decides what it is worth.
+
+Asking rather than being pushed to is also what keeps the answer current. A
+retirement is often the first half of an operation: a restart retires a provider
+and then starts its replacement, and a snapshot taken at the retirement would
+describe the gap in between, where the provider has no process and no documents.
+A request is answered when it is handled, after the operation it followed has
+finished.
+
+One consequence is worth stating, because it reads as a regression and is not.
+Closing the last file of a provider that could not start used to leave the panel
+showing `unavailable` and its error; it now reads `idle`, because there is no
+longer anywhere to record a state for a provider this session is not running. The
+diagnosis is not lost -- the launch failure is reported when it happens, and
+logged.
+
 Requests made during an outage receive an empty response rather than hanging.
 Both protocol and per-server command queues are bounded at 256 messages.
 
@@ -522,8 +558,9 @@ needs explicit approval, once, and update discovery never applies a change: both
 live in the Language Servers tab, which is where the badge takes you.
 
 Uninstall first appends a deactivation record, so future resolution immediately
-stops selecting that managed version. It then retires language-server connections
-only in the requesting editor session. Other karet processes and their shared
+stops selecting that managed version. It then retires the connections *for that
+provider*, and only in the requesting editor session -- uninstalling Ruff used to
+stop rust-analyzer alongside it. Other karet processes and their shared
 brokers keep running. The immutable payload is deleted only after broker endpoint
 checks show that no live process still references it; until then the manager
 reports `cleanup pending`, and the registry retries reclamation in the background.

@@ -119,8 +119,9 @@ pub(crate) fn local_session(mut session: Session, events: Option<EventRx>) -> Lo
         // construction thread — a large repository's `git status` then runs
         // concurrently with the first frame instead of blocking it.
         session.start();
-        // A steady tick drives the crash-recovery backup sweep; the session decides
-        // per-document whether the configured dirty interval has elapsed.
+        // A steady tick drives the session's periodic sweeps: the crash-recovery
+        // backup (which decides per-document whether the configured dirty
+        // interval has elapsed) and the format-on-save deadline.
         let mut backup = tokio::time::interval(BACKUP_TICK);
         backup.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
@@ -151,8 +152,21 @@ pub(crate) fn local_session(mut session: Session, events: Option<EventRx>) -> Lo
                     Some(update) => session.apply_lsp_registry_update(update),
                     None => registry_updates = None,
                 },
-                _ = backup.tick() => session.backup_tick(),
+                _ = backup.tick() => session.tick(),
             }
+            // One drain, here, for whichever arm just ran. A retirement is
+            // routinely the first half of an operation -- `restart` retires a
+            // provider and then starts its replacement -- so the client is told
+            // its inventory is stale once the whole unit of work is done rather
+            // than partway through it.
+            //
+            // At the loop rather than inside the arms that can retire, because
+            // that list is not something a reader can be asked to maintain: an
+            // arm added later that retires a slot and forgets to drain would
+            // silently stop telling the client, which is the defect #278 was
+            // filed over. Here every arm is covered by construction, and the
+            // arms that cannot retire pay one bool test.
+            session.settle_lsp_inventory();
         }
     });
     LocalBackend {
