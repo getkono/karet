@@ -66,7 +66,15 @@ pub(super) async fn server_task(task: ServerTask) {
     // The root is a local because the connector and `SpawnFailed` want it by
     // value while `key` is still borrowed elsewhere.
     let root = key.root.clone();
+    // Whether the last state reported was an open restart circuit, so a request
+    // arriving while the connection is down can be answered according to what
+    // kind of down it is. Atomic only because the task must stay `Send`.
+    let circuit_open = std::sync::atomic::AtomicBool::new(false);
     let report_state = |state, error: Option<String>| {
+        circuit_open.store(
+            state == LanguageServerRuntimeState::CircuitOpen,
+            std::sync::atomic::Ordering::Relaxed,
+        );
         let _ = updates.send(LspUpdate::RuntimeState {
             token,
             key: key.clone(),
@@ -132,7 +140,15 @@ pub(super) async fn server_task(task: ServerTask) {
                             break;
                         };
                         remember_document(&mut documents, &cmd);
-                        answer_reconnecting(&updates, cmd, generation);
+                        // An open circuit is a cooldown, but one a server that
+                        // keeps dying can sit in indefinitely -- so its hints
+                        // are treated as gone rather than held stale forever.
+                        // A plain retry is expected back shortly.
+                        if circuit_open.load(std::sync::atomic::Ordering::Relaxed) {
+                            answer_empty(&updates, cmd, generation);
+                        } else {
+                            answer_reconnecting(&updates, cmd, generation);
+                        }
                         continue;
                     },
                     () = &mut sleep => {},

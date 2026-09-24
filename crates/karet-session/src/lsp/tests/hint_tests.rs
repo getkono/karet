@@ -271,3 +271,64 @@ async fn non_flushing_commands_do_not_postpone_the_debounced_flush() -> TestResu
     );
     Ok(())
 }
+
+/// While a server is being retried its hints are held -- the request is
+/// reported unanswered -- but once its restart circuit opens they are dropped.
+///
+/// A server that keeps dying can sit behind an open circuit indefinitely, so
+/// holding its last hints there would paint them stale forever.
+#[tokio::test]
+async fn hints_are_held_while_retrying_and_dropped_once_the_circuit_opens() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let path = rust_file(&dir, "main.rs", "let a = 1;\n").ok_or("write failed")?;
+    // Transient on every attempt, so the task retries until the circuit opens
+    // (five failures inside the window: about four seconds of back-off).
+    let connector: Connector = Arc::new(|spec, _root| {
+        let failure = karet_lsp::LaunchFailure::host(
+            spec.command.clone(),
+            spec.args.clone(),
+            "shared broker unreachable",
+        );
+        Box::pin(async move { Err(LspError::Launch(Box::new(failure))) })
+    });
+    let (session, mut events) = session_with_connector(connector);
+    let backend = local_session(session, None);
+    backend.send(
+        backend.next_id(),
+        Command::OpenDocument {
+            path,
+            language: None,
+        },
+    )?;
+    let (doc, _) = await_opened(&mut events).await.ok_or("no Opened")?;
+
+    let mut held = 0;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        if tokio::time::Instant::now() > deadline {
+            return Err("the circuit never opened, or its hints were never dropped".into());
+        }
+        let request = backend.next_id();
+        backend.send(
+            request,
+            Command::InlayHints {
+                doc,
+                range: whole_first_line(),
+            },
+        )?;
+        match await_hint_answer(&mut events, request).await {
+            Some(None) => held += 1,
+            Some(Some(hints)) => {
+                assert!(hints.is_empty());
+                break;
+            },
+            None => return Err("event stream ended".into()),
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        held > 0,
+        "hints were dropped while the server was still being retried"
+    );
+    Ok(())
+}
