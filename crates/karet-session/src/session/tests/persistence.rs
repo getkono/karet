@@ -56,7 +56,10 @@
         assert_eq!(scan(swapdir.path()).len(), 1, "dirty doc backed up");
 
         // A successful save clears the swap.
-        session.handle(RequestId(3), Command::Save { doc });
+        session.handle(RequestId(3), Command::Save {
+                doc,
+                cause: SaveCause::Manual,
+            });
         assert!(scan(swapdir.path()).is_empty(), "save removes the swap");
     }
 

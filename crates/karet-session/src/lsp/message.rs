@@ -15,6 +15,7 @@ use karet_core::Location;
 use karet_core::Symbol;
 use karet_core::TextEdit;
 use karet_core::WorkspaceEdit;
+use karet_lsp::Indentation;
 
 use super::slot::SlotKey;
 use super::slot::SlotToken;
@@ -112,6 +113,14 @@ pub(crate) enum ServerCmd {
         doc: DocumentId,
         version: u64,
         path: PathBuf,
+        /// The buffer's resolved `editor.tabSize` / `editor.insertSpaces`.
+        ///
+        /// Carried per request rather than read from the manager's settings:
+        /// the setting is per *language*, resolved against the document's
+        /// selector, and the server task serving the language has no document
+        /// to resolve it from. A server that honours it reindents the whole
+        /// file, so a default here is not a neutral choice.
+        indentation: Indentation,
     },
 }
 
@@ -186,6 +195,15 @@ pub(crate) enum LspUpdate {
         request: RequestId,
         doc: DocumentId,
         version: u64,
+        /// Whether a language server actually formatted this file.
+        ///
+        /// The question the session asks, rather than what the server claims it
+        /// can do. Distinct from empty `edits`: a server that formatted and
+        /// found nothing to change has done its job and this is `true`, while a
+        /// server that never offered the method, was not reachable, or failed
+        /// the request has formatted nothing — and the session is then free to
+        /// use its own formatter instead.
+        formatted: bool,
         edits: Vec<TextEdit>,
     },
     /// A complete server diagnostic layer for one file.

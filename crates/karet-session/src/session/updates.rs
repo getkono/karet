@@ -52,8 +52,26 @@ impl Session {
     /// Adopt one LSP task result: convert positions against the live buffer
     /// (LSP's UTF-16 → the buffer's UTF-32 columns) and emit the answering event.
     /// A result for a document that has since closed is dropped as stale.
+    ///
+    /// Answers from a retired server generation are dropped — except a
+    /// formatting answer holding up a save. Every other answer is advisory, so
+    /// ignoring a stale one costs nothing; that one owes a disk write, and
+    /// dropping it would strand the file unwritten with nothing answering the
+    /// client's request. [`Self::apply_config_report`] already commits those
+    /// saves when it retires a generation, so this is the narrower race where
+    /// the answer and the retirement cross; committing twice is impossible
+    /// because [`Self::finish_format_on_save`] consumes the pending entry.
     pub(crate) fn apply_lsp_update(&mut self, update: LspUpdate) {
         if !self.lsp.accepts(&update) {
+            if let LspUpdate::Formatting {
+                request,
+                doc,
+                version,
+                ..
+            } = update
+            {
+                let _ = self.finish_format_on_save(request, doc, version, Vec::new());
+            }
             return;
         }
         match update {
@@ -163,30 +181,41 @@ impl Session {
                 }
                 self.emit(Some(request), Event::WorkspaceEdit { edit });
             },
+            // A formatting answer exists only to finish a deferred save: the
+            // edits are applied here, never handed to the client. Edits computed
+            // against a version the buffer has moved past are dropped, but the
+            // save they were holding up still completes.
             LspUpdate::Formatting {
                 request,
                 doc,
                 version,
+                formatted,
                 mut edits,
                 ..
             } => {
-                let Some(document) = self.store.docs.get(&doc) else {
-                    return;
-                };
-                if document.buffer.version() != version {
+                let stale = self
+                    .store
+                    .docs
+                    .get(&doc)
+                    .is_none_or(|document| document.buffer.version() != version);
+                if stale {
+                    let _ = self.finish_format_on_save(request, doc, version, Vec::new());
                     return;
                 }
-                for edit in &mut edits {
-                    edit.range = utf16_range_to_buffer(&document.buffer, edit.range);
+                if formatted {
+                    if let Some(document) = self.store.docs.get(&doc) {
+                        for edit in &mut edits {
+                            edit.range = utf16_range_to_buffer(&document.buffer, edit.range);
+                        }
+                    }
+                } else {
+                    // No language server formatted this file -- it never offered
+                    // the method, was not reachable, or failed the request. That
+                    // is exactly the case the built-in formatter exists for, and
+                    // it produces buffer coordinates already.
+                    edits = self.builtin_format_edits(doc).unwrap_or_default();
                 }
-                self.emit(
-                    Some(request),
-                    Event::FormattingEdits {
-                        doc,
-                        version,
-                        edits,
-                    },
-                );
+                let _ = self.finish_format_on_save(request, doc, version, edits);
             },
             LspUpdate::ServerStatus { key, message, .. } => {
                 let server = key.provider.display_name();
@@ -714,7 +743,9 @@ impl Session {
 
     /// Adopt one validated live configuration snapshot and refresh producers whose
     /// behavior is derived from it. Existing LSP tasks are retired on an LSP change;
-    /// their generation-tagged late answers are ignored by [`Self::apply_lsp_update`].
+    /// their generation-tagged late answers are ignored by [`Self::apply_lsp_update`]
+    /// — so any save waiting on one is written out here first, before the
+    /// generation moves out from under it.
     pub(super) fn apply_config_report(&mut self, report: crate::config::LoadedConfig) {
         self.debug.reconfigure(report.settings.debug.clone());
         let lsp_retired = self.lsp.reconfigure(report.settings.lsp.clone());
@@ -739,6 +770,12 @@ impl Session {
         }
 
         if let Some(retired) = lsp_retired {
+            // Retiring the servers orphans every formatting request in flight.
+            // A save is not advisory: write it now, unformatted, which is the
+            // same posture a formatter error already takes -- and before the
+            // retirement is adopted, so nothing is waiting on a slot that has
+            // already gone.
+            self.commit_pending_format_saves();
             self.adopt_retirement(retired);
             let mut reopened = crate::lsp::Retired::default();
             let lsp = &mut self.lsp;

@@ -5,6 +5,29 @@ use super::forward::forward_diagnostics;
 use super::health::FailureTally;
 use super::health::{self};
 use super::*;
+use crate::session::FORMAT_ON_SAVE_DEADLINE_MS;
+
+/// Slack over the session's own deadline before this task stops waiting.
+///
+/// The session sweeps [`FORMAT_ON_SAVE_DEADLINE_MS`] on its backup tick, so its
+/// effective deadline is that plus up to one tick. Giving up any sooner would
+/// race the sweep and throw away an answer that was about to be used.
+const FORMATTING_SWEEP_MARGIN_MS: u64 = 3_000;
+
+/// How long `server_task` waits for a `textDocument/formatting` reply.
+///
+/// Tied to the session's [`FORMAT_ON_SAVE_DEADLINE_MS`] rather than chosen
+/// independently: past that deadline the save has been committed unformatted,
+/// so an answer arriving later has nobody left waiting for it -- while the wait
+/// itself is serial, and holds every other command for this server (diagnostics,
+/// completions, `didChange` flushes) behind it.
+///
+/// `karet-jsonrpc`'s 30-second request timeout is the only other bound on this
+/// await, and it is three times too long to hold the task for: it exists to
+/// decide that a *connection* is hung, which is a different question from how
+/// long one save may wait.
+pub(super) const FORMATTING_DEADLINE: Duration =
+    Duration::from_millis(FORMAT_ON_SAVE_DEADLINE_MS + FORMATTING_SWEEP_MARGIN_MS);
 
 pub(super) struct ServerTask {
     pub(super) spec: LspSpec,
@@ -600,6 +623,7 @@ pub(super) async fn server_task(task: ServerTask) {
                 doc,
                 version,
                 path,
+                indentation,
             } => {
                 flush_pending(
                     active,
@@ -611,21 +635,57 @@ pub(super) async fn server_task(task: ServerTask) {
                     token,
                 )
                 .await;
-                let edits = if dead {
-                    Vec::new()
+                // A server that never advertised the method can only answer
+                // "method not found". Asking anyway would spend a round trip --
+                // on every save, once format-on-save is on -- to learn what the
+                // handshake already said.
+                let advertised = !dead && active.supports_formatting();
+                // Every ending but a successful reply leaves the file unformatted,
+                // and each one is reported as such so the session can fall back on
+                // its own formatter. A connection that died, and a request that
+                // errored, format exactly as much as a server that never offered
+                // the method: nothing.
+                // The wait is bounded here as well as by the save, because the
+                // two waits cost different things: the save's deadline gives up
+                // on the answer, while this one gives the *task* back. Every
+                // command for this server -- diagnostics, completions, a
+                // `didChange` flush -- queues behind this `await`.
+                let (formatted, edits) = if !advertised {
+                    (false, Vec::new())
                 } else {
-                    tally
-                        .observe(active.formatting(&path).await)
-                        .unwrap_or_else(|error| {
-                            tally.note::<()>(Err(error), &mut dead, &updates, &key, token);
-                            Vec::new()
-                        })
+                    match tokio::time::timeout(
+                        FORMATTING_DEADLINE,
+                        active.formatting(&path, indentation),
+                    )
+                    .await
+                    {
+                        Ok(answer) => match tally.observe(answer) {
+                            Ok(edits) => (true, edits),
+                            Err(error) => {
+                                tally.note::<()>(Err(error), &mut dead, &updates, &key, token);
+                                (false, Vec::new())
+                            },
+                        },
+                        // Deliberately not charged to the connection and not a
+                        // death: a formatter slower than one save can wait for is
+                        // not a server that has stopped answering. The request is
+                        // left to expire on its own in the JSON-RPC layer.
+                        Err(_elapsed) => {
+                            tracing::warn!(
+                                language = %key,
+                                "formatting outlasted the save that asked for it; \
+                                 saving unformatted"
+                            );
+                            (false, Vec::new())
+                        },
+                    }
                 };
                 let _ = updates.send(LspUpdate::Formatting {
                     generation,
                     request,
                     doc,
                     version,
+                    formatted,
                     edits,
                 });
             },

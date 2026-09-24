@@ -102,6 +102,42 @@ pub enum LspError {
     Closed,
 }
 
+/// The indentation a formatting request states on behalf of the buffer.
+///
+/// LSP puts this in the *request*: `textDocument/formatting` carries a
+/// `FormattingOptions`, and a server that honours it (clangd with no
+/// `.clang-format`, jdtls, lua-language-server, omnisharp) reindents the whole
+/// file to whatever the client said. So the client's real settings have to
+/// cross this API — a constant here silently overrides the user's
+/// `editor.tabSize` / `editor.insertSpaces` on every save.
+///
+/// Deliberately this crate's own type rather than `lsp_types::FormattingOptions`:
+/// `lsp_types` is an internal dependency and appears nowhere in the published
+/// surface, and keeping it that way is what lets the dependency move without a
+/// breaking release.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Indentation {
+    /// Columns one indentation level occupies (`editor.tabSize`).
+    pub tab_size: u32,
+    /// Whether indentation is written as spaces rather than tab characters
+    /// (`editor.insertSpaces`).
+    pub insert_spaces: bool,
+}
+
+impl Default for Indentation {
+    /// Four spaces: the LSP specification's own example values, and what this
+    /// client sent unconditionally before callers could say otherwise.
+    ///
+    /// A fallback for a caller that has no editor settings to resolve — not a
+    /// value any caller that *does* have them should be reaching for.
+    fn default() -> Self {
+        Self {
+            tab_size: 4,
+            insert_spaces: true,
+        }
+    }
+}
+
 /// How long a failed handshake waits for the child to exit before reporting.
 ///
 /// Only spent on a launch that already failed, and only to learn whether the
@@ -197,6 +233,8 @@ pub struct RawNotification {
 pub struct LspClient {
     conn: conn::Connection,
     child: Option<tokio::process::Child>,
+    /// What the handshake said about `textDocument/formatting`.
+    formats: bool,
 }
 
 impl LspClient {
@@ -392,9 +430,14 @@ impl LspClient {
         let mut params = initialize_params(root)?;
         params.initialization_options = initialization_options;
         let conn = conn::Connection::start(read, write);
-        let _server_capabilities: Value = conn.request("initialize", params).await?;
+        let server_capabilities: Value = conn.request("initialize", params).await?;
+        let formats = advertises_formatting(&server_capabilities);
         conn.notify("initialized", lsp_types::InitializedParams {})?;
-        Ok(Self { conn, child: None })
+        Ok(Self {
+            conn,
+            child: None,
+            formats,
+        })
     }
 
     /// Shut the server down (`shutdown` request + `exit` notification) and await
@@ -738,14 +781,23 @@ impl LspClient {
         Ok(convert::code_actions_from_lsp(response))
     }
 
-    /// Request whole-document formatting edits for `doc`.
+    /// Request whole-document formatting edits for `doc`, indented as
+    /// `indentation` says.
+    ///
+    /// `indentation` is the caller's resolved editor settings for this file,
+    /// not a default: see [`Indentation`] for why the difference is visible in
+    /// the result.
     ///
     /// # Errors
     /// Returns [`LspError::Server`] or [`LspError::Timeout`].
-    pub async fn formatting(&self, doc: &Path) -> Result<Vec<TextEdit>, LspError> {
+    pub async fn formatting(
+        &self,
+        doc: &Path,
+        indentation: Indentation,
+    ) -> Result<Vec<TextEdit>, LspError> {
         let params = lsp_types::DocumentFormattingParams {
             text_document: lsp_types::TextDocumentIdentifier::new(uri::path_to_uri(doc)?),
-            options: formatting_options(),
+            options: formatting_options(indentation),
             work_done_progress_params: lsp_types::WorkDoneProgressParams::default(),
         };
         let response: Option<Vec<lsp_types::TextEdit>> =
@@ -753,7 +805,23 @@ impl LspClient {
         Ok(convert::text_edits_from_lsp(response))
     }
 
-    /// Request formatting edits for `range` in `doc`.
+    /// Whether the server advertised `textDocument/formatting` in its handshake.
+    ///
+    /// Worth asking before [`Self::formatting`]: a server that never offered the
+    /// method can only answer "method not found", so dispatching to it spends a
+    /// round trip to learn nothing. A caller that has its own formatter to fall
+    /// back on needs the answer before it decides, not after.
+    #[must_use]
+    pub fn supports_formatting(&self) -> bool {
+        self.formats
+    }
+
+    /// Request formatting edits for `range` in `doc`, indented as `indentation`
+    /// says.
+    ///
+    /// Takes the same [`Indentation`] as [`Self::formatting`] for the same
+    /// reason — a range format reindents the lines it rewrites — even though
+    /// nothing in karet calls this yet.
     ///
     /// # Errors
     /// Returns [`LspError::Server`] or [`LspError::Timeout`].
@@ -761,11 +829,12 @@ impl LspClient {
         &self,
         doc: &Path,
         range: Range,
+        indentation: Indentation,
     ) -> Result<Vec<TextEdit>, LspError> {
         let params = lsp_types::DocumentRangeFormattingParams {
             text_document: lsp_types::TextDocumentIdentifier::new(uri::path_to_uri(doc)?),
             range: convert::range_to_lsp(range),
-            options: formatting_options(),
+            options: formatting_options(indentation),
             work_done_progress_params: lsp_types::WorkDoneProgressParams::default(),
         };
         let response: Option<Vec<lsp_types::TextEdit>> = self
@@ -856,10 +925,28 @@ fn text_document_position(
     })
 }
 
-fn formatting_options() -> lsp_types::FormattingOptions {
+/// Whether an `initialize` result advertises `textDocument/formatting`.
+///
+/// LSP types the field as `boolean | DocumentFormattingOptions`, so a bare
+/// `true` and an options object both mean yes. `false`, `null`, and an absent
+/// field all mean no — under LSP, a capability that is not advertised is not
+/// there. Read from the raw value because the handshake result is kept as
+/// `Value`; nothing else in this client needs it typed.
+fn advertises_formatting(initialize_result: &Value) -> bool {
+    match initialize_result
+        .get("capabilities")
+        .and_then(|capabilities| capabilities.get("documentFormattingProvider"))
+    {
+        Some(Value::Bool(supported)) => *supported,
+        Some(Value::Object(_)) => true,
+        _ => false,
+    }
+}
+
+fn formatting_options(indentation: Indentation) -> lsp_types::FormattingOptions {
     lsp_types::FormattingOptions {
-        tab_size: 4,
-        insert_spaces: true,
+        tab_size: indentation.tab_size,
+        insert_spaces: indentation.insert_spaces,
         ..lsp_types::FormattingOptions::default()
     }
 }

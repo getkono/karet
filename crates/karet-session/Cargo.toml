@@ -111,6 +111,9 @@ tempfile.workspace = true             # atomic swap-file writes + open/save flow
 # Compile in the Rust + Markdown grammars so the Command/snapshot contract test can
 # assert that an *injected* language really is highlighted through the worker.
 karet-treesitter = { workspace = true, features = ["lang-rust", "lang-markdown"] }
+# `test-util` only: tokio's pausable clock, so a test can assert on a
+# ten-second timeout without spending ten seconds on it.
+tokio = { workspace = true, features = ["test-util"] }
 
 [[example]]
 name = "settings-schema"

@@ -100,6 +100,7 @@ pub use api::RangeSpec;
 pub use api::RemoteFacts;
 pub use api::RepositorySnapshot;
 pub use api::RequestId;
+pub use api::SaveCause;
 pub use api::SearchHit;
 pub use api::SearchMatch;
 pub use api::SpellingHit;

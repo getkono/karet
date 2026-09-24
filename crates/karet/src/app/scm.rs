@@ -54,7 +54,7 @@ impl App {
         docs.sort();
         docs.dedup();
         let action = VcsAction::SwitchBranch(target);
-        if self.save_docs(&docs) == 0 {
+        if self.save_docs(&docs, SaveCause::Manual) == 0 {
             self.run_vcs_action(action);
         } else {
             self.vcs_after_save = Some(action);

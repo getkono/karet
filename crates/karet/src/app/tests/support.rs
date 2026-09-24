@@ -385,7 +385,7 @@ pub(crate) fn saved_docs(backend: &RecordingBackend) -> Vec<DocumentId> {
         .map(|sent| {
             sent.iter()
                 .filter_map(|(_, command)| match command {
-                    SessionCommand::Save { doc } => Some(*doc),
+                    SessionCommand::Save { doc, .. } => Some(*doc),
                     _ => None,
                 })
                 .collect()

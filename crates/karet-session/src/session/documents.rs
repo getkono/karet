@@ -1,5 +1,8 @@
 use super::*;
 
+/// Answer to a save abandoned because its document was closed first.
+const SAVE_CANCELLED_CLOSED: &str = "save cancelled: document closed";
+
 /// Test-only read view of a document's buffer state. Production consumers render
 /// from the [`DocSnapshot`](crate::local::DocSnapshot) stream instead.
 #[cfg(test)]
@@ -295,7 +298,208 @@ impl Session {
         }
     }
 
-    pub(super) fn save(&mut self, id: RequestId, doc_id: DocumentId) {
+    pub(super) fn save(&mut self, id: RequestId, doc_id: DocumentId, cause: SaveCause) {
+        if cause.may_format() && self.begin_format_on_save(id, doc_id) {
+            return;
+        }
+        self.commit_save(id, doc_id);
+    }
+
+    /// Request LSP formatting (or apply the built-in TOML formatter) before the
+    /// disk write. `true` means the save is waiting on an async formatting reply.
+    fn begin_format_on_save(&mut self, id: RequestId, doc_id: DocumentId) -> bool {
+        let Some(doc) = self.store.docs.get(&doc_id) else {
+            return false;
+        };
+        let editor = self
+            .config
+            .settings
+            .editor
+            .for_language(doc.language_selector);
+        if !editor.format_on_save() {
+            return false;
+        }
+        // The server is told how this buffer is actually indented rather than
+        // guessing: a formatter that honours `FormattingOptions` reindents the
+        // whole file to whatever the request says, so a constant here would undo
+        // the user's indentation on every save. Read from the document's own
+        // resolved settings -- the layer `.editorconfig` lands on, and the one
+        // the editor itself types by -- because telling a formatter something
+        // the buffer does not believe is how a save comes to fight its project.
+        // `tabSize` is a width in columns either way: the indent step when that
+        // is spaces, the tab stop when it is not.
+        let indentation = karet_lsp::Indentation {
+            tab_size: u32::from(if doc.settings.insert_spaces {
+                doc.settings.indent_size
+            } else {
+                doc.settings.tab_width
+            }),
+            insert_spaces: doc.settings.insert_spaces,
+        };
+        let version = doc.buffer.version();
+        let selector = doc.language_selector;
+        let path = doc.path.clone();
+        if self
+            .lsp
+            .formatting(selector, id, doc_id, version, &path, indentation)
+        {
+            let issued_ms = self.elapsed_ms();
+            self.pending_format_saves.insert(
+                id,
+                PendingFormatSave {
+                    doc: doc_id,
+                    issued_ms,
+                },
+            );
+            // The user asked for this buffer to be on disk and it is not going
+            // to be for a while: the write waits on a formatter that has up to
+            // `FORMAT_ON_SAVE_DEADLINE_MS` to answer. Until then the swap is the
+            // only other copy there is, and the backup interval alone would not
+            // have written one — a buffer edited in the last thirty seconds, or
+            // edited since its last swap, has none. Write it now, so what the
+            // force-quit path promises the user is recoverable actually is.
+            self.back_up_document(doc_id);
+            return true;
+        }
+        if let Some(edits) = self.builtin_format_edits(doc_id) {
+            self.apply_format_edits(doc_id, edits);
+        }
+        false
+    }
+
+    /// Built-in formatter edits when no language server offered formatting.
+    pub(super) fn builtin_format_edits(&self, doc_id: DocumentId) -> Option<Vec<TextEdit>> {
+        #[cfg(feature = "toml-format")]
+        {
+            let doc = self.store.docs.get(&doc_id)?;
+            if doc.language_selector == Some("toml")
+                && self.config.settings.toml.format
+                && let Some(formatted) =
+                    crate::toml_format::format_toml(&doc.buffer.text(), &self.config.roots)
+            {
+                return whole_document_change(doc, formatted).map(|change| change.edits);
+            }
+        }
+        #[cfg(not(feature = "toml-format"))]
+        let _ = doc_id;
+        None
+    }
+
+    /// Apply formatter edits in-place so the subsequent save writes formatted text.
+    fn apply_format_edits(&mut self, doc_id: DocumentId, edits: Vec<TextEdit>) {
+        let tick = self.elapsed_ms();
+        let (spell_without_syntax, retired) = {
+            let highlight_tx = &self.highlight_tx;
+            let settings = &self.config.settings;
+            let lsp = &mut self.lsp;
+            let Some(doc) = self.store.docs.get_mut(&doc_id) else {
+                return;
+            };
+            let change = Change::new(doc.buffer.version(), edits);
+            let ctx = edit_context(tick, EditCause::Replace, &change);
+            let Ok(applied) = doc.buffer.apply(&change, ctx) else {
+                return;
+            };
+            let spell_without_syntax =
+                update_syntax(settings, highlight_tx, doc_id, doc, Some(&applied.edits));
+            doc.sync_dirty_since(tick);
+            let retired =
+                lsp.document_changed(doc.language_selector, &doc.path, applied.version, || {
+                    doc.buffer.text()
+                });
+            (spell_without_syntax, retired)
+        };
+        // Formatter edits are a document change like any other, so the same
+        // retirement a plain edit can trigger has to be adopted here too -- a
+        // slot retired while its layer stands would badge a server that is gone.
+        self.adopt_retirement(retired);
+        self.publish(doc_id, None);
+        if spell_without_syntax {
+            self.schedule_spell(doc_id);
+        }
+    }
+
+    /// Adopt an LSP formatting reply that belongs to a pending save, then write.
+    pub(super) fn finish_format_on_save(
+        &mut self,
+        request: RequestId,
+        doc: DocumentId,
+        version: u64,
+        edits: Vec<TextEdit>,
+    ) -> bool {
+        let Some(pending) = self
+            .pending_format_saves
+            .remove(&request)
+            .map(|save| save.doc)
+        else {
+            return false;
+        };
+        // A closed document cannot be found here: `close` drains this map before
+        // it removes the document, and that is the only place documents are
+        // removed. A cancelled save is reported there, once.
+        if pending == doc
+            && self
+                .store
+                .docs
+                .get(&doc)
+                .is_some_and(|document| document.buffer.version() == version)
+            && !edits.is_empty()
+        {
+            self.apply_format_edits(doc, edits);
+        }
+        self.commit_save(request, pending);
+        true
+    }
+
+    /// Write out every save still waiting on a formatting answer, unformatted.
+    ///
+    /// Called when the answers those saves depend on are about to become
+    /// undeliverable — today, when an `lsp` settings change retires the server
+    /// generation that owes them. The alternative is a file that is never
+    /// written and a request nothing ever answers, which reads to the user as a
+    /// save that silently did nothing.
+    pub(super) fn commit_pending_format_saves(&mut self) {
+        let stranded: Vec<(RequestId, DocumentId)> = self
+            .pending_format_saves
+            .drain()
+            .map(|(request, save)| (request, save.doc))
+            .collect();
+        for (request, doc_id) in stranded {
+            self.commit_save(request, doc_id);
+        }
+    }
+
+    /// Write out any save whose formatter has taken too long.
+    ///
+    /// A server is free to accept `textDocument/formatting` and then never
+    /// answer; the only other bound is the JSON-RPC request timeout, which is
+    /// tens of seconds. A save that slow is indistinguishable from a broken one,
+    /// so past the deadline the buffer goes to disk unformatted rather than
+    /// waiting on a formatter that may never come back.
+    ///
+    /// Takes `now` rather than reading the clock, so the deadline is reachable
+    /// from a unit test without waiting out its wall-clock duration.
+    pub(super) fn expire_format_on_save(&mut self, now: u64) {
+        let expired: Vec<(RequestId, DocumentId)> = self
+            .pending_format_saves
+            .iter()
+            .filter(|(_, save)| now.saturating_sub(save.issued_ms) >= FORMAT_ON_SAVE_DEADLINE_MS)
+            .map(|(request, save)| (*request, save.doc))
+            .collect();
+        for (request, doc_id) in expired {
+            self.pending_format_saves.remove(&request);
+            self.commit_save(request, doc_id);
+        }
+    }
+
+    fn commit_save(&mut self, id: RequestId, doc_id: DocumentId) {
+        // Trailing whitespace and the final newline are settled here, against the
+        // text actually about to be written, rather than before the formatter ran
+        // against text it was about to replace. `editor.trimTrailingWhitespace`
+        // and `editor.insertFinalNewline` are documented without qualification,
+        // so they have to hold over formatter output too -- and every ending of
+        // the formatter wait, including the ones that give up on it, arrives
+        // here.
         if self.apply_save_cleanup(doc_id) {
             self.publish(doc_id, None);
         }
@@ -484,6 +688,23 @@ impl Session {
             None => return,
         };
         if removed {
+            let cancelled: Vec<RequestId> = self
+                .pending_format_saves
+                .iter()
+                .filter(|(_, pending)| pending.doc == doc_id)
+                .map(|(id, _)| *id)
+                .collect();
+            for id in cancelled {
+                self.pending_format_saves.remove(&id);
+                self.emit(
+                    Some(id),
+                    Event::Notification {
+                        severity: Severity::Warning,
+                        kind: NotificationKind::Io,
+                        message: SAVE_CANCELLED_CLOSED.to_owned(),
+                    },
+                );
+            }
             if let Some(doc) = self.store.docs.remove(&doc_id) {
                 self.store.by_path.remove(&doc.path);
                 let retired = self.lsp.document_closed(doc.language_selector, &doc.path);

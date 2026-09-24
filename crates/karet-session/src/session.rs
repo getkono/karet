@@ -94,6 +94,7 @@ use crate::api::Event;
 #[cfg(test)]
 use crate::api::RangeSpec;
 use crate::api::RequestId;
+use crate::api::SaveCause;
 use crate::api::SwapInfo;
 use crate::backup::SwapRecord;
 use crate::backup::SwapStore;
@@ -370,6 +371,8 @@ pub struct Session {
     lsp_registry: std::sync::mpsc::Sender<crate::lsp_registry::RegistryJob>,
     /// Registry results, taken by the local backend actor.
     lsp_registry_rx: Option<mpsc::UnboundedReceiver<crate::lsp_registry::RegistryUpdate>>,
+    /// Saves waiting on `textDocument/formatting` before the disk write.
+    pending_format_saves: HashMap<RequestId, PendingFormatSave>,
     /// Exact-root public-GitHub identity, when this workspace is eligible.
     #[cfg(feature = "github")]
     github_repository: Option<karet_github::RepositoryIdentity>,
@@ -412,7 +415,7 @@ impl Session {
             Command::ApplyChange { doc, change, cause } => self.apply(id, doc, &change, cause),
             Command::Undo { doc } => self.undo_redo(id, doc, true),
             Command::Redo { doc } => self.undo_redo(id, doc, false),
-            Command::Save { doc } => self.save(id, doc),
+            Command::Save { doc, cause } => self.save(id, doc, cause),
             Command::RetargetDocument { doc, path } => self.retarget(id, doc, path),
             Command::BuildLatex { doc } => self.request_latex_build(id, doc),
             // The caret is UI-local; `SetCursor` becomes meaningful when producers
@@ -616,7 +619,6 @@ impl Session {
                 position,
                 new_name,
             } => self.rename(id, doc, position, new_name),
-            Command::FormatOnSave { doc } => self.format_document(id, doc),
             Command::RemoteFacts { path } => {
                 self.submit_vcs(id, |id, cancel| crate::vcs_worker::VcsJob::RemoteFacts {
                     id,
@@ -874,6 +876,40 @@ fn update_syntax(
 /// Build a [`Change`] that replaces the entirety of `doc`'s buffer with `new_text`,
 /// based on the buffer's current version. Used to restore a recovered swap's content
 /// as a dirty edit (undo returns to the on-disk version).
+/// A save parked on a `textDocument/formatting` answer, and when it was parked.
+///
+/// The clock reading is what bounds the wait: a server that accepts the request
+/// and then never answers would otherwise hold the file unwritten for the
+/// JSON-RPC request timeout, which is far longer than anyone expects a save to
+/// take. See [`Session::expire_format_on_save`].
+struct PendingFormatSave {
+    /// The document whose disk write is waiting.
+    doc: DocumentId,
+    /// Session-clock reading, in milliseconds, when the request was dispatched.
+    issued_ms: u64,
+}
+
+/// How long a save may wait on a formatter before it is written unformatted.
+///
+/// Sized to the slowest formatting a working server plausibly does — a cold
+/// process, a large file, a loaded machine — because the cost of being wrong is
+/// asymmetric. Too generous and a rare save waits, visibly, with the tab
+/// spinner running; too tight and an ordinary save silently stops formatting.
+/// Three seconds was tight enough to lose the second way.
+///
+/// Its ceiling is `karet-jsonrpc`'s request timeout, the only other bound on
+/// this wait: past that there is no answer left to come, so a deadline above it
+/// would mean nothing. This sits well inside it.
+///
+/// Swept on the session's existing backup tick rather than its own timer, so
+/// the effective bound is this plus up to one tick.
+///
+/// The server task bounds its own await on the same answer, and derives that
+/// bound from this one (`lsp::runtime::FORMATTING_DEADLINE`) so the two cannot
+/// drift: once this deadline has passed there is nobody left for a reply to be
+/// delivered to, and continuing to wait only keeps that server's task busy.
+pub(crate) const FORMAT_ON_SAVE_DEADLINE_MS: u64 = 10_000;
+
 fn whole_document_change(doc: &Document, new_text: String) -> Option<Change> {
     let end = doc.buffer.byte_to_line_col(BytePos(doc.buffer.len_bytes()));
     let range = Range::new(LineCol::new(0, 0), end).ok()?;

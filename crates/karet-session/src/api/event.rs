@@ -237,15 +237,6 @@ pub enum Event {
         /// Version-independent, path-grouped edits in buffer coordinates.
         edit: WorkspaceEdit,
     },
-    /// Formatting edits answering [`Command::FormatOnSave`].
-    FormattingEdits {
-        /// Document the edits target.
-        doc: DocumentId,
-        /// Buffer version the edits were computed against.
-        version: u64,
-        /// Non-overlapping edits in buffer coordinates.
-        edits: Vec<TextEdit>,
-    },
     /// One streamed batch of a workspace search, answering [`Command::Search`].
     ///
     /// Batches arrive as the walk proceeds so a client fills its list

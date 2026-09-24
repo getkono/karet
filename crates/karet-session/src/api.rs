@@ -18,7 +18,6 @@ use karet_core::Location;
 use karet_core::NotificationKind;
 use karet_core::Severity;
 use karet_core::Symbol;
-use karet_core::TextEdit;
 use karet_core::WorkspaceEdit;
 use karet_text::EditCause;
 use karet_vcs::Branch;
@@ -240,6 +239,51 @@ pub enum DictionaryScope {
     Project,
 }
 
+/// What prompted a save, for the decisions that depend on it.
+///
+/// Only format-on-save reads this today, and it asks one question: does this
+/// save record a decision to persist the file, or is it a snapshot taken while
+/// the user is still editing it? Formatting rewrites the whole buffer, so on a
+/// snapshot it moves text under a live caret mid-edit — the reformat is not
+/// wrong, it is just badly timed, and it arrives while the user is typing.
+///
+/// Every cause here records a decision except [`SaveCause::AutoDelay`], which
+/// fires a second after a typing pause with the caret still in the file. The
+/// rest — a keystroke, a close prompt, focus leaving the document — all mean
+/// the user is done with it for now, which is precisely when reformatting is
+/// free.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+#[derive(serde::Serialize, serde::Deserialize)]
+pub enum SaveCause {
+    /// The user asked, explicitly — a keybinding, a command, or a close prompt.
+    #[default]
+    Manual,
+    /// Autosave, triggered by focus leaving the document. The user has moved on
+    /// from it, so there is no caret in it left to disturb.
+    FocusChange,
+    /// Autosave, triggered by the inactivity timer while the document is still
+    /// the one being edited. A pause in typing is not a decision to persist,
+    /// and this is the one cause that does not format.
+    AutoDelay,
+    /// Forward-compatibility fallback: an unrecognized cause from a newer peer.
+    /// Treated as [`SaveCause::Manual`], the conservative reading — a save that
+    /// formats is recoverable, one that silently does not is surprising.
+    #[serde(other)]
+    Unknown,
+}
+
+impl SaveCause {
+    /// Whether a save from this cause may run the formatter first.
+    ///
+    /// True for every cause that records a decision to persist the file, which
+    /// is all of them but the inactivity timer.
+    #[must_use]
+    pub fn may_format(self) -> bool {
+        !matches!(self, Self::AutoDelay)
+    }
+}
+
 /// A request submitted by the presentation layer to the backend.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
@@ -278,6 +322,8 @@ pub enum Command {
     Save {
         /// The document to save.
         doc: DocumentId,
+        /// What prompted the save; see [`SaveCause`].
+        cause: SaveCause,
     },
     /// Retarget an open document to a new path after a filesystem rename/move.
     RetargetDocument {
@@ -378,11 +424,6 @@ pub enum Command {
         position: LineCol,
         /// The new name.
         new_name: String,
-    },
-    /// Format a document as part of saving it.
-    FormatOnSave {
-        /// The document to format.
-        doc: DocumentId,
     },
     /// Compile the LaTeX root containing an editable TeX document and produce a PDF.
     BuildLatex {
@@ -890,7 +931,7 @@ mod tests {
             doc: DocumentId(3),
             change: Change::new(
                 7,
-                vec![TextEdit {
+                vec![karet_core::TextEdit {
                     range: karet_core::Range::default(),
                     new_text: "x".into(),
                 }],
@@ -977,7 +1018,10 @@ mod tests {
     fn ids_and_payloads_construct() {
         assert_eq!(DocumentId(1), DocumentId(1));
         assert_ne!(RequestId(1), RequestId(2));
-        let _cmd = Command::Save { doc: DocumentId(7) };
+        let _cmd = Command::Save {
+            doc: DocumentId(7),
+            cause: SaveCause::Manual,
+        };
         let _cmd = Command::RetargetDocument {
             doc: DocumentId(7),
             path: PathBuf::from("new.txt"),

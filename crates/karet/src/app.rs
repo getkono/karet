@@ -141,6 +141,7 @@ use karet_session::PullRequestSummary;
 use karet_session::RangeSpec;
 use karet_session::RepositorySnapshot;
 use karet_session::RequestId;
+use karet_session::SaveCause;
 use karet_session::SearchHit;
 use karet_session::SessionConfig;
 use karet_session::Settings;

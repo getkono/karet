@@ -134,6 +134,7 @@ impl Session {
             lsp_rx: Some(lsp_rx),
             lsp_registry,
             lsp_registry_rx: Some(lsp_registry_rx),
+            pending_format_saves: HashMap::new(),
             #[cfg(feature = "github")]
             github_repository,
             #[cfg(feature = "github")]
