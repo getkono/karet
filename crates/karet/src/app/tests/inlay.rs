@@ -578,3 +578,56 @@ fn a_failure_for_a_superseded_request_is_ignored() {
     );
     assert_eq!(app.inlay_next_wake(now), None, "a stale failure backed off");
 }
+
+/// Reload the configuration with hints `enabled` or not, as the watcher does.
+fn reload_with_hints(app: &mut App, enabled: bool) {
+    let mut settings = app.settings.clone();
+    settings.editor.inlay_hints.enabled = enabled;
+    app.on_backend_event(
+        None,
+        SessionEvent::ConfigChanged {
+            report: Box::new(karet_session::LoadedConfig::from_settings(settings)),
+        },
+    );
+}
+
+#[test]
+fn turning_hints_off_clears_them_and_turning_them_on_asks_again() {
+    let (backend, mut app) = hinted_app("let a = 1;\n");
+    app.request_inlay_hints();
+    let Some(&(id, ..)) = inlay_requests(&backend).first() else {
+        unreachable!("a request was just issued");
+    };
+    app.on_inlay_hints(Some(id), DocumentId(9), 0, vec![hint(0, 5, ": i32")]);
+
+    reload_with_hints(&mut app, false);
+    assert!(
+        app.docs.inlay_hints.is_empty(),
+        "hints stayed painted after being turned off"
+    );
+    app.request_inlay_hints();
+    assert_eq!(inlay_requests(&backend).len(), 1, "asked while turned off");
+
+    reload_with_hints(&mut app, true);
+    app.request_inlay_hints();
+    assert_eq!(
+        inlay_requests(&backend).len(),
+        2,
+        "turning hints back on did not ask for them"
+    );
+}
+
+#[test]
+fn an_answer_arriving_after_hints_are_turned_off_is_discarded() {
+    let (backend, mut app) = hinted_app("let a = 1;\n");
+    app.request_inlay_hints();
+    let Some(&(id, ..)) = inlay_requests(&backend).first() else {
+        unreachable!("a request was just issued");
+    };
+    reload_with_hints(&mut app, false);
+    app.on_inlay_hints(Some(id), DocumentId(9), 0, vec![hint(0, 5, ": i32")]);
+    assert!(
+        app.docs.inlay_hints.is_empty(),
+        "a late answer was painted with hints turned off"
+    );
+}

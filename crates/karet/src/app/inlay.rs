@@ -322,6 +322,22 @@ impl App {
         self.docs.inlay_pending.remove(&doc);
     }
 
+    /// Drop every document's hints and every request for them, when they are
+    /// turned off.
+    ///
+    /// The setting only gates asking, so without this the hints already shown
+    /// stayed painted -- and kept moving with each edit -- until their tab
+    /// closed. Forgetting the pending requests too makes a late answer find
+    /// nothing outstanding and be discarded; turning hints back on then asks
+    /// afresh, since nothing is covered.
+    pub(crate) fn forget_all_inlay_hints(&mut self) {
+        self.docs.inlay_hints.clear();
+        self.docs.inlay_version.clear();
+        self.docs.inlay_covered.clear();
+        self.docs.inlay_pending.clear();
+        self.docs.inlay_quiet_until.clear();
+    }
+
     /// Forget what every document is covered for, without dropping what is on
     /// screen.
     ///
