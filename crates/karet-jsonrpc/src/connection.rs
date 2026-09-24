@@ -76,8 +76,10 @@ pub trait Handler: Send + Sync + 'static {
     /// Replies to peer requests are the exception, because none may be dropped
     /// and the reader must not block: one that finds this queue full waits on
     /// a per-connection overflow queue behind a single drainer task, so it
-    /// costs memory proportional to the unanswered requests the peer has sent
-    /// — never a task per reply.
+    /// costs memory proportional to the answered-but-unwritten requests the
+    /// peer has sent — never a task per reply. That overflow queue has no
+    /// constant bound: a peer that floods requests while never reading grows
+    /// it until it reads or the connection ends.
     ///
     /// [`Connection::start`] clamps this to at least `1`, the minimum
     /// `tokio::sync::mpsc` accepts — an override of `0` degrades to `1` rather

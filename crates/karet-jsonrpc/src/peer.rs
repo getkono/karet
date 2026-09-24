@@ -9,14 +9,28 @@
 //!
 //! So a consumer takes [`Connection::inbound_requests`] and answers at its own
 //! pace through a [`Responder`]. The one invariant this module exists to hold
-//! is that **a peer request is always answered**: a responder that is dropped,
-//! a stream nobody is draining, and a full queue all produce a reply rather
-//! than silence. Replies that meet a full outbound queue wait on one
-//! per-connection overflow queue with a single drainer (see `Replies`). A peer that is never answered waits forever — JSON-RPC puts
-//! no timeout obligation on the requester, and most language servers have none.
+//! is that **a peer request is answered for as long as the connection can
+//! still write**: a responder that is dropped, a stream nobody is draining, and
+//! a full queue all produce a reply rather than silence. Replies that meet a
+//! full outbound queue wait on one per-connection overflow queue with a single
+//! drainer (see `Replies`). A peer that is never answered waits forever —
+//! JSON-RPC puts no timeout obligation on the requester, and most language
+//! servers have none.
+//!
+//! # The one exception: a reply after the writer stops
+//!
+//! Once the writer has stopped — [`Connection::close`] has written its close
+//! signal, a write failed, or the connection was dropped — there is no wire
+//! left to answer on. A [`Responder`] still alive at that point (held by a
+//! consumer that has not answered yet) produces no frame: its reply is
+//! discarded and logged at `debug`. Nothing better is available — the reply
+//! has nowhere to go — and a peer that is being closed on is not waiting for
+//! it in any useful sense. Answer every outstanding responder *before*
+//! calling [`Connection::close`] if the peer must see those replies.
 //!
 //! [`Handler::answer`]: crate::Handler::answer
 //! [`Connection::inbound_requests`]: crate::Connection::inbound_requests
+//! [`Connection::close`]: crate::Connection::close
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
@@ -48,7 +62,14 @@ pub struct PeerRequest {
 /// [`cancel`](Self::cancel). Dropping it without answering is not a leak: the
 /// `Drop` impl sends [`ResponseError::method_not_found`], because a peer left
 /// waiting is a worse outcome than a wrong answer and discipline is not a
-/// mechanism — but it *is* a wrong answer, so drop only by accident. Answering twice is impossible — every method consumes `self`.
+/// mechanism — but it *is* a wrong answer, so drop only by accident.
+/// Answering twice is impossible — every method consumes `self`.
+///
+/// The obligation ends where the wire does: a responder answered (or dropped)
+/// after the connection's writer has stopped — after
+/// [`Connection::close`](crate::Connection::close), a write failure, or the
+/// connection being dropped — sends nothing, and its reply is only logged at
+/// `debug`. Answer before closing if the peer must see the reply.
 #[derive(Debug)]
 pub struct Responder {
     id: Value,
@@ -201,14 +222,21 @@ impl Drop for Responder {
 /// # What bounds it
 ///
 /// Tasks are bounded: one drainer per connection, however many replies are
-/// deferred. Memory is bounded by the peer, not by a constant — the overflow
-/// queue holds at most one reply per request the peer has sent and we have
-/// answered but not yet written, so it grows only as fast as we *read* the
-/// peer's requests. A hard cap is not available without breaking the
-/// invariant: past it a reply would have to be dropped (the peer waits
-/// forever) or the reader would have to block (the deadlock above). The
-/// per-reply detached task this replaced had the same memory profile plus one
-/// task, and one scheduler slot, per deferred reply.
+/// deferred. **Memory is not bounded by any constant.** The overflow queue
+/// holds one reply per request the peer has sent and we have answered but not
+/// yet written, so a peer that floods requests while never reading its own
+/// input grows it without limit — until the peer starts reading or the
+/// connection ends. That is deliberate. A cap would have to do something with
+/// the reply that meets it, and both options break the invariant: drop the
+/// reply (the peer waits forever on it) or block the caller until the queue
+/// shrinks (the reader-side deadlock above). Growth is also paced by us, not
+/// by the peer alone: a reply is only produced after the reader has taken the
+/// request off the wire, so the queue grows no faster than we *read*.
+///
+/// This is the memory profile of the design it replaced, which spawned one
+/// detached task per deferred reply and so held the same unbounded set of
+/// replies — plus a task, and a scheduler slot, for each. Only the task count
+/// changed; the memory trade was kept on purpose.
 #[derive(Clone, Debug)]
 pub(crate) struct Replies {
     outbound: mpsc::Sender<Outbound>,
