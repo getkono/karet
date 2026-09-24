@@ -467,3 +467,20 @@ fn text_after_a_pre_block_is_ordinary_again() {
     // Markdown text keeps its own spacing; only the `<b>` around `bold` was HTML.
     assert_eq!(all_text(&doc.blocks[1..]), "after  bold|");
 }
+
+#[test]
+fn a_pre_block_cut_by_a_blank_line_keeps_its_place() {
+    let doc = parse("<div>\n<pre>\nline1\n\nline2\n</pre>\n</div>\n");
+    assert!(
+        matches!(
+            doc.blocks.as_slice(),
+            [Block::CodeBlock { code, .. }, Block::Paragraph(_)] if code == "line1\n"
+        ),
+        "{:#?}",
+        doc.blocks
+    );
+    let lines: Vec<_> = (0..doc.blocks.len())
+        .filter_map(|i| doc.block_line(i))
+        .collect();
+    assert!(lines.windows(2).all(|w| w[0] < w[1]), "{lines:?}");
+}

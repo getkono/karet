@@ -83,8 +83,11 @@ impl Builder {
             self.html_token(token, false);
         }
         self.close_inline_run();
-        if self.innermost_html_tag() == Some("p") {
-            self.html_close("p");
+        // So does a `<pre>` whose block a blank line ended (inside a `<div>`): what
+        // follows is markdown, and must not land ahead of the code it follows.
+        if let Some(name @ ("p" | "pre")) = self.innermost_html_tag() {
+            let name = name.to_owned();
+            self.html_close(&name);
         }
     }
 
