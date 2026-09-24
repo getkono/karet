@@ -13,6 +13,8 @@ use crate::app::CommitInput;
 
 #[path = "tests/commit_graph.rs"]
 mod commit_graph;
+#[path = "tests/merge_conflict.rs"]
+mod merge_conflict;
 #[path = "tests/save_mark.rs"]
 mod save_mark;
 #[path = "tests/search_panel.rs"]
