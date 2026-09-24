@@ -425,3 +425,45 @@ fn thousands_of_open_containers_do_not_slow_each_block() {
             .all(|block| matches!(block, Block::Aligned { .. }))
     );
 }
+
+#[test]
+fn a_pre_block_is_a_code_block_that_keeps_its_whitespace() {
+    assert_eq!(
+        parse("<pre>\n  indented\n\n    more &lt;b&gt;\n</pre>\n").blocks,
+        vec![Block::CodeBlock {
+            lang: None,
+            code: "  indented\n\n    more <b>\n".to_owned(),
+        }]
+    );
+}
+
+#[test]
+fn a_pre_block_takes_its_language_from_its_code_element_and_ignores_other_markup() {
+    assert_eq!(
+        parse("<pre><code class=\"highlight language-Rust\">fn <b>main</b>() {}\n</code></pre>\n")
+            .blocks,
+        vec![Block::CodeBlock {
+            lang: Some("rust".to_owned()),
+            code: "fn main() {}\n".to_owned(),
+        }]
+    );
+    assert!(matches!(
+        parse("<pre lang=\"python\">x = 1\n</pre>\n").blocks.first(),
+        Some(Block::CodeBlock { lang: Some(lang), .. }) if lang == "python"
+    ));
+    // A class that names no language names none.
+    assert!(matches!(
+        parse("<pre><code class=\"highlight\">x\n</code></pre>\n")
+            .blocks
+            .first(),
+        Some(Block::CodeBlock { lang: None, .. })
+    ));
+}
+
+#[test]
+fn text_after_a_pre_block_is_ordinary_again() {
+    let doc = parse("<pre>a  b</pre>\n\nafter  <b>bold</b>\n");
+    assert!(matches!(doc.blocks.first(), Some(Block::CodeBlock { .. })));
+    // Markdown text keeps its own spacing; only the `<b>` around `bold` was HTML.
+    assert_eq!(all_text(&doc.blocks[1..]), "after  bold|");
+}

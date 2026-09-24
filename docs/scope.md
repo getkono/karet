@@ -52,8 +52,8 @@ Deliberately not built:
 
 - **Positional layout beyond alignment.** `align="center"`/`"right"` and `<center>`
   are honoured; floats, `style=`/CSS, tables used for layout, and side-by-side
-  columns are not. Images in one paragraph stack vertically, and HTML `<table>` and
-  `<pre>` read as plain text. Tags outside the subset keep their text and lose their
+  columns are not. Images in one paragraph stack vertically, and an HTML `<table>`
+  reads as plain text, a line per row. Tags outside the subset keep their text and lose their
   markup.
 - **Remote images.** The preview never makes a network request: an `http(s)` image —
   a CI badge — renders as a `🖼 alt` chip that links to it. Opening a file performs no

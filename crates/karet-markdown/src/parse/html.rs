@@ -6,6 +6,8 @@
 //!
 //! - text formatting: `b`/`strong`, `i`/`em`, `s`/`del`/`strike`, `code`/`kbd`/`tt`/`samp`;
 //! - `a href`, `img`, `br`, `hr`, `h1`–`h6`, `ul`/`ol`/`li`, `blockquote`;
+//! - `pre` as a code block keeping its whitespace, its language from a
+//!   `<code class="language-…">` inside it;
 //! - containers (`p`, `div`, `center`, `details`, `section`, …), honouring
 //!   `align="center"`/`"right"`; `summary` renders as a bold line;
 //! - `script`, `style`, `iframe` and `object` are dropped with their content.
@@ -104,6 +106,17 @@ impl Builder {
         if self.suppress.is_some() {
             return;
         }
+        // Inside `<pre>` whitespace is the content. As in a browser, the line break
+        // straight after the opening tag is not.
+        if let Some(Frame::CodeBlock { code, .. }) = self.stack.last_mut() {
+            let text = if code.is_empty() {
+                text.strip_prefix('\n').unwrap_or(text)
+            } else {
+                text
+            };
+            code.push_str(text);
+            return;
+        }
         let mut collapsed = collapse_whitespace(text);
         // A run of whitespace split across chunks (a line end, the next line's indent)
         // is still one run.
@@ -153,6 +166,14 @@ impl Builder {
             }
             return;
         }
+        // Inside `<pre>` markup is ignored; only a `<code class="language-…">` counts,
+        // naming the block's language.
+        if let Some(Frame::CodeBlock { lang, code }) = self.stack.last_mut() {
+            if name == "code" && lang.is_none() && code.trim().is_empty() {
+                *lang = attr(attrs, "class").and_then(class_language);
+            }
+            return;
+        }
         let empty = Vec::new;
         match name {
             "img" => self.html_image(attrs),
@@ -177,6 +198,16 @@ impl Builder {
             _ if inline => {},
             "hr" => self.block(Block::Rule),
             _ if self_closing => {},
+            "pre" => {
+                self.close_inline_run();
+                let block = Frame::CodeBlock {
+                    lang: attr(attrs, "lang")
+                        .map(|lang| lang.trim().to_ascii_lowercase())
+                        .filter(|lang| !lang.is_empty()),
+                    code: String::new(),
+                };
+                self.push_html(name, block);
+            },
             "blockquote" => {
                 self.close_inline_run();
                 self.push_html(name, Frame::Quote(Vec::new()));
@@ -250,6 +281,9 @@ impl Builder {
             if raw == name {
                 self.suppress = None;
             }
+            return;
+        }
+        if matches!(self.stack.last(), Some(Frame::CodeBlock { .. })) && name != "pre" {
             return;
         }
         let Some(index) = self
@@ -349,6 +383,17 @@ impl Builder {
             self.close();
         }
     }
+}
+
+/// The language a `class` attribute names (`language-rust`, `lang-rust`), if any.
+fn class_language(value: &str) -> Option<String> {
+    value.split_whitespace().find_map(|class| {
+        class
+            .strip_prefix("language-")
+            .or_else(|| class.strip_prefix("lang-"))
+            .filter(|name| !name.is_empty())
+            .map(str::to_ascii_lowercase)
+    })
 }
 
 /// The alignment `name` with `attrs` declares: `<center>`, or an `align` attribute of

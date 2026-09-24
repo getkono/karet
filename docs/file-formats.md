@@ -195,7 +195,8 @@ model through a curated subset; everything else is a deliberate non-goal recorde
 | `h1`–`h6`, `ul`/`ol` (`start`)/`li`, `blockquote` | their markdown equivalents |
 | `p`, `div`, `center`, `section`, `picture`, … with `align="center"`/`"right"` | the enclosed blocks centred or right-aligned (code blocks and tables keep their own layout) |
 | `details` / `summary` | always expanded, under a bold `▾` summary line |
-| `table`, `pre`, `sub`/`sup`, `span`, any other tag | its text only |
+| `pre` | a code block keeping its whitespace, highlighted when a `<code class="language-…">` (or `lang` attribute) names a bundled grammar |
+| `table` (a line per row), `sub`/`sup`, `span`, any other tag | its text only |
 | `script`, `style`, `iframe`, `object`, comments | nothing |
 
 As in a browser, a `<p>` ends where its HTML block does, so markdown after a blank
