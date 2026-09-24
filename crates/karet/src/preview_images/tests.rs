@@ -62,6 +62,58 @@ pub(crate) fn png(width: u32, height: u32, rgb: [u8; 3]) -> Vec<u8> {
     out
 }
 
+/// A valid lossless WebP of `width`×`height` opaque pixels, all `rgb`, its `VP8L` frame
+/// behind a `VP8X` header declaring a `canvas` and an unknown chunk of `padding`
+/// bytes. Every prefix code has a single symbol, so each pixel costs no bits and the
+/// bitstream is the header and the codes alone.
+fn extended_webp(
+    (width, height): (u32, u32),
+    rgb: [u8; 3],
+    canvas: (u32, u32),
+    padding: usize,
+) -> Vec<u8> {
+    let mut bits = Vec::new();
+    let mut push = |value: u32, count: u32| bits.extend((0..count).map(|i| (value >> i) & 1));
+    push(width - 1, 14);
+    push(height - 1, 14);
+    push(0, 1); // alpha unused
+    push(0, 3); // version
+    push(0, 1); // no transform
+    push(0, 1); // no colour cache
+    push(0, 1); // no meta prefix codes
+    // Green, red, blue, alpha: each one 8-bit symbol; distance: the 1-bit symbol 0.
+    for symbol in [rgb[1], rgb[0], rgb[2], 255] {
+        push(0b101, 3); // simple code, one symbol, 8 bits wide
+        push(u32::from(symbol), 8);
+    }
+    push(0b001, 3);
+    push(0, 1);
+    let mut frame = vec![0x2f];
+    frame.extend(bits.chunks(8).map(|byte| {
+        byte.iter()
+            .enumerate()
+            .fold(0u8, |acc, (i, &bit)| acc | (u8::from(bit == 1) << i))
+    }));
+    let chunk = |out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]| {
+        out.extend_from_slice(kind);
+        out.extend_from_slice(&u32::try_from(data.len()).unwrap_or(0).to_le_bytes());
+        out.extend_from_slice(data);
+        if data.len() % 2 == 1 {
+            out.push(0);
+        }
+    };
+    let mut vp8x = vec![0; 4];
+    vp8x.extend_from_slice(&(canvas.0 - 1).to_le_bytes()[..3]);
+    vp8x.extend_from_slice(&(canvas.1 - 1).to_le_bytes()[..3]);
+    let mut out = b"RIFF\0\0\0\0WEBP".to_vec();
+    chunk(&mut out, b"VP8X", &vp8x);
+    chunk(&mut out, b"XPAD", &vec![0; padding]);
+    chunk(&mut out, b"VP8L", &frame);
+    let riff = u32::try_from(out.len() - 8).unwrap_or(0);
+    out[4..8].copy_from_slice(&riff.to_le_bytes());
+    out
+}
+
 /// A scratch workspace holding `files`, with the markdown document at its root.
 fn workspace(files: &[(&str, &[u8])]) -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("a scratch workspace");
@@ -95,18 +147,43 @@ fn the_png_fixture_decodes() {
 }
 
 #[test]
-fn a_workspace_image_is_sized_from_its_header_and_queued() {
-    let dir = workspace(&[("docs/logo.png", &png(40, 20, [1, 2, 3]))]);
+fn a_workspace_image_is_sized_from_its_header_and_decoded_only_once_painted() {
+    let dir = workspace(&[
+        ("docs/logo.png", &png(40, 20, [1, 2, 3])),
+        ("docs/below.png", &png(8, 8, [1, 2, 3])),
+    ]);
     let images = PreviewImages::default();
     assert_eq!(size(&images, dir.path(), "docs/logo.png"), Some((40, 20)));
-    assert_eq!(images.pendings().len(), 1);
+    assert_eq!(size(&images, dir.path(), "docs/below.png"), Some((8, 8)));
+    assert_eq!(
+        images.queued(),
+        0,
+        "layout reserves rows but decodes nothing"
+    );
     assert!(matches!(
         lookup(&images, dir.path(), "docs/logo.png"),
         Lookup::Loading(_)
     ));
-    // Asking again reads nothing new and queues nothing new.
+    assert_eq!(images.queued(), 1, "only the painted image is queued");
+    // Painting or sizing it again queues nothing new.
+    assert!(matches!(
+        lookup(&images, dir.path(), "docs/logo.png"),
+        Lookup::Loading(_)
+    ));
     assert_eq!(size(&images, dir.path(), "./docs/logo.png"), Some((40, 20)));
-    assert_eq!(images.pendings().len(), 1);
+    assert_eq!(images.queued(), 1);
+}
+
+#[test]
+fn the_reveal_delay_runs_from_the_first_paint_not_from_layout() {
+    let dir = workspace(&[("logo.png", &png(2, 2, [0, 0, 0]))]);
+    let images = PreviewImages::default();
+    let _ = size(&images, dir.path(), "logo.png");
+    std::thread::sleep(crate::app::LOADING_REVEAL_DELAY);
+    let Lookup::Loading(pending) = lookup(&images, dir.path(), "logo.png") else {
+        panic!("the first paint queues the decode");
+    };
+    assert!(!pending.visible(), "no placeholder the moment it is queued");
 }
 
 #[test]
@@ -220,8 +297,10 @@ fn a_failed_decode_releases_its_rows() {
 #[test]
 fn a_decode_for_a_file_that_has_since_changed_is_dropped() {
     let dir = workspace(&[("logo.png", &png(2, 2, [0, 0, 0]))]);
-    let images = PreviewImages::default();
+    // Checked on every wrap, so the change below is seen at once.
+    let images = PreviewImages::with_restat(std::time::Duration::ZERO);
     let _ = size(&images, dir.path(), "logo.png");
+    let _ = lookup(&images, dir.path(), "logo.png");
     let stale = decode_for_test(dir.path().join("logo.png"));
     // The file changes (a different length is a different stamp), and is sized again.
     let _ = std::fs::write(dir.path().join("logo.png"), png(3, 3, [0, 0, 0]));
@@ -246,6 +325,8 @@ fn a_pending_load_is_offered_for_the_reveal_wake() {
     let dir = workspace(&[("logo.png", &png(2, 2, [0, 0, 0]))]);
     let images = PreviewImages::default();
     let _ = size(&images, dir.path(), "logo.png");
+    let _ = lookup(&images, dir.path(), "logo.png");
+    assert_eq!(images.pendings().len(), 1);
     assert!(
         images
             .pendings()
@@ -268,12 +349,12 @@ fn over_budget_the_least_recently_seen_image_is_evicted_and_reloads_on_sight() {
     images.settle();
     let _ = size(&images, dir.path(), "b.png");
     images.settle();
-    assert_eq!(images.ready_bytes(), 64);
-    assert!(matches!(
-        lookup(&images, dir.path(), "b.png"),
-        Lookup::Ready(_)
-    ));
-    // `a` was evicted; seeing it queues it again.
+    assert_eq!(
+        images.ready_bytes(),
+        64,
+        "`b` landed, and `a` made room for it"
+    );
+    // A frame showing only `a`: evicted, so seeing it queues it again.
     assert!(matches!(
         lookup(&images, dir.path(), "a.png"),
         Lookup::Loading(_)
@@ -283,7 +364,201 @@ fn over_budget_the_least_recently_seen_image_is_evicted_and_reloads_on_sight() {
         lookup(&images, dir.path(), "a.png"),
         Lookup::Ready(_)
     ));
-    assert_eq!(images.ready_bytes(), 64, "and `b` made room for it");
+    assert_eq!(
+        images.ready_bytes(),
+        64,
+        "and `b`, off screen, made room for it"
+    );
+    assert!(matches!(
+        lookup(&images, dir.path(), "b.png"),
+        Lookup::Loading(_)
+    ));
+}
+
+#[test]
+fn an_image_larger_than_the_whole_budget_is_kept_once_decoded() {
+    let dir = workspace(&[("big.png", &png(4, 4, [1, 1, 1]))]);
+    let images = PreviewImages::with_budget(10);
+    let _ = size(&images, dir.path(), "big.png");
+    let _ = lookup(&images, dir.path(), "big.png");
+    images.settle();
+    for _ in 0..3 {
+        assert!(matches!(
+            lookup(&images, dir.path(), "big.png"),
+            Lookup::Ready(_)
+        ));
+        images.settle();
+    }
+    assert_eq!(images.queued(), 0, "never queued again");
+}
+
+#[test]
+fn images_on_one_screen_over_the_budget_all_stay_ready() {
+    let names = ["a.png", "b.png", "c.png"];
+    let pngs: Vec<Vec<u8>> = (0..3u8).map(|i| png(4, 4, [i, i, i])).collect();
+    let files: Vec<(&str, &[u8])> = names
+        .iter()
+        .zip(&pngs)
+        .map(|(name, bytes)| (*name, bytes.as_slice()))
+        .collect();
+    let dir = workspace(&files);
+    // Room for one 4×4 RGBA image (64 bytes) — the screen shows three.
+    let images = PreviewImages::with_budget(100);
+    for name in names {
+        let _ = size(&images, dir.path(), name);
+        let _ = lookup(&images, dir.path(), name);
+    }
+    images.settle();
+    for frame in 0..4 {
+        for name in names {
+            assert!(
+                matches!(lookup(&images, dir.path(), name), Lookup::Ready(_)),
+                "{name} in frame {frame}"
+            );
+        }
+        assert_eq!(images.queued(), 0, "nothing re-queued in frame {frame}");
+        images.settle();
+        images.end_frame();
+    }
+    assert_eq!(images.ready_bytes(), 3 * 64, "over budget, tolerated");
+    // Scrolled away: two frames that paint none of them give the pixels back.
+    images.end_frame();
+    images.end_frame();
+    assert!(images.ready_bytes() <= 100, "back within the budget");
+}
+
+#[test]
+fn an_image_off_screen_for_a_whole_frame_makes_room_for_a_decode() {
+    let dir = workspace(&[
+        ("a.png", &png(4, 4, [1, 1, 1])),
+        ("b.png", &png(4, 4, [2, 2, 2])),
+    ]);
+    // Room for one 4×4 RGBA image (64 bytes), not two.
+    let images = PreviewImages::with_budget(100);
+    let _ = size(&images, dir.path(), "a.png");
+    let _ = size(&images, dir.path(), "b.png");
+    let _ = lookup(&images, dir.path(), "a.png");
+    images.settle();
+    images.end_frame();
+    // The next frame shows only `b`; `a` was painted in the frame before it, so it
+    // is kept while that frame is the last one finished.
+    let _ = lookup(&images, dir.path(), "b.png");
+    images.end_frame();
+    images.settle();
+    assert!(matches!(
+        lookup(&images, dir.path(), "b.png"),
+        Lookup::Ready(_)
+    ));
+    assert!(
+        matches!(lookup(&images, dir.path(), "a.png"), Lookup::Loading(_)),
+        "`a`, off screen for a whole frame, made room for `b`"
+    );
+    assert_eq!(images.ready_bytes(), 64);
+}
+
+#[test]
+fn a_refused_image_is_not_checked_again_within_the_restat_interval() {
+    let dir = workspace(&[("late.png", b"")]);
+    let path = dir.path().join("late.png");
+    // Over the size guard: refused.
+    std::fs::File::create(&path)
+        .and_then(|file| file.set_len(karet_filetype::SIZE_GUARD + 1))
+        .expect("a sparse oversized file");
+    let images = PreviewImages::default();
+    assert_eq!(size(&images, dir.path(), "late.png"), None);
+    std::fs::write(&path, png(4, 2, [0, 0, 0])).expect("write");
+    assert_eq!(
+        size(&images, dir.path(), "late.png"),
+        None,
+        "a re-wrap straight after reuses the refusal"
+    );
+    let images = PreviewImages::with_restat(std::time::Duration::ZERO);
+    assert_eq!(size(&images, dir.path(), "late.png"), Some((4, 2)));
+}
+
+#[test]
+fn a_sized_image_is_not_stat_ed_again_within_the_restat_interval() {
+    let dir = workspace(&[("logo.png", &png(4, 2, [0, 0, 0]))]);
+    let images = PreviewImages::default();
+    assert_eq!(size(&images, dir.path(), "logo.png"), Some((4, 2)));
+    // Neither a changed nor a vanished file is noticed by a re-wrap straight after:
+    // the answer comes from the cache, not the filesystem.
+    let _ = std::fs::write(dir.path().join("logo.png"), png(9, 9, [0, 0, 0]));
+    assert_eq!(size(&images, dir.path(), "logo.png"), Some((4, 2)));
+    let _ = std::fs::remove_file(dir.path().join("logo.png"));
+    assert_eq!(size(&images, dir.path(), "logo.png"), Some((4, 2)));
+    // Past the interval, it is.
+    let eager = PreviewImages::with_restat(std::time::Duration::ZERO);
+    let _ = std::fs::write(dir.path().join("logo.png"), png(4, 2, [0, 0, 0]));
+    assert_eq!(size(&eager, dir.path(), "logo.png"), Some((4, 2)));
+    let _ = std::fs::remove_file(dir.path().join("logo.png"));
+    assert_eq!(size(&eager, dir.path(), "logo.png"), None);
+    assert!(matches!(
+        lookup(&eager, dir.path(), "logo.png"),
+        Lookup::Missing
+    ));
+}
+
+/// A workspace `ws` holding `inside.png`, with an `outside.png` in its parent.
+#[cfg(unix)]
+fn beside_an_outside_image() -> (tempfile::TempDir, std::path::PathBuf) {
+    let parent = workspace(&[
+        ("outside.png", &png(2, 2, [255, 0, 0])),
+        ("ws/inside.png", &png(2, 2, [0, 0, 255])),
+        ("ws/README.md", b""),
+    ]);
+    let root = parent.path().join("ws");
+    (parent, root)
+}
+
+/// Swap `inside.png` for a symlink to the `outside.png` beside the workspace.
+#[cfg(unix)]
+fn swap_for_a_symlink_out(root: &Path) {
+    let _ = std::fs::remove_file(root.join("inside.png"));
+    if let Some(parent) = root.parent() {
+        let _ = std::os::unix::fs::symlink(parent.join("outside.png"), root.join("inside.png"));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_file_swapped_for_a_symlink_out_after_sizing_is_never_decoded() {
+    let (_parent, root) = beside_an_outside_image();
+    let images = PreviewImages::default();
+    assert_eq!(size(&images, &root, "inside.png"), Some((2, 2)));
+    swap_for_a_symlink_out(&root);
+    // The resolution is cached, but the decode re-checks the path before reading it.
+    assert!(matches!(
+        lookup(&images, &root, "inside.png"),
+        Lookup::Loading(_)
+    ));
+    images.settle();
+    assert!(matches!(
+        lookup(&images, &root, "inside.png"),
+        Lookup::Missing
+    ));
+    assert_eq!(images.ready_bytes(), 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_decoded_file_swapped_for_a_symlink_out_is_refused_on_its_next_check() {
+    let (_parent, root) = beside_an_outside_image();
+    let images = PreviewImages::with_restat(std::time::Duration::ZERO);
+    assert_eq!(size(&images, &root, "inside.png"), Some((2, 2)));
+    let _ = lookup(&images, &root, "inside.png");
+    images.settle();
+    assert!(matches!(
+        lookup(&images, &root, "inside.png"),
+        Lookup::Ready(_)
+    ));
+    swap_for_a_symlink_out(&root);
+    assert_eq!(size(&images, &root, "inside.png"), None, "a chip now");
+    assert!(matches!(
+        lookup(&images, &root, "inside.png"),
+        Lookup::Missing
+    ));
+    assert_eq!(images.ready_bytes(), 0, "its pixels are dropped");
 }
 
 #[test]
@@ -308,7 +583,12 @@ fn a_jpeg_whose_frame_header_lies_past_the_probe_is_still_queued() {
         None,
         "no rows yet"
     );
-    assert_eq!(images.pendings().len(), 1, "but the decode is queued");
+    // Without rows it is never painted, so it cannot wait for a paint to decode.
+    assert_eq!(
+        images.pendings().len(),
+        1,
+        "but the decode is queued at once"
+    );
     images.settle();
     assert!(matches!(
         lookup(&images, dir.path(), "big-exif.jpg"),
@@ -346,4 +626,55 @@ fn a_file_claiming_a_vast_image_is_refused_before_decoding() {
         lookup(&images, dir.path(), "vast.jpg"),
         Lookup::Missing
     ));
+}
+
+#[test]
+fn the_webp_fixture_decodes_and_probes() {
+    let bytes = extended_webp((3, 2), [10, 20, 30], (3, 2), 0);
+    assert_eq!(
+        karet_fileview::image::probe_dimensions(&bytes),
+        Some((3, 2))
+    );
+    let image = karet_fileview::image::decode(&bytes);
+    assert!(image.is_ok_and(|image| (image.width(), image.height()) == (3, 2)));
+}
+
+#[test]
+fn an_extended_webp_whose_frame_lies_past_the_probe_is_queued_and_decodes() {
+    // A large chunk before the frame keeps the probe from vouching for the canvas.
+    let padding = usize::try_from(super::PROBE_BYTES).unwrap_or(0) + 16;
+    let bytes = extended_webp((4, 2), [9, 9, 9], (4, 2), padding);
+    let dir = workspace(&[("wide.webp", &bytes)]);
+    let images = PreviewImages::default();
+    assert_eq!(size(&images, dir.path(), "wide.webp"), None, "no rows yet");
+    assert_eq!(images.queued(), 1, "but the decode is queued at once");
+    let before = images.generation();
+    images.settle();
+    assert_ne!(
+        images.generation(),
+        before,
+        "rows are reserved once it decodes"
+    );
+    assert_eq!(size(&images, dir.path(), "wide.webp"), Some((4, 2)));
+    assert!(matches!(
+        lookup(&images, dir.path(), "wide.webp"),
+        Lookup::Ready(image) if (image.width(), image.height()) == (4, 2)
+    ));
+}
+
+#[test]
+fn an_extended_webp_whose_canvas_disagrees_with_its_frame_is_refused() {
+    // Near its header or past the probe, the whole file is re-probed before decoding.
+    for padding in [0, usize::try_from(super::PROBE_BYTES).unwrap_or(0) + 16] {
+        let bytes = extended_webp((2, 2), [9, 9, 9], (3, 3), padding);
+        let dir = workspace(&[("lying.webp", &bytes)]);
+        let images = PreviewImages::default();
+        assert_eq!(size(&images, dir.path(), "lying.webp"), None);
+        images.settle();
+        assert!(
+            matches!(lookup(&images, dir.path(), "lying.webp"), Lookup::Missing),
+            "padding {padding}"
+        );
+        assert_eq!(images.ready_bytes(), 0);
+    }
 }

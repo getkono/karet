@@ -289,6 +289,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     draw_toasts(f, app, &theme, area);
 
     app.scroll_hits = hits;
+    // Every preview has looked up the images it shows: the rest may be evicted.
+    app.preview_images.end_frame();
 }
 
 /// Draw the modal explaining why a destructive operation is delaying shutdown.

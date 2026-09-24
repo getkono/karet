@@ -9,9 +9,13 @@
 //!   network request is ever made;
 //! - the draw path reads at most [`PROBE_BYTES`] of a file, for its header, so layout
 //!   can reserve the image's rows before any pixel is decoded;
+//! - an image is decoded only once it is painted — layout sizes every image in the
+//!   document, but decodes none (bar those whose size only a decode can tell);
 //! - decoding runs on one background thread and lands through the event loop, which
-//!   repaints; files over the size guard or the pixel cap stay chips;
-//! - decoded pixels are budgeted, oldest-first, and an evicted image reloads on sight.
+//!   repaints; files over the size guard or the pixel cap stay chips, and a file that
+//!   has since become a symlink is refused, not followed;
+//! - decoded pixels are budgeted, oldest-first, and an evicted image reloads on sight;
+//!   the images on screen are never evicted, so a screen over budget runs over it.
 //!
 //! Built without the `images` feature, nothing is ever sized, so every image is a chip.
 
@@ -48,6 +52,9 @@ impl PreviewImages {
     pub(crate) fn generation(&self) -> u64 {
         0
     }
+
+    /// Nothing is ever decoded, so nothing is evicted.
+    pub(crate) fn end_frame(&self) {}
 }
 
 /// Sizes nothing.

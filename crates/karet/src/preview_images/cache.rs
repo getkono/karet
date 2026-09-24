@@ -8,6 +8,8 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc as std_mpsc;
+use std::time::Duration;
+use std::time::Instant;
 use std::time::SystemTime;
 
 use karet_fileview::image;
@@ -28,6 +30,16 @@ const MAX_FILE_BYTES: u64 = karet_filetype::SIZE_GUARD;
 const MAX_PIXELS: u64 = 4096 * 4096;
 /// The decoded bytes kept before the least-recently-seen images are dropped.
 const READY_BUDGET: u64 = 256 * 1024 * 1024;
+/// How long a sized image's stamp is trusted before a re-wrap stats the file again.
+///
+/// The preview re-wraps on every keystroke, and a `stat` (plus the containment check)
+/// per image per keystroke is wasted work for files that almost never change. So an
+/// image checked within this interval is answered from the cache without touching
+/// the filesystem. The staleness this adds is bounded and small: a file changed on
+/// disk was only ever noticed at the next re-wrap, and now it is noticed at the first
+/// re-wrap at least this long after the previous check. The decode worker re-checks
+/// the file regardless, so a stale answer here never reads anything it should not.
+const RESTAT_INTERVAL: Duration = Duration::from_secs(1);
 
 /// What the preview may paint for an image.
 #[derive(Clone, Debug)]
@@ -72,6 +84,10 @@ struct Job {
 
 #[derive(Debug)]
 enum Load {
+    /// Sized from its header, but never painted, so never decoded: the decode is
+    /// queued by the first [`PreviewImages::lookup`], not by layout, so a long
+    /// document decodes only the images the reader actually scrolls to.
+    Unrequested,
     Queued(Pending),
     Ready(Arc<Image>),
     /// Dropped to stay within [`READY_BUDGET`]; decoded again when next painted.
@@ -85,8 +101,12 @@ struct Entry {
     /// The size the layout reserved, once known.
     dims: Option<(u32, u32)>,
     load: Load,
-    /// The [`State::clock`] tick this image was last sized or painted at.
+    /// The [`State::clock`] tick this image was last painted (or first sized) at.
     last_used: u64,
+    /// The [`State::epoch`] this image was last painted in, if ever.
+    seen: Option<u64>,
+    /// When the file was last stat'ed and checked, for [`RESTAT_INTERVAL`].
+    checked: Instant,
 }
 
 #[derive(Debug, Default)]
@@ -98,6 +118,14 @@ struct State {
     resolved: HashMap<(PathBuf, String), Option<PathBuf>>,
     clock: u64,
     ready_bytes: u64,
+    /// The current frame, advanced by [`PreviewImages::end_frame`]. An image looked
+    /// up in the current frame or the one before it is on screen and is never
+    /// evicted — see [`evict_over_budget`].
+    epoch: u64,
+    /// Paths the preview refused (missing, oversized, not a regular file, no longer
+    /// canonical, unreadable), with when they were checked: a broken image link is
+    /// not re-checked on every keystroke either, for [`RESTAT_INTERVAL`].
+    refused: HashMap<PathBuf, Instant>,
 }
 
 /// The markdown preview's image cache. Interior mutability lets the draw path —
@@ -114,6 +142,8 @@ pub(crate) struct PreviewImages {
     receiver: RefCell<Option<mpsc::UnboundedReceiver<Decoded>>>,
     /// The decoded bytes to keep: [`READY_BUDGET`], but for tests.
     budget: u64,
+    /// How long a sized image goes unchecked: [`RESTAT_INTERVAL`], but for tests.
+    restat: Duration,
 }
 
 impl Default for PreviewImages {
@@ -126,6 +156,7 @@ impl Default for PreviewImages {
             results,
             receiver: RefCell::new(Some(receiver)),
             budget: READY_BUDGET,
+            restat: RESTAT_INTERVAL,
         }
     }
 }
@@ -163,24 +194,26 @@ impl PreviewImages {
         }
     }
 
-    /// What to paint for `src` in the document at `source`. An evicted image is queued
-    /// to decode again.
+    /// What to paint for `src` in the document at `source` — called by the draw path
+    /// for the visible image rows only. An image not decoded yet (never painted, or
+    /// evicted) is queued to decode here, and its reveal delay runs from now.
     pub(crate) fn lookup(&self, source: &Path, root: &Path, src: &str) -> Lookup {
         let Some(path) = self.resolve(source, root, src) else {
             return Lookup::Missing;
         };
         let mut state = self.state.borrow_mut();
         state.clock += 1;
-        let now = state.clock;
+        let (now, epoch) = (state.clock, state.epoch);
         let Some(entry) = state.entries.get_mut(&path) else {
             return Lookup::Missing;
         };
         entry.last_used = now;
+        entry.seen = Some(epoch);
         match &entry.load {
             Load::Ready(image) => Lookup::Ready(Arc::clone(image)),
             Load::Queued(pending) => Lookup::Loading(*pending),
             Load::Failed => Lookup::Missing,
-            Load::Evicted => {
+            Load::Unrequested | Load::Evicted => {
                 let pending = Pending::start();
                 entry.load = Load::Queued(pending);
                 let stamp = entry.stamp;
@@ -205,7 +238,7 @@ impl PreviewImages {
         let bytes = match decoded.image {
             Some(image) => {
                 entry.dims = Some((image.width(), image.height()));
-                let bytes = u64::from(image.width()) * u64::from(image.height()) * 4;
+                let bytes = image_bytes(&image);
                 entry.load = Load::Ready(image);
                 bytes
             },
@@ -218,58 +251,106 @@ impl PreviewImages {
         if entry.dims != reserved {
             self.generation.set(self.generation.get().wrapping_add(1));
         }
+        if bytes == 0 {
+            return;
+        }
         state.ready_bytes = state.ready_bytes.saturating_add(bytes);
-        evict_over_budget(&mut state, self.budget);
+        evict_over_budget(&mut state, self.budget, Some(&decoded.path));
+    }
+
+    /// End a drawn frame: every image the frame did not paint (nor the one before it)
+    /// may now be evicted, so a screen scrolled away from its images gives their
+    /// pixels back even if no decode lands again.
+    pub(crate) fn end_frame(&self) {
+        let mut state = self.state.borrow_mut();
+        state.epoch = state.epoch.wrapping_add(1);
+        evict_over_budget(&mut state, self.budget, None);
     }
 
     /// The native size of `src` in the document at `source`, reading at most the
-    /// file's header; queues the decode. `None` for an image the preview will not load.
+    /// file's header. `None` for an image the preview will not load.
+    ///
+    /// Layout sizes every image in the document, so this only reserves rows; the
+    /// decode waits for [`Self::lookup`] to see the image on screen.
     fn dimensions(&self, source: &Path, root: &Path, src: &str) -> Option<(u32, u32)> {
         let path = self.resolve(source, root, src)?;
-        let meta = std::fs::metadata(&path).ok()?;
-        if !meta.is_file() || meta.len() > MAX_FILE_BYTES {
-            return None;
+        let checked = Instant::now();
+        {
+            let state = self.state.borrow();
+            let fresh = |at: Instant| checked.saturating_duration_since(at) < self.restat;
+            if state.refused.get(&path).is_some_and(|&at| fresh(at)) {
+                return None;
+            }
+            if let Some(entry) = state.entries.get(&path)
+                && fresh(entry.checked)
+            {
+                return entry.dims;
+            }
         }
+        // The path was canonical — so inside the workspace — when it was resolved; a
+        // file (or directory) since swapped for a symlink leaves it no longer its own
+        // canonical form, and it is refused rather than followed.
+        let meta = still_canonical(&path)
+            .then(|| std::fs::metadata(&path).ok())
+            .flatten()
+            .filter(|meta| meta.is_file() && meta.len() <= MAX_FILE_BYTES);
+        let Some(meta) = meta else {
+            self.refuse(&path, checked);
+            return None;
+        };
         let stamp = Stamp::of(&meta);
+        if let Some(entry) = self.state.borrow_mut().entries.get_mut(&path)
+            && entry.stamp == stamp
+        {
+            entry.checked = checked;
+            return entry.dims;
+        }
+        let Some(head) = read_head(&path) else {
+            self.refuse(&path, checked);
+            return None;
+        };
         let mut state = self.state.borrow_mut();
         state.clock += 1;
         let now = state.clock;
-        if let Some(entry) = state.entries.get_mut(&path)
-            && entry.stamp == stamp
-        {
-            entry.last_used = now;
-            return entry.dims;
-        }
-        let head = read_head(&path)?;
         let dims = image::probe_dimensions(&head);
         let over_cap = dims.is_some_and(|(w, h)| u64::from(w) * u64::from(h) > MAX_PIXELS);
         // Only a format the decoder knows is worth a decode: TIFF has no header size to
-        // probe, and a JPEG's frame header can lie past the bytes read (behind a large
-        // EXIF or ICC segment), but both decode; anything else (SVG, GIF, …) is a chip
-        // straight away.
-        let decodable = dims.is_some() || is_tiff(&head) || head.starts_with(b"\xff\xd8\xff");
+        // probe, a JPEG's frame header can lie past the bytes read (behind a large EXIF
+        // or ICC segment), and so can an extended WebP's frame (behind a large `ALPH`
+        // or `ICCP` chunk) — the probe vouches for its canvas only once it has seen
+        // that frame — but all of them decode; anything else (SVG, GIF, …) is a chip
+        // straight away. [`admissible`] re-probes the whole file before any decode, so
+        // the pixel cap holds for these too.
+        let decodable =
+            dims.is_some() || is_tiff(&head) || head.starts_with(b"\xff\xd8\xff") || is_webp(&head);
         let load = if over_cap || !decodable {
             Load::Failed
+        } else if dims.is_some() {
+            Load::Unrequested
         } else {
+            // The exception to decoding on paint: with no size from the header (TIFF, or
+            // a JPEG or WebP whose frame lies past the probe), layout reserves no
+            // rows until the decode reports one — and a row-less image is never
+            // painted, so it would never be looked up. It decodes now instead.
             Load::Queued(Pending::start())
         };
         let queue = matches!(load, Load::Queued(_));
-        if let Some(previous) = state.entries.remove(&path)
-            && let Load::Ready(image) = previous.load
-        {
-            let bytes = u64::from(image.width()) * u64::from(image.height()) * 4;
-            state.ready_bytes = state.ready_bytes.saturating_sub(bytes);
-        }
-        let dims = dims.filter(|_| queue);
-        state.entries.insert(
+        let dims = dims.filter(|_| !matches!(load, Load::Failed));
+        state.refused.remove(&path);
+        let previous = state.entries.insert(
             path.clone(),
             Entry {
                 stamp,
                 dims,
                 load,
                 last_used: now,
+                seen: None,
+                checked,
             },
         );
+        if let Some(previous) = previous {
+            release(&mut state, &previous);
+        }
         drop(state);
         if queue {
             self.queue(path, stamp);
@@ -293,6 +374,16 @@ impl PreviewImages {
             .resolved
             .insert(key, resolved.clone());
         resolved
+    }
+
+    /// Drop the entry for `path`, which the preview no longer loads, and its pixels,
+    /// remembering the refusal (made at `checked`) so it is not re-checked per wrap.
+    fn refuse(&self, path: &Path, checked: Instant) {
+        let mut state = self.state.borrow_mut();
+        if let Some(entry) = state.entries.remove(path) {
+            release(&mut state, &entry);
+        }
+        state.refused.insert(path.to_path_buf(), checked);
     }
 
     /// Hand a decode to the worker, starting it on first use. A worker that cannot be
@@ -319,21 +410,42 @@ impl PreviewImages {
     }
 }
 
+/// Stop counting a removed entry's decoded bytes against the budget.
+fn release(state: &mut State, entry: &Entry) {
+    if let Load::Ready(image) = &entry.load {
+        state.ready_bytes = state.ready_bytes.saturating_sub(image_bytes(image));
+    }
+}
+
+/// The decoded size of `image`: RGBA, four bytes a pixel.
+fn image_bytes(image: &Image) -> u64 {
+    u64::from(image.width()) * u64::from(image.height()) * 4
+}
+
 /// Drop the least-recently-seen decoded images until the rest fit `budget` bytes.
-fn evict_over_budget(state: &mut State, budget: u64) {
+///
+/// Never `accepted` (the decode just taken) nor an image painted in the current or
+/// the last finished frame: evicting either would have the next frame queue it again,
+/// and a screen whose images together exceed the budget would decode forever. Such a
+/// screen is let run over budget instead, until a frame stops showing some of them
+/// ([`PreviewImages::end_frame`] evicts then).
+fn evict_over_budget(state: &mut State, budget: u64, accepted: Option<&Path>) {
+    let recent = state.epoch.saturating_sub(1);
     while state.ready_bytes > budget {
         let oldest = state
             .entries
             .iter_mut()
-            .filter(|(_, entry)| matches!(entry.load, Load::Ready(_)))
+            .filter(|(path, entry)| {
+                matches!(entry.load, Load::Ready(_))
+                    && Some(path.as_path()) != accepted
+                    && entry.seen.is_none_or(|seen| seen < recent)
+            })
             .min_by_key(|(_, entry)| entry.last_used);
         let Some((_, entry)) = oldest else {
-            state.ready_bytes = 0;
             return;
         };
         if let Load::Ready(image) = std::mem::replace(&mut entry.load, Load::Evicted) {
-            let bytes = u64::from(image.width()) * u64::from(image.height()) * 4;
-            state.ready_bytes = state.ready_bytes.saturating_sub(bytes);
+            state.ready_bytes = state.ready_bytes.saturating_sub(image_bytes(&image));
         }
     }
 }
@@ -355,10 +467,11 @@ fn spawn_worker(results: mpsc::UnboundedSender<Decoded>) -> Option<std_mpsc::Sen
 }
 
 /// Decode one file, re-checking what the draw path checked: the file may have
-/// changed in between.
+/// changed in between — even into a symlink out of the workspace.
 fn decode_file(job: Job) -> Decoded {
-    let image = std::fs::metadata(&job.path)
-        .ok()
+    let image = still_canonical(&job.path)
+        .then(|| std::fs::metadata(&job.path).ok())
+        .flatten()
         .filter(|meta| meta.is_file() && meta.len() <= MAX_FILE_BYTES)
         .and_then(|_| std::fs::read(&job.path).ok())
         .filter(|bytes| admissible(bytes))
@@ -395,6 +508,16 @@ fn read_head(path: &Path) -> Option<Vec<u8>> {
     Some(head)
 }
 
+/// Whether `path` — canonical, and so inside the workspace, when it was resolved — is
+/// still its own canonical form: no component of it has since become a symlink.
+fn still_canonical(path: &Path) -> bool {
+    std::fs::canonicalize(path).is_ok_and(|canonical| canonical == path)
+}
+
+fn is_webp(head: &[u8]) -> bool {
+    head.starts_with(b"RIFF") && head.get(8..12) == Some(b"WEBP")
+}
+
 fn is_tiff(head: &[u8]) -> bool {
     head.starts_with(b"II*\0") || head.starts_with(b"MM\0*")
 }
@@ -423,18 +546,23 @@ pub(crate) fn decode_now(path: PathBuf, meta: &std::fs::Metadata) -> Decoded {
 
 #[cfg(test)]
 impl PreviewImages {
-    /// Run every queued decode on this thread and accept the results, so a test sees
-    /// the settled cache without a worker or an event loop.
+    /// Run every decode the preview could want on this thread and accept the results,
+    /// so a test sees the settled cache without a worker or an event loop: each queued
+    /// decode, and each image sized but not yet painted — as if the whole document had
+    /// been on screen. (An evicted image stays evicted until it is looked up again.)
     pub(crate) fn settle(&self) {
-        let queued: Vec<(PathBuf, Stamp)> = self
-            .state
-            .borrow()
-            .entries
-            .iter()
-            .filter(|(_, entry)| matches!(entry.load, Load::Queued(_)))
-            .map(|(path, entry)| (path.clone(), entry.stamp))
-            .collect();
-        for (path, stamp) in queued {
+        let mut state = self.state.borrow_mut();
+        let mut wanted = Vec::new();
+        for (path, entry) in &mut state.entries {
+            if matches!(entry.load, Load::Unrequested) {
+                entry.load = Load::Queued(Pending::start());
+            }
+            if matches!(entry.load, Load::Queued(_)) {
+                wanted.push((path.clone(), entry.stamp));
+            }
+        }
+        drop(state);
+        for (path, stamp) in wanted {
             self.accept(decode_file(Job { path, stamp }));
         }
     }
@@ -459,5 +587,18 @@ impl PreviewImages {
             budget,
             ..Self::default()
         }
+    }
+
+    /// A cache trusting a sized image's stamp for `restat` before checking it again.
+    pub(crate) fn with_restat(restat: Duration) -> Self {
+        Self {
+            restat,
+            ..Self::default()
+        }
+    }
+
+    /// The decodes queued so far — each one handed to the worker.
+    pub(crate) fn queued(&self) -> usize {
+        self.pendings().len()
     }
 }
