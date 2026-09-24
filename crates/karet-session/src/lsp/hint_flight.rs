@@ -190,11 +190,19 @@ impl HintFlight {
     }
 
     /// Stop every running request and wait until each has released the client,
-    /// so the caller can take sole ownership of it to shut it down.
-    pub(super) async fn shutdown(&mut self) {
-        self.deferred.clear();
-        self.running.clear();
+    /// so the caller can take sole ownership of it to shut it down -- answering
+    /// everything accepted with an empty set on the way, as [`Self::abandon`]
+    /// does, because the slot is retiring and nothing else ever will.
+    pub(super) async fn shutdown(
+        &mut self,
+        updates: &mpsc::UnboundedSender<LspUpdate>,
+        generation: u64,
+    ) {
+        // Stopped before answering, so a task that finished in the meantime is
+        // still answered exactly once: `shutdown` discards its output, and its
+        // tag is still in `running`.
         self.tasks.shutdown().await;
+        self.answer_all_empty(updates, generation);
     }
 
     /// Answer every deferred and running request with an empty set, forgetting

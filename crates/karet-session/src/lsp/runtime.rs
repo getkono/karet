@@ -801,15 +801,18 @@ pub(super) async fn server_task(task: ServerTask) {
         }
     }
     // Every launched request holds the client; stop them first, so the polite
-    // shutdown owns it outright rather than falling back to a kill on drop.
-    hints.shutdown().await;
+    // shutdown owns it outright rather than falling back to a kill on drop. The
+    // requests are answered, not dropped: an answer to a request is not a report
+    // about the slot, so it is still true after retirement (see `accepts`).
+    hints.shutdown(&updates, generation).await;
     if let Some(client) = client.and_then(Arc::into_inner) {
         let _ = client.shutdown().await;
     }
     if let Some(task) = diagnostic_task {
         task.abort();
     }
-    // Nothing is reported on the way out, and nothing can be: a task only reaches
+    // Nothing is reported about the slot on the way out -- the hint answers
+    // above are answers, not reports -- and nothing can be: a task only reaches
     // here after `rx.recv()` returned `None`, which happens only once the manager
     // has dropped its slot. Anything said now is said by a task that no longer
     // represents anything -- and since the key can be re-taken immediately, a
