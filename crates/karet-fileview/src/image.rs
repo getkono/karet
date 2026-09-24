@@ -184,8 +184,55 @@ impl Image {
         let target_w = ((f64::from(self.width) * scale) as u32).clamp(1, u32::from(area.width));
         let target_h =
             ((f64::from(self.height) * scale) as u32).clamp(1, u32::from(area.height) * 2);
-        for cy in 0..target_h.div_ceil(2) {
-            for cx in 0..target_w {
+        self.paint_halfblocks(target_w, target_h, 0, area, buf);
+    }
+
+    /// Render a window of the image scaled into a `cols`×`rows` halfblock box: the
+    /// box's cell rows from `first_row` on, as many as fit in `area`, clipped to its
+    /// width.
+    ///
+    /// The box is taken as given — the caller chose its aspect — so a view scrolling
+    /// past a tall image can paint just the rows on screen, each row identical to the
+    /// one a whole-box render would paint there.
+    pub fn render_halfblocks_rows(
+        &self,
+        cols: u16,
+        rows: u16,
+        first_row: u16,
+        area: Rect,
+        buf: &mut Buffer,
+    ) {
+        if cols == 0 || rows == 0 || area.width == 0 || area.height == 0 {
+            return;
+        }
+        if self.width == 0 || self.height == 0 {
+            return;
+        }
+        self.paint_halfblocks(
+            u32::from(cols),
+            u32::from(rows) * 2,
+            u32::from(first_row),
+            area,
+            buf,
+        );
+    }
+
+    /// Paint this image resampled to `target_w`×`target_h` pixels, two pixels per
+    /// cell, starting at cell row `first_row` of the result, into `area`.
+    fn paint_halfblocks(
+        &self,
+        target_w: u32,
+        target_h: u32,
+        first_row: u32,
+        area: Rect,
+        buf: &mut Buffer,
+    ) {
+        let last_row = target_h
+            .div_ceil(2)
+            .min(first_row.saturating_add(u32::from(area.height)));
+        let cols = target_w.min(u32::from(area.width));
+        for cy in first_row..last_row {
+            for cx in 0..cols {
                 let top = self.sample_resized(cx, (cy * 2).min(target_h - 1), target_w, target_h);
                 let bottom_y = cy * 2 + 1;
                 let bottom = if bottom_y < target_h {
@@ -194,7 +241,7 @@ impl Image {
                     top
                 };
                 let x = area.x + cx as u16;
-                let y = area.y + cy as u16;
+                let y = area.y + (cy - first_row) as u16;
                 if let Some(cell) = buf.cell_mut((x, y)) {
                     cell.set_char('▀');
                     cell.set_fg(Color::Rgb(top[0], top[1], top[2]));
@@ -328,19 +375,71 @@ fn is_tiff(bytes: &[u8]) -> bool {
 #[cfg(feature = "images")]
 #[must_use]
 pub fn dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
-    if is_png(bytes) && bytes.get(12..16) == Some(b"IHDR") {
-        let header = bytes.get(16..24)?;
-        let width = u32::from_be_bytes(header.get(..4)?.try_into().ok()?);
-        let height = u32::from_be_bytes(header.get(4..)?.try_into().ok()?);
-        return (width > 0 && height > 0).then_some((width, height));
-    }
-    if is_jpeg(bytes) {
-        let info = gamut::jpeg::info(bytes).ok()?;
-        if info.width > 0 && info.height > 0 {
-            return Some((info.width, info.height));
+    probe_dimensions(bytes).or_else(|| decode(bytes).ok().map(|image| (image.width, image.height)))
+}
+
+/// Read the pixel dimensions from the header at the start of an image file, never
+/// decoding pixels — `head` may be just the file's first few kilobytes.
+///
+/// Knows PNG (`IHDR`), JPEG (the frame header, wherever the markers before it put
+/// it) and WebP (`VP8 `, `VP8L` and `VP8X`). `None` for TIFF, whose header points
+/// elsewhere in the file, for anything unrecognised, and for a header cut short.
+#[cfg(feature = "images")]
+#[must_use]
+pub fn probe_dimensions(head: &[u8]) -> Option<(u32, u32)> {
+    let (width, height) = if is_png(head) {
+        if head.get(12..16) != Some(b"IHDR") {
+            return None;
         }
+        (be_u32(head, 16)?, be_u32(head, 20)?)
+    } else if is_jpeg(head) {
+        let info = gamut::jpeg::info(head).ok()?;
+        (info.width, info.height)
+    } else if is_webp(head) {
+        webp_dimensions(head)?
+    } else {
+        return None;
+    };
+    (width > 0 && height > 0).then_some((width, height))
+}
+
+/// The canvas size a WebP file's first chunk declares.
+#[cfg(feature = "images")]
+fn webp_dimensions(head: &[u8]) -> Option<(u32, u32)> {
+    let le24 = |at: usize| -> Option<u32> {
+        let b = head.get(at..at + 3)?;
+        Some(u32::from(b[0]) | u32::from(b[1]) << 8 | u32::from(b[2]) << 16)
+    };
+    match head.get(12..16)? {
+        // Extended: 24-bit canvas width and height, each stored minus one.
+        b"VP8X" => Some((le24(24)? + 1, le24(27)? + 1)),
+        // Lossless: after the 0x2f signature, 14-bit width and height, minus one.
+        b"VP8L" => {
+            if head.get(20) != Some(&0x2f) {
+                return None;
+            }
+            let bits = u32::from_le_bytes(head.get(21..25)?.try_into().ok()?);
+            Some(((bits & 0x3fff) + 1, ((bits >> 14) & 0x3fff) + 1))
+        },
+        // Lossy: a 3-byte frame tag and the 9d 01 2a start code, then 14-bit sizes.
+        b"VP8 " => {
+            if head.get(23..26) != Some(&[0x9d, 0x01, 0x2a]) {
+                return None;
+            }
+            let le14 = |at: usize| -> Option<u32> {
+                let b = head.get(at..at + 2)?;
+                Some(u32::from(u16::from_le_bytes([b[0], b[1]]) & 0x3fff))
+            };
+            Some((le14(26)?, le14(28)?))
+        },
+        _ => None,
     }
-    decode(bytes).ok().map(|image| (image.width, image.height))
+}
+
+/// The big-endian `u32` at byte `at`, if `bytes` reaches that far.
+#[cfg(feature = "images")]
+fn be_u32(bytes: &[u8], at: usize) -> Option<u32> {
+    Some(u32::from_be_bytes(bytes.get(at..at + 4)?.try_into().ok()?))
 }
 
 #[cfg(all(test, feature = "images"))]
@@ -532,6 +631,119 @@ mod tests {
         assert!(esc.contains("f=32"));
         assert!(esc.contains("c=4"));
         assert!(esc.contains("r=2"));
+    }
+
+    #[cfg(feature = "images")]
+    #[test]
+    fn probe_reads_png_jpeg_and_webp_headers_from_a_prefix() {
+        let png = test_png();
+        assert_eq!(probe_dimensions(&png[..24]), Some((2, 2)));
+        let webp = rgba_fixture(gamut::webp::WebpEncoder::lossless());
+        assert_eq!(probe_dimensions(&webp[..25.min(webp.len())]), Some((2, 2)));
+        let lossy = rgba_fixture(gamut::webp::WebpEncoder::lossy(80));
+        assert_eq!(
+            probe_dimensions(&lossy[..30.min(lossy.len())]),
+            Some((2, 2))
+        );
+        // The JPEG frame header sits past the tables; the prefix need only reach the
+        // end of its segment (marker, 2-byte length, then that many bytes less two).
+        let jpeg = jpeg_fixture();
+        let sof = jpeg
+            .windows(2)
+            .position(|w| w == [0xff, 0xc0] || w == [0xff, 0xc2])
+            .unwrap_or(jpeg.len());
+        let length = jpeg
+            .get(sof + 2..sof + 4)
+            .map_or(0, |b| usize::from(u16::from_be_bytes([b[0], b[1]])));
+        let end = (sof + 2 + length).min(jpeg.len());
+        assert!(end < jpeg.len(), "the probe must not need the scan data");
+        assert_eq!(probe_dimensions(&jpeg[..end]), Some((2, 2)));
+    }
+
+    #[cfg(feature = "images")]
+    #[test]
+    fn probe_reads_an_extended_webp_canvas() {
+        // RIFF header, then a VP8X chunk: flags, reserved, canvas 300×200 minus one.
+        let mut vp8x = b"RIFF\0\0\0\0WEBPVP8X\x0a\0\0\0\0\0\0\0".to_vec();
+        vp8x.extend_from_slice(&[43, 1, 0, 199, 0, 0]);
+        assert_eq!(probe_dimensions(&vp8x), Some((300, 200)));
+    }
+
+    #[cfg(feature = "images")]
+    #[test]
+    fn probe_refuses_tiff_garbage_and_cut_headers() {
+        let tiff = rgba_fixture(gamut::tiff::TiffEncoder::new());
+        assert_eq!(probe_dimensions(&tiff), None);
+        assert_eq!(probe_dimensions(b"not an image"), None);
+        assert_eq!(probe_dimensions(&test_png()[..20]), None);
+        assert_eq!(probe_dimensions(b"RIFF\0\0\0\0WEBPVP8L\0\0\0\0\x2f"), None);
+        assert_eq!(
+            probe_dimensions(b"RIFF\0\0\0\0WEBPVP8 \0\0\0\0\0\0\0\0\0\0"),
+            None
+        );
+        // A zero-sized PNG is no image.
+        let mut png = test_png();
+        png[16..24].fill(0);
+        assert_eq!(probe_dimensions(&png), None);
+        // `dimensions` still gets TIFF right, by decoding.
+        assert_eq!(dimensions(&tiff), Some((2, 2)));
+    }
+
+    /// A 3×4 image whose every pixel is distinct, so a misplaced row shows.
+    #[cfg(feature = "raster")]
+    fn gradient() -> Image {
+        let rgba = (0..12u8)
+            .flat_map(|i| [i * 20, 255 - i * 20, i, 255])
+            .collect();
+        Image::from_rgba(rgba, 3, 4)
+    }
+
+    #[cfg(feature = "raster")]
+    #[test]
+    fn a_row_window_paints_exactly_the_rows_a_whole_render_paints_there() {
+        let image = gradient();
+        let whole_area = Rect::new(0, 0, 6, 5);
+        let mut whole = Buffer::empty(whole_area);
+        image.render_halfblocks_rows(6, 5, 0, whole_area, &mut whole);
+        for first in 0..5u16 {
+            let window_area = Rect::new(10, 20, 6, 2);
+            let mut window = Buffer::empty(Rect::new(10, 20, 6, 2));
+            image.render_halfblocks_rows(6, 5, first, window_area, &mut window);
+            for dy in 0..2u16 {
+                for x in 0..6u16 {
+                    let expected = whole.cell((x, first + dy)).cloned().unwrap_or_default();
+                    let got = window.cell((10 + x, 20 + dy)).cloned().unwrap_or_default();
+                    assert_eq!(got, expected, "row {first}+{dy}, column {x}");
+                }
+            }
+        }
+        // The whole box is painted, and nothing past it.
+        assert!(whole.content().iter().all(|cell| cell.symbol() == "▀"));
+    }
+
+    #[cfg(feature = "raster")]
+    #[test]
+    fn a_row_window_is_clipped_to_its_area_and_the_box() {
+        let image = gradient();
+        // Narrower than the box: only the columns that fit.
+        let area = Rect::new(0, 0, 2, 1);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 4, 1));
+        image.render_halfblocks_rows(4, 2, 0, area, &mut buf);
+        assert_eq!(
+            buf.cell((1, 0)).map(|c| c.symbol().to_owned()).as_deref(),
+            Some("▀")
+        );
+        assert_eq!(
+            buf.cell((2, 0)).map(|c| c.symbol().to_owned()).as_deref(),
+            Some(" ")
+        );
+        // A window starting past the box paints nothing.
+        let mut buf = Buffer::empty(Rect::new(0, 0, 4, 2));
+        image.render_halfblocks_rows(4, 2, 2, Rect::new(0, 0, 4, 2), &mut buf);
+        assert!(buf.content().iter().all(|cell| cell.symbol() == " "));
+        // A degenerate box paints nothing.
+        image.render_halfblocks_rows(0, 2, 0, Rect::new(0, 0, 4, 2), &mut buf);
+        assert!(buf.content().iter().all(|cell| cell.symbol() == " "));
     }
 
     #[test]
