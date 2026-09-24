@@ -131,6 +131,18 @@ pub enum Event {
         /// The hints, positioned in buffer (UTF-32) columns.
         hints: Vec<InlayHint>,
     },
+    /// A [`Command::InlayHints`] went unanswered: the server failed or timed
+    /// out on it, a newer request replaced it, or the server went away.
+    ///
+    /// Not an empty [`Event::InlayHints`]: nothing was learned about the
+    /// document, so a client should keep the hints it already shows and ask
+    /// again later rather than treat the range as having none.
+    InlayHintsFailed {
+        /// The document the request was for.
+        doc: DocumentId,
+        /// The document version the request was made against.
+        version: u64,
+    },
     /// A language server said every inlay hint it answered may be stale
     /// (`workspace/inlayHint/refresh`), so a client should drop what it
     /// holds as covered and re-issue [`Command::InlayHints`] for what it

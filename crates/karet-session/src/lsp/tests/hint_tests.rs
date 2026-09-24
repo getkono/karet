@@ -51,26 +51,34 @@ fn whole_first_line() -> Range {
     }
 }
 
-/// Wait for the answer to `request`, skipping answers to anything else.
+/// Wait for the answer to `request`, skipping answers to anything else: the
+/// hints, or `None` for a request reported unanswered.
 async fn await_hint_answer(
     events: &mut EventRx,
     request: RequestId,
-) -> Option<Vec<karet_core::InlayHint>> {
+) -> Option<Option<Vec<karet_core::InlayHint>>> {
     loop {
-        let (id, _, _, hints) = await_inlay_hints(events).await?;
-        if id == Some(request) {
-            return Some(hints);
+        let (id, event) = next_event(events).await?;
+        if id != Some(request) {
+            continue;
+        }
+        match event {
+            Event::InlayHints { hints, .. } => return Some(Some(hints)),
+            Event::InlayHintsFailed { .. } => return Some(None),
+            _ => {},
         }
     }
 }
 
 /// A restart retires the slot while a hint request is running on it; the
-/// request is answered empty rather than dropped.
+/// request is reported unanswered rather than dropped -- and not answered
+/// empty, which would blank the hints the editor shows until the new server
+/// answers.
 ///
 /// Falsified by: `HintFlight::shutdown` clearing its bookkeeping without
 /// answering, as it once did -- the answer never arrives.
 #[tokio::test]
-async fn a_restart_answers_a_running_hint_request_empty() -> TestResult {
+async fn a_restart_reports_a_running_hint_request_unanswered() -> TestResult {
     let dir = tempfile::tempdir()?;
     let path = rust_file(&dir, "main.rs", "let a = 1;\n").ok_or("write failed")?;
     let (observed_tx, mut observed) = mpsc::unbounded_channel();
@@ -102,7 +110,10 @@ async fn a_restart_answers_a_running_hint_request_empty() -> TestResult {
     let hints = await_hint_answer(&mut events, request)
         .await
         .ok_or("the restart left the hint request unanswered")?;
-    assert!(hints.is_empty());
+    assert_eq!(
+        hints, None,
+        "a retired request was answered as having no hints"
+    );
     Ok(())
 }
 
@@ -141,19 +152,24 @@ async fn closing_the_last_document_answers_a_running_hint_request() -> TestResul
         let update = tokio::time::timeout(Duration::from_secs(5), updates.recv())
             .await?
             .ok_or("the retired task never answered")?;
-        if let LspUpdate::InlayHints { request, hints, .. } = update {
-            assert_eq!(request, RequestId(41));
-            assert!(hints.is_empty());
-            return Ok(());
+        match update {
+            LspUpdate::InlayHintsFailed { request, .. } => {
+                assert_eq!(request, RequestId(41));
+                return Ok(());
+            },
+            LspUpdate::InlayHints { .. } => {
+                return Err("a retired request was answered as having no hints".into());
+            },
+            _ => {},
         }
     }
 }
 
 /// The connection is lost with a hint request in flight; the request is
-/// answered empty, whichever notices first -- the liveness arm abandoning it,
+/// reported unanswered, whichever notices first -- the liveness arm abandoning it,
 /// or the request itself failing on the closed connection.
 #[tokio::test]
-async fn a_lost_connection_answers_a_running_hint_request_empty() -> TestResult {
+async fn a_lost_connection_reports_a_running_hint_request_unanswered() -> TestResult {
     let dir = tempfile::tempdir()?;
     let path = rust_file(&dir, "main.rs", "let a = 1;\n").ok_or("write failed")?;
     let (observed_tx, mut observed) = mpsc::unbounded_channel();
@@ -177,7 +193,10 @@ async fn a_lost_connection_answers_a_running_hint_request_empty() -> TestResult 
     let hints = await_hint_answer(&mut events, request)
         .await
         .ok_or("the lost connection left the hint request unanswered")?;
-    assert!(hints.is_empty());
+    assert_eq!(
+        hints, None,
+        "a lost request was answered as having no hints"
+    );
     Ok(())
 }
 

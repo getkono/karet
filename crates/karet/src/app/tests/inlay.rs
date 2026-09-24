@@ -512,3 +512,69 @@ fn a_document_in_two_panes_is_carried_once_per_edit() {
     app.on_snapshot(DocumentId(9), &echo);
     assert_eq!(held_positions(&app), vec![LineCol::new(2, 5)]);
 }
+
+#[test]
+fn a_failed_request_keeps_what_is_painted_and_asks_again_after_a_pause() {
+    // rust-analyzer cancels a hint request whenever any file changes under it.
+    // Adopting that as an empty set blanked an idle pane's hints, and its
+    // coverage kept them blank until the buffer moved.
+    let (backend, mut app) = hinted_app("let a = 1;\n");
+    app.request_inlay_hints();
+    let Some(&(first, ..)) = inlay_requests(&backend).first() else {
+        unreachable!("a request was just issued");
+    };
+    app.on_inlay_hints(Some(first), DocumentId(9), 0, vec![hint(0, 5, ": i32")]);
+    app.invalidate_inlay_coverage();
+    app.request_inlay_hints();
+    let Some(&(second, ..)) = inlay_requests(&backend).get(1) else {
+        unreachable!("an invalidated range is re-asked");
+    };
+
+    let now = Instant::now();
+    app.on_inlay_hints_failed_at(Some(second), DocumentId(9), 0, now);
+    assert_eq!(
+        app.docs.inlay_hints.get(&DocumentId(9)).map(Vec::len),
+        Some(1),
+        "a failure cleared the painted hints"
+    );
+    app.request_inlay_hints_at(now);
+    assert_eq!(
+        inlay_requests(&backend).len(),
+        2,
+        "a failing server was re-asked without a pause"
+    );
+    assert!(
+        app.inlay_next_wake(now).is_some(),
+        "no wake scheduled to re-ask"
+    );
+    let quiet = now + LSP_CHANGE_DEBOUNCE + Duration::from_millis(1);
+    app.request_inlay_hints_at(quiet);
+    assert_eq!(
+        inlay_requests(&backend).len(),
+        3,
+        "a failure counted as coverage"
+    );
+}
+
+#[test]
+fn a_failure_for_a_superseded_request_is_ignored() {
+    let (backend, mut app) = hinted_app("let a = 1;\n");
+    app.request_inlay_hints();
+    app.invalidate_inlay_coverage();
+    app.request_inlay_hints();
+    let asked = inlay_requests(&backend);
+    let (Some(&(stale, ..)), Some(&(current, ..))) = (asked.first(), asked.get(1)) else {
+        unreachable!("two requests were just issued");
+    };
+
+    let now = Instant::now();
+    app.on_inlay_hints_failed_at(Some(stale), DocumentId(9), 0, now);
+    assert!(
+        app.docs
+            .inlay_pending
+            .get(&DocumentId(9))
+            .is_some_and(|pending| pending.id == current),
+        "a stale failure retired the current request"
+    );
+    assert_eq!(app.inlay_next_wake(now), None, "a stale failure backed off");
+}

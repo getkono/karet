@@ -277,6 +277,43 @@ impl App {
         }
     }
 
+    /// Note that the request outstanding for `doc` went unanswered.
+    pub(crate) fn on_inlay_hints_failed(
+        &mut self,
+        id: Option<RequestId>,
+        doc: DocumentId,
+        version: u64,
+    ) {
+        self.on_inlay_hints_failed_at(id, doc, version, Instant::now());
+    }
+
+    /// [`Self::on_inlay_hints_failed`] at a given moment, so the back-off can
+    /// be tested without sleeping.
+    ///
+    /// Nothing was learned about the document, so what is painted stays and
+    /// nothing counts as covered. Adopting the failure as an empty set is what
+    /// made hints vanish from an idle pane whenever rust-analyzer cancelled its
+    /// request for an edit elsewhere -- and then stay gone, because the empty
+    /// set covered the range. The re-ask waits out the same pause an edit does
+    /// (`inlay_next_wake` wakes for it), so a server failing every request is
+    /// asked once per pause rather than once per frame.
+    pub(crate) fn on_inlay_hints_failed_at(
+        &mut self,
+        id: Option<RequestId>,
+        doc: DocumentId,
+        version: u64,
+        now: Instant,
+    ) {
+        let Some(pending) = self.docs.inlay_pending.get(&doc).copied() else {
+            return; // nothing outstanding: a late report on a retired request
+        };
+        if id != Some(pending.id) || pending.asked.version != version {
+            return; // superseded
+        }
+        self.docs.inlay_pending.remove(&doc);
+        self.note_inlay_edit(doc, now);
+    }
+
     /// Drop everything cached for `doc`, on close or on a language change.
     pub(crate) fn forget_inlay_hints(&mut self, doc: DocumentId) {
         self.docs.inlay_hints.remove(&doc);

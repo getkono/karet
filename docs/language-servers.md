@@ -221,7 +221,7 @@ provider, path, and document version, then sorted and deduplicated.
 |---|---|
 | Parsing, syntax colours, folds, brackets, structural selection, injections | Tree-sitter, always the baseline |
 | Completion, hover, symbols, rename, signature help, code actions | the language's primary server — the first in its ordered `servers` list. A request the primary does not offer is refused, not passed on to a companion |
-| Inlay hints (inferred types, parameter names) | the language's primary server, as above. Requested for the front tab of each visible pane, over its viewport with overscan; re-asked when the viewport leaves what was covered, once an edit has been quiet for the `didChange` debounce (150 ms), and when the server sends `workspace/inlayHint/refresh`. At most one hint request per document is in flight: a newer one waits for the running one to return, and only the newest of those waiting is then sent, so re-asking on every scroll never stacks inference passes on a slow server. Until the replacement arrives the hints on screen move with the text, and one whose anchor an edit replaced is dropped. Drawn as virtual text the caret steps over rather than into. `editor.inlayHints.enabled` (default `true`) turns them off |
+| Inlay hints (inferred types, parameter names) | the language's primary server, as above. Requested for the front tab of each visible pane, over its viewport with overscan; re-asked when the viewport leaves what was covered, once an edit has been quiet for the `didChange` debounce (150 ms), and when the server sends `workspace/inlayHint/refresh`. At most one hint request per document is in flight: a newer one waits for the running one to return, and only the newest of those waiting is then sent, so re-asking on every scroll never stacks inference passes on a slow server. Until the replacement arrives the hints on screen move with the text, and one whose anchor an edit replaced is dropped. A request the server fails, times out on, or never answers because it restarted leaves the hints on screen as they are and is re-asked after the same pause; only a server that does not offer hints clears them. Drawn as virtual text the caret steps over rather than into. `editor.inlayHints.enabled` (default `true`) turns them off |
 | Definition (`F12` / `Ctrl+Click`, with `Ctrl`-hover underline and Go Back) | the language's primary server, as above; a `LocationLink` reply lands the caret on the definition's *name*, a plain `Location` on whatever the server calls its start |
 | Semantic tokens | Tree-sitter owns highlighting today; `semanticTokens` reserves one future LSP overlay owner and is never allowed to replace parsing |
 | Diagnostics | every provider in `diagnostics`, version-gated and merged |
@@ -375,10 +375,11 @@ them.
 Only requests the server task waits on one at a time count toward that streak.
 Inlay-hint requests run in the background, several documents at once, so three can
 time out together inside one 30-second window, and a server slow to infer types
-for a large file is slow rather than hung — so a timed-out hint request is answered
-empty and never counts toward declaring the server dead. An answered hint request
-is neutral too: it does not clear the streak, so a server that keeps answering
-hints while hover and completion time out is still caught.
+for a large file is slow rather than hung — so a timed-out or failed hint request
+never counts toward declaring the server dead. An answered hint request is neutral
+too: it does not clear the streak, so a server that keeps answering hints while
+hover and completion time out is still caught. It does count as the server having
+answered, so one whose only answers so far were hints can still be declared hung.
 
 A connection that dies without having lasted ten seconds is charged against the
 restart budget, so five such cycles in a minute open the circuit. Connecting is

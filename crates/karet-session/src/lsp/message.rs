@@ -191,6 +191,19 @@ pub(crate) enum LspUpdate {
         /// The mapped hints.
         hints: Vec<InlayHint>,
     },
+    /// A [`ServerCmd::InlayHints`] request a server existed for but did not
+    /// answer: it failed, timed out, was superseded, or its slot retired.
+    /// Distinct from an empty [`Self::InlayHints`], which says there are none.
+    InlayHintsFailed {
+        /// The manager generation that spawned the server task.
+        generation: u64,
+        /// The originating request.
+        request: RequestId,
+        /// The target document.
+        doc: DocumentId,
+        /// The buffer version the request was made against.
+        version: u64,
+    },
     /// Document symbols answering a [`ServerCmd::DocumentSymbols`] request. Ranges
     /// remain in UTF-16 until the session adopts the update.
     Symbols {

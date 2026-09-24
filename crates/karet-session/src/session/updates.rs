@@ -128,6 +128,12 @@ impl Session {
                     },
                 );
             },
+            LspUpdate::InlayHintsFailed {
+                request,
+                doc,
+                version,
+                ..
+            } => self.emit(Some(request), Event::InlayHintsFailed { doc, version }),
             LspUpdate::Symbols {
                 request,
                 doc,

@@ -22,7 +22,7 @@
 //! At most one request per document is ever launched at a time. A newer one
 //! for a document whose request is still running stays deferred until that
 //! one returns, and only the newest deferred request is then launched -- each
-//! one it replaced is answered empty. The alternative, cancelling the running
+//! one it replaced is reported unanswered. The alternative, cancelling the running
 //! request, is not available: `karet-jsonrpc` does not hand the request id to
 //! its caller, so `$/cancelRequest` cannot be sent, and dropping the future
 //! only stops karet listening -- the server keeps computing. Without the
@@ -95,9 +95,9 @@ impl HintFlight {
     /// Accept a request, superseding any older one for the same document that
     /// has not been launched yet.
     ///
-    /// The superseded one is answered empty rather than dropped: every request
-    /// is answered. Its asker has already moved on -- it asked again -- so the
-    /// empty set is discarded there rather than painted.
+    /// The superseded one is reported unanswered rather than dropped: every
+    /// request is answered. Its asker has already moved on -- it asked again --
+    /// so the report is discarded there.
     pub(super) fn ask(
         &mut self,
         ask: HintAsk,
@@ -109,7 +109,7 @@ impl HintFlight {
             .partition(|older| older.tag.doc == ask.tag.doc);
         self.deferred = kept;
         for older in superseded {
-            answer_empty(updates, older.tag, generation);
+            answer_failed(updates, older.tag, generation);
         }
         self.deferred.push(ask);
     }
@@ -180,19 +180,19 @@ impl HintFlight {
         }
     }
 
-    /// Answer everything accepted with an empty set and stop what is running:
-    /// the connection it was headed for is gone.
+    /// Report everything accepted as unanswered and stop what is running: the
+    /// connection it was headed for is gone.
     pub(super) fn abandon(&mut self, updates: &mpsc::UnboundedSender<LspUpdate>, generation: u64) {
         // Dropping the set aborts its tasks, which releases the client they
         // hold -- and with it, for a spawned server, the process.
         self.tasks = JoinSet::new();
-        self.answer_all_empty(updates, generation);
+        self.answer_all_failed(updates, generation);
     }
 
     /// Stop every running request and wait until each has released the client,
-    /// so the caller can take sole ownership of it to shut it down -- answering
-    /// everything accepted with an empty set on the way, as [`Self::abandon`]
-    /// does, because the slot is retiring and nothing else ever will.
+    /// so the caller can take sole ownership of it to shut it down -- reporting
+    /// everything accepted as unanswered on the way, as [`Self::abandon`] does,
+    /// because the slot is retiring and nothing else ever will.
     pub(super) async fn shutdown(
         &mut self,
         updates: &mpsc::UnboundedSender<LspUpdate>,
@@ -202,19 +202,19 @@ impl HintFlight {
         // still answered exactly once: `shutdown` discards its output, and its
         // tag is still in `running`.
         self.tasks.shutdown().await;
-        self.answer_all_empty(updates, generation);
+        self.answer_all_failed(updates, generation);
     }
 
-    /// Answer every deferred and running request with an empty set, forgetting
+    /// Report every deferred and running request as unanswered, forgetting
     /// them all.
-    fn answer_all_empty(&mut self, updates: &mpsc::UnboundedSender<LspUpdate>, generation: u64) {
+    fn answer_all_failed(&mut self, updates: &mpsc::UnboundedSender<LspUpdate>, generation: u64) {
         let tags = self
             .deferred
             .drain(..)
             .map(|ask| ask.tag)
             .chain(self.running.drain().map(|(_, tag)| tag));
         for tag in tags {
-            answer_empty(updates, tag, generation);
+            answer_failed(updates, tag, generation);
         }
     }
 }
@@ -222,8 +222,12 @@ impl HintFlight {
 /// Report one finished request: charge its outcome to the connection's health,
 /// then answer it.
 ///
-/// An [`LspError::Unsupported`] refusal is neither: `note` leaves the tally
-/// exactly as it was, and the answer is empty like any other failure.
+/// An [`LspError::Unsupported`] refusal is neither: the tally is left exactly
+/// as it was, and the answer is an empty set, because a server that does not
+/// offer hints has none to show. Every other failure is reported as
+/// unanswered instead ([`LspUpdate::InlayHintsFailed`]): the server had
+/// nothing to say about the document, so what the editor already shows for
+/// it stands.
 ///
 /// Neither is a timeout. The hang streak exists to catch a server that has
 /// stopped answering *what the user is waiting on*, and it is calibrated for
@@ -250,25 +254,30 @@ pub(super) fn deliver(
     let hints = match answer.result {
         Ok(hints) => {
             tally.note_background_answer();
-            hints
+            Some(hints)
         },
+        Err(LspError::Unsupported { .. }) => Some(Vec::new()),
         Err(LspError::Timeout) => {
             tracing::debug!(language = %key, "inlay-hint request timed out; not charged");
-            Vec::new()
+            None
         },
         // A closed connection is a fact about the server, not about hints, and
         // must still be noticed.
         Err(LspError::Closed) => {
             tally.note::<()>(Err(LspError::Closed), dead, updates, key, token);
-            Vec::new()
+            None
         },
         // Any other error is neutral like an answer: `note` would reset the
         // streak, letting a hint the server cancelled (rust-analyzer's
         // `ContentModified` while typing) excuse hover timeouts around it.
         Err(error) => {
             tracing::debug!(language = %key, %error, "inlay-hint request failed; not charged");
-            Vec::new()
+            None
         },
+    };
+    let Some(hints) = hints else {
+        answer_failed(updates, answer.tag, generation);
+        return;
     };
     let HintTag {
         request,
@@ -284,13 +293,13 @@ pub(super) fn deliver(
     });
 }
 
-fn answer_empty(updates: &mpsc::UnboundedSender<LspUpdate>, tag: HintTag, generation: u64) {
-    let _ = updates.send(LspUpdate::InlayHints {
+/// Report the request `tag` echoes as unanswered.
+fn answer_failed(updates: &mpsc::UnboundedSender<LspUpdate>, tag: HintTag, generation: u64) {
+    let _ = updates.send(LspUpdate::InlayHintsFailed {
         generation,
         request: tag.request,
         doc: tag.doc,
         version: tag.version,
-        hints: Vec::new(),
     });
 }
 
@@ -318,11 +327,15 @@ mod tests {
         }
     }
 
-    /// Every answer sent so far, as `(request, hint count)`.
-    fn answers(rx: &mut mpsc::UnboundedReceiver<LspUpdate>) -> Vec<(u64, usize)> {
+    /// Every answer sent so far, as `(request, hint count)`; a count of
+    /// `None` is a request reported unanswered.
+    fn answers(rx: &mut mpsc::UnboundedReceiver<LspUpdate>) -> Vec<(u64, Option<usize>)> {
         std::iter::from_fn(|| rx.try_recv().ok())
             .filter_map(|update| match update {
-                LspUpdate::InlayHints { request, hints, .. } => Some((request.0, hints.len())),
+                LspUpdate::InlayHints { request, hints, .. } => {
+                    Some((request.0, Some(hints.len())))
+                },
+                LspUpdate::InlayHintsFailed { request, .. } => Some((request.0, None)),
                 _ => None,
             })
             .collect()
@@ -342,7 +355,7 @@ mod tests {
     }
 
     #[test]
-    fn a_replaced_deferred_request_is_answered_empty() {
+    fn a_replaced_deferred_request_is_reported_unanswered() {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let mut flight = HintFlight::default();
         flight.ask(ask(1, 7), &tx, 0);
@@ -354,7 +367,7 @@ mod tests {
         flight.ask(ask(3, 7), &tx, 0);
         assert_eq!(
             answers(&mut rx),
-            vec![(1, 0)],
+            vec![(1, None)],
             "the replaced ask went unanswered"
         );
         assert_eq!(requests(flight.deferred.iter().map(|ask| &ask.tag)), [2, 3]);
@@ -389,7 +402,7 @@ mod tests {
         assert_eq!(requests(flight.deferred.iter().map(|ask| &ask.tag)), [3]);
         assert_eq!(
             answers(&mut rx),
-            vec![(2, 0)],
+            vec![(2, None)],
             "the replaced ask went unanswered"
         );
 
@@ -544,6 +557,38 @@ mod tests {
     }
 
     #[test]
+    fn only_a_server_with_no_hints_to_offer_answers_an_empty_set() {
+        // A refusal says the server has no hints; a failure says nothing about
+        // the document, so the editor must keep what it shows.
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut tally = FailureTally::default();
+        let mut dead = false;
+        let outcomes = [
+            Ok(vec![InlayHint {
+                position: karet_core::LineCol::new(0, 0),
+                label: ": i32".to_owned(),
+                kind: karet_core::InlayHintKind::Type,
+                padding_left: false,
+                padding_right: false,
+            }]),
+            Err(LspError::Unsupported {
+                method: "textDocument/inlayHint",
+            }),
+            Err(LspError::Timeout),
+            Err(LspError::Server("content modified".to_owned())),
+            Err(LspError::Closed),
+        ];
+        for result in outcomes {
+            deliver_one(&mut tally, &mut dead, &tx, result);
+        }
+        let counts: Vec<Option<usize>> = answers(&mut rx)
+            .into_iter()
+            .map(|(_, count)| count)
+            .collect();
+        assert_eq!(counts, [Some(1), Some(0), None, None, None]);
+    }
+
+    #[test]
     fn a_hint_request_on_a_closed_connection_is_still_a_death() {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let mut tally = FailureTally::default();
@@ -554,7 +599,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn abandoning_answers_running_and_deferred_requests_empty() {
+    async fn abandoning_reports_running_and_deferred_requests_unanswered() {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let mut flight = HintFlight::default();
         flight.ask(ask(1, 7), &tx, 0);
@@ -563,7 +608,7 @@ mod tests {
         flight.abandon(&tx, 0);
         let mut answered = answers(&mut rx);
         answered.sort_unstable();
-        assert_eq!(answered, vec![(1, 0), (2, 0)]);
+        assert_eq!(answered, vec![(1, None), (2, None)]);
         assert!(!flight.is_busy());
     }
 }

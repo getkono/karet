@@ -228,6 +228,7 @@ impl LspManager {
                 .is_some_and(|slot| slot.token == *token),
             LspUpdate::Completions { generation, .. }
             | LspUpdate::InlayHints { generation, .. }
+            | LspUpdate::InlayHintsFailed { generation, .. }
             | LspUpdate::Symbols { generation, .. }
             | LspUpdate::Hover { generation, .. }
             | LspUpdate::Unsupported { generation, .. }
