@@ -221,7 +221,7 @@ provider, path, and document version, then sorted and deduplicated.
 |---|---|
 | Parsing, syntax colours, folds, brackets, structural selection, injections | Tree-sitter, always the baseline |
 | Completion, hover, symbols, rename, signature help, code actions | the language's primary server — the first in its ordered `servers` list. A request the primary does not offer is refused, not passed on to a companion |
-| Inlay hints (inferred types, parameter names) | the language's primary server, as above. Requested for the front tab of each visible pane, over its viewport with overscan; re-asked when the viewport leaves what was covered, once an edit has been quiet for the `didChange` debounce (150 ms), and when the server sends `workspace/inlayHint/refresh`. Until the replacement arrives the hints on screen move with the text, and one whose anchor an edit replaced is dropped. Drawn as virtual text the caret steps over rather than into. `editor.inlayHints.enabled` (default `true`) turns them off |
+| Inlay hints (inferred types, parameter names) | the language's primary server, as above. Requested for the front tab of each visible pane, over its viewport with overscan; re-asked when the viewport leaves what was covered, once an edit has been quiet for the `didChange` debounce (150 ms), and when the server sends `workspace/inlayHint/refresh`. At most one hint request per document is in flight: a newer one waits for the running one to return, and only the newest of those waiting is then sent, so re-asking on every scroll never stacks inference passes on a slow server. Until the replacement arrives the hints on screen move with the text, and one whose anchor an edit replaced is dropped. Drawn as virtual text the caret steps over rather than into. `editor.inlayHints.enabled` (default `true`) turns them off |
 | Definition (`F12` / `Ctrl+Click`, with `Ctrl`-hover underline and Go Back) | the language's primary server, as above; a `LocationLink` reply lands the caret on the definition's *name*, a plain `Location` on whatever the server calls its start |
 | Semantic tokens | Tree-sitter owns highlighting today; `semanticTokens` reserves one future LSP overlay owner and is never allowed to replace parsing |
 | Diagnostics | every provider in `diagnostics`, version-gated and merged |
@@ -269,6 +269,16 @@ What the client declares at the handshake is kept to what it honours:
   deliberately not declared: their registrations carry trigger characters and
   action kinds karet would drop, so a server should keep stating them in its
   handshake.
+
+A registration applies only to the documents its `registerOptions.documentSelector`
+covers; an absent or `null` selector covers every document. A filter matches on
+the language id the document was opened with, its scheme (every karet document is
+a `file` URI), and its glob `pattern` — a plain glob over the absolute path, or a
+relative pattern under a base URI. A request for a document that no active
+registration covers, and that the handshake did not advertise, is refused like
+any other unoffered request. Withdrawing a registration removes exactly its own
+scope: another registration of the same method, or the handshake having
+advertised it, keeps the feature on.
 
 The reply is read from its JSON rather than through a typed mirror of one
 spec revision, so a capability karet learns about later needs no dependency
@@ -357,6 +367,13 @@ Two silent deaths in a row put the provider behind the circuit; they are counted
 directly rather than through the sliding failure window, because establishing each
 one costs at least three 30-second timeouts and the window always expires between
 them.
+
+Only requests the server task waits on one at a time count toward that streak.
+Inlay-hint requests run in the background, several documents at once, so three can
+time out together inside one 30-second window, and a server slow to infer types
+for a large file is slow rather than hung — so a timed-out hint request is answered
+empty and never counts toward declaring the server dead. An answered hint request
+still counts as the server answering, and clears the streak like any other answer.
 
 A connection that dies without having lasted ten seconds is charged against the
 restart budget, so five such cycles in a minute open the circuit. Connecting is
