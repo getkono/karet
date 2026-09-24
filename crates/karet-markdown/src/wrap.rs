@@ -4,6 +4,7 @@
 //! semantic [`TokenId`], which a consumer resolves to a color (and bold/italic) through
 //! `karet-theme`. Widths are measured in terminal columns, not bytes or `char`s.
 
+mod align;
 #[cfg(test)]
 mod tests;
 
@@ -267,6 +268,7 @@ fn wrap_block(block: &Block, width: usize, prefix: &[TextSpan], out: &mut Vec<Wr
                 link: None,
             }],
         )),
+        Block::Aligned { align, blocks } => align::wrap_aligned(*align, blocks, width, prefix, out),
     }
 }
 

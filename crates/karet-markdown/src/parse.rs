@@ -1,5 +1,6 @@
 //! `pulldown-cmark` events → the [`MarkdownDocument`] render model.
 
+mod html;
 #[cfg(test)]
 mod tests;
 
@@ -62,6 +63,14 @@ enum Frame {
         lang: Option<String>,
         code: String,
     },
+    /// An HTML container element (`<div>`, `<p>`, `<details>`, …). It holds nothing
+    /// itself: blocks closing inside it land in the nearest real container, wrapped in
+    /// [`Block::Aligned`] when it (or an enclosing one) declares an alignment.
+    HtmlBlock {
+        align: Option<Alignment>,
+    },
+    /// An HTML `<code>`/`<kbd>`/`<tt>` element, collecting its text verbatim.
+    HtmlCode(String),
     Table {
         alignments: Vec<Alignment>,
         header: Row,
@@ -103,7 +112,8 @@ fn closes(frame: &Frame, tag: TagEnd) -> bool {
 pub(crate) fn parse(source: &str) -> MarkdownDocument {
     let mut builder = Builder::new(source);
     // CommonMark plus the GitHub extensions the model has a shape for. The rest
-    // (footnotes, math) would only produce events we silently drop.
+    // (footnotes, math) would only produce events we silently drop. Embedded HTML is
+    // always on in CommonMark; `html` maps the subset the model can show.
     //
     // `into_offset_iter` pairs each event with its source byte range, which is what lets
     // a top-level block remember the line it came from (see `Builder::block_lines`).
@@ -124,6 +134,17 @@ struct Builder {
     newlines: Vec<usize>,
     /// The byte offset at which the currently-open top-level block began.
     pending_start: usize,
+    /// How many [`Frame::HtmlBlock`] markers are on `stack`. While every frame is one,
+    /// the builder is still at the document root.
+    markers: usize,
+    /// The frames HTML tags opened: `(stack index, tag name)`, ascending by index, so a
+    /// close tag finds its frame and a markdown end tag can pass one by.
+    html_tags: Vec<(usize, String)>,
+    /// Lexer state carried across the chunks of one HTML block.
+    lexer: crate::html::Tokenizer,
+    /// A raw element (`<script>`, …) whose content is being dropped, and the stack depth
+    /// it opened at: leaving that depth ends it even if its close tag never comes.
+    suppress: Option<(String, usize)>,
 }
 
 impl Builder {
@@ -134,7 +155,24 @@ impl Builder {
             stack: Vec::new(),
             newlines: source.match_indices('\n').map(|(index, _)| index).collect(),
             pending_start: 0,
+            markers: 0,
+            html_tags: Vec::new(),
+            lexer: crate::html::Tokenizer::default(),
+            suppress: None,
         }
+    }
+
+    /// Whether no frame but an HTML container marker is open: the next block is a
+    /// top-level one.
+    fn at_root(&self) -> bool {
+        self.stack.len() == self.markers
+    }
+
+    /// Whether the frame at stack `index` was opened by an HTML tag.
+    fn html_opened(&self, index: usize) -> bool {
+        self.html_tags
+            .binary_search_by_key(&index, |(at, _)| *at)
+            .is_ok()
     }
 
     /// The 0-based line holding byte `offset`. A `\n` belongs to the line it ends.
@@ -155,11 +193,22 @@ impl Builder {
     }
 
     fn event(&mut self, event: &Event<'_>, start: usize) {
-        // An event seen with an empty stack opens the next top-level block: record where
-        // it began, before any frame hides the transition. The value survives untouched
-        // until that block closes, because every event in between sees a non-empty stack.
-        if self.stack.is_empty() {
+        // An event seen at the root opens the next top-level block: record where it
+        // began, before any frame hides the transition. The value survives untouched
+        // until that block closes, because every event in between sees a real frame.
+        // (An HTML container is transparent: a `<div>` wrapping markdown blocks leaves
+        // each of them top-level, anchored on its own line.)
+        if self.at_root() {
             self.pending_start = start;
+        }
+        // Inside a raw element nothing is content; only structure passes through.
+        if self.suppress.is_some()
+            && matches!(
+                event,
+                Event::Text(_) | Event::Code(_) | Event::SoftBreak | Event::HardBreak
+            )
+        {
+            return;
         }
         match event {
             Event::Start(tag) => self.start(tag),
@@ -177,8 +226,10 @@ impl Builder {
                     *task = Some(*checked);
                 }
             },
-            // Inline/block HTML, math and footnotes have no place in the model; their
-            // text still arrives as `Event::Text` where it matters.
+            // A block's HTML arrives line by line; an inline tag arrives whole.
+            Event::Html(html) => self.html(html, false),
+            Event::InlineHtml(html) => self.html(html, true),
+            // Math and footnotes have no place in the model.
             _ => {},
         }
     }
@@ -242,17 +293,30 @@ impl Builder {
     }
 
     fn end(&mut self, tag: TagEnd) {
-        // An unmodelled tag (a footnote, an HTML block) pushed no frame; closing on it
-        // would tear down an unrelated one.
-        if !self.stack.iter().any(|frame| closes(frame, tag)) {
+        if tag == TagEnd::HtmlBlock {
+            self.end_html_block();
+            return;
+        }
+        // A frame an HTML tag opened is closed by its own close tag, never by markdown:
+        // in `**a <b>b** c</b>` the `**` closes its own strong, not the `<b>`.
+        let target = |builder: &Self, index: usize| {
+            builder
+                .stack
+                .get(index)
+                .is_some_and(|frame| closes(frame, tag))
+                && !builder.html_opened(index)
+        };
+        // An unmodelled tag (a footnote) pushed no frame; closing on it would tear down
+        // an unrelated one.
+        if !(0..self.stack.len()).any(|index| target(self, index)) {
             return;
         }
         // Close inward-out until the tag's own frame goes: `End(Item)` on a tight list
         // must first close the paragraph we implicitly opened inside it.
-        while let Some(top) = self.stack.last() {
-            let target = closes(top, tag);
+        while let Some(top) = self.stack.len().checked_sub(1) {
+            let is_target = target(self, top);
             self.close();
-            if target {
+            if is_target {
                 break;
             }
         }
@@ -263,9 +327,24 @@ impl Builder {
         let Some(frame) = self.stack.pop() else {
             return;
         };
+        let depth = self.stack.len();
+        while self.html_tags.last().is_some_and(|(at, _)| *at >= depth) {
+            self.html_tags.pop();
+        }
+        if self.suppress.as_ref().is_some_and(|(_, at)| depth < *at) {
+            self.suppress = None;
+        }
         match frame {
-            Frame::Paragraph { content, .. } => self.block(Block::Paragraph(content)),
-            Frame::Heading { level, content } => self.block(Block::Heading { level, content }),
+            Frame::HtmlBlock { .. } => self.markers = self.markers.saturating_sub(1),
+            Frame::HtmlCode(code) => self.inline(Inline::Code(code)),
+            Frame::Paragraph { mut content, .. } => {
+                trim_trailing_space(&mut content);
+                self.block(Block::Paragraph(content));
+            },
+            Frame::Heading { level, mut content } => {
+                trim_trailing_space(&mut content);
+                self.block(Block::Heading { level, content });
+            },
             Frame::Quote(blocks) => self.block(Block::Quote(blocks)),
             Frame::CodeBlock { lang, code } => self.block(Block::CodeBlock { lang, code }),
             Frame::List { start, items } => self.block(Block::List { start, items }),
@@ -319,7 +398,7 @@ impl Builder {
 
     /// Route text: inside a code block it is raw source, elsewhere it is an inline.
     fn text(&mut self, text: &str) {
-        if let Some(Frame::CodeBlock { code, .. }) = self.stack.last_mut() {
+        if let Some(Frame::CodeBlock { code, .. } | Frame::HtmlCode(code)) = self.stack.last_mut() {
             code.push_str(text);
         } else {
             self.inline(Inline::Text(text.to_owned()));
@@ -347,7 +426,7 @@ impl Builder {
                 },
                 inline => flatten_into(&inline, text),
             },
-            Some(Frame::Image { alt, .. }) => flatten_into(&inline, alt),
+            Some(Frame::Image { alt, .. } | Frame::HtmlCode(alt)) => flatten_into(&inline, alt),
             _ => self.stack.push(Frame::Paragraph {
                 content: vec![inline],
                 implicit: true,
@@ -365,8 +444,32 @@ impl Builder {
         ) {
             self.close();
         }
-        match self.stack.last_mut() {
+        // HTML containers are transparent: look through them for the real container,
+        // and carry the innermost alignment one declares onto the block.
+        let mut align = None;
+        let mut target = None;
+        for (index, frame) in self.stack.iter().enumerate().rev() {
+            if let Frame::HtmlBlock { align: declared } = frame {
+                align = align.or(*declared);
+            } else {
+                target = Some(index);
+                break;
+            }
+        }
+        let block = match align {
+            Some(align) => Block::Aligned {
+                align,
+                blocks: vec![block],
+            },
+            None => block,
+        };
+        match target.and_then(|index| self.stack.get_mut(index)) {
             Some(Frame::Quote(blocks) | Frame::Item { blocks, .. }) => blocks.push(block),
+            // A block straight inside an HTML list (`<ul>` with no `<li>`) gets an item.
+            Some(Frame::List { items, .. }) => items.push(ListItem {
+                task: None,
+                blocks: vec![block],
+            }),
             _ => self.push_root(block),
         }
     }
@@ -390,6 +493,21 @@ fn flatten_into(inline: &Inline, out: &mut String) {
         },
         Inline::Link { text, .. } => out.push_str(text),
         Inline::Image(image) => out.push_str(&image.alt),
+    }
+}
+
+/// Drop the whitespace a block's content ends with — the line end inside an HTML block
+/// collapses to a space that has nothing left to separate.
+fn trim_trailing_space(content: &mut Vec<Inline>) {
+    while let Some(Inline::Text(text)) = content.last_mut() {
+        let kept = text
+            .trim_end_matches(|c: char| c.is_ascii_whitespace())
+            .len();
+        if kept > 0 {
+            text.truncate(kept);
+            return;
+        }
+        content.pop();
     }
 }
 

@@ -625,3 +625,59 @@ fn an_image_without_alt_text_is_named_by_its_file() {
     assert_eq!(lines("![]()\n", 40), vec![format!("{IMAGE_CHIP}image")]);
     assert_eq!(lines("![ ](a/b/)\n", 40), vec![format!("{IMAGE_CHIP}b")]);
 }
+
+#[test]
+fn a_centered_block_is_padded_to_the_middle_and_a_right_one_to_the_edge() {
+    assert_eq!(lines("<center>abcd</center>\n", 10), vec!["   abcd"]);
+    assert_eq!(lines("<p align=right>abcd</p>\n", 10), vec!["      abcd"]);
+    // Every soft-wrapped line is aligned on its own width.
+    assert_eq!(
+        lines("<center>aaaa bb</center>\n", 6),
+        vec![" aaaa", "  bb"]
+    );
+}
+
+#[test]
+fn an_aligned_line_that_fills_the_width_is_not_padded() {
+    assert_eq!(lines("<center>abcdefgh</center>\n", 4), vec!["abcdefgh"]);
+}
+
+#[test]
+fn an_aligned_heading_keeps_its_marker_and_token() {
+    let doc = wrap(&parse::parse("<h1 align=center>T</h1>\n"), 9);
+    assert_eq!(
+        doc.lines.first().map(WrappedLine::text).as_deref(),
+        Some("   # T")
+    );
+    assert!(doc.lines.first().is_some_and(|line| {
+        line.spans
+            .iter()
+            .any(|s| s.text.starts_with("# ") && s.token == Some(StandardToken::MarkupHeading.id()))
+    }));
+}
+
+#[test]
+fn code_and_tables_keep_their_own_layout_inside_an_aligned_container() {
+    assert_eq!(
+        lines("<div align=center>\n\n```\nx\n```\n\n</div>\n", 20),
+        vec!["x"]
+    );
+    let table = lines("<div align=center>\n\n| a |\n| - |\n| 1 |\n\n</div>\n", 20);
+    assert!(table.iter().all(|line| !line.starts_with(' ')), "{table:?}");
+}
+
+#[test]
+fn alignment_inside_a_quote_keeps_the_gutter_first() {
+    assert_eq!(
+        lines("> <center>ab</center>\n", 8),
+        vec![format!("{QUOTE_GUTTER}  ab")]
+    );
+}
+
+#[test]
+fn nested_alignment_is_applied_once() {
+    assert_eq!(
+        lines("<center><div align=right>ab</div></center>\n", 6),
+        vec!["    ab"]
+    );
+}

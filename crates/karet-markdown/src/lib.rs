@@ -4,6 +4,12 @@
 //! render model decoupled from any renderer. Enable `view` for a ratatui renderer, and
 //! `highlight` to syntax-highlight code fences via `karet-syntax`.
 //!
+//! Embedded HTML maps onto the same model through a curated subset — text formatting,
+//! links, images, headings, lists, `<details>`, and `align="center"`/`"right"` on
+//! containers ([`Block::Aligned`]); other tags keep only their text, and `<script>`-like
+//! elements vanish with their content. There is no HTML layout engine: see
+//! `docs/scope.md` for what the preview deliberately does not render.
+//!
 //! Two stages. [`parse`] turns source into a tree of [`Block`]s and [`Inline`]s;
 //! [`MarkdownDocument::wrap`] soft-wraps that tree to a column width, producing
 //! [`WrappedLine`]s of [`TextSpan`]s tagged with a semantic
@@ -15,6 +21,7 @@
 //! markdown it was rendered from.
 
 pub mod edit;
+mod html;
 #[cfg(feature = "lint")]
 pub mod lint;
 #[cfg(feature = "mermaid")]
@@ -156,6 +163,15 @@ pub enum Block {
     },
     /// A thematic break (horizontal rule).
     Rule,
+    /// Blocks an HTML container aligns (`<p align="center">`, `<center>`): each line
+    /// is padded to sit centered or right-aligned within the width. Code and tables
+    /// keep their own layout.
+    Aligned {
+        /// The declared alignment.
+        align: Alignment,
+        /// The aligned content.
+        blocks: Vec<Block>,
+    },
 }
 
 /// A parsed markdown document: an ordered sequence of blocks.
