@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0](https://github.com/getkono/karet/compare/karet-lsp-v0.6.1...karet-lsp-v0.7.0) - 2026-09-24
+
+### Added
+
+- *(lsp)* [**breaking**] scope dynamic registrations to their documentSelector
+- *(lsp)* declare inlay hints to the server, and hear it ask for a refresh
+- *(lsp)* expose the server's formatting capability
+- *(jsonrpc)* let a caller await a connection's death
+
+### Fixed
+
+- *(lsp)* fail open on a document-selector pattern karet cannot use
+- *(lsp)* [**breaking**] format with the indentation the buffer is actually in
+
+### Other
+
+- *(lsp)* say a document must be opened before asking what it supports
+- put drain_stderr's comment back and narrow what close() logs
+- say which server answers, and what the client really declares
+- Merge remote-tracking branch 'origin/master' into feat/language-intelligence
+- describe what formatOnSave actually does
+
 ## [0.6.0](https://github.com/getkono/karet/compare/karet-lsp-v0.5.0...karet-lsp-v0.6.0) - 2026-08-29
 
 ### Added
