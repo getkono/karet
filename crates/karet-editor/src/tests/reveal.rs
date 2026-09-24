@@ -141,3 +141,32 @@ fn a_reveal_before_the_first_render_waits_for_its_geometry() {
     Editor::new(&buffer).render(area, &mut target, &mut state);
     assert_eq!(state.scroll_col, 4);
 }
+
+#[test]
+fn a_reveal_is_rechecked_against_a_narrower_next_frame() {
+    // The estimate uses the last frame's width. A pane that narrowed since
+    // (a resize, a split, a background tab brought forward) must still show
+    // the caret over its own character, not clamped to the edge.
+    let line: String = ('a'..='z').cycle().take(200).collect();
+    let buffer = TextBuffer::from_text(&line);
+    let mut state = EditorState::new();
+    let wide = Rect::new(0, 0, 204, 1);
+    let mut target = Buffer::empty(wide);
+    Editor::new(&buffer).render(wide, &mut target, &mut state);
+
+    state.goto(&buffer, LineCol::new(0, 150));
+    assert_eq!(state.scroll_col, 0, "column 150 fits the wide frame");
+
+    let narrow = Rect::new(0, 0, 43, 1);
+    let mut target = Buffer::empty(narrow);
+    Editor::new(&buffer).render(narrow, &mut target, &mut state);
+    let Some((x, y)) = caret_cell(narrow, &buffer, &[], &state, state.cursor()) else {
+        unreachable!("a revealed caret is on screen");
+    };
+    let expected = line.chars().nth(150).map(String::from).unwrap_or_default();
+    assert_eq!(target[(x, y)].symbol(), expected);
+    assert!(
+        x < narrow.width - 1,
+        "caret at cell {x} is clamped to the edge"
+    );
+}

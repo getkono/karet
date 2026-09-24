@@ -170,13 +170,15 @@ impl EditorState {
     }
 
     /// Scroll so that `pos` is within the viewport, resolving both axes
-    /// immediately.
+    /// immediately and re-checking the horizontal one at the next render.
     ///
     /// In an unwrapped view the horizontal scroll keeps up to a 10-cell margin
     /// either side of the caret, measured in display cells against the last
     /// frame's geometry: its content width, tab width and inlay hints. So
     /// [`scroll_col`](Self::scroll_col) is already right when read before the
-    /// next render — as a view that mirrors this one's offset does. Soft-wrapped
+    /// next render — as a view that mirrors this one's offset does. The render
+    /// then re-resolves it against the geometry it actually paints, so a pane
+    /// that changed width since still shows the caret. Soft-wrapped
     /// views have no horizontal axis; their vertical reveal still completes on
     /// the next render, which knows how the lines wrap. Before any render has
     /// measured the viewport the horizontal part is deferred to the first one.
@@ -187,7 +189,10 @@ impl EditorState {
             self.follow_col = Some(pos);
             return;
         }
-        self.follow_col = None;
+        // An estimate, not the last word: the last frame's width may not be the
+        // next one's (a resize, a split, a background tab brought forward), so
+        // the render re-resolves against the geometry it actually paints.
+        self.follow_col = Some(pos);
         self.scroll_col = reveal_column(
             &line_chars(buffer, pos.line),
             self.scroll_col,
