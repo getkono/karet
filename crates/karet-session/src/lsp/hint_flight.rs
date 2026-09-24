@@ -251,8 +251,17 @@ pub(super) fn deliver(
             tracing::debug!(language = %key, "inlay-hint request timed out; not charged");
             Vec::new()
         },
+        // A closed connection is a fact about the server, not about hints, and
+        // must still be noticed.
+        Err(LspError::Closed) => {
+            tally.note::<()>(Err(LspError::Closed), dead, updates, key, token);
+            Vec::new()
+        },
+        // Any other error is neutral like an answer: `note` would reset the
+        // streak, letting a hint the server cancelled (rust-analyzer's
+        // `ContentModified` while typing) excuse hover timeouts around it.
         Err(error) => {
-            tally.note::<()>(Err(error), dead, updates, key, token);
+            tracing::debug!(language = %key, %error, "inlay-hint request failed; not charged");
             Vec::new()
         },
     };
@@ -488,6 +497,39 @@ mod tests {
         assert!(!dead);
         serial_timeout(&mut tally, &mut dead, &tx);
         assert!(dead, "a hint answer reset the streak");
+        assert!(died(&mut rx));
+    }
+
+    #[test]
+    fn a_failed_hint_request_does_not_clear_the_streak_either() {
+        // rust-analyzer answers a hint request an edit cancelled with
+        // `ContentModified`; that must not excuse hover timeouts around it.
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut tally = FailureTally::default();
+        let mut dead = false;
+        let _answered = tally.observe(Ok::<(), LspError>(()));
+        for _ in 0..health::TIMEOUT_DEATH_LIMIT.saturating_sub(1) {
+            serial_timeout(&mut tally, &mut dead, &tx);
+        }
+        deliver_one(
+            &mut tally,
+            &mut dead,
+            &tx,
+            Err(LspError::Server("content modified".to_owned())),
+        );
+        assert!(!dead, "a hint error is not a death");
+        serial_timeout(&mut tally, &mut dead, &tx);
+        assert!(dead, "a hint error reset the streak");
+        assert!(died(&mut rx));
+    }
+
+    #[test]
+    fn a_hint_request_on_a_closed_connection_is_still_a_death() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut tally = FailureTally::default();
+        let mut dead = false;
+        deliver_one(&mut tally, &mut dead, &tx, Err(LspError::Closed));
+        assert!(dead);
         assert!(died(&mut rx));
     }
 
