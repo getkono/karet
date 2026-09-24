@@ -801,3 +801,79 @@ async fn deferred_replies_share_one_drainer_and_keep_their_order() -> TestResult
     assert_eq!(seen, (1..=BURST).collect::<Vec<_>>());
     Ok(())
 }
+
+#[tokio::test]
+async fn close_writes_replies_deferred_before_it_ahead_of_the_close() -> TestResult {
+    // Replies answered before `close()` but parked behind a full outbound
+    // queue must still reach the peer: the close signal queues behind them on
+    // the same ordered path, rather than overtaking them on the outbound
+    // queue and stopping the writer with the replies still parked.
+    struct NarrowHandler;
+
+    impl Handler for NarrowHandler {
+        type Framing = ContentLength;
+        type Push = (String, Value);
+
+        const OUTBOUND_CHANNEL_CAPACITY: usize = 1;
+
+        fn push_payload(&self, _method: &str, _params: &Value) -> Option<Self::Push> {
+            None
+        }
+    }
+
+    // Far more replies than a 64-byte pipe plus a one-slot queue can hold, so
+    // most of them are parked when `close()` is called.
+    const BURST: i64 = 40;
+
+    let (client_end, peer_end) = tokio::io::duplex(64);
+    let (client_read, client_write) = tokio::io::split(client_end);
+    let (peer_read, peer_write) = tokio::io::split(peer_end);
+    let mut peer = FakePeer {
+        reader: BufReader::new(peer_read),
+        writer: peer_write,
+    };
+    let mut connection = Connection::start(NarrowHandler, client_read, client_write);
+    let mut requests = connection
+        .inbound_requests()
+        .ok_or("the peer-request stream was already taken")?;
+
+    // The peer floods requests and reads nothing back until the close.
+    let flood = tokio::spawn(async move {
+        for id in 1..=BURST {
+            peer.send(&json!({"jsonrpc": "2.0", "id": id, "method": "test/x"}))
+                .await;
+        }
+        peer
+    });
+    // Every request is answered before the close, so every reply is owed.
+    for _ in 1..=BURST {
+        let request = tokio::time::timeout(Duration::from_secs(5), requests.recv())
+            .await
+            .map_err(|_| "the reader stopped delivering peer requests")?
+            .ok_or("the peer-request stream ended early")?;
+        request.responder.ok(json!("ok"));
+    }
+    let mut peer = tokio::time::timeout(Duration::from_secs(5), flood)
+        .await
+        .map_err(|_| "the reader stopped draining the peer")??;
+
+    let closing = tokio::spawn(async move {
+        connection.close().await;
+    });
+
+    let mut seen = Vec::new();
+    for _ in 1..=BURST {
+        let reply = tokio::time::timeout(Duration::from_secs(5), peer.recv())
+            .await
+            .map_err(|_| "a reply deferred before close() never arrived")?;
+        seen.push(reply["id"].as_i64().unwrap_or_default());
+    }
+    assert_eq!(seen, (1..=BURST).collect::<Vec<_>>());
+    closing.await?;
+    // And the close really did end the connection after them.
+    let after = tokio::time::timeout(Duration::from_secs(5), peer.recv())
+        .await
+        .map_err(|_| "the connection stayed open after close()")?;
+    assert_eq!(after, Value::Null, "nothing may follow the close");
+    Ok(())
+}
