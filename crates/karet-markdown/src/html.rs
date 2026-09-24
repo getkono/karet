@@ -275,21 +275,30 @@ fn lex_value(input: &str) -> Option<(&str, &str)> {
 
 /// Skip a raw element's content up to and past `</name…>`, returning the input after
 /// it, or `None` when the close tag is not in `input`.
+///
+/// The close tag is matched ASCII case-insensitively in place, so skipping costs one
+/// pass over the content rather than a lowercased copy of the whole remaining chunk
+/// per raw element.
 fn skip_raw<'a>(input: &'a str, name: &str) -> Option<&'a str> {
-    let lower = input.to_ascii_lowercase();
-    let close = format!("</{name}");
+    let bytes = input.as_bytes();
+    let name = name.as_bytes();
     let mut from = 0;
-    while let Some(at) = lower[from..].find(&close).map(|at| from + at) {
-        let after = at + close.len();
+    while let Some(at) = input[from..].find("</").map(|at| from + at) {
+        from = at + 2;
+        let after = from + name.len();
+        let named = bytes
+            .get(from..after)
+            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(name));
         // `</scripts>` does not close `<script>`.
-        if lower[after..].starts_with(|c: char| c.is_ascii_alphanumeric()) {
-            from = after;
+        if !named || bytes.get(after).is_some_and(u8::is_ascii_alphanumeric) {
             continue;
         }
-        let end = lower[after..]
-            .find('>')
+        // The name matched ASCII bytes, so `after` is a character boundary.
+        let end = input
+            .get(after..)
+            .and_then(|tail| tail.find('>'))
             .map_or(input.len(), |gt| after + gt + 1);
-        return Some(&input[end..]);
+        return input.get(end..);
     }
     None
 }
@@ -307,6 +316,9 @@ fn push_text(out: &mut Vec<Token>, text: &str) {
     }
 }
 
+/// The furthest a reference's `;` may sit from its `&`, in bytes.
+const MAX_REFERENCE: usize = 12;
+
 /// Decode the character references in `text`. An unknown or malformed reference is
 /// kept as written.
 pub(crate) fn decode_entities(text: &str) -> String {
@@ -315,10 +327,13 @@ pub(crate) fn decode_entities(text: &str) -> String {
     while let Some(amp) = rest.find('&') {
         out.push_str(&rest[..amp]);
         rest = &rest[amp..];
+        // Look for the `;` only within the longest reference's reach: searching the
+        // whole remainder at every `&` would make a run of them quadratic.
         let decoded = rest
-            .find(';')
-            .filter(|&semi| semi <= 12)
-            .and_then(|semi| entity(&rest[1..semi]).map(|c| (c, semi)));
+            .bytes()
+            .take(MAX_REFERENCE + 1)
+            .position(|b| b == b';')
+            .and_then(|semi| entity(rest.get(1..semi)?).map(|c| (c, semi)));
         match decoded {
             Some((c, semi)) => {
                 out.push(c);

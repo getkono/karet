@@ -247,3 +247,49 @@ fn an_unfinished_tag_spanning_many_lines_is_released_once_over_the_cap() {
         .collect();
     assert_eq!(joined.len(), 3 * 50_000, "every byte survives as text");
 }
+
+#[test]
+fn a_long_run_of_ampersands_decodes_in_linear_time() {
+    // Each `&` looks for its `;` only a reference's length ahead; scanning the whole
+    // remainder per `&` would take ~10^10 steps here.
+    let run = "&".repeat(200_000);
+    let line = format!("<p>{run}</p>");
+    assert_eq!(lex(&[&line]), vec![open("p", &[]), text(&run), close("p")]);
+    // A reference right after the run still decodes, and one whose `;` sits past the
+    // reach is kept as written.
+    assert_eq!(decode_entities(&format!("{run}&amp;")), format!("{run}&"));
+    assert_eq!(
+        decode_entities("&abcdefghijkl;&abcdefghijk;"),
+        "&abcdefghijkl;&abcdefghijk;"
+    );
+}
+
+#[test]
+fn many_raw_elements_in_one_chunk_skip_in_linear_time() {
+    // Each raw element is closed by an in-place case-insensitive match; lowercasing a
+    // copy of the remaining chunk per element would be quadratic at this size.
+    let n = 50_000;
+    let chunk = "<script>x</SCRIPT>".repeat(n);
+    let tokens = lex(&[&chunk, "end"]);
+    assert_eq!(tokens.len(), 2 * n + 1);
+    assert_eq!(tokens.last(), Some(&text("end")));
+    assert!(
+        tokens
+            .chunks(2)
+            .take(n)
+            .all(|pair| pair == [open("script", &[]), close("script")])
+    );
+}
+
+#[test]
+fn a_raw_close_tag_matches_any_case_but_not_a_longer_name() {
+    assert_eq!(
+        lex(&["<style>a</STYLEs>b</StYlE\n>c"]),
+        vec![open("style", &[]), close("style"), text("c")]
+    );
+    // A close tag cut at the chunk's end leaves the element open.
+    assert_eq!(
+        lex(&["<script>a</scr", "ipt>b"]),
+        vec![open("script", &[]), close("script")]
+    );
+}
