@@ -1096,11 +1096,6 @@ impl LspClient {
     }
 }
 
-/// Drain a child's stderr into the debug log and into `tail`.
-///
-/// The returned handle is the synchronization point a failed launch needs: the
-/// tail holds the server's last words only once this task has read the pipe to
-/// EOF.
 /// `Ok` if `supported`, else the [`LspError::Unsupported`] refusal for `method`.
 fn refuse_unless(
     supported: bool,
@@ -1118,6 +1113,11 @@ fn refuse_unless(
     Err(LspError::Unsupported { method })
 }
 
+/// Drain a child's stderr into the debug log and into `tail`.
+///
+/// The returned handle is the synchronization point a failed launch needs: the
+/// tail holds the server's last words only once this task has read the pipe to
+/// EOF.
 fn drain_stderr(
     stderr: tokio::process::ChildStderr,
     command: String,

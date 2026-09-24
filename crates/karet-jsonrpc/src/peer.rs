@@ -23,7 +23,9 @@
 //! signal, a write failed, or the connection was dropped — there is no wire
 //! left to answer on. A [`Responder`] still alive at that point (held by a
 //! consumer that has not answered yet) produces no frame: its reply is
-//! discarded and logged at `debug`. Nothing better is available — the reply
+//! discarded — logged at `debug` once the queue has closed, or dropped with
+//! the queue if it lands behind the close signal first. Nothing better is
+//! available — the reply
 //! has nowhere to go — and a peer that is being closed on is not waiting for
 //! it in any useful sense. Answer every outstanding responder *before*
 //! calling [`Connection::close`] if the peer must see those replies.

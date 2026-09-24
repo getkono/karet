@@ -477,8 +477,10 @@ impl<H: Handler> Connection<H> {
     ///   bounded one on the writer draining.
     /// - **Replies after the close signal are dropped.** The writer stops at
     ///   the signal, so a reply parked behind it — or sent later by a
-    ///   [`Responder`] still held by a consumer — is
-    ///   discarded and logged at `debug`. This is the one case in which a peer
+    ///   [`Responder`] still held by a consumer — is discarded. It is logged at
+    ///   `debug` when it arrives after the queue has closed; one that reaches
+    ///   the queue behind the signal before the writer stops is dropped with
+    ///   the queue, unlogged. This is the one case in which a peer
     ///   request goes unanswered; answer outstanding responders before calling
     ///   `close()` if the peer must see those replies.
     pub async fn close(&mut self) {
