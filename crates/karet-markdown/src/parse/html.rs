@@ -98,11 +98,37 @@ impl Builder {
         if self.suppress.is_some() {
             return;
         }
-        let collapsed = collapse_whitespace(text);
+        let mut collapsed = collapse_whitespace(text);
+        // A run of whitespace split across chunks (a line end, the next line's indent)
+        // is still one run.
+        if collapsed.starts_with(' ') && self.ends_in_space() {
+            collapsed.remove(0);
+        }
         if collapsed == " " && !self.inline_open() || collapsed.is_empty() {
             return;
         }
         self.text(&collapsed);
+    }
+
+    /// Whether the innermost inline container's content ends in a space.
+    fn ends_in_space(&self) -> bool {
+        let content = match self.stack.last() {
+            Some(
+                Frame::Paragraph { content, .. }
+                | Frame::Heading { content, .. }
+                | Frame::Emphasis(content)
+                | Frame::Strong(content)
+                | Frame::Strikethrough(content)
+                | Frame::TableCell(content),
+            ) => content,
+            Some(
+                Frame::Link { text, .. } | Frame::HtmlCode(text) | Frame::Image { alt: text, .. },
+            ) => {
+                return text.ends_with(' ');
+            },
+            _ => return false,
+        };
+        matches!(content.last(), Some(Inline::Text(text)) if text.ends_with(' '))
     }
 
     fn html_open(
@@ -229,7 +255,9 @@ impl Builder {
         else {
             return;
         };
-        while self.stack.len() > index {
+        // Exactly the frames open now: closing an inline element can open the
+        // implicit paragraph that holds it, and that paragraph must outlive the close.
+        for _ in index..self.stack.len() {
             self.close();
         }
     }

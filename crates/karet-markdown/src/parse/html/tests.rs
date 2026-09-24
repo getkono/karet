@@ -366,3 +366,21 @@ fn parsing_is_deterministic() {
     let source = "<div align=center>\n\n<img src=a.png>\n\n**x <i>y</i>**\n\n</div>\n";
     assert_eq!(parse(source).blocks, parse(source).blocks);
 }
+
+#[test]
+fn an_inline_element_closed_at_the_top_level_leaves_its_paragraph_open() {
+    // `</a>` hands its image to a fresh paragraph; the next image joins that paragraph.
+    let doc = parse(
+        "<p align=\"center\">\n  <a href=\"https://ci\"><img src=\"a.svg\" alt=\"A\"></a>\n  <img src=\"b.svg\" alt=\"B\">\n</p>\n",
+    );
+    assert!(
+        matches!(
+            doc.blocks.as_slice(),
+            [Block::Aligned { blocks, .. }]
+                if matches!(blocks.as_slice(), [Block::Paragraph(inlines)] if inlines.len() == 3)
+        ),
+        "{:#?}",
+        doc.blocks
+    );
+    assert_eq!(all_text(&parse("<b>x</b> y\n").blocks), "x y|");
+}
