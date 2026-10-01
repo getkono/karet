@@ -120,6 +120,7 @@ pub(super) fn source_label(source: LanguageServerSource) -> &'static str {
         LanguageServerSource::ProjectLocal => "project",
         LanguageServerSource::Path => "PATH",
         LanguageServerSource::Managed => "managed",
+        LanguageServerSource::Builtin => "built-in",
         LanguageServerSource::Unavailable => "unavailable",
         _ => "other",
     }
@@ -127,7 +128,7 @@ pub(super) fn source_label(source: LanguageServerSource) -> &'static str {
 
 pub(super) fn source_role(source: LanguageServerSource) -> ThemeRole {
     match source {
-        LanguageServerSource::Managed => ThemeRole::DiagnosticHint,
+        LanguageServerSource::Managed | LanguageServerSource::Builtin => ThemeRole::DiagnosticHint,
         LanguageServerSource::Unavailable => ThemeRole::DiagnosticError,
         LanguageServerSource::Configured
         | LanguageServerSource::ProjectLocal

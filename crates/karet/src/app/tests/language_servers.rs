@@ -99,6 +99,30 @@ fn language_server_manager_renders_inventory_controls_and_detail() {
     assert!(rendered.contains("install with the project toolchain"));
 }
 
+/// A server compiled into karet is neither managed nor manual: the detail pane
+/// says it is built in, and the instance names its source, so nobody goes
+/// looking for an install that never happened.
+#[test]
+fn language_server_manager_names_a_built_in_provider() {
+    let mut app = app();
+    app.open_language_servers();
+    let mut taplo = language_server_status(LanguageServerId::new("taplo"), "toml", false);
+    taplo.manual_install_reason = None;
+    taplo.instances[0].source = karet_session::LanguageServerSource::Builtin;
+    taplo.instances[0].command = Some("karet-builtin:taplo".to_string());
+    taplo.instances[0].args = Vec::new();
+    answer_inventory(&mut app, vec![taplo]);
+    app.language_server_select(0);
+
+    let rendered = screen(&mut app, 120, 24).join("\n");
+    assert!(
+        rendered.contains("built into Karet"),
+        "manager screen:\n{rendered}"
+    );
+    assert!(rendered.contains("built-in"), "manager screen:\n{rendered}");
+    assert!(!rendered.contains("manual install"));
+}
+
 #[test]
 fn language_server_manager_mouse_selects_rows_and_runs_toolbar_actions() {
     let backend = Arc::new(RecordingBackend::new());
