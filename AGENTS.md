@@ -141,6 +141,14 @@ needed. The individual tasks
 iteration; CI additionally checks Conventional Commits (`convco`) on pull
 requests and `cargo check`s a few grammar feature subsets.
 
+Format Rust with `mise run format`, never with an editor's format-on-save:
+rust-analyzer runs whatever `rustfmt` is on `PATH` (through rustup, the stable
+toolchain in `rust-toolchain.toml`), which ignores the unstable options in
+`rustfmt.toml`, so its output can fail `format-check`. The
+tracked project layer `.karet/setting.jsonc` therefore sets
+`editor."[rust]".formatOnSave` to `false`, so saving a `.rs` file in karet here
+leaves its formatting alone; other editors need the equivalent setting.
+
 One task is deliberately **not** in `verify`: `mise run test-servers-live`
 really installs and starts every managed language server from upstream. It
 needs network and takes minutes, so it is opt-in — see the testing policy.

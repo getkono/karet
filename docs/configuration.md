@@ -105,6 +105,29 @@ selectors to the protocol IDs `cpp`, `csharp`, `javascriptreact`, `typescriptrea
 using `[json]`, while formats that require distinct parsing such as JSON5, MDX, ERB,
 Zsh, Fish, and EDN have their own selectors.
 
+#### Format-on-save and pinned formatters
+
+`formatOnSave` uses whichever formatter the language server runs, and a server
+typically runs whatever version of that tool is on `PATH`. A project whose CI pins a
+different formatter version can therefore see a save-time reformat that its own
+format check rejects. Turn format-on-save off for that language in the project layer,
+and format with the pinned tool instead.
+
+karet's own repository is such a project: its merge gate runs the nightly `rustfmt`
+pinned in `rust-nightly.txt`, while rust-analyzer runs the `rustfmt` on `PATH`. Its
+tracked `.karet/setting.jsonc` therefore carries:
+
+```jsonc
+{
+  "editor": {
+    "[rust]": { "formatOnSave": false }
+  }
+}
+```
+
+Because the project layer has the highest precedence within a selector, this value
+also beats a user-level `[rust]` `formatOnSave`.
+
 ### `files`
 
 | Key | Type | Default | Meaning |
