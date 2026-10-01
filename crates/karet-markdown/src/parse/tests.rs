@@ -408,3 +408,147 @@ fn an_image_in_a_table_cell_is_an_image() {
         Some(Inline::Image(_))
     ));
 }
+
+/// How many levels deep `blocks` nest: a leaf block is one level, inlines aside.
+fn block_depth(blocks: &[Block]) -> usize {
+    blocks
+        .iter()
+        .map(|block| match block {
+            Block::Quote(blocks) | Block::Aligned { blocks, .. } => 1 + block_depth(blocks),
+            Block::List { items, .. } => {
+                1 + items
+                    .iter()
+                    .map(|item| block_depth(&item.blocks))
+                    .max()
+                    .unwrap_or(0)
+            },
+            _ => 1,
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+/// How many levels deep `inlines` nest.
+fn inline_depth(inlines: &[Inline]) -> usize {
+    inlines
+        .iter()
+        .map(|inline| match inline {
+            Inline::Emphasis(children)
+            | Inline::Strong(children)
+            | Inline::Strikethrough(children) => 1 + inline_depth(children),
+            _ => 1,
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+/// Every paragraph's text in document order, flattened.
+fn paragraph_texts(blocks: &[Block]) -> Vec<String> {
+    let mut out = Vec::new();
+    for block in blocks {
+        match block {
+            Block::Paragraph(inlines) => {
+                let mut text = String::new();
+                for inline in inlines {
+                    flatten_into(inline, &mut text);
+                }
+                out.push(text);
+            },
+            Block::Quote(blocks) | Block::Aligned { blocks, .. } => {
+                out.extend(paragraph_texts(blocks));
+            },
+            Block::List { items, .. } => {
+                for item in items {
+                    out.extend(paragraph_texts(&item.blocks));
+                }
+            },
+            _ => {},
+        }
+    }
+    out
+}
+
+#[test]
+fn nesting_past_the_cap_flattens_into_the_deepest_level() {
+    let doc = parse(&format!("{} deep\n", ">".repeat(20_000)));
+    // The capped quotes, then the paragraph they hold.
+    assert_eq!(block_depth(&doc.blocks), MAX_DEPTH + 1);
+    assert_eq!(paragraph_texts(&doc.blocks), vec!["deep"]);
+}
+
+#[test]
+fn nesting_up_to_the_cap_is_kept_whole() {
+    let doc = parse(&format!("{} x\n", ">".repeat(MAX_DEPTH)));
+    assert_eq!(block_depth(&doc.blocks), MAX_DEPTH + 1);
+    let doc = parse(&format!("{} x\n", ">".repeat(MAX_DEPTH + 1)));
+    assert_eq!(block_depth(&doc.blocks), MAX_DEPTH + 1);
+}
+
+#[test]
+fn inline_nesting_past_the_cap_keeps_its_text_in_order() {
+    let doc = parse(&format!(
+        "a {}b{} c\n",
+        "*".repeat(5_000),
+        "*".repeat(5_000)
+    ));
+    assert!(inline_depth(paragraph(&doc)) <= MAX_DEPTH);
+    let doc = parse(&format!(
+        "a {}b{} c\n",
+        "<s>".repeat(5_000),
+        "</s>".repeat(5_000)
+    ));
+    assert!(inline_depth(paragraph(&doc)) <= MAX_DEPTH);
+    assert_eq!(paragraph_texts(&doc.blocks), vec!["a b c"]);
+}
+
+#[test]
+fn siblings_past_the_cap_keep_their_order_and_their_container() {
+    let deep = ">".repeat(MAX_DEPTH + 10);
+    let doc = parse(&format!("{deep} a\n{deep}\n{deep} b\n\nafter\n"));
+    // Nothing past the cap escapes to the root: the quote, then the paragraph after it.
+    assert_eq!(doc.blocks.len(), 2);
+    assert_eq!(paragraph_texts(&doc.blocks), vec!["a", "b", "after"]);
+}
+
+#[test]
+fn a_block_in_a_tight_item_past_the_cap_follows_the_items_text() {
+    // A tight item's text opens an implicit paragraph; a nested list past the cap must
+    // close it rather than adopt it as the container of what follows.
+    let deep = ">".repeat(MAX_DEPTH + 10);
+    let doc = parse(&format!("{deep} - a\n{deep}   - b\n"));
+    assert_eq!(doc.blocks.len(), 1);
+    assert_eq!(paragraph_texts(&doc.blocks), vec!["a", "b"]);
+}
+
+#[test]
+fn a_code_block_past_the_cap_keeps_its_code() {
+    let deep = ">".repeat(MAX_DEPTH + 10);
+    let doc = parse(&format!("{deep} ```rust\n{deep} let x;\n{deep} ```\n"));
+    assert_eq!(block_depth(&doc.blocks), MAX_DEPTH + 1);
+    let mut block = doc.blocks.first();
+    while let Some(Block::Quote(blocks)) = block {
+        block = blocks.first();
+    }
+    assert!(matches!(
+        block,
+        Some(Block::CodeBlock { lang, code }) if lang.as_deref() == Some("rust") && code == "let x;\n"
+    ));
+}
+
+#[test]
+fn html_nesting_past_the_cap_is_bounded_and_keeps_what_follows() {
+    for (open, close) in [
+        ("<ul><li>", "</li></ul>"),
+        ("<blockquote>", "</blockquote>"),
+        ("<b>", "</b>"),
+    ] {
+        let source = format!(
+            "{}x{}\n\nafter\n",
+            open.repeat(20_000),
+            close.repeat(20_000)
+        );
+        let doc = parse(&source);
+        assert!(block_depth(&doc.blocks) <= MAX_DEPTH + 1, "{open}");
+        assert_eq!(paragraph_texts(&doc.blocks), vec!["x", "after"], "{open}");
+    }
+}
