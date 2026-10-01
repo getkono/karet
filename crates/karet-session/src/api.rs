@@ -775,6 +775,13 @@ pub enum Command {
         /// Zero-based cursor line.
         line: u32,
     },
+    /// Mark the document's current buffer lines that differ from `HEAD`,
+    /// answered by [`Event::LineChanges`]. An unknown document answers with no
+    /// markers rather than an error, since closing a tab races this request.
+    LineChanges {
+        /// Open document to compare.
+        doc: DocumentId,
+    },
     /// Fetch a page of the commit-history log (newest first), for lazy loading.
     VcsLog {
         /// How many commits to skip from `HEAD`.

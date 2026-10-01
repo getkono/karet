@@ -613,6 +613,21 @@ pub enum Event {
         /// committed history available.
         attribution: Option<BlameAttribution>,
     },
+    /// A document's uncommitted lines against `HEAD`, answering
+    /// [`Command::LineChanges`].
+    LineChanges {
+        /// The marked document.
+        doc: DocumentId,
+        /// The buffer version that was compared.
+        version: u64,
+        /// One [`DecorationKind::GutterMarker`](karet_core::DecorationKind::GutterMarker)
+        /// per changed run, colored by
+        /// [`GutterAdded`](karet_core::ThemeRole::GutterAdded),
+        /// [`GutterModified`](karet_core::ThemeRole::GutterModified), or
+        /// [`GutterDeleted`](karet_core::ThemeRole::GutterDeleted). Empty when the
+        /// file is unchanged or has no committed version to compare.
+        markers: Vec<karet_core::Decoration>,
+    },
     /// Console output from a commit that is still running, in arrival order.
     ///
     /// Emitted repeatedly between [`Command::Commit`] and its outcome, batched so

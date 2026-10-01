@@ -25,6 +25,7 @@ mod blame;
 mod commit;
 mod conflict;
 mod history;
+mod linediff;
 mod prepare;
 
 use blame::BlameCache;
@@ -120,6 +121,15 @@ pub(crate) enum VcsJob {
         path: PathBuf,
         text: String,
         line: u32,
+        cancel: Cancellation,
+    },
+    /// Mark a document buffer's uncommitted lines against its `HEAD` blob.
+    LineChanges {
+        id: RequestId,
+        doc: DocumentId,
+        version: u64,
+        path: PathBuf,
+        text: String,
         cancel: Cancellation,
     },
     /// Resolve repository/remote facts for one file (per-file discovery).
@@ -386,6 +396,29 @@ fn run(
             Err(message) => {
                 notify_cancellable(events, id, &cancel, format!("blame: {message}"));
             },
+        },
+        VcsJob::LineChanges {
+            id,
+            doc,
+            version,
+            path,
+            text,
+            cancel,
+        } => {
+            if cancel.is_cancelled() {
+                return;
+            }
+            let markers = linediff::line_changes(&path, &text);
+            emit_cancellable(
+                events,
+                id,
+                &cancel,
+                Event::LineChanges {
+                    doc,
+                    version,
+                    markers,
+                },
+            );
         },
         VcsJob::RemoteFacts { id, path, cancel } => {
             let facts = remote_facts(&path);

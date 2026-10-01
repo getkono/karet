@@ -200,6 +200,9 @@ async fn recv_opt<T>(rx: &mut Option<mpsc::UnboundedReceiver<T>>) -> Option<T> {
 }
 
 #[cfg(test)]
+mod line_changes_tests;
+
+#[cfg(test)]
 mod merge_conflict_tests;
 
 #[cfg(test)]

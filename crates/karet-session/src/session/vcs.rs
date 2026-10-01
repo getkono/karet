@@ -35,6 +35,34 @@ impl Session {
         }
     }
 
+    /// Queue the uncommitted-line comparison of `doc`'s current buffer on the
+    /// VCS worker. A document closed before this arrives answers with no
+    /// markers: the client's request for it was already moot.
+    pub(super) fn request_line_changes(&self, id: RequestId, doc: DocumentId) {
+        let Some(document) = self.store.docs.get(&doc) else {
+            self.emit(
+                Some(id),
+                Event::LineChanges {
+                    doc,
+                    version: 0,
+                    markers: Vec::new(),
+                },
+            );
+            return;
+        };
+        let version = document.buffer.version();
+        let path = document.path.clone();
+        let text = document.buffer.text();
+        self.submit_vcs(id, |id, cancel| crate::vcs_worker::VcsJob::LineChanges {
+            id,
+            doc,
+            version,
+            path,
+            text,
+            cancel,
+        });
+    }
+
     /// Lazily fetch a commit's GitHub "Verified" status through the shared async
     /// GitHub manager. A no-op when the workspace is ineligible or the feature is
     /// disabled.
