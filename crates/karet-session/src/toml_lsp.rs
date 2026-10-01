@@ -27,14 +27,12 @@ use karet_lsp::LaunchFailure;
 use karet_lsp::LspClient;
 use karet_lsp::LspError;
 use karet_lsp::LspSpec;
+use karet_lsp::codec;
 use lsp_async_stub::rpc::Message;
 use serde_json::Value;
 use taplo_common::environment::native::NativeEnvironment;
 use tokio::io::AsyncBufRead;
-use tokio::io::AsyncBufReadExt;
-use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWrite;
-use tokio::io::AsyncWriteExt;
 use tokio::io::BufReader;
 use tokio::io::DuplexStream;
 
@@ -52,13 +50,6 @@ pub(crate) const COMMAND: &str = "karet-builtin:taplo";
 
 /// Bytes either side of the pipe may buffer before the writer waits.
 const PIPE_CAPACITY: usize = 1 << 20;
-
-/// The largest message body the server accepts.
-///
-/// The only client is karet's own, so this guards a corrupt header rather than
-/// a hostile peer: without it a mangled `Content-Length` allocates whatever it
-/// claims before a single body byte arrives.
-const MAX_MESSAGE: usize = 64 * 1024 * 1024;
 
 /// Whether `server` is built into this karet, so it never needs installing.
 pub(crate) fn bundles(server: &LanguageServerId) -> bool {
@@ -152,42 +143,22 @@ async fn run(stream: DuplexStream) {
     }
 }
 
-/// Read one `Content-Length`-framed message.
+/// Read one `Content-Length`-framed message, through the codec every karet
+/// language-server connection uses.
 ///
-/// [`None`] ends the session: end of stream, a frame with no usable length, or
-/// a body that is not a JSON-RPC message. The client is karet's own, so a
-/// malformed frame means the stream is no longer trustworthy, and resyncing
-/// from the middle of a body would be guessing.
+/// [`None`] ends the session: end of stream, a frame the codec rejects (no
+/// usable length, one over its cap, a truncated body), or a body that is not a
+/// JSON-RPC message. The client is karet's own, so a malformed frame means the
+/// stream is no longer trustworthy, and resyncing from the middle of a body
+/// would be guessing.
 async fn read_message<R: AsyncBufRead + Unpin>(reader: &mut R) -> Option<Message> {
-    let mut length = None;
-    let mut line = String::new();
-    loop {
-        line.clear();
-        if reader.read_line(&mut line).await.ok()? == 0 {
-            return None;
-        }
-        let header = line.trim_end_matches(['\r', '\n']);
-        if header.is_empty() {
-            break;
-        }
-        if let Some((name, value)) = header.split_once(':')
-            && name.trim().eq_ignore_ascii_case("content-length")
-        {
-            length = value.trim().parse::<usize>().ok();
-        }
-    }
-    let length = length.filter(|length| *length <= MAX_MESSAGE)?;
-    let mut body = vec![0; length];
-    reader.read_exact(&mut body).await.ok()?;
+    let body = codec::read_frame(reader).await.ok()??;
     serde_json::from_slice(&body).ok()
 }
 
 async fn write_message<W: AsyncWrite + Unpin>(out: &mut W, message: &Message) -> io::Result<()> {
     let body = serde_json::to_vec(message).map_err(io::Error::other)?;
-    out.write_all(format!("Content-Length: {}\r\n\r\n", body.len()).as_bytes())
-        .await?;
-    out.write_all(&body).await?;
-    out.flush().await
+    codec::write_frame(out, &body).await
 }
 
 #[cfg(test)]
@@ -195,6 +166,7 @@ mod tests {
     use std::time::Duration;
 
     use serde_json::json;
+    use tokio::io::AsyncWriteExt;
     use tokio::io::ReadHalf;
     use tokio::io::WriteHalf;
 
@@ -289,7 +261,7 @@ mod tests {
     /// the reader stranded mid-stream.
     #[tokio::test]
     async fn an_unusable_frame_ends_the_session() {
-        let oversized = format!("Content-Length: {}\r\n\r\n", MAX_MESSAGE + 1);
+        let oversized = format!("Content-Length: {}\r\n\r\n", codec::MAX_MESSAGE_BYTES + 1);
         let cases: [&[u8]; 5] = [
             b"",
             b"Content-Length: 4\r\n\r\nnull",
