@@ -16,13 +16,16 @@
 
 use std::collections::VecDeque;
 use std::time::Duration;
-use std::time::Instant;
 
 use karet_lsp::LspClient;
 use karet_lsp::LspError;
 use tokio::sync::mpsc;
+// Tokio's clock rather than the standard one, so a test can pause and advance
+// it and pin every delay and window below without waiting on any of them.
+use tokio::time::Instant;
 
 use super::CIRCUIT_COOLDOWN;
+use super::DIAGNOSTIC_GRACE;
 use super::RESTART_LIMIT;
 use super::RESTART_MAX_DELAY;
 use super::RESTART_MIN_DELAY;
@@ -108,7 +111,7 @@ pub(super) async fn next_wake(
         tokio::select! {
             biased;
             () = client.closed() => Wake::Lost,
-            () = tokio::time::sleep_until(tokio::time::Instant::from_std(flush_at)) => Wake::Quiet,
+            () = tokio::time::sleep_until(flush_at) => Wake::Quiet,
             Some(answer) = hints.next(), if busy => Wake::Hint(answer),
             cmd = rx.recv() => Wake::Command(cmd),
         }
@@ -128,6 +131,41 @@ pub(super) async fn next_wake(
 /// path, which has its own accounting.
 pub(super) fn was_stable(connected_at: Option<Instant>) -> bool {
     connected_at.is_some_and(|since| since.elapsed() >= STABLE_CONNECTION)
+}
+
+/// Take the delay the next restart waits, and double the one after it, up to
+/// [`RESTART_MAX_DELAY`].
+///
+/// The one place the backoff schedule is computed, so every path that retries --
+/// a launch that failed, a replay that failed, a connection that dropped -- walks
+/// the same 250ms, 500ms, 1s, ... 30s sequence.
+pub(super) fn back_off(restart_delay: &mut Duration) -> Duration {
+    let delay = *restart_delay;
+    *restart_delay = (*restart_delay * 2).min(RESTART_MAX_DELAY);
+    delay
+}
+
+/// Drop every entry of `log` older than `window`, as of `now`.
+///
+/// An entry exactly `window` old still counts: the window is closed at its far
+/// end. The log is in arrival order, so only its front can have expired.
+pub(super) fn expire(log: &mut VecDeque<Instant>, now: Instant, window: Duration) {
+    while log
+        .front()
+        .is_some_and(|entry| now.duration_since(*entry) > window)
+    {
+        log.pop_front();
+    }
+}
+
+/// When the next restart is due, and when the dropped provider's diagnostics
+/// stop being worth trusting, for a connection lost at `now` that must wait
+/// `delay` before the next attempt.
+///
+/// Every route that loses a connection -- the liveness arm, a failed flush, a
+/// failed command -- schedules through here, so they cannot drift apart.
+pub(super) fn after_loss(now: Instant, delay: Duration) -> (Instant, Instant) {
+    (now + delay, now + DIAGNOSTIC_GRACE)
 }
 
 /// Charge one lost connection against the restart budget, returning how long to
@@ -159,12 +197,7 @@ pub(super) fn charge_disconnect(
     // has no such hole.
     if hung {
         let now = Instant::now();
-        while hangs
-            .front()
-            .is_some_and(|hang| now.duration_since(*hang) > HANG_WINDOW)
-        {
-            hangs.pop_front();
-        }
+        expire(hangs, now, HANG_WINDOW);
         hangs.push_back(now);
         if hangs.len() >= HANG_LIMIT {
             tracing::warn!(
@@ -175,9 +208,10 @@ pub(super) fn charge_disconnect(
             hangs.clear();
             return (CIRCUIT_COOLDOWN, LanguageServerRuntimeState::CircuitOpen);
         }
-        let delay = *restart_delay;
-        *restart_delay = (*restart_delay * 2).min(RESTART_MAX_DELAY);
-        return (delay, LanguageServerRuntimeState::Retrying);
+        return (
+            back_off(restart_delay),
+            LanguageServerRuntimeState::Retrying,
+        );
     }
     hangs.clear();
     if was_stable(connected_at) {
@@ -186,12 +220,7 @@ pub(super) fn charge_disconnect(
         return (*restart_delay, LanguageServerRuntimeState::Retrying);
     }
     let now = Instant::now();
-    while failures
-        .front()
-        .is_some_and(|failure| now.duration_since(*failure) > RESTART_WINDOW)
-    {
-        failures.pop_front();
-    }
+    expire(failures, now, RESTART_WINDOW);
     failures.push_back(now);
     if failures.len() >= RESTART_LIMIT {
         tracing::warn!(
@@ -200,9 +229,10 @@ pub(super) fn charge_disconnect(
         );
         return (CIRCUIT_COOLDOWN, LanguageServerRuntimeState::CircuitOpen);
     }
-    let delay = *restart_delay;
-    *restart_delay = (*restart_delay * 2).min(RESTART_MAX_DELAY);
-    (delay, LanguageServerRuntimeState::Retrying)
+    (
+        back_off(restart_delay),
+        LanguageServerRuntimeState::Retrying,
+    )
 }
 
 /// Running verdict on a connection, from the calls made over it.

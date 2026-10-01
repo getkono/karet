@@ -132,7 +132,7 @@ pub(super) async fn server_task(task: ServerTask) {
             let wake_at =
                 clear_diagnostics_at.map_or(next_restart, |grace| next_restart.min(grace));
             if Instant::now() < wake_at {
-                let sleep = tokio::time::sleep_until(tokio::time::Instant::from_std(wake_at));
+                let sleep = tokio::time::sleep_until(wake_at);
                 tokio::pin!(sleep);
                 tokio::select! {
                     cmd = rx.recv() => {
@@ -161,12 +161,7 @@ pub(super) async fn server_task(task: ServerTask) {
             }
 
             let now = Instant::now();
-            while failures
-                .front()
-                .is_some_and(|failure| now.duration_since(*failure) > RESTART_WINDOW)
-            {
-                failures.pop_front();
-            }
+            health::expire(&mut failures, now, RESTART_WINDOW);
             match connector(spec.clone(), root.clone()).await {
                 Ok(candidate) => {
                     let mut replay_failed = false;
@@ -182,8 +177,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     }
                     if replay_failed {
                         failures.push_back(now);
-                        next_restart = now + restart_delay;
-                        restart_delay = (restart_delay * 2).min(RESTART_MAX_DELAY);
+                        next_restart = now + health::back_off(&mut restart_delay);
                         report_state(
                             LanguageServerRuntimeState::Retrying,
                             Some("document replay failed".to_owned()),
@@ -278,9 +272,7 @@ pub(super) async fn server_task(task: ServerTask) {
                             LanguageServerRuntimeState::Retrying,
                             Some(error.to_string()),
                         );
-                        let next = now + restart_delay;
-                        restart_delay = (restart_delay * 2).min(RESTART_MAX_DELAY);
-                        next
+                        now + health::back_off(&mut restart_delay)
                     };
                     continue;
                 },
@@ -323,8 +315,9 @@ pub(super) async fn server_task(task: ServerTask) {
                     &key,
                 );
                 connected_at = None;
-                next_restart = Instant::now() + delay;
-                clear_diagnostics_at = Some(Instant::now() + DIAGNOSTIC_GRACE);
+                let clear_at;
+                (next_restart, clear_at) = health::after_loss(Instant::now(), delay);
+                clear_diagnostics_at = Some(clear_at);
                 report_state(state, None);
                 continue;
             },
@@ -362,8 +355,9 @@ pub(super) async fn server_task(task: ServerTask) {
                         &key,
                     );
                     connected_at = None;
-                    next_restart = Instant::now() + delay;
-                    clear_diagnostics_at = Some(Instant::now() + DIAGNOSTIC_GRACE);
+                    let clear_at;
+                    (next_restart, clear_at) = health::after_loss(Instant::now(), delay);
+                    clear_diagnostics_at = Some(clear_at);
                     report_state(state, None);
                 }
                 continue;
@@ -812,8 +806,9 @@ pub(super) async fn server_task(task: ServerTask) {
                 &key,
             );
             connected_at = None;
-            next_restart = Instant::now() + delay;
-            clear_diagnostics_at = Some(Instant::now() + DIAGNOSTIC_GRACE);
+            let clear_at;
+            (next_restart, clear_at) = health::after_loss(Instant::now(), delay);
+            clear_diagnostics_at = Some(clear_at);
             report_state(state, None);
         }
     }

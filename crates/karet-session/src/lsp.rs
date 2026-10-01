@@ -38,7 +38,6 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use std::time::Instant;
 
 pub(crate) use catalog::managed_arguments;
 pub(crate) use catalog::serves_language;
@@ -66,6 +65,10 @@ use slot::ServerSlot;
 pub(crate) use slot::SlotKey;
 use slot::SlotToken;
 use tokio::sync::mpsc;
+// Tokio's clock, not the standard one: the server task's backoff, failure
+// window and diagnostic grace all measure time with it, so a test can pause
+// and advance it rather than wait those delays out.
+use tokio::time::Instant;
 
 use crate::api::DocumentId;
 use crate::api::LanguageServerId;
