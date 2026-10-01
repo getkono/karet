@@ -640,3 +640,24 @@ fn queued_startup_commands_run_at_once_without_a_code_tab() {
     assert!(app.startup_commands.is_empty());
     assert_eq!(app.sidebar_panel, SidebarPanel::Search);
 }
+
+#[test]
+fn unicode_placeholders_are_off_where_the_image_would_be_blank() {
+    use crate::app::state::placeholders_in;
+    let env = |pairs: &'static [(&'static str, &'static str)]| {
+        move |key: &str| {
+            pairs
+                .iter()
+                .find(|(k, _)| *k == key)
+                .map(|(_, v)| (*v).to_owned())
+        }
+    };
+    assert!(placeholders_in(env(&[("TERM_PROGRAM", "ghostty")])));
+    assert!(placeholders_in(env(&[])));
+    assert!(!placeholders_in(env(&[("TERM_PROGRAM", "WezTerm")])));
+    assert!(!placeholders_in(env(&[(
+        "TMUX",
+        "/tmp/tmux-1/default,1,0"
+    )])));
+    assert!(!placeholders_in(env(&[("KONSOLE_VERSION", "240401")])));
+}

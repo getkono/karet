@@ -172,7 +172,8 @@ with a root per package. The same query language drives both the filter box and
 are the same string. See [`docs/seam.md`](docs/seam.md).
 
 **Documents and media.** Markdown preview to the side, re-rendering as you type with
-the two panes scroll-synced and mermaid diagrams drawn inline; Jupyter notebooks with
+the two panes scroll-synced, mermaid diagrams drawn inline, and a curated HTML subset
+and local images rendered in place; Jupyter notebooks with
 kernel execution; PDF pages; DOCX as read-only markdown; images inline; and a hex
 view for everything else. LaTeX has tree-sitter highlighting plus a **LaTeX: Build and
 Open PDF Preview** workflow around a local `latexmk`.

@@ -2,13 +2,54 @@
 
 use super::*;
 
+/// The Kitty id of the image or PDF page an image tab shows: outside the 24 bits the
+/// markdown preview's images use, so deleting one never deletes the other.
+#[cfg(any(feature = "images", feature = "pdf"))]
+const TAB_IMAGE_ID: u32 = 0x4b41_5202;
+
 impl App {
+    /// Tell the markdown preview how to paint images this frame: as Kitty unicode
+    /// placeholders when the terminal draws them, on the cell size the terminal
+    /// reports now (a font or zoom change re-sizes every image).
+    pub(super) fn sync_preview_graphics(&mut self) {
+        if let Ok(size) = crossterm::terminal::window_size()
+            && size.width > 0
+            && size.height > 0
+            && size.columns > 0
+            && size.rows > 0
+        {
+            self.caps.cell_px = (
+                u32::from(size.width) / u32::from(size.columns),
+                u32::from(size.height) / u32::from(size.rows),
+            );
+        }
+        let kitty = self.caps.graphics == GraphicsProtocol::Kitty && self.caps.placeholders;
+        self.preview_images.configure(kitty, self.caps.cell_px);
+    }
+
+    /// Delete every image the preview transmitted, before the editor exits.
+    pub(super) fn release_preview_graphics(&self) {
+        let output = self.preview_images.teardown();
+        if !output.is_empty() {
+            let mut stdout = io::stdout();
+            let _ = write!(stdout, "{output}");
+            let _ = stdout.flush();
+        }
+    }
+
     /// Transmit or clear the active tab's Kitty image after a frame is drawn.
     pub(super) fn flush_graphics(&mut self) {
         if self.caps.graphics != GraphicsProtocol::Kitty {
             return;
         }
         let mut stdout = io::stdout();
+        // The preview's images: transmitted once, placed per cell box, deleted when
+        // their pixels are dropped. Their placeholder cells were drawn with the frame.
+        let preview = self.preview_images.take_output();
+        if !preview.is_empty() {
+            let _ = write!(stdout, "{preview}");
+            let _ = stdout.flush();
+        }
         // Transmitting a rasterized image/PDF page needs a raster branch compiled in
         // (`images`/`pdf`); the graphical text caret below is independent of it.
         #[cfg(any(feature = "images", feature = "pdf"))]
@@ -36,17 +77,21 @@ impl App {
             };
             match self.image_area {
                 Some(area) if self.shown_image != current || self.shown_page != current_page => {
-                    let _ = write!(stdout, "{}", image::kitty_delete_all());
+                    let _ = write!(stdout, "{}", image::kitty_delete_image(TAB_IMAGE_ID));
                     let _ = write!(stdout, "\x1b[{};{}H", area.y + 1, area.x + 1);
                     if let Some(image) = image {
-                        let _ = write!(stdout, "{}", image.kitty_escape(area.width, area.height));
+                        let _ = write!(
+                            stdout,
+                            "{}",
+                            image.kitty_escape_with_id(TAB_IMAGE_ID, area.width, area.height)
+                        );
                     }
                     let _ = stdout.flush();
                     self.shown_image = current;
                     self.shown_page = current_page;
                 },
                 None if self.shown_image.is_some() => {
-                    let _ = write!(stdout, "{}", image::kitty_delete_all());
+                    let _ = write!(stdout, "{}", image::kitty_delete_image(TAB_IMAGE_ID));
                     let _ = stdout.flush();
                     self.shown_image = None;
                 },

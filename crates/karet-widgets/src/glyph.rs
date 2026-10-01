@@ -45,6 +45,8 @@ pub enum UiIcon {
     Preview,
     /// Format a source table.
     FormatTable,
+    /// An image shown as a labelled chip rather than pixels, e.g. in a markdown preview.
+    Image,
     /// Seam lens: what is visible from outside.
     SeamApi,
     /// Seam lens: what behavior can be swapped.
@@ -96,6 +98,7 @@ impl UiIcon {
             Self::Symlink => '\u{f0c1}',       // link
             Self::Preview => '\u{f06e}',       // eye
             Self::FormatTable => '\u{f0ce}',   // table
+            Self::Image => '\u{f03e}',         // image (picture)
             // Seam lenses. Distinct silhouettes matter more than literal depiction —
             // these are read side by side on one row.
             Self::SeamApi => '\u{f06e}', // eye — visible from outside
@@ -135,6 +138,7 @@ impl UiIcon {
             Self::Symlink => '\u{2197}',          // ↗ (redirect / link)
             Self::Preview => '\u{25c9}',          // ◉ (preview)
             Self::FormatTable => '\u{25a6}',      // ▦ (grid)
+            Self::Image => '\u{29c8}',            // ⧈ squared square (a framed picture)
             Self::SeamApi => '\u{25c9}',          // ◉ fisheye (a filled eye)
             Self::SeamSubstitution => '\u{25ca}', // ◊ lozenge
             Self::SeamVariation => '\u{2325}',    // ⌥ option key
@@ -166,6 +170,7 @@ impl UiIcon {
             Self::Symlink => '@',
             Self::Preview => 'P',
             Self::FormatTable => 'T',
+            Self::Image => 'I',
             // Mnemonic and unambiguous side by side; no digits, which read as counts.
             Self::SeamApi => '*',
             Self::SeamSubstitution => '#',
@@ -252,6 +257,7 @@ mod tests {
             UiIcon::Symlink,
             UiIcon::Preview,
             UiIcon::FormatTable,
+            UiIcon::Image,
         ] {
             assert!(icon.glyph(IconStyle::Ascii).is_ascii_graphic());
         }
@@ -385,6 +391,25 @@ mod tests {
         assert_eq!(UiIcon::ViewEditor.glyph(IconStyle::Unicode), '\u{270e}');
         assert_eq!(UiIcon::ViewGithub.glyph(IconStyle::Unicode), '\u{2388}');
         // #211: assert_eq!(UiIcon::ViewAgents.glyph(IconStyle::Unicode), '\u{2042}');
+    }
+
+    #[test]
+    fn the_image_glyph_is_one_narrow_non_emoji_cell_outside_the_nerd_tier() {
+        // It leads a chip inside running prose, so it must not be the wide, non-BMP
+        // emoji it replaces: pinned by codepoint (East_Asian_Width=Neutral, no emoji
+        // presentation) so a swap forces re-checking that class.
+        assert_eq!(UiIcon::Image.glyph(IconStyle::NerdFont), '\u{f03e}');
+        assert_eq!(UiIcon::Image.glyph(IconStyle::Unicode), '\u{29c8}');
+        assert_eq!(UiIcon::Image.glyph(IconStyle::Ascii), 'I');
+        for style in [IconStyle::Unicode, IconStyle::Ascii] {
+            let glyph = UiIcon::Image.glyph(style);
+            assert_eq!(UnicodeWidthChar::width(glyph), Some(1), "{style:?}");
+            assert_eq!(
+                UnicodeWidthChar::width_cjk(glyph),
+                Some(1),
+                "{style:?} is ambiguous-width"
+            );
+        }
     }
 
     #[test]

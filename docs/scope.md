@@ -36,6 +36,70 @@ runtime — **sixel and iTerm2 protocols are out of scope**
 `ratatui-image` (its build script needs the system C library `chafa`, which the
 [no-system-deps rule](../AGENTS.md#design-principles) forbids).
 
+## Markdown preview
+
+**No HTML layout engine.** The preview renders CommonMark with GitHub tables, task
+lists and strikethrough, and maps a curated subset of embedded HTML onto the same
+render model — text formatting, links, images, headings, lists, `<details>`, and
+horizontal alignment. [file-formats.md](file-formats.md#markdown-preview) catalogues
+exactly what renders how. Rendering HTML "positionally correct"
+([#295](https://github.com/getkono/karet/issues/295)) was weighed and declined: no
+pure-Rust engine lays HTML out onto a terminal grid, and embedding a browser-grade one
+would outweigh the editor and break the
+[minimal-dependency and one-backend rules](../AGENTS.md#design-principles).
+
+Deliberately not built:
+
+- **Positional layout beyond alignment.** `align="center"`/`"right"` and `<center>`
+  are honoured; floats, `style=`/CSS, tables used for layout, and side-by-side
+  columns are not. Images in one paragraph stack vertically, and an HTML `<table>`
+  reads as plain text, a line per row. Tags outside the subset keep their text and lose their
+  markup.
+- **Remote images.** The preview never makes a network request: an `http(s)` image —
+  a CI badge — renders as a chip naming its alt text that links to it. Opening a file performs no
+  network I/O, and a README must not be able to phone home through an image.
+- **Active content.** `<script>`, `<style>`, `<iframe>` and `<object>` vanish with
+  their content; forms and embedded media are not interactive.
+- **Downscaled preview images.** An image is shown at its native resolution, one
+  image pixel per screen pixel on the terminal's real cell size, and shrinks only to
+  fit the pane's width. On a [Kitty](#terminal-graphics) terminal it is transmitted
+  once, in full, and drawn through unicode placeholders — ordinary cells, so it
+  scrolls, clips to its pane and sits under popups like text, and nothing is re-sent
+  as it moves. WezTerm and Konsole speak Kitty graphics but not its placeholders, tmux
+  drops the transmissions unless its passthrough is configured, and every other
+  terminal has neither, so there the image falls back to truecolor half-blocks: two
+  pixels a cell, area-averaged, the most a text grid can show.
+- **Images the preview will not load** render as chips: SVG, GIF, BMP, ICO, animated
+  WebP and any other format Gamut does not decode; absolute paths and anything resolving outside
+  the workspace (`../`, symlinks); files over the 10 MiB guard or images over
+  4096×4096 pixels.
+- **Watching image files.** A changed image is picked up on the preview's next
+  re-render (an edit, a resize) at least a second after it was last checked, not by
+  watching the file.
+
+Accepted rough edges, not bugs:
+
+- An image takes as many preview lines as its height needs but a single source line,
+  so the two panes' scroll sync jumps across it.
+- An image taller than 297 lines — Kitty's placeholders address no more rows — is
+  shrunk to that height; only an image thousands of pixels tall at a small font
+  reaches it.
+- A TIFF — or a JPEG or extended WebP whose size lies past its first 64 KiB —
+  reserves its rows only once decoded, so the layout shifts once; such an image
+  decodes as soon as the document is laid out, not when it is scrolled into view.
+- A screen whose images together decode to more than the 256 MiB budget keeps them
+  all while they are on screen rather than re-decoding them.
+- Chips are clickable in the preview only; hover popups, dialogs and the GitHub
+  surfaces render images as chip text, led by a fixed `🖼` rather than the icon
+  style's glyph. A lean build (`--no-default-features`)
+  renders every image as a chip.
+
+This reopens on **proven demand** for a specific construct, which is then added to
+the subset — not on the arrival of an HTML engine.
+
+Not affected: the image tab, PDF pages, and the notebook and DOCX previews (whose
+converters already reduce embedded images to placeholders).
+
 ## Syntax backends
 
 Tree-sitter only. No syntect, no TextMate grammars, no dual-backend

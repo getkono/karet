@@ -30,6 +30,8 @@ mod lifecycle;
 mod line_changes;
 mod markdown_edit;
 mod preview;
+#[cfg(feature = "images")]
+mod preview_images;
 mod remote;
 mod review;
 mod save;

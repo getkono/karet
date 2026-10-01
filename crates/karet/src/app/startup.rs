@@ -129,6 +129,7 @@ impl App {
             click_streak: 0,
             clipboard: Clipboard::new(),
             image_area: None,
+            preview_images: crate::preview_images::PreviewImages::default(),
             shown_image: None,
             shown_page: 0,
             shown_graphics_caret: None,
