@@ -374,6 +374,70 @@ async fn a_formatter_that_never_answers_does_not_wedge_its_server() -> TestResul
     Ok(())
 }
 
+/// A `Command::Save` hands the server task the configured
+/// `editor.formatOnSaveTimeout`, not the default.
+///
+/// The test above calls `LspManager::formatting` directly, which takes
+/// `begin_format_on_save` building the request on trust. This one starts from
+/// the save. The session's own sweep reads a wall clock that the paused tokio
+/// clock does not advance, so here only the server task can give up. It must do
+/// so within the deadline derived from the configured 2.5 s. A task handed the
+/// 10 s default would wait 13 s and overrun the assertion.
+#[tokio::test(start_paused = true)]
+async fn a_save_hands_the_server_the_configured_format_timeout() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let path = rust_file(&dir, "main.rs", "original\n").ok_or("write failed")?;
+    let save_timeout = Duration::from_millis(2_500);
+
+    let mut settings = crate::config::Settings::default();
+    settings.editor.format_on_save = true;
+    settings.editor.format_on_save_timeout = 2_500;
+    let (mut session, mut events, _snaps) = Session::new(SessionConfig {
+        settings,
+        ..SessionConfig::default()
+    });
+    session.set_lsp_connector(test_connector(
+        Behavior::FormatsNever,
+        None,
+        Arc::new(AtomicUsize::new(0)),
+    ));
+    let backend = local_session(session, None);
+
+    backend.send(
+        backend.next_id(),
+        Command::OpenDocument {
+            path: path.clone(),
+            language: None,
+        },
+    )?;
+    let (doc, _version) = await_opened(&mut events).await.ok_or("no Opened")?;
+    let started = tokio::time::Instant::now();
+    backend.send(
+        backend.next_id(),
+        Command::Save {
+            doc,
+            cause: crate::api::SaveCause::Manual,
+        },
+    )?;
+    let (_request, saved) = tokio::time::timeout(Duration::from_secs(60), await_saved(&mut events))
+        .await
+        .map_err(|_elapsed| "the save never landed")?
+        .ok_or("no Saved")?;
+    let waited = started.elapsed();
+
+    assert_eq!(saved, doc);
+    assert!(
+        waited >= save_timeout,
+        "the save must wait for the formatter before giving up (waited {waited:?})"
+    );
+    assert!(
+        waited <= crate::lsp::runtime::formatting_deadline(save_timeout),
+        "the server task must give up at the configured timeout, not the \
+         default (waited {waited:?})"
+    );
+    Ok(())
+}
+
 /// The `FormattingOptions` the client sent with the last `textDocument/formatting`
 /// it issued, out of everything the scripted server received.
 fn formatting_options_sent(observed: &mut mpsc::UnboundedReceiver<Value>) -> Option<Value> {
