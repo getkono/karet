@@ -730,3 +730,56 @@ fn invalidation_tombstones_an_already_queued_repository_status() {
     }));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A left press routed the way a real one is, through `handle_mouse`.
+fn left_click(app: &mut App, column: u16, row: u16) {
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    });
+}
+
+/// The first header cell of `panel`'s tab, as the last painted frame placed it.
+fn panel_tab(app: &App, panel: SidebarPanel) -> Option<(u16, u16)> {
+    app.panel_hits
+        .iter()
+        .find_map(|&(start, _, hit)| (hit == panel).then_some((start, app.sidebar_rect.y)))
+}
+
+/// #315: double-clicking the tab of the panel already open folds the sidebar.
+#[test]
+fn double_click_on_the_open_panel_tab_folds_the_sidebar() {
+    let mut app = App::new(PathBuf::from("."), Vec::new(), Vec::new(), false);
+    app.sidebar_panel = SidebarPanel::Explorer;
+    let _ = frame(&mut app, 100, 30);
+    let tab = panel_tab(&app, SidebarPanel::Explorer);
+    assert!(tab.is_some(), "the explorer tab is painted in the header");
+    let (col, row) = tab.unwrap_or_default();
+
+    left_click(&mut app, col, row);
+    assert!(app.sidebar_visible, "a single click keeps the sidebar open");
+    left_click(&mut app, col, row);
+
+    assert!(!app.sidebar_visible);
+    assert_eq!(app.sidebar_panel, SidebarPanel::Explorer);
+}
+
+/// A double-click on a tab that was not open opens it and leaves the sidebar up,
+/// rather than opening it and folding it away on the second click.
+#[test]
+fn double_click_on_another_panel_tab_opens_it_without_folding() {
+    let mut app = App::new(PathBuf::from("."), Vec::new(), Vec::new(), false);
+    app.sidebar_panel = SidebarPanel::Explorer;
+    let _ = frame(&mut app, 100, 30);
+    let tab = panel_tab(&app, SidebarPanel::Search);
+    assert!(tab.is_some(), "the search tab is painted in the header");
+    let (col, row) = tab.unwrap_or_default();
+
+    left_click(&mut app, col, row);
+    left_click(&mut app, col, row);
+
+    assert!(app.sidebar_visible);
+    assert_eq!(app.sidebar_panel, SidebarPanel::Search);
+}
