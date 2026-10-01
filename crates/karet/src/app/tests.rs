@@ -32,6 +32,7 @@ mod preview;
 mod remote;
 mod review;
 mod save;
+mod save_cursor;
 mod scm;
 mod scroll;
 mod seam;

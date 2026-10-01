@@ -112,6 +112,37 @@ impl History {
         } else {
             self.alloc_group()
         };
+        self.push(inverse, forward, ctx, edit_end, group);
+    }
+
+    /// Record an applied edit as part of the current head group, so one undo
+    /// reverts it together with the edit before it. With nothing to join (an
+    /// empty undo stack) it starts a group of its own, exactly like
+    /// [`record`](Self::record) would.
+    pub(crate) fn record_joined(
+        &mut self,
+        inverse: Change,
+        forward: Change,
+        ctx: &EditContext,
+        edit_end: Option<LineCol>,
+    ) {
+        self.redo.clear();
+        let group = if self.undo.is_empty() {
+            self.alloc_group()
+        } else {
+            self.current_group()
+        };
+        self.push(inverse, forward, ctx, edit_end, group);
+    }
+
+    fn push(
+        &mut self,
+        inverse: Change,
+        forward: Change,
+        ctx: &EditContext,
+        edit_end: Option<LineCol>,
+        group: u64,
+    ) {
         self.undo.push(Revision {
             inverse,
             forward,
@@ -310,5 +341,56 @@ mod tests {
         assert_eq!(redo.len(), 1);
         assert_eq!(h.undo.len(), 1);
         assert_eq!(group_of(&h, 0), group);
+    }
+
+    #[test]
+    fn joined_edit_undoes_with_the_one_before_it_and_restores_its_cursor() {
+        let mut h = History::default();
+        h.record(
+            insert(0, 0, "a"),
+            insert(0, 0, "a"),
+            &typed(0, 0, 0),
+            Some(LineCol::new(0, 1)),
+        );
+        // A non-coalescing replace starts its own group.
+        let replace = |line, col| EditContext {
+            tick_ms: 0,
+            cause: EditCause::Replace,
+            cursor_before: CursorState::single(Selection::caret(LineCol::new(line, col))),
+        };
+        h.record(insert(0, 1, "b"), insert(0, 1, "b"), &replace(3, 4), None);
+        h.record_joined(insert(0, 2, "c"), insert(0, 2, "c"), &replace(9, 9), None);
+        assert_ne!(group_of(&h, 0), group_of(&h, 1));
+        assert_eq!(
+            group_of(&h, 1),
+            group_of(&h, 2),
+            "the joined edit shares a group"
+        );
+
+        let (changes, cursor) = h.take_undo().unwrap_or_default();
+        assert_eq!(changes.len(), 2, "one undo reverts both edits");
+        assert_eq!(
+            cursor.primary().head,
+            LineCol::new(3, 4),
+            "undo restores the cursor from before the first edit of the group"
+        );
+        assert_eq!(h.undo.len(), 1, "the edit before the group is untouched");
+    }
+
+    #[test]
+    fn joined_edit_on_empty_history_starts_its_own_group() {
+        let mut h = History::default();
+        h.record_joined(
+            insert(0, 0, "a"),
+            insert(0, 0, "a"),
+            &EditContext::default(),
+            None,
+        );
+        assert_eq!(h.undo.len(), 1);
+        assert_ne!(
+            group_of(&h, 0),
+            0,
+            "group 0 is reserved for the unedited state"
+        );
     }
 }

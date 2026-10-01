@@ -248,6 +248,15 @@ struct Document {
     /// The buffer version last written to a crash-recovery swap, so a tick does not
     /// rewrite an unchanged buffer.
     backed_up_version: Option<u64>,
+    /// The caret the client last reported through [`Command::SetCursor`], with
+    /// the buffer version it arrived at. A save's own rewrites record it as the
+    /// cursor their undo restores, but only while that version is still
+    /// current: once any edit lands after it, the report no longer says where
+    /// the user is.
+    reported_cursor: Option<(u64, CursorState)>,
+    /// The buffer version a save's formatter edit left behind, so the same
+    /// save's whitespace cleanup joins its undo step instead of adding one.
+    formatted_version: Option<u64>,
 }
 
 impl Document {
@@ -418,9 +427,13 @@ impl Session {
             Command::Save { doc, cause } => self.save(id, doc, cause),
             Command::RetargetDocument { doc, path } => self.retarget(id, doc, path),
             Command::BuildLatex { doc } => self.request_latex_build(id, doc),
-            // The caret is UI-local; `SetCursor` becomes meaningful when producers
-            // (LSP at a position, multi-view sync) need it.
-            Command::SetCursor { .. } => {},
+            // The caret is UI-local; the backend keeps only the last report per
+            // document, so a save's own rewrites can undo back to it.
+            Command::SetCursor { doc, cursors, .. } => {
+                if let Some(doc) = self.store.docs.get_mut(&doc) {
+                    doc.reported_cursor = Some((doc.buffer.version(), cursors));
+                }
+            },
             Command::Stage { paths } => self.vcs_write(id, |repo| repo.stage(&paths)),
             Command::ApplyIndexPatch { patch, reverse } => {
                 self.vcs_write(id, |repo| repo.apply_index_patch(&patch, reverse));
@@ -929,6 +942,35 @@ fn edit_context(tick_ms: u64, cause: EditCause, change: &Change) -> EditContext 
         cause,
         cursor_before,
     }
+}
+
+/// The context for a rewrite the session makes on its own at save time
+/// (formatting, whitespace cleanup). Undoing it should put the caret back where
+/// the user was, not at the rewrite's first edit -- which, for a whole-document
+/// replacement, is the top of the file. The client's last [`Command::SetCursor`]
+/// report says where that is, as long as no edit has landed since it; failing
+/// that, the first edit's start is the only position there is.
+fn save_edit_context(tick_ms: u64, doc: &Document, change: &Change) -> EditContext {
+    let mut ctx = edit_context(tick_ms, EditCause::Replace, change);
+    if let Some((version, cursors)) = &doc.reported_cursor
+        && *version == doc.buffer.version()
+        && !cursors.selections.is_empty()
+    {
+        let clamp = |pos: LineCol| {
+            let byte = doc
+                .buffer
+                .line_col_to_byte(pos)
+                .unwrap_or(BytePos(doc.buffer.len_bytes()));
+            doc.buffer.byte_to_line_col(byte)
+        };
+        let mut cursor_before = cursors.clone();
+        for selection in &mut cursor_before.selections {
+            selection.anchor = clamp(selection.anchor);
+            selection.head = clamp(selection.head);
+        }
+        ctx.cursor_before = cursor_before;
+    }
+    ctx
 }
 
 /// Map an explicit LSP-style language id (e.g. `"rust"`) to karet's display name,
