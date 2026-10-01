@@ -20,19 +20,19 @@ dependency footprint, and none of them drags an editor in with it.
 ## Install
 
 **mise** ([mise-en-place](https://mise.jdx.dev)) — the released binary: no clone, no Rust
-toolchain, no C compiler. karet is not in mise's registry, so name the `ubi` backend:
+toolchain, no C compiler. karet is not in mise's registry, so name the `github` backend:
 
 ```bash
-mise use -g ubi:getkono/karet            # latest release, on PATH
-mise use -g ubi:getkono/karet@0.6.0      # or pin a version
+mise use -g github:getkono/karet            # latest release, on PATH
+mise use -g github:getkono/karet@0.6.0      # or pin a version
 ```
 
-`mise use -g ubi:getkono/karet@latest` moves a pinned install up again. To pin karet for
+`mise use -g github:getkono/karet@latest` moves a pinned install up again. To pin karet for
 one project rather than globally, put it in that repository's `mise.toml`:
 
 ```toml
 [tools]
-"ubi:getkono/karet" = "0.6.0"
+"github:getkono/karet" = "0.6.0"
 ```
 
 **Homebrew**
