@@ -243,6 +243,36 @@
         );
     }
 
+    /// The drain is keyed on a retirement having happened, not on any reload:
+    /// a settings change that leaves `lsp.*` alone retires no server, so the
+    /// save keeps waiting for its formatter rather than being written early and
+    /// unformatted.
+    #[test]
+    fn a_reload_that_leaves_lsp_alone_keeps_the_save_waiting() {
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        let path = dir.path().join("main.rs");
+        if std::fs::write(&path, "original\n").is_err() {
+            return;
+        }
+        let Some((mut session, _doc, mut events, request)) = parked_save(&path) else {
+            return;
+        };
+
+        let mut settings = crate::config::Settings::default();
+        settings.editor.format_on_save = true;
+        settings.editor.insert_final_newline = !settings.editor.insert_final_newline;
+        session.apply_config_report(crate::config::LoadedConfig::from_settings(settings));
+
+        assert!(!saved(&mut events), "nothing retired, so nothing is owed");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap_or_default(),
+            "original\n"
+        );
+        assert!(session.pending_format_saves.contains_key(&request));
+    }
+
     /// The same strand reached from the other side: the answer arrives after the
     /// generation moved, so `accepts` rejects it. It must still finish its save.
     #[test]

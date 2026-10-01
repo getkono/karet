@@ -56,6 +56,47 @@ fn reconfigure_retires_updates_from_old_server_tasks() {
     );
 }
 
+/// `commit_pending_format_saves` drains every parked save on any `lsp.*`
+/// change, which is exact only while a reload retires every slot. This pins
+/// that half: an edit naming a language no open document uses still retires
+/// the servers of the documents that are open. Narrow `reconfigure` and this
+/// fails, pointing at the drain that has to narrow with it.
+#[tokio::test]
+async fn reconfigure_retires_slots_its_change_did_not_name() {
+    let (mut manager, _updates) = LspManager::new(LspSettings::default(), None, None, None);
+    manager.set_connector(test_connector(
+        Behavior::Normal,
+        None,
+        Arc::new(AtomicUsize::new(0)),
+    ));
+    let rust = PathBuf::from("/tmp/untouched.rs");
+    let typescript = PathBuf::from("/tmp/untouched.ts");
+    let _ = manager.document_opened(Some("rust"), Some("rust"), &rust, 1, String::new);
+    let _ = manager.document_opened(
+        Some("typescript"),
+        Some("typescript"),
+        &typescript,
+        1,
+        String::new,
+    );
+    assert!(manager.is_running(&LanguageServerId::RustAnalyzer));
+    assert!(manager.is_running(&LanguageServerId::TypeScript));
+
+    let mut settings = LspSettings::default();
+    settings.languages.insert(
+        "python".to_owned(),
+        crate::config::schema::LspLanguage {
+            formatter: Some("ruff".to_owned()),
+            ..Default::default()
+        },
+    );
+    let retired = manager.reconfigure(settings).unwrap_or_default();
+
+    assert_eq!(retired.document_paths(), vec![rust, typescript]);
+    assert!(!manager.is_running(&LanguageServerId::RustAnalyzer));
+    assert!(!manager.is_running(&LanguageServerId::TypeScript));
+}
+
 #[tokio::test]
 async fn last_document_close_retires_the_server_slot() {
     let (mut manager, _updates) = LspManager::new(LspSettings::default(), None, None, None);
