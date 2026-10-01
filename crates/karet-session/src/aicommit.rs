@@ -343,26 +343,24 @@ mod tests {
 
     #[tokio::test]
     #[cfg(unix)]
-    async fn probing_finds_a_binary_that_exists() {
+    async fn probing_finds_a_binary_that_exists() -> std::io::Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
         // A stand-in agent written for the test rather than borrowed from the
         // system: `env --version` is a GNU coreutils extension that BSD/macOS
         // `env` rejects, so reaching for a real binary would make this pass or
         // fail on which platform ran it rather than on the code.
-        let Ok(directory) = tempfile::tempdir() else {
-            return;
-        };
+        //
+        // Staging failures propagate rather than return early: a test that
+        // passes when its fixture could not be written proves nothing.
+        let directory = tempfile::tempdir()?;
         let script = directory.path().join("fake-agent");
-        if std::fs::write(&script, "#!/bin/sh\necho 'fake-agent 9.9.9'\n").is_err() {
-            return;
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            if std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).is_err() {
-                return;
-            }
-        }
+        std::fs::write(&script, "#!/bin/sh\necho 'fake-agent 9.9.9'\n")?;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))?;
+        // Pinned rather than inherited from the default: only the launchable
+        // probe runs the binary's `--version`, which is what this test stages.
         let cfg = AiCommit {
+            agent: AiCommitAgent::Claude,
             binary: Some(script.to_string_lossy().into_owned()),
             ..AiCommit::default()
         };
@@ -383,5 +381,6 @@ mod tests {
         // The probe reports the version line the agent printed, which is what a
         // picker shows beside it.
         assert_eq!(result.detail, "fake-agent 9.9.9");
+        Ok(())
     }
 }
