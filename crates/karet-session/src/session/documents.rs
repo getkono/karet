@@ -3,6 +3,9 @@ use super::*;
 /// Answer to a save abandoned because its document was closed first.
 const SAVE_CANCELLED_CLOSED: &str = "save cancelled: document closed";
 
+/// Answer to a save abandoned by a [`Command::Cancel`] naming it.
+const SAVE_CANCELLED_REQUESTED: &str = "save cancelled";
+
 /// Test-only read view of a document's buffer state. Production consumers render
 /// from the [`DocSnapshot`](crate::local::DocSnapshot) stream instead.
 #[cfg(test)]
@@ -472,6 +475,32 @@ impl Session {
         }
     }
 
+    /// Abandon a save still waiting on its formatting answer, writing nothing.
+    ///
+    /// The [`Command::Cancel`] half of a parked save. A cancelled save is not
+    /// written unformatted: the peer asked for the write not to happen, and
+    /// `close` already settled that an abandoned save leaves the file as it was
+    /// last written. The buffer stays dirty and its swap stays in place, so
+    /// nothing the user typed is lost. The formatting answer, when it arrives,
+    /// finds no pending entry and is dropped, and so does the deadline sweep.
+    pub(super) fn cancel_format_on_save(&mut self, request: RequestId) {
+        if self.pending_format_saves.remove(&request).is_some() {
+            self.report_save_cancelled(request, SAVE_CANCELLED_REQUESTED);
+        }
+    }
+
+    /// Answer a save request that will never be written.
+    fn report_save_cancelled(&mut self, request: RequestId, message: &str) {
+        self.emit(
+            Some(request),
+            Event::Notification {
+                severity: Severity::Warning,
+                kind: NotificationKind::Io,
+                message: message.to_owned(),
+            },
+        );
+    }
+
     /// Write out any save whose formatter has taken too long.
     ///
     /// A server is free to accept `textDocument/formatting` and then never
@@ -709,14 +738,7 @@ impl Session {
                 .collect();
             for id in cancelled {
                 self.pending_format_saves.remove(&id);
-                self.emit(
-                    Some(id),
-                    Event::Notification {
-                        severity: Severity::Warning,
-                        kind: NotificationKind::Io,
-                        message: SAVE_CANCELLED_CLOSED.to_owned(),
-                    },
-                );
+                self.report_save_cancelled(id, SAVE_CANCELLED_CLOSED);
             }
             if let Some(doc) = self.store.docs.remove(&doc_id) {
                 self.store.by_path.remove(&doc.path);

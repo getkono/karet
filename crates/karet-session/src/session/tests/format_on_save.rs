@@ -413,6 +413,63 @@
         assert!(session.pending_format_saves.is_empty());
     }
 
+    /// `Command::Cancel` naming a parked save abandons it the way `close` does:
+    /// nothing is written, the request is answered, and neither the late
+    /// formatting answer nor the deadline sweep resurrects the write.
+    #[test]
+    fn cancelling_a_pending_format_save_writes_nothing() {
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        let path = dir.path().join("main.rs");
+        if std::fs::write(&path, "original\n").is_err() {
+            return;
+        }
+        let Some((mut session, doc, mut events, request)) = parked_save(&path) else {
+            return;
+        };
+        let version = session.document(doc).map(|d| d.version()).unwrap_or(0);
+
+        session.handle(RequestId(4), Command::Cancel { request });
+
+        let mut answered = false;
+        while let Some((tag, ev)) = events.try_recv() {
+            if let Event::Notification {
+                severity: Severity::Warning,
+                message,
+                ..
+            } = ev
+                && tag == Some(request)
+                && message.contains("save cancelled")
+            {
+                answered = true;
+            }
+        }
+        assert!(answered, "the cancelled save request must be answered");
+        assert!(session.pending_format_saves.is_empty());
+
+        session.apply_lsp_update(crate::lsp::LspUpdate::Formatting {
+            generation: 0,
+            request,
+            doc,
+            version,
+            formatted: true,
+            edits: Vec::new(),
+        });
+        session.expire_format_on_save(crate::session::FORMAT_ON_SAVE_DEADLINE_MS);
+
+        assert!(!saved(&mut events), "a cancelled save must not be written");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap_or_default(),
+            "original\n",
+            "a cancelled save writes nothing"
+        );
+        assert!(
+            session.document(doc).is_some(),
+            "cancelling a save leaves the document open"
+        );
+    }
+
     /// A server may accept the request and never answer. Without a deadline of
     /// its own the save would wait out the JSON-RPC request timeout — tens of
     /// seconds of a file not being on disk, with only a spinner to show for it.
