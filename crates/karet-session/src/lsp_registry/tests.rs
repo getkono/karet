@@ -372,6 +372,37 @@ fn uninstall_defers_payload_cleanup_while_a_broker_is_live()
     Ok(())
 }
 
+/// An install job for a built-in provider is refused with the real reason,
+/// rather than failing in discovery with "has no managed installer".
+#[cfg(feature = "toml-lsp")]
+#[test]
+fn installing_a_built_in_provider_says_it_needs_no_installation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let (jobs, mut updates) = spawn(Some(dir.path().to_path_buf()), None);
+    jobs.send(RegistryJob::Install {
+        request: RequestId(3),
+        server: LanguageServerId::new("taplo"),
+    })?;
+    // Bounded: the refusal needs no network, so it is all but immediate.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let update = loop {
+        match updates.try_recv() {
+            Ok(update) => break update,
+            Err(_) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            },
+            Err(_) => return Err("the registry never answered the install".into()),
+        }
+    };
+    let RegistryUpdate::Failed { request, message } = update else {
+        return Err("a built-in provider must not be installed".into());
+    };
+    assert_eq!(request, RequestId(3));
+    assert!(message.contains("built into karet"), "{message}");
+    Ok(())
+}
+
 #[test]
 fn uninstall_rejects_external_providers() -> Result<(), Box<dyn std::error::Error>> {
     let dir = tempfile::tempdir()?;
