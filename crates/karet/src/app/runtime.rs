@@ -115,7 +115,7 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
         app.caps.pointer_shapes = true;
     }
 
-    let result = runtime.block_on(async move {
+    let result = runtime.block_on(async {
         let (events, snaps) = attach_backend(&mut app, config)?;
         let graphical_cursor_requested = app.tabs.get(app.active).is_some_and(|tab| {
             app.settings
@@ -143,7 +143,30 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
     );
     drop(_keyboard);
     ratatui::restore();
+    // Only now is there a screen to read it on: printed earlier, it would land in
+    // the alternate screen and vanish with it.
+    let mut stderr = io::stderr().lock();
+    for line in std::mem::take(&mut app.farewell) {
+        let _ = writeln!(stderr, "karet: {}", farewell_line(&line));
+    }
     result
+}
+
+/// `message` made safe to write raw to a terminal: every control character (C0,
+/// DEL, and C1, which covers ESC and the single-byte CSI) is replaced by its
+/// `\u{..}`-style escape, so text carrying a filesystem path or a server's words
+/// cannot drive the terminal it is printed on. Everything else, non-ASCII
+/// included, passes through unchanged.
+fn farewell_line(message: &str) -> String {
+    let mut line = String::with_capacity(message.len());
+    for character in message.chars() {
+        if character.is_control() {
+            line.extend(character.escape_default());
+        } else {
+            line.push(character);
+        }
+    }
+    line
 }
 
 /// The async UI loop: render, then wake on terminal input, a backend event, or a
@@ -238,4 +261,23 @@ fn handle_terminal_event(app: &mut App, event: Event) {
         _ => {},
     }
     app.auto_save_context_changed(previous);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::farewell_line;
+
+    #[test]
+    fn a_farewell_line_escapes_control_characters_and_keeps_the_rest() {
+        assert_eq!(
+            farewell_line("opened /tmp/\u{1b}]0;pwned\u{7}x\u{9b}2J\nnext read-only"),
+            "opened /tmp/\\u{1b}]0;pwned\\u{7}x\\u{9b}2J\\nnext read-only",
+            "ESC, BEL, C1 CSI and newline are escaped"
+        );
+        assert_eq!(
+            farewell_line("quit: 1 save(s) abandoned — /home/zoë/t.rs"),
+            "quit: 1 save(s) abandoned — /home/zoë/t.rs",
+            "printable non-ASCII passes through untouched"
+        );
+    }
 }
