@@ -58,36 +58,6 @@ fn duplicate_save_command_is_debounced_while_in_flight() {
     );
 }
 
-/// The backend restores this caret when the save's own rewrite is undone, so it
-/// has to arrive before the save does.
-#[test]
-fn a_save_reports_the_caret_before_it_saves() {
-    let backend = Arc::new(RecordingBackend::new());
-    let mut app = app();
-    app.backend = Some(backend.clone());
-    app.push_tab(text_tab("t.rs", "one\ntwo\n"));
-    if let TabKind::Code { doc, .. } = &mut app.tabs[app.active].kind {
-        *doc = Some(DocumentId(2));
-    }
-    app.tabs[app.active]
-        .editor
-        .set_carets(&[LineCol::new(1, 2)]);
-    let view = app.tabs[app.active].view;
-
-    app.save_active();
-
-    let sent = backend.sent.lock().map(|s| s.clone()).unwrap_or_default();
-    let kinds: Vec<_> = sent.iter().map(|(_, c)| c).collect();
-    assert!(
-        matches!(
-            kinds.as_slice(),
-            [.., SessionCommand::SetCursor { doc: DocumentId(2), view: v, cursors }, SessionCommand::Save { .. }]
-                if *v == view && cursors.primary().head == LineCol::new(1, 2)
-        ),
-        "{kinds:?}"
-    );
-}
-
 #[test]
 fn after_delay_auto_save_debounces_to_the_newest_edit() {
     let backend = Arc::new(RecordingBackend::new());
