@@ -317,7 +317,7 @@ pub struct Editor {
     /// Milliseconds a save waits on a language-server formatter before it is
     /// written unformatted (`1..=30000`).
     #[serde(deserialize_with = "format_on_save_timeout")]
-    #[cfg_attr(feature = "schema", schemars(range(min = 1, max = 30_000)))]
+    #[cfg_attr(feature = "schema", schemars(range(min = 1, max = FORMAT_ON_SAVE_TIMEOUT_MAX_MS)))]
     pub format_on_save_timeout: u64,
     /// Distinct highlighting of codetag comment blocks (`TODO:`, `FIXME:`, …).
     pub semantic_comments: SemanticComments,
