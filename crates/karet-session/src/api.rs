@@ -296,6 +296,8 @@ pub enum Command {
     ///
     /// Cancellation is cooperative: a worker suppresses results and stops before
     /// the next expensive phase. Repository mutations are never cancellable.
+    /// A [`Command::Save`] still waiting on its formatter is cancellable too: it
+    /// writes nothing and is answered with a `save cancelled` warning.
     Cancel {
         /// The original request to cancel.
         request: RequestId,
@@ -322,6 +324,13 @@ pub enum Command {
         cause: EditCause,
     },
     /// Save a document to disk.
+    ///
+    /// While the save waits on a format-on-save formatter it is cancellable
+    /// through [`Command::Cancel`]: nothing is written, the buffer stays dirty,
+    /// and the request is answered with a [`Severity::Warning`]
+    /// [`Event::Notification`] reading `save cancelled` instead of a save
+    /// event. A save not waiting on a formatter completes before a cancel can
+    /// reach it.
     Save {
         /// The document to save.
         doc: DocumentId,

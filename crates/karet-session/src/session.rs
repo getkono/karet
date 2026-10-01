@@ -418,7 +418,13 @@ impl Session {
             return;
         }
         match command {
-            Command::Cancel { request } => self.cancellations.cancel(request),
+            Command::Cancel { request } => {
+                // A save parked on its formatter is not a worker job, so the
+                // registry alone would let it write anyway once the answer (or
+                // the deadline) arrived.
+                self.cancel_format_on_save(request);
+                self.cancellations.cancel(request);
+            },
             Command::OpenDocument { path, language } => self.open(id, path, language.as_deref()),
             Command::CloseDocument { doc } => self.close(id, doc),
             Command::ApplyChange { doc, change, cause } => self.apply(id, doc, &change, cause),
