@@ -253,6 +253,11 @@ impl MarkdownDocument {
 }
 
 /// Parse markdown `source` into a [`MarkdownDocument`].
+///
+/// The model nests at most 64 levels deep (quotes, lists, emphasis, and the HTML that
+/// maps onto them, counted together): content nested deeper keeps its text and order but
+/// flattens into the deepest level, so pathological input cannot exhaust the stack of
+/// whatever walks the model.
 #[must_use]
 pub fn parse(source: &str) -> MarkdownDocument {
     parse::parse(source)

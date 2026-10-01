@@ -682,6 +682,50 @@ fn alignment_inside_a_quote_keeps_the_gutter_first() {
     );
 }
 
+/// How many quote gutters lead each wrapped line of `source`.
+fn gutters(source: &str) -> Vec<usize> {
+    lines(source, 400)
+        .iter()
+        .map(|line| line.matches(QUOTE_GUTTER.trim_end()).count())
+        .collect()
+}
+
+#[test]
+fn deeply_nested_quotes_render_instead_of_overflowing() {
+    // 20,000 levels overflowed the stack in wrap, flatten, and the model's drop.
+    let source = format!("{} deep\n", ">".repeat(20_000));
+    let wrapped = lines(&source, 400);
+    assert_eq!(wrapped.len(), 1, "one paragraph line");
+    assert!(
+        wrapped.iter().all(|line| line.ends_with("deep")),
+        "{wrapped:?}"
+    );
+    assert_eq!(gutters(&source), vec![crate::parse::MAX_DEPTH]);
+}
+
+#[test]
+fn deeply_nested_html_renders_instead_of_overflowing() {
+    for (open, close) in [
+        ("<b>", "</b>"),
+        ("<ul><li>", "</li></ul>"),
+        ("<blockquote>", "</blockquote>"),
+        ("<div>", "</div>"),
+    ] {
+        let source = format!("{}deep{}\n", open.repeat(50_000), close.repeat(50_000));
+        let wrapped = lines(&source, 400);
+        assert!(
+            wrapped.iter().any(|line| line.trim_end().ends_with("deep")),
+            "{open}: {wrapped:?}"
+        );
+    }
+}
+
+#[test]
+fn deeply_nested_emphasis_keeps_its_text_in_order() {
+    let source = format!("a {}b{} c\n", "<i>".repeat(10_000), "</i>".repeat(10_000));
+    assert_eq!(lines(&source, 40), vec!["a b c"]);
+}
+
 #[test]
 fn nested_alignment_is_applied_once() {
     assert_eq!(

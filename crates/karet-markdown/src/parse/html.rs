@@ -134,7 +134,7 @@ impl Builder {
 
     /// Whether the innermost inline container's content ends in a space.
     fn ends_in_space(&self) -> bool {
-        let content = match self.stack.last() {
+        let content = match self.inline_target().and_then(|index| self.stack.get(index)) {
             Some(
                 Frame::Paragraph { content, .. }
                 | Frame::Heading { content, .. }
@@ -222,8 +222,7 @@ impl Builder {
                     implicit: true,
                 };
                 self.push_html(name, heading);
-                self.stack
-                    .push(Frame::Strong(vec![Inline::Text(SUMMARY_MARKER.to_owned())]));
+                self.push_frame(Frame::Strong(vec![Inline::Text(SUMMARY_MARKER.to_owned())]));
             },
             "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
                 self.close_inline_run();
@@ -235,7 +234,7 @@ impl Builder {
                 match html_align(name, attrs) {
                     Some(align) => {
                         self.push_marker(name, Some(align));
-                        self.stack.push(heading);
+                        self.push_frame(heading);
                     },
                     None => self.push_html(name, heading),
                 }
@@ -330,7 +329,7 @@ impl Builder {
             .entry(name.to_owned())
             .or_default()
             .push(self.stack.len());
-        self.stack.push(frame);
+        self.push_frame(frame);
     }
 
     /// Push a transparent container marker for `name`.
@@ -340,6 +339,7 @@ impl Builder {
         let marker = Frame::HtmlBlock {
             align: align.or(inherited),
             target,
+            elided: None,
         };
         self.push_html(name, marker);
     }
@@ -352,7 +352,7 @@ impl Builder {
     /// Whether the innermost frame collects inline content.
     fn inline_open(&self) -> bool {
         matches!(
-            self.stack.last(),
+            self.inline_target().and_then(|index| self.stack.get(index)),
             Some(
                 Frame::Paragraph { .. }
                     | Frame::Heading { .. }
@@ -370,21 +370,29 @@ impl Builder {
     /// Close the inline content HTML left open — and the implicit paragraph holding it —
     /// so the next block starts as a sibling rather than inside a sentence.
     fn close_inline_run(&mut self) {
-        while matches!(
-            self.stack.last(),
-            Some(
-                Frame::Paragraph { implicit: true, .. }
-                    | Frame::Heading { .. }
-                    | Frame::Emphasis(_)
-                    | Frame::Strong(_)
-                    | Frame::Strikethrough(_)
-                    | Frame::Link { .. }
-                    | Frame::Image { .. }
-                    | Frame::HtmlCode(_)
-            )
-        ) {
+        while self.stack.last().is_some_and(in_inline_run) {
             self.close();
         }
+    }
+}
+
+/// Whether `frame` holds inline content HTML left open: an inline element, a heading, or
+/// an implicit paragraph — or a marker the depth cap left in place of one.
+fn in_inline_run(frame: &Frame) -> bool {
+    match frame {
+        Frame::HtmlBlock {
+            elided: Some(frame),
+            ..
+        } => in_inline_run(frame),
+        Frame::Paragraph { implicit, .. } => *implicit,
+        Frame::Heading { .. }
+        | Frame::Emphasis(_)
+        | Frame::Strong(_)
+        | Frame::Strikethrough(_)
+        | Frame::Link { .. }
+        | Frame::Image { .. }
+        | Frame::HtmlCode(_) => true,
+        _ => false,
     }
 }
 

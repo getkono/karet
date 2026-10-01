@@ -69,11 +69,16 @@ enum Frame {
     ///
     /// Both are resolved when the marker is pushed — markers only ever leave from the
     /// top — so a block finds its home in constant time however deep the markers nest.
+    ///
+    /// The same marker stands in for a frame opened past [`MAX_DEPTH`]: its content
+    /// joins the real frame beneath, and it closes as the frame it replaced would.
     HtmlBlock {
         /// The innermost alignment declared by this marker or those it sits in.
         align: Option<Alignment>,
         /// The stack index of the real container beneath the markers, if any.
         target: Option<usize>,
+        /// The frame the depth cap elided in favour of this marker, if any.
+        elided: Option<Box<Frame>>,
     },
     /// An HTML `<code>`/`<kbd>`/`<tt>` element, collecting its text verbatim.
     HtmlCode(String),
@@ -91,8 +96,24 @@ enum Frame {
     TableCell(Cell),
 }
 
+/// How many frames that shape the model may nest: past it, a frame is elided and its
+/// content flattens into its parent. The model's depth bounds every recursive walk of
+/// it — wrapping, flattening, dropping — so pathological nesting (thousands of `>`, or
+/// of `<b>`) degrades instead of overflowing the stack. HTML container markers do not
+/// count: they add no level to the model.
+pub(crate) const MAX_DEPTH: usize = 64;
+
 /// Whether `frame` is the one `tag` closes.
 fn closes(frame: &Frame, tag: TagEnd) -> bool {
+    // An elided frame closes as the frame it stands in for; that one is never a marker,
+    // so this recurses once at most.
+    if let Frame::HtmlBlock {
+        elided: Some(frame),
+        ..
+    } = frame
+    {
+        return closes(frame, tag);
+    }
     matches!(
         (frame, tag),
         (Frame::Paragraph { .. }, TagEnd::Paragraph)
@@ -140,8 +161,9 @@ struct Builder {
     newlines: Vec<usize>,
     /// The byte offset at which the currently-open top-level block began.
     pending_start: usize,
-    /// How many [`Frame::HtmlBlock`] markers are on `stack`. While every frame is one,
-    /// the builder is still at the document root.
+    /// How many [`Frame::HtmlBlock`] markers are on `stack`, elided frames included.
+    /// While every frame is one, the builder is still at the document root; the rest
+    /// are the model's depth.
     markers: usize,
     /// The frames HTML tags opened: `(stack index, tag name)`, ascending by index, so a
     /// close tag finds its frame and a markdown end tag can pass one by.
@@ -299,7 +321,50 @@ impl Builder {
             Tag::TableCell => Frame::TableCell(Vec::new()),
             _ => return, // footnotes, HTML blocks: no model shape
         };
-        self.stack.push(frame);
+        self.push_frame(frame);
+    }
+
+    /// Push `frame`, or — once the model is [`MAX_DEPTH`] frames deep — a transparent
+    /// marker standing in for it. A marker adds no depth, and a code block holds no
+    /// frames, so neither is elided: the code keeps its layout at any depth.
+    ///
+    /// Nor is the row of a real table, or the cell of a real row: a table holds only
+    /// rows and a row only cells, so they add two levels at most, and a table that kept
+    /// its frame keeps its rows and cells rather than spilling them past its container.
+    /// (A table elided whole elides its rows and cells too, so its cells' text lands in
+    /// the table's own container in order.)
+    fn push_frame(&mut self, frame: Frame) {
+        let depth = self.stack.len().saturating_sub(self.markers);
+        let table_part = matches!(
+            (&frame, self.stack.last()),
+            (Frame::TableRow { .. }, Some(Frame::Table { .. }))
+                | (Frame::TableCell(_), Some(Frame::TableRow { .. }))
+        );
+        if depth < MAX_DEPTH
+            || table_part
+            || matches!(frame, Frame::HtmlBlock { .. } | Frame::CodeBlock { .. })
+        {
+            self.stack.push(frame);
+            return;
+        }
+        // A real block frame would close an implicit paragraph before its own block
+        // landed (see `block`); an elided one never lands, so it closes it now, or the
+        // blocks it holds would find a paragraph as their container.
+        if !is_inline(&frame)
+            && matches!(
+                self.stack.last(),
+                Some(Frame::Paragraph { implicit: true, .. })
+            )
+        {
+            self.close();
+        }
+        let (target, align) = self.container();
+        self.markers += 1;
+        self.stack.push(Frame::HtmlBlock {
+            align,
+            target,
+            elided: Some(Box::new(frame)),
+        });
     }
 
     fn end(&mut self, tag: TagEnd) {
@@ -422,7 +487,10 @@ impl Builder {
     /// Append an inline to the innermost inline container, opening an implicit paragraph
     /// when the inline lands straight inside a block container (a tight list item).
     fn inline(&mut self, inline: Inline) {
-        match self.stack.last_mut() {
+        match self
+            .inline_target()
+            .and_then(|index| self.stack.get_mut(index))
+        {
             Some(
                 Frame::Paragraph { content, .. }
                 | Frame::Heading { content, .. }
@@ -483,9 +551,23 @@ impl Builder {
     /// HTML marker — and the alignment the markers above it declare.
     fn container(&self) -> (Option<usize>, Option<Alignment>) {
         match self.stack.last() {
-            Some(Frame::HtmlBlock { align, target }) => (*target, *align),
+            Some(Frame::HtmlBlock { align, target, .. }) => (*target, *align),
             Some(_) => (self.stack.len().checked_sub(1), None),
             None => (None, None),
+        }
+    }
+
+    /// The stack index of the frame an inline lands in: the top one, or — past an
+    /// elided frame — the real frame beneath it. (An HTML container marker is not
+    /// looked through: inline content in a `<div>` opens a paragraph of its own.)
+    fn inline_target(&self) -> Option<usize> {
+        match self.stack.last() {
+            Some(Frame::HtmlBlock {
+                elided: Some(_),
+                target,
+                ..
+            }) => *target,
+            _ => self.stack.len().checked_sub(1),
         }
     }
 
@@ -495,6 +577,19 @@ impl Builder {
         self.blocks.push(block);
         self.block_lines.push(self.line_of(self.pending_start));
     }
+}
+
+/// Whether `frame` closes into an inline rather than a block.
+fn is_inline(frame: &Frame) -> bool {
+    matches!(
+        frame,
+        Frame::Emphasis(_)
+            | Frame::Strong(_)
+            | Frame::Strikethrough(_)
+            | Frame::Link { .. }
+            | Frame::Image { .. }
+            | Frame::HtmlCode(_)
+    )
 }
 
 /// Append an inline's plain text to `out`, discarding its structure.
