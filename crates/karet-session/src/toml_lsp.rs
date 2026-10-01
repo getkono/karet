@@ -17,12 +17,16 @@
 //! runtime and a [`tokio::task::LocalSet`] rather than a task on the session's
 //! runtime.
 
+use std::cell::RefCell;
 use std::io;
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::Once;
 
 use futures::SinkExt;
 use futures::StreamExt;
 use futures::channel::mpsc;
+use futures::sink::SinkMapErr;
 use karet_lsp::LaunchFailure;
 use karet_lsp::LspClient;
 use karet_lsp::LspError;
@@ -35,6 +39,7 @@ use tokio::io::AsyncBufRead;
 use tokio::io::AsyncWrite;
 use tokio::io::BufReader;
 use tokio::io::DuplexStream;
+use tokio::sync::Notify;
 
 use crate::api::LanguageServerId;
 
@@ -92,12 +97,81 @@ pub(crate) async fn connect(
     LspClient::connect_with(read, write, root, initialization_options).await
 }
 
-/// Run the server over `stream` until the client sends `exit` or hangs up.
+thread_local! {
+    /// Set only on a built-in server's own thread: what a panic there signals.
+    static ON_PANIC: RefCell<Option<Arc<Notify>>> = const { RefCell::new(None) };
+}
+
+/// The writer a handler answers through.
+type Writer = SinkMapErr<mpsc::UnboundedSender<Message>, fn(mpsc::SendError) -> io::Error>;
+
+/// A failed send can only mean the writer task stopped: the client hung up.
+fn hung_up(_closed: mpsc::SendError) -> io::Error {
+    io::Error::new(io::ErrorKind::BrokenPipe, "the client has gone")
+}
+
+/// Route panics on a built-in server's thread away from the process-wide hook.
+///
+/// A panic in a taplo task is caught by its runtime and would otherwise leave
+/// the pipe open with the request unanswered until the client times out. It
+/// would also run the host's hook, and a TUI host's hook restores the terminal
+/// under an editor that is still running. Installed once, wrapping whatever
+/// hook is current, so every other thread's panic reaches it unchanged.
+fn contain_panics() {
+    static INSTALL: Once = Once::new();
+    INSTALL.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if signal_panic() {
+                tracing::error!(%info, "the built-in taplo server panicked and is restarting");
+            } else {
+                previous(info);
+            }
+        }));
+    });
+}
+
+/// Tell this thread's server it panicked, when this is a server's thread.
+fn signal_panic() -> bool {
+    ON_PANIC
+        .try_with(|slot| {
+            slot.try_borrow()
+                .ok()
+                .and_then(|slot| slot.as_ref().map(|panicked| panicked.notify_one()))
+                .is_some()
+        })
+        .unwrap_or(false)
+}
+
+/// Run the server over `stream` until the client sends `exit` or hangs up, or
+/// the server panics.
 ///
 /// Dropping `stream` on return is what tells the client the server is gone,
 /// so a server that stops for any reason surfaces as a closed connection and
 /// takes the ordinary restart path.
 fn serve(stream: DuplexStream) {
+    host(stream, |stream, panicked| async move {
+        let server = taplo_lsp::create_server();
+        let world = taplo_lsp::create_world(NativeEnvironment::new());
+        drive(stream, panicked, move |message, writer| {
+            server.handle_message(world.clone(), message, writer)
+        })
+        .await;
+    });
+}
+
+/// Run `session` on this thread's own runtime, ending it on any panic here.
+///
+/// Every task taplo spawns, its own included, runs on this thread, so the
+/// panic hook [`contain_panics`] installs sees each of their panics.
+fn host<S, F>(stream: DuplexStream, session: S)
+where
+    S: FnOnce(DuplexStream, Arc<Notify>) -> F,
+    F: Future<Output = ()>,
+{
+    contain_panics();
+    let panicked = Arc::new(Notify::new());
+    ON_PANIC.with(|slot| *slot.borrow_mut() = Some(Arc::clone(&panicked)));
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -108,10 +182,17 @@ fn serve(stream: DuplexStream) {
             return;
         },
     };
-    tokio::task::LocalSet::new().block_on(&runtime, run(stream));
+    // The `LocalSet` is dropped with every task on it, so the writer's half of
+    // the pipe goes with it.
+    tokio::task::LocalSet::new().block_on(&runtime, session(stream, panicked));
 }
 
-async fn run(stream: DuplexStream) {
+/// Dispatch every message to `handle` until `exit`, a hang-up, or a panic.
+async fn drive<H, F>(stream: DuplexStream, panicked: Arc<Notify>, mut handle: H)
+where
+    H: FnMut(Message, Writer) -> F,
+    F: Future<Output = io::Result<()>> + 'static,
+{
     let (read, mut write) = tokio::io::split(stream);
     let (outgoing, mut queue) = mpsc::unbounded::<Message>();
     tokio::task::spawn_local(async move {
@@ -122,19 +203,20 @@ async fn run(stream: DuplexStream) {
             }
         }
     });
-    let server = taplo_lsp::create_server();
-    let world = taplo_lsp::create_world(NativeEnvironment::new());
     let mut reader = BufReader::new(read);
-    while let Some(message) = read_message(&mut reader).await {
+    loop {
+        // A panic leaves a request unanswered and the server's state suspect,
+        // so it ends the session rather than letting the client wait it out.
+        let message = tokio::select! {
+            message = read_message(&mut reader) => message,
+            () = panicked.notified() => break,
+        };
+        let Some(message) = message else { break };
         if message.method.as_deref() == Some("exit") {
             break;
         }
-        // A handler answers through its own clone of the writer. A failed send
-        // can only mean the writer task stopped, which is the client hanging up.
-        let writer = outgoing.clone().sink_map_err(|_closed| {
-            io::Error::new(io::ErrorKind::BrokenPipe, "the client has gone")
-        });
-        let handled = server.handle_message(world.clone(), message, writer);
+        let writer: Writer = outgoing.clone().sink_map_err(hung_up);
+        let handled = handle(message, writer);
         tokio::task::spawn_local(async move {
             if let Err(error) = handled.await {
                 tracing::debug!(%error, "a built-in taplo handler failed");
@@ -277,6 +359,69 @@ mod tests {
                 String::from_utf8_lossy(case)
             );
         }
+    }
+
+    /// Send one request to a server whose handler panics, and require the
+    /// server to close its end of the pipe rather than leave it waiting.
+    async fn a_panic_closes_the_pipe<H, F>(handle: H) -> TestResult
+    where
+        H: FnMut(Message, Writer) -> F + Send + 'static,
+        F: Future<Output = io::Result<()>> + 'static,
+    {
+        let (client, server) = tokio::io::duplex(PIPE_CAPACITY);
+        let thread = std::thread::spawn(move || {
+            host(server, |stream, panicked| drive(stream, panicked, handle));
+        });
+        let (read, mut out) = tokio::io::split(client);
+        let mut reader = BufReader::new(read);
+        let hover = json!({ "jsonrpc": "2.0", "id": 1, "method": "textDocument/hover" });
+        send(&mut out, &hover).await?;
+        let closed = tokio::time::timeout(PATIENCE, async {
+            while read_message(&mut reader).await.is_some() {}
+        })
+        .await;
+        assert!(closed.is_ok(), "the server kept its end open after a panic");
+        assert!(
+            thread.join().is_ok(),
+            "the panic escaped the server's runtime"
+        );
+        Ok(())
+    }
+
+    // A deliberate panic: it is the behaviour under test.
+    #[allow(clippy::panic)]
+    #[tokio::test]
+    async fn a_panicking_handler_ends_the_session() -> TestResult {
+        a_panic_closes_the_pipe(|_message, _writer| async { panic!("handler panicked") }).await
+    }
+
+    /// taplo publishes diagnostics from tasks of its own, not from the handler
+    /// the loop spawned, so a panic there must end the session too.
+    // A deliberate panic: it is the behaviour under test.
+    #[allow(clippy::panic)]
+    #[tokio::test]
+    async fn a_panic_in_a_task_the_handler_spawned_ends_the_session() -> TestResult {
+        a_panic_closes_the_pipe(|_message, _writer| async {
+            tokio::task::spawn_local(async { panic!("spawned task panicked") });
+            Ok(())
+        })
+        .await
+    }
+
+    /// Only a server's own thread is diverted from the host's panic hook.
+    #[test]
+    fn only_a_server_thread_diverts_its_panics() {
+        assert!(
+            !signal_panic(),
+            "a thread with no server reaches the host hook"
+        );
+        let diverted = std::thread::spawn(|| {
+            let panicked = Arc::new(Notify::new());
+            ON_PANIC.with(|slot| *slot.borrow_mut() = Some(Arc::clone(&panicked)));
+            signal_panic()
+        })
+        .join();
+        assert!(matches!(diverted, Ok(true)));
     }
 
     /// The whole built-in path: the handshake advertises what the panel shows,
