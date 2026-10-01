@@ -12,6 +12,7 @@
 //! fully installed and verified.
 
 mod archive;
+mod builtin;
 mod catalog;
 mod declined;
 mod lifecycle;
@@ -31,6 +32,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use archive::*;
+pub(crate) use builtin::*;
 #[cfg(test)]
 use catalog::Archive;
 use catalog::Release;
@@ -230,35 +232,6 @@ pub(crate) fn cleanup_pending(root: Option<&Path>, server: &LanguageServerId) ->
 /// Whether Karet has a complete managed installation recipe for this provider.
 pub(crate) fn managed_provider(server: &LanguageServerId) -> bool {
     managed_recipe(server).is_some()
-}
-
-/// Whether `server` is compiled into this karet and run in-process, so it never
-/// needs installing (feature `toml-lsp`, for taplo).
-pub(crate) fn builtin_provider(server: &LanguageServerId) -> bool {
-    #[cfg(feature = "toml-lsp")]
-    {
-        crate::toml_lsp::bundles(server)
-    }
-    #[cfg(not(feature = "toml-lsp"))]
-    {
-        let _ = server;
-        false
-    }
-}
-
-/// The in-process launch for a [built-in](builtin_provider) provider: the last
-/// resolution step, after configuration, the project, `PATH`, and a managed
-/// installation have all come up empty.
-pub(crate) fn builtin_spec(server: &LanguageServerId, language: &str) -> Option<LspSpec> {
-    #[cfg(feature = "toml-lsp")]
-    {
-        crate::toml_lsp::spec(server, language)
-    }
-    #[cfg(not(feature = "toml-lsp"))]
-    {
-        let _ = (server, language);
-        None
-    }
 }
 
 /// Why karet will not install `server` itself, if it will not.
