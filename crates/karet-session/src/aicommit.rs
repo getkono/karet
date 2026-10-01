@@ -366,7 +366,19 @@ mod tests {
             binary: Some(script.to_string_lossy().into_owned()),
             ..AiCommit::default()
         };
-        let result = probe(&cfg).await;
+        // Exec of a file this process just wrote can fail with ETXTBSY (errno 26
+        // on Linux and macOS): a test on another thread that forks while the
+        // write descriptor is open hands the child a copy, which stays open
+        // until that child execs. The race belongs to the test harness, not the
+        // probe, so retry it, briefly and only it.
+        let mut result = probe(&cfg).await;
+        for _ in 0..50 {
+            if !result.detail.contains("(os error 26)") {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            result = probe(&cfg).await;
+        }
         assert!(result.available, "{result:?}");
         // The probe reports the version line the agent printed, which is what a
         // picker shows beside it.
