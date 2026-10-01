@@ -182,6 +182,22 @@ impl LspManager {
     /// `None` means the settings are unchanged and nothing need happen. `Some`
     /// carries the retirement the caller must adopt, and is also its signal to
     /// reopen documents against fresh servers.
+    ///
+    /// Every slot is retired, not only the ones whose settings moved, and that
+    /// is deliberate. Which slots an `lsp.*` edit touches is not a function of
+    /// the slot key: `enabled` reaches all of them, a `languages` entry can move
+    /// the primary flag or the formatter owner of a slot serving several
+    /// languages, and the repository defaults (Ruff, Biome) are resolved per
+    /// root. A narrowed guess that misses one leaves a server running a stale
+    /// launch, which is worse than restarting a healthy one. The generation is
+    /// bumped for the same reason, so it fences every in-flight answer.
+    ///
+    /// `Session::commit_pending_format_saves` drains *every* parked save on
+    /// the strength of this: with every slot gone, no formatting answer is
+    /// still coming, and one that slipped through would be refused by the
+    /// generation fence anyway. Narrowing this function means narrowing that
+    /// drain to the retired slots' documents and the fence to those slots.
+    ///
     /// `#[must_use]` for the same reason as [`LspManager::restart`]: a dropped
     /// `Option<Retired>` warns about nothing on its own.
     #[must_use]
