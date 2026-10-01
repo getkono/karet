@@ -441,8 +441,9 @@ impl App {
             .find_map(|&(start, end, panel)| (col >= start && col < end).then_some(panel))
     }
 
-    /// Handle a left click inside the sidebar: switch panels via the header, or
-    /// select the clicked row. A plain click moves the cursor and activates the
+    /// Handle a left click inside the sidebar: switch panels via the header (a
+    /// double-click on the open panel's tab folds the sidebar), or select the
+    /// clicked row. A plain click moves the cursor and activates the
     /// row; Ctrl toggles it in the selection and Shift extends a range to it
     /// (neither activates).
     pub(super) fn handle_sidebar_click(&mut self, col: u16, row_y: u16, modifiers: KeyModifiers) {
@@ -486,7 +487,19 @@ impl App {
             return;
         }
         if let Some(panel) = self.panel_at(col, row_y) {
-            self.dispatch(Command::SelectPanel(panel));
+            let streak = self.click_streak(col, row_y);
+            if panel == self.sidebar_panel && streak >= 2 {
+                // A double-click on the tab already open folds the sidebar (#315).
+                self.dispatch(Command::ToggleSidebar);
+            } else {
+                if panel != self.sidebar_panel {
+                    // A click that switches panels starts no streak, so a
+                    // double-click on another tab opens it rather than opening it
+                    // and folding it away again.
+                    self.last_click = None;
+                }
+                self.dispatch(Command::SelectPanel(panel));
+            }
             return;
         }
         if self.sidebar_panel == SidebarPanel::SourceControl
