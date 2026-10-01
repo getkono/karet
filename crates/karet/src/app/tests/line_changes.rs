@@ -144,6 +144,88 @@ fn turning_decorations_off_asks_for_and_paints_nothing() {
     );
 }
 
+/// Reload the configuration with `git.decorations` set to `enabled`, as the
+/// watcher does.
+fn reload_with_decorations(app: &mut App, enabled: bool) {
+    let mut settings = app.settings.clone();
+    settings.git.decorations = enabled;
+    app.on_backend_event(
+        None,
+        SessionEvent::ConfigChanged {
+            report: Box::new(karet_session::LoadedConfig::from_settings(settings)),
+        },
+    );
+}
+
+#[test]
+fn switching_decorations_off_at_runtime_forgets_everything_and_on_asks_again() {
+    let (mut app, backend) = app_with_doc();
+    app.docs.line_changes.insert(DocumentId(9), vec![added(1)]);
+    app.request_line_changes(DocumentId(9));
+    app.request_line_changes(DocumentId(9));
+    assert!(app.docs.line_changes_rerun.contains(&DocumentId(9)));
+
+    reload_with_decorations(&mut app, false);
+    assert!(app.docs.line_changes.is_empty(), "held markers are dropped");
+    assert!(
+        app.docs.line_changes_pending.is_empty(),
+        "the in-flight request is forgotten"
+    );
+    assert!(
+        app.docs.line_changes_rerun.is_empty(),
+        "no follow-up is owed"
+    );
+
+    // The answer to the forgotten request is dropped and asks nothing more.
+    let requests = line_change_requests(&backend);
+    assert_eq!(requests.len(), 1);
+    app.on_backend_event(
+        Some(requests[0].0),
+        SessionEvent::LineChanges {
+            doc: DocumentId(9),
+            version: 0,
+            markers: vec![added(0)],
+        },
+    );
+    assert!(app.docs.line_changes.is_empty());
+    assert_eq!(line_change_requests(&backend).len(), 1);
+
+    reload_with_decorations(&mut app, true);
+    let requests = line_change_requests(&backend);
+    assert_eq!(requests.len(), 2, "switching on asks for the open document");
+    assert_eq!(requests[1].1, DocumentId(9));
+}
+
+#[test]
+fn closing_a_document_drops_its_markers_and_request() {
+    let (mut app, backend) = app_with_doc();
+    app.docs.line_changes.insert(DocumentId(9), vec![added(1)]);
+    app.docs.line_changes.insert(DocumentId(4), vec![added(0)]);
+    app.request_line_changes(DocumentId(9));
+    app.request_line_changes(DocumentId(9));
+
+    app.on_backend_event(None, SessionEvent::Closed { doc: DocumentId(9) });
+    assert!(!app.docs.line_changes.contains_key(&DocumentId(9)));
+    assert!(app.docs.line_changes_pending.is_empty());
+    assert!(app.docs.line_changes_rerun.is_empty());
+    assert_eq!(
+        app.docs.line_changes.get(&DocumentId(4)),
+        Some(&vec![added(0)]),
+        "another document keeps its markers"
+    );
+
+    let requests = line_change_requests(&backend);
+    app.on_backend_event(
+        Some(requests[0].0),
+        SessionEvent::LineChanges {
+            doc: DocumentId(9),
+            version: 0,
+            markers: vec![added(1)],
+        },
+    );
+    assert!(!app.docs.line_changes.contains_key(&DocumentId(9)));
+}
+
 #[test]
 fn held_markers_paint_in_the_gutter_lane_in_their_role() {
     let (mut app, _backend) = app_with_doc();
