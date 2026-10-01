@@ -164,8 +164,10 @@ pub(super) fn expire(log: &mut VecDeque<Instant>, now: Instant, window: Duration
 ///
 /// Every route that loses a connection -- the liveness arm, a failed flush, a
 /// failed command -- schedules through here, so they cannot drift apart.
-pub(super) fn after_loss(now: Instant, delay: Duration) -> (Instant, Instant) {
-    (now + delay, now + DIAGNOSTIC_GRACE)
+///
+/// Both come back armed, in the shape the server task keeps them in.
+pub(super) fn after_loss(now: Instant, delay: Duration) -> (Option<Instant>, Option<Instant>) {
+    (Some(now + delay), Some(now + DIAGNOSTIC_GRACE))
 }
 
 /// Charge one lost connection against the restart budget, returning how long to

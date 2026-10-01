@@ -95,7 +95,8 @@ pub(super) async fn server_task(task: ServerTask) {
     // the flush does not itself push the flush back.
     let mut flush_at = Instant::now();
     let mut restart_delay = RESTART_MIN_DELAY;
-    let mut next_restart = Instant::now();
+    // When the next launch is due; `None` until the first one has been tried.
+    let mut next_restart: Option<Instant> = None;
     let mut failures = VecDeque::<Instant>::new();
     let mut spawn_failure_reported = false;
     // Whether this task ever reached a working connection. A server that has
@@ -117,24 +118,37 @@ pub(super) async fn server_task(task: ServerTask) {
 
     loop {
         if client.is_none() {
-            if let Some(deadline) = clear_diagnostics_at
-                && Instant::now() >= deadline
-            {
-                clear_diagnostics_at = None;
-                let _ = updates.send(LspUpdate::DiagnosticsCleared {
-                    token,
-                    server: key.clone(),
-                });
-            }
-            // Sleep to whichever deadline comes first. The grace window usually
-            // outlasts the first two reconnect attempts, so it is normally the
-            // reconnect that wakes us and the grace never fires at all.
-            let wake_at =
-                clear_diagnostics_at.map_or(next_restart, |grace| next_restart.min(grace));
-            if Instant::now() < wake_at {
-                let sleep = tokio::time::sleep_until(wake_at);
-                tokio::pin!(sleep);
+            // Sleep to whichever deadline comes first, answering commands
+            // meanwhile. The grace window usually outlasts the first two
+            // reconnect attempts, so it is normally the reconnect that wakes us
+            // and the grace never fires at all.
+            //
+            // Each deadline is its own arm rather than one sleep to the earlier
+            // of the two followed by comparisons against the clock: an arm that
+            // fires says which deadline passed, so nothing here can mistake a
+            // grace wake for the retry clock or spin on a deadline it has
+            // already reached. `biased` keeps a due deadline ahead of queued
+            // commands, and a due grace ahead of a due reconnect, so the stale
+            // markers go before the replacement server can republish.
+            //
+            // No deadline at all means the first launch, which goes at once:
+            // even an already-passed deadline costs a timer tick, and commands
+            // queued behind it would be answered "reconnecting" by a server
+            // that has not yet been tried.
+            if let Some(restart_at) = next_restart {
                 tokio::select! {
+                    biased;
+                    () = tokio::time::sleep_until(clear_diagnostics_at.unwrap_or(restart_at)),
+                        if clear_diagnostics_at.is_some() =>
+                    {
+                        clear_diagnostics_at = None;
+                        let _ = updates.send(LspUpdate::DiagnosticsCleared {
+                            token,
+                            server: key.clone(),
+                        });
+                        continue;
+                    },
+                    () = tokio::time::sleep_until(restart_at) => {},
                     cmd = rx.recv() => {
                         let Some(cmd) = cmd else {
                             break;
@@ -151,13 +165,7 @@ pub(super) async fn server_task(task: ServerTask) {
                         }
                         continue;
                     },
-                    () = &mut sleep => {},
                 }
-            }
-            // Woken by the grace deadline rather than the retry clock: go round so
-            // the block above fires it, then sleep out the rest of the backoff.
-            if Instant::now() < next_restart {
-                continue;
             }
 
             let now = Instant::now();
@@ -177,7 +185,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     }
                     if replay_failed {
                         failures.push_back(now);
-                        next_restart = now + health::back_off(&mut restart_delay);
+                        next_restart = Some(now + health::back_off(&mut restart_delay));
                         report_state(
                             LanguageServerRuntimeState::Retrying,
                             Some("document replay failed".to_owned()),
@@ -260,7 +268,7 @@ pub(super) async fn server_task(task: ServerTask) {
                         return;
                     }
                     failures.push_back(now);
-                    next_restart = if failures.len() >= RESTART_LIMIT {
+                    next_restart = Some(if failures.len() >= RESTART_LIMIT {
                         tracing::warn!(language = %key, "language server restart circuit opened");
                         report_state(
                             LanguageServerRuntimeState::CircuitOpen,
@@ -273,7 +281,7 @@ pub(super) async fn server_task(task: ServerTask) {
                             Some(error.to_string()),
                         );
                         now + health::back_off(&mut restart_delay)
-                    };
+                    });
                     continue;
                 },
             }
@@ -315,9 +323,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     &key,
                 );
                 connected_at = None;
-                let clear_at;
-                (next_restart, clear_at) = health::after_loss(Instant::now(), delay);
-                clear_diagnostics_at = Some(clear_at);
+                (next_restart, clear_diagnostics_at) = health::after_loss(Instant::now(), delay);
                 report_state(state, None);
                 continue;
             },
@@ -355,9 +361,8 @@ pub(super) async fn server_task(task: ServerTask) {
                         &key,
                     );
                     connected_at = None;
-                    let clear_at;
-                    (next_restart, clear_at) = health::after_loss(Instant::now(), delay);
-                    clear_diagnostics_at = Some(clear_at);
+                    (next_restart, clear_diagnostics_at) =
+                        health::after_loss(Instant::now(), delay);
                     report_state(state, None);
                 }
                 continue;
@@ -806,9 +811,7 @@ pub(super) async fn server_task(task: ServerTask) {
                 &key,
             );
             connected_at = None;
-            let clear_at;
-            (next_restart, clear_at) = health::after_loss(Instant::now(), delay);
-            clear_diagnostics_at = Some(clear_at);
+            (next_restart, clear_diagnostics_at) = health::after_loss(Instant::now(), delay);
             report_state(state, None);
         }
     }
