@@ -403,6 +403,29 @@ impl App {
             return false;
         }
         let version = self.document_version(doc);
+        // A save may rewrite the buffer (formatting, whitespace cleanup). Tell
+        // the backend where the caret is first, so undoing that rewrite puts
+        // the caret back here rather than at the top of the file. The focused
+        // tab's caret wins when it shows this document. A failed send is left
+        // to the save below, which reports the same backend error.
+        let is_doc =
+            |tab: &&Tab| matches!(&tab.kind, TabKind::Code { doc: Some(d), .. } if *d == doc);
+        if let Some(tab) = self
+            .tabs
+            .get(self.active)
+            .filter(is_doc)
+            .or_else(|| self.all_tabs().find(is_doc))
+        {
+            let cursors = tab.editor.cursors().clone();
+            let _ = backend.send(
+                backend.next_id(),
+                SessionCommand::SetCursor {
+                    doc,
+                    view: tab.view,
+                    cursors,
+                },
+            );
+        }
         let id = backend.next_id();
         match backend.send(id, SessionCommand::Save { doc, cause }) {
             Ok(()) => {
