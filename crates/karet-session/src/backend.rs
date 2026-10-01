@@ -36,6 +36,19 @@ pub enum BackendError {
 /// submission is synchronous and fallible, while results arrive asynchronously on
 /// the session's [`EventRx`](crate::session::EventRx). The same UI code drives an
 /// in-process [`LocalBackend`] today and a remote client later.
+///
+/// # Answer latency
+///
+/// Do not assume a command is answered promptly. In particular, a
+/// [`Command::Save`] with format-on-save enabled waits for the language
+/// server's formatting answer before it writes, so its
+/// [`Event::Saved`](crate::api::Event::Saved) can arrive seconds after the
+/// command, bounded by the format-on-save deadline. A consumer that needs to
+/// act after a save (close, quit, reload) must hold that action until the
+/// event answering the save's [`RequestId`] arrives (`Saved`, an error, or a
+/// `save cancelled` notification), not assume the write is done once `send`
+/// returns. While it waits on the formatter, such a save
+/// can be withdrawn with [`Command::Cancel`](crate::api::Command::Cancel).
 pub trait Backend: Send + Sync {
     /// Submit `command`, tagged with `id` so its answering event can be correlated.
     ///
