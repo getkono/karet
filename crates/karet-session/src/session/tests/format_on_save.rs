@@ -486,7 +486,7 @@
             formatted: true,
             edits: Vec::new(),
         });
-        session.expire_format_on_save(crate::session::FORMAT_ON_SAVE_DEADLINE_MS);
+        session.expire_format_on_save(crate::config::schema::FORMAT_ON_SAVE_TIMEOUT_DEFAULT_MS);
 
         assert!(!saved(&mut events), "a cancelled save must not be written");
         assert_eq!(
@@ -503,6 +503,8 @@
     /// A server may accept the request and never answer. Without a deadline of
     /// its own the save would wait out the JSON-RPC request timeout — tens of
     /// seconds of a file not being on disk, with only a spinner to show for it.
+    /// The deadline is `editor.formatOnSaveTimeout`, set here off its default so
+    /// a sweep that ignored the setting would fire at the wrong moment.
     #[test]
     fn a_formatter_that_never_answers_does_not_hold_the_file_forever() {
         let Ok(dir) = tempfile::tempdir() else {
@@ -515,14 +517,15 @@
         let Some((mut session, _doc, mut events, _request)) = parked_save(&path) else {
             return;
         };
+        session.config.settings.editor.format_on_save_timeout = 2_500;
 
         // Just short of the deadline the save is still the formatter's to finish.
-        session.expire_format_on_save(crate::session::FORMAT_ON_SAVE_DEADLINE_MS - 1);
+        session.expire_format_on_save(2_499);
         assert!(!saved(&mut events), "the deadline must not fire early");
         assert_eq!(std::fs::read_to_string(&path).unwrap_or_default(), "original\n");
         assert_eq!(session.pending_format_saves.len(), 1);
 
-        session.expire_format_on_save(crate::session::FORMAT_ON_SAVE_DEADLINE_MS);
+        session.expire_format_on_save(2_500);
 
         assert!(saved(&mut events), "past the deadline the save must land");
         assert_eq!(
@@ -700,10 +703,10 @@
             return;
         };
 
-        session.tick_at(crate::session::FORMAT_ON_SAVE_DEADLINE_MS - 1);
+        session.tick_at(crate::config::schema::FORMAT_ON_SAVE_TIMEOUT_DEFAULT_MS - 1);
         assert!(!saved(&mut events), "the tick must not expire a save early");
 
-        session.tick_at(crate::session::FORMAT_ON_SAVE_DEADLINE_MS);
+        session.tick_at(crate::config::schema::FORMAT_ON_SAVE_TIMEOUT_DEFAULT_MS);
 
         assert!(
             saved(&mut events),

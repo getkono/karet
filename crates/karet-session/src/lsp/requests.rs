@@ -6,7 +6,6 @@
 //! not, so the caller answers the request itself rather than leaving it hanging.
 
 use karet_core::Range;
-use karet_lsp::Indentation;
 
 use super::*;
 
@@ -164,12 +163,12 @@ impl LspManager {
         .is_ok()
     }
 
-    /// Forward a `textDocument/formatting` request, indented as `indentation`
-    /// says.
+    /// Forward a `textDocument/formatting` request, indented and bounded as
+    /// `ask` says.
     ///
-    /// `indentation` is resolved by the caller against the *document's*
-    /// language, because that is where the selector lives; this manager only
-    /// knows languages by key. See [`ServerCmd::Formatting`].
+    /// `ask` is resolved by the caller against the *document's* language and
+    /// the editor settings, because that is where they live; this manager only
+    /// knows languages by key. See [`FormattingAsk`].
     pub(crate) fn formatting(
         &self,
         language: Option<&str>,
@@ -177,7 +176,7 @@ impl LspManager {
         doc: DocumentId,
         version: u64,
         path: &Path,
-        indentation: Indentation,
+        ask: FormattingAsk,
     ) -> bool {
         // Every other request reaches its server through `existing_server`, which
         // declines when language servers are switched off. This one resolves its
@@ -236,7 +235,7 @@ impl LspManager {
             doc,
             version,
             path,
-            indentation,
+            ask,
         })
         .is_ok()
     }

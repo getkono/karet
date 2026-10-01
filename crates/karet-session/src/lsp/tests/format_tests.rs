@@ -284,7 +284,9 @@ async fn a_deferred_save_writes_no_swap_when_backups_are_off() -> TestResult {
 ///
 /// The clock is tokio's virtual one (`start_paused`), so this measures the
 /// bound rather than waiting it out: idle time is advanced to the next timer, and
-/// the assertion is on *which* timer that turns out to be.
+/// the assertion is on *which* timer that turns out to be. The save asks for a
+/// two-second `formatOnSaveTimeout`, well short of the ten-second default, so a
+/// task that ignored the one it was handed would overrun the assertion.
 #[tokio::test(start_paused = true)]
 async fn a_formatter_that_never_answers_does_not_wedge_its_server() -> TestResult {
     let (mut manager, mut updates) = LspManager::new(LspSettings::default(), None, None, None);
@@ -299,6 +301,7 @@ async fn a_formatter_that_never_answers_does_not_wedge_its_server() -> TestResul
     let _ = manager.document_opened(Some("rust"), Some("rust"), &path, 1, || {
         "fn main() {}".into()
     });
+    let save_timeout = Duration::from_secs(2);
     assert!(
         manager.formatting(
             Some("rust"),
@@ -306,7 +309,10 @@ async fn a_formatter_that_never_answers_does_not_wedge_its_server() -> TestResul
             DocumentId(1),
             1,
             &path,
-            karet_lsp::Indentation::default(),
+            crate::lsp::FormattingAsk {
+                save_timeout,
+                ..crate::lsp::FormattingAsk::default()
+            },
         ),
         "the request must reach a server for this to test anything"
     );
@@ -340,9 +346,9 @@ async fn a_formatter_that_never_answers_does_not_wedge_its_server() -> TestResul
         "giving up must report the shape every other non-success ending uses"
     );
     assert!(
-        waited <= crate::lsp::runtime::FORMATTING_DEADLINE,
-        "the wait must be bounded by the formatting deadline, not by the \
-         JSON-RPC request timeout (waited {waited:?})"
+        waited <= crate::lsp::runtime::formatting_deadline(save_timeout),
+        "the wait must be bounded by the save's own timeout, not by the \
+         default or the JSON-RPC request timeout (waited {waited:?})"
     );
 
     // And the task is genuinely back: the next command for this server is served

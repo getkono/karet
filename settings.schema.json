@@ -392,6 +392,14 @@
           "type": "boolean",
           "default": true
         },
+        "formatOnSaveTimeout": {
+          "description": "Milliseconds a save waits on a language-server formatter before it is\nwritten unformatted (`1..=30000`).",
+          "type": "integer",
+          "format": "uint64",
+          "default": 10000,
+          "maximum": 30000,
+          "minimum": 1
+        },
         "graphicalCursor": {
           "description": "Draw the caret with terminal graphics: `null` auto-enables when supported,\n`true` requests it and reports incompatibility, `false` disables it.",
           "type": [

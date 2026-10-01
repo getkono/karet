@@ -15,8 +15,8 @@ use std::sync::Mutex;
 use tokio::time::Instant;
 
 use super::*;
-use crate::lsp::runtime::FORMATTING_DEADLINE;
 use crate::lsp::runtime::ServerTask;
+use crate::lsp::runtime::formatting_deadline;
 use crate::lsp::runtime::server_task;
 
 /// What the task reported, reduced to what the policy decides.
@@ -379,12 +379,21 @@ async fn a_hint_request_is_answered_by_the_kind_of_outage() -> TestResult {
     Ok(())
 }
 
-/// The formatting wait outlasts the session's own ten-second format-on-save
-/// deadline by the three seconds its sweep may lag, and no more.
+/// The formatting wait outlasts the save's own `editor.formatOnSaveTimeout`
+/// by the three seconds its sweep may lag, and no more, whatever the setting.
 ///
 /// Falsified by: giving up before the session's sweep (racing it and throwing
 /// away an answer about to be used), or by holding the task longer.
 #[test]
 fn the_formatting_wait_is_the_save_deadline_plus_one_sweep() {
-    assert_eq!(FORMATTING_DEADLINE, Duration::from_secs(13));
+    let default = Duration::from_millis(
+        crate::config::Settings::default()
+            .editor
+            .format_on_save_timeout,
+    );
+    assert_eq!(formatting_deadline(default), Duration::from_secs(13));
+    assert_eq!(
+        formatting_deadline(Duration::from_secs(2)),
+        Duration::from_secs(5)
+    );
 }
