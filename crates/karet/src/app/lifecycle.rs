@@ -200,6 +200,9 @@ impl App {
                          so no swap file was written"
                     )
                 };
+                // The loop exits before another frame is drawn, so the toast alone
+                // is never seen; the farewell is printed once the terminal is back.
+                self.farewell.push(report.clone());
                 self.notify(Report::Failure, NotificationKind::Io, report);
             }
             self.execute_close(request);

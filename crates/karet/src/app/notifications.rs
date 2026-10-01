@@ -188,6 +188,12 @@ impl App {
             },
             Report::Outcome | Report::Activity => {},
         }
+        // Once quitting, no further frame is drawn: carry what persists until
+        // read (a failure or an alert) out to stderr instead. Transient tiers would
+        // have expired unread anyway.
+        if self.should_quit && matches!(tier, Report::Failure | Report::Alert) {
+            self.farewell.push(title.clone());
+        }
         self.notifications.push(
             Notification {
                 id: NotificationId(0),

@@ -643,6 +643,38 @@ fn a_second_quit_forces_through_a_parked_one() {
         Some("quit: 1 save(s) abandoned, recoverable from swap files"),
         "abandoning a write is reported, not silent"
     );
+    assert_eq!(
+        app.farewell,
+        vec!["quit: 1 save(s) abandoned, recoverable from swap files".to_owned()],
+        "the loop draws no frame after a quit, so the report must outlive the terminal"
+    );
+}
+
+/// The loop returns without drawing once `should_quit` is set, so a notification
+/// raised after that point is carried out to stderr instead of being dropped —
+/// but only the tiers that wait to be read. A transient one would have expired
+/// unread anyway, and before the quit the toast itself is the report.
+#[test]
+fn a_notification_raised_while_quitting_is_carried_out_as_a_farewell() {
+    let mut app = app();
+    app.notify(Report::Failure, NotificationKind::Io, "before quitting");
+    assert!(
+        app.farewell.is_empty(),
+        "a live session paints its own toasts"
+    );
+
+    app.dispatch(Command::Quit);
+    assert!(app.should_quit);
+    app.notify(Report::Failure, NotificationKind::Io, "write failed");
+    app.notify(Report::Alert, NotificationKind::System, "server crashed");
+    app.notify(Report::Outcome, NotificationKind::Io, "saved t.rs");
+    app.notify(Report::Refusal, NotificationKind::System, "nothing to do");
+    app.notify(Report::Activity, NotificationKind::System, "indexing");
+
+    assert_eq!(
+        app.farewell,
+        vec!["write failed".to_owned(), "server crashed".to_owned()]
+    );
 }
 
 /// The hatch abandons writes either way; whether anything survives it is
@@ -675,6 +707,11 @@ fn a_forced_quit_without_backups_does_not_promise_swap_recovery() {
     assert!(
         message.contains("1 save(s) abandoned and lost") && message.contains("files.backup"),
         "the loss, and the setting that caused it, are named: {message}"
+    );
+    assert_eq!(
+        app.farewell,
+        vec![message],
+        "and printed once the terminal is back"
     );
 }
 

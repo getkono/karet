@@ -552,6 +552,14 @@ pub struct App {
     graphics_caret_blink_epoch: Instant,
     /// Whether the app should quit.
     should_quit: bool,
+    /// Messages to print to stderr once the terminal has been restored.
+    ///
+    /// The event loop returns without another frame once [`should_quit`] is set,
+    /// so a notification raised on the way out would never be painted. Anything
+    /// that has to be read after quitting goes here instead.
+    ///
+    /// [`should_quit`]: Self::should_quit
+    farewell: Vec<String>,
     /// The headless editor backend; edits route through it. `None` in unit tests,
     /// where editing commands are inert.
     backend: Option<Arc<dyn Backend>>,

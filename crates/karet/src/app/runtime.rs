@@ -115,7 +115,7 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
         app.caps.pointer_shapes = true;
     }
 
-    let result = runtime.block_on(async move {
+    let result = runtime.block_on(async {
         let (events, snaps) = attach_backend(&mut app, config)?;
         let graphical_cursor_requested = app.tabs.get(app.active).is_some_and(|tab| {
             app.settings
@@ -143,6 +143,12 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
     );
     drop(_keyboard);
     ratatui::restore();
+    // Only now is there a screen to read it on: printed earlier, it would land in
+    // the alternate screen and vanish with it.
+    let mut stderr = io::stderr().lock();
+    for line in std::mem::take(&mut app.farewell) {
+        let _ = writeln!(stderr, "karet: {line}");
+    }
     result
 }
 

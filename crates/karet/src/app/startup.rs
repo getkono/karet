@@ -134,6 +134,7 @@ impl App {
             shown_graphics_caret: None,
             graphics_caret_blink_epoch: Instant::now(),
             should_quit: false,
+            farewell: Vec::new(),
             backend: None,
             pending_open: HashMap::new(),
             abandoned_open: HashSet::new(),
