@@ -177,6 +177,13 @@ needs network and takes minutes, so it is opt-in — see the testing policy.
   (`LOADING_REVEAL_DELAY`, currently 200ms) and render a stable, muted placeholder
   only after work remains pending beyond that delay. Schedule a repaint at the
   threshold so the placeholder appears even if no input arrives.
+  - The one recorded exception is the tab **save spinner** (`SPINNER_DELAY` in
+    `crates/karet/src/ui.rs`), which reveals at 1s. It is deliberately slower:
+    nearly every save finishes imperceptibly, and the tab's one-cell status slot
+    already shows the unsaved `●` until the save lands, so a 200ms spinner would
+    flicker on ordinary saves without telling the user anything new. A save can
+    still take seconds (format-on-save waits on the language server), and past
+    1s the spinner appears. Keep it at 1s rather than `LOADING_REVEAL_DELAY`.
 - Keep delayed loading states layout-stable: reserve the destination pane/tab
   immediately, clear stale detail while a new detail request is pending, and ignore
   stale async responses that no longer match the selected item or open view.
