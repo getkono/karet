@@ -186,6 +186,7 @@ fn builtin_install_recipes_are_complete_for_supported_targets() {
         "clojure-lsp",
         "docker-langserver",
         "graphql-lsp",
+        "lemminx",
         "lua-language-server",
         "marksman",
         "neocmakelsp",
@@ -221,7 +222,6 @@ fn builtin_install_recipes_are_complete_for_supported_targets() {
         "gopls",
         "haskell-language-server",
         "jdtls",
-        "lemminx",
         "metals",
         "ocamllsp",
         "phpactor",
@@ -304,6 +304,48 @@ fn builtin_install_recipes_are_complete_for_supported_targets() {
             },
         }
     }
+}
+
+/// LemMinX is fetched as Red Hat's native build, which needs no Java runtime.
+///
+/// The asset names are upstream's, including the `aarch_64` spelling and the
+/// unqualified `win32` build, and each archive holds a single executable named
+/// after the archive -- so a guessed "tidier" name finds nothing to download.
+#[test]
+fn lemminx_fetches_the_native_build_for_every_supported_target() {
+    let lemminx = LanguageServerId::new("lemminx");
+    let expected = [
+        ("linux", "x86_64", "lemminx-linux-x86_64"),
+        ("linux", "aarch64", "lemminx-linux-aarch_64"),
+        ("macos", "x86_64", "lemminx-osx-x86_64"),
+        ("macos", "aarch64", "lemminx-osx-aarch_64"),
+    ];
+    for (os, arch, stem) in expected {
+        let asset = catalog::github_asset_for(&lemminx, "0.29.3", os, arch);
+        assert!(
+            matches!(
+                &asset,
+                Ok((name, Archive::Zip, executable, false))
+                    if *name == format!("{stem}.zip") && executable == stem
+            ),
+            "{os}-{arch} resolved {:?}",
+            asset
+                .as_ref()
+                .map(|(name, _, executable, _)| (name, executable))
+        );
+    }
+    let windows = catalog::github_asset_for(&lemminx, "0.29.3", "windows", "x86_64");
+    assert!(matches!(
+        &windows,
+        Ok((name, Archive::Zip, executable, false))
+            if name == "lemminx-win32.zip" && executable == "lemminx-win32.exe"
+    ));
+    assert!(catalog::github_asset_for(&lemminx, "0.29.3", "windows", "aarch64").is_err());
+    assert_eq!(
+        manual_install_reason(&lemminx).is_none(),
+        managed_provider(&lemminx),
+        "lemminx is manual exactly where it has no recipe"
+    );
 }
 
 #[test]

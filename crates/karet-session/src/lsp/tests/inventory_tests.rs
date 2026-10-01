@@ -62,6 +62,7 @@ fn inventory_covers_builtins_and_configured_providers() -> TestResult {
         "clojure-lsp",
         "docker-langserver",
         "graphql-lsp",
+        "lemminx",
         "lua-language-server",
         "marksman",
         "neocmakelsp",

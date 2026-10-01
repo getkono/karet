@@ -53,7 +53,7 @@ explicitly manual:
 | Svelte | **svelte-language-server** | yes | yes, with injections |
 | Vue | **vue-language-server** | yes | yes, with injections |
 | YAML | **yaml-language-server** | yes | yes |
-| XML / SVG | **lemminx** (`xml`) | project/PATH | yes |
+| XML / SVG | **lemminx** (`xml`) | yes (native build, no Java) | yes |
 | HTML | vscode-html-language-server | yes | yes |
 | CSS / Sass / Less | vscode-css-language-server | yes | yes |
 | JSON | vscode-json-language-server | yes | yes |
@@ -83,19 +83,44 @@ explicitly manual:
 diagnostics, and editor features work without configuration when the conventional
 executable is present. It does not mean karet downloads that third-party tool.
 
-The manual entries are explicit, not an unexplained remainder:
+The manual entries are explicit, not an unexplained remainder. Every provider
+that is not plainly fetched has one of three strategies, chosen in this order:
 
-| Providers requiring user installation | Reason |
-|---|---|
-| C# Language Server | distributed with Microsoft's C# tooling and requires the user's .NET SDK/MSBuild |
-| gopls | the official installation and analysis flow uses the project's Go toolchain |
-| jdtls, LemMinX | require a compatible user-selected Java runtime; current jdtls requires Java 21 plus project JDK configuration |
-| ruby-lsp, phpactor | must run inside the project's Ruby/Bundler or PHP environment |
-| sourcekit-lsp, Dart Language Server | ship with the matching Swift/Xcode or Dart/Flutter SDK |
-| Metals, Haskell Language Server, ocamllsp, ELP | must match the project's Scala/JVM, GHC, opam-switch, or Erlang/OTP toolchain |
-| R languageserver, PowerShell Editor Services, Esbonio, pkl-lsp | require the user's R, PowerShell, Python/Sphinx, or Java/Pkl runtime environment |
+- **Fetch** — a managed recipe, used only where the publisher ships a
+  self-contained artifact with a verifiable SHA-256 digest.
+- **Embed** — compile the server into karet. Only a pure-Rust server qualifies,
+  under the no-system-dependencies policy.
+- **Stay manual** — the server has to match, or run inside, a toolchain the
+  project already owns, so a copy karet chose would analyse the wrong thing. These
+  languages still get tree-sitter highlighting, folding, and outlines with no
+  server at all; the server adds the semantic features.
 
-Taplo is no longer on this list. Its native release assets still carry no
+None of the manual servers below is written in Rust, so embedding is open to none
+of them; each row records why fetching is not either.
+
+| Provider | Strategy | Reason |
+|---|---|---|
+| LemMinX | fetch | Red Hat attaches GraalVM native LemMinX builds — one executable per platform, needing no Java runtime, each with a GitHub SHA-256 digest — to every `redhat-developer/vscode-xml` release. LemMinX's own repository publishes no assets, so the version karet records is vscode-xml's. |
+| taplo | embed (`toml-lsp`) | see below |
+| clangd, off x86_64 | stay manual | `clangd/clangd` publishes x86_64 Linux, macOS, and Windows archives only; there is no verified ARM artifact to fetch. |
+| C# Language Server | stay manual | loads projects through the user's .NET SDK and MSBuild, which a fetched server cannot bring with it |
+| gopls | stay manual | published as Go module source for `go install`, with no release binaries, and its analysis drives the project's `go` toolchain |
+| jdtls | stay manual | a Java application needing Java 21 or newer to run, plus the project's own JDKs to import it |
+| ruby-lsp | stay manual | a gem that must run inside the project's Ruby and Bundler environment to see its dependencies |
+| phpactor | stay manual | a PHAR that runs on the project's PHP runtime and extensions |
+| sourcekit-lsp | stay manual | ships with, and must match, the Swift or Xcode toolchain |
+| Metals | stay manual | a JVM application that must match the project's JVM and Scala build environment |
+| Haskell Language Server | stay manual | built per GHC version; the wrapper picks the build matching the project's GHC |
+| ocamllsp | stay manual | must be built in the project's opam switch, against its compiler |
+| ELP | stay manual | releases carry digests, but as one build per Erlang/OTP version; the right one depends on the project's OTP, which karet does not choose |
+| Dart Language Server | stay manual | a mode of the `dart` executable in the Dart or Flutter SDK |
+| R languageserver | stay manual | a CRAN package installed into the user's R library |
+| PowerShell Editor Services | stay manual | a PowerShell module bundle entered through `Start-EditorServices.ps1`, needing the user's PowerShell, with no standalone executable |
+| Esbonio | stay manual | must run in the project's Python and Sphinx environment |
+| pkl-lsp | stay manual | published as a Java archive, needing a compatible Java runtime and Pkl |
+| pylsp | stay manual | must be installed in the project's Python environment, with its Flake8 plugin |
+
+Taplo is embedded rather than fetched. Its native release assets still carry no
 publisher-authenticated SHA-256 digest, so karet does not download them; it
 compiles the server in instead, and the crates.io checksum is the integrity
 check. The npm `@taplo/cli` package is not an alternative: its WebAssembly build

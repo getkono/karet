@@ -216,6 +216,16 @@ const MANAGED_RECIPES: &[ManagedRecipe] = &[
             repository: "neocmakelsp/neocmakelsp",
         },
     },
+    // LemMinX's own repository publishes no release assets. Red Hat, which
+    // maintains it, attaches GraalVM native builds to the vscode-xml releases
+    // instead: one self-contained executable per platform, needing no Java
+    // runtime. The version karet records is therefore vscode-xml's.
+    ManagedRecipe {
+        server: "lemminx",
+        source: ManagedSource::Github {
+            repository: "redhat-developer/vscode-xml",
+        },
+    },
 ];
 
 pub(super) fn managed_recipes() -> &'static [ManagedRecipe] {
@@ -579,6 +589,27 @@ pub(super) fn github_asset_for(
             Archive::Zip,
             "neocmakelsp.exe",
         ),
+        ("lemminx", "linux", "x86_64") => simple(
+            "lemminx-linux-x86_64.zip",
+            Archive::Zip,
+            "lemminx-linux-x86_64",
+        ),
+        ("lemminx", "linux", "aarch64") => simple(
+            "lemminx-linux-aarch_64.zip",
+            Archive::Zip,
+            "lemminx-linux-aarch_64",
+        ),
+        ("lemminx", "macos", "x86_64") => {
+            simple("lemminx-osx-x86_64.zip", Archive::Zip, "lemminx-osx-x86_64")
+        },
+        ("lemminx", "macos", "aarch64") => simple(
+            "lemminx-osx-aarch_64.zip",
+            Archive::Zip,
+            "lemminx-osx-aarch_64",
+        ),
+        ("lemminx", "windows", "x86_64") => {
+            simple("lemminx-win32.zip", Archive::Zip, "lemminx-win32.exe")
+        },
         _ => Err(format!(
             "{} has no managed release for {}-{}",
             server.display_name(),

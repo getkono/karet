@@ -87,6 +87,7 @@ const SAMPLE_FILES: &[(&str, &str, &str)] = &[
     ("buf", "api.proto", "syntax = \"proto3\";\n"),
     ("marksman", "README.md", "# hi\n"),
     ("neocmakelsp", "CMakeLists.txt", "project(x)\n"),
+    ("lemminx", "data.xml", "<root/>\n"),
 ];
 
 #[derive(Default)]

@@ -246,6 +246,10 @@ pub(crate) fn managed_provider(server: &LanguageServerId) -> bool {
 /// Callers rely on that totality to decide between offering an install and
 /// explaining one, so a new arm must never fall through to [`None`]. One that
 /// offers an install checks [`builtin_provider`] first.
+///
+/// Each named arm is a decision, not a gap: `docs/language-servers.md` records
+/// why every one of these providers stays manual rather than being fetched or
+/// compiled in, and an arm moves out of this list only with that table.
 pub(crate) fn manual_install_reason(server: &LanguageServerId) -> Option<String> {
     if managed_provider(server) || builtin_provider(server) {
         return None;
@@ -254,7 +258,6 @@ pub(crate) fn manual_install_reason(server: &LanguageServerId) -> Option<String>
         "csharp" => "requires the user's .NET SDK and MSBuild installation",
         "gopls" => "official installation and analysis require the project's Go toolchain",
         "jdtls" => "requires a user-selected Java 21 runtime and project JDKs",
-        "lemminx" => "requires a compatible user-installed Java runtime",
         "ruby-lsp" => "must be installed in the project's Ruby and Bundler environment",
         "phpactor" => "requires the project's PHP runtime and extensions",
         "sourcekit-lsp" => "ships with and must match the Swift or Xcode toolchain",
