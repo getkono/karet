@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1](https://github.com/getkono/karet/compare/karet-fileview-v0.7.0...karet-fileview-v0.7.1) - 2026-10-01
+
+### Added
+
+- *(markdown)* render curated HTML and local images in the preview ([#297](https://github.com/getkono/karet/pull/297))
+
 ## [0.6.0](https://github.com/getkono/karet/compare/karet-fileview-v0.5.0...karet-fileview-v0.6.0) - 2026-08-29
 
 ### Added

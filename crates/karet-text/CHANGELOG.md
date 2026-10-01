@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1](https://github.com/getkono/karet/compare/karet-text-v0.7.0...karet-text-v0.7.1) - 2026-10-01
+
+### Fixed
+
+- *(session)* align gutter-marker line splitting with the editor buffer ([#314](https://github.com/getkono/karet/pull/314))
+- *(session)* undo a save's rewrites back to the caret, as one step ([#299](https://github.com/getkono/karet/pull/299))
+
 ## [0.6.0](https://github.com/getkono/karet/compare/karet-text-v0.5.0...karet-text-v0.6.0) - 2026-08-29
 
 ### Fixed
