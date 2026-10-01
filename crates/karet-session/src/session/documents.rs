@@ -344,9 +344,15 @@ impl Session {
         let version = doc.buffer.version();
         let selector = doc.language_selector;
         let path = doc.path.clone();
+        let ask = FormattingAsk {
+            indentation,
+            save_timeout: std::time::Duration::from_millis(
+                self.config.settings.editor.format_on_save_timeout,
+            ),
+        };
         if self
             .lsp
-            .formatting(selector, id, doc_id, version, &path, indentation)
+            .formatting(selector, id, doc_id, version, &path, ask)
         {
             let issued_ms = self.elapsed_ms();
             self.pending_format_saves.insert(
@@ -358,7 +364,7 @@ impl Session {
             );
             // The user asked for this buffer to be on disk and it is not going
             // to be for a while: the write waits on a formatter that has up to
-            // `FORMAT_ON_SAVE_DEADLINE_MS` to answer. Until then the swap is the
+            // `editor.formatOnSaveTimeout` to answer. Until then the swap is the
             // only other copy there is, and the backup interval alone would not
             // have written one — a buffer edited in the last thirty seconds, or
             // edited since its last swap, has none. Write it now, so what the
@@ -514,16 +520,21 @@ impl Session {
     /// A server is free to accept `textDocument/formatting` and then never
     /// answer; the only other bound is the JSON-RPC request timeout, which is
     /// tens of seconds. A save that slow is indistinguishable from a broken one,
-    /// so past the deadline the buffer goes to disk unformatted rather than
-    /// waiting on a formatter that may never come back.
+    /// so past `editor.formatOnSaveTimeout` the buffer goes to disk unformatted
+    /// rather than waiting on a formatter that may never come back.
+    ///
+    /// The setting is read at the sweep, not when the save was parked, so a
+    /// timeout changed while a save waits governs that save too. The server task
+    /// keeps the bound it was handed; whichever gives up first, the save lands.
     ///
     /// Takes `now` rather than reading the clock, so the deadline is reachable
     /// from a unit test without waiting out its wall-clock duration.
     pub(super) fn expire_format_on_save(&mut self, now: u64) {
+        let deadline = self.config.settings.editor.format_on_save_timeout;
         let expired: Vec<(RequestId, DocumentId)> = self
             .pending_format_saves
             .iter()
-            .filter(|(_, save)| now.saturating_sub(save.issued_ms) >= FORMAT_ON_SAVE_DEADLINE_MS)
+            .filter(|(_, save)| now.saturating_sub(save.issued_ms) >= deadline)
             .map(|(request, save)| (*request, save.doc))
             .collect();
         for (request, doc_id) in expired {

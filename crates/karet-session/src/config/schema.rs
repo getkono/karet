@@ -314,6 +314,11 @@ pub struct Editor {
     pub insert_final_newline: bool,
     /// Run the configured formatter on save.
     pub format_on_save: bool,
+    /// Milliseconds a save waits on a language-server formatter before it is
+    /// written unformatted (`1..=30000`).
+    #[serde(deserialize_with = "format_on_save_timeout")]
+    #[cfg_attr(feature = "schema", schemars(range(min = 1, max = FORMAT_ON_SAVE_TIMEOUT_MAX_MS)))]
+    pub format_on_save_timeout: u64,
     /// Distinct highlighting of codetag comment blocks (`TODO:`, `FIXME:`, …).
     pub semantic_comments: SemanticComments,
     /// Re-render TypeScript diagnostics as markdown (quoted types lifted into
@@ -340,6 +345,37 @@ fn deny_additional_properties(schema: &mut Schema) {
     schema.insert("additionalProperties".to_string(), false.into());
 }
 
+/// The default `editor.formatOnSaveTimeout`, in milliseconds.
+///
+/// Sized to the slowest formatting a working server plausibly does — a cold
+/// process, a large file, a loaded machine — because the cost of being wrong is
+/// asymmetric. Too generous and a rare save waits, visibly, with the tab
+/// spinner running; too tight and an ordinary save silently stops formatting.
+/// Three seconds was tight enough to lose the second way.
+pub const FORMAT_ON_SAVE_TIMEOUT_DEFAULT_MS: u64 = 10_000;
+
+/// The largest `editor.formatOnSaveTimeout` accepted, in milliseconds.
+///
+/// This is `karet-jsonrpc`'s request timeout, the only other bound on the
+/// wait: past it the request has expired and no answer is left to come, so a
+/// longer deadline would mean nothing. Keep the two equal.
+pub const FORMAT_ON_SAVE_TIMEOUT_MAX_MS: u64 = 30_000;
+
+/// Accept a `formatOnSaveTimeout` only within `1..=`[`FORMAT_ON_SAVE_TIMEOUT_MAX_MS`].
+///
+/// Zero is refused rather than read as "never wait": that would quietly stop
+/// language-server formatting, which `formatOnSave: false` already says plainly.
+fn format_on_save_timeout<'de, D: serde::Deserializer<'de>>(de: D) -> Result<u64, D::Error> {
+    let millis = u64::deserialize(de)?;
+    if (1..=FORMAT_ON_SAVE_TIMEOUT_MAX_MS).contains(&millis) {
+        return Ok(millis);
+    }
+    Err(serde::de::Error::custom(format!(
+        "`formatOnSaveTimeout` must be between 1 and {FORMAT_ON_SAVE_TIMEOUT_MAX_MS} \
+         milliseconds (the language-server request timeout), got {millis}"
+    )))
+}
+
 impl Default for Editor {
     fn default() -> Self {
         Self {
@@ -355,6 +391,7 @@ impl Default for Editor {
             trim_trailing_whitespace: true,
             insert_final_newline: true,
             format_on_save: true,
+            format_on_save_timeout: FORMAT_ON_SAVE_TIMEOUT_DEFAULT_MS,
             semantic_comments: SemanticComments::default(),
             pretty_errors: true,
             completion: Completion::default(),
@@ -968,6 +1005,23 @@ mod tests {
         assert!(s.editor.completion.enabled, "completion defaults on (#57)");
         assert!(s.editor.completion.auto_trigger, "auto-trigger defaults on");
         assert!(s.lsp.servers.is_empty(), "no user overrides by default");
+    }
+
+    /// The bound is the JSON-RPC request timeout at the top and one millisecond
+    /// at the bottom, both inclusive; anything outside fails the section.
+    #[test]
+    fn format_on_save_timeout_is_held_inside_the_request_timeout() {
+        let parse = |value: &str| {
+            serde_json::from_str::<Editor>(&format!(r#"{{ "formatOnSaveTimeout": {value} }}"#))
+                .map(|editor| editor.format_on_save_timeout)
+        };
+        assert_eq!(Editor::default().format_on_save_timeout, 10_000);
+        assert_eq!(parse("1").ok(), Some(1));
+        assert_eq!(parse("30000").ok(), Some(30_000));
+        assert!(parse("30001").is_err_and(|e| e.to_string().contains("between 1 and 30000")));
+        assert!(parse("0").is_err());
+        assert!(parse("-5").is_err());
+        assert!(parse("\"10s\"").is_err());
     }
 
     #[test]

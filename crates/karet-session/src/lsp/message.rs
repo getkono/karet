@@ -6,6 +6,7 @@
 //! emission happen on the actor, where the buffer lives.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use karet_core::CompletionItem;
 use karet_core::Diagnostic;
@@ -129,15 +130,26 @@ pub(crate) enum ServerCmd {
         doc: DocumentId,
         version: u64,
         path: PathBuf,
-        /// The buffer's resolved `editor.tabSize` / `editor.insertSpaces`.
-        ///
-        /// Carried per request rather than read from the manager's settings:
-        /// the setting is per *language*, resolved against the document's
-        /// selector, and the server task serving the language has no document
-        /// to resolve it from. A server that honours it reindents the whole
-        /// file, so a default here is not a neutral choice.
-        indentation: Indentation,
+        ask: FormattingAsk,
     },
+}
+
+/// What one format-on-save asks of its server beyond the document itself.
+///
+/// Carried per request rather than read from the manager's settings: both are
+/// editor settings the session resolves, and the server task has neither the
+/// document nor the editor settings to resolve them from.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct FormattingAsk {
+    /// The buffer's resolved `editor.tabSize` / `editor.insertSpaces`.
+    ///
+    /// The setting is per *language*, resolved against the document's
+    /// selector. A server that honours it reindents the whole file, so a
+    /// default here is not a neutral choice.
+    pub(crate) indentation: Indentation,
+    /// `editor.formatOnSaveTimeout`: how long the save waits for this answer.
+    /// The task derives its own, slightly longer, bound from it.
+    pub(crate) save_timeout: Duration,
 }
 
 /// A result flowing from a server task back to the session actor.

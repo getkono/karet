@@ -277,7 +277,7 @@ mod tests {
                 doc: DocumentId(2),
                 version: 3,
                 path: PathBuf::from("Cargo.toml"),
-                indentation: karet_lsp::Indentation::default(),
+                ask: crate::lsp::FormattingAsk::default(),
             },
             7,
         );
@@ -349,7 +349,7 @@ mod tests {
                 doc: DocumentId(2),
                 version: 3,
                 path: PathBuf::from("Cargo.toml"),
-                indentation: karet_lsp::Indentation::default(),
+                ask: crate::lsp::FormattingAsk::default(),
             },
             7,
         );

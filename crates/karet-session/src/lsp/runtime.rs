@@ -13,29 +13,32 @@ use super::hint_flight::HintFlight;
 use super::hint_flight::HintTag;
 use super::hint_flight::{self};
 use super::*;
-use crate::session::FORMAT_ON_SAVE_DEADLINE_MS;
 
 /// Slack over the session's own deadline before this task stops waiting.
 ///
-/// The session sweeps [`FORMAT_ON_SAVE_DEADLINE_MS`] on its backup tick, so its
+/// The session sweeps `editor.formatOnSaveTimeout` on its backup tick, so its
 /// effective deadline is that plus up to one tick. Giving up any sooner would
 /// race the sweep and throw away an answer that was about to be used.
-const FORMATTING_SWEEP_MARGIN_MS: u64 = 3_000;
+const FORMATTING_SWEEP_MARGIN: Duration = Duration::from_secs(3);
 
-/// How long `server_task` waits for a `textDocument/formatting` reply.
+/// How long `server_task` waits for a `textDocument/formatting` reply, given
+/// the `save_timeout` the save that asked will wait.
 ///
-/// Tied to the session's [`FORMAT_ON_SAVE_DEADLINE_MS`] rather than chosen
+/// Tied to the save's `editor.formatOnSaveTimeout` rather than chosen
 /// independently: past that deadline the save has been committed unformatted,
 /// so an answer arriving later has nobody left waiting for it -- while the wait
 /// itself is serial, and holds every other command for this server (diagnostics,
 /// completions, `didChange` flushes) behind it.
 ///
 /// `karet-jsonrpc`'s 30-second request timeout is the only other bound on this
-/// await, and it is three times too long to hold the task for: it exists to
-/// decide that a *connection* is hung, which is a different question from how
-/// long one save may wait.
-pub(super) const FORMATTING_DEADLINE: Duration =
-    Duration::from_millis(FORMAT_ON_SAVE_DEADLINE_MS + FORMATTING_SWEEP_MARGIN_MS);
+/// await, and at the default ten-second save timeout it is three times too long
+/// to hold the task for: it exists to decide that a *connection* is hung, which
+/// is a different question from how long one save may wait. At the setting's
+/// 30-second ceiling the request timeout ends the wait first, which is fine:
+/// either ending reports the file unformatted.
+pub(super) fn formatting_deadline(save_timeout: Duration) -> Duration {
+    save_timeout.saturating_add(FORMATTING_SWEEP_MARGIN)
+}
 
 pub(super) struct ServerTask {
     pub(super) spec: LspSpec,
@@ -721,7 +724,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     doc,
                     version,
                     path,
-                    indentation,
+                    ask,
                 } => {
                     flush_pending(
                         active,
@@ -752,8 +755,8 @@ pub(super) async fn server_task(task: ServerTask) {
                         (false, Vec::new())
                     } else {
                         match tokio::time::timeout(
-                            FORMATTING_DEADLINE,
-                            active.formatting(&path, indentation),
+                            formatting_deadline(ask.save_timeout),
+                            active.formatting(&path, ask.indentation),
                         )
                         .await
                         {
