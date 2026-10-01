@@ -623,6 +623,209 @@ mod tests {
         assert_eq!(failures.len(), 1, "stale failures were not expired");
     }
 
+    // The tests below pin the policy's numbers with literals, on a paused clock
+    // where exact boundaries can be reached. Deriving the expectations from the
+    // constants would pass whatever the constants became.
+
+    /// One quick death, charged now.
+    fn quick_death(
+        failures: &mut VecDeque<Instant>,
+        delay: &mut Duration,
+    ) -> (Duration, LanguageServerRuntimeState) {
+        charge_disconnect(
+            Some(Instant::now()),
+            &mut VecDeque::new(),
+            false,
+            failures,
+            delay,
+            &key("rust"),
+        )
+    }
+
+    /// One silent death, charged now.
+    fn silent_death(
+        hangs: &mut VecDeque<Instant>,
+        delay: &mut Duration,
+    ) -> (Duration, LanguageServerRuntimeState) {
+        let proven = Instant::now().checked_sub(STABLE_CONNECTION);
+        charge_disconnect(
+            proven,
+            hangs,
+            true,
+            &mut VecDeque::new(),
+            delay,
+            &key("java"),
+        )
+    }
+
+    /// Falsified by a different minimum, a factor other than two, or a missing
+    /// or moved ceiling.
+    #[test]
+    fn the_backoff_doubles_from_a_quarter_second_to_a_thirty_second_ceiling() {
+        let mut delay = RESTART_MIN_DELAY;
+        let schedule: Vec<u128> = (0..9).map(|_| back_off(&mut delay).as_millis()).collect();
+        assert_eq!(
+            schedule,
+            [250, 500, 1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000]
+        );
+    }
+
+    /// Falsified by an expiry that drops an entry exactly a window old, keeps
+    /// one older than that, or stops at the wrong end of the log.
+    #[tokio::test(start_paused = true)]
+    async fn a_window_keeps_an_entry_exactly_its_own_length_old() {
+        let window = Duration::from_secs(60);
+        let mut log = VecDeque::new();
+        for _ in 0..3 {
+            log.push_back(Instant::now());
+            tokio::time::advance(Duration::from_millis(1)).await;
+        }
+        let edge = log.get(1).copied();
+        // Now the entries are a window and a millisecond old, exactly a window
+        // old, and a millisecond short of it.
+        tokio::time::advance(window - Duration::from_millis(2)).await;
+        expire(&mut log, Instant::now(), window);
+        assert_eq!(log.len(), 2, "the wrong entries expired");
+        assert_eq!(log.front().copied(), edge);
+    }
+
+    /// Falsified by scheduling either deadline anywhere but after the loss, or
+    /// by a grace other than one second.
+    #[tokio::test(start_paused = true)]
+    async fn a_loss_schedules_its_reconnect_and_grace_from_the_moment_of_loss() {
+        let now = Instant::now();
+        assert_eq!(
+            after_loss(now, Duration::from_millis(250)),
+            (
+                Some(now + Duration::from_millis(250)),
+                Some(now + Duration::from_secs(1))
+            )
+        );
+    }
+
+    /// Five quick deaths inside a minute -- the first exactly a minute before
+    /// the fifth -- open a five-minute circuit.
+    ///
+    /// Falsified by a budget other than five, a window shorter than 60s, a
+    /// cooldown other than 300s, or a death-path backoff off its schedule.
+    #[tokio::test(start_paused = true)]
+    async fn five_quick_deaths_in_a_minute_open_a_five_minute_circuit() {
+        let mut failures = VecDeque::new();
+        let mut delay = RESTART_MIN_DELAY;
+        let mut charged = vec![quick_death(&mut failures, &mut delay)];
+        tokio::time::advance(Duration::from_secs(60)).await;
+        for _ in 0..4 {
+            charged.push(quick_death(&mut failures, &mut delay));
+        }
+        use LanguageServerRuntimeState::CircuitOpen as Open;
+        use LanguageServerRuntimeState::Retrying as Retry;
+        assert_eq!(
+            charged,
+            [
+                (Duration::from_millis(250), Retry),
+                (Duration::from_millis(500), Retry),
+                (Duration::from_secs(1), Retry),
+                (Duration::from_secs(2), Retry),
+                (Duration::from_secs(300), Open),
+            ]
+        );
+    }
+
+    /// The counterpart: a millisecond later the first death has left the
+    /// window, and the fifth is only the fourth that counts.
+    ///
+    /// Falsified by a window longer than 60s.
+    #[tokio::test(start_paused = true)]
+    async fn a_quick_death_just_over_a_minute_old_is_forgiven() {
+        let mut failures = VecDeque::new();
+        let mut delay = RESTART_MIN_DELAY;
+        quick_death(&mut failures, &mut delay);
+        tokio::time::advance(Duration::from_millis(60_001)).await;
+        let mut last = None;
+        for _ in 0..4 {
+            last = Some(quick_death(&mut failures, &mut delay));
+        }
+        assert_eq!(
+            last,
+            Some((Duration::from_secs(4), LanguageServerRuntimeState::Retrying))
+        );
+    }
+
+    /// Two silent deaths ten minutes apart, to the millisecond, still open the
+    /// circuit; one more millisecond and the first is forgiven, with the
+    /// backoff carried on from where it was.
+    ///
+    /// Falsified by a hang limit other than two, a hang window other than
+    /// 600s, or a silent-death backoff that does not double.
+    #[tokio::test(start_paused = true)]
+    async fn two_silent_deaths_in_ten_minutes_open_the_circuit() {
+        let mut hangs = VecDeque::new();
+        let mut delay = RESTART_MIN_DELAY;
+        let first = silent_death(&mut hangs, &mut delay);
+        tokio::time::advance(Duration::from_secs(600)).await;
+        let second = silent_death(&mut hangs, &mut delay);
+        assert_eq!(
+            [first, second],
+            [
+                (
+                    Duration::from_millis(250),
+                    LanguageServerRuntimeState::Retrying
+                ),
+                (
+                    Duration::from_secs(300),
+                    LanguageServerRuntimeState::CircuitOpen
+                ),
+            ]
+        );
+
+        let mut hangs = VecDeque::new();
+        let mut delay = RESTART_MIN_DELAY;
+        silent_death(&mut hangs, &mut delay);
+        tokio::time::advance(Duration::from_millis(600_001)).await;
+        assert_eq!(
+            silent_death(&mut hangs, &mut delay),
+            (
+                Duration::from_millis(500),
+                LanguageServerRuntimeState::Retrying
+            )
+        );
+    }
+
+    /// A connection proves itself at ten seconds, not a millisecond sooner.
+    ///
+    /// Falsified by any other threshold, or by a strict comparison at it.
+    #[tokio::test(start_paused = true)]
+    async fn a_connection_is_proven_at_ten_seconds() {
+        let opened = Some(Instant::now());
+        tokio::time::advance(Duration::from_millis(9_999)).await;
+        assert!(!was_stable(opened), "proven a millisecond early");
+        tokio::time::advance(Duration::from_millis(1)).await;
+        assert!(was_stable(opened), "not proven at ten seconds");
+    }
+
+    /// Three timeouts in a row condemn a connection that has answered; two do
+    /// not.
+    ///
+    /// Falsified by any other limit.
+    #[test]
+    fn the_third_consecutive_timeout_is_the_death() {
+        let (mut tally, tx, _rx) = tally();
+        let mut dead = false;
+        let _answered = tally.observe(Ok::<(), LspError>(()));
+        let mut verdicts = Vec::new();
+        for _ in 0..3 {
+            tally.note::<()>(
+                Err(LspError::Timeout),
+                &mut dead,
+                &tx,
+                &key("rust"),
+                SlotToken::FIRST,
+            );
+            verdicts.push(dead);
+        }
+        assert_eq!(verdicts, [false, false, true]);
+    }
+
     #[test]
     fn a_closed_connection_dies_at_once() {
         let (mut tally, tx, mut rx) = tally();
