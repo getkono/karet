@@ -60,6 +60,9 @@ const ROLE_KEYS: &[(&str, ThemeRole)] = &[
     ("editorInlayHint.foreground", ThemeRole::InlayHint),
     ("diffEditor.insertedTextBackground", ThemeRole::DiffAdded),
     ("diffEditor.removedTextBackground", ThemeRole::DiffRemoved),
+    ("editorGutter.addedBackground", ThemeRole::GutterAdded),
+    ("editorGutter.modifiedBackground", ThemeRole::GutterModified),
+    ("editorGutter.deletedBackground", ThemeRole::GutterDeleted),
     ("statusBar.background", ThemeRole::StatusBarBackground),
     ("statusBar.foreground", ThemeRole::StatusBarForeground),
     ("list.hoverBackground", ThemeRole::HoverHighlight),
@@ -225,6 +228,28 @@ mod tests {
         assert_eq!(t.color(StandardToken::Comment.id()), Rgba::rgb(0, 255, 0));
         // Background is dark → theme reports dark.
         assert!(t.is_dark());
+        Ok(())
+    }
+
+    #[test]
+    fn gutter_keys_overlay_the_gutter_roles() -> Result<(), ThemeError> {
+        let json = r##"{
+            "colors": {
+                "editorGutter.addedBackground": "#112233",
+                "editorGutter.modifiedBackground": "#445566",
+                "editorGutter.deletedBackground": "#778899"
+            }
+        }"##;
+        let t = Theme::load_vscode(json)?;
+        assert_eq!(t.role(ThemeRole::GutterAdded), Rgba::rgb(0x11, 0x22, 0x33));
+        assert_eq!(
+            t.role(ThemeRole::GutterModified),
+            Rgba::rgb(0x44, 0x55, 0x66)
+        );
+        assert_eq!(
+            t.role(ThemeRole::GutterDeleted),
+            Rgba::rgb(0x77, 0x88, 0x99)
+        );
         Ok(())
     }
 

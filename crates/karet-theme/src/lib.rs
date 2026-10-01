@@ -15,7 +15,7 @@ mod load_vscode;
 /// Number of [`StandardToken`](karet_core::StandardToken) classes (token id space).
 pub(crate) const TOKEN_COUNT: usize = 32;
 /// Number of [`ThemeRole`] variants.
-pub(crate) const ROLE_COUNT: usize = 32;
+pub(crate) const ROLE_COUNT: usize = 35;
 
 /// Errors produced while loading a theme.
 #[derive(Debug, thiserror::Error)]
@@ -364,6 +364,26 @@ mod tests {
             theme.role(ThemeRole::IndentGuide)
         );
         assert_ne!(theme.role(ThemeRole::ScrollbarTrack), theme.fallback_fg);
+    }
+
+    #[test]
+    fn gutter_change_roles_are_distinct_readable_accents() {
+        // The three markers share one gutter cell, so they are told apart by hue
+        // alone: each must be its own color, and each must read against the
+        // editor background (the diff background tints do not).
+        let theme = Theme::dark();
+        assert!((ThemeRole::GutterDeleted as usize) < ROLE_COUNT);
+        let bg = theme.role(ThemeRole::Background);
+        let added = theme.role(ThemeRole::GutterAdded);
+        let modified = theme.role(ThemeRole::GutterModified);
+        let deleted = theme.role(ThemeRole::GutterDeleted);
+        assert_ne!(added, modified);
+        assert_ne!(added, deleted);
+        assert_ne!(modified, deleted);
+        for marker in [added, modified, deleted] {
+            assert_ne!(marker, theme.fallback_fg);
+            assert!(contrast_ratio(marker, bg) > 3.0);
+        }
     }
 
     #[cfg(feature = "view")]

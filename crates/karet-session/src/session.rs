@@ -496,6 +496,7 @@ impl Session {
                 });
             },
             Command::Blame { doc, version, line } => self.request_blame(id, doc, version, line),
+            Command::LineChanges { doc } => self.request_line_changes(id, doc),
             Command::VcsLog { skip, limit } => {
                 self.submit_vcs(id, |id, cancel| crate::vcs_worker::VcsJob::Log {
                     id,

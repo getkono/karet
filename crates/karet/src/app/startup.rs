@@ -246,7 +246,14 @@ impl App {
         if !settings.editor.inlay_hints.enabled {
             self.forget_all_inlay_hints();
         }
+        let decorations_turned_on = settings.git.decorations && !self.settings.git.decorations;
+        if !settings.git.decorations {
+            self.forget_line_changes(None);
+        }
         self.settings = settings;
+        if decorations_turned_on {
+            self.request_all_line_changes();
+        }
         self.reconcile_auto_save_settings(Instant::now());
     }
 

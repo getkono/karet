@@ -116,6 +116,11 @@ pub(super) fn draw_panes(
                 tab_width,
                 diagnostics: &app.docs.diagnostics,
                 inlay_hints: &app.docs.inlay_hints,
+                line_changes: app
+                    .settings
+                    .git
+                    .decorations
+                    .then_some(&app.docs.line_changes),
                 language_servers,
                 find: app
                     .find_open
@@ -165,6 +170,11 @@ pub(super) fn draw_panes(
                 tab_width,
                 diagnostics: &app.docs.diagnostics,
                 inlay_hints: &app.docs.inlay_hints,
+                line_changes: app
+                    .settings
+                    .git
+                    .decorations
+                    .then_some(&app.docs.line_changes),
                 language_servers,
                 find: None,
                 blame: None,
