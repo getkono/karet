@@ -81,9 +81,12 @@ pub(super) fn markers(head: &str, current: &str) -> Vec<Decoration> {
 
 /// `text` with every line `\n`-terminated, so terminator differences never
 /// read as changed content.
+///
+/// Lines are split where the editor's rope splits them (a lone `\r`, VT, FF,
+/// NEL, LS and PS included), so line `i` here is row `i` in the editor.
 fn normalized(text: &str) -> String {
     let mut out = String::with_capacity(text.len() + 1);
-    for line in text.lines() {
+    for line in karet_text::lines(text) {
         out.push_str(line);
         out.push('\n');
     }
@@ -193,6 +196,31 @@ mod tests {
     fn line_ending_differences_are_not_changes() {
         assert!(spans("a\r\nb\r\n", "a\nb").is_empty());
         assert!(spans("a\nb", "a\nb\n").is_empty());
+        assert!(spans("a\rb\r", "a\nb\n").is_empty());
+        assert!(spans("a\u{2028}b", "a\r\nb").is_empty());
+    }
+
+    #[test]
+    fn markers_land_on_the_editor_row_past_non_lf_breaks() {
+        // A lone `\r` and a U+2028 each start a row in the editor, so the
+        // change sits on row 4 of both sides.
+        let head = "a\rb\u{2028}c\nd\ne\n";
+        let current = "a\rb\u{2028}c\nd\nE\n";
+        assert_eq!(
+            karet_text::TextBuffer::from_text(current)
+                .line(4)
+                .as_deref(),
+            Some("E")
+        );
+        assert_eq!(
+            spans(head, current),
+            vec![(4, 4, CHANGED_GLYPH, Some(ThemeRole::GutterModified))]
+        );
+        // A change above the breaks stays where it is.
+        assert_eq!(
+            spans(head, "A\rb\u{2028}c\nd\ne\n"),
+            vec![(0, 0, CHANGED_GLYPH, Some(ThemeRole::GutterModified))]
+        );
     }
 
     #[test]
