@@ -387,6 +387,14 @@ pub(crate) struct DocState {
     pub(crate) outline_loading: HashMap<DocumentId, (u64, Pending)>,
     /// Dependency-freshness hints per open manifest, with the checked version.
     pub(crate) manifest_hints: HashMap<DocumentId, (u64, Vec<karet_session::ManifestHint>)>,
+    /// Latest uncommitted-line gutter markers per document. Held across edits
+    /// until the next answer replaces them, so typing does not flicker them off.
+    pub(crate) line_changes: HashMap<DocumentId, Vec<Decoration>>,
+    /// The one in-flight line-change request per document.
+    pub(crate) line_changes_pending: HashMap<DocumentId, RequestId>,
+    /// Documents that changed while their request was in flight, to re-ask for
+    /// as soon as it answers.
+    pub(crate) line_changes_rerun: HashSet<DocumentId>,
 }
 
 /// The Source-Control panel state: the changed files (staged first) and selection.

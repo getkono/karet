@@ -389,6 +389,9 @@ struct PaneCtx<'a> {
     diagnostics: &'a HashMap<DocumentId, Vec<Diagnostic>>,
     /// Inlay hints keyed by backend document, in buffer columns.
     inlay_hints: &'a HashMap<DocumentId, Vec<InlayHint>>,
+    /// Uncommitted-line gutter markers keyed by backend document; `None` while
+    /// `git.decorations` is off.
+    line_changes: Option<&'a HashMap<DocumentId, Vec<Decoration>>>,
     /// The client's one copy of the language-server inventory, which the manager
     /// tab draws from. Held on the app rather than the view, so a background
     /// pane's manager tab and the focused one cannot disagree.

@@ -84,6 +84,13 @@ impl App {
         if advanced {
             self.note_inlay_edit(doc, Instant::now());
         }
+        // The first snapshot of a document asks for its gutter markers; later
+        // ones only when the text moved (a highlight pass republishes it as is).
+        let unasked = !self.docs.line_changes.contains_key(&doc)
+            && !self.docs.line_changes_pending.contains_key(&doc);
+        if advanced || unasked {
+            self.request_line_changes(doc);
+        }
         if snap.dirty {
             self.schedule_auto_save(doc, snap.version, Instant::now());
         } else if self

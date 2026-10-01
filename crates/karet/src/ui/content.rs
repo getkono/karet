@@ -145,6 +145,9 @@ pub(super) fn draw_pane_content(
                 let mut frame_decos =
                     swatches::frame_decorations(ctx, *doc, buffer, tab.editor.scroll_line, area);
                 frame_decos.extend(swatches::debug_decorations(ctx, path));
+                // After the breakpoints: they share the marker lane and win it.
+                let line_changes = doc.and_then(|doc| ctx.line_changes?.get(&doc));
+                frame_decos.extend(line_changes.into_iter().flatten().cloned());
                 let combined: Vec<Decoration> = decos
                     .iter()
                     .chain(search_decos.iter())

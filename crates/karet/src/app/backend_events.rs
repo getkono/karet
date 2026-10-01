@@ -357,6 +357,9 @@ impl App {
                 line,
                 attribution,
             } => self.on_blame_result(id, doc, version, line, attribution),
+            SessionEvent::LineChanges { doc, markers, .. } => {
+                self.on_line_changes(id, doc, markers);
+            },
             SessionEvent::PullRequests {
                 remote,
                 items,

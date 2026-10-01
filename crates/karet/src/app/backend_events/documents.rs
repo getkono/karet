@@ -64,6 +64,7 @@ impl App {
         self.docs.diagnostics.remove(&doc);
         self.docs.symbols.remove(&doc);
         self.forget_inlay_hints(doc);
+        self.forget_line_changes(Some(doc));
         self.docs.outline_versions.remove(&doc);
         self.docs.outline_loading.remove(&doc);
     }

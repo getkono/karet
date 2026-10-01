@@ -27,6 +27,7 @@ mod language_server_progress;
 mod language_server_staleness;
 mod language_servers;
 mod lifecycle;
+mod line_changes;
 mod markdown_edit;
 mod preview;
 mod remote;

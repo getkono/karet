@@ -22,7 +22,72 @@ impl App {
         self.live_blame = None;
         self.pending_blame = None;
         self.failed_blame = None;
+        // A commit, stage, or checkout moves `HEAD` under every open buffer.
+        self.request_all_line_changes();
         self.apply_vcs_status(staged, working);
+    }
+
+    /// Ask for `doc`'s uncommitted-line gutter markers, keeping at most one
+    /// request in flight per document: one asked for while another runs is
+    /// re-sent when that answers, so a burst of edits costs two comparisons.
+    pub(in crate::app) fn request_line_changes(&mut self, doc: DocumentId) {
+        if !self.settings.git.decorations {
+            return;
+        }
+        if self.docs.line_changes_pending.contains_key(&doc) {
+            self.docs.line_changes_rerun.insert(doc);
+            return;
+        }
+        if let Some(id) = self.send(SessionCommand::LineChanges { doc }) {
+            self.docs.line_changes_pending.insert(doc, id);
+        }
+    }
+
+    /// Refresh the gutter markers of every open document.
+    pub(in crate::app) fn request_all_line_changes(&mut self) {
+        let mut docs: Vec<DocumentId> = self.all_tabs().filter_map(Self::tab_doc).collect();
+        docs.sort();
+        docs.dedup();
+        for doc in docs {
+            self.request_line_changes(doc);
+        }
+    }
+
+    /// Adopt the markers answering this document's in-flight request; an answer
+    /// to anything else (a closed document, a superseded request) is dropped.
+    pub(super) fn on_line_changes(
+        &mut self,
+        id: Option<RequestId>,
+        doc: DocumentId,
+        markers: Vec<Decoration>,
+    ) {
+        if id.is_none() || self.docs.line_changes_pending.get(&doc) != id.as_ref() {
+            return;
+        }
+        self.docs.line_changes_pending.remove(&doc);
+        if self.settings.git.decorations {
+            self.docs.line_changes.insert(doc, markers);
+        }
+        if self.docs.line_changes_rerun.remove(&doc) {
+            self.request_line_changes(doc);
+        }
+    }
+
+    /// Drop every held marker and request, after the setting turns them off or
+    /// the document closes.
+    pub(in crate::app) fn forget_line_changes(&mut self, doc: Option<DocumentId>) {
+        match doc {
+            Some(doc) => {
+                self.docs.line_changes.remove(&doc);
+                self.docs.line_changes_pending.remove(&doc);
+                self.docs.line_changes_rerun.remove(&doc);
+            },
+            None => {
+                self.docs.line_changes.clear();
+                self.docs.line_changes_pending.clear();
+                self.docs.line_changes_rerun.clear();
+            },
+        }
     }
 
     /// Fill a reserved conflict view's two committed sides.
