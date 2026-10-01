@@ -343,6 +343,10 @@ impl LspManager {
                 )
                 .map(|spec| (spec, LanguageServerSource::Managed))
             })
+            .or_else(|| {
+                crate::lsp_registry::builtin_spec(provider, language)
+                    .map(|spec| (spec, LanguageServerSource::Builtin))
+            })
     }
 
     /// Give Astro the TypeScript SDK path it refuses to start without.
@@ -414,7 +418,11 @@ impl LspManager {
     /// install then failed with "taplo has no managed installer" — and, under
     /// `managedDownloads: "auto"`, queued that doomed job with no prompt at all.
     fn report_unresolved(&mut self, provider: LanguageServerId, language: &str) {
-        if !self.missing_reported.insert(provider.clone()) {
+        // A provider built into this karet is never missing: it resolves on
+        // every launch, so a report could only be wrong.
+        if crate::lsp_registry::builtin_provider(&provider)
+            || !self.missing_reported.insert(provider.clone())
+        {
             return;
         }
         let update = match crate::lsp_registry::manual_install_reason(&provider) {

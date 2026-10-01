@@ -232,18 +232,49 @@ pub(crate) fn managed_provider(server: &LanguageServerId) -> bool {
     managed_recipe(server).is_some()
 }
 
+/// Whether `server` is compiled into this karet and run in-process, so it never
+/// needs installing (feature `toml-lsp`, for taplo).
+pub(crate) fn builtin_provider(server: &LanguageServerId) -> bool {
+    #[cfg(feature = "toml-lsp")]
+    {
+        crate::toml_lsp::bundles(server)
+    }
+    #[cfg(not(feature = "toml-lsp"))]
+    {
+        let _ = server;
+        false
+    }
+}
+
+/// The in-process launch for a [built-in](builtin_provider) provider: the last
+/// resolution step, after configuration, the project, `PATH`, and a managed
+/// installation have all come up empty.
+pub(crate) fn builtin_spec(server: &LanguageServerId, language: &str) -> Option<LspSpec> {
+    #[cfg(feature = "toml-lsp")]
+    {
+        crate::toml_lsp::spec(server, language)
+    }
+    #[cfg(not(feature = "toml-lsp"))]
+    {
+        let _ = (server, language);
+        None
+    }
+}
+
 /// Why karet will not install `server` itself, if it will not.
 ///
-/// [`None`] means exactly one thing: karet owns this provider's installation on
-/// this platform, so offering to install it is honest. Every other case -- a
-/// provider that must come from a project toolchain, one whose publisher ships
-/// no verified artifact for this `(os, arch)`, and an id karet has never heard
-/// of -- yields a reason the user can act on.
+/// [`None`] means the user has nothing to install: karet either owns this
+/// provider's installation on this platform, so offering to install it is
+/// honest, or [carries it built in](builtin_provider), so it is never missing.
+/// Every other case -- a provider that must come from a project toolchain, one
+/// whose publisher ships no verified artifact for this `(os, arch)`, and an id
+/// karet has never heard of -- yields a reason the user can act on.
 ///
 /// Callers rely on that totality to decide between offering an install and
-/// explaining one, so a new arm must never fall through to [`None`].
+/// explaining one, so a new arm must never fall through to [`None`]. One that
+/// offers an install checks [`builtin_provider`] first.
 pub(crate) fn manual_install_reason(server: &LanguageServerId) -> Option<String> {
-    if managed_provider(server) {
+    if managed_provider(server) || builtin_provider(server) {
         return None;
     }
     let reason = match server.key() {
@@ -266,6 +297,7 @@ pub(crate) fn manual_install_reason(server: &LanguageServerId) -> Option<String>
         },
         "esbonio" => "must use the project's Python and Sphinx environment",
         "pkl-lsp" => "requires compatible user-installed Java and Pkl runtimes",
+        // Reached only in a build without `toml-lsp`, which carries it built in.
         "taplo" => "current native releases have no publisher-authenticated SHA-256 digest",
         "pylsp" => "must be installed in the project's Python environment, with its Flake8 plugin",
         key if catalog::managed_recipes()
@@ -328,6 +360,14 @@ fn run(
                 // unmanaged provider reaching here used to fail deep in
                 // discovery with "has no managed installer"; the reason it is
                 // manual is more useful and is known up front.
+                if builtin_provider(&server) {
+                    let message = format!(
+                        "{} is built into karet and needs no installation",
+                        server.display_name()
+                    );
+                    send_result(updates, request, Err(message));
+                    continue;
+                }
                 if let Some(reason) = manual_install_reason(&server) {
                     let message = format!("{} {reason}", server.display_name());
                     send_result(updates, request, Err(message));

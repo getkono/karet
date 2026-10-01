@@ -14,7 +14,7 @@ categories.workspace   = true
 publish = false                       # karet-internal backend — pulls the whole logic tree
 
 [features]
-default = ["github", "cbor", "viz", "mdlint", "deps", "toml-format"]
+default = ["github", "cbor", "viz", "mdlint", "deps", "toml-format", "toml-lsp"]
 # Lazily fetch a commit's "Verified" status from the GitHub REST API (the commit
 # view's signature badge) and drive the GitHub dashboard. NOTE: turning this off
 # does NOT drop reqwest — the managed-LSP registry uses it unconditionally.
@@ -42,6 +42,11 @@ mdlint = ["dep:karet-markdown"]
 deps = ["dep:dependable-fetch"]
 # Built-in TOML formatting fallback (taplo), honoring the workspace .taplo.toml.
 toml-format = ["dep:taplo", "dep:toml"]
+# Built-in TOML language server: taplo's server runs in-process when no taplo is
+# configured, in the project, or on PATH, so TOML gets validation, completion,
+# hover, and schema support with nothing to install. On by default; dropping it
+# drops a second (older) reqwest/hyper/rustls stack and its JSON-schema engine.
+toml-lsp = ["dep:taplo-lsp", "dep:taplo-common", "dep:lsp-async-stub", "dep:futures"]
 # Generate the settings JSON Schema (build/tooling concern — the
 # settings-schema example and its freshness test; never needed at runtime).
 schema = ["dep:schemars"]
@@ -60,6 +65,10 @@ karet-markdown = { workspace = true, optional = true, features = ["lint"] } # th
 dependable-fetch = { workspace = true, optional = true } # Cargo.toml dependency hints
 taplo = { workspace = true, optional = true } # built-in TOML formatting fallback
 toml = { workspace = true, optional = true } # read .taplo.toml formatter options
+taplo-lsp = { workspace = true, optional = true }      # the built-in TOML server (feature `toml-lsp`)
+taplo-common = { workspace = true, optional = true }   # its native environment (feature `toml-lsp`)
+lsp-async-stub = { workspace = true, optional = true } # its message type (feature `toml-lsp`)
+futures = { workspace = true, optional = true }        # its Sink-based writer (feature `toml-lsp`)
 karet-cbor = { workspace = true, optional = true } # decode/encode CBOR ↔ editable diagnostic text (feature `cbor`)
 karet-docx = { workspace = true, optional = true } # DOCX → markdown for read-only previews (feature `docx`)
 karet-notebook = { workspace = true, optional = true } # .ipynb → markdown for read-only previews (feature `notebook`)

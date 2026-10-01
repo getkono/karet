@@ -120,6 +120,9 @@ pub enum LanguageServerSource {
     Path,
     /// A checksum-verified installation managed by Karet.
     Managed,
+    /// A server compiled into Karet itself, run in-process: nothing was
+    /// installed, and nothing can be updated or uninstalled.
+    Builtin,
     /// No usable executable is currently available.
     Unavailable,
 }

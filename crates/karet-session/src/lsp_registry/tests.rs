@@ -231,11 +231,27 @@ fn builtin_install_recipes_are_complete_for_supported_targets() {
         "r-languageserver",
         "ruby-lsp",
         "sourcekit-lsp",
-        "taplo",
     ];
+    // taplo is built in where the build carries its server, and manual where
+    // it does not; either way it is counted exactly once.
+    let builtin: &[&str] = if cfg!(feature = "toml-lsp") {
+        &["taplo"]
+    } else {
+        manual.push("taplo");
+        &[]
+    };
     if std::env::consts::ARCH != "x86_64" {
         manual.push("clangd");
-        manual.sort();
+    }
+    manual.sort_unstable();
+    for server in builtin {
+        let server = LanguageServerId::new(*server);
+        assert!(builtin_provider(&server), "{server:?} should be built in");
+        assert!(
+            manual_install_reason(&server).is_none(),
+            "{server:?} is built in, so nothing about it is manual"
+        );
+        assert!(!managed_provider(&server), "a built-in has no installer");
     }
     for server in &manual {
         assert!(
@@ -244,10 +260,10 @@ fn builtin_install_recipes_are_complete_for_supported_targets() {
             "{server} has no manual-install reason"
         );
     }
-    assert_eq!(actual.len() + manual.len(), 41);
+    assert_eq!(actual.len() + manual.len() + builtin.len(), 41);
     // A reason is total: an id karet has never heard of is still explained,
-    // because callers use `None` to mean "karet can install this" and must
-    // never read an unknown provider that way.
+    // because callers use `None` to mean "the user has nothing to install" and
+    // must never read an unknown provider that way.
     assert!(
         manual_install_reason(&LanguageServerId::new("company-lsp"))
             .is_some_and(|reason| !reason.trim().is_empty())

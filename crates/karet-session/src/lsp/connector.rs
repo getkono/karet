@@ -132,6 +132,13 @@ pub(super) fn spawn_connector(
         let supervisor = supervisor.clone();
         let registry_root = registry_root.clone();
         Box::pin(async move {
+            // A built-in server is no process at all, so it needs neither the
+            // supervisor nor the broker -- and runs on a headless host that
+            // has neither.
+            #[cfg(feature = "toml-lsp")]
+            if crate::toml_lsp::is_builtin(&spec) {
+                return crate::toml_lsp::connect(&root, spec.initialization_options.clone()).await;
+            }
             let Some(supervisor) = supervisor else {
                 // Not `Host`: a host problem may be over by the next attempt,
                 // and this one cannot be. The supervisor path is fixed when the

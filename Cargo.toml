@@ -74,6 +74,14 @@ dependable-fetch = "=0.1.3"
 # lossless CST + the ~20 even-better-toml options; pure Rust, no network).
 taplo = "0.14.0"
 toml  = "1.1.4"                        # read .taplo.toml formatter options
+# The taplo language server, run in-process as TOML's built-in provider (its
+# native releases carry no publisher digest, so karet cannot fetch them; the
+# crates.io checksum is the integrity check instead). rustls only: the default
+# feature set is the same, but naming it keeps native-tls (OpenSSL) out.
+taplo-lsp      = { version = "0.8.0", default-features = false, features = ["rustls-tls"] }
+taplo-common   = { version = "0.6.0", default-features = false } # NativeEnvironment
+lsp-async-stub = { version = "0.7.0", default-features = false } # the server's message type
+futures        = { version = "0.3.33", default-features = false, features = ["std"] } # the server's Sink-based writer
 # blameline is a standalone library on its OWN SemVer line (NOT the workspace lockstep);
 # pin its independent version here. See crates/blameline/README.md.
 blameline        = { path = "crates/blameline", version = "2.0.3", default-features = false }
