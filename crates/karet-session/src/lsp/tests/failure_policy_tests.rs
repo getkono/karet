@@ -128,16 +128,42 @@ fn seen(update: &LspUpdate) -> Option<Seen> {
     }
 }
 
-/// Everything the task decided before `start + horizon`, with when it did.
+/// How a test stops watching: at a point in virtual time, or once the task has
+/// tried to launch more often than the schedule allows by then.
+///
+/// The second bound is what keeps a broken schedule from hanging the suite. A
+/// deadline in the past makes the task retry without ever sleeping, and on a
+/// paused clock a task that never sleeps never lets the clock reach the
+/// test's own deadline either.
+struct Watch {
+    start: Instant,
+    until: Duration,
+    attempts: Attempts,
+    most: usize,
+}
+
+impl Watch {
+    /// The next update, or `None` once either bound is reached.
+    async fn next(&self, updates: &mut mpsc::UnboundedReceiver<LspUpdate>) -> Option<LspUpdate> {
+        if self.attempts.count() > self.most {
+            return None;
+        }
+        tokio::time::timeout_at(self.start + self.until, updates.recv())
+            .await
+            .ok()
+            .flatten()
+    }
+}
+
+/// Everything the task decided while `watch` lasted, with when it did.
 async fn observe(
     updates: &mut mpsc::UnboundedReceiver<LspUpdate>,
-    start: Instant,
-    horizon: Duration,
+    watch: &Watch,
 ) -> Vec<(u128, Seen)> {
     let mut log = Vec::new();
-    while let Ok(Some(update)) = tokio::time::timeout_at(start + horizon, updates.recv()).await {
+    while let Some(update) = watch.next(updates).await {
         if let Some(decision) = seen(&update) {
-            log.push((start.elapsed().as_millis(), decision));
+            log.push((watch.start.elapsed().as_millis(), decision));
         }
     }
     log
@@ -155,7 +181,13 @@ async fn a_failing_launch_backs_off_on_the_documented_schedule() {
     let start = Instant::now();
     let attempts = Attempts::default();
     let (_tx, mut updates) = spawn_task(always_failing(&attempts, start));
-    let log = observe(&mut updates, start, Duration::from_secs(680)).await;
+    let watch = Watch {
+        start,
+        until: Duration::from_secs(680),
+        attempts: attempts.clone(),
+        most: 11,
+    };
+    let log = observe(&mut updates, &watch).await;
 
     assert_eq!(
         attempts.millis(),
@@ -215,7 +247,13 @@ async fn a_server_that_dies_on_arrival_is_retried_then_circuit_broken() {
     let start = Instant::now();
     let attempts = Attempts::default();
     let (_tx, mut updates) = spawn_task(dying_on_arrival(&attempts, start));
-    let log = observe(&mut updates, start, Duration::from_millis(301_400)).await;
+    let watch = Watch {
+        start,
+        until: Duration::from_millis(301_400),
+        attempts: attempts.clone(),
+        most: 7,
+    };
+    let log = observe(&mut updates, &watch).await;
 
     assert_eq!(
         attempts.millis(),
@@ -264,10 +302,14 @@ async fn a_failed_replay_backs_off_like_a_failed_launch() -> TestResult {
         text: "fn main() {}\n".to_owned(),
     })
     .await?;
+    let watch = Watch {
+        start,
+        until: Duration::from_millis(3_800),
+        attempts: attempts.clone(),
+        most: 5,
+    };
     let mut replays = Vec::new();
-    while let Ok(Some(update)) =
-        tokio::time::timeout_at(start + Duration::from_millis(3_800), updates.recv()).await
-    {
+    while let Some(update) = watch.next(&mut updates).await {
         if let LspUpdate::RuntimeState {
             error: Some(error), ..
         } = update
@@ -302,9 +344,15 @@ async fn a_hint_request_is_answered_by_the_kind_of_outage() -> TestResult {
     let mut asked_while_retrying = false;
     let mut asked_while_open = false;
     let mut answers = Vec::new();
-    while let Ok(Some(update)) =
-        tokio::time::timeout_at(start + Duration::from_secs(10), updates.recv()).await
-    {
+    // Ten seconds spans the five launches that open the circuit (by 3.75s),
+    // with room for one more attempt and nothing after it.
+    let watch = Watch {
+        start,
+        until: Duration::from_secs(10),
+        attempts: attempts.clone(),
+        most: 6,
+    };
+    while let Some(update) = watch.next(&mut updates).await {
         match update {
             LspUpdate::RuntimeState {
                 state: LanguageServerRuntimeState::Retrying,
