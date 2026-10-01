@@ -55,6 +55,32 @@ impl TextBuffer {
     /// - [`TextError::OverlappingEdits`] if the batch's edits overlap.
     /// - [`TextError::OutOfBounds`] for an edit addressing a line past the end.
     pub fn apply(&mut self, change: &Change, ctx: EditContext) -> Result<Applied, TextError> {
+        self.apply_recorded(change, &ctx, false)
+    }
+
+    /// Apply an atomic [`Change`] as part of the most recent undo step rather
+    /// than as a new one, so a single [`undo`](Self::undo) reverts it together
+    /// with the edit before it and restores *that* edit's cursor. Use it for
+    /// follow-up rewrites that belong to one user action (e.g. a save's
+    /// formatting and its whitespace cleanup). With nothing to undo yet it
+    /// starts a step of its own, like [`apply`](Self::apply).
+    ///
+    /// # Errors
+    /// As [`apply`](Self::apply).
+    pub fn apply_joined(
+        &mut self,
+        change: &Change,
+        ctx: EditContext,
+    ) -> Result<Applied, TextError> {
+        self.apply_recorded(change, &ctx, true)
+    }
+
+    fn apply_recorded(
+        &mut self,
+        change: &Change,
+        ctx: &EditContext,
+        join: bool,
+    ) -> Result<Applied, TextError> {
         if change.base_version != self.version {
             return Err(TextError::StaleVersion);
         }
@@ -72,7 +98,12 @@ impl TextBuffer {
             edits: inverse_edits,
         };
         let edit_end = edit_end_byte.map(|b| self.byte_to_line_col(BytePos(b)));
-        self.history.record(inverse, change.clone(), &ctx, edit_end);
+        if join {
+            self.history
+                .record_joined(inverse, change.clone(), ctx, edit_end);
+        } else {
+            self.history.record(inverse, change.clone(), ctx, edit_end);
+        }
         Ok(Applied {
             version: self.version,
             edits,
@@ -373,6 +404,34 @@ mod tests {
         assert!(undone.restored_cursor.is_some());
         assert!(b.redo().is_some());
         assert_eq!(b.line(0).as_deref(), Some("hello world"));
+    }
+
+    #[test]
+    fn joined_change_undoes_with_the_previous_step() {
+        let mut b = TextBuffer::from_text("a ");
+        let at = |line, col| EditContext {
+            cursor_before: CursorState::single(karet_core::Selection::caret(LineCol::new(
+                line, col,
+            ))),
+            ..EditContext::default()
+        };
+        assert!(b.apply_simple(&ins(0, 0, 0, "x")).is_ok());
+        assert!(b.apply(&ins(b.version(), 0, 0, "y"), at(0, 2)).is_ok());
+        assert!(
+            b.apply_joined(&ins(b.version(), 0, 0, "z"), at(5, 5))
+                .is_ok()
+        );
+        assert_eq!(b.line(0).as_deref(), Some("zyxa "));
+
+        let undone = b.undo().unwrap_or_default();
+        assert_eq!(b.line(0).as_deref(), Some("xa "), "one undo reverts both");
+        assert_eq!(
+            undone.restored_cursor.map(|c| c.primary().head),
+            Some(LineCol::new(0, 2)),
+            "the cursor from before the first edit of the step comes back"
+        );
+        assert!(b.redo().is_some());
+        assert_eq!(b.line(0).as_deref(), Some("zyxa "), "one redo replays both");
     }
 
     #[test]
