@@ -1,6 +1,7 @@
 //! The pane under the table: everything known about the selected provider.
 
 use karet_session::LanguageServerInstanceStatus;
+use karet_session::LanguageServerSource;
 use karet_session::LanguageServerStatus;
 
 use super::*;
@@ -26,8 +27,14 @@ pub(super) fn draw_detail(
                 change.target
             )
         });
+    let builtin = status
+        .instances
+        .iter()
+        .any(|instance| instance.source == LanguageServerSource::Builtin);
     let ownership = if status.managed {
         "Karet-managed"
+    } else if builtin {
+        "built into Karet"
     } else if status.manual_install_reason.is_some() {
         "manual install"
     } else {

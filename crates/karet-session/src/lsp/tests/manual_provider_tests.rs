@@ -25,14 +25,14 @@ fn a_provider_karet_can_install_is_offered() {
     );
 }
 
-/// taplo's releases carry no publisher digest, so karet has no recipe for it.
-/// It used to be offered anyway, and accepting produced an install that failed
-/// with "taplo is available from the project or PATH but has no managed
-/// installer".
+/// gopls must come from the project's Go toolchain, so karet has no recipe for
+/// it. A provider like it used to be offered anyway, and accepting produced an
+/// install that failed with "... is available from the project or PATH but has
+/// no managed installer".
 #[test]
 fn a_provider_karet_cannot_install_is_explained_instead_of_offered() -> TestResult {
     let (mut manager, mut updates) = manager();
-    manager.report_unresolved(LanguageServerId::new("taplo"), "toml");
+    manager.report_unresolved(LanguageServerId::new("gopls"), "go");
     let Some(LspUpdate::ManualInstallRequired {
         server,
         command,
@@ -40,12 +40,38 @@ fn a_provider_karet_cannot_install_is_explained_instead_of_offered() -> TestResu
         ..
     }) = updates.try_recv().ok()
     else {
-        return Err("taplo should report a manual install, not an offer".into());
+        return Err("gopls should report a manual install, not an offer".into());
     };
-    assert_eq!(server, LanguageServerId::new("taplo"));
-    assert_eq!(command, "taplo");
-    assert!(reason.contains("SHA-256"), "{reason}");
+    assert_eq!(server, LanguageServerId::new("gopls"));
+    assert_eq!(command, "gopls");
+    assert!(reason.contains("Go toolchain"), "{reason}");
     Ok(())
+}
+
+/// A provider built into karet resolves on every launch, so it is neither
+/// offered an install nor explained as a manual one: either notice would tell
+/// the user to act on something that is already working.
+#[cfg(feature = "toml-lsp")]
+#[test]
+fn a_built_in_provider_is_never_reported_missing() {
+    let (mut manager, mut updates) = manager();
+    manager.report_unresolved(LanguageServerId::new("taplo"), "toml");
+    assert!(
+        updates.try_recv().is_err(),
+        "taplo is built in, so there is nothing to install"
+    );
+}
+
+/// Without the built-in server taplo is manual again, and says why.
+#[cfg(not(feature = "toml-lsp"))]
+#[test]
+fn taplo_without_the_built_in_server_is_a_manual_install() {
+    let (mut manager, mut updates) = manager();
+    manager.report_unresolved(LanguageServerId::new("taplo"), "toml");
+    assert!(matches!(
+        updates.try_recv().ok(),
+        Some(LspUpdate::ManualInstallRequired { reason, .. }) if reason.contains("SHA-256")
+    ));
 }
 
 /// The notice names the executable to put on `PATH`, which for several
@@ -83,11 +109,11 @@ fn every_manual_builtin_reports_rather_than_offers() {
 #[test]
 fn a_provider_is_reported_once_per_generation() {
     let (mut manager, mut updates) = manager();
-    manager.report_unresolved(LanguageServerId::new("taplo"), "toml");
-    manager.report_unresolved(LanguageServerId::new("taplo"), "toml");
+    manager.report_unresolved(LanguageServerId::new("gopls"), "go");
+    manager.report_unresolved(LanguageServerId::new("gopls"), "go");
     assert!(updates.try_recv().is_ok());
     assert!(
         updates.try_recv().is_err(),
-        "opening a second TOML file must not repeat the notice"
+        "opening a second Go file must not repeat the notice"
     );
 }

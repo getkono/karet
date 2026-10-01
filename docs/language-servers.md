@@ -8,10 +8,15 @@ every provider's launch command and arguments live), the release recipes in
 
 ## The built-in experience
 
-TOML formatting never requires a server: karet bundles taplo's formatter as a
-fallback (`toml.format`), honoring the workspace `.taplo.toml`. Installing the
-`taplo` language server additionally brings schema-driven validation,
-completion, and hover (its `#:schema` directives work as documented upstream).
+TOML never requires an install. karet carries taplo's language server built in
+(the default-on `karet-session` feature `toml-lsp`) and runs it in-process when
+no other taplo is available, so TOML gets validation, completion, hover,
+formatting, and schema support (its `#:schema` directives and the SchemaStore
+catalogue work as documented upstream) with nothing on `PATH`. A taplo the user
+configured, the project ships, or `PATH` provides still wins, which is how a
+pinned taplo version is kept. Independently of any server, karet also bundles
+taplo's formatter as a fallback (`toml.format`), honoring the workspace
+`.taplo.toml`.
 
 
 karet resolves a provider separately for every open document:
@@ -20,7 +25,8 @@ karet resolves a provider separately for every open document:
 2. an executable in the document's repository (`node_modules/.bin`, `.venv/bin`,
    or `venv/bin`);
 3. the user's `PATH`;
-4. a checksum-verified managed installation.
+4. a checksum-verified managed installation;
+5. a server built into karet and run in-process (today only taplo, for TOML).
 
 The workspace passed on the command line is not assumed to be one repository.
 karet walks upward from each file to the nearest `.git` file or directory. Thus a
@@ -63,7 +69,7 @@ explicitly manual:
 | Dart | `dart language-server` | project/PATH | when compiled in |
 | R | languageserver | project/PATH | when compiled in |
 | Clojure | clojure-lsp | yes | when compiled in |
-| TOML | taplo | project/PATH | yes |
+| TOML | taplo | built in (project/PATH preferred) | yes |
 | Pkl | pkl-lsp | project/PATH | when compiled in |
 | Protobuf | `buf beta lsp` | yes | when compiled in |
 | GraphQL | graphql-lsp | yes | when compiled in |
@@ -88,7 +94,14 @@ The manual entries are explicit, not an unexplained remainder:
 | sourcekit-lsp, Dart Language Server | ship with the matching Swift/Xcode or Dart/Flutter SDK |
 | Metals, Haskell Language Server, ocamllsp, ELP | must match the project's Scala/JVM, GHC, opam-switch, or Erlang/OTP toolchain |
 | R languageserver, PowerShell Editor Services, Esbonio, pkl-lsp | require the user's R, PowerShell, Python/Sphinx, or Java/Pkl runtime environment |
-| Taplo | current native release assets do not provide a publisher-authenticated SHA-256 digest; the older npm channel is not treated as a current update source |
+
+Taplo is no longer on this list. Its native release assets still carry no
+publisher-authenticated SHA-256 digest, so karet does not download them; it
+compiles the server in instead, and the crates.io checksum is the integrity
+check. The npm `@taplo/cli` package is not an alternative: its WebAssembly build
+omits the language server (`taplo lsp stdio` reports "the LSP is not part of this
+build"). A build without `toml-lsp` treats taplo as manual again, for the
+digest reason above.
 
 On an architecture for which a normally managed provider has no verified upstream
 artifact, the manager reports that platform-specific reason and treats the provider

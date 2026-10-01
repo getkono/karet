@@ -231,11 +231,27 @@ fn builtin_install_recipes_are_complete_for_supported_targets() {
         "r-languageserver",
         "ruby-lsp",
         "sourcekit-lsp",
-        "taplo",
     ];
+    // taplo is built in where the build carries its server, and manual where
+    // it does not; either way it is counted exactly once.
+    let builtin: &[&str] = if cfg!(feature = "toml-lsp") {
+        &["taplo"]
+    } else {
+        manual.push("taplo");
+        &[]
+    };
     if std::env::consts::ARCH != "x86_64" {
         manual.push("clangd");
-        manual.sort();
+    }
+    manual.sort_unstable();
+    for server in builtin {
+        let server = LanguageServerId::new(*server);
+        assert!(builtin_provider(&server), "{server:?} should be built in");
+        assert!(
+            manual_install_reason(&server).is_none(),
+            "{server:?} is built in, so nothing about it is manual"
+        );
+        assert!(!managed_provider(&server), "a built-in has no installer");
     }
     for server in &manual {
         assert!(
@@ -244,10 +260,10 @@ fn builtin_install_recipes_are_complete_for_supported_targets() {
             "{server} has no manual-install reason"
         );
     }
-    assert_eq!(actual.len() + manual.len(), 41);
+    assert_eq!(actual.len() + manual.len() + builtin.len(), 41);
     // A reason is total: an id karet has never heard of is still explained,
-    // because callers use `None` to mean "karet can install this" and must
-    // never read an unknown provider that way.
+    // because callers use `None` to mean "the user has nothing to install" and
+    // must never read an unknown provider that way.
     assert!(
         manual_install_reason(&LanguageServerId::new("company-lsp"))
             .is_some_and(|reason| !reason.trim().is_empty())
@@ -353,6 +369,37 @@ fn uninstall_defers_payload_cleanup_while_a_broker_is_live()
     assert!(read_active(dir.path(), &server).is_none());
     assert!(payload.is_dir());
     assert!(cleanup_pending(Some(dir.path()), &server));
+    Ok(())
+}
+
+/// An install job for a built-in provider is refused with the real reason,
+/// rather than failing in discovery with "has no managed installer".
+#[cfg(feature = "toml-lsp")]
+#[test]
+fn installing_a_built_in_provider_says_it_needs_no_installation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let (jobs, mut updates) = spawn(Some(dir.path().to_path_buf()), None);
+    jobs.send(RegistryJob::Install {
+        request: RequestId(3),
+        server: LanguageServerId::new("taplo"),
+    })?;
+    // Bounded: the refusal needs no network, so it is all but immediate.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let update = loop {
+        match updates.try_recv() {
+            Ok(update) => break update,
+            Err(_) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            },
+            Err(_) => return Err("the registry never answered the install".into()),
+        }
+    };
+    let RegistryUpdate::Failed { request, message } = update else {
+        return Err("a built-in provider must not be installed".into());
+    };
+    assert_eq!(request, RequestId(3));
+    assert!(message.contains("built into karet"), "{message}");
     Ok(())
 }
 
