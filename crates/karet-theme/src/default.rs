@@ -120,6 +120,11 @@ pub(crate) fn dark() -> Theme {
     // A dim amber wash: visible under syntax colors, unmistakably not the
     // cursor line.
     role(ThemeRole::DebugStoppedLine, rgb(0x4d, 0x3c, 0x1a));
+    // Uncommitted-change gutter markers: green added, blue modified, red deleted
+    // (VS Code's convention), bright enough to read as a one-cell glyph.
+    role(ThemeRole::GutterAdded, rgb(0x9e, 0xce, 0x6a));
+    role(ThemeRole::GutterModified, rgb(0x7a, 0xa2, 0xf7));
+    role(ThemeRole::GutterDeleted, rgb(0xf7, 0x76, 0x8e));
 
     Theme {
         tokens,

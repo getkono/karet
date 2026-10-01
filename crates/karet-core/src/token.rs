@@ -335,6 +335,15 @@ pub enum ThemeRole {
     ScrollbarThumb,
     /// The line the debuggee is stopped on (a whole-line background tint).
     DebugStoppedLine,
+    /// The editor-gutter marker for lines added since the last commit.
+    ///
+    /// A foreground accent, unlike [`DiffAdded`](Self::DiffAdded), which is a
+    /// background tint too dark to read as a one-cell glyph.
+    GutterAdded,
+    /// The editor-gutter marker for lines modified since the last commit.
+    GutterModified,
+    /// The editor-gutter marker where lines were deleted since the last commit.
+    GutterDeleted,
 }
 
 #[cfg(test)]
