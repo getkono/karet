@@ -327,9 +327,23 @@ impl Builder {
     /// Push `frame`, or — once the model is [`MAX_DEPTH`] frames deep — a transparent
     /// marker standing in for it. A marker adds no depth, and a code block holds no
     /// frames, so neither is elided: the code keeps its layout at any depth.
+    ///
+    /// Nor is the row of a real table, or the cell of a real row: a table holds only
+    /// rows and a row only cells, so they add two levels at most, and a table that kept
+    /// its frame keeps its rows and cells rather than spilling them past its container.
+    /// (A table elided whole elides its rows and cells too, so its cells' text lands in
+    /// the table's own container in order.)
     fn push_frame(&mut self, frame: Frame) {
         let depth = self.stack.len().saturating_sub(self.markers);
-        if depth < MAX_DEPTH || matches!(frame, Frame::HtmlBlock { .. } | Frame::CodeBlock { .. }) {
+        let table_part = matches!(
+            (&frame, self.stack.last()),
+            (Frame::TableRow { .. }, Some(Frame::Table { .. }))
+                | (Frame::TableCell(_), Some(Frame::TableRow { .. }))
+        );
+        if depth < MAX_DEPTH
+            || table_part
+            || matches!(frame, Frame::HtmlBlock { .. } | Frame::CodeBlock { .. })
+        {
             self.stack.push(frame);
             return;
         }

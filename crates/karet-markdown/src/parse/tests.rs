@@ -535,6 +535,69 @@ fn a_code_block_past_the_cap_keeps_its_code() {
     ));
 }
 
+/// The text of every cell in `row`, flattened.
+fn row_texts(row: &[Cell]) -> Vec<String> {
+    row.iter()
+        .map(|cell| {
+            let mut text = String::new();
+            for inline in cell {
+                flatten_into(inline, &mut text);
+            }
+            text
+        })
+        .collect()
+}
+
+#[test]
+fn a_table_at_the_cap_keeps_its_rows_and_cells() {
+    // The table itself is the last frame the cap admits; its rows and cells must stay
+    // in it rather than spill to the root ahead of the quotes enclosing it.
+    let deep = ">".repeat(MAX_DEPTH - 1);
+    let doc = parse(&format!(
+        "{deep} | h1 | h2 |\n{deep} | -- | -- |\n{deep} | c1 | c2 |\n"
+    ));
+    assert_eq!(doc.blocks.len(), 1);
+    let mut block = doc.blocks.first();
+    while let Some(Block::Quote(blocks)) = block {
+        block = blocks.first();
+    }
+    assert!(matches!(
+        block,
+        Some(Block::Table { header, rows, .. })
+            if row_texts(header) == ["h1", "h2"]
+                && rows.iter().map(|row| row_texts(row)).collect::<Vec<_>>() == [["c1", "c2"]]
+    ));
+}
+
+#[test]
+fn a_table_past_the_cap_keeps_its_text_in_its_container() {
+    let deep = ">".repeat(MAX_DEPTH + 10);
+    let doc = parse(&format!(
+        "{deep} | h1 | h2 |\n{deep} | -- | -- |\n{deep} | c1 | c2 |\n\nafter\n"
+    ));
+    // The quote, then the paragraph after it: no cell escapes to the root.
+    assert_eq!(doc.blocks.len(), 2);
+    assert_eq!(block_depth(&doc.blocks), MAX_DEPTH + 1);
+    assert_eq!(
+        paragraph_texts(&doc.blocks),
+        vec!["h1", "h2", "c1", "c2", "after"]
+    );
+}
+
+#[test]
+fn an_html_block_left_inside_inlines_past_the_cap_ends_at_its_blank_line() {
+    // The `<b>`s past the cap leave markers on the stack; the HTML block's end must
+    // close them with the paragraph they hold, or `after` joins the `x` paragraph.
+    // (The line end the unclosed `<b>` holds survives as a space, as it does below the
+    // cap, so the texts are compared trimmed.)
+    let doc = parse(&format!("<div>{}x\n\nafter\n", "<b>".repeat(MAX_DEPTH + 6)));
+    let texts = paragraph_texts(&doc.blocks);
+    assert_eq!(
+        texts.iter().map(|text| text.trim()).collect::<Vec<_>>(),
+        vec!["x", "after"]
+    );
+}
+
 #[test]
 fn html_nesting_past_the_cap_is_bounded_and_keeps_what_follows() {
     for (open, close) in [
