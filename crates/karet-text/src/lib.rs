@@ -21,6 +21,7 @@ use karet_core::Span;
 
 mod apply;
 mod history;
+mod lines;
 mod load;
 mod save;
 
@@ -29,6 +30,7 @@ pub use history::EditContext;
 use history::History;
 pub use karet_core::AppliedEdit;
 pub use karet_core::EditCause;
+pub use lines::lines;
 pub use load::Encoding;
 pub use load::Eol;
 pub use load::LoadError;
