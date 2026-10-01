@@ -312,8 +312,14 @@ async fn a_formatter_that_never_answers_does_not_wedge_its_server() -> TestResul
     );
 
     let started = tokio::time::Instant::now();
+    // Bounded, on the same virtual clock: the manager holds a sender, so a task
+    // that is gone leaves this channel open and silent, and an unbounded wait
+    // would hang the suite rather than fail it.
     let answer = loop {
-        match updates.recv().await {
+        let next = tokio::time::timeout(Duration::from_secs(60), updates.recv())
+            .await
+            .map_err(|_elapsed| "the server task never answered")?;
+        match next {
             Some(LspUpdate::Formatting {
                 formatted,
                 edits,

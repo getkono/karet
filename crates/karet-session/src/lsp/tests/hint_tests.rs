@@ -53,21 +53,31 @@ fn whole_first_line() -> Range {
 
 /// Wait for the answer to `request`, skipping answers to anything else: the
 /// hints, or `None` for a request reported unanswered.
+///
+/// The wait is bounded as a whole, not per event: a server task that floods
+/// the stream with state changes would otherwise reset a per-event timeout
+/// forever and hang the suite instead of failing it.
 async fn await_hint_answer(
     events: &mut EventRx,
     request: RequestId,
 ) -> Option<Option<Vec<karet_core::InlayHint>>> {
-    loop {
-        let (id, event) = next_event(events).await?;
-        if id != Some(request) {
-            continue;
+    let answer = async {
+        loop {
+            let (id, event) = next_event(events).await?;
+            if id != Some(request) {
+                continue;
+            }
+            match event {
+                Event::InlayHints { hints, .. } => return Some(Some(hints)),
+                Event::InlayHintsFailed { .. } => return Some(None),
+                _ => {},
+            }
         }
-        match event {
-            Event::InlayHints { hints, .. } => return Some(Some(hints)),
-            Event::InlayHintsFailed { .. } => return Some(None),
-            _ => {},
-        }
-    }
+    };
+    tokio::time::timeout(Duration::from_secs(10), answer)
+        .await
+        .ok()
+        .flatten()
 }
 
 /// A restart retires the slot while a hint request is running on it; the
