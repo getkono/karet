@@ -464,6 +464,14 @@ impl Session {
     /// generation that owes them. The alternative is a file that is never
     /// written and a request nothing ever answers, which reads to the user as a
     /// save that silently did nothing.
+    ///
+    /// The drain is global because the retirement is: [`LspManager::reconfigure`]
+    /// retires every slot and bumps the generation, so no parked save is owed by
+    /// a server that survives the reload, and waiting on one would buy nothing --
+    /// a late answer from the old generation is refused its edits and only
+    /// finishes the save unformatted. Narrow this only together with that.
+    ///
+    /// [`LspManager::reconfigure`]: crate::lsp::LspManager::reconfigure
     pub(super) fn commit_pending_format_saves(&mut self) {
         let stranded: Vec<(RequestId, DocumentId)> = self
             .pending_format_saves

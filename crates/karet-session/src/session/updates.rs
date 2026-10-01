@@ -812,7 +812,9 @@ impl Session {
         }
 
         if let Some(retired) = lsp_retired {
-            // Retiring the servers orphans every formatting request in flight.
+            // Retiring the servers orphans every formatting request in flight --
+            // every one, because `reconfigure` retires every slot, so the drain
+            // below is exactly as wide as the retirement and no wider.
             // A save is not advisory: write it now, unformatted, which is the
             // same posture a formatter error already takes -- and before the
             // retirement is adopted, so nothing is waiting on a slot that has
