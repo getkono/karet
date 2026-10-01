@@ -733,11 +733,11 @@ pub(super) async fn server_task(task: ServerTask) {
                         token,
                     )
                     .await;
-                    // A server that never advertised the method can only answer
-                    // "method not found". Asking anyway would spend a round trip --
-                    // on every save, once format-on-save is on -- to learn what the
-                    // negotiated capabilities already say.
-                    let advertised = !dead && active.supports_formatting(&path);
+                    // No capability check of its own: a server that never
+                    // advertised the method is refused by the client before any
+                    // request reaches the wire (`LspError::Unsupported`, issue
+                    // #279), which costs no round trip and lands in the same
+                    // unformatted answer below.
                     // Every ending but a successful reply leaves the file unformatted,
                     // and each one is reported as such so the session can fall back on
                     // its own formatter. A connection that died, and a request that
@@ -748,7 +748,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     // on the answer, while this one gives the *task* back. Every
                     // command for this server -- diagnostics, completions, a
                     // `didChange` flush -- queues behind this `await`.
-                    let (formatted, edits) = if !advertised {
+                    let (formatted, edits) = if dead {
                         (false, Vec::new())
                     } else {
                         match tokio::time::timeout(
