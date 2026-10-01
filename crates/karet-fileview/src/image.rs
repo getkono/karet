@@ -220,12 +220,14 @@ impl Image {
         out
     }
 
-    /// This image resampled to `width`×`height` pixels: an exact area average when
-    /// shrinking, so no source pixel is skipped, and bilinear when enlarging.
+    /// This image resampled to `width`×`height` pixels exactly as the halfblock
+    /// painters sample it: an area average when shrinking, bilinear when enlarging.
     ///
-    /// The halfblock painters resample on every frame, so they bound the average's
-    /// cost; a caller that paints the same box every frame can resample once here,
-    /// exactly, and paint the result 1:1.
+    /// Like the painters, it reads at most four spread source pixels a side for each
+    /// destination pixel, so its cost follows the size asked for, not the source's: a
+    /// shrink of up to four times a side is an exact area average, and a larger one
+    /// still reads every phase of a fine pattern. A caller that paints the same box
+    /// every frame can resample once here and paint the result 1:1.
     #[must_use]
     pub fn resized(&self, width: u32, height: u32) -> Self {
         if self.width == 0 || self.height == 0 || width == 0 || height == 0 {
@@ -234,7 +236,7 @@ impl Image {
         let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
         for y in 0..height {
             for x in 0..width {
-                rgba.extend_from_slice(&self.sample_resized(x, y, width, height, u32::MAX));
+                rgba.extend_from_slice(&self.sample_resized(x, y, width, height, PAINT_TAPS));
             }
         }
         Self {

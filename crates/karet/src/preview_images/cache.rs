@@ -119,7 +119,9 @@ const RESAMPLES_KEPT: usize = 4;
 
 impl Ready {
     /// The image resampled to `(cols, rows)` halfblock cells, resampled only when the
-    /// box changes rather than on every frame.
+    /// box changes rather than on every frame. This runs on the draw path, so the
+    /// resample is the painters' bounded one ([`Image::resized`]): its cost follows
+    /// the box, not the source, and a pane-width drag stays cheap per frame.
     fn resampled(&mut self, (cols, rows): (u16, u16)) -> Arc<Image> {
         if let Some(index) = self
             .resampled

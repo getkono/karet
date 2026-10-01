@@ -231,6 +231,39 @@ fn resized_matches_the_sampler_and_paints_one_to_one() {
 
 #[cfg(feature = "raster")]
 #[test]
+fn resized_past_four_taps_a_side_is_bounded_like_the_painters() {
+    // A 16-fold shrink reads the painters' spread grid, not all 256 source pixels a
+    // destination pixel covers, and still folds the checkerboard to grey.
+    let image = checkerboard(64);
+    let small = image.resized(4, 4);
+    for (x, y) in [(0, 0), (1, 2), (3, 3)] {
+        let at = (y as usize * 4 + x as usize) * 4;
+        assert_eq!(
+            small.rgba().get(at..at + 4),
+            Some(&image.sample_resized(x, y, 4, 4, 4)[..])
+        );
+    }
+    let area = Rect::new(0, 0, 4, 2);
+    let (mut direct, mut copied) = (Buffer::empty(area), Buffer::empty(area));
+    image.render_halfblocks_rows(4, 2, 0, area, &mut direct);
+    small.render_halfblocks_rows(4, 2, 0, area, &mut copied);
+    assert_eq!(direct, copied);
+    // One white pixel on row 1 of a black 64×64: an exact average of the 16×16 block
+    // would tint the corner (255/256 rounds to 1), but the spread rows (2, 6, 10, 14)
+    // never read row 1, so the cost stayed bounded.
+    let mut rgba = [0, 0, 0, 255].repeat(64 * 64);
+    if let Some(pixel) = rgba.get_mut((64 + 1) * 4..(64 + 1) * 4 + 4) {
+        pixel.copy_from_slice(&[255; 4]);
+    }
+    let speck = Image::from_rgba(rgba, 64, 64);
+    assert_eq!(
+        speck.resized(4, 4).rgba().get(..4),
+        Some(&[0, 0, 0, 255][..])
+    );
+}
+
+#[cfg(feature = "raster")]
+#[test]
 fn an_id_scoped_kitty_escape_is_deletable_by_that_id_alone() {
     let image = Image::from_rgba(vec![255; 4 * 4], 2, 2);
     let escape = image.kitty_escape_with_id(7, 3, 1);
