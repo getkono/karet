@@ -1,4 +1,14 @@
 {
+  "editor": {
+    // The merge gate's `format-check` runs the nightly rustfmt pinned in
+    // `rust-nightly.txt`, but rust-analyzer formats with whatever `rustfmt` is
+    // on PATH (through rustup, the stable toolchain in `rust-toolchain.toml`).
+    // Formatting Rust on save would write output `verify` rejects, so format
+    // with `mise run format` instead.
+    "[rust]": {
+      "formatOnSave": false
+    }
+  },
   "spellcheck": {
     "enabled": true,
     "language": "en_US",
