@@ -129,6 +129,8 @@ impl Session {
             refs: 1,
             dirty_since: None,
             backed_up_version: None,
+            reported_cursor: None,
+            formatted_version: None,
         };
         let spell_without_syntax = update_syntax(
             &self.config.settings,
@@ -396,10 +398,11 @@ impl Session {
                 return;
             };
             let change = Change::new(doc.buffer.version(), edits);
-            let ctx = edit_context(tick, EditCause::Replace, &change);
+            let ctx = save_edit_context(tick, doc, &change);
             let Ok(applied) = doc.buffer.apply(&change, ctx) else {
                 return;
             };
+            doc.formatted_version = Some(applied.version);
             let spell_without_syntax =
                 update_syntax(settings, highlight_tx, doc_id, doc, Some(&applied.edits));
             doc.sync_dirty_since(tick);
@@ -617,6 +620,11 @@ impl Session {
         let Some(doc) = self.store.docs.get_mut(&doc_id) else {
             return false;
         };
+        // A save that formatted and then cleaned up is one user action, so it is
+        // one undo step: the cleanup joins the formatter's step when nothing has
+        // landed between them. Taken unconditionally, so the marker never
+        // outlives the save that set it.
+        let join = doc.formatted_version.take() == Some(doc.buffer.version());
         let current = doc.buffer.text();
         let normalized = normalize_text_for_save(&current, doc.settings);
         if normalized == current {
@@ -625,8 +633,13 @@ impl Session {
         let Some(change) = whole_document_change(doc, normalized) else {
             return false;
         };
-        let ctx = edit_context(tick, EditCause::Replace, &change);
-        let Ok(applied) = doc.buffer.apply(&change, ctx) else {
+        let ctx = save_edit_context(tick, doc, &change);
+        let applied = if join {
+            doc.buffer.apply_joined(&change, ctx)
+        } else {
+            doc.buffer.apply(&change, ctx)
+        };
+        let Ok(applied) = applied else {
             return false;
         };
         let spell_without_syntax =
