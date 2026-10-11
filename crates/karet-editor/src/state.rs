@@ -91,8 +91,14 @@ pub struct EditorState {
     /// the scroll could not be resolved on the spot — [`scroll_to`] was given
     /// no buffer, or the last frame was wrapped or never measured the viewport.
     ///
+    /// Paired with the margin that reveal keeps, so the render re-resolves a
+    /// pointer-originated move without the keyboard's margin.
+    ///
     /// [`scroll_to`]: Self::scroll_to
-    pub(super) follow_col: Option<LineCol>,
+    pub(super) follow_col: Option<(LineCol, Reveal)>,
+    /// The collapsed folds the last render hid lines behind, so a reveal made
+    /// between renders counts rows, not buffer lines.
+    pub(super) last_folds: Vec<Fold>,
     /// Source lines currently occupying the sticky-scroll rows, outermost first.
     pub(super) sticky_rows: Vec<u32>,
     /// Rows reserved above the live document viewport by the last render.
@@ -122,6 +128,7 @@ impl Default for EditorState {
             last_hints: HintIndex::default(),
             follow_cursor: false,
             follow_col: None,
+            last_folds: Vec::new(),
             sticky_rows: Vec::new(),
             sticky_height: 0,
             last_visible_lines: 0,
@@ -166,33 +173,49 @@ impl EditorState {
     /// [`reveal`](Self::reveal), which resolves both axes now.
     pub fn scroll_to(&mut self, pos: LineCol) {
         self.scroll_vertically_to(pos);
-        self.follow_col = Some(pos);
+        self.follow_col = Some((pos, Reveal::Margin));
     }
 
     /// Scroll so that `pos` is within the viewport, resolving both axes
-    /// immediately and re-checking the horizontal one at the next render.
+    /// immediately and re-checking both at the next render.
     ///
-    /// In an unwrapped view the horizontal scroll keeps up to a 10-cell margin
-    /// either side of the caret, measured in display cells against the last
-    /// frame's geometry: its content width, tab width and inlay hints. So
-    /// [`scroll_col`](Self::scroll_col) is already right when read before the
-    /// next render — as a view that mirrors this one's offset does. The render
-    /// then re-resolves it against the geometry it actually paints, so a pane
-    /// that changed width since still shows the caret. Soft-wrapped
-    /// views have no horizontal axis; their vertical reveal still completes on
-    /// the next render, which knows how the lines wrap. Before any render has
-    /// measured the viewport the horizontal part is deferred to the first one.
+    /// This is the keyboard reveal: in an unwrapped view the horizontal scroll
+    /// keeps up to a 10-cell margin either side of the caret, measured in
+    /// display cells against the last frame's geometry: its content width, tab
+    /// width and inlay hints. So [`scroll_col`](Self::scroll_col) is already
+    /// right when read before the next render — as a view that mirrors this
+    /// one's offset does. The render then re-resolves it against the geometry
+    /// it actually paints, so a pane that changed width since still shows the
+    /// caret. Soft-wrapped views have no horizontal axis. Before any render
+    /// has measured the viewport the horizontal part is deferred to the first
+    /// one.
+    ///
+    /// Vertically the caret's line is brought onto a visible row, counting
+    /// rows rather than buffer lines — collapsed folds take none, wrapped
+    /// lines take several, sticky headers shrink the viewport — so a line
+    /// already on screen never scrolls. The estimate made here uses the last
+    /// frame's folds and height; the render completes it against the ones it
+    /// paints.
+    ///
+    /// The pointer-originated moves — [`set_caret`](Self::set_caret),
+    /// [`extend_to`](Self::extend_to), [`set_selection`](Self::set_selection)
+    /// and [`add_caret`](Self::add_caret) — keep no margin instead: they
+    /// scroll only when the target is off screen.
     pub fn reveal(&mut self, buffer: &TextBuffer, pos: LineCol) {
+        self.reveal_with(buffer, pos, Reveal::Margin);
+    }
+
+    /// [`reveal`](Self::reveal) keeping the horizontal margin `reveal` asks for.
+    fn reveal_with(&mut self, buffer: &TextBuffer, pos: LineCol, reveal: Reveal) {
         self.scroll_vertically_to(pos);
+        // Re-resolved by the render whatever happens here: the last frame's
+        // width may not be the next one's (a resize, a split, a background tab
+        // brought forward), and a wrapped frame may be followed by an
+        // unwrapped one.
+        self.follow_col = Some((pos, reveal));
         if self.last_word_wrap || self.last_content_width == 0 {
-            // Wrapped: nothing to scroll, unless the next frame is unwrapped.
-            self.follow_col = Some(pos);
             return;
         }
-        // An estimate, not the last word: the last frame's width may not be the
-        // next one's (a resize, a split, a background tab brought forward), so
-        // the render re-resolves against the geometry it actually paints.
-        self.follow_col = Some(pos);
         self.scroll_col = reveal_column(
             &line_chars(buffer, pos.line),
             self.scroll_col,
@@ -200,19 +223,18 @@ impl EditorState {
             u32::from(self.last_content_width),
             self.last_tab_width,
             self.hints_on(pos.line),
+            reveal,
         );
     }
 
-    /// Bring `pos`'s line into the viewport and have the next render follow
+    /// Bring `pos`'s line onto a visible row and have the next render follow
     /// the cursor.
     fn scroll_vertically_to(&mut self, pos: LineCol) {
         self.follow_cursor = true;
         let height = u32::from(self.last_height.max(1));
-        if pos.line < self.scroll_line {
-            self.scroll_line = pos.line;
-            self.scroll_subrow = 0;
-        } else if pos.line >= self.scroll_line + height {
-            self.scroll_line = pos.line + 1 - height;
+        let top = reveal_line(&self.last_folds, self.scroll_line, pos.line, height);
+        if top != self.scroll_line {
+            self.scroll_line = top;
             self.scroll_subrow = 0;
         }
     }
@@ -557,6 +579,10 @@ impl EditorState {
     }
 
     /// Select the entire buffer as a single selection, caret at the end (Ctrl+A).
+    ///
+    /// Does not scroll: the selection covers whatever is on screen, so the view
+    /// the user selected from stays put, and any reveal still owed by an
+    /// earlier move is dropped with the caret it was for.
     pub fn select_all(&mut self, buffer: &TextBuffer) {
         let last = last_line(buffer);
         let end = LineCol::new(last, line_len(buffer, last));
@@ -564,7 +590,8 @@ impl EditorState {
             anchor: LineCol::new(0, 0),
             head: end,
         });
-        self.reveal(buffer, end);
+        self.follow_cursor = false;
+        self.follow_col = None;
     }
 
     /// Jump the caret to `pos` (clamped), collapsing to a single bare caret there.
@@ -585,8 +612,14 @@ impl EditorState {
 
     /// Place the caret at `pos` (clamped), collapsing to a single bare caret there and
     /// clearing any selection or secondary carets.
+    ///
+    /// The pointer placement (a click): it scrolls only when `pos` is off
+    /// screen, so the text under the pointer never moves. Use
+    /// [`goto`](Self::goto) to jump to a target with the keyboard margin.
     pub fn set_caret(&mut self, buffer: &TextBuffer, pos: LineCol) {
-        self.goto(buffer, pos);
+        let p = clamp_to_buffer(buffer, pos);
+        self.cursors = CursorState::single(Selection::caret(p));
+        self.reveal_with(buffer, p, Reveal::Minimal);
     }
 
     /// Replace the cursor set with a single bare caret at exactly `pos` (no clamping);
@@ -632,21 +665,28 @@ impl EditorState {
 
     /// Extend the primary selection so its moving end is `pos` (clamped), keeping the
     /// primary anchor fixed and leaving any secondary carets in place.
+    ///
+    /// A pointer move (Shift+click, drag): it scrolls only when `pos` is off
+    /// screen.
     pub fn extend_to(&mut self, buffer: &TextBuffer, pos: LineCol) {
         let p = clamp_to_buffer(buffer, pos);
         if let Some(s) = self.cursors.selections.get_mut(self.cursors.primary) {
             s.head = p;
         }
-        self.after_motion(buffer);
+        self.cursors.normalize();
+        self.reveal_with(buffer, self.cursor(), Reveal::Minimal);
     }
 
     /// Collapse to a single selection spanning `anchor`..`head` (both clamped), with
     /// the caret at `head`. Used by double/triple-click word/line selection.
+    ///
+    /// A pointer move: it scrolls only when `head` is off screen, so a
+    /// double-click's second click lands on the word the first one hit.
     pub fn set_selection(&mut self, buffer: &TextBuffer, anchor: LineCol, head: LineCol) {
         let anchor = clamp_to_buffer(buffer, anchor);
         let head = clamp_to_buffer(buffer, head);
         self.cursors = CursorState::single(Selection { anchor, head });
-        self.reveal(buffer, head);
+        self.reveal_with(buffer, head, Reveal::Minimal);
     }
 
     /// Collapse the cursor set to just the primary selection (the `Esc` fold-back).
@@ -678,7 +718,8 @@ impl EditorState {
     }
 
     /// Toggle a caret at `pos` (Alt+click): remove a coincident bare caret unless it is
-    /// the only one, otherwise add one as the new primary.
+    /// the only one, otherwise add one as the new primary. A pointer move: it
+    /// scrolls only when `pos` is off screen.
     pub fn add_caret(&mut self, buffer: &TextBuffer, pos: LineCol) {
         let p = clamp_to_buffer(buffer, pos);
         if let Some(i) = self
@@ -693,7 +734,7 @@ impl EditorState {
             return;
         }
         self.cursors.push(Selection::caret(p));
-        self.reveal(buffer, p);
+        self.reveal_with(buffer, p, Reveal::Minimal);
     }
 
     /// `Ctrl+D`: if the primary is a bare caret, select the word under it; otherwise

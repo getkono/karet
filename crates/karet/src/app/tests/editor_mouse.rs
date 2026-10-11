@@ -177,6 +177,13 @@ fn keyboard_caret_and_selection_conformance() {
             "[hello world\nsecond|]",
         ),
         case(
+            "Ctrl+A does not scroll to the end of the document",
+            "|0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\n16\n17\n18\n19",
+            vec![Step::Key(Char('a'), ctrl)],
+            "[0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\n16\n17\n18\n19|]",
+        )
+        .scrolled(0),
+        case(
             "Shift+Right extends one character at a time",
             "|hello",
             vec![Step::Key(Right, shift), Step::Key(Right, shift)],
