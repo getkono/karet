@@ -36,7 +36,16 @@ impl App {
                 if panel == SidebarPanel::Todos {
                     self.show_todos();
                 }
+                if panel == SidebarPanel::Problems {
+                    self.show_problems();
+                }
             },
+            Command::NextProblem => self.goto_problem(true),
+            Command::PrevProblem => self.goto_problem(false),
+            Command::ProblemsFilter => self.problems_begin_filter(),
+            Command::ProblemsCycleSeverity => self.problems_cycle_severity(),
+            Command::ProblemsFilterAccept => self.problems_end_filter(false),
+            Command::ProblemsFilterCancel => self.problems_end_filter(true),
             Command::OpenQuickOpen => self.open_quick_open(),
             Command::OpenCommandPalette => self.overlay = Some(Overlay::command_palette()),
             Command::OpenFind => self.open_find(),
@@ -203,6 +212,7 @@ impl App {
             Command::TodoToggleGrouping => self.todos_toggle_grouping(),
             Command::GoToDefinition => self.request_definition(),
             Command::JumpBack => self.jump_back(),
+            Command::JumpForward => self.jump_forward(),
             Command::InsertChar(c) => {
                 if !self.try_inline_macro(karet_syntax::InlineMacroTrigger::Character(c)) {
                     let s = c.to_string();

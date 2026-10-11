@@ -817,5 +817,34 @@ fn ctrl_alt_left_goes_back_from_any_focus() {
             ),
             Some(Command::JumpBack)
         );
+        assert_eq!(
+            res(
+                focus,
+                false,
+                key(KeyCode::Right, KeyModifiers::CONTROL | KeyModifiers::ALT)
+            ),
+            Some(Command::JumpForward)
+        );
     }
+}
+
+#[test]
+fn alt_arrows_walk_history_outside_the_editor_and_move_by_word_inside_it() {
+    assert_eq!(
+        res(Focus::Sidebar, false, key(KeyCode::Left, KeyModifiers::ALT)),
+        Some(Command::JumpBack)
+    );
+    assert_eq!(
+        res(
+            Focus::Sidebar,
+            false,
+            key(KeyCode::Right, KeyModifiers::ALT)
+        ),
+        Some(Command::JumpForward)
+    );
+    // The editor layer outranks Global: Alt+arrow stays word motion there (#141).
+    assert_eq!(
+        res(Focus::Editor, false, key(KeyCode::Right, KeyModifiers::ALT)),
+        Some(Command::CaretWordRight)
+    );
 }

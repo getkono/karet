@@ -191,6 +191,9 @@ async fn event_loop(
     let mut decoded_images = preview_image_results(app);
 
     loop {
+        // Backend events (a definition answer, a debugger stop) move the caret
+        // too; one look per frame records them for Go Back.
+        app.observe_navigation();
         app.sync_preview_graphics();
         terminal.draw(|f| ui::draw(f, app))?;
         app.flush_graphics();
@@ -304,6 +307,9 @@ fn handle_terminal_event(app: &mut App, event: Event) {
         _ => {},
     }
     app.auto_save_context_changed(previous);
+    // Per event, not per frame: a far click followed by typing in the same burst
+    // would otherwise read as one edit and lose the step back.
+    app.observe_navigation();
 }
 
 #[cfg(test)]

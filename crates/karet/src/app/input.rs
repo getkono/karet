@@ -120,6 +120,10 @@ impl App {
         }
         let ctx = self.input_context();
         match ctx.modal {
+            // The Search input stacks the Global layer, whose Alt+arrow is Go
+            // Back/Forward; in a text field Alt+arrow is word motion (#141), as in
+            // the editor, so the field keeps it.
+            Some(Modal::SearchInput) if is_alt_word_motion(key) => self.search_edit(key),
             Some(modal) => match keymap::resolve(ctx, &[KeyChord::from_event(key)]) {
                 Resolved::Command(command) => self.dispatch(command),
                 Resolved::Pending | Resolved::None => self.modal_text(modal, key),
@@ -180,6 +184,11 @@ impl App {
             } else {
                 Modal::SearchList
             })
+        } else if self.focus == Focus::Sidebar
+            && self.sidebar_panel == SidebarPanel::Problems
+            && self.problems.filter_input
+        {
+            Some(Modal::ProblemsFilter)
         } else {
             None
         };
@@ -249,6 +258,7 @@ impl App {
             Modal::ExplorerEdit => self.explorer_edit(key),
             Modal::SearchInput => self.search_edit(key),
             Modal::SearchList => {},
+            Modal::ProblemsFilter => self.problems_filter_key(key),
             Modal::ContextMenu => self.close_context_menu(),
             // The console is read, not typed into: only the keys that move it
             // through a long log do anything.
@@ -297,6 +307,7 @@ impl App {
                 }
             },
             Modal::ExplorerEdit => self.explorer.edit_paste(text),
+            Modal::ProblemsFilter => self.problems_filter_paste(text),
             Modal::SearchInput => {
                 let (target, edit) = self.search.active_field();
                 edit.insert(target, text);
@@ -492,4 +503,13 @@ impl App {
             _ => {},
         }
     }
+}
+
+/// Alt+Left/Right, with or without Shift: word motion inside a text field.
+fn is_alt_word_motion(key: KeyEvent) -> bool {
+    matches!(key.code, KeyCode::Left | KeyCode::Right)
+        && key.modifiers.contains(KeyModifiers::ALT)
+        && !key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::SUPER)
 }

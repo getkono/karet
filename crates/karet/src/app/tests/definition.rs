@@ -298,11 +298,151 @@ fn the_jump_stack_stays_bounded() {
             },
         );
     }
-    assert!(
-        app.definition_jumps.len() <= 64,
-        "stack grew to {}",
-        app.definition_jumps.len()
+    for history in app.nav_history.values() {
+        let (back, forward) = history.depth();
+        assert!(
+            back <= 64 && forward == 0,
+            "history grew to {back}/{forward}"
+        );
+    }
+}
+
+#[test]
+fn going_forward_returns_to_where_go_back_left() {
+    let Some((mut app, origin, other)) = jumped("definition-forward") else {
+        return;
+    };
+    app.dispatch(Command::JumpBack);
+    assert_eq!(app.tabs[app.active].path(), Some(origin.as_path()));
+
+    app.dispatch(Command::JumpForward);
+    assert_eq!(app.tabs[app.active].path(), Some(other.as_path()));
+    assert_eq!(app.tabs[app.active].editor.cursor(), LineCol::new(1, 0));
+    app.dispatch(Command::JumpForward);
+    assert_eq!(
+        last_message(&app).as_deref(),
+        Some("nothing to go forward to")
     );
+    // And back again still works from the far end.
+    app.dispatch(Command::JumpBack);
+    assert_eq!(app.tabs[app.active].path(), Some(origin.as_path()));
+}
+
+/// A code tab over `lines` numbered lines, saved on disk, caret at `caret`.
+fn long_file(name: &str, lines: u32, caret: LineCol) -> (App, PathBuf) {
+    let text: String = (0..lines).map(|i| format!("line {i}\n")).collect();
+    let root = test_dir(name);
+    write_file(&root, "long.rs", text.as_bytes());
+    let (_backend, mut app) = completion_app(&text, caret);
+    app.root = root.clone();
+    let active = app.active;
+    if let TabKind::Code { path, .. } = &mut app.tabs[active].kind {
+        *path = root.join("long.rs");
+    }
+    app.observe_navigation();
+    (app, root.join("long.rs"))
+}
+
+#[test]
+fn a_large_caret_move_is_a_step_back_and_a_small_one_is_not() {
+    let (mut app, _path) = long_file("nav-large-move", 60, LineCol::new(0, 0));
+    app.dispatch(Command::CaretDown);
+    app.observe_navigation();
+    app.dispatch(Command::CaretDocEnd);
+    app.observe_navigation();
+
+    app.dispatch(Command::JumpBack);
+    // Back to where the long move started, not the line before the small one.
+    assert_eq!(app.tabs[app.active].editor.cursor().line, 1);
+    app.dispatch(Command::JumpBack);
+    assert_eq!(last_message(&app).as_deref(), Some("nothing to go back to"));
+}
+
+#[test]
+fn a_history_entry_moves_with_an_edit_above_it() {
+    let (mut app, _path) = long_file("nav-edit-shift", 60, LineCol::new(30, 0));
+    app.dispatch(Command::CaretDocStart);
+    app.observe_navigation();
+    // Two new lines above the entry at line 30.
+    app.dispatch(Command::InsertNewline);
+    app.dispatch(Command::InsertNewline);
+    app.observe_navigation();
+
+    app.dispatch(Command::JumpBack);
+    assert_eq!(app.tabs[app.active].editor.cursor(), LineCol::new(32, 0));
+}
+
+#[test]
+fn history_is_per_pane() {
+    let (mut app, _path) = long_file("nav-per-pane", 60, LineCol::new(0, 0));
+    app.dispatch(Command::CaretDocEnd);
+    app.observe_navigation();
+    app.dispatch(Command::SplitRight);
+    app.observe_navigation();
+
+    // The new pane has not been anywhere yet.
+    app.dispatch(Command::JumpBack);
+    assert_eq!(last_message(&app).as_deref(), Some("nothing to go back to"));
+}
+
+#[test]
+fn a_paste_over_a_selection_records_nothing() {
+    let (mut app, _path) = long_file("nav-paste-selection", 60, LineCol::new(5, 0));
+    // A selection whose head, the caret, sits at its start.
+    app.dispatch(Command::SelectUp);
+    app.observe_navigation();
+    app.handle_paste("pasted\n".repeat(20));
+    app.observe_navigation();
+
+    app.dispatch(Command::JumpBack);
+    assert_eq!(last_message(&app).as_deref(), Some("nothing to go back to"));
+}
+
+#[test]
+fn a_large_move_within_a_preview_tab_is_a_step_back() {
+    let (mut app, _path) = long_file("nav-preview-move", 60, LineCol::new(0, 0));
+    let active = app.active;
+    app.tabs[active].is_preview = true;
+    app.observe_navigation();
+    app.dispatch(Command::CaretDocEnd);
+    app.observe_navigation();
+
+    app.dispatch(Command::JumpBack);
+    assert_eq!(app.tabs[app.active].editor.cursor().line, 0);
+}
+
+#[test]
+fn closing_a_split_pane_drops_its_history() {
+    let (mut app, _path) = long_file("nav-closed-pane", 60, LineCol::new(0, 0));
+    app.dispatch(Command::SplitRight);
+    let split = app.focus_pane();
+    app.dispatch(Command::CaretDocEnd);
+    app.observe_navigation();
+    assert!(app.nav_history.contains_key(&split));
+
+    app.close_tab_at(app.active);
+    app.observe_navigation();
+
+    assert_eq!(app.layout.pane_count(), 1);
+    assert!(!app.nav_history.contains_key(&split));
+}
+
+#[test]
+fn alt_left_in_the_search_field_is_still_word_motion() {
+    let mut app = app();
+    app.focus = Focus::Sidebar;
+    app.sidebar_panel = SidebarPanel::Search;
+    app.search.query = "foo bar".into();
+    app.search_focus_field(SearchPanelField::Find);
+    app.search
+        .query_edit
+        .set_cursor(&app.search.query, 7, false);
+
+    send_key(&mut app, KeyCode::Left, KeyModifiers::ALT);
+    send_key(&mut app, KeyCode::Char('x'), KeyModifiers::NONE);
+
+    assert_eq!(app.search.query, "foo xbar");
+    assert!(app.search.input);
 }
 
 /// A left click at `(col, row)` carrying `mods`.

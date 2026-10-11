@@ -430,8 +430,39 @@ pub(super) fn horizontal_extent(
     }
 }
 
+/// How much room a reveal leaves around the caret.
+///
+/// Who moved the caret decides it. A keyboard motion walks toward the edge, so
+/// the view scrolls before the caret reaches it and the text ahead stays in
+/// sight. A pointer placed the caret on a cell the user is looking at, so the
+/// text under the pointer must not move: the view scrolls only when the target
+/// is not on screen at all, and then only as far as it takes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Reveal {
+    /// Keep up to 10 cells either side of the caret (keyboard motions,
+    /// navigation).
+    Margin,
+    /// Scroll only when the target is off screen, by the least that shows it
+    /// (pointer-originated moves).
+    Minimal,
+}
+
+impl Reveal {
+    /// The horizontal margin this reveal keeps in a viewport `width` cells
+    /// wide (at least 1).
+    const fn margin(self, width: u32) -> u32 {
+        match self {
+            Self::Margin => {
+                let half = (width - 1) / 2;
+                if half < 10 { half } else { 10 }
+            },
+            Self::Minimal => 0,
+        }
+    }
+}
+
 /// The `scroll_col` that brings the caret at `col` into an unwrapped viewport
-/// of `width` cells, keeping a margin of up to 10 cells on either side.
+/// of `width` cells, keeping the margin `reveal` asks for on either side.
 ///
 /// Measured in screen cells from the scrolled row's origin — the same
 /// [`offset_within_row`] the caret is placed with — so a line whose tabs,
@@ -445,6 +476,7 @@ pub(super) fn reveal_column(
     width: u32,
     tab_width: u16,
     hints: LineHints<'_>,
+    reveal: Reveal,
 ) -> u32 {
     let cols = display_cols(chars, tab_width, hints);
     let col = col.min(chars.len() as u32) as usize;
@@ -452,7 +484,7 @@ pub(super) fn reveal_column(
     // Candidate origins are the columns up to the caret's own.
     let origins = cols.get(..=col).unwrap_or_default();
     let width = width.max(1);
-    let margin = 10_u32.min((width - 1) / 2);
+    let margin = reveal.margin(width);
     let offset_at = |origin: usize| {
         origins
             .get(origin)
@@ -575,19 +607,21 @@ pub(super) fn caret_cell(
     if at.col > chars.len() as u32 {
         return None;
     }
-    let hints = state.hints_on(at.line);
-    let rel = if at.col < state.scroll_col {
-        0
-    } else {
-        offset_within_row(
-            &chars,
-            state.scroll_col,
-            at.col,
-            state.last_tab_width,
-            hints,
-        )
-    };
-    let rel = rel.min(u32::from(content_width.saturating_sub(1)));
+    // A caret scrolled off either side is not on screen: drawing it pinned to
+    // the edge would show it over text it is not on.
+    if at.col < state.scroll_col {
+        return None;
+    }
+    let rel = offset_within_row(
+        &chars,
+        state.scroll_col,
+        at.col,
+        state.last_tab_width,
+        state.hints_on(at.line),
+    );
+    if rel >= u32::from(content_width) {
+        return None;
+    }
     let cx = content_x.saturating_add(u16::try_from(rel).unwrap_or(u16::MAX));
     let cy = content_y.saturating_add(vis_row);
     (cy < area.bottom()).then_some((cx, cy))
@@ -598,6 +632,88 @@ pub(super) fn first_visible(folds: &[Fold], mut line: u32, line_count: u32) -> u
         line += 1;
     }
     line
+}
+
+/// The last line of the collapsed fold interior that hides `line`, when one
+/// does: with nested folds, the outermost one's end.
+fn hidden_until(folds: &[Fold], line: u32) -> Option<u32> {
+    folds
+        .iter()
+        .filter(|f| f.collapsed && line > f.start && line <= f.end)
+        .map(|f| f.end)
+        .max()
+}
+
+/// The header line that shows `line`: `line` itself unless a collapsed fold
+/// hides it, else the outermost hiding fold's start.
+fn shown_line(folds: &[Fold], mut line: u32) -> u32 {
+    while let Some(start) = folds
+        .iter()
+        .filter(|f| f.collapsed && line > f.start && line <= f.end)
+        .map(|f| f.start)
+        .min()
+    {
+        line = start;
+    }
+    line
+}
+
+/// The first line after `line` that occupies a row, jumping whole collapsed
+/// folds rather than walking their interiors.
+fn next_shown_line(folds: &[Fold], line: u32) -> u32 {
+    let mut next = line.saturating_add(1);
+    while let Some(end) = hidden_until(folds, next) {
+        next = end.saturating_add(1);
+    }
+    next
+}
+
+/// The top line that shows `target` in an unwrapped viewport of `height`
+/// rows currently starting at `top`.
+///
+/// Counted in rows, not buffer lines: a collapsed fold's interior takes none,
+/// so a line far below `top` in the buffer can still be on screen. Returns
+/// `top` unchanged when `target` is already on one of its rows; otherwise
+/// scrolls by the least that shows it — `target` becomes the top row when it
+/// is above, the bottom row when below. A `target` hidden in a collapsed fold
+/// is revealed through the header that shows it.
+///
+/// Soft-wrapped lines take more than one row, so for a wrapped view this is an
+/// under-estimate that never scrolls further than needed; the render then
+/// completes it against the real wrap.
+pub(super) fn reveal_line(folds: &[Fold], top: u32, target: u32, height: u32) -> u32 {
+    let target = shown_line(folds, target);
+    if target < top {
+        return target;
+    }
+    let height = height.max(1);
+    // A top inside a collapsed fold paints from the first line after it, as
+    // the render normalizes it.
+    let mut line = if hidden_until(folds, top).is_some() {
+        next_shown_line(folds, top)
+    } else {
+        top
+    };
+    let mut row = 0;
+    while line < target {
+        line = next_shown_line(folds, line);
+        row += 1;
+        if row >= height {
+            break;
+        }
+    }
+    if row < height {
+        return top;
+    }
+    // Walk up from the target until it sits on the bottom row.
+    let mut first = target;
+    for _ in 1..height {
+        if first == 0 {
+            break;
+        }
+        first = shown_line(folds, first - 1);
+    }
+    first
 }
 
 /// Clamp `pos` to a valid position within `buffer` (line, then column).

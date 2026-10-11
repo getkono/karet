@@ -20,6 +20,7 @@ mod editor_drag;
 mod editor_mouse;
 mod explorer;
 mod github;
+pub(crate) mod harness;
 mod hover;
 mod inlay;
 mod inline_macros;
@@ -33,6 +34,7 @@ mod markdown_edit;
 mod preview;
 #[cfg(feature = "images")]
 mod preview_images;
+mod problems;
 mod remote;
 mod review;
 mod save;

@@ -29,9 +29,11 @@ mod language_servers;
 mod lifecycle;
 mod markdown_edit;
 mod mouse;
+mod navigation;
 mod notifications;
 mod panes;
 mod pending;
+mod problems;
 mod remote_actions;
 mod review;
 mod runtime;
@@ -185,6 +187,9 @@ pub(crate) use language_servers::LanguageServerBadge;
 pub(crate) use language_servers::LanguageServerBadgeSummary;
 pub(crate) use notifications::Report;
 pub(crate) use pending::Pending;
+pub(crate) use problems::ProblemRow;
+pub(crate) use problems::ProblemsChrome;
+pub(crate) use problems::ProblemsPanel;
 use ratatui::layout::Rect;
 pub(crate) use runtime::run;
 pub(crate) use select::SelectRegion;
@@ -505,6 +510,10 @@ pub struct App {
     pub(crate) review: review::ReviewStore,
     /// The Todos panel's per-frame chrome.
     pub(crate) todos_ui: TodosChrome,
+    /// The Problems panel state.
+    pub(crate) problems: ProblemsPanel,
+    /// The Problems panel's per-frame chrome.
+    pub(crate) problems_ui: ProblemsChrome,
     /// The status bar rect from the last frame (mouse hit-testing).
     pub(crate) status_rect: Rect,
     /// Clickable status-bar segments `(start, end, command)` from the last frame.
@@ -521,8 +530,8 @@ pub struct App {
     pub(crate) markdown_link_hover: Option<(u16, u16)>,
     /// The definition request awaiting an answer, if any.
     pub(crate) pending_definition: Option<definition::PendingDefinition>,
-    /// Pre-jump positions, most recent last, for "Go Back" after a definition jump.
-    pub(crate) definition_jumps: VecDeque<definition::JumpOrigin>,
+    /// Each pane's Go Back / Go Forward history, keyed by the pane it navigates.
+    pub(crate) nav_history: HashMap<PaneId, navigation::NavHistory>,
     /// The Ctrl-hovered symbol the editor should underline as navigable.
     pub(crate) definition_hover: Option<definition::DefinitionHover>,
     /// The focused commit view's signature-badge rect (screen coords) from the last
