@@ -111,6 +111,11 @@ impl App {
     fn handle_mouse_event(&mut self, mouse: MouseEvent) {
         self.update_definition_hover(&mouse);
         self.update_pointer_shape_hint(&mouse);
+        // Ahead of every surface that could swallow it: a release that an overlay
+        // or a toast took would otherwise leave the drag running behind it.
+        if self.end_editor_drag_on(&mouse) {
+            return;
+        }
         // Toasts float above everything (including the overlay), so hit-test them
         // first: left-click dismisses and right-click copies an error.
         if self.handle_toast_mouse(mouse) {
@@ -228,13 +233,16 @@ impl App {
             }
             return;
         }
-        // An in-progress text selection captures motion until the button is released.
+        // An in-progress text selection captures motion and the wheel until the
+        // button is released (the release and any press were taken above).
         if self.editor_drag.is_some() {
+            let (col, row) = (mouse.column, mouse.row);
             match mouse.kind {
-                MouseEventKind::Drag(MouseButton::Left) => {
-                    self.drag_select_to(mouse.column, mouse.row);
-                },
-                MouseEventKind::Up(MouseButton::Left) => self.editor_drag = None,
+                MouseEventKind::Drag(MouseButton::Left) => self.drag_select_to(col, row),
+                MouseEventKind::ScrollDown => self.drag_wheel(3, 0, col, row),
+                MouseEventKind::ScrollUp => self.drag_wheel(-3, 0, col, row),
+                MouseEventKind::ScrollRight => self.drag_wheel(0, 3, col, row),
+                MouseEventKind::ScrollLeft => self.drag_wheel(0, -3, col, row),
                 _ => {},
             }
             return;

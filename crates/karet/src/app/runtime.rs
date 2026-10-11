@@ -230,7 +230,7 @@ async fn event_loop(
                 }
             } => {},
         }
-        app.tick_drag_autoscroll();
+        app.tick_drag_autoscroll(Instant::now());
         app.notifications.expire(Instant::now());
         app.expire_operation_blocker(Instant::now());
         app.fire_auto_save(Instant::now());
@@ -294,16 +294,25 @@ pub(super) fn accept_decoded(app: &mut App, image: Option<crate::preview_images:
 pub(super) fn accept_decoded(_app: &mut App, _image: Option<std::convert::Infallible>) {}
 
 /// Dispatch one terminal event to the app.
-fn handle_terminal_event(app: &mut App, event: Event) {
+pub(super) fn handle_terminal_event(app: &mut App, event: Event) {
     app.reset_graphics_caret_blink();
     let previous = (app.focus == Focus::Editor)
         .then(|| app.active_code_doc())
         .flatten();
     match event {
-        Event::Key(key) if key.kind == KeyEventKind::Press => app.handle_key(key),
+        // A key ends a pointer drag: whatever it does (open a picker, switch a
+        // tab, type) the selection under the held button is no longer the subject.
+        Event::Key(key) if key.kind == KeyEventKind::Press => {
+            app.editor_drag = None;
+            app.handle_key(key);
+        },
         Event::Mouse(mouse) => app.handle_mouse(mouse),
         Event::Paste(text) => app.handle_paste(text),
-        Event::FocusLost => app.auto_save_focus_lost(),
+        // The release may happen in another window, where it never reaches us.
+        Event::FocusLost => {
+            app.editor_drag = None;
+            app.auto_save_focus_lost();
+        },
         _ => {},
     }
     app.auto_save_context_changed(previous);
