@@ -36,6 +36,11 @@ pub(crate) enum Columns {
     Buffer,
 }
 
+/// Each document's version before an edit's first step reached it, keyed by
+/// document so a rename between steps cannot lose it; `None` for a document
+/// the edit itself opened, which no client could have versioned.
+type Baselines = HashMap<DocumentId, Option<u64>>;
+
 /// One step of an edit, with its index into `document_changes` when it has one
 /// (the unordered `changes` half has none to report).
 struct Step {
@@ -92,6 +97,21 @@ fn exists(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok()
 }
 
+/// Whether `to` is another name for the directory entry `from` is, rather
+/// than a different file in the way: both resolve to one path, and neither is
+/// itself a symlink (an entry of its own, distinct from what it points at).
+fn same_entry(from: &Path, to: &Path) -> bool {
+    let is_link = |path: &Path| {
+        std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink())
+    };
+    !is_link(from)
+        && !is_link(to)
+        && matches!(
+            (std::fs::canonicalize(from), std::fs::canonicalize(to)),
+            (Ok(a), Ok(b)) if a == b
+        )
+}
+
 /// Create `path`'s parent directories.
 fn create_parent(path: &Path) -> Result<(), String> {
     match path.parent() {
@@ -141,8 +161,10 @@ impl Session {
             applied.result = result;
             return applied;
         }
+        let mut baselines = Baselines::new();
         for step in steps {
-            if let Err(reason) = self.apply_step(step.change, columns, &mut applied) {
+            if let Err(reason) = self.apply_step(step.change, columns, &mut baselines, &mut applied)
+            {
                 applied.result = ApplyWorkspaceEditResult::failed(reason, step.index);
                 return applied;
             }
@@ -179,15 +201,18 @@ impl Session {
                 continue;
             };
             let fail = |reason: String| ApplyWorkspaceEditResult::failed(reason, step.index);
+            let open = self
+                .document_at(&edit.path)
+                .and_then(|doc| self.store.docs.get(&doc));
+            // Every step names the version the whole edit was computed
+            // against, which the live document (untouched by a dry run) still
+            // holds -- so each step is checked, not only the first per file.
+            if let Some(document) = open {
+                check_version(edit, document.buffer.version()).map_err(fail)?;
+            }
             if !scratch.contains_key(&edit.path) {
-                let open = self
-                    .document_at(&edit.path)
-                    .and_then(|doc| self.store.docs.get(&doc));
                 let buffer = match open {
-                    Some(document) => {
-                        check_version(document, edit).map_err(fail)?;
-                        document.buffer.clone()
-                    },
+                    Some(document) => document.buffer.clone(),
                     None => {
                         load_document(&edit.path)
                             .map_err(|error| fail(load_failure(&edit.path, &error)))?
@@ -212,10 +237,11 @@ impl Session {
         &mut self,
         change: DocumentChange,
         columns: Columns,
+        baselines: &mut Baselines,
         applied: &mut AppliedWorkspaceEdit,
     ) -> Result<(), String> {
         match change {
-            DocumentChange::Edit(edit) => self.apply_text_step(edit, columns, applied),
+            DocumentChange::Edit(edit) => self.apply_text_step(edit, columns, baselines, applied),
             DocumentChange::Create { path, options } => create_file(&path, options),
             DocumentChange::Rename { from, to, options } => {
                 self.rename_path(&from, &to, options, applied)
@@ -232,6 +258,7 @@ impl Session {
         &mut self,
         edit: DocumentEdit,
         columns: Columns,
+        baselines: &mut Baselines,
         applied: &mut AppliedWorkspaceEdit,
     ) -> Result<(), String> {
         let open = self
@@ -239,7 +266,15 @@ impl Session {
             .and_then(|doc| Some((doc, self.store.docs.get(&doc)?)));
         let doc = match open {
             Some((doc, document)) => {
-                check_version(document, &edit)?;
+                // Checked against the version before this edit's own earlier
+                // steps advanced it: that is the one the edit was computed
+                // against. A document this edit opened has none to check.
+                let baseline = *baselines
+                    .entry(doc)
+                    .or_insert(Some(document.buffer.version()));
+                if let Some(version) = baseline {
+                    check_version(&edit, version)?;
+                }
                 doc
             },
             None => {
@@ -252,6 +287,7 @@ impl Session {
                     .document_at(&edit.path)
                     .ok_or_else(|| format!("cannot open {}", edit.path.display()))?;
                 applied.opened.push((doc, edit.path.clone()));
+                baselines.insert(doc, None);
                 doc
             },
         };
@@ -317,7 +353,13 @@ impl Session {
         if !exists(from) {
             return Err(format!("{} does not exist", from.display()));
         }
-        if exists(to) {
+        if from == to {
+            return Ok(());
+        }
+        // `to` already names `from` itself -- a case-only rename on a
+        // case-insensitive filesystem, or another spelling of the same path:
+        // it is not in the way, and removing it would delete the source.
+        if exists(to) && !same_entry(from, to) {
             if options.overwrite {
                 remove_any(to)
                     .map_err(|error| format!("cannot replace {}: {error}", to.display()))?;
@@ -359,15 +401,14 @@ impl Session {
     }
 }
 
-/// Refuse an edit computed against a version the document has moved past.
-fn check_version(document: &Document, edit: &DocumentEdit) -> Result<(), String> {
+/// Refuse an edit computed against a version other than `version`, the
+/// document's version before the edit began.
+fn check_version(edit: &DocumentEdit, version: u64) -> Result<(), String> {
     match edit.version {
-        Some(version) if version != crate::lsp::version_i32(document.buffer.version()) => {
-            Err(format!(
-                "{} changed since the edit was computed",
-                edit.path.display()
-            ))
-        },
+        Some(named) if named != crate::lsp::version_i32(version) => Err(format!(
+            "{} changed since the edit was computed",
+            edit.path.display()
+        )),
         _ => Ok(()),
     }
 }

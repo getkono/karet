@@ -287,23 +287,25 @@ impl Session {
         );
     }
 
-    /// Apply a rename's edit, unless the document moved on since the request.
+    /// Apply a rename's edit, unless the document moved on since the request
+    /// or the request produced none, whose reason is then the answer.
     pub(super) fn adopt_rename_edit(
         &mut self,
         request: RequestId,
         doc_id: DocumentId,
         version: u64,
-        edit: karet_core::WorkspaceEdit,
+        edit: Result<karet_core::WorkspaceEdit, String>,
     ) {
         let current = self.store.docs.get(&doc_id).map(|doc| doc.buffer.version());
-        let applied = if current != Some(version) {
+        let applied = match edit {
             // The server computed the edit against text that is gone: applying
             // it would put the new name wherever the old offsets now land.
-            refused("the document changed while renaming; try again")
-        } else if edit.is_empty() {
-            refused("the language server found nothing to rename")
-        } else {
-            self.apply_workspace_edit(edit, Columns::Utf16, None)
+            _ if current != Some(version) => {
+                refused("the document changed while renaming; try again")
+            },
+            Err(reason) => refused(&reason),
+            Ok(edit) if edit.is_empty() => refused("the language server found nothing to rename"),
+            Ok(edit) => self.apply_workspace_edit(edit, Columns::Utf16, None),
         };
         self.emit(Some(request), Event::WorkspaceEdit { applied });
     }

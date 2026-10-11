@@ -202,6 +202,114 @@
         }
 
         #[test]
+        fn several_steps_for_one_file_are_checked_against_its_version_before_the_edit()
+        -> TestResult {
+            let dir = tempfile::tempdir()?;
+            let path = dir.path().join("a.rs");
+            std::fs::write(&path, "one two\n")?;
+            let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
+            let doc = open(&mut session, &mut events, &path).ok_or("open")?;
+            let current = crate::lsp::version_i32(session.document(doc).ok_or("doc")?.version());
+            let step = |version, from, to, text: &str| {
+                DocumentChange::Edit(DocumentEdit {
+                    path: path.clone(),
+                    version: Some(version),
+                    edits: vec![edit(0, from, to, text)],
+                })
+            };
+
+            // A stale version on a later step fails the dry run: nothing lands.
+            let refused = apply(
+                &mut session,
+                &mut events,
+                WorkspaceEdit {
+                    document_changes: vec![
+                        step(current, 0, 3, "ONE"),
+                        step(current.wrapping_add(1), 4, 7, "TWO"),
+                    ],
+                    ..WorkspaceEdit::default()
+                },
+            )
+            .ok_or("answer")?;
+            assert_eq!(refused.result.failed_change, Some(1));
+            assert_eq!(text(&session, doc).as_deref(), Some("one two\n"));
+
+            // Both naming the version the edit was computed against: the
+            // second is not refused for the version the first produced.
+            let applied = apply(
+                &mut session,
+                &mut events,
+                WorkspaceEdit {
+                    document_changes: vec![step(current, 0, 3, "ONE"), step(current, 4, 7, "TWO")],
+                    ..WorkspaceEdit::default()
+                },
+            )
+            .ok_or("answer")?;
+            assert_eq!(applied.result, ApplyWorkspaceEditResult::applied());
+            assert_eq!(text(&session, doc).as_deref(), Some("ONE TWO\n"));
+            Ok(())
+        }
+
+        #[test]
+        fn another_spelling_of_an_open_file_edits_its_document() -> TestResult {
+            let dir = tempfile::tempdir()?;
+            std::fs::create_dir(dir.path().join("sub"))?;
+            let path = dir.path().join("a.rs");
+            std::fs::write(&path, "let old = 1;\n")?;
+            let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
+            let doc = open(&mut session, &mut events, &path).ok_or("open")?;
+
+            // Not the path the document was opened under, but the same file.
+            let spelled = dir.path().join("sub").join("..").join("a.rs");
+            let applied = apply(
+                &mut session,
+                &mut events,
+                WorkspaceEdit {
+                    changes: vec![(spelled, vec![edit(0, 4, 7, "new")])],
+                    ..WorkspaceEdit::default()
+                },
+            )
+            .ok_or("no answer")?;
+            assert!(applied.result.applied);
+            assert!(applied.opened.is_empty(), "not opened a second time");
+            assert_eq!(text(&session, doc).as_deref(), Some("let new = 1;\n"));
+            Ok(())
+        }
+
+        #[test]
+        fn renaming_a_file_onto_itself_never_deletes_it() -> TestResult {
+            let dir = tempfile::tempdir()?;
+            std::fs::create_dir(dir.path().join("sub"))?;
+            let path = dir.path().join("a.rs");
+            std::fs::write(&path, "keep\n")?;
+            let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
+            let overwrite = FileOptions {
+                overwrite: true,
+                ignore_if_exists: false,
+            };
+            // The same path, and another spelling of it: `to` is the source,
+            // not a file in the way, so `overwrite` must not remove it.
+            for to in [path.clone(), dir.path().join("sub").join("..").join("a.rs")] {
+                let applied = apply(
+                    &mut session,
+                    &mut events,
+                    WorkspaceEdit {
+                        document_changes: vec![DocumentChange::Rename {
+                            from: path.clone(),
+                            to,
+                            options: overwrite,
+                        }],
+                        ..WorkspaceEdit::default()
+                    },
+                )
+                .ok_or("no answer")?;
+                assert!(applied.result.applied, "{:?}", applied.result);
+                assert_eq!(std::fs::read_to_string(&path)?, "keep\n");
+            }
+            Ok(())
+        }
+
+        #[test]
         fn file_operations_run_in_order_and_stop_at_the_first_failure() -> TestResult {
             let dir = tempfile::tempdir()?;
             let root = dir.path();
@@ -314,10 +422,10 @@
                 doc,
                 version,
                 // `value` starts at UTF-16 column 9, buffer column 8.
-                edit: WorkspaceEdit {
+                edit: Ok(WorkspaceEdit {
                     changes: vec![(path.clone(), vec![edit(0, 9, 14, "renamed")])],
                     ..WorkspaceEdit::default()
-                },
+                }),
             });
             let applied = answer(&mut events, RequestId(80)).ok_or("no answer")?;
             assert!(applied.result.applied);
@@ -332,14 +440,41 @@
                 request: RequestId(81),
                 doc,
                 version,
-                edit: WorkspaceEdit {
+                edit: Ok(WorkspaceEdit {
                     changes: vec![(path.clone(), vec![edit(0, 0, 3, "const")])],
                     ..WorkspaceEdit::default()
-                },
+                }),
             });
             let refused = answer(&mut events, RequestId(81)).ok_or("no answer")?;
             assert!(!refused.result.applied);
             assert!(text(&session, doc).is_some_and(|text| text.starts_with("let ")));
+            Ok(())
+        }
+
+        #[test]
+        fn a_rename_the_server_refuses_answers_with_its_reason() -> TestResult {
+            let dir = tempfile::tempdir()?;
+            let path = dir.path().join("a.rs");
+            std::fs::write(&path, "let value = 1;\n")?;
+            let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
+            let doc = open(&mut session, &mut events, &path).ok_or("open")?;
+            let version = session.document(doc).ok_or("doc")?.version();
+
+            session.apply_lsp_update(LspUpdate::WorkspaceEdit {
+                generation: 0,
+                request: RequestId(82),
+                doc,
+                version,
+                edit: Err("`1x` is not a valid identifier".to_owned()),
+            });
+            let refused = answer(&mut events, RequestId(82)).ok_or("no answer")?;
+            assert!(!refused.result.applied);
+            assert_eq!(
+                refused.result.failure_reason.as_deref(),
+                Some("`1x` is not a valid identifier"),
+                "the server's reason, not \"nothing to rename\""
+            );
+            assert_eq!(text(&session, doc).as_deref(), Some("let value = 1;\n"));
             Ok(())
         }
 

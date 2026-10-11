@@ -747,7 +747,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     )
                     .await;
                     let edit = if dead {
-                        WorkspaceEdit::default()
+                        Ok(WorkspaceEdit::default())
                     } else {
                         let result = active.rename(&path, position, &new_name).await;
                         report_unsupported(
@@ -758,10 +758,20 @@ pub(super) async fn server_task(task: ServerTask) {
                             &key,
                             ServerFeature::Rename,
                         );
-                        tally.observe(result).unwrap_or_else(|error| {
-                            tally.note::<()>(Err(error), &mut dead, &updates, &key, token);
-                            WorkspaceEdit::default()
-                        })
+                        // Every error is the user's answer: a server explains
+                        // "you cannot rename this" as an error reply, and an
+                        // edit naming a non-file URI is refused whole.
+                        match tally.observe(result) {
+                            Ok(edit) => Ok(edit),
+                            Err(LspError::Server(reason) | LspError::Protocol(reason)) => {
+                                Err(reason)
+                            },
+                            Err(error) => {
+                                let reason = error.to_string();
+                                tally.note::<()>(Err(error), &mut dead, &updates, &key, token);
+                                Err(reason)
+                            },
+                        }
                     };
                     let _ = updates.send(LspUpdate::WorkspaceEdit {
                         generation,

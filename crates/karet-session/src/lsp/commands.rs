@@ -178,7 +178,7 @@ pub(super) fn answer_empty(
                 request,
                 doc,
                 version,
-                edit: WorkspaceEdit::default(),
+                edit: Ok(WorkspaceEdit::default()),
             });
         },
         ServerCmd::PrepareRename {
@@ -367,7 +367,7 @@ mod tests {
             rx.try_recv(),
             Ok(LspUpdate::WorkspaceEdit {
                 request: RequestId(4),
-                ref edit,
+                edit: Ok(ref edit),
                 ..
             }) if edit.is_empty()
         ));

@@ -300,13 +300,15 @@ pub(crate) enum LspUpdate {
         request: RequestId,
         symbols: Vec<Symbol>,
     },
-    /// A rename's edit, in UTF-16 columns, for the session to apply.
+    /// A rename's edit, in UTF-16 columns, for the session to apply, or the
+    /// reason the request produced none (a server's error reply, an edit the
+    /// client refused to convert, a request that timed out).
     WorkspaceEdit {
         generation: u64,
         request: RequestId,
         doc: DocumentId,
         version: u64,
-        edit: WorkspaceEdit,
+        edit: Result<WorkspaceEdit, String>,
     },
     /// The answer to a [`ServerCmd::PrepareRename`]; ranges in UTF-16 columns.
     PrepareRename {
