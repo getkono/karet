@@ -796,6 +796,10 @@ impl EditorState {
     /// render `area` and the `folds` in effect. Accounts for the gutter width, the
     /// scroll offsets, and any collapsed folds that hide lines between the viewport
     /// top and the click.
+    ///
+    /// A cell inside a wide character or a tab resolves to the nearer of its
+    /// two edges, and a cell below the last row resolves to the end of the
+    /// last line shown.
     #[must_use]
     pub fn pos_at(
         &self,
@@ -836,7 +840,7 @@ impl EditorState {
         if self.last_word_wrap {
             let width = u32::from(area.width.saturating_sub(gutter).max(1));
             let layout = self.layout(width);
-            let anchor = visual_anchor_at_row(
+            let (anchor, below_end) = visual_anchor_at_row(
                 buffer,
                 folds,
                 layout,
@@ -846,6 +850,9 @@ impl EditorState {
                 },
                 rel_row,
             );
+            if below_end {
+                return LineCol::new(anchor.line, line_len(buffer, anchor.line));
+            }
             let ranges = visual_ranges(buffer, anchor.line, layout);
             let range = ranges
                 .get(anchor.subrow as usize)
@@ -879,7 +886,9 @@ impl EditorState {
                 next += 1;
             }
             if next >= line_count {
-                break;
+                // Below the last row: the end of the document, as shown.
+                let line = line.min(line_count - 1);
+                return LineCol::new(line, line_len(buffer, line));
             }
             line = next;
         }

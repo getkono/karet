@@ -78,3 +78,63 @@ fn a_click_rounds_to_the_nearer_edge_of_a_tab() {
         );
     }
 }
+
+#[test]
+fn a_click_below_the_last_line_lands_at_the_end_of_the_document() {
+    let buffer = TextBuffer::from_text("one\ntwo three");
+    let area = Rect::new(0, 0, 20, 5);
+    let mut state = EditorState::new();
+    let mut target = Buffer::empty(area);
+    Editor::new(&buffer).render(area, &mut target, &mut state);
+
+    // At the left edge, not the clicked column's spot on the last line.
+    assert_eq!(
+        state.pos_at(area, &buffer, &[], GUTTER, 4),
+        LineCol::new(1, 9)
+    );
+    // The last line itself still resolves by column.
+    assert_eq!(
+        state.pos_at(area, &buffer, &[], GUTTER, 1),
+        LineCol::new(1, 0)
+    );
+}
+
+#[test]
+fn a_click_below_a_wrapped_last_line_lands_at_the_end_of_the_document() {
+    let buffer = TextBuffer::from_text("alpha beta gamma");
+    // Ten content cells: the line wraps onto two rows.
+    let area = Rect::new(0, 0, 13, 5);
+    let mut state = EditorState::new();
+    let mut target = Buffer::empty(area);
+    Editor::new(&buffer)
+        .word_wrap(true)
+        .render(area, &mut target, &mut state);
+
+    assert_eq!(
+        state.pos_at(area, &buffer, &[], GUTTER, 3),
+        LineCol::new(0, 16)
+    );
+}
+
+#[test]
+fn a_click_below_a_collapsed_last_fold_lands_at_the_end_of_its_header() {
+    let buffer = TextBuffer::from_text("head\nbody\ntail");
+    let folds = [Fold {
+        start: 0,
+        end: 2,
+        collapsed: true,
+    }];
+    let area = Rect::new(0, 0, 20, 4);
+    let mut state = EditorState::new();
+    let mut target = Buffer::empty(area);
+    Editor::new(&buffer)
+        .folds(&folds)
+        .render(area, &mut target, &mut state);
+
+    // The last row shown is the header, so that is where the document ends
+    // on screen.
+    assert_eq!(
+        state.pos_at(area, &buffer, &folds, GUTTER, 2),
+        LineCol::new(0, 4)
+    );
+}

@@ -301,22 +301,24 @@ pub(super) fn next_line_anchor(
     }
 }
 
+/// The visual row `row` rows below `start`, and whether `row` lies past the
+/// document's last row — in which case the anchor is that last row.
 pub(super) fn visual_anchor_at_row(
     buffer: &TextBuffer,
     folds: &[Fold],
     layout: Layout<'_>,
     start: VisualAnchor,
     row: u32,
-) -> VisualAnchor {
+) -> (VisualAnchor, bool) {
     let mut anchor = normalize_visual_anchor(buffer, folds, layout, start);
     for _ in 0..row {
         let next = next_visual_anchor(buffer, folds, layout, anchor);
         if next == anchor {
-            break;
+            return (anchor, true);
         }
         anchor = next;
     }
-    anchor
+    (anchor, false)
 }
 
 pub(super) fn visual_anchor_for_position(
