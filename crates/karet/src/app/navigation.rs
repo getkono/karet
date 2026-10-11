@@ -66,18 +66,24 @@ pub(crate) struct NavHistory {
     forward: Vec<NavPoint>,
     /// Where the pane was when last looked at.
     current: Option<NavPoint>,
+    /// Whether an edit has moved `current` since it was last observed. Shifting
+    /// `current` keeps its version in step with the buffer, so without this the
+    /// next observation could not tell the edit's caret jump from a navigation.
+    edited: bool,
 }
 
 impl NavHistory {
     /// Take `now` as the pane's location, leaving an entry for where it was when
     /// the move was large enough to be worth one.
     pub(crate) fn observe(&mut self, now: NavPoint) {
+        let shifted = std::mem::take(&mut self.edited);
         if let Some(current) = self.current.take() {
             // Same file, new text: an edit moved the caret, not a navigation.
-            let edited = current.path == now.path && current.version != now.version;
+            let edited = current.path == now.path && (shifted || current.version != now.version);
             // Arrowing through the explorer swaps the preview slot file by file;
-            // that is browsing, and only the place it started from is a step.
-            let browsing = current.preview && now.preview;
+            // that is browsing, and only the place it started from is a step. A
+            // move within one preview file is not browsing.
+            let browsing = current.preview && now.preview && current.path != now.path;
             if !edited && !browsing && current.far_from(&now) {
                 self.leave(current);
             }
@@ -105,6 +111,7 @@ impl NavHistory {
     pub(crate) fn settle(&mut self, now: Option<NavPoint>) {
         if now.is_some() {
             self.current = now;
+            self.edited = false;
         }
     }
 
@@ -145,16 +152,22 @@ impl NavHistory {
     /// Only `from` moves, so a document shown in two panes, which hears about one
     /// edit along two paths, is shifted once.
     pub(crate) fn shift(&mut self, path: &Path, from: u64, to: u64, edits: &[TextEdit]) {
-        let points = self
-            .back
-            .iter_mut()
-            .chain(self.forward.iter_mut())
-            .chain(self.current.iter_mut());
-        for point in points {
-            if point.path == path && point.version == Some(from) {
+        let moves = |point: &mut NavPoint| {
+            let hit = point.path == path && point.version == Some(from);
+            if hit {
                 point.position = map_position(point.position, edits);
                 point.version = Some(to);
             }
+            hit
+        };
+        self.back
+            .iter_mut()
+            .chain(self.forward.iter_mut())
+            .for_each(|point| {
+                moves(point);
+            });
+        if self.current.as_mut().is_some_and(moves) {
+            self.edited = true;
         }
     }
 
@@ -362,6 +375,19 @@ mod tests {
     }
 
     #[test]
+    fn a_large_move_within_one_preview_file_is_a_step() {
+        let mut history = NavHistory::default();
+        history.observe(preview("a"));
+        history.observe(NavPoint {
+            position: LineCol::new(2 * NAV_LINE_THRESHOLD, 0),
+            ..preview("a")
+        });
+        assert_eq!(history.depth(), (1, 0));
+        let back = history.back(always);
+        assert_eq!(back.map(|p| p.position), Some(LineCol::new(0, 0)));
+    }
+
+    #[test]
     fn a_small_move_is_not_a_step_but_a_large_one_or_a_file_change_is() {
         let mut history = NavHistory::default();
         history.observe(at("a", 0, 1));
@@ -384,6 +410,28 @@ mod tests {
         // A paste of a hundred lines: same file, new version.
         history.observe(at("a", 100, 2));
         assert_eq!(history.depth(), (0, 0));
+    }
+
+    #[test]
+    fn a_paste_over_a_selection_ahead_of_the_caret_is_not_a_navigation() {
+        let mut history = NavHistory::default();
+        // The caret is the selection's head, at its start.
+        history.observe(at("a", 4, 1));
+        let paste = [TextEdit {
+            range: karet_core::Range {
+                start: LineCol::new(4, 0),
+                end: LineCol::new(5, 0),
+            },
+            new_text: "x\n".repeat(20),
+        }];
+        // The edit is shifted in before the move is observed, syncing `current`
+        // to the new version while leaving it at the replacement's start.
+        history.shift(Path::new("a"), 1, 2, &paste);
+        history.observe(at("a", 24, 2));
+        assert_eq!(history.depth(), (0, 0));
+        // The edit is spent: a real move after it is still a step.
+        history.observe(at("a", 24 + NAV_LINE_THRESHOLD, 2));
+        assert_eq!(history.depth(), (1, 0));
     }
 
     #[test]

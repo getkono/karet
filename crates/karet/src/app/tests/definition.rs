@@ -386,6 +386,48 @@ fn history_is_per_pane() {
 }
 
 #[test]
+fn a_paste_over_a_selection_records_nothing() {
+    let (mut app, _path) = long_file("nav-paste-selection", 60, LineCol::new(5, 0));
+    // A selection whose head, the caret, sits at its start.
+    app.dispatch(Command::SelectUp);
+    app.observe_navigation();
+    app.handle_paste("pasted\n".repeat(20));
+    app.observe_navigation();
+
+    app.dispatch(Command::JumpBack);
+    assert_eq!(last_message(&app).as_deref(), Some("nothing to go back to"));
+}
+
+#[test]
+fn a_large_move_within_a_preview_tab_is_a_step_back() {
+    let (mut app, _path) = long_file("nav-preview-move", 60, LineCol::new(0, 0));
+    let active = app.active;
+    app.tabs[active].is_preview = true;
+    app.observe_navigation();
+    app.dispatch(Command::CaretDocEnd);
+    app.observe_navigation();
+
+    app.dispatch(Command::JumpBack);
+    assert_eq!(app.tabs[app.active].editor.cursor().line, 0);
+}
+
+#[test]
+fn closing_a_split_pane_drops_its_history() {
+    let (mut app, _path) = long_file("nav-closed-pane", 60, LineCol::new(0, 0));
+    app.dispatch(Command::SplitRight);
+    let split = app.focus_pane();
+    app.dispatch(Command::CaretDocEnd);
+    app.observe_navigation();
+    assert!(app.nav_history.contains_key(&split));
+
+    app.close_tab_at(app.active);
+    app.observe_navigation();
+
+    assert_eq!(app.layout.pane_count(), 1);
+    assert!(!app.nav_history.contains_key(&split));
+}
+
+#[test]
 fn alt_left_in_the_search_field_is_still_word_motion() {
     let mut app = app();
     app.focus = Focus::Sidebar;
