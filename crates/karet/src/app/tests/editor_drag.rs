@@ -53,6 +53,43 @@ fn drag_selection_conformance() {
 }
 
 #[test]
+fn a_double_click_near_the_right_edge_selects_the_word_under_the_pointer() {
+    // The pointer stays on one cell for both presses, as a real one does. Were
+    // the first press to scroll the line (as the keyboard's margin would),
+    // the second would land on a different word.
+    let line: String = (0..40).map(|n| format!("w{n:02} ")).collect();
+    let marked = format!("|{line}");
+    let mut rig = Rig::sized(&marked, 40, 8);
+    let width = u32::from(rig.tab().editor.content_width());
+    let mut col = width.saturating_sub(2);
+    if col % 4 == 3 {
+        col -= 1;
+    }
+    let (x, y) = rig.cell(text(0, col));
+    rig.run(&[click(At::Cell(x, y)), click(At::Cell(x, y))]);
+
+    assert_eq!(
+        rig.tab().editor.scroll_col,
+        0,
+        "the click scrolled the line"
+    );
+    let start = col / 4 * 4;
+    assert_eq!(
+        rig.tab()
+            .editor
+            .selection_range()
+            .map(|range| (range.start.col, range.end.col)),
+        Some((start, start + 3))
+    );
+    // The view is unwrapped, so the keyboard does scroll it.
+    rig.step(key(KeyCode::End));
+    assert!(
+        rig.tab().editor.scroll_col > 0,
+        "the line does not overflow"
+    );
+}
+
+#[test]
 fn a_triple_click_drag_extends_by_whole_lines() {
     let mut rig = Rig::new("|alpha\nbravo\ncharlie\n");
     let mut steps = vec![click(text(0, 2)), click(text(0, 2))];

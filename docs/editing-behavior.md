@@ -80,7 +80,7 @@ same motion.
 | Input | Behaviour | Status |
 |---|---|---|
 | Shift + any motion above | Extend: the head moves and the anchor stays. | harness (Shift+Left, Shift+Right, Shift+End) |
-| Ctrl+A | Select the whole document, with the head at its end. Does not scroll. | harness (selection); #334 (scroll) |
+| Ctrl+A | Select the whole document, with the head at its end. Does not scroll. | harness |
 | Esc, one caret with a selection | Clear the selection and keep the caret at its head. | #328 |
 | Esc, one caret, no selection | Nothing. Focus stays in the editor. | harness |
 | Plain arrow after a selection | Clear the selection (see Motion for where the caret lands). | harness |
@@ -121,7 +121,7 @@ of a wide character or of a tab's cells resolves to after it (#337).
 
 | Input | Behaviour | Status |
 |---|---|---|
-| Click on text | Place the caret there and drop every other caret. A click on visible text never scrolls. | harness; #334 (never scrolls) |
+| Click on text | Place the caret there and drop every other caret. A click on visible text never scrolls. | harness (horizontal scroll read from the rig in `editor_drag.rs`; folds and sticky headers in `karet-editor`'s `tests/pointer.rs`) |
 | Click past the end of a line | Caret at the line end. | harness |
 | Click below the last line | Caret at the end of the document. | #337 |
 | Click at a wrap boundary | The caret stays on the visual row that was clicked. | #337 |
