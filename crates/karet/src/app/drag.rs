@@ -8,14 +8,16 @@
 //! the pointer sits outside the viewport instead of stopping at the edge.
 //!
 //! A drag is bound to the pane and tab it began in. It ends on a release
-//! anywhere, on any press (the release before it was lost), and as soon as it
-//! no longer addresses what is on screen: an overlay opened, the focus or the
+//! anywhere, on any press (the release before it was lost), on buttonless
+//! motion (the button is up, though its release never arrived), and as soon as
+//! it no longer addresses what is on screen: an overlay opened, the focus or the
 //! active tab moved, or the editor view was put away. The event loop also ends
 //! it on a key press and when the terminal loses focus.
 
 use std::time::Duration;
 use std::time::Instant;
 
+use crossterm::event::KeyModifiers;
 use crossterm::event::MouseButton;
 use crossterm::event::MouseEvent;
 use crossterm::event::MouseEventKind;
@@ -171,8 +173,11 @@ impl App {
     /// A left release ends it and is consumed: it answers the drag's own press.
     /// Any press ends it too — a press with no release before it means the
     /// release was lost (outside the window, or under an overlay) — and then
-    /// goes on to do what a press does. A drag that no longer addresses what is
-    /// on screen ends on any event at all, which consumes nothing.
+    /// goes on to do what a press does. Buttonless motion ends it the same way:
+    /// with mouse capture on, the terminal reports motion under a held button
+    /// as a drag, so a plain move proves the button is already up; the move is
+    /// not consumed, so it still drives hover. A drag that no longer addresses
+    /// what is on screen ends on any event at all, which consumes nothing.
     pub(super) fn end_editor_drag_on(&mut self, mouse: &MouseEvent) -> bool {
         if self.live_editor_drag().is_none() {
             return false;
@@ -182,7 +187,7 @@ impl App {
                 self.editor_drag = None;
                 true
             },
-            MouseEventKind::Down(_) => {
+            MouseEventKind::Down(_) | MouseEventKind::Moved => {
                 self.editor_drag = None;
                 false
             },
@@ -240,11 +245,15 @@ impl App {
     }
 
     /// Route a mouse event to the live drag: motion extends the selection, and
-    /// a wheel notch scrolls three rows (or columns) and extends.
+    /// a wheel notch scrolls three rows (or columns) and extends. Shift turns
+    /// the vertical wheel sideways, as it does outside a drag.
     pub(super) fn editor_drag_mouse(&mut self, mouse: &MouseEvent) {
         let (col, row) = (mouse.column, mouse.row);
+        let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
         match mouse.kind {
             MouseEventKind::Drag(MouseButton::Left) => self.drag_select_to(col, row),
+            MouseEventKind::ScrollDown if shift => self.drag_wheel(0, 3, col, row),
+            MouseEventKind::ScrollUp if shift => self.drag_wheel(0, -3, col, row),
             MouseEventKind::ScrollDown => self.drag_wheel(3, 0, col, row),
             MouseEventKind::ScrollUp => self.drag_wheel(-3, 0, col, row),
             MouseEventKind::ScrollRight => self.drag_wheel(0, 3, col, row),

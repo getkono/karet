@@ -362,6 +362,47 @@ fn the_wheel_during_a_drag_scrolls_and_extends() {
 }
 
 #[test]
+fn shift_wheel_during_a_drag_scrolls_columns_and_extends() {
+    let line: String = (0..200)
+        .map(|n| char::from(b'a' + (n % 26) as u8))
+        .collect();
+    let mut rig = Rig::sized(&format!("|{line}\n{line}\n"), 40, 8);
+    let pointer = rig.cell(text(1, 4));
+    rig.step(Step::Down(text(0, 1), KeyModifiers::NONE));
+    rig.step(Step::Drag(
+        At::Cell(pointer.0, pointer.1),
+        KeyModifiers::NONE,
+    ));
+    rig.step(Step::WheelDown(
+        At::Cell(pointer.0, pointer.1),
+        KeyModifiers::SHIFT,
+    ));
+    assert_eq!(rig.scroll_line(), 0, "the notch did not scroll rows");
+    assert_eq!(rig.tab().editor.scroll_col, 3, "the notch scrolled columns");
+    assert_eq!(
+        rig.tab().editor.cursor().col,
+        7,
+        "the head follows the text under it"
+    );
+    assert!(rig.app.editor_drag.is_some(), "the drag is still held");
+}
+
+#[test]
+fn buttonless_motion_ends_a_drag_whose_release_was_lost() {
+    // With mouse capture on, motion under a held button arrives as a drag, so
+    // a plain move means the button is up and its release never arrived.
+    let mut rig = drag_below(1);
+    let (column, row) = rig.cell(text(0, 2));
+    rig.app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Moved,
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert_drag_ended(&mut rig, "buttonless motion");
+}
+
+#[test]
 fn sticky_header_rows_count_as_above_the_text() {
     let body: String = std::iter::once("fn main() {\n".to_string())
         .chain((1..39).map(|n| format!("    line {n}\n")))
