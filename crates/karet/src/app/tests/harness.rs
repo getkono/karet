@@ -176,6 +176,8 @@ pub(crate) struct Rig {
     pub(crate) app: App,
     width: u16,
     height: u16,
+    /// Scripted time since the last press, advanced only by [`Step::Wait`].
+    since_click: Duration,
 }
 
 impl Rig {
@@ -194,7 +196,12 @@ impl Rig {
         app.sidebar_visible = false;
         app.push_tab(text_tab("t.rs", &body));
         app.focus = Focus::Editor;
-        let mut rig = Self { app, width, height };
+        let mut rig = Self {
+            app,
+            width,
+            height,
+            since_click: Duration::ZERO,
+        };
         // A first frame tells the editor its viewport height, so placing the
         // carets reveals them the way it would in a running app instead of
         // against a zero-row viewport.
@@ -240,26 +247,34 @@ impl Rig {
                 self.mouse(MouseEventKind::Up(MouseButton::Left), at, modifiers);
             },
             Step::Click(at, modifiers) => {
+                // The pointer does not move between press and release, even if
+                // the press scrolled the text under it.
+                let (col, row) = self.cell(at);
+                let at = At::Cell(col, row);
                 self.mouse(MouseEventKind::Down(MouseButton::Left), at, modifiers);
                 self.render();
                 self.mouse(MouseEventKind::Up(MouseButton::Left), at, modifiers);
             },
             Step::WheelDown(at, modifiers) => self.mouse(MouseEventKind::ScrollDown, at, modifiers),
             Step::WheelUp(at, modifiers) => self.mouse(MouseEventKind::ScrollUp, at, modifiers),
-            Step::Wait(gap) => {
-                // The click streak reads the wall clock, so age the last click
-                // instead of sleeping.
-                if let Some((when, col, row)) = self.app.last_click {
-                    let earlier = when.checked_sub(gap).unwrap_or(when);
-                    self.app.last_click = Some((earlier, col, row));
-                }
-            },
+            Step::Wait(gap) => self.since_click += gap,
             Step::Tick => self.app.tick_drag_autoscroll(),
         }
         self.render();
     }
 
     fn mouse(&mut self, kind: MouseEventKind, at: At, modifiers: KeyModifiers) {
+        if matches!(kind, MouseEventKind::Down(_)) {
+            // The click streak reads the wall clock. Restate the last click as
+            // exactly the scripted time ago, so a streak depends only on the
+            // script's waits and never on how fast the machine runs it.
+            if let Some((_, col, row)) = self.app.last_click {
+                let now = Instant::now();
+                let when = now.checked_sub(self.since_click).unwrap_or(now);
+                self.app.last_click = Some((when, col, row));
+            }
+            self.since_click = Duration::ZERO;
+        }
         let (column, row) = self.cell(at);
         self.app.handle_mouse(MouseEvent {
             kind,
