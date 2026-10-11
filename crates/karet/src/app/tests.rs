@@ -34,6 +34,7 @@ mod overlay_focus;
 mod preview;
 #[cfg(feature = "images")]
 mod preview_images;
+mod problems;
 mod remote;
 mod review;
 mod save;

@@ -454,6 +454,11 @@ impl App {
     /// row; Ctrl toggles it in the selection and Shift extends a range to it
     /// (neither activates).
     pub(super) fn handle_sidebar_click(&mut self, col: u16, row_y: u16, modifiers: KeyModifiers) {
+        if self.focus != Focus::Sidebar {
+            // Arriving by click lands on the Problems list, not a filter edit
+            // abandoned when focus left; a click on the filter field re-enters it.
+            self.problems.filter_input = false;
+        }
         self.focus = Focus::Sidebar;
         // The AI chip sits on the commit box's border, so it is tested before the
         // box itself — and only when it was actually painted, since the rect is
@@ -527,6 +532,7 @@ impl App {
             SidebarPanel::Spelling => self.spelling_click(col, row_y),
             SidebarPanel::Todos => self.todos_click(col, row_y),
             SidebarPanel::Debug => self.debug_click(col, row_y),
+            SidebarPanel::Problems => self.problems_click(col, row_y),
             SidebarPanel::Explorer => {
                 if !rect_contains(self.sidebar_content_rect, (col, row_y)) {
                     return;
