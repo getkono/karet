@@ -95,3 +95,39 @@ fn a_file_without_comment_syntax_is_left_alone() {
     app.dispatch(Command::ToggleLineComment);
     assert_eq!(code_tab_text(&app), "{}\n");
 }
+
+#[test]
+fn a_caret_in_the_second_language_of_a_mixed_line_takes_that_language() {
+    // The caret sits inside the script body, past the `<p>` that opens the line.
+    let text = "<p>hi</p><script>let x = 1;</script>\n";
+    let mut app = editor_app("index.html", text, &[LineCol::new(0, 20)]);
+    app.dispatch(Command::ToggleLineComment);
+    assert_eq!(
+        code_tab_text(&app),
+        "// <p>hi</p><script>let x = 1;</script>\n"
+    );
+}
+
+#[test]
+fn doc_comment_text_in_rust_takes_rusts_comments_not_markdowns() {
+    // A caret on a `///` line's text, and on a doctest line inside it, sits in
+    // injected Markdown (and Rust again), but the line is still Rust source: `//`
+    // applies, and a `///` line already starts with it, so the toggle uncomments.
+    let text = "/// Adds one.\n///\n/// ```\n/// let y = 2;\n/// ```\nfn f() {}\n";
+    for (caret, want) in [
+        (LineCol::new(0, 6), "/ Adds one."),
+        (LineCol::new(3, 8), "/ let y = 2;"),
+    ] {
+        let mut app = editor_app("lib.rs", text, &[caret]);
+        app.dispatch(Command::ToggleLineComment);
+        let after = code_tab_text(&app);
+        let line = after.lines().nth(caret.line as usize).unwrap_or_default();
+        assert_eq!(line, want, "{caret:?}");
+    }
+
+    // An inner line of a `/** */` block with no leading `*`.
+    let text = "/**\n Adds one.\n */\nfn f() {}\n";
+    let mut app = editor_app("lib.rs", text, &[LineCol::new(1, 3)]);
+    app.dispatch(Command::ToggleLineComment);
+    assert_eq!(code_tab_text(&app), "/**\n // Adds one.\n */\nfn f() {}\n");
+}

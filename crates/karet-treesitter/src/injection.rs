@@ -123,8 +123,20 @@ impl crate::LayeredTree {
     /// has no comment syntax) walk outward through the rest.
     #[must_use]
     pub fn languages_at(&self, byte: BytePos) -> Vec<LanguageId> {
+        self.layers_at(byte)
+            .into_iter()
+            .map(crate::SyntaxTree::language)
+            .collect()
+    }
+
+    /// The layers that contain `byte`, innermost first and ending with the root —
+    /// the trees behind [`languages_at`](Self::languages_at), for a caller that
+    /// must also inspect each layer's nodes at `byte` (e.g. to tell that an
+    /// injected layer sits inside a host comment).
+    #[must_use]
+    pub fn layers_at(&self, byte: BytePos) -> Vec<&crate::SyntaxTree> {
         // Layers are stored breadth-first, so the deepest containing layer is last.
-        let mut out: Vec<LanguageId> = self
+        let mut out: Vec<&crate::SyntaxTree> = self
             .children()
             .iter()
             .rev()
@@ -135,9 +147,8 @@ impl crate::LayeredTree {
                     .iter()
                     .any(|r| r.start_byte <= byte.0 && byte.0 < r.end_byte)
             })
-            .map(crate::SyntaxTree::language)
             .collect();
-        out.push(self.root().language());
+        out.push(self.root());
         out
     }
 }
@@ -247,6 +258,31 @@ mod tests {
         let at = |needle: &str| BytePos(src.find(needle).unwrap_or(0));
         assert_eq!(tree.languages_at(at("fn main")), vec![rust, md]);
         assert_eq!(tree.languages_at(at("prose")), vec![inline, md]);
+        Ok(())
+    }
+
+    #[cfg(all(feature = "lang-markdown", feature = "lang-rust"))]
+    #[test]
+    fn layers_at_returns_the_trees_behind_languages_at() -> Result<(), crate::TsError> {
+        let rust =
+            language_id_from_injection_name("rust").ok_or(crate::TsError::UnknownLanguage)?;
+        let src = "/// Adds *one*.\npub fn f() {}\n";
+        let tree = crate::LayeredParser::new().parse(rust, src)?;
+        let byte = BytePos(src.find("Adds").unwrap_or(0));
+        let layers = tree.layers_at(byte);
+        let langs: Vec<_> = layers.iter().map(|l| l.language()).collect();
+        assert_eq!(langs, tree.languages_at(byte));
+        // The root comes last, and at a doc comment's text it is a comment node.
+        let root = layers.last().ok_or(crate::TsError::UnknownLanguage)?;
+        assert!(
+            root.named_ancestors_at(byte)
+                .iter()
+                .any(|n| n.kind == "line_comment")
+        );
+        assert_eq!(
+            tree.layers_at(BytePos(src.find("pub").unwrap_or(0))).len(),
+            1
+        );
         Ok(())
     }
 

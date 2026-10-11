@@ -47,24 +47,36 @@ impl App {
     }
 }
 
-/// Where the comment language is read: the first non-blank char of the primary
-/// selection's first line at or after its start, so a caret in a line's indent (or
-/// a selection opening in the whitespace before a `<script>` body's code) still
-/// resolves the language of the code on that line. A blank line uses the caret.
+/// Where the comment language is read: the first non-blank char at or after the
+/// primary selection's start (a bare caret's position) on its line, so a caret in a
+/// line's indent, or a selection opening in the whitespace before a `<script>`
+/// body's code, still resolves the language of the code it precedes, and a caret
+/// in the second language of a mixed-language line resolves that language. With
+/// nothing but whitespace after it, the last non-blank char before it is used; a
+/// blank line uses the caret.
 fn probe(buffer: &TextBuffer, range: Range) -> LineCol {
-    let from = if range.is_empty() { 0 } else { range.start.col };
+    let from = range.start.col as usize;
     let col = buffer.line(range.start.line as usize).and_then(|text| {
-        text.chars()
-            .enumerate()
-            .skip(from as usize)
-            .find(|(_, c)| !c.is_whitespace())
-            .and_then(|(i, _)| u32::try_from(i).ok())
+        let solid = || {
+            text.chars()
+                .enumerate()
+                .filter(|(_, c)| !c.is_whitespace())
+                .map(|(i, _)| i)
+        };
+        solid()
+            .find(|&i| i >= from)
+            .or_else(|| solid().take_while(|&i| i < from).last())
+            .and_then(|i| u32::try_from(i).ok())
     });
     LineCol::new(range.start.line, col.unwrap_or(range.start.col))
 }
 
 /// The comment tokens of the innermost language at `pos` in the document at `path`
 /// that has any, falling back outward to the file's own type.
+///
+/// Layers nested inside a comment of their host (Markdown injected into a Rust doc
+/// comment, and a doctest fence inside that) are not candidates: the line is still
+/// the host's source, so toggling it must use the host's comment syntax.
 fn comment_tokens_at(path: &Path, buffer: &TextBuffer, pos: LineCol) -> CommentTokens {
     let own = karet_filetype::file_type_for_path(path).comment_tokens();
     let Some(root) = karet_treesitter::language_id_from_path(path) else {
@@ -80,8 +92,21 @@ fn comment_tokens_at(path: &Path, buffer: &TextBuffer, pos: LineCol) -> CommentT
     let Ok(tree) = karet_treesitter::LayeredParser::new().parse(root, &text) else {
         return own;
     };
-    tree.languages_at(byte)
-        .into_iter()
+    let layers = tree.layers_at(byte);
+    // Outermost first: keep descending until a layer is inside a comment of its own.
+    let host = layers
+        .iter()
+        .rposition(|layer| {
+            layer
+                .named_ancestors_at(byte)
+                .iter()
+                .any(|node| node.kind.contains("comment"))
+        })
+        .unwrap_or(0);
+    layers
+        .iter()
+        .skip(host)
+        .map(|layer| layer.language())
         .map(|lang| {
             if lang == root {
                 own
