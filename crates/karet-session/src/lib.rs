@@ -56,6 +56,7 @@ mod wakatime;
 
 pub use api::AiCommitAgentStatus;
 pub use api::AiCommitAvailability;
+pub use api::AppliedWorkspaceEdit;
 pub use api::ChangeSummary;
 pub use api::Command;
 pub use api::DebugBreakpoint;
@@ -100,6 +101,7 @@ pub use api::PreparedChange;
 pub use api::PullRequestSummary;
 pub use api::RangeSpec;
 pub use api::RemoteFacts;
+pub use api::RenameTarget;
 pub use api::RepositorySnapshot;
 pub use api::RequestId;
 pub use api::SaveCause;

@@ -289,10 +289,27 @@ pub enum Event {
         /// Matching symbols from the active repository servers.
         symbols: Vec<Symbol>,
     },
-    /// A refactoring edit for preview and explicit application by the client.
+    /// A workspace edit was applied, or refused.
+    ///
+    /// Answers [`Command::Rename`] and [`Command::ApplyWorkspaceEdit`] with
+    /// their [`RequestId`], and arrives unrequested (no id) when a language
+    /// server applied one of its own (`workspace/applyEdit`). The changed text
+    /// itself arrives on the snapshot stream like any other edit.
     WorkspaceEdit {
-        /// Version-independent, path-grouped edits in buffer coordinates.
-        edit: WorkspaceEdit,
+        /// What changed, what was opened to change it, and the outcome.
+        applied: AppliedWorkspaceEdit,
+    },
+    /// Answers [`Command::PrepareRename`].
+    RenamePrepared {
+        /// The document asked about.
+        doc: DocumentId,
+        /// The document version the answer is for.
+        version: u64,
+        /// What to rename, or `None` when nothing at the position can be.
+        target: Option<RenameTarget>,
+        /// Why nothing can be renamed there, when `target` is `None` and the
+        /// language server (or the lack of one) gave a reason.
+        reason: Option<String>,
     },
     /// One streamed batch of a workspace search, answering [`Command::Search`].
     ///

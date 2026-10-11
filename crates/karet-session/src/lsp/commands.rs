@@ -19,6 +19,7 @@ use karet_lsp::LspError;
 use tokio::sync::mpsc;
 
 use super::message::LspUpdate;
+use super::message::RenameAnswer;
 use super::message::ServerCmd;
 use super::slot::SlotKey;
 use crate::RequestId;
@@ -166,11 +167,34 @@ pub(super) fn answer_empty(
                 symbols: Vec::new(),
             });
         },
-        ServerCmd::Rename { request, .. } => {
+        ServerCmd::Rename {
+            request,
+            doc,
+            version,
+            ..
+        } => {
             let _ = updates.send(LspUpdate::WorkspaceEdit {
                 generation,
                 request,
+                doc,
+                version,
                 edit: WorkspaceEdit::default(),
+            });
+        },
+        ServerCmd::PrepareRename {
+            request,
+            doc,
+            version,
+            caret,
+            ..
+        } => {
+            let _ = updates.send(LspUpdate::PrepareRename {
+                generation,
+                request,
+                doc,
+                version,
+                caret,
+                answer: RenameAnswer::NoServer,
             });
         },
         ServerCmd::Formatting {
@@ -248,6 +272,7 @@ pub(super) fn remember_document(documents: &mut HashMap<PathBuf, OpenDocument>, 
         | ServerCmd::Definition { .. }
         | ServerCmd::WorkspaceSymbols { .. }
         | ServerCmd::Rename { .. }
+        | ServerCmd::PrepareRename { .. }
         | ServerCmd::Formatting { .. } => {},
     }
 }
@@ -296,6 +321,56 @@ mod tests {
             ),
             "an unreachable server must not be reported as having formatted the file"
         );
+    }
+
+    /// A rename asked of no connection still answers, both halves of it, so a
+    /// client holding an open rename prompt is never left waiting.
+    #[test]
+    fn unanswerable_rename_requests_still_answer() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        answer_empty(
+            &tx,
+            ServerCmd::PrepareRename {
+                request: RequestId(1),
+                doc: DocumentId(2),
+                version: 3,
+                path: PathBuf::from("main.rs"),
+                position: karet_core::LineCol::new(0, 0),
+                caret: karet_core::LineCol::new(0, 0),
+            },
+            7,
+        );
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(LspUpdate::PrepareRename {
+                generation: 7,
+                request: RequestId(1),
+                doc: DocumentId(2),
+                version: 3,
+                answer: RenameAnswer::NoServer,
+                ..
+            })
+        ));
+        answer_empty(
+            &tx,
+            ServerCmd::Rename {
+                request: RequestId(4),
+                doc: DocumentId(2),
+                version: 3,
+                path: PathBuf::from("main.rs"),
+                position: karet_core::LineCol::new(0, 0),
+                new_name: "renamed".into(),
+            },
+            7,
+        );
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(LspUpdate::WorkspaceEdit {
+                request: RequestId(4),
+                ref edit,
+                ..
+            }) if edit.is_empty()
+        ));
     }
 
     fn hint_request() -> ServerCmd {

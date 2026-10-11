@@ -50,6 +50,7 @@ use karet_lsp::LspError;
 use karet_lsp::LspSpec;
 pub(crate) use message::FormattingAsk;
 pub(crate) use message::LspUpdate;
+pub(crate) use message::RenameAnswer;
 use message::ServerCmd;
 pub(crate) use provider::absolute_path;
 pub(crate) use provider::builtin_server;
@@ -234,6 +235,7 @@ impl LspManager {
         match update {
             LspUpdate::ServerStatus { token, key, .. }
             | LspUpdate::InlayHintsRefresh { token, key }
+            | LspUpdate::ApplyEdit { token, key, .. }
             | LspUpdate::Diagnostics {
                 token, server: key, ..
             }
@@ -255,6 +257,7 @@ impl LspManager {
             | LspUpdate::Definitions { generation, .. }
             | LspUpdate::WorkspaceSymbols { generation, .. }
             | LspUpdate::WorkspaceEdit { generation, .. }
+            | LspUpdate::PrepareRename { generation, .. }
             | LspUpdate::Formatting { generation, .. }
             | LspUpdate::SyncFailed { generation, .. }
             | LspUpdate::PreflightFailed { generation, .. }

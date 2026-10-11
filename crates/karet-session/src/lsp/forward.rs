@@ -1,6 +1,6 @@
 //! Relaying what a connected server pushes: diagnostics, the status
-//! notifications some servers use in place of them, and its requests to
-//! refresh what it answered before.
+//! notifications some servers use in place of them, its requests to refresh
+//! what it answered before, and its requests to apply a workspace edit.
 //!
 //! Split out of `runtime`, which owns the task's own lifecycle. This is the one
 //! piece that outlives a single loop iteration -- it runs as its own task for as
@@ -29,6 +29,25 @@ pub(super) fn forward_diagnostics(
     let mut diagnostic_rx = client.diagnostics();
     let mut raw_rx = client.raw_notifications();
     let mut refresh_rx = client.refreshes();
+    // A server's `workspace/applyEdit` waits on the session, which applies it
+    // and answers. Each request carries its own reply, so one the session never
+    // sees -- the slot retired, the session gone -- is answered by its `Drop`.
+    if let Some(mut edits) = client.apply_edit_requests() {
+        let edit_updates = updates.clone();
+        let edit_key = key.clone();
+        tokio::spawn(async move {
+            while let Some(request) = edits.recv().await {
+                let update = LspUpdate::ApplyEdit {
+                    token,
+                    key: edit_key.clone(),
+                    request,
+                };
+                if edit_updates.send(update).is_err() {
+                    return;
+                }
+            }
+        });
+    }
     let status_updates = updates.clone();
     let status_key = key.clone();
     let refresh_updates = updates.clone();

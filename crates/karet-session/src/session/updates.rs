@@ -200,17 +200,22 @@ impl Session {
             } => {
                 self.emit(Some(request), Event::WorkspaceSymbols { symbols });
             },
-            LspUpdate::WorkspaceEdit { request, edit, .. } => {
-                let mut edit = edit;
-                for (path, edits) in &mut edit.changes {
-                    if let Some(buffer) = self.buffer_for_path(path) {
-                        for edit in edits {
-                            edit.range = utf16_range_to_buffer(&buffer, edit.range);
-                        }
-                    }
-                }
-                self.emit(Some(request), Event::WorkspaceEdit { edit });
-            },
+            LspUpdate::WorkspaceEdit {
+                request,
+                doc,
+                version,
+                edit,
+                ..
+            } => self.adopt_rename_edit(request, doc, version, edit),
+            LspUpdate::PrepareRename {
+                request,
+                doc,
+                version,
+                caret,
+                answer,
+                ..
+            } => self.adopt_prepare_rename(request, doc, version, caret, answer),
+            LspUpdate::ApplyEdit { request, .. } => self.adopt_server_edit(request),
             // A formatting answer exists only to finish a deferred save: the
             // edits are applied here, never handed to the client. Edits computed
             // against a version the buffer has moved past are dropped, but the
@@ -895,27 +900,6 @@ impl Session {
                 self.schedule_spell(doc_id);
             }
         }
-    }
-
-    /// The text of `path` for column conversion: the live buffer when the file is
-    /// open, else its contents from disk.
-    ///
-    /// A server answers in UTF-16 columns for whatever file it names, which is often
-    /// not one the client has open — so converting those columns needs the target's
-    /// text, not the requesting document's. `None` when the file cannot be read; the
-    /// caller then leaves the range as the server sent it, since an approximate
-    /// column beats a dropped result.
-    fn buffer_for_path(&self, path: &Path) -> Option<TextBuffer> {
-        self.store
-            .by_path
-            .get(path)
-            .and_then(|doc| self.store.docs.get(doc))
-            .map(|document| document.buffer.clone())
-            .or_else(|| {
-                std::fs::read_to_string(path)
-                    .ok()
-                    .map(|text| TextBuffer::from_text(&text))
-            })
     }
 }
 

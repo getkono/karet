@@ -121,9 +121,25 @@ pub(crate) enum ServerCmd {
     },
     Rename {
         request: RequestId,
+        /// The document the rename was asked from, and its version, so an
+        /// answer to a buffer that has moved on is refused, not applied.
+        doc: DocumentId,
+        version: u64,
         path: PathBuf,
         position: LineCol,
         new_name: String,
+    },
+    /// Ask whether the symbol at `position` can be renamed.
+    PrepareRename {
+        request: RequestId,
+        doc: DocumentId,
+        version: u64,
+        path: PathBuf,
+        /// In UTF-16 columns, for the server.
+        position: LineCol,
+        /// The same position in buffer columns, carried back with the answer
+        /// for picking the identifier when the server leaves that to us.
+        caret: LineCol,
     },
     Formatting {
         request: RequestId,
@@ -150,6 +166,24 @@ pub(crate) struct FormattingAsk {
     /// `editor.formatOnSaveTimeout`: how long the save waits for this answer.
     /// The task derives its own, slightly longer, bound from it.
     pub(crate) save_timeout: Duration,
+}
+
+/// What a server said about renaming at a position.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum RenameAnswer {
+    /// No server could be asked: none runs for the document, or the
+    /// connection is down.
+    NoServer,
+    /// The server does not offer rename at all.
+    Unsupported,
+    /// The server says the position cannot be renamed, with its reason when
+    /// it gave one.
+    Refused(Option<String>),
+    /// The server named the span to rename (UTF-16 columns).
+    Span(karet_core::PrepareRename),
+    /// The server renames but does not prepare: the client picks the
+    /// identifier at the position.
+    Identifier,
 }
 
 /// A result flowing from a server task back to the session actor.
@@ -266,10 +300,35 @@ pub(crate) enum LspUpdate {
         request: RequestId,
         symbols: Vec<Symbol>,
     },
+    /// A rename's edit, in UTF-16 columns, for the session to apply.
     WorkspaceEdit {
         generation: u64,
         request: RequestId,
+        doc: DocumentId,
+        version: u64,
         edit: WorkspaceEdit,
+    },
+    /// The answer to a [`ServerCmd::PrepareRename`]; ranges in UTF-16 columns.
+    PrepareRename {
+        generation: u64,
+        request: RequestId,
+        doc: DocumentId,
+        version: u64,
+        /// The request's position in buffer columns.
+        caret: LineCol,
+        answer: RenameAnswer,
+    },
+    /// A server's `workspace/applyEdit`, waiting for the session's answer.
+    ///
+    /// Fenced on the slot: a retired server's request is dropped, which
+    /// answers it `applied: false`.
+    ApplyEdit {
+        /// The incarnation of the slot whose server asked.
+        token: SlotToken,
+        /// The slot whose server asked.
+        key: SlotKey,
+        /// The request, answered through its own `respond`.
+        request: karet_lsp::ApplyEditRequest,
     },
     Formatting {
         generation: u64,
