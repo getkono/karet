@@ -283,6 +283,8 @@ fn clicking_the_find_field_takes_the_keyboard_back() {
     rig.run(&find("fo"));
     rig.run(&[click(text(0, 5))]);
     let query = rig.app.find_rects.query;
+    // Even from the commit box, which outranks the bar while it is focused.
+    rig.app.commit_input.focused = true;
     rig.run(&[click(At::Cell(query.x + 2, query.y))]);
     assert_eq!(rig.app.input_context().modal, Some(Modal::Find));
     rig.run(&typed("o"));
