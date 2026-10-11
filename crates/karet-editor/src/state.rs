@@ -123,6 +123,10 @@ pub struct EditorState {
     /// ([`set_caret`](Self::set_caret), [`extend_to`](Self::extend_to)) can
     /// keep the caret on that row. A `Cell` because hit-testing is `&self`.
     pub(super) pointer_upstream: Cell<Option<LineCol>>,
+    /// Where the last render painted each inline text decoration, keyed by
+    /// its index in the slice given to `Editor::decorations` — see
+    /// [`inline_text_rect`](Self::inline_text_rect).
+    pub(super) last_inline_text: Vec<(usize, Rect)>,
 }
 
 impl Default for EditorState {
@@ -147,6 +151,7 @@ impl Default for EditorState {
             last_longest_col: 0,
             upstream: None,
             pointer_upstream: Cell::new(None),
+            last_inline_text: Vec::new(),
         }
     }
 }
@@ -440,6 +445,23 @@ impl EditorState {
         position: LineCol,
     ) -> Option<(u16, u16)> {
         caret_cell(area, buffer, folds, self, position)
+    }
+
+    /// The screen cells the last render painted the
+    /// [`InlineText`](karet_core::DecorationKind::InlineText) decoration at
+    /// `index` of the slice given to [`Editor::decorations`] in, clipped to
+    /// the editor area; `None` when it painted none of it (off screen, or not
+    /// inline text).
+    ///
+    /// Read back from the painted spans rather than re-derived, so a hit
+    /// region built from it covers exactly the text the user sees — after
+    /// any inlay hint or fold marker the line ends with. A decoration over
+    /// several lines reports its first painted row.
+    #[must_use]
+    pub fn inline_text_rect(&self, index: usize) -> Option<Rect> {
+        self.last_inline_text
+            .iter()
+            .find_map(|&(painted, rect)| (painted == index).then_some(rect))
     }
 
     /// Scroll so `line` sits at the vertical center of the viewport. Handy for a

@@ -364,3 +364,77 @@ fn before_inline_text_narrows_the_room_a_reveal_scrolls_into() {
     };
     assert!(x < area.right());
 }
+
+/// `after` inline text `text` over line 0.
+fn after_text(text: &str) -> Vec<Decoration> {
+    before_text(text)
+        .into_iter()
+        .map(|decoration| Decoration {
+            kind: DecorationKind::InlineText {
+                text: text.to_owned(),
+                before: false,
+            },
+            ..decoration
+        })
+        .collect()
+}
+
+/// The text painted inside `rect`.
+fn painted_in(target: &Buffer, rect: Rect) -> String {
+    (rect.x..rect.right())
+        .map(|x| target[(x, rect.y)].symbol().to_owned())
+        .collect()
+}
+
+#[test]
+fn inline_text_reports_the_cells_it_was_painted_in_after_hints_and_fold_marker() {
+    let buffer = TextBuffer::from_text("let x\nbody\n");
+    let hints = [InlayHint {
+        position: LineCol::new(0, 5),
+        label: ": i32".to_owned(),
+        kind: karet_core::InlayHintKind::Type,
+        padding_left: false,
+        padding_right: false,
+    }];
+    let folds = [Fold {
+        start: 0,
+        end: 1,
+        collapsed: true,
+    }];
+    let decorations = after_text("  Ada");
+    let area = Rect::new(0, 0, 30, 2);
+    let mut state = EditorState::new();
+    let mut target = Buffer::empty(area);
+    Editor::new(&buffer)
+        .inlay_hints(&hints)
+        .folds(&folds)
+        .decorations(&decorations)
+        .render(area, &mut target, &mut state);
+
+    // `let x` then the hint, then ` ⋯`, and only then the inline text: not
+    // at the end-of-line caret cell, where the hint begins.
+    let Some(rect) = state.inline_text_rect(0) else {
+        unreachable!("the inline text is on screen: {:?}", row(&target, 0));
+    };
+    assert_eq!(rect, Rect::new(GUTTER + 12, 0, 5, 1));
+    assert_eq!(painted_in(&target, rect), "  Ada");
+    assert_eq!(state.inline_text_rect(1), None, "no such decoration");
+}
+
+#[test]
+fn inline_text_cut_off_by_the_edge_reports_only_its_visible_cells() {
+    let buffer = TextBuffer::from_text("let x\n");
+    let decorations = after_text("  Ada, a long while ago");
+    let area = Rect::new(4, 0, 14, 1);
+    let mut state = EditorState::new();
+    let mut target = Buffer::empty(area);
+    Editor::new(&buffer)
+        .decorations(&decorations)
+        .render(area, &mut target, &mut state);
+
+    // Gutter 3 + `let x` 5 leaves six of the editor's fourteen cells.
+    assert_eq!(
+        state.inline_text_rect(0),
+        Some(Rect::new(4 + GUTTER + 5, 0, 6, 1))
+    );
+}

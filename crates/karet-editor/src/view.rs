@@ -223,15 +223,17 @@ impl Editor<'_> {
     }
 
     /// Inline virtual text attached to `l`, filtered by whether it belongs before or
-    /// after the decorated range.
+    /// after the decorated range. Returns the index in `decorations` of each
+    /// span pushed, in order.
     fn push_inline_spans(
         &self,
         spans: &mut Vec<Span<'static>>,
         l: u32,
         before: bool,
         theme: &Theme,
-    ) {
-        for decoration in self.decorations {
+    ) -> Vec<usize> {
+        let mut pushed = Vec::new();
+        for (index, decoration) in self.decorations.iter().enumerate() {
             if let DecorationKind::InlineText {
                 text,
                 before: decoration_before,
@@ -246,8 +248,10 @@ impl Editor<'_> {
                     text.clone(),
                     Style::default().fg(color.to_ratatui()),
                 ));
+                pushed.push(index);
             }
         }
+        pushed
     }
 
     /// Append the syntax-colored content spans for line `l`, honoring horizontal
@@ -574,6 +578,7 @@ impl StatefulWidget for Editor<'_> {
     type State = EditorState;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut EditorState) {
+        state.last_inline_text.clear();
         if area.width == 0 || area.height == 0 {
             return;
         }
@@ -824,7 +829,9 @@ impl StatefulWidget for Editor<'_> {
                 .copied()
                 .unwrap_or_else(|| VisualRange::empty(0));
             if range_index == 0 {
-                self.push_inline_spans(&mut spans, l, true, theme);
+                let first = spans.len();
+                let painted = self.push_inline_spans(&mut spans, l, true, theme);
+                record_inline_text(&mut state.last_inline_text, area, y, &spans, first, &painted);
             }
             self.push_content_spans(
                 &mut spans,
@@ -843,7 +850,9 @@ impl StatefulWidget for Editor<'_> {
                 ));
             }
             if range_index + 1 == ranges.len() {
-                self.push_inline_spans(&mut spans, l, false, theme);
+                let first = spans.len();
+                let painted = self.push_inline_spans(&mut spans, l, false, theme);
+                record_inline_text(&mut state.last_inline_text, area, y, &spans, first, &painted);
             }
             buf.set_line(area.x, y, &Line::from(spans), area.width);
 
@@ -876,5 +885,32 @@ impl StatefulWidget for Editor<'_> {
                 self.draw_caret(buf, area, state, sel.head);
             }
         }
+    }
+}
+
+/// Record where the row at `y` paints the inline text spans `spans[first..]`,
+/// one per decoration index in `painted`: measured from the spans themselves,
+/// so the rect is exactly the cells the text went to, clipped to `area`.
+fn record_inline_text(
+    rects: &mut Vec<(usize, Rect)>,
+    area: Rect,
+    y: u16,
+    spans: &[Span<'_>],
+    first: usize,
+    painted: &[usize],
+) {
+    let mut x = spans
+        .get(..first)
+        .unwrap_or_default()
+        .iter()
+        .fold(0_usize, |x, span| x.saturating_add(span.width()));
+    for (span, &index) in spans.get(first..).unwrap_or_default().iter().zip(painted) {
+        let start = u16::try_from(x).unwrap_or(u16::MAX);
+        let width = u16::try_from(span.width()).unwrap_or(u16::MAX);
+        let visible = width.min(area.width.saturating_sub(start));
+        if visible > 0 {
+            rects.push((index, Rect::new(area.x.saturating_add(start), y, visible, 1)));
+        }
+        x = x.saturating_add(span.width());
     }
 }
