@@ -141,6 +141,16 @@ impl App {
                 if self.completion_key(key) {
                     return;
                 }
+                // A find bar left open behind the editor still closes on Esc
+                // from the text, as VS Code's does.
+                if key.code == KeyCode::Esc
+                    && key.modifiers.is_empty()
+                    && self.find_open
+                    && self.editor_owns_keyboard()
+                {
+                    self.close_find();
+                    return;
+                }
                 self.resolve_key(key);
             },
         }
@@ -174,7 +184,9 @@ impl App {
             Some(Modal::RevInput)
         } else if self.context_menu.is_some() {
             Some(Modal::ContextMenu)
-        } else if self.find_open {
+        } else if self.find_open && self.active_find().is_some_and(|find| find.focused) {
+            // An open bar the user clicked away from leaves the keys with the
+            // editor: only a bar that owns the keyboard is a modal.
             Some(Modal::Find)
         } else if self.explorer.is_editing() {
             Some(Modal::ExplorerEdit)
@@ -191,6 +203,15 @@ impl App {
             modal,
             target: self.focus_target(),
         }
+    }
+
+    /// Whether keys go to the active editor's text: the editor is focused, the
+    /// editor view is showing, and no modal (an overlay, a menu, a focused find
+    /// bar, an inline rename, a console) has taken the keyboard.
+    pub(crate) fn editor_owns_keyboard(&self) -> bool {
+        self.focus == Focus::Editor
+            && self.view == View::Editor
+            && self.input_context().modal.is_none()
     }
 
     /// Resolve a focus-context key against the layered keymap, accumulating

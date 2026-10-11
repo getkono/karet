@@ -30,6 +30,7 @@ mod language_servers;
 mod lifecycle;
 mod line_changes;
 mod markdown_edit;
+mod overlay_focus;
 mod preview;
 #[cfg(feature = "images")]
 mod preview_images;
