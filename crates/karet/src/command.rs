@@ -315,8 +315,11 @@ pub enum Command {
     CommitGraphCopyIssueUrls,
     /// Jump to the definition of the symbol at the caret (F12).
     GoToDefinition,
-    /// Return to the position a definition jump started from (Ctrl+Alt+Left).
+    /// Return to the place the focused pane most recently left: a jump's origin
+    /// or the start of a large caret move (Ctrl+Alt+Left, Alt+Left).
     JumpBack,
+    /// Undo the last Go Back (Ctrl+Alt+Right, Alt+Right).
+    JumpForward,
     /// Insert a printable character at the caret (replacing any selection).
     InsertChar(char),
     /// Insert a newline with leading-whitespace auto-indent.
@@ -799,6 +802,7 @@ impl Command {
             Self::CommitGraphCopyIssueUrls => "Commit Graph: Copy Issue URLs",
             Self::GoToDefinition => "Go to Definition",
             Self::JumpBack => "Go Back",
+            Self::JumpForward => "Go Forward",
             Self::InsertNewline => "Insert Newline",
             Self::DeleteBackward => "Delete Backward",
             Self::DeleteForward => "Delete Forward",

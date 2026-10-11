@@ -28,6 +28,7 @@ mod language_servers;
 mod lifecycle;
 mod markdown_edit;
 mod mouse;
+mod navigation;
 mod notifications;
 mod panes;
 mod pending;
@@ -520,8 +521,8 @@ pub struct App {
     pub(crate) markdown_link_hover: Option<(u16, u16)>,
     /// The definition request awaiting an answer, if any.
     pub(crate) pending_definition: Option<definition::PendingDefinition>,
-    /// Pre-jump positions, most recent last, for "Go Back" after a definition jump.
-    pub(crate) definition_jumps: VecDeque<definition::JumpOrigin>,
+    /// Each pane's Go Back / Go Forward history, keyed by the pane it navigates.
+    pub(crate) nav_history: HashMap<PaneId, navigation::NavHistory>,
     /// The Ctrl-hovered symbol the editor should underline as navigable.
     pub(crate) definition_hover: Option<definition::DefinitionHover>,
     /// The focused commit view's signature-badge rect (screen coords) from the last

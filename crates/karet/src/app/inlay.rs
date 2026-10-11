@@ -24,6 +24,7 @@ use karet_session::api::Command as SessionCommand;
 use karet_session::api::DocumentId;
 use karet_session::api::RequestId;
 pub(crate) use shift::diff_edit;
+pub(crate) use shift::map_position;
 
 use super::App;
 use super::Instant;

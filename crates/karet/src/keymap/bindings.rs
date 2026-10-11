@@ -77,9 +77,15 @@ pub(super) static BINDINGS: &[Binding] = &[
     // Tiling-WM-style pane growth. Shift keeps these distinct from multi-cursor
     // Ctrl+Alt+Up/Down in the editor layer.
     b(Global, true, true, true, Left,  Command::ResizePaneLeft),
-    // Go Back lives in the Global layer: a jump can leave focus in the sidebar,
-    // and the way back should still work from there.
+    // Go Back/Forward live in the Global layer: a jump can leave focus in the
+    // sidebar, and the way back should still work from there. Ctrl+Alt is listed
+    // first because it works everywhere; VS Code's Alt+arrow works wherever the
+    // focused layer leaves it free, which the editor does not: there Alt+arrow
+    // is the portable word motion (#141).
     b(Global, true, false, true, Left, Command::JumpBack),
+    b(Global, true, false, true, Right, Command::JumpForward),
+    b(Global, false, false, true, Left, Command::JumpBack),
+    b(Global, false, false, true, Right, Command::JumpForward),
     b(Global, true, true, true, Right, Command::ResizePaneRight),
     b(Global, true, true, true, Up,    Command::ResizePaneUp),
     b(Global, true, true, true, Down,  Command::ResizePaneDown),

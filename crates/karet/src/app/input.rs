@@ -120,6 +120,10 @@ impl App {
         }
         let ctx = self.input_context();
         match ctx.modal {
+            // The Search input stacks the Global layer, whose Alt+arrow is Go
+            // Back/Forward; in a text field Alt+arrow is word motion (#141), as in
+            // the editor, so the field keeps it.
+            Some(Modal::SearchInput) if is_alt_word_motion(key) => self.search_edit(key),
             Some(modal) => match keymap::resolve(ctx, &[KeyChord::from_event(key)]) {
                 Resolved::Command(command) => self.dispatch(command),
                 Resolved::Pending | Resolved::None => self.modal_text(modal, key),
@@ -492,4 +496,13 @@ impl App {
             _ => {},
         }
     }
+}
+
+/// Alt+Left/Right, with or without Shift: word motion inside a text field.
+fn is_alt_word_motion(key: KeyEvent) -> bool {
+    matches!(key.code, KeyCode::Left | KeyCode::Right)
+        && key.modifiers.contains(KeyModifiers::ALT)
+        && !key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::SUPER)
 }
