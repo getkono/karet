@@ -27,6 +27,8 @@ pub enum UiIcon {
     Todos,
     /// The debugger activity-bar entry.
     Debug,
+    /// The problems (diagnostics) activity-bar entry.
+    Problems,
     /// A close ("×") affordance, e.g. on a tab.
     Close,
     /// A right-pointing chevron, e.g. a breadcrumb separator.
@@ -89,6 +91,7 @@ impl UiIcon {
             Self::Spelling => '\u{f02d}',      // book (dictionary)
             Self::Todos => '\u{f00c}',         // check mark (tasks)
             Self::Debug => '\u{f188}',         // bug
+            Self::Problems => '\u{f06a}',      // exclamation-circle
             Self::Close => '\u{f00d}',         // times
             Self::ChevronRight => '\u{f054}',  // chevron-right
             Self::NewFile => '\u{f15b}',       // file
@@ -129,6 +132,7 @@ impl UiIcon {
             Self::Spelling => '\u{00b6}',         // ¶ pilcrow (prose)
             Self::Todos => '\u{2713}',            // ✓ check mark (tasks)
             Self::Debug => '\u{25f4}',            // ◴ (dial: run state)
+            Self::Problems => '\u{2297}',         // ⊗ circled times (an error mark)
             Self::Close => '\u{00d7}',            // ×
             Self::ChevronRight => '\u{203a}',     // ›
             Self::NewFile => '\u{25A4}',          // ▤ (file-ish lines)
@@ -161,6 +165,7 @@ impl UiIcon {
             Self::Spelling => 'W',      // words
             Self::Todos => 'T',         // todos
             Self::Debug => 'G',         // debuG (D is taken by new directory)
+            Self::Problems => 'P',      // problems
             Self::Close => 'x',
             Self::ChevronRight => '>',
             Self::NewFile => '+',
@@ -264,6 +269,43 @@ mod tests {
         for icon in SEAM_ICONS {
             assert!(icon.glyph(IconStyle::Ascii).is_ascii_graphic());
         }
+    }
+
+    /// The sidebar activity-bar switcher, read as a group on the header row.
+    const ACTIVITY_ICONS: [UiIcon; 7] = [
+        UiIcon::Explorer,
+        UiIcon::Search,
+        UiIcon::SourceControl,
+        UiIcon::Spelling,
+        UiIcon::Todos,
+        UiIcon::Debug,
+        UiIcon::Problems,
+    ];
+
+    #[test]
+    fn activity_bar_glyphs_are_distinct_in_every_style() {
+        // One button per panel on one row: a shared glyph makes two panels
+        // indistinguishable.
+        for style in [IconStyle::NerdFont, IconStyle::Unicode, IconStyle::Ascii] {
+            let mut seen: Vec<char> = ACTIVITY_ICONS.iter().map(|i| i.glyph(style)).collect();
+            let total = seen.len();
+            seen.sort_unstable();
+            seen.dedup();
+            assert_eq!(seen.len(), total, "duplicate activity glyph in {style:?}");
+        }
+        for icon in ACTIVITY_ICONS {
+            assert!(icon.glyph(IconStyle::Ascii).is_ascii_graphic(), "{icon:?}");
+        }
+    }
+
+    #[test]
+    fn the_problems_glyph_is_one_narrow_non_emoji_cell_in_the_unicode_tier() {
+        // Pinned by codepoint (East_Asian_Width=Neutral, no emoji presentation):
+        // the switcher's hit regions march in two-cell steps, so a wide glyph
+        // would shift the button after it off its click target.
+        let glyph = UiIcon::Problems.glyph(IconStyle::Unicode);
+        assert_eq!(glyph, '\u{2297}');
+        assert_eq!(unicode_width::UnicodeWidthChar::width(glyph), Some(1));
     }
 
     /// The seam legend, which is read as a group on a single row.
