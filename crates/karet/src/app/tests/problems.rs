@@ -296,3 +296,35 @@ fn the_panel_paints_a_file_heading_and_severity_marked_rows() {
     assert!(painted.contains("src/main.rs (1)"), "{painted}");
     assert!(painted.contains("E mismatched types 2:9"), "{painted}");
 }
+
+#[test]
+fn clicking_a_painted_problem_row_jumps_to_it() {
+    let mut app = bound_app();
+    publish(&mut app, vec![diagnostic(3, 4, Severity::Error, "boom")]);
+    app.dispatch(Command::SelectPanel(SidebarPanel::Problems));
+
+    let rows = screen(&mut app, 120, 12);
+    let Some(y) = rows.iter().position(|row| row.contains("E boom")) else {
+        panic!("no problem row painted:\n{}", rows.join("\n"));
+    };
+    let x = app.problems_ui.results_rect.x + 4;
+    app.problems_click(x, u16::try_from(y).unwrap_or_default());
+    assert_eq!(caret(&app), LineCol::new(3, 4));
+}
+
+#[test]
+fn pasting_while_filtering_extends_the_filter_with_one_line() {
+    let mut app = bound_app();
+    publish(
+        &mut app,
+        vec![diagnostic(1, 0, Severity::Error, "mismatched types")],
+    );
+    app.dispatch(Command::SelectPanel(SidebarPanel::Problems));
+    send_key(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
+
+    app.handle_paste("mismatched\nsecond line".to_owned());
+    assert_eq!(app.problems.filter, "mismatched");
+    assert_eq!(app.problems.rows.len(), 2);
+    // The paste went to the filter, not into the document behind the panel.
+    assert!(code_tab_text(&app).starts_with("fn main()"));
+}
