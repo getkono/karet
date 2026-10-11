@@ -49,12 +49,15 @@ fn a_click_on_a_visible_cell_never_scrolls_the_line() {
     assert!(state.scroll_col > 0, "goto keeps the keyboard margin");
 }
 
+/// One of the editor's pointer-originated caret moves.
+type PointerMove = fn(&mut EditorState, &TextBuffer, LineCol);
+
 #[test]
 fn every_pointer_move_keeps_a_visible_target_where_it_is() {
     let buffer = TextBuffer::from_text(&long_line());
     let mut target = Buffer::empty(NARROW);
     let edge = LineCol::new(0, 19);
-    let moves: [(&str, fn(&mut EditorState, &TextBuffer, LineCol)); 4] = [
+    let moves: [(&str, PointerMove); 4] = [
         ("set_caret", |s, b, p| s.set_caret(b, p)),
         ("extend_to", |s, b, p| s.extend_to(b, p)),
         ("set_selection", |s, b, p| {
