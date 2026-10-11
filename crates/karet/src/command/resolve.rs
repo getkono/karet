@@ -53,6 +53,7 @@ static PALETTE: &[Command] = &[
     Command::NotebookRestartKernel,
     Command::GoToDefinition,
     Command::JumpBack,
+    Command::JumpForward,
     Command::ToggleInlineBlame,
     Command::ShowSeamView,
     Command::ShowSeamViewAt,

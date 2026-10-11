@@ -56,6 +56,7 @@ impl Command {
             Self::SpellingScan => "scan",
             Self::GoToDefinition => "definition",
             Self::JumpBack => "back",
+            Self::JumpForward => "forward",
             Self::OpenQuickOpen => "open",
             Self::OpenCommandPalette => "commands",
             Self::OpenFind => "find",

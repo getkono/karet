@@ -117,7 +117,7 @@ impl App {
             blame_rect: None,
             markdown_link_hits: Vec::new(),
             pending_definition: None,
-            definition_jumps: VecDeque::new(),
+            nav_history: HashMap::new(),
             definition_hover: None,
             markdown_link_hover: None,
             commit_badge_rect: None,
