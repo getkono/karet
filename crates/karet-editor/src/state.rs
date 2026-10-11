@@ -817,8 +817,20 @@ impl EditorState {
                 .copied()
                 .unwrap_or(self.scroll_line)
                 .min(line_count - 1);
-            let want = self.scroll_col.saturating_add(rel_col);
-            return LineCol::new(line, want.min(line_len(buffer, line)));
+            let chars = line_chars(buffer, line);
+            // Measured exactly as `draw_sticky_row` paints it: from
+            // `scroll_col`, tabs expanded, and unhinted.
+            return LineCol::new(
+                line,
+                source_col_at_display_offset(
+                    &chars,
+                    self.scroll_col,
+                    chars.len() as u32,
+                    rel_col,
+                    self.last_tab_width,
+                    LineHints::EMPTY,
+                ),
+            );
         }
         rel_row = rel_row.saturating_sub(u32::from(self.sticky_height));
         if self.last_word_wrap {

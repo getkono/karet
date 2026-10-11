@@ -5,6 +5,7 @@ use super::text::*;
 use super::*;
 
 mod carets;
+mod hit;
 mod inlay;
 mod pointer;
 mod reveal;
@@ -328,7 +329,9 @@ fn configured_tab_width_controls_rendering_caret_and_click_geometry() {
     // The one-digit gutter occupies three cells, followed by four tab cells.
     assert_eq!(buf[(7, 0)].symbol(), "X");
     assert!(buf[(7, 0)].modifier.contains(Modifier::REVERSED));
-    assert_eq!(state.pos_at(area, &buffer, &[], 5, 0), LineCol::new(0, 0));
+    // A click rounds to the nearer tab edge: its first half, then its second.
+    assert_eq!(state.pos_at(area, &buffer, &[], 4, 0), LineCol::new(0, 0));
+    assert_eq!(state.pos_at(area, &buffer, &[], 5, 0), LineCol::new(0, 1));
     assert_eq!(state.pos_at(area, &buffer, &[], 7, 0), LineCol::new(0, 1));
 }
 

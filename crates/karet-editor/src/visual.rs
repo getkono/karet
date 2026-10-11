@@ -104,8 +104,10 @@ pub(super) fn display_col(
 /// which is also where the hint anchored at `start` paints: that hint belongs
 /// to the row that starts at its column.
 ///
-/// A cell inside a hint resolves to the hint's own anchor column, where the
-/// caret is drawn immediately left of the annotation. Clicking an annotation
+/// A cell inside a character resolves to the nearer of its two boundaries, so
+/// the right half of a wide character, or the trailing cells of a tab, put the
+/// caret after it. A cell inside a hint resolves to the hint's own anchor
+/// column, where the caret is drawn immediately left of the annotation. Clicking an annotation
 /// therefore puts the caret against the text the hint describes rather than
 /// past the character that follows it.
 pub(super) fn source_col_at_display_offset(
@@ -132,6 +134,11 @@ pub(super) fn source_col_at_display_offset(
         }
         let width = character_width(*ch, after_hint, tab_width);
         if target < after_hint.saturating_add(width) {
+            // Round to the nearer boundary: the right half of a wide
+            // character, or a tab's trailing cells, put the caret after it.
+            if target.saturating_sub(after_hint).saturating_mul(2) >= width {
+                source = source.saturating_add(1);
+            }
             break;
         }
         absolute = after_hint.saturating_add(width);

@@ -551,8 +551,8 @@ impl Editor<'_> {
             },
             selections,
             // Deliberately unhinted. A sticky row is a compressed header
-            // preview, and `EditorState::pos_at` resolves a click on one with a
-            // plain `scroll_col + offset` -- painting hints here would shift the
+            // preview, and `EditorState::pos_at` resolves a click on one through
+            // the same unhinted mapping -- painting hints here would shift the
             // text without shifting that, so every click would land wrong.
             LineHints::EMPTY,
         );
