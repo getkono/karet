@@ -220,6 +220,69 @@ fn reopening_the_panel_lands_on_the_list_not_an_abandoned_filter_edit() {
     assert_eq!(app.input_context().modal, None);
 }
 
+/// Tab back to the panel after `leave` moved focus out mid-filter: the keys
+/// drive the list, so `j` moves the selection instead of joining the filter.
+fn tab_back_lands_on_the_list(app: &mut App) {
+    assert_eq!(app.focus, Focus::Editor);
+    send_key(app, KeyCode::Tab, KeyModifiers::NONE);
+    assert_eq!(app.focus, Focus::Sidebar);
+    assert_eq!(app.input_context().modal, None);
+    let before = app.problems.selection.cursor();
+    send_key(app, KeyCode::Char('j'), KeyModifiers::NONE);
+    assert!(
+        app.problems.filter.is_empty(),
+        "`j` was typed into the filter"
+    );
+    assert_ne!(app.problems.selection.cursor(), before);
+}
+
+#[test]
+fn clicking_a_row_mid_filter_ends_the_filter_edit() {
+    let mut app = bound_app();
+    publish(&mut app, vec![diagnostic(3, 4, Severity::Error, "boom")]);
+    app.dispatch(Command::SelectPanel(SidebarPanel::Problems));
+    send_key(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
+
+    let rows = screen(&mut app, 120, 12);
+    let Some(y) = rows.iter().position(|row| row.contains("E boom")) else {
+        panic!("no problem row painted:\n{}", rows.join("\n"));
+    };
+    let x = app.problems_ui.results_rect.x + 4;
+    app.problems_click(x, u16::try_from(y).unwrap_or_default());
+    assert!(!app.problems.filter_input);
+    app.problems.selection.move_to(0);
+    tab_back_lands_on_the_list(&mut app);
+}
+
+#[test]
+fn f8_mid_filter_ends_the_filter_edit() {
+    let mut app = bound_app();
+    publish(&mut app, vec![diagnostic(3, 4, Severity::Error, "boom")]);
+    app.dispatch(Command::SelectPanel(SidebarPanel::Problems));
+    send_key(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
+
+    send_key(&mut app, KeyCode::F(8), KeyModifiers::NONE);
+    assert_eq!(caret(&app), LineCol::new(3, 4));
+    assert!(!app.problems.filter_input);
+    tab_back_lands_on_the_list(&mut app);
+}
+
+#[test]
+fn clicking_back_into_the_panel_does_not_resume_an_abandoned_filter_edit() {
+    let mut app = bound_app();
+    app.dispatch(Command::SelectPanel(SidebarPanel::Problems));
+    send_key(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
+    app.focus = Focus::Editor;
+
+    let rows = screen(&mut app, 120, 12);
+    let Some(y) = rows.iter().position(|row| row.contains("PROBLEMS")) else {
+        panic!("no panel title painted:\n{}", rows.join("\n"));
+    };
+    app.handle_sidebar_click(1, u16::try_from(y).unwrap_or_default(), KeyModifiers::NONE);
+    assert_eq!(app.focus, Focus::Sidebar);
+    assert!(!app.problems.filter_input);
+}
+
 #[test]
 fn s_cycles_the_severity_filter() {
     let mut app = bound_app();

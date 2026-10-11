@@ -3,6 +3,9 @@ use super::*;
 impl App {
     /// Move focus between the sidebar and the editor.
     pub(super) fn toggle_focus(&mut self) {
+        // A Problems filter edit belongs to one visit: leaving ends it, and
+        // coming back lands on the list rather than resuming the edit.
+        self.problems.filter_input = false;
         self.focus = match self.focus {
             Focus::Sidebar => Focus::Editor,
             // A view that owns the full width has no sidebar to toggle into;

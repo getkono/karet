@@ -291,6 +291,8 @@ impl App {
             return;
         };
         let (path, at) = (entry.path.clone(), entry.diagnostic.range.start);
+        // Focus leaves the panel, so any filter edit in progress ends here.
+        self.problems.filter_input = false;
         self.focus_by_file_line(&path, at, true);
     }
 
@@ -417,6 +419,7 @@ impl App {
         }
         self.view = View::Editor;
         self.focus = Focus::Editor;
+        self.problems.filter_input = false;
         let label = match severity {
             Severity::Error => "error",
             Severity::Warning => "warning",
