@@ -158,13 +158,15 @@ A press in the text starts a drag that owns the pointer until it is released.
 | Press, drag | Select from the press to the character under the pointer, with the head at the pointer. | harness (forward and backward) |
 | Double click, drag | Extend by whole words; the word first clicked stays selected however far back the pointer goes. | harness (forward and backward) |
 | Triple click, drag | Extend by whole lines. | harness |
-| Pointer above or below the viewport | Scroll toward it on a fixed-rate timer, faster the further out it is, and keep extending. Sticky header rows count as above. | harness (scrolls and extends); #336 (timer, speed, sticky rows) |
-| Pointer left or right of the viewport | Scroll horizontally the same way. | #336 |
+| Pointer above or below the viewport | Scroll toward it on a fixed-rate timer, faster the further out it is, and keep extending. Sticky header rows count as above. | harness |
+| Pointer left or right of the viewport | Scroll horizontally the same way; the gutter counts as left. | harness |
 | Pointer inside the viewport | Never autoscroll. | harness |
-| Wheel during a drag | Scroll, and extend to the pointer's new text position. | #336 |
+| Wheel during a drag | Scroll, and extend to the pointer's new text position. | harness |
 | Release | End the drag and its autoscroll. | harness |
-| Release elsewhere, focus loss, an overlay opening, a tab switch, a key press | Also end the drag. A drag never outlives its button. | #336 |
-| Pointer strays into another split | Keep mapping it against the split the drag started in, clamped to that split's edge. | #336 |
+| Release elsewhere, focus loss, an overlay opening, a tab switch, a key press | Also end the drag. A drag never outlives its button. | harness |
+| A press with no release before it | End the stale drag, then act as a fresh press. | harness |
+| Pointer strays into another split | Keep mapping it against the split the drag started in, clamped to that split's edge. | harness |
+| Window resized mid-drag | Map the pointer against the split's new size. | harness |
 
 ## Wheel
 
