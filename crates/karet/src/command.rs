@@ -47,6 +47,18 @@ pub enum Command {
     TodoScan,
     /// Switch the Todos panel between by-file and by-tag grouping.
     TodoToggleGrouping,
+    /// Move the caret to the next problem (diagnostic) in the active file.
+    NextProblem,
+    /// Move the caret to the previous problem (diagnostic) in the active file.
+    PrevProblem,
+    /// Begin editing the Problems panel's text filter.
+    ProblemsFilter,
+    /// Cycle the Problems panel's severity filter (all / warnings / errors).
+    ProblemsCycleSeverity,
+    /// Stop editing the Problems filter, keeping it.
+    ProblemsFilterAccept,
+    /// Stop editing the Problems filter, clearing it.
+    ProblemsFilterCancel,
     /// Open the quick-open (go-to-file) overlay.
     OpenQuickOpen,
     /// Open the command palette overlay.
@@ -321,8 +333,11 @@ pub enum Command {
     RenameSubmit,
     /// Close the rename prompt without renaming.
     RenameCancel,
-    /// Return to the position a definition jump started from (Ctrl+Alt+Left).
+    /// Return to the place the focused pane most recently left: a jump's origin
+    /// or the start of a large caret move (Ctrl+Alt+Left, Alt+Left).
     JumpBack,
+    /// Undo the last Go Back (Ctrl+Alt+Right, Alt+Right).
+    JumpForward,
     /// Insert a printable character at the caret (replacing any selection).
     InsertChar(char),
     /// Insert a newline with leading-whitespace auto-indent.
@@ -669,9 +684,16 @@ impl Command {
             Self::SelectPanel(SidebarPanel::Spelling) => "View: Show Spelling",
             Self::SelectPanel(SidebarPanel::Todos) => "View: Show Todos",
             Self::SelectPanel(SidebarPanel::Debug) => "View: Show Debug",
+            Self::SelectPanel(SidebarPanel::Problems) => "View: Show Problems",
             Self::SpellingScan => "Spelling: Scan Workspace",
             Self::TodoScan => "Todos: Scan Workspace",
             Self::TodoToggleGrouping => "Todos: Toggle Grouping (File / Tag)",
+            Self::NextProblem => "Go to Next Problem in File",
+            Self::PrevProblem => "Go to Previous Problem in File",
+            Self::ProblemsFilter => "Problems: Filter…",
+            Self::ProblemsCycleSeverity => "Problems: Cycle Severity Filter",
+            Self::ProblemsFilterAccept => "Problems: Apply Filter",
+            Self::ProblemsFilterCancel => "Problems: Clear Filter",
             Self::OpenQuickOpen => "Go to File…",
             Self::OpenCommandPalette => "Show All Commands",
             Self::OpenFind => "Find in File…",
@@ -808,6 +830,7 @@ impl Command {
             Self::RenameSubmit => "Rename Symbol: Confirm",
             Self::RenameCancel => "Rename Symbol: Cancel",
             Self::JumpBack => "Go Back",
+            Self::JumpForward => "Go Forward",
             Self::InsertNewline => "Insert Newline",
             Self::DeleteBackward => "Delete Backward",
             Self::DeleteForward => "Delete Forward",

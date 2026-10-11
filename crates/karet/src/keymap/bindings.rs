@@ -36,6 +36,11 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(Global, true,  false, false, Char('4'), Command::SelectPanel(SidebarPanel::Spelling)),
     b(Global, true,  false, false, Char('5'), Command::SelectPanel(SidebarPanel::Todos)),
     b(Global, true,  false, false, Char('6'), Command::SelectPanel(SidebarPanel::Debug)),
+    b(Global, true,  false, false, Char('7'), Command::SelectPanel(SidebarPanel::Problems)),
+    // Next / previous problem in the active file (VS Code parity). Global, so the
+    // walk also works from the Problems panel, which hands focus to the editor.
+    b(Global, false, false, false, F(8),      Command::NextProblem),
+    b(Global, false, true,  false, F(8),      Command::PrevProblem),
     b(Global, false, false, false, Tab,       Command::ToggleFocus),
 
     // The top-level view switcher. A `Ctrl+K` chord rather than `Ctrl+Shift+<digit>`:
@@ -77,9 +82,15 @@ pub(super) static BINDINGS: &[Binding] = &[
     // Tiling-WM-style pane growth. Shift keeps these distinct from multi-cursor
     // Ctrl+Alt+Up/Down in the editor layer.
     b(Global, true, true, true, Left,  Command::ResizePaneLeft),
-    // Go Back lives in the Global layer: a jump can leave focus in the sidebar,
-    // and the way back should still work from there.
+    // Go Back/Forward live in the Global layer: a jump can leave focus in the
+    // sidebar, and the way back should still work from there. Ctrl+Alt is listed
+    // first because it works everywhere; VS Code's Alt+arrow works wherever the
+    // focused layer leaves it free, which the editor does not: there Alt+arrow
+    // is the portable word motion (#141).
     b(Global, true, false, true, Left, Command::JumpBack),
+    b(Global, true, false, true, Right, Command::JumpForward),
+    b(Global, false, false, true, Left, Command::JumpBack),
+    b(Global, false, false, true, Right, Command::JumpForward),
     b(Global, true, true, true, Right, Command::ResizePaneRight),
     b(Global, true, true, true, Up,    Command::ResizePaneUp),
     b(Global, true, true, true, Down,  Command::ResizePaneDown),
@@ -125,6 +136,15 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(ExplorerEdit, true,  false, false, Char('c'), Command::Copy),
     b(ExplorerEdit, true,  false, false, Char('x'), Command::Cut),
     b(ExplorerEdit, true,  false, false, Char('v'), Command::Paste),
+
+    // Problems panel (sidebar focus, Problems active). Listed before the generic
+    // sidebar bindings so its keys win.
+    b(Problems, false, false, false, Char('/'), Command::ProblemsFilter),
+    b(Problems, false, false, false, Char('s'), Command::ProblemsCycleSeverity),
+    // Problems panel: editing the text filter. Enter keeps the filter, Esc drops it.
+    b(ProblemsFilter, false, false, false, Enter, Command::ProblemsFilterAccept),
+    b(ProblemsFilter, false, false, false, Esc,   Command::ProblemsFilterCancel),
+    b(ProblemsFilter, true,  false, false, Char('v'), Command::Paste),
 
     // Sidebar focus. Selection verbs are shared across every list panel (explorer
     // and source control) — they route to the focused panel's selection in dispatch.

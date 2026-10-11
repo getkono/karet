@@ -151,7 +151,10 @@ impl App {
         self.debug_panel.clear_inspection(self.debug_output.len());
         self.debug_stopped = path.clone().zip(line);
         if let (Some(path), Some(line)) = (path, line) {
-            self.jump_to_location(&path, LineCol::new(line, 0));
+            // Not `jump_to_location`: stepping line by line is not a trail of
+            // jumps. Observed navigation still records a stop in another file or
+            // a far-away line, so Go Back returns from wherever execution went.
+            self.focus_by_file_line(&path, LineCol::new(line, 0), true);
         }
         // Populate the panel for this stop.
         self.debug_request(SessionCommand::DebugStackTrace);

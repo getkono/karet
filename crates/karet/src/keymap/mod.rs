@@ -116,6 +116,8 @@ use Layer::Outline;
 use Layer::Overlay;
 use Layer::Oversize;
 use Layer::Pager;
+use Layer::Problems;
+use Layer::ProblemsFilter;
 use Layer::Rename;
 use Layer::RevInput;
 use Layer::Seam;

@@ -33,6 +33,23 @@ use karet_editor::editing::caret_after_insert;
 /// - `pos` at or before `start` is untouched.
 #[must_use]
 pub(crate) fn shift_position(pos: LineCol, edits: &[TextEdit]) -> Option<LineCol> {
+    shift(pos, edits, false)
+}
+
+/// Where `pos` lands once `edits` are applied, collapsing a position an edit
+/// replaced onto that edit's start rather than dropping it.
+///
+/// For a place to *return to* rather than text to annotate: a navigation
+/// entry inside replaced text still names the spot the user was at, and the
+/// start of the replacement is the nearest place that still exists.
+#[must_use]
+pub(crate) fn map_position(pos: LineCol, edits: &[TextEdit]) -> LineCol {
+    shift(pos, edits, true).unwrap_or(pos)
+}
+
+/// The shared rule behind [`shift_position`] and [`map_position`]; `collapse`
+/// decides whether a consumed position moves to the edit's start or is gone.
+fn shift(pos: LineCol, edits: &[TextEdit], collapse: bool) -> Option<LineCol> {
     let mut ordered: Vec<&TextEdit> = edits.iter().collect();
     ordered.sort_by_key(|edit| std::cmp::Reverse(edit.range.start));
     let mut pos = pos;
@@ -48,7 +65,11 @@ pub(crate) fn shift_position(pos: LineCol, edits: &[TextEdit]) -> Option<LineCol
                 LineCol::new(pos.line - end.line + new_end.line, pos.col)
             };
         } else if pos > start {
-            return None;
+            if !collapse {
+                return None;
+            }
+            // Edits run last-first, so the earlier ones still move `start`.
+            pos = start;
         }
     }
     Some(pos)
@@ -186,6 +207,16 @@ mod tests {
         shift_hints(&mut hints, &[edit((1, 0), (2, 0), "")]);
         assert_eq!(hints.len(), 1);
         assert_eq!(hints[0].position, LineCol::new(2, 2));
+    }
+
+    #[test]
+    fn mapping_collapses_a_consumed_position_onto_the_edit_start() {
+        // Line 1 is replaced whole, and two lines are inserted above it.
+        let edits = [edit((0, 0), (0, 0), "a\nb\n"), edit((1, 2), (2, 0), "x")];
+        assert_eq!(shift_position(LineCol::new(1, 5), &edits), None);
+        assert_eq!(map_position(LineCol::new(1, 5), &edits), LineCol::new(3, 2));
+        // Outside every edit it agrees with the exact shift.
+        assert_eq!(map_position(LineCol::new(4, 1), &edits), LineCol::new(5, 1));
     }
 
     #[test]

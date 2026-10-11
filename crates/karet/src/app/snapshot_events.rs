@@ -14,6 +14,20 @@ impl App {
         // snapshot does not say what changed -- an undo, a formatter, a
         // reload -- so it is recovered from the two texts.
         let held = self.inlay_hint_version(doc);
+        // Navigation entries ride the same recovered edit, so it is also worth
+        // recovering when only they are positioned against the old text.
+        let wanted_versions: Vec<u64> = self
+            .all_tabs()
+            .filter_map(|tab| match &tab.kind {
+                TabKind::Code {
+                    doc: Some(d),
+                    buffer,
+                    ..
+                } if *d == doc => Some(buffer.version()),
+                _ => None,
+            })
+            .filter(|&version| held == Some(version) || self.navigation_holds(doc, version))
+            .collect();
         let mut carried: Option<(u64, Option<karet_core::TextEdit>)> = None;
         for tab in self.all_tabs_mut() {
             let matches = matches!(&tab.kind, TabKind::Code { doc: Some(d), .. } if *d == doc);
@@ -40,7 +54,9 @@ impl App {
                     let old_version = buffer.version();
                     advanced |= snap.version > old_version;
                     let new_text = snap.buffer.text();
-                    if carried.is_none() && snap.version > old_version && held == Some(old_version)
+                    if carried.is_none()
+                        && snap.version > old_version
+                        && wanted_versions.contains(&old_version)
                     {
                         carried = Some((old_version, super::inlay::diff_edit(text, &new_text)));
                     }
@@ -80,6 +96,7 @@ impl App {
         }
         if let Some((from, edit)) = carried {
             self.shift_inlay_hints(doc, from, snap.version, edit.as_slice());
+            self.shift_navigation(doc, from, snap.version, edit.as_slice());
         }
         if advanced {
             self.note_inlay_edit(doc, Instant::now());

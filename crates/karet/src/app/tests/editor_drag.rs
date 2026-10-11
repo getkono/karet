@@ -1,90 +1,102 @@
 //! The editor's pointer selection drag: word and line granularity, and the
 //! autoscroll that keeps a drag alive past the edge of the viewport.
 
-use super::support::*;
+use super::harness::*;
 use crate::app::*;
 
-/// An app with `text` in a code tab and one focused pane covering `area`.
-fn drag_app(text: &str, area: Rect) -> App {
-    let mut app = app();
-    app.push_tab(text_tab("t.rs", text));
-    app.pane_frames = vec![content_frame(&app, area)];
-    app.editor_rect = area;
-    app
+/// A press, a drag to `to`, and a release there, all with no modifier.
+fn drag(from: At, to: At) -> Vec<Step> {
+    let none = KeyModifiers::NONE;
+    vec![
+        Step::Down(from, none),
+        Step::Drag(to, none),
+        Step::Up(to, none),
+    ]
 }
 
-fn press(col: u16, row: u16) -> MouseEvent {
-    MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
-        column: col,
-        row,
-        modifiers: KeyModifiers::NONE,
+/// A double click on `from` whose second press drags to `to`.
+fn double_click_drag(from: At, to: At) -> Vec<Step> {
+    let mut steps = vec![click(from)];
+    steps.extend(drag(from, to));
+    steps
+}
+
+/// Drag rows (`docs/editing-behavior.md`, "Drag").
+#[test]
+fn drag_selection_conformance() {
+    check(vec![
+        case(
+            "a plain drag lands on the exact characters under the pointer",
+            "|foo bar baz",
+            drag(text(0, 5), text(0, 7)),
+            "foo b[ar|] baz",
+        ),
+        case(
+            "a plain drag backward puts the head first",
+            "|foo bar baz",
+            drag(text(0, 7), text(0, 5)),
+            "foo b[|ar] baz",
+        ),
+        case(
+            "a double-click drag swallows whole words, never a partial one",
+            "|foo bar baz qux",
+            double_click_drag(text(0, 5), text(0, 9)),
+            "foo [bar baz|] qux",
+        ),
+        case(
+            "a double-click drag backward keeps the word it started on",
+            "|foo bar baz qux",
+            double_click_drag(text(0, 9), text(0, 1)),
+            "[|foo bar baz] qux",
+        ),
+    ]);
+}
+
+#[test]
+fn a_double_click_near_the_right_edge_selects_the_word_under_the_pointer() {
+    // The pointer stays on one cell for both presses, as a real one does. Were
+    // the first press to scroll the line (as the keyboard's margin would),
+    // the second would land on a different word.
+    let line: String = (0..40).map(|n| format!("w{n:02} ")).collect();
+    let marked = format!("|{line}");
+    let mut rig = Rig::sized(&marked, 40, 8);
+    let width = u32::from(rig.tab().editor.content_width());
+    let mut col = width.saturating_sub(2);
+    if col % 4 == 3 {
+        col -= 1;
     }
-}
-
-#[test]
-fn a_double_click_drag_extends_by_whole_words() {
-    let area = Rect {
-        x: 0,
-        y: 0,
-        width: 40,
-        height: 5,
-    };
-    let mut app = drag_app("foo bar baz qux", area);
-    // Double-click "bar" (buffer col 5 -> screen col 8), then drag into "baz".
-    app.handle_editor_click(press(8, 0));
-    app.handle_editor_click(press(8, 0));
-    app.drag_select_to(12, 0);
+    let (x, y) = rig.cell(text(0, col));
+    rig.run(&[click(At::Cell(x, y)), click(At::Cell(x, y))]);
 
     assert_eq!(
-        app.tabs[app.active].editor.selection_range(),
-        Some(Range {
-            start: LineCol::new(0, 4),
-            end: LineCol::new(0, 11),
-        }),
-        "the drag swallows whole words, never a partial one"
+        rig.tab().editor.scroll_col,
+        0,
+        "the click scrolled the line"
     );
-}
-
-#[test]
-fn a_double_click_drag_backwards_keeps_the_word_it_started_on() {
-    let area = Rect {
-        x: 0,
-        y: 0,
-        width: 40,
-        height: 5,
-    };
-    let mut app = drag_app("foo bar baz qux", area);
-    // Double-click "baz" (buffer col 9 -> screen col 12), then drag back into "foo".
-    app.handle_editor_click(press(12, 0));
-    app.handle_editor_click(press(12, 0));
-    app.drag_select_to(4, 0);
-
+    let start = col / 4 * 4;
     assert_eq!(
-        app.tabs[app.active].editor.selection_range(),
-        Some(Range {
-            start: LineCol::new(0, 0),
-            end: LineCol::new(0, 11),
-        }),
-        "dragging back keeps the opening word and adds whole words before it"
+        rig.tab()
+            .editor
+            .selection_range()
+            .map(|range| (range.start.col, range.end.col)),
+        Some((start, start + 3))
+    );
+    // The view is unwrapped, so the keyboard does scroll it.
+    rig.step(key(KeyCode::End));
+    assert!(
+        rig.tab().editor.scroll_col > 0,
+        "the line does not overflow"
     );
 }
 
 #[test]
 fn a_triple_click_drag_extends_by_whole_lines() {
-    let area = Rect {
-        x: 0,
-        y: 0,
-        width: 40,
-        height: 5,
-    };
-    let mut app = drag_app("alpha\nbravo\ncharlie\n", area);
-    for _ in 0..3 {
-        app.handle_editor_click(press(8, 0));
-    }
-    app.drag_select_to(9, 1);
+    let mut rig = Rig::new("|alpha\nbravo\ncharlie\n");
+    let mut steps = vec![click(text(0, 2)), click(text(0, 2))];
+    steps.extend(drag(text(0, 2), text(1, 3)));
+    rig.run(&steps);
 
-    let sel = app.tabs[app.active].editor.selection_range();
+    let sel = rig.tab().editor.selection_range();
     assert_eq!(
         sel.map(|range| (range.start.line, range.end.line)),
         Some((0, 1)),
@@ -94,47 +106,25 @@ fn a_triple_click_drag_extends_by_whole_lines() {
 }
 
 #[test]
-fn a_single_click_drag_still_extends_character_by_character() {
-    let area = Rect {
-        x: 0,
-        y: 0,
-        width: 40,
-        height: 5,
-    };
-    let mut app = drag_app("foo bar baz", area);
-    app.handle_editor_click(press(8, 0));
-    app.drag_select_to(10, 0);
-
-    assert_eq!(
-        app.tabs[app.active].editor.selection_range(),
-        Some(Range {
-            start: LineCol::new(0, 5),
-            end: LineCol::new(0, 7),
-        }),
-        "a plain drag lands on the exact characters under the pointer"
-    );
-}
-
-#[test]
 fn dragging_below_the_viewport_scrolls_and_keeps_extending() {
-    let area = Rect {
-        x: 0,
-        y: 0,
-        width: 40,
-        height: 4,
-    };
-    let text: String = (0..40).map(|n| format!("line {n}\n")).collect();
-    let mut app = drag_app(&text, area);
-    app.handle_editor_click(press(8, 0));
+    let text_body: String = (0..40).map(|n| format!("line {n}\n")).collect();
+    let marked = format!("|{text_body}");
+    let mut rig = Rig::sized(&marked, 40, 8);
+    let area = rig.app.editor_rect;
+    let (x, _) = rig.cell(text(0, 4));
+    let below = At::Cell(x, area.bottom());
+    rig.step(Step::Down(text(0, 4), KeyModifiers::NONE));
 
     // Park the pointer one row below the viewport and let the loop tick.
-    app.drag_select_to(8, area.bottom());
-    let before = app.tabs[app.active].editor.scroll_line;
-    app.tick_drag_autoscroll();
-    let after = app.tabs[app.active].editor.scroll_line;
-    assert!(after > before, "the viewport creeps toward the pointer");
+    rig.step(Step::Drag(below, KeyModifiers::NONE));
+    let before = rig.scroll_line();
+    rig.step(Step::Tick);
     assert!(
-        app.tabs[app.active]
+        rig.scroll_line() > before,
+        "the viewport creeps toward the pointer"
+    );
+    assert!(
+        rig.tab()
             .editor
             .selection_range()
             .is_some_and(|range| range.end.line > 0),
@@ -142,34 +132,24 @@ fn dragging_below_the_viewport_scrolls_and_keeps_extending() {
     );
 
     // The loop is told to come back for the next step.
-    assert!(app.drag_autoscroll_wake().is_some());
+    assert!(rig.app.drag_autoscroll_wake().is_some());
 
     // Releasing the button ends both the drag and the autoscroll.
-    app.handle_mouse(MouseEvent {
-        kind: MouseEventKind::Up(MouseButton::Left),
-        column: 8,
-        row: area.bottom(),
-        modifiers: KeyModifiers::NONE,
-    });
-    assert!(app.editor_drag.is_none());
-    assert_eq!(app.drag_autoscroll_wake(), None);
+    rig.step(Step::Up(below, KeyModifiers::NONE));
+    assert!(rig.app.editor_drag.is_none());
+    assert_eq!(rig.app.drag_autoscroll_wake(), None);
 }
 
 #[test]
 fn a_drag_inside_the_viewport_never_autoscrolls() {
-    let area = Rect {
-        x: 0,
-        y: 0,
-        width: 40,
-        height: 6,
-    };
-    let text: String = (0..40).map(|n| format!("line {n}\n")).collect();
-    let mut app = drag_app(&text, area);
-    app.handle_editor_click(press(4, 0));
-    app.drag_select_to(4, 2);
+    let text_body: String = (0..40).map(|n| format!("line {n}\n")).collect();
+    let marked = format!("|{text_body}");
+    let mut rig = Rig::sized(&marked, 40, 10);
+    rig.step(Step::Down(text(0, 1), KeyModifiers::NONE));
+    rig.step(Step::Drag(text(2, 1), KeyModifiers::NONE));
 
-    assert_eq!(app.drag_autoscroll_wake(), None);
-    let before = app.tabs[app.active].editor.scroll_line;
-    app.tick_drag_autoscroll();
-    assert_eq!(app.tabs[app.active].editor.scroll_line, before);
+    assert_eq!(rig.app.drag_autoscroll_wake(), None);
+    let before = rig.scroll_line();
+    rig.step(Step::Tick);
+    assert_eq!(rig.scroll_line(), before);
 }

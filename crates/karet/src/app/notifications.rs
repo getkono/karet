@@ -261,6 +261,7 @@ impl App {
         } else {
             self.docs.diagnostics.insert(doc, diagnostics);
         }
+        self.refresh_problems();
     }
 }
 

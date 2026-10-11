@@ -622,10 +622,10 @@ impl StatefulWidget for Editor<'_> {
         };
         if !self.word_wrap
             && state.follow_cursor
-            && let Some(target) = state.follow_col
+            && let Some((target, reveal)) = state.follow_col
         {
-            // Owed by a `scroll_to` that had no buffer, or by a reveal made
-            // before an unwrapped frame had measured the viewport.
+            // Re-resolved against the width this frame paints: the reveal's
+            // own estimate used the last frame's, or had none to use.
             state.scroll_col = reveal_column(
                 &line_chars(self.buffer, target.line),
                 state.scroll_col,
@@ -633,6 +633,7 @@ impl StatefulWidget for Editor<'_> {
                 width,
                 self.tab_width,
                 layout.hints_on(target.line),
+                reveal,
             );
         }
         let mut anchor = normalize_visual_anchor(
@@ -644,26 +645,53 @@ impl StatefulWidget for Editor<'_> {
                 subrow: state.scroll_subrow,
             },
         );
-        let initial_sticky = self.sticky_blocks(anchor, area.height);
-        let initial_content_height = area
-            .height
-            .saturating_sub(u16::try_from(initial_sticky.len()).unwrap_or(u16::MAX));
-        if self.word_wrap && state.follow_cursor {
-            anchor = reveal_visual_anchor(
-                self.buffer,
-                self.folds,
-                layout,
-                initial_content_height,
-                anchor,
-                state.cursor(),
-            );
+        let mut sticky = self.sticky_blocks(anchor, area.height);
+        if state.follow_cursor {
+            // Revealing moves the top, the top decides which headers stick,
+            // and the headers decide how many rows are left for the caret. So
+            // re-check until the caret is on a row the headers leave. A reveal
+            // only moves down while the caret is below the last row, so this
+            // settles; the bound is a backstop.
+            for _ in 0..=area.height {
+                let height = area
+                    .height
+                    .saturating_sub(u16::try_from(sticky.len()).unwrap_or(u16::MAX));
+                let revealed = if self.word_wrap {
+                    reveal_visual_anchor(
+                        self.buffer,
+                        self.folds,
+                        layout,
+                        height,
+                        anchor,
+                        state.cursor(),
+                    )
+                } else {
+                    VisualAnchor {
+                        line: reveal_line(
+                            self.folds,
+                            anchor.line,
+                            state.cursor().line,
+                            u32::from(height),
+                        ),
+                        subrow: 0,
+                    }
+                };
+                if revealed == anchor {
+                    break;
+                }
+                anchor = revealed;
+                sticky = self.sticky_blocks(anchor, area.height);
+            }
         }
         state.scroll_line = anchor.line;
         state.scroll_subrow = if self.word_wrap { anchor.subrow } else { 0 };
         state.follow_cursor = false;
         state.follow_col = None;
+        state.last_folds.clear();
+        state
+            .last_folds
+            .extend(self.folds.iter().copied().filter(|fold| fold.collapsed));
 
-        let sticky = self.sticky_blocks(anchor, area.height);
         state.sticky_rows = sticky.iter().map(|block| block.header_start).collect();
         state.sticky_height = u16::try_from(sticky.len()).unwrap_or(u16::MAX);
         state.last_height = area.height.saturating_sub(state.sticky_height);
