@@ -171,6 +171,11 @@ impl App {
                 let cursor = window_bottom(position, viewport, len);
                 self.todos.selection.move_to(cursor);
             },
+            ScrollSurface::ProblemResults => {
+                let len = self.problems.rows.len();
+                let cursor = window_bottom(position, viewport, len);
+                self.problems.selection.move_to(cursor);
+            },
             ScrollSurface::DebugResults => {
                 let len = self.debug_panel.rows.len();
                 let cursor = window_bottom(position, viewport, len);

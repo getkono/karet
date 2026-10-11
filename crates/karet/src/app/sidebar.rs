@@ -257,6 +257,7 @@ impl App {
             SidebarPanel::Spelling => self.spelling_select(delta),
             SidebarPanel::Todos => self.todos_select(delta),
             SidebarPanel::Debug => self.debug_select(delta),
+            SidebarPanel::Problems => self.problems_select(delta),
         }
     }
 
@@ -275,7 +276,8 @@ impl App {
             SidebarPanel::Search
             | SidebarPanel::Spelling
             | SidebarPanel::Todos
-            | SidebarPanel::Debug => {},
+            | SidebarPanel::Debug
+            | SidebarPanel::Problems => {},
         }
     }
 
@@ -352,6 +354,7 @@ impl App {
             SidebarPanel::Spelling => self.open_selected_spelling(),
             SidebarPanel::Todos => self.open_selected_todo(),
             SidebarPanel::Debug => self.debug_activate_row(),
+            SidebarPanel::Problems => self.open_selected_problem(),
             // The Search panel binds Enter in its own layer (Layer::SearchList).
             SidebarPanel::Search => {},
         }

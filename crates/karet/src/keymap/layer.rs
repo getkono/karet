@@ -35,6 +35,8 @@ pub enum SidebarPanel {
     Todos,
     /// The debugger: call stack, variables, console.
     Debug,
+    /// The diagnostics published for open documents, grouped by file.
+    Problems,
 }
 
 /// The content kind of the active editor tab — the third input to
@@ -100,6 +102,8 @@ pub enum FocusTarget {
     Todos,
     /// The debugger panel.
     Debug,
+    /// The Problems (diagnostics) panel.
+    Problems,
     /// The right-side outline panel.
     Outline,
 }
@@ -135,6 +139,7 @@ impl FocusTarget {
                 SidebarPanel::Spelling => FocusTarget::Spelling,
                 SidebarPanel::Todos => FocusTarget::Todos,
                 SidebarPanel::Debug => FocusTarget::Debug,
+                SidebarPanel::Problems => FocusTarget::Problems,
             },
         }
     }
@@ -154,6 +159,10 @@ pub enum Layer {
     SourceControl,
     /// Active when the right-side outline panel has focus.
     Outline,
+    /// Active when the Problems panel has focus (filter, severity).
+    Problems,
+    /// Active while editing the Problems panel's text filter.
+    ProblemsFilter,
     /// Active when a code or diff editor tab has focus.
     Editor,
     /// Active when a diff editor tab has focus.
@@ -210,6 +219,8 @@ pub enum Modal {
     SearchInput,
     /// The workspace Search panel while navigating results.
     SearchList,
+    /// The Problems panel while editing its text filter.
+    ProblemsFilter,
     /// The Source-Control commit-message input.
     CommitInput,
     /// The go-to-commit (revision) input.
@@ -273,6 +284,9 @@ pub fn active_layers(ctx: Context) -> &'static [Layer] {
         Some(Modal::ExplorerEdit) => &[L::ExplorerEdit],
         Some(Modal::SearchInput) => &[L::SearchInput, L::Global],
         Some(Modal::SearchList) => &[L::SearchList, L::Global],
+        // Like the Search query: typing is captured, but the global chords (and
+        // F8 / Shift+F8 among them) still reach the app.
+        Some(Modal::ProblemsFilter) => &[L::ProblemsFilter, L::Global],
         None => match ctx.target {
             FocusTarget::Outline => &[L::Outline, L::Global],
             FocusTarget::Editor => &[L::Editor, L::Global],
@@ -303,6 +317,9 @@ pub fn active_layers(ctx: Context) -> &'static [Layer] {
             FocusTarget::Todos => &[L::Sidebar, L::Global],
             // Same shape again: rows, expand/collapse, activate.
             FocusTarget::Debug => &[L::Sidebar, L::Global],
+            // A results list with two panel keys of its own (filter, severity)
+            // over the shared sidebar verbs.
+            FocusTarget::Problems => &[L::Problems, L::Sidebar, L::Global],
             FocusTarget::SourceControl => &[L::SourceControl, L::Sidebar, L::Global],
         },
     }

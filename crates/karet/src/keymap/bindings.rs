@@ -36,6 +36,11 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(Global, true,  false, false, Char('4'), Command::SelectPanel(SidebarPanel::Spelling)),
     b(Global, true,  false, false, Char('5'), Command::SelectPanel(SidebarPanel::Todos)),
     b(Global, true,  false, false, Char('6'), Command::SelectPanel(SidebarPanel::Debug)),
+    b(Global, true,  false, false, Char('7'), Command::SelectPanel(SidebarPanel::Problems)),
+    // Next / previous problem in the active file (VS Code parity). Global, so the
+    // walk also works from the Problems panel, which hands focus to the editor.
+    b(Global, false, false, false, F(8),      Command::NextProblem),
+    b(Global, false, true,  false, F(8),      Command::PrevProblem),
     b(Global, false, false, false, Tab,       Command::ToggleFocus),
 
     // The top-level view switcher. A `Ctrl+K` chord rather than `Ctrl+Shift+<digit>`:
@@ -125,6 +130,15 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(ExplorerEdit, true,  false, false, Char('c'), Command::Copy),
     b(ExplorerEdit, true,  false, false, Char('x'), Command::Cut),
     b(ExplorerEdit, true,  false, false, Char('v'), Command::Paste),
+
+    // Problems panel (sidebar focus, Problems active). Listed before the generic
+    // sidebar bindings so its keys win.
+    b(Problems, false, false, false, Char('/'), Command::ProblemsFilter),
+    b(Problems, false, false, false, Char('s'), Command::ProblemsCycleSeverity),
+    // Problems panel: editing the text filter. Enter keeps the filter, Esc drops it.
+    b(ProblemsFilter, false, false, false, Enter, Command::ProblemsFilterAccept),
+    b(ProblemsFilter, false, false, false, Esc,   Command::ProblemsFilterCancel),
+    b(ProblemsFilter, true,  false, false, Char('v'), Command::Paste),
 
     // Sidebar focus. Selection verbs are shared across every list panel (explorer
     // and source control) — they route to the focused panel's selection in dispatch.

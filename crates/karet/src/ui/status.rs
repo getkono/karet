@@ -1,5 +1,4 @@
 use super::*;
-use crate::app::LanguageServerBadgeSummary;
 
 /// What joins the right strip's segments. Three cells wide.
 const SEPARATOR: &str = " \u{b7} ";
@@ -32,10 +31,33 @@ pub(super) fn draw_status(f: &mut Frame, app: &mut App, theme: &Theme, area: Rec
     // from a joined string meant re-finding the label inside it — which broke as
     // soon as the label could appear twice or the strip was truncated.
     //
-    // Segment order, outermost first: cursor position (code tabs only), encoding
-    // and EOL, today's coding total, the debug session, the language, its
-    // spelling language, and the language-server badge.
+    // Segment order, left to right: the workspace's error and warning counts,
+    // cursor position (code tabs only), encoding and EOL, today's coding total,
+    // the debug session, the language, its spelling language, and the
+    // language-server badge.
     let mut segments: Vec<String> = Vec::new();
+    // Each clickable segment: its index, its colour, and the command it runs.
+    let mut actions: Vec<(usize, Style, Command)> = Vec::new();
+    // The counts are workspace-wide, so they show in every view, and always —
+    // zero included — so the way into the Problems panel never moves.
+    let (errors, warnings) = app.problems.counts();
+    for (count, letter, role) in [
+        (errors, 'E', ThemeRole::DiagnosticError),
+        (warnings, 'W', ThemeRole::DiagnosticWarning),
+    ] {
+        let style = if count > 0 {
+            bar.fg(theme.role(role).to_ratatui())
+                .add_modifier(Modifier::BOLD)
+        } else {
+            bar
+        };
+        actions.push((
+            segments.len(),
+            style,
+            Command::SelectPanel(SidebarPanel::Problems),
+        ));
+        segments.push(format!("{letter} {count}"));
+    }
     if let Some(
         tab @ Tab {
             kind: TabKind::Code { .. },
@@ -71,11 +93,15 @@ pub(super) fn draw_status(f: &mut Frame, app: &mut App, theme: &Theme, area: Rec
     }) {
         segments.push(spelling.display_name().to_owned());
     }
-    let lsp_badge = active_tab.and(app.active_language_server_badge());
-    let lsp_index = lsp_badge.map(|badge| {
+    if let Some(badge) = active_tab.and(app.active_language_server_badge()) {
+        actions.push((
+            segments.len(),
+            bar.fg(theme.role(lsp_badge::role(badge.state)).to_ratatui())
+                .add_modifier(Modifier::BOLD),
+            Command::ManageLanguageServers,
+        ));
         segments.push(lsp_badge::spelled(badge));
-        segments.len().saturating_sub(1)
-    });
+    }
 
     let right_width = status_right_width(&segments);
     let left = Rect {
@@ -143,11 +169,9 @@ pub(super) fn draw_status(f: &mut Frame, app: &mut App, theme: &Theme, area: Rec
     let strip_x = area
         .x
         .saturating_add(area.width.saturating_sub(right_width));
-    let (right_line, badge_hit) =
-        status_right(&segments, lsp_badge.zip(lsp_index), strip_x, bar, theme);
-    if let Some((start, end)) = badge_hit.filter(|_| right_width <= area.width) {
-        app.status_hits
-            .push((start, end, Command::ManageLanguageServers));
+    let (right_line, action_hits) = status_right(&segments, &actions, strip_x, bar);
+    if right_width <= area.width {
+        app.status_hits.extend(action_hits);
     }
     karet_widgets::status::StatusBar {
         bar,
@@ -170,21 +194,20 @@ fn status_right_width(segments: &[String]) -> u16 {
     content.saturating_add(separators).saturating_add(2)
 }
 
-/// Assemble the right strip, colouring the badge segment and reporting the
-/// columns it occupies so a click can find it.
+/// Assemble the right strip, colouring each action segment and reporting the
+/// columns it occupies with the command a click there runs.
 ///
-/// `badge` names both the state to colour by and which segment carries it; the
-/// index is passed rather than searched for because the caller is the only thing
-/// that knows where it pushed it.
+/// `actions` names each clickable segment by index, with its style and command;
+/// the index is passed rather than searched for because the caller is the only
+/// thing that knows where it pushed it, and a label can appear twice.
 fn status_right(
     segments: &[String],
-    badge: Option<(LanguageServerBadgeSummary, usize)>,
+    actions: &[(usize, Style, Command)],
     strip_x: u16,
     bar: Style,
-    theme: &Theme,
-) -> (Line<'static>, Option<(u16, u16)>) {
+) -> (Line<'static>, Vec<(u16, u16, Command)>) {
     let mut spans: Vec<Span<'static>> = Vec::new();
-    let mut hit = None;
+    let mut hits = Vec::new();
     let mut x = strip_x.saturating_add(1);
     spans.push(Span::styled(" ".to_owned(), bar));
     for (index, segment) in segments.iter().enumerate() {
@@ -193,19 +216,18 @@ fn status_right(
             x = x.saturating_add(cell_width(SEPARATOR));
         }
         let width = cell_width(segment);
-        let style = match badge {
-            Some((summary, badge_index)) if badge_index == index => {
-                hit = Some((x, x.saturating_add(width)));
-                bar.fg(theme.role(lsp_badge::role(summary.state)).to_ratatui())
-                    .add_modifier(Modifier::BOLD)
+        let style = match actions.iter().find(|&&(at, ..)| at == index) {
+            Some(&(_, style, command)) => {
+                hits.push((x, x.saturating_add(width), command));
+                style
             },
-            _ => bar,
+            None => bar,
         };
         spans.push(Span::styled(segment.clone(), style));
         x = x.saturating_add(width);
     }
     spans.push(Span::styled(" ".to_owned(), bar));
-    (Line::from(spans), hit)
+    (Line::from(spans), hits)
 }
 
 /// The status bar's cursor-position label for a code tab: `"Ln {line}, Col
