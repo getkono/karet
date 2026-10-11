@@ -200,6 +200,9 @@ impl App {
             Command::CommitGraphCopyIssueUrls => self.commit_graph_copy_issue_urls(),
             Command::TodoToggleGrouping => self.todos_toggle_grouping(),
             Command::GoToDefinition => self.request_definition(),
+            Command::RenameSymbol => self.start_rename(),
+            Command::RenameSubmit => self.rename_submit(),
+            Command::RenameCancel => self.rename_cancel(),
             Command::JumpBack => self.jump_back(),
             Command::InsertChar(c) => {
                 if !self.try_inline_macro(karet_syntax::InlineMacroTrigger::Character(c)) {

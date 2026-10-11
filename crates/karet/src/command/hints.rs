@@ -55,6 +55,8 @@ impl Command {
             Self::TodoScan | Self::TodoToggleGrouping => "todos",
             Self::SpellingScan => "scan",
             Self::GoToDefinition => "definition",
+            Self::RenameSymbol | Self::RenameSubmit => "rename",
+            Self::RenameCancel => "cancel",
             Self::JumpBack => "back",
             Self::OpenQuickOpen => "open",
             Self::OpenCommandPalette => "commands",

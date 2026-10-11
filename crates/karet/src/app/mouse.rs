@@ -105,6 +105,7 @@ impl App {
         // Mouse clicks, drag-selection, tab switches, and pane focus changes can all
         // move the active caret without passing through the keyboard input hook.
         self.reconcile_completion();
+        self.reconcile_rename();
         self.request_live_blame();
     }
 
@@ -123,6 +124,11 @@ impl App {
         }
         if self.overlay.is_some() {
             return;
+        }
+        // A click anywhere settles the rename prompt as Esc would, then does
+        // what it would have done without it.
+        if matches!(mouse.kind, MouseEventKind::Down(_)) {
+            self.rename = None;
         }
         if self.handle_context_menu_mouse(mouse) {
             return;

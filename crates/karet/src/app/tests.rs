@@ -33,6 +33,7 @@ mod preview;
 #[cfg(feature = "images")]
 mod preview_images;
 mod remote;
+mod rename;
 mod review;
 mod save;
 mod save_cursor;

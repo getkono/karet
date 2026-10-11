@@ -32,6 +32,7 @@ mod notifications;
 mod panes;
 mod pending;
 mod remote_actions;
+pub(crate) mod rename;
 mod review;
 mod runtime;
 pub(crate) mod scm;
@@ -520,6 +521,10 @@ pub struct App {
     pub(crate) markdown_link_hover: Option<(u16, u16)>,
     /// The definition request awaiting an answer, if any.
     pub(crate) pending_definition: Option<definition::PendingDefinition>,
+    /// The open inline rename prompt (F2), if any.
+    pub(crate) rename: Option<rename::RenamePrompt>,
+    /// The submitted rename awaiting the backend's answer, if any.
+    pub(crate) pending_rename: Option<rename::PendingRename>,
     /// Pre-jump positions, most recent last, for "Go Back" after a definition jump.
     pub(crate) definition_jumps: VecDeque<definition::JumpOrigin>,
     /// The Ctrl-hovered symbol the editor should underline as navigable.

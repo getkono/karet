@@ -189,6 +189,8 @@ pub enum Layer {
     CommitConsole,
     /// Active while the go-to-commit (revision) input is open.
     RevInput,
+    /// Active while the inline rename-symbol prompt is open.
+    Rename,
     /// Active while a context menu is open.
     ContextMenu,
     /// Active while a confirmation dialog is open.
@@ -214,6 +216,8 @@ pub enum Modal {
     CommitInput,
     /// The go-to-commit (revision) input.
     RevInput,
+    /// The inline rename-symbol prompt.
+    Rename,
     /// A context menu.
     ContextMenu,
     /// A confirmation dialog awaiting a choice.
@@ -268,6 +272,7 @@ pub fn active_layers(ctx: Context) -> &'static [Layer] {
         Some(Modal::CommitInput) => &[L::CommitInput],
         Some(Modal::CommitConsole) => &[L::CommitConsole],
         Some(Modal::RevInput) => &[L::RevInput],
+        Some(Modal::Rename) => &[L::Rename],
         Some(Modal::ContextMenu) => &[L::ContextMenu],
         Some(Modal::Confirm) => &[L::Confirm],
         Some(Modal::ExplorerEdit) => &[L::ExplorerEdit],

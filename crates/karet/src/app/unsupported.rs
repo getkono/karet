@@ -53,6 +53,15 @@ impl App {
             {
                 pending.refused = true;
             }
+            // The rename's own answer -- an empty, unapplied edit -- follows;
+            // this notice already says why.
+            if self
+                .pending_rename
+                .as_ref()
+                .is_some_and(|pending| pending.id == id)
+            {
+                self.pending_rename = None;
+            }
         }
         self.notify(
             Report::Refusal,

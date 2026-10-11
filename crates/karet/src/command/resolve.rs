@@ -52,6 +52,7 @@ static PALETTE: &[Command] = &[
     Command::NotebookInterrupt,
     Command::NotebookRestartKernel,
     Command::GoToDefinition,
+    Command::RenameSymbol,
     Command::JumpBack,
     Command::ToggleInlineBlame,
     Command::ShowSeamView,
