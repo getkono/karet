@@ -457,8 +457,26 @@ fn plain_text_extent_and_reveal_are_unchanged() {
     }
     // And the reveal still places a far-right caret `margin` cells from the
     // edge: 22 cells, margin 10, caret at 15 -> scroll 4.
-    assert_eq!(reveal_column(&chars, 0, 15, 22, 4, none.line(0)), 4);
-    assert_eq!(reveal_column(&chars, 4, 15, 22, 4, none.line(0)), 4);
-    assert_eq!(reveal_column(&chars, 4, 2, 22, 4, none.line(0)), 0);
-    assert_eq!(reveal_column(&chars, 20, 12, 22, 4, none.line(0)), 2);
+    let margin = |from, col| reveal_column(&chars, from, col, 22, 4, none.line(0), Reveal::Margin);
+    assert_eq!(margin(0, 15), 4);
+    assert_eq!(margin(4, 15), 4);
+    assert_eq!(margin(4, 2), 0);
+    assert_eq!(margin(20, 12), 2);
+}
+
+#[test]
+fn a_minimal_reveal_scrolls_only_for_an_off_screen_caret() {
+    // The pointer's reveal: a caret anywhere on the 22 visible cells keeps
+    // the scroll, edges included; one past either edge scrolls just far
+    // enough to sit on that edge.
+    let chars: Vec<char> = "abcdefghijklmnopqrstuvwxyz".chars().collect();
+    let none = crate::hint::HintIndex::new(&[]);
+    let minimal =
+        |from, col| reveal_column(&chars, from, col, 22, 4, none.line(0), Reveal::Minimal);
+    assert_eq!(minimal(0, 0), 0, "left edge");
+    assert_eq!(minimal(0, 21), 0, "right edge");
+    assert_eq!(minimal(4, 4), 4, "scrolled, left edge");
+    assert_eq!(minimal(4, 25), 4, "scrolled, right edge");
+    assert_eq!(minimal(0, 22), 1, "one past the right edge");
+    assert_eq!(minimal(4, 3), 3, "one past the left edge");
 }

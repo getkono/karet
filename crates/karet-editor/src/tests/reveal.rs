@@ -153,9 +153,10 @@ fn a_reveal_is_a_fixed_point_when_a_hint_straddles_the_margin() {
     let hints = [hint(2, "::::::::::"), hint(5, "++++++++++")];
     let index = crate::hint::HintIndex::new(&hints);
     let on = index.line(0);
-    let from_start = reveal_column(&chars, 0, 15, 30, 4, on);
-    assert_eq!(reveal_column(&chars, from_start, 15, 30, 4, on), from_start);
-    let from_past = reveal_column(&chars, 14, 15, 30, 4, on);
+    let reveal = |from| reveal_column(&chars, from, 15, 30, 4, on, Reveal::Margin);
+    let from_start = reveal(0);
+    assert_eq!(reveal(from_start), from_start);
+    let from_past = reveal(14);
     assert_eq!(from_past, from_start, "reached from the right");
 }
 

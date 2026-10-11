@@ -369,7 +369,7 @@ fn overflow_scrolling_and_cursor_margin_are_clamped() {
 }
 
 #[test]
-fn overflow_caret_clamps_to_horizontal_edges() {
+fn overflow_caret_scrolled_off_either_side_is_hidden() {
     let buffer = TextBuffer::from_text("abcdefghijklmnopqrstuvwxyz");
     let mut state = EditorState::new();
     let area = Rect::new(0, 0, 10, 1); // 3-cell gutter, 7 content cells.
@@ -378,8 +378,13 @@ fn overflow_caret_clamps_to_horizontal_edges() {
     state.scroll_col = 10;
 
     state.place_caret(LineCol::new(0, 2));
-    assert_eq!(state.primary_caret_cell(area, &buffer, &[]), Some((3, 0)));
+    assert_eq!(state.primary_caret_cell(area, &buffer, &[]), None, "left");
     state.place_caret(LineCol::new(0, 22));
+    assert_eq!(state.primary_caret_cell(area, &buffer, &[]), None, "right");
+    // The first and last visible cells still hold a caret.
+    state.place_caret(LineCol::new(0, 10));
+    assert_eq!(state.primary_caret_cell(area, &buffer, &[]), Some((3, 0)));
+    state.place_caret(LineCol::new(0, 16));
     assert_eq!(state.primary_caret_cell(area, &buffer, &[]), Some((9, 0)));
 
     Editor::new(&buffer)
