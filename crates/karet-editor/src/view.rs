@@ -613,7 +613,7 @@ impl StatefulWidget for Editor<'_> {
         // a later mouse click resolves against the hints this frame painted.
         // Held locally until then because `layout` borrows it while the loop
         // is still assigning scroll positions.
-        let hint_index = HintIndex::new(self.inlay_hints);
+        let hint_index = HintIndex::new(self.inlay_hints).with_prefixes(self.decorations);
         let layout = Layout {
             width,
             tab_width: self.tab_width,

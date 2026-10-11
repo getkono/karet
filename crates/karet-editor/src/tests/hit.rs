@@ -244,3 +244,123 @@ fn a_click_below_a_collapsed_last_fold_lands_at_the_end_of_its_header() {
         LineCol::new(0, 4)
     );
 }
+
+/// `before` inline text `text` over line 0.
+fn before_text(text: &str) -> Vec<Decoration> {
+    Range::new(LineCol::new(0, 0), LineCol::new(0, 1))
+        .map(|range| Decoration {
+            range,
+            kind: DecorationKind::InlineText {
+                text: text.to_owned(),
+                before: true,
+            },
+            role: None,
+        })
+        .into_iter()
+        .collect()
+}
+
+/// The row `y` as painted.
+fn row(target: &Buffer, y: u16) -> String {
+    (0..target.area.width)
+        .map(|x| target[(x, y)].symbol().chars().next().unwrap_or(' '))
+        .collect()
+}
+
+#[test]
+fn before_inline_text_shifts_clicks_and_the_caret_as_it_shifts_the_text() {
+    let buffer = TextBuffer::from_text("abc\ndef");
+    let decorations = before_text("» ");
+    let area = Rect::new(0, 0, 20, 2);
+    let mut state = EditorState::new();
+    state.place_caret(LineCol::new(0, 1));
+    let mut target = Buffer::empty(area);
+    Editor::new(&buffer)
+        .decorations(&decorations)
+        .render(area, &mut target, &mut state);
+
+    assert_eq!(symbol(&target, GUTTER + 2, 0), "a");
+    assert_eq!(
+        state.pos_at(area, &buffer, &[], GUTTER + 3, 0),
+        LineCol::new(0, 1)
+    );
+    // A click on the inline text itself lands on the line's first column.
+    assert_eq!(
+        state.pos_at(area, &buffer, &[], GUTTER, 0),
+        LineCol::new(0, 0)
+    );
+    assert_eq!(
+        state.primary_caret_cell(area, &buffer, &[]),
+        Some((GUTTER + 3, 0)),
+        "drawn on the `b`"
+    );
+    // The undecorated line is untouched.
+    assert_eq!(
+        state.pos_at(area, &buffer, &[], GUTTER + 1, 1),
+        LineCol::new(1, 1)
+    );
+}
+
+#[test]
+fn before_inline_text_takes_its_cells_from_the_first_wrapped_row() {
+    let buffer = TextBuffer::from_text("alpha beta gamma");
+    let decorations = before_text("»»»» ");
+    let area = Rect::new(0, 0, 13, 3);
+    let mut state = EditorState::new();
+    state.place_caret(LineCol::new(0, 3));
+    let mut target = Buffer::empty(area);
+    Editor::new(&buffer)
+        .decorations(&decorations)
+        .word_wrap(true)
+        .render(area, &mut target, &mut state);
+
+    // Five cells of text leave room for `alpha` alone on the first row.
+    assert!(
+        row(&target, 0).ends_with("»»»» alpha"),
+        "{:?}",
+        row(&target, 0)
+    );
+    assert!(
+        row(&target, 1).starts_with("    beta "),
+        "{:?}",
+        row(&target, 1)
+    );
+    assert_eq!(
+        state.primary_caret_cell(area, &buffer, &[]),
+        Some((GUTTER + 8, 0))
+    );
+    assert_eq!(
+        state.pos_at(area, &buffer, &[], GUTTER + 8, 0),
+        LineCol::new(0, 3)
+    );
+    // The continuation row carries no inline text.
+    assert_eq!(
+        state.pos_at(area, &buffer, &[], GUTTER + 1, 1),
+        LineCol::new(0, 6)
+    );
+}
+
+#[test]
+fn before_inline_text_narrows_the_room_a_reveal_scrolls_into() {
+    let line: String = ('a'..='z').collect();
+    let buffer = TextBuffer::from_text(&line);
+    let decorations = before_text("»»»» ");
+    let area = Rect::new(0, 0, 13, 1);
+    let mut state = EditorState::new();
+    let mut target = Buffer::empty(area);
+    let mut render = |state: &mut EditorState| {
+        Editor::new(&buffer)
+            .decorations(&decorations)
+            .render(area, &mut target, state);
+    };
+    render(&mut state);
+    state.goto(&buffer, LineCol::new(0, 26));
+    render(&mut state);
+    let Some((x, _)) = state.primary_caret_cell(area, &buffer, &[]) else {
+        unreachable!(
+            "the end of the line is revealed, scrolled {}",
+            state.scroll_col
+        );
+    };
+    assert!(x < area.right());
+}

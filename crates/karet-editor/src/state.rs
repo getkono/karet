@@ -880,15 +880,16 @@ impl EditorState {
                 .copied()
                 .unwrap_or_else(|| VisualRange::empty(line_len(buffer, anchor.line)));
             let chars = line_chars(buffer, anchor.line);
+            let hints = layout.hints_on(anchor.line);
             let hit = LineCol::new(
                 anchor.line,
                 source_col_at_display_offset(
                     &chars,
                     range.start,
                     range.end,
-                    rel_col,
+                    rel_col.saturating_sub(row_lead(hints, anchor.subrow == 0)),
                     self.last_tab_width,
-                    layout.hints_on(anchor.line),
+                    hints,
                 ),
             );
             // Past the end of a row the line continues below: the same column
@@ -916,20 +917,17 @@ impl EditorState {
             line = next;
         }
         let line = line.min(line_count - 1);
-        let chars: Vec<char> = buffer
-            .line(line as usize)
-            .unwrap_or_default()
-            .chars()
-            .collect();
+        let chars = line_chars(buffer, line);
+        let hints = self.hints_on(line);
         LineCol::new(
             line,
             source_col_at_display_offset(
                 &chars,
                 self.scroll_col,
                 chars.len() as u32,
-                rel_col,
+                rel_col.saturating_sub(row_lead(hints, true)),
                 self.last_tab_width,
-                self.hints_on(line),
+                hints,
             ),
         )
     }
