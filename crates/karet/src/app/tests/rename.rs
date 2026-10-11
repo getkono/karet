@@ -231,6 +231,58 @@ fn the_applied_rename_is_reported_and_opens_background_tabs() {
     assert_eq!(closes, vec![DocumentId(40)]);
 }
 
+/// The code tabs over `path`, and the `OpenDocument`s the backend got for it.
+fn code_tabs_and_opens(backend: &RecordingBackend, app: &App, path: &Path) -> (usize, usize) {
+    let tabs = app
+        .tabs
+        .iter()
+        .filter(|tab| matches!(tab.kind, TabKind::Code { .. }) && tab.path() == Some(path))
+        .count();
+    let opens = sent(backend, |_, command| {
+        matches!(command, SessionCommand::OpenDocument { path: p, .. } if p == path).then_some(())
+    })
+    .len();
+    (tabs, opens)
+}
+
+#[test]
+fn an_edited_document_keeps_a_code_tab_whatever_else_shows_its_path() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    // Sniffed as binary, so an ordinary open would give a byte view.
+    let binary = dir.path().join("blob.dat");
+    std::fs::write(&binary, b"\0\x01\x02some_value\n").expect("write");
+    // Already shown, but only by a preview, which holds no reference.
+    let previewed = dir.path().join("notes.md");
+    std::fs::write(&previewed, "some_value\n").expect("write");
+    let (backend, mut app) = completion_app(SOURCE, LineCol::new(0, 6));
+    app.push_tab(Tab::document_converting(previewed.clone()));
+
+    app.on_backend_event(
+        None,
+        SessionEvent::WorkspaceEdit {
+            applied: AppliedWorkspaceEdit {
+                result: ApplyWorkspaceEditResult::applied(),
+                edited: vec![binary.clone(), previewed.clone()],
+                opened: vec![
+                    (DocumentId(41), binary.clone()),
+                    (DocumentId(42), previewed.clone()),
+                ],
+                ..AppliedWorkspaceEdit::default()
+            },
+        },
+    );
+
+    // Each edited document gets a code tab that takes its own reference
+    // before the backend's is released, so neither edit is discarded.
+    assert_eq!(code_tabs_and_opens(&backend, &app, &binary), (1, 1));
+    assert_eq!(code_tabs_and_opens(&backend, &app, &previewed), (1, 1));
+    let closes = sent(&backend, |_, command| match command {
+        SessionCommand::CloseDocument { doc } => Some(*doc),
+        _ => None,
+    });
+    assert_eq!(closes, vec![DocumentId(41), DocumentId(42)]);
+}
+
 #[test]
 fn a_failed_rename_says_why_and_a_moved_file_retargets_its_tab() {
     let (backend, mut app) = completion_app(SOURCE, LineCol::new(0, 6));
@@ -266,6 +318,101 @@ fn a_failed_rename_says_why_and_a_moved_file_retargets_its_tab() {
     let tab = &app.tabs[app.active];
     assert_eq!(tab.path(), Some(Path::new("lib.rs")));
     assert_eq!(tab.title, "lib.rs");
+}
+
+/// The prompt's name and selected text.
+fn field(app: &App) -> (String, Option<String>) {
+    app.rename.as_ref().map_or_else(Default::default, |prompt| {
+        (
+            prompt.text.clone(),
+            prompt.edit.selected_text(&prompt.text).map(str::to_owned),
+        )
+    })
+}
+
+#[test]
+fn the_prompt_field_edits_by_character_and_by_word() {
+    let (_backend, mut app) = completion_app(SOURCE, LineCol::new(0, 6));
+    app.dispatch(Command::RenameSymbol);
+    type_text(&mut app, "new_total value");
+
+    // Backspace takes a character, Ctrl+Backspace the word before the caret.
+    send_key(&mut app, KeyCode::Backspace, KeyModifiers::NONE);
+    assert_eq!(field(&app).0, "new_total valu");
+    send_key(&mut app, KeyCode::Backspace, KeyModifiers::CONTROL);
+    assert_eq!(field(&app).0, "new_total ");
+
+    // Word motion, then Delete forward by character and by word.
+    send_key(&mut app, KeyCode::Left, KeyModifiers::CONTROL);
+    send_key(&mut app, KeyCode::Delete, KeyModifiers::NONE);
+    assert_eq!(field(&app).0, "ew_total ");
+    send_key(&mut app, KeyCode::Delete, KeyModifiers::CONTROL);
+    assert_eq!(field(&app).0, " ");
+    send_key(&mut app, KeyCode::Delete, KeyModifiers::NONE);
+    assert_eq!(field(&app).0, "");
+
+    // Shift extends a selection by character and by word.
+    type_text(&mut app, "abc def");
+    send_key(&mut app, KeyCode::Home, KeyModifiers::NONE);
+    send_key(&mut app, KeyCode::Right, KeyModifiers::SHIFT);
+    assert_eq!(field(&app).1.as_deref(), Some("a"));
+    send_key(&mut app, KeyCode::End, KeyModifiers::NONE);
+    send_key(
+        &mut app,
+        KeyCode::Left,
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    );
+    assert_eq!(field(&app).1.as_deref(), Some("def"));
+
+    // Ctrl+A selects the whole name, which typing then replaces.
+    send_key(&mut app, KeyCode::Char('a'), KeyModifiers::CONTROL);
+    assert_eq!(field(&app).1, Some(field(&app).0));
+    type_text(&mut app, "x");
+    assert_eq!(field(&app), ("x".to_owned(), None));
+    let prompt = app.rename.as_ref().expect("prompt");
+    assert!(prompt.touched, "editing marks the name as the user's");
+}
+
+#[test]
+fn the_prompt_copies_cuts_and_pastes_its_own_field() {
+    let (backend, mut app) = completion_app(SOURCE, LineCol::new(0, 6));
+    app.dispatch(Command::RenameSymbol);
+    // An editor selection beneath the prompt must be left alone.
+    let active = app.active;
+    if let Tab {
+        kind: TabKind::Code { buffer, .. },
+        editor,
+        ..
+    } = &mut app.tabs[active]
+    {
+        editor.set_selection(buffer, LineCol::new(1, 0), LineCol::new(1, 5));
+    }
+
+    // Ctrl+C copies the prompt's selected name, not the editor's selection.
+    send_key(&mut app, KeyCode::Char('c'), KeyModifiers::CONTROL);
+    assert_eq!(last_message(&app).as_deref(), Some("copied selection"));
+    assert_eq!(field(&app).0, "some_value");
+
+    // Ctrl+X takes the name out of the field and edits nothing beneath it.
+    send_key(&mut app, KeyCode::Char('x'), KeyModifiers::CONTROL);
+    assert_eq!(field(&app).0, "");
+    assert!(app.rename.as_ref().is_some_and(|prompt| prompt.touched));
+    let edits = sent(&backend, |_, command| {
+        matches!(command, SessionCommand::ApplyChange { .. }).then_some(())
+    });
+    assert!(edits.is_empty(), "the buffer under the prompt is untouched");
+    // With nothing selected in the field, Ctrl+C copies nothing -- not the
+    // editor's selection beneath it.
+    send_key(&mut app, KeyCode::Char('c'), KeyModifiers::CONTROL);
+    assert_eq!(
+        last_message(&app).as_deref(),
+        Some("copy: no text selected")
+    );
+
+    // A paste lands in the field, and a name is one line: only the first
+    // line of a multi-line paste is taken.
+    app.handle_paste("total\nsecond line\n".to_owned());
+    assert_eq!(field(&app).0, "total");
 }
 
 #[test]

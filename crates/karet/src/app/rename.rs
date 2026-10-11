@@ -317,6 +317,13 @@ impl App {
     /// A new tab takes its own through the ordinary open, and that reference
     /// is then released, so the tab is left owning exactly one -- the same
     /// bookkeeping as any other tab.
+    ///
+    /// Only a code tab holds a document reference: a preview, placeholder, or
+    /// byte view over the same path does not, and neither does the tab a path
+    /// would ordinarily open as when it is too large, a notebook, or binary.
+    /// Releasing the backend's reference then would close the edited document
+    /// and discard its change, so such a document is given a code tab of its
+    /// own.
     fn adopt_workspace_edit_tabs(&mut self, applied: &AppliedWorkspaceEdit) {
         for (from, to) in &applied.renamed {
             for tab in self.all_tabs_mut() {
@@ -328,11 +335,15 @@ impl App {
         }
         for (doc, path) in &applied.opened {
             let target = canonical(path);
-            let shown = self
-                .all_tabs()
-                .any(|tab| !tab.is_diff() && tab.path().is_some_and(|p| canonical(p) == target));
+            let shown = self.all_tabs().any(|tab| {
+                matches!(tab.kind, TabKind::Code { .. })
+                    && tab.path().is_some_and(|p| canonical(p) == target)
+            });
             if !shown {
                 let mut tab = workspace::open_file(path);
+                if !matches!(tab.kind, TabKind::Code { .. }) {
+                    tab = workspace::open_as_text(path);
+                }
                 tab.view = self.alloc_view();
                 self.tabs.push(tab);
                 self.register_doc(self.tabs.len() - 1);
