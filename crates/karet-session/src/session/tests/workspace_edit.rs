@@ -273,6 +273,25 @@
             assert!(applied.result.applied);
             assert!(applied.opened.is_empty(), "not opened a second time");
             assert_eq!(text(&session, doc).as_deref(), Some("let new = 1;\n"));
+
+            // A symlink to the file is the same document too.
+            #[cfg(unix)]
+            {
+                let link = dir.path().join("link.rs");
+                std::os::unix::fs::symlink(&path, &link)?;
+                let applied = apply(
+                    &mut session,
+                    &mut events,
+                    WorkspaceEdit {
+                        changes: vec![(link, vec![edit(0, 4, 7, "old")])],
+                        ..WorkspaceEdit::default()
+                    },
+                )
+                .ok_or("no answer")?;
+                assert!(applied.result.applied);
+                assert!(applied.opened.is_empty(), "not opened a second time");
+                assert_eq!(text(&session, doc).as_deref(), Some("let old = 1;\n"));
+            }
             Ok(())
         }
 
