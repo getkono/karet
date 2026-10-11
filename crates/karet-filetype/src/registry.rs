@@ -10,6 +10,7 @@
 
 use std::path::Path;
 
+use crate::comment::CommentTokens;
 use crate::icon::Category;
 use crate::icon::IconStyle;
 
@@ -102,6 +103,13 @@ impl FileType {
     #[must_use]
     pub fn wrap_mode(&self) -> WrapMode {
         self.wrap_mode
+    }
+
+    /// The line/block comment tokens a "toggle comment" command uses for this
+    /// file type ([`CommentTokens::NONE`] for data formats and unknown files).
+    #[must_use]
+    pub fn comment_tokens(&self) -> CommentTokens {
+        crate::comment::tokens_for(self.lsp_language_id.unwrap_or(self.name))
     }
 }
 
