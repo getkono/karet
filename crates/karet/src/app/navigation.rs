@@ -330,7 +330,7 @@ impl App {
     }
 
     /// The file `doc` is open from, wherever it is shown.
-    fn doc_path(&self, doc: DocumentId) -> Option<PathBuf> {
+    pub(super) fn doc_path(&self, doc: DocumentId) -> Option<PathBuf> {
         self.all_tabs()
             .find(|tab| matches!(tab.kind, TabKind::Code { doc: Some(d), .. } if d == doc))
             .and_then(Tab::path)
