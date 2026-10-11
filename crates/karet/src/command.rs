@@ -47,6 +47,18 @@ pub enum Command {
     TodoScan,
     /// Switch the Todos panel between by-file and by-tag grouping.
     TodoToggleGrouping,
+    /// Move the caret to the next problem (diagnostic) in the active file.
+    NextProblem,
+    /// Move the caret to the previous problem (diagnostic) in the active file.
+    PrevProblem,
+    /// Begin editing the Problems panel's text filter.
+    ProblemsFilter,
+    /// Cycle the Problems panel's severity filter (all / warnings / errors).
+    ProblemsCycleSeverity,
+    /// Stop editing the Problems filter, keeping it.
+    ProblemsFilterAccept,
+    /// Stop editing the Problems filter, clearing it.
+    ProblemsFilterCancel,
     /// Open the quick-open (go-to-file) overlay.
     OpenQuickOpen,
     /// Open the command palette overlay.
@@ -666,9 +678,16 @@ impl Command {
             Self::SelectPanel(SidebarPanel::Spelling) => "View: Show Spelling",
             Self::SelectPanel(SidebarPanel::Todos) => "View: Show Todos",
             Self::SelectPanel(SidebarPanel::Debug) => "View: Show Debug",
+            Self::SelectPanel(SidebarPanel::Problems) => "View: Show Problems",
             Self::SpellingScan => "Spelling: Scan Workspace",
             Self::TodoScan => "Todos: Scan Workspace",
             Self::TodoToggleGrouping => "Todos: Toggle Grouping (File / Tag)",
+            Self::NextProblem => "Go to Next Problem in File",
+            Self::PrevProblem => "Go to Previous Problem in File",
+            Self::ProblemsFilter => "Problems: Filter…",
+            Self::ProblemsCycleSeverity => "Problems: Cycle Severity Filter",
+            Self::ProblemsFilterAccept => "Problems: Apply Filter",
+            Self::ProblemsFilterCancel => "Problems: Clear Filter",
             Self::OpenQuickOpen => "Go to File…",
             Self::OpenCommandPalette => "Show All Commands",
             Self::OpenFind => "Find in File…",

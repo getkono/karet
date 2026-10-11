@@ -61,7 +61,9 @@ impl App {
     /// Drop every per-document cache for a closed session document.
     pub(super) fn on_document_closed(&mut self, doc: DocumentId) {
         self.docs.settings.remove(&doc);
-        self.docs.diagnostics.remove(&doc);
+        if self.docs.diagnostics.remove(&doc).is_some() {
+            self.refresh_problems();
+        }
         self.docs.symbols.remove(&doc);
         self.forget_inlay_hints(doc);
         self.forget_line_changes(Some(doc));

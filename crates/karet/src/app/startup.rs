@@ -80,6 +80,8 @@ impl App {
             wakatime_status: None,
             review: review::ReviewStore::default(),
             todos_ui: TodosChrome::default(),
+            problems: ProblemsPanel::default(),
+            problems_ui: ProblemsChrome::default(),
             notifications: NotificationCenter::default(),
             toast_hits: Vec::new(),
             sidebar_rect: Rect::default(),
