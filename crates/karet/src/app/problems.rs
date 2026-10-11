@@ -236,18 +236,6 @@ pub(crate) fn step_problem(starts: &[LineCol], caret: LineCol, forward: bool) ->
 }
 
 impl App {
-    /// The path of the tab bound to session document `doc`, in any pane.
-    fn doc_path(&self, doc: DocumentId) -> Option<PathBuf> {
-        self.all_tabs().find_map(|tab| match &tab.kind {
-            TabKind::Code {
-                path,
-                doc: Some(bound),
-                ..
-            } if *bound == doc => Some(path.clone()),
-            _ => None,
-        })
-    }
-
     /// Rebuild the Problems panel from the held diagnostic sets.
     pub(super) fn refresh_problems(&mut self) {
         let entries = self
