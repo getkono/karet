@@ -6,6 +6,7 @@ use super::*;
 
 mod carets;
 mod inlay;
+mod pointer;
 mod reveal;
 
 #[test]
