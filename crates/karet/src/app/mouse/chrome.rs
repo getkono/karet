@@ -187,14 +187,25 @@ impl App {
 
     /// Open the attributed commit when the visible inline blame label is
     /// double-clicked. The first click is consumed so it cannot fall through to the
-    /// editor and count twice in the shared multi-click streak.
+    /// editor and count twice in the shared multi-click streak, but it still
+    /// focuses the editor pane the label is in, as any click on its text does.
     pub(in crate::app) fn handle_blame_mouse(&mut self, mouse: MouseEvent) -> bool {
+        let point = (mouse.column, mouse.row);
         if !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
             || !self
                 .blame_rect
-                .is_some_and(|rect| rect_contains(rect, (mouse.column, mouse.row)))
+                .is_some_and(|rect| rect_contains(rect, point))
         {
             return false;
+        }
+        if let Some(pane) = self
+            .pane_frames
+            .iter()
+            .find(|frame| rect_contains(frame.content_rect, point))
+            .map(|frame| frame.pane)
+        {
+            self.focus_pane_switch(pane);
+            self.focus = Focus::Editor;
         }
         if self.click_streak(mouse.column, mouse.row) >= 2 {
             self.open_live_blame_detail();
