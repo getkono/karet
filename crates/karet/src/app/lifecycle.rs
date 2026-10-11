@@ -345,6 +345,8 @@ impl App {
     pub(super) fn cancel_close(&mut self) {
         let quitting = matches!(self.pending_close, Some(CloseRequest::Quit));
         self.pending_close = None;
+        // An Open Recent reopen rides on the quit it just cancelled.
+        self.cancel_relaunch();
         self.notify(
             Report::Outcome,
             NotificationKind::System,

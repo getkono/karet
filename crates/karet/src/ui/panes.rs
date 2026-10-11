@@ -644,8 +644,15 @@ pub(super) fn draw_find_bar(
     rects
 }
 
-/// Draw a centered modal overlay (quick-open / command palette).
-pub(super) fn draw_overlay(f: &mut Frame, overlay: &Overlay, theme: &Theme, area: Rect) {
+/// Draw a centered modal overlay (quick-open / command palette). `indexing`
+/// adds a muted note to the title that its list is still being gathered.
+pub(super) fn draw_overlay(
+    f: &mut Frame,
+    overlay: &Overlay,
+    indexing: bool,
+    theme: &Theme,
+    area: Rect,
+) {
     let width = (u32::from(area.width) * 7 / 10).clamp(20, 80) as u16;
     let height = (u32::from(area.height) * 6 / 10).clamp(6, 18) as u16;
     let rect = centered(area, width, height);
@@ -654,9 +661,16 @@ pub(super) fn draw_overlay(f: &mut Frame, overlay: &Overlay, theme: &Theme, area
     let style = Style::default()
         .bg(theme.role(ThemeRole::Background).to_ratatui())
         .fg(theme.role(ThemeRole::Foreground).to_ratatui());
+    let mut title = vec![Span::raw(overlay.title().to_string())];
+    if indexing {
+        title.push(Span::styled(
+            " · indexing files…",
+            theme.style(ThemeRole::LineNumber),
+        ));
+    }
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(overlay.title().to_string())
+        .title(Line::from(title))
         .style(style);
     let inner = block.inner(rect);
     f.render_widget(block, rect);

@@ -269,7 +269,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     draw_diagnostic_view(f, app, &theme, area);
 
     if let Some(overlay) = &app.overlay {
-        draw_overlay(f, overlay, &theme, area);
+        // Quick-open over a first walk that is taking a while says so.
+        let indexing = app
+            .quick_open_loading()
+            .is_some_and(|pending| pending.visible());
+        draw_overlay(f, overlay, indexing, &theme, area);
     }
     if let Some(rev) = &app.rev_input {
         draw_rev_input(f, rev, &theme, area);

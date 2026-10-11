@@ -4,6 +4,7 @@ use super::*;
 /// palette offers (a command is "in the palette" iff it is listed here).
 static PALETTE: &[Command] = &[
     Command::OpenQuickOpen,
+    Command::OpenRecentWorkspace,
     Command::SelectView(View::Editor),
     Command::SelectView(View::GitHub),
     // #211: Command::SelectView(View::Agents),

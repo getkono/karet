@@ -367,6 +367,7 @@ impl App {
         match event {
             OverlayEvent::Close => {},
             OverlayEvent::AcceptFile(path) => self.open_path(&path),
+            OverlayEvent::AcceptWorkspace(root) => self.reopen_on_workspace(root),
             OverlayEvent::AcceptSeamRoot(root) => self.open_seam_view_at(root),
             OverlayEvent::AcceptLocation { path, position } => {
                 self.jump_to_location(&path, position);

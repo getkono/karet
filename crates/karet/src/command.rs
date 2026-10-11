@@ -61,6 +61,8 @@ pub enum Command {
     ProblemsFilterCancel,
     /// Open the quick-open (go-to-file) overlay.
     OpenQuickOpen,
+    /// Pick a recently opened workspace and reopen karet on it.
+    OpenRecentWorkspace,
     /// Open the command palette overlay.
     OpenCommandPalette,
     /// Open the find-in-file bar.
@@ -689,6 +691,7 @@ impl Command {
             Self::ProblemsFilterAccept => "Problems: Apply Filter",
             Self::ProblemsFilterCancel => "Problems: Clear Filter",
             Self::OpenQuickOpen => "Go to File…",
+            Self::OpenRecentWorkspace => "File: Open Recent…",
             Self::OpenCommandPalette => "Show All Commands",
             Self::OpenFind => "Find in File…",
             Self::OpenGlobalSearch => "Search: Find in Files…",

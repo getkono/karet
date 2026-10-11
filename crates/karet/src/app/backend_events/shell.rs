@@ -12,6 +12,7 @@ impl App {
         // No extra debouncing needed here — the watcher already debounces at
         // the source, and the result cap keeps a search re-run cheap.
         self.invalidate_nested_repository_statuses(paths);
+        self.file_index_fs_changed(paths);
         if !self.search.query.is_empty() {
             self.run_global_search();
         }

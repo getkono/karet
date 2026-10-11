@@ -25,6 +25,8 @@ pub enum OverlayEvent {
     Close,
     /// Open the chosen file.
     AcceptFile(PathBuf),
+    /// Reopen karet on the chosen recent workspace.
+    AcceptWorkspace(PathBuf),
     /// Run the chosen command.
     AcceptCommand(Command),
     /// Run the edited interactive-rebase plan.
@@ -311,15 +313,60 @@ impl RebaseTodoForm {
     }
 }
 
+/// The quick-open picker's title, which is also how it is told apart.
+const QUICK_OPEN_TITLE: &str = "Go to File";
+
 impl Overlay {
-    /// Build a quick-open overlay over `(display, path)` pairs.
+    /// Build a quick-open overlay over `(display, path)` pairs, in rank order.
     #[must_use]
     pub fn quick_open(files: Vec<(String, PathBuf)>) -> Self {
         let items = files
             .into_iter()
             .map(|(label, path)| (label, OverlayEvent::AcceptFile(path)))
             .collect();
-        Self::Picker(Picker::new("Go to File", items))
+        Self::Picker(Picker::new(QUICK_OPEN_TITLE, items))
+    }
+
+    /// Whether this is the quick-open (go to file) picker.
+    #[must_use]
+    pub fn is_quick_open(&self) -> bool {
+        matches!(self, Self::Picker(picker) if picker.title() == QUICK_OPEN_TITLE)
+    }
+
+    /// The file the highlighted quick-open row opens, if one is highlighted.
+    #[must_use]
+    pub fn selected_file(&self) -> Option<&Path> {
+        match self {
+            Self::Picker(picker) => match picker.accepted() {
+                Some(OverlayEvent::AcceptFile(path)) => Some(path),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Highlight the row that opens `path`, when it is listed.
+    pub fn select_file(&mut self, path: &Path) {
+        let Self::Picker(picker) = self else {
+            return;
+        };
+        let row = picker
+            .values()
+            .iter()
+            .position(|event| matches!(event, OverlayEvent::AcceptFile(p) if p == path));
+        for _ in 0..row.unwrap_or_default() {
+            picker.select_down();
+        }
+    }
+
+    /// Build the Open Recent picker over `(display, workspace root)` pairs.
+    #[must_use]
+    pub fn recent_workspaces(items: Vec<(String, PathBuf)>) -> Self {
+        let items = items
+            .into_iter()
+            .map(|(label, root)| (label, OverlayEvent::AcceptWorkspace(root)))
+            .collect();
+        Self::Picker(Picker::new("Open Recent Workspace", items))
     }
 
     /// Build the picker over the start points the Seam view can be opened on.
@@ -750,6 +797,34 @@ mod tests {
         match overlay.accept() {
             OverlayEvent::AcceptFile(p) => assert_eq!(p, PathBuf::from("/x/main.rs")),
             _ => unreachable!("accept opens the single match"),
+        }
+    }
+
+    #[test]
+    fn quick_open_is_recognised_and_reselects_a_file() {
+        let files = vec![
+            ("a.rs".to_string(), PathBuf::from("/x/a.rs")),
+            ("b.rs".to_string(), PathBuf::from("/x/b.rs")),
+            ("c.rs".to_string(), PathBuf::from("/x/c.rs")),
+        ];
+        let mut overlay = Overlay::quick_open(files);
+        assert!(overlay.is_quick_open());
+        assert!(!Overlay::command_palette().is_quick_open());
+        assert_eq!(overlay.selected_file(), Some(Path::new("/x/a.rs")));
+        overlay.select_file(Path::new("/x/c.rs"));
+        assert_eq!(overlay.selected_file(), Some(Path::new("/x/c.rs")));
+        overlay.select_file(Path::new("/x/gone.rs"));
+        assert_eq!(overlay.selected_file(), Some(Path::new("/x/c.rs")));
+    }
+
+    #[test]
+    fn recent_workspace_picker_accepts_a_root() {
+        let items = vec![("~/src/karet".to_string(), PathBuf::from("/h/src/karet"))];
+        let overlay = Overlay::recent_workspaces(items);
+        assert!(!overlay.is_quick_open());
+        match overlay.accept() {
+            OverlayEvent::AcceptWorkspace(root) => assert_eq!(root, PathBuf::from("/h/src/karet")),
+            _ => unreachable!("accept reopens on the workspace"),
         }
     }
 

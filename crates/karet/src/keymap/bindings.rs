@@ -11,6 +11,7 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(Global, true,  false, false, Char('q'), Command::Quit),
     b(Global, true,  false, false, Char('c'), Command::Copy),
     b(Global, true,  false, false, Char('p'), Command::OpenQuickOpen),
+    b(Global, true,  false, false, Char('r'), Command::OpenRecentWorkspace),
     b(Global, true,  true,  false, Char('p'), Command::OpenCommandPalette),
     // F1 is a terminal-safe alternate for the command palette: some emulators
     // capture Ctrl+Shift+P before it reaches the app (see the app README).

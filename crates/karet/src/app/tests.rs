@@ -34,6 +34,7 @@ mod preview;
 #[cfg(feature = "images")]
 mod preview_images;
 mod problems;
+mod quick_open;
 mod remote;
 mod review;
 mod save;
