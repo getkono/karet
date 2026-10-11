@@ -898,12 +898,14 @@ impl LspClient {
         Ok(convert::inlay_hints_from_lsp(response))
     }
 
-    /// Rename the symbol at `pos` to `new_name`, returning the edits to apply.
+    /// Rename the symbol at `pos` to `new_name`, returning the edits to apply,
+    /// resource operations included.
     ///
     /// # Errors
     /// Returns [`LspError::Unsupported`] **without issuing a request** when the
     /// server did not advertise the capability, else [`LspError::Server`] or
-    /// [`LspError::Timeout`].
+    /// [`LspError::Timeout`], or [`LspError::Protocol`] when the edit names a
+    /// URI that is not a file.
     pub async fn rename(
         &self,
         doc: &Path,

@@ -319,7 +319,7 @@ impl Session {
 }
 
 /// The refusal when no language server serves the document.
-const NO_SERVER: &str = "no language server for this file";
+const NO_SERVER: &str = "no language server is running for this file";
 
 /// An edit refused before anything was applied.
 fn refused(reason: &str) -> AppliedWorkspaceEdit {
