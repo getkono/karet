@@ -109,6 +109,20 @@ fn a_caret_in_the_second_language_of_a_mixed_line_takes_that_language() {
 }
 
 #[test]
+fn a_caret_after_trailing_whitespace_takes_the_last_solid_chars_language() {
+    // The caret sits past the line's trailing whitespace, which already belongs to
+    // the script body; the last non-blank char before it is the `<script>` tag's
+    // `>`, so the line resolves to HTML, not JavaScript.
+    let text = "<p>hi</p><script>   \nlet x = 1;\n</script>\n";
+    let mut app = editor_app("index.html", text, &[LineCol::new(0, 20)]);
+    app.dispatch(Command::ToggleLineComment);
+    assert_eq!(
+        code_tab_text(&app),
+        "<!-- <p>hi</p><script> -->   \nlet x = 1;\n</script>\n"
+    );
+}
+
+#[test]
 fn doc_comment_text_in_rust_takes_rusts_comments_not_markdowns() {
     // A caret on a `///` line's text, and on a doctest line inside it, sits in
     // injected Markdown (and Rust again), but the line is still Rust source: `//`
