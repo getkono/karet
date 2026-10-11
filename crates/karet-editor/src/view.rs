@@ -831,7 +831,14 @@ impl StatefulWidget for Editor<'_> {
             if range_index == 0 {
                 let first = spans.len();
                 let painted = self.push_inline_spans(&mut spans, l, true, theme);
-                record_inline_text(&mut state.last_inline_text, area, y, &spans, first, &painted);
+                record_inline_text(
+                    &mut state.last_inline_text,
+                    area,
+                    y,
+                    &spans,
+                    first,
+                    &painted,
+                );
             }
             self.push_content_spans(
                 &mut spans,
@@ -852,7 +859,14 @@ impl StatefulWidget for Editor<'_> {
             if range_index + 1 == ranges.len() {
                 let first = spans.len();
                 let painted = self.push_inline_spans(&mut spans, l, false, theme);
-                record_inline_text(&mut state.last_inline_text, area, y, &spans, first, &painted);
+                record_inline_text(
+                    &mut state.last_inline_text,
+                    area,
+                    y,
+                    &spans,
+                    first,
+                    &painted,
+                );
             }
             buf.set_line(area.x, y, &Line::from(spans), area.width);
 
@@ -909,7 +923,10 @@ fn record_inline_text(
         let width = u16::try_from(span.width()).unwrap_or(u16::MAX);
         let visible = width.min(area.width.saturating_sub(start));
         if visible > 0 {
-            rects.push((index, Rect::new(area.x.saturating_add(start), y, visible, 1)));
+            rects.push((
+                index,
+                Rect::new(area.x.saturating_add(start), y, visible, 1),
+            ));
         }
         x = x.saturating_add(span.width());
     }
