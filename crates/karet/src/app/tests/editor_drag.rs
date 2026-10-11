@@ -2,6 +2,7 @@
 //! autoscroll that keeps a drag alive past the edge of the viewport.
 
 use super::harness::*;
+use super::support::text_tab;
 use crate::app::*;
 
 /// A press, a drag to `to`, and a release there, all with no modifier.
@@ -183,7 +184,10 @@ fn head_line(rig: &Rig) -> Option<u32> {
 /// Assert the drag is over: nothing armed, and the loop no longer wakes for it
 /// or scrolls on a tick.
 fn assert_drag_ended(rig: &mut Rig, why: &str) {
-    assert!(rig.app.editor_drag.is_none(), "{why}: the drag is still armed");
+    assert!(
+        rig.app.editor_drag.is_none(),
+        "{why}: the drag is still armed"
+    );
     assert_eq!(rig.app.drag_autoscroll_wake(), None, "{why}: still waking");
     let before = rig.scroll_line();
     rig.step(Step::Tick);
@@ -206,7 +210,11 @@ fn a_release_under_an_overlay_ends_the_drag() {
 fn an_overlay_opening_ends_the_drag_even_without_a_release() {
     let mut rig = drag_below(1);
     rig.step(Step::Cmd(Command::OpenQuickOpen));
-    assert_eq!(rig.app.drag_autoscroll_wake(), None, "no wake under the picker");
+    assert_eq!(
+        rig.app.drag_autoscroll_wake(),
+        None,
+        "no wake under the picker"
+    );
     rig.step(Step::Tick);
     assert!(rig.app.editor_drag.is_none());
 }
@@ -288,17 +296,26 @@ fn autoscroll_speed_grows_with_the_distance_past_the_edge() {
     let mut rig = drag_below(3);
     let start = rig.scroll_line();
     rig.step(Step::Tick);
-    assert_eq!(rig.scroll_line(), start + 3, "three rows out, three per step");
+    assert_eq!(
+        rig.scroll_line(),
+        start + 3,
+        "three rows out, three per step"
+    );
 }
 
 #[test]
 fn dragging_past_the_right_edge_scrolls_horizontally() {
-    let line: String = (0..200).map(|n| char::from(b'a' + (n % 26) as u8)).collect();
+    let line: String = (0..200)
+        .map(|n| char::from(b'a' + (n % 26) as u8))
+        .collect();
     let mut rig = Rig::sized(&format!("|{line}\n"), 40, 8);
     let area = rig.app.editor_rect;
     let (_, y) = rig.cell(text(0, 2));
     rig.step(Step::Down(text(0, 2), KeyModifiers::NONE));
-    rig.step(Step::Drag(At::Cell(area.right() + 1, y), KeyModifiers::NONE));
+    rig.step(Step::Drag(
+        At::Cell(area.right() + 1, y),
+        KeyModifiers::NONE,
+    ));
     let width = u32::from(rig.tab().editor.content_width());
     assert!(
         rig.tab()
@@ -308,7 +325,11 @@ fn dragging_past_the_right_edge_scrolls_horizontally() {
         "past the edge the selection stops at the edge"
     );
     rig.step(Step::Tick);
-    assert_eq!(rig.tab().editor.scroll_col, 2, "two columns out, two per step");
+    assert_eq!(
+        rig.tab().editor.scroll_col,
+        2,
+        "two columns out, two per step"
+    );
     assert!(
         rig.tab()
             .editor
@@ -323,13 +344,20 @@ fn the_wheel_during_a_drag_scrolls_and_extends() {
     let mut rig = Rig::sized(&forty_lines(), 40, 12);
     let pointer = rig.cell(text(2, 1));
     rig.step(Step::Down(text(0, 1), KeyModifiers::NONE));
-    rig.step(Step::Drag(At::Cell(pointer.0, pointer.1), KeyModifiers::NONE));
+    rig.step(Step::Drag(
+        At::Cell(pointer.0, pointer.1),
+        KeyModifiers::NONE,
+    ));
     rig.step(Step::WheelDown(
         At::Cell(pointer.0, pointer.1),
         KeyModifiers::NONE,
     ));
     assert_eq!(rig.scroll_line(), 3, "the notch scrolled");
-    assert_eq!(head_line(&rig), Some(5), "the head follows the text under it");
+    assert_eq!(
+        head_line(&rig),
+        Some(5),
+        "the head follows the text under it"
+    );
     assert!(rig.app.editor_drag.is_some(), "the drag is still held");
 }
 
@@ -376,7 +404,9 @@ fn sticky_header_rows_count_as_above_the_text() {
 
 #[test]
 fn a_drag_into_another_pane_stops_at_its_own_edge() {
-    let line: String = (0..100).map(|n| char::from(b'a' + (n % 26) as u8)).collect();
+    let line: String = (0..100)
+        .map(|n| char::from(b'a' + (n % 26) as u8))
+        .collect();
     let mut rig = Rig::new(&format!("|{line}\n{line}\n"));
     rig.step(Step::Cmd(Command::SplitRight));
     rig.step(click(At::Pane(0, 0, 1)));
@@ -401,5 +431,9 @@ fn a_resize_mid_drag_maps_against_the_new_viewport() {
     let (x, y) = rig.cell(text(9, 1));
     rig.step(Step::Drag(At::Cell(x, y), KeyModifiers::NONE));
     assert_eq!(head_line(&rig), Some(9), "the row is inside the grown view");
-    assert_eq!(rig.app.drag_autoscroll_wake(), None, "and is not past its edge");
+    assert_eq!(
+        rig.app.drag_autoscroll_wake(),
+        None,
+        "and is not past its edge"
+    );
 }
