@@ -8,17 +8,17 @@ use tokio::io::WriteHalf;
 
 use super::*;
 
-type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
+pub(crate) type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
 /// The scripted fake server side of an in-memory connection.
-struct FakeServer {
+pub(crate) struct FakeServer {
     reader: BufReader<ReadHalf<DuplexStream>>,
     writer: WriteHalf<DuplexStream>,
 }
 
 /// An in-memory wire: the client's `(read, write)` halves plus the fake
 /// server holding the other end.
-fn wire() -> (
+pub(crate) fn wire() -> (
     (ReadHalf<DuplexStream>, WriteHalf<DuplexStream>),
     FakeServer,
 ) {
@@ -36,19 +36,19 @@ fn wire() -> (
 
 impl FakeServer {
     /// Read one message, or `Null` on EOF/parse failure.
-    async fn recv(&mut self) -> Value {
+    pub(crate) async fn recv(&mut self) -> Value {
         match codec::read_frame(&mut self.reader).await {
             Ok(Some(bytes)) => serde_json::from_slice(&bytes).unwrap_or(Value::Null),
             _ => Value::Null,
         }
     }
 
-    async fn send(&mut self, message: &Value) {
+    pub(crate) async fn send(&mut self, message: &Value) {
         let bytes = serde_json::to_vec(message).unwrap_or_default();
         let _ = codec::write_frame(&mut self.writer, &bytes).await;
     }
 
-    async fn respond(&mut self, id: &Value, result: Value) {
+    pub(crate) async fn respond(&mut self, id: &Value, result: Value) {
         self.send(&json!({"jsonrpc": "2.0", "id": id, "result": result}))
             .await;
     }
@@ -61,12 +61,12 @@ impl FakeServer {
     /// exactly what it withholds. The old fake advertised `{}` and answered
     /// every request anyway, which is why nothing noticed that karet issued
     /// requests no server had agreed to — see `handshake_with`.
-    async fn handshake(&mut self) -> Value {
+    pub(crate) async fn handshake(&mut self) -> Value {
         self.handshake_with(everything()).await
     }
 
     /// Serve the handshake advertising exactly `capabilities`.
-    async fn handshake_with(&mut self, capabilities: Value) -> Value {
+    pub(crate) async fn handshake_with(&mut self, capabilities: Value) -> Value {
         let init = self.recv().await;
         assert_eq!(init["method"], "initialize");
         let id = init["id"].clone();
@@ -79,7 +79,7 @@ impl FakeServer {
 }
 
 /// Every capability karet currently gates a request on.
-fn everything() -> Value {
+pub(crate) fn everything() -> Value {
     json!({
         "textDocumentSync": 1,
         "hoverProvider": true,

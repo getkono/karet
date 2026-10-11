@@ -15,7 +15,9 @@
 //! client must not leave hanging (`workspace/configuration`,
 //! `client/registerCapability`, `window/workDoneProgress/create`,
 //! `workspace/inlayHint/refresh` -- the last also surfaced through
-//! [`LspClient::refreshes`]).
+//! [`LspClient::refreshes`]). The one server request that must wait on the
+//! editor, `workspace/applyEdit`, is handed out through
+//! [`LspClient::apply_edit_requests`] instead.
 //!
 //! Three protocol choices are deliberate and documented here once:
 //!
@@ -42,11 +44,13 @@
 /// Re-exported from [`karet_jsonrpc::framing::content_length`], which is where
 /// the implementation now lives; the `karet_lsp::codec` path is kept because it
 /// is this crate's published surface.
+pub use apply_edit::ApplyEditRequest;
 pub use karet_jsonrpc::framing::content_length as codec;
 pub use launch::ExitReport;
 pub use launch::LaunchCause;
 pub use launch::LaunchFailure;
 
+mod apply_edit;
 mod capability;
 mod conn;
 mod convert;
@@ -68,6 +72,7 @@ use karet_core::Hover;
 use karet_core::InlayHint;
 use karet_core::LineCol;
 use karet_core::Location;
+use karet_core::PrepareRename;
 use karet_core::Range;
 use karet_core::ServerFeature;
 use karet_core::SignatureHelp;
@@ -913,7 +918,49 @@ impl LspClient {
         };
         let response: Option<lsp_types::WorkspaceEdit> =
             self.conn.request("textDocument/rename", params).await?;
-        Ok(response.map_or_else(WorkspaceEdit::default, convert::workspace_edit_from_lsp))
+        response.map_or_else(
+            || Ok(WorkspaceEdit::default()),
+            convert::workspace_edit_from_lsp,
+        )
+    }
+
+    /// Ask whether the symbol at `pos` can be renamed, and what to prefill the
+    /// new name with. `Ok(None)` means the server says it cannot.
+    ///
+    /// # Errors
+    /// Returns [`LspError::Unsupported`] **without issuing a request** when the
+    /// server did not advertise `prepareProvider`, else [`LspError::Server`]
+    /// (servers commonly explain a refusal this way) or [`LspError::Timeout`].
+    pub async fn prepare_rename(
+        &self,
+        doc: &Path,
+        pos: LineCol,
+    ) -> Result<Option<PrepareRename>, LspError> {
+        self.require_for(
+            ServerFeature::PrepareRename,
+            "textDocument/prepareRename",
+            doc,
+        )?;
+        let response: Option<lsp_types::PrepareRenameResponse> = self
+            .conn
+            .request(
+                "textDocument/prepareRename",
+                text_document_position(doc, pos)?,
+            )
+            .await?;
+        Ok(convert::prepare_rename_from_lsp(response))
+    }
+
+    /// Take the stream of the server's `workspace/applyEdit` requests.
+    ///
+    /// Returns the receiver once; every later call returns `None`, because each
+    /// request has exactly one answerer. Until it is taken -- and after it is
+    /// dropped -- every such request is answered `applied: false`, so a server
+    /// never waits on a client that is not listening. Positions in the edits
+    /// are UTF-16, as everywhere in this crate.
+    #[must_use]
+    pub fn apply_edit_requests(&self) -> Option<tokio::sync::mpsc::Receiver<ApplyEditRequest>> {
+        self.conn.apply_edit_requests()
     }
 
     /// Request signature help at `pos` in `doc`.
@@ -1216,6 +1263,12 @@ fn initialize_params(root: &Path) -> Result<lsp_types::InitializeParams, LspErro
             }),
             rename: Some(lsp_types::RenameClientCapabilities {
                 dynamic_registration: Some(true),
+                // `LspClient::prepare_rename`; a "default behavior" answer is
+                // resolved by the consumer to the identifier at the position.
+                prepare_support: Some(true),
+                prepare_support_default_behavior: Some(
+                    lsp_types::PrepareSupportDefaultBehavior::IDENTIFIER,
+                ),
                 ..lsp_types::RenameClientCapabilities::default()
             }),
             formatting: Some(dynamic),
@@ -1230,6 +1283,22 @@ fn initialize_params(root: &Path) -> Result<lsp_types::InitializeParams, LspErro
             // Answered, and relayed through `LspClient::refreshes`.
             inlay_hint: Some(lsp_types::InlayHintWorkspaceClientCapabilities {
                 refresh_support: Some(true),
+            }),
+            // Relayed through `LspClient::apply_edit_requests`.
+            apply_edit: Some(true),
+            // What `karet_core::WorkspaceEdit` carries. Failure handling is
+            // what karet-session's apply path does: an edit of text alone is
+            // checked whole before anything changes, while one with file
+            // operations stops at the first step that fails.
+            workspace_edit: Some(lsp_types::WorkspaceEditClientCapabilities {
+                document_changes: Some(true),
+                resource_operations: Some(vec![
+                    lsp_types::ResourceOperationKind::Create,
+                    lsp_types::ResourceOperationKind::Rename,
+                    lsp_types::ResourceOperationKind::Delete,
+                ]),
+                failure_handling: Some(lsp_types::FailureHandlingKind::TextOnlyTransactional),
+                ..lsp_types::WorkspaceEditClientCapabilities::default()
             }),
             ..lsp_types::WorkspaceClientCapabilities::default()
         }),

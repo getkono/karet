@@ -4,8 +4,10 @@
 //! outbound queue, the close protocol, failing everything in flight on EOF —
 //! lives in [`karet_jsonrpc`]. What stays here is the LSP-specific leaves: the
 //! diagnostics fan-out, the raw-notification broadcast payload, the few
-//! server→client requests a headless client must not leave hanging, and the
-//! bridge that turns [`karet_jsonrpc::RpcError`] into [`LspError`].
+//! server→client requests a headless client must not leave hanging (answered
+//! through the [`apply_edit`](crate::apply_edit) pump, which also routes
+//! `workspace/applyEdit` to the editor), and the bridge that turns
+//! [`karet_jsonrpc::RpcError`] into [`LspError`].
 
 use std::sync::Arc;
 use std::sync::RwLock;
@@ -66,6 +68,11 @@ impl From<karet_jsonrpc::RpcError> for LspError {
 
 /// The LSP protocol handler: it owns the diagnostics fan-out and answers the
 /// server→client requests a headless client must not leave hanging.
+///
+/// `Clone` because two places answer with it: the connection, which owns it,
+/// and the [`apply_edit`](crate::apply_edit) pump that answers every request
+/// in its stead. A clone shares every channel and the gate.
+#[derive(Clone)]
 pub(crate) struct LspHandler {
     diagnostics: broadcast::Sender<PublishedDiagnostics>,
     /// Server requests to re-fetch something it answered before
@@ -210,8 +217,12 @@ impl karet_jsonrpc::Handler for LspHandler {
     }
 }
 
-/// A live JSON-RPC connection to one language server.
-pub(crate) struct Connection(karet_jsonrpc::Connection<LspHandler>);
+/// A live JSON-RPC connection to one language server, and the stream of the
+/// server's edit requests that wait on the editor.
+pub(crate) struct Connection(
+    karet_jsonrpc::Connection<LspHandler>,
+    crate::apply_edit::ApplyEdits,
+);
 
 impl Connection {
     /// The live gate this connection's handler maintains.
@@ -228,11 +239,25 @@ impl Connection {
         R: AsyncRead + Send + Unpin + 'static,
         W: AsyncWrite + Send + Unpin + 'static,
     {
-        Self(karet_jsonrpc::Connection::start(
-            LspHandler::default(),
-            read,
-            write,
-        ))
+        let handler = LspHandler::default();
+        let connection = karet_jsonrpc::Connection::start(handler.clone(), read, write);
+        // Taken at once, before any request can arrive: from here on every
+        // server request goes through the pump, which answers what the handler
+        // answers and holds only `workspace/applyEdit` for the editor.
+        let requests = connection.inbound_requests();
+        let edits = match requests {
+            Some(requests) => crate::apply_edit::start(requests, handler),
+            // Unreachable on a fresh connection; the handler keeps answering.
+            None => crate::apply_edit::start(tokio::sync::mpsc::channel(1).1, handler),
+        };
+        Self(connection, edits)
+    }
+
+    /// Take the stream of the server's `workspace/applyEdit` requests, once.
+    pub(crate) fn apply_edit_requests(
+        &self,
+    ) -> Option<tokio::sync::mpsc::Receiver<crate::ApplyEditRequest>> {
+        self.1.take()
     }
 
     /// Issue `method` and await its typed result, bounded by the default
