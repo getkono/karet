@@ -111,7 +111,8 @@ VS Code where VS Code has an answer.
 | Key | Action |
 | --- | --- |
 | `Ctrl+Shift+P` / `F1` | Command palette (`F1` for terminals that swallow the chord) |
-| `Ctrl+P` | Quick open |
+| `Ctrl+P` | Quick open (recently opened files first) |
+| `Ctrl+R` | Open a recent workspace |
 | `Ctrl+B` / `Ctrl+Shift+O` | Toggle the sidebar / the outline |
 | `Ctrl+1`…`Ctrl+7` | Explorer, Search, Source Control, Spelling, Todos, Debug, Problems |
 | `F8` / `Shift+F8` | Next / previous problem in the file |
