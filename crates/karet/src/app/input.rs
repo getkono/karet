@@ -184,6 +184,11 @@ impl App {
             } else {
                 Modal::SearchList
             })
+        } else if self.focus == Focus::Sidebar
+            && self.sidebar_panel == SidebarPanel::Problems
+            && self.problems.filter_input
+        {
+            Some(Modal::ProblemsFilter)
         } else {
             None
         };
@@ -253,6 +258,7 @@ impl App {
             Modal::ExplorerEdit => self.explorer_edit(key),
             Modal::SearchInput => self.search_edit(key),
             Modal::SearchList => {},
+            Modal::ProblemsFilter => self.problems_filter_key(key),
             Modal::ContextMenu => self.close_context_menu(),
             // The console is read, not typed into: only the keys that move it
             // through a long log do anything.
@@ -301,6 +307,7 @@ impl App {
                 }
             },
             Modal::ExplorerEdit => self.explorer.edit_paste(text),
+            Modal::ProblemsFilter => self.problems_filter_paste(text),
             Modal::SearchInput => {
                 let (target, edit) = self.search.active_field();
                 edit.insert(target, text);

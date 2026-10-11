@@ -164,6 +164,8 @@ pub(crate) enum ScrollSurface {
     SpellingResults,
     /// The Todos results list.
     TodoResults,
+    /// The Problems results list.
+    ProblemResults,
     /// The Debug panel's section list.
     DebugResults,
     /// A commit or compare view's changed-file rail, which scrolls independently of
