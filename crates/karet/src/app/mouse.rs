@@ -1,6 +1,6 @@
 use super::*;
 
-mod chrome;
+pub(super) mod chrome;
 
 impl App {
     /// Resize the sidebar so its right edge sits at column `col`. Dragging narrower
@@ -815,11 +815,4 @@ impl App {
             },
         }
     }
-}
-
-pub(super) fn notification_clipboard_text(notification: &Notification) -> String {
-    notification.body.as_ref().map_or_else(
-        || notification.title.clone(),
-        |body| format!("{}\n{body}", notification.title),
-    )
 }
