@@ -147,6 +147,24 @@ fn keyboard_caret_and_selection_conformance() {
             "hello|",
         ),
         case(
+            "Ctrl+Left moves to the start of the previous word",
+            "foo bar| baz",
+            vec![Step::Key(Left, ctrl)],
+            "foo |bar baz",
+        ),
+        case(
+            "Ctrl+Right moves to the end of the next word",
+            "fo|o bar baz",
+            vec![Step::Key(Right, ctrl), Step::Key(Right, ctrl)],
+            "foo bar| baz",
+        ),
+        case(
+            "Alt+Right is the same word motion as Ctrl+Right",
+            "fo|o bar baz",
+            vec![Step::Key(Right, KeyModifiers::ALT)],
+            "foo| bar baz",
+        ),
+        case(
             "Shift+End selects from the caret to the line end",
             "|hello world\nsecond",
             vec![Step::Key(End, shift)],
@@ -291,6 +309,12 @@ fn mouse_caret_and_selection_conformance() {
             "|foo bar baz",
             vec![click(text(0, 5))],
             "foo b|ar baz",
+        ),
+        case(
+            "a click past the end of a line lands at the line end",
+            "|foo\nbar",
+            vec![click(At::Offset(0, 3, 4, 0))],
+            "foo|\nbar",
         ),
         case(
             "a click drops every secondary caret",
