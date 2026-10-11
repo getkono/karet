@@ -208,6 +208,19 @@ fn typing_after_slash_filters_and_esc_drops_the_filter() {
 }
 
 #[test]
+fn reopening_the_panel_lands_on_the_list_not_an_abandoned_filter_edit() {
+    let mut app = bound_app();
+    app.dispatch(Command::SelectPanel(SidebarPanel::Problems));
+    send_key(&mut app, KeyCode::Char('/'), KeyModifiers::NONE);
+    assert!(app.problems.filter_input);
+    app.focus = Focus::Editor;
+
+    app.dispatch(Command::SelectPanel(SidebarPanel::Problems));
+    assert!(!app.problems.filter_input);
+    assert_eq!(app.input_context().modal, None);
+}
+
+#[test]
 fn s_cycles_the_severity_filter() {
     let mut app = bound_app();
     publish(

@@ -113,7 +113,8 @@ VS Code where VS Code has an answer.
 | `Ctrl+Shift+P` / `F1` | Command palette (`F1` for terminals that swallow the chord) |
 | `Ctrl+P` | Quick open |
 | `Ctrl+B` / `Ctrl+Shift+O` | Toggle the sidebar / the outline |
-| `Ctrl+1`…`Ctrl+6` | Explorer, Search, Source Control, Spelling, Todos, Debug |
+| `Ctrl+1`…`Ctrl+7` | Explorer, Search, Source Control, Spelling, Todos, Debug, Problems |
+| `F8` / `Shift+F8` | Next / previous problem in the file |
 | `Ctrl+F` / `Ctrl+Shift+F` | Find in file / search the workspace |
 | `Ctrl+\` / `Ctrl+K Ctrl+\` | Split right / split down |
 | `Ctrl+Tab` / `Ctrl+W` | Next tab / close tab |
@@ -141,8 +142,10 @@ merge-conflict decorations, across panes, splits, and tabs.
 
 **Navigation.** An explorer with the full file-management set (new, rename, delete,
 cut/copy/paste, duplicate, context menu), a symbol outline, quick open, workspace
-find-and-replace with regex, case, and whole-word matching, and a Todos panel that
-collects codetags across the tree.
+find-and-replace with regex, case, and whole-word matching, a Todos panel that
+collects codetags across the tree, and a Problems panel listing the diagnostics of
+every open file, grouped by file and filtered by severity (`s`) or text (`/`); the
+status bar's `E`/`W` counts open it.
 
 **Source control.** Status and per-hunk staging, commit and compare views, stash,
 the branch lifecycle (create, switch, publish, sync), rebase, cherry-pick, revert,

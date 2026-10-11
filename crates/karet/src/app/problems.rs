@@ -273,6 +273,9 @@ impl App {
         self.sidebar_visible = true;
         self.sidebar_panel = SidebarPanel::Problems;
         self.focus = Focus::Sidebar;
+        // Arriving at the panel lands on the list, never mid-way through a
+        // filter edit the user walked away from.
+        self.problems.filter_input = false;
         self.refresh_problems();
     }
 
