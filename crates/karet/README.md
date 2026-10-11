@@ -130,6 +130,15 @@ occurrence (wrapping); `Alt+Click` adds or removes a caret and `Alt+Drag` extend
 newly-added one; `Esc` collapses back to a single caret. Typing, deletion and
 newlines then apply at every caret at once.
 
+**Editor — comments.** `Ctrl+/` toggles a line comment on every line the selections
+touch, aligning the markers at the lines' shared indent and skipping blank lines; a
+language with only block comments (HTML, CSS) wraps each line instead.
+`Shift+Alt+A` toggles a block comment around each selection, or around a bare
+caret's line. Both read the language *at the caret*, so a `<script>` body in HTML
+takes `//` and a fenced code block in Markdown takes its own language's comments.
+Terminals without the kitty keyboard protocol send `Ctrl+/` as `Ctrl+7`, which is
+bound too.
+
 Modifier conventions: **`Shift`** always *extends* the selection (paired with any
 motion key or click); **`Ctrl`** widens the granularity (word for arrows, document
 for `Home`/`End`, whole file for `A`); **`Alt`** drives pointer multi-cursor

@@ -6,6 +6,7 @@ mod backend_events;
 mod capture;
 mod change_view;
 mod commands;
+mod comment;
 pub(crate) mod commit_console;
 mod completion;
 pub(crate) mod confirm;

@@ -282,6 +282,8 @@ impl Command {
             | Self::NotebookRunAll
             | Self::NotebookInterrupt
             | Self::NotebookRestartKernel
+            | Self::ToggleLineComment
+            | Self::ToggleBlockComment
             | Self::ToggleBold
             | Self::ToggleItalic
             | Self::ToggleStrikethrough

@@ -25,6 +25,24 @@ fn bindings_are_authored_in_canonical_form() {
     }
 }
 
+#[test]
+fn comment_toggles_bind_in_the_editor_under_both_terminal_encodings() {
+    let editor = |code, mods| res(Focus::Editor, false, key(code, mods));
+    // Kitty-protocol terminals report Ctrl+/; legacy ones send 0x1F, read as Ctrl+7.
+    assert_eq!(
+        editor(KeyCode::Char('/'), KeyModifiers::CONTROL),
+        Some(Command::ToggleLineComment)
+    );
+    assert_eq!(
+        editor(KeyCode::Char('7'), KeyModifiers::CONTROL),
+        Some(Command::ToggleLineComment)
+    );
+    assert_eq!(
+        editor(KeyCode::Char('A'), KeyModifiers::SHIFT | KeyModifiers::ALT),
+        Some(Command::ToggleBlockComment)
+    );
+}
+
 /// Resolve a single key press in a focus context to its command. `is_diff` maps
 /// to the diff editor tab; every other editor tab is treated as plain here.
 fn res_in(focus: Focus, panel: SidebarPanel, is_diff: bool, key: KeyEvent) -> Option<Command> {
