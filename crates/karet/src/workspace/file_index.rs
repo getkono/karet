@@ -71,12 +71,6 @@ impl FileIndex {
         self.rx.take()
     }
 
-    /// The current list, `(display, absolute)`, sorted by display path.
-    #[must_use]
-    pub(crate) fn files(&self) -> &[(String, PathBuf)] {
-        &self.files
-    }
-
     /// The first walk, while it is still in flight: what a loading placeholder
     /// anchors on. A later refresh is not loading — the list it replaces is good.
     #[must_use]
@@ -167,6 +161,8 @@ impl FileIndex {
                     self.files.retain(|(_, abs)| !abs.starts_with(path));
                     self.ignored.retain(|ignored| !ignored.starts_with(path));
                     changed |= self.files.len() != before;
+                    // A walk in flight may have listed it before it went.
+                    walk |= self.scanning.is_some();
                 },
                 Ok(meta) if meta.is_file() || meta.is_dir() => {
                     if !self.covers(path) && !self.ignored.contains(path) {
@@ -178,7 +174,9 @@ impl FileIndex {
                 Ok(_) => {},
             }
         }
-        if walk && self.loaded {
+        // Before anything was asked for there is no list to keep fresh; the
+        // first walk, whenever it runs, sees the change itself.
+        if walk && (self.loaded || self.scanning.is_some()) {
             self.request_scan();
         }
         changed
@@ -268,7 +266,7 @@ mod tests {
     }
 
     fn displays(index: &FileIndex) -> Vec<&str> {
-        index.files().iter().map(|(d, _)| d.as_str()).collect()
+        index.files.iter().map(|(d, _)| d.as_str()).collect()
     }
 
     fn loaded(files: &[&str]) -> (tempfile::TempDir, FileIndex, mpsc::UnboundedReceiver<Scan>) {
@@ -299,7 +297,7 @@ mod tests {
         index.ensure_started();
         assert!(land(&mut index, &mut rx));
         assert!(index.loading().is_none());
-        assert_eq!(index.files().len(), 2500, "the old 2000-file cap is gone");
+        assert_eq!(index.files.len(), 2500, "the old 2000-file cap is gone");
         assert!(
             rx.try_recv().is_err(),
             "a second ensure_started walks nothing"
@@ -392,6 +390,22 @@ mod tests {
         index.on_fs_changed(&[dir.path().join(".gitignore")]);
         assert!(land(&mut index, &mut rx));
         assert_eq!(displays(&index), ["a.rs", "build.log"]);
+    }
+
+    #[test]
+    fn changes_during_the_first_walk_are_walked_again_and_before_it_cost_nothing() {
+        let dir = workspace(&["a.rs"]);
+        let mut index = FileIndex::new(dir.path().to_path_buf());
+        let mut rx = index.take_receiver().expect("receiver");
+        let _ = std::fs::write(dir.path().join("b.rs"), "x");
+        index.on_fs_changed(&[dir.path().join("b.rs")]);
+        assert!(index.scanning.is_none(), "nothing walks before it is asked");
+        index.ensure_started();
+        index.on_fs_changed(&[dir.path().join("b.rs")]);
+        assert!(index.rescan, "the walk in flight may predate the change");
+        assert!(land(&mut index, &mut rx));
+        assert!(land(&mut index, &mut rx));
+        assert_eq!(displays(&index), ["a.rs", "b.rs"]);
     }
 
     #[test]

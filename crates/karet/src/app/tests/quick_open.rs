@@ -131,7 +131,12 @@ fn open_recent_with_nothing_to_offer_says_so() {
 fn cancelling_the_unsaved_changes_prompt_cancels_the_reopen() {
     let (_dir, mut app, _rx) = workspace_app(&[]);
     let other = tempfile::tempdir().expect("temp dir");
-    dirty_doc_tab(&mut app, "t.rs", 1);
+    app.push_tab(text_tab("t.rs", "x"));
+    let idx = app.active;
+    if let TabKind::Code { doc, .. } = &mut app.tabs[idx].kind {
+        *doc = Some(DocumentId(1));
+    }
+    app.tabs[idx].dirty = true;
     app.reopen_on_workspace(other.path().to_path_buf());
     assert_eq!(app.pending_close, Some(CloseRequest::Quit));
     assert!(!app.should_quit);
