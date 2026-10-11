@@ -1,3 +1,4 @@
+use super::harness::*;
 use super::support::*;
 use crate::app::*;
 
@@ -132,61 +133,88 @@ fn copied_notification_text_includes_the_body() {
     );
 }
 
+/// Keyboard motion, selection and multi-caret rows (`docs/editing-behavior.md`).
 #[test]
-fn select_line_end_then_select_all_dispatch_in_editor() {
-    let mut app = app();
-    app.push_tab(text_tab("t.rs", "hello world\nsecond"));
-    app.focus = Focus::Editor;
-    // Shift+End selects from the caret to the end of the line.
-    app.dispatch(Command::SelectLineEnd);
-    assert_eq!(
-        app.tabs[app.active].editor.selection_range(),
-        Some(Range {
-            start: LineCol::new(0, 0),
-            end: LineCol::new(0, 11),
-        })
-    );
-    // Ctrl+A selects the whole buffer.
-    app.dispatch(Command::EditorSelectAll);
-    assert_eq!(
-        app.tabs[app.active].editor.selection_range(),
-        Some(Range {
-            start: LineCol::new(0, 0),
-            end: LineCol::new(1, 6),
-        })
-    );
+fn keyboard_caret_and_selection_conformance() {
+    use KeyCode::*;
+    let shift = KeyModifiers::SHIFT;
+    let ctrl = KeyModifiers::CONTROL;
+    check(vec![
+        case(
+            "End moves the caret without selecting",
+            "|hello",
+            vec![key(End)],
+            "hello|",
+        ),
+        case(
+            "Ctrl+Left moves to the start of the previous word",
+            "foo bar| baz",
+            vec![Step::Key(Left, ctrl)],
+            "foo |bar baz",
+        ),
+        case(
+            "Ctrl+Right moves to the end of the next word",
+            "fo|o bar baz",
+            vec![Step::Key(Right, ctrl), Step::Key(Right, ctrl)],
+            "foo bar| baz",
+        ),
+        case(
+            "Alt+Right is the same word motion as Ctrl+Right",
+            "fo|o bar baz",
+            vec![Step::Key(Right, KeyModifiers::ALT)],
+            "foo| bar baz",
+        ),
+        case(
+            "Shift+End selects from the caret to the line end",
+            "|hello world\nsecond",
+            vec![Step::Key(End, shift)],
+            "[hello world|]\nsecond",
+        ),
+        case(
+            "Ctrl+A selects the whole document, head at its end",
+            "hello |world\nsecond",
+            vec![Step::Key(Char('a'), ctrl)],
+            "[hello world\nsecond|]",
+        ),
+        case(
+            "Shift+Right extends one character at a time",
+            "|hello",
+            vec![Step::Key(Right, shift), Step::Key(Right, shift)],
+            "[he|]llo",
+        ),
+        case(
+            "Shift+Left extends backward, the head leading",
+            "he|llo",
+            vec![Step::Key(Left, shift), Step::Key(Left, shift)],
+            "[|he]llo",
+        ),
+        case(
+            "a plain arrow clears the selection",
+            "he|llo",
+            vec![Step::Key(Left, shift), Step::Key(Left, shift), key(Left)],
+            "|hello",
+        ),
+        case(
+            "Ctrl+Alt+Down adds a caret below, which becomes primary",
+            "|ab\ncd",
+            vec![Step::Key(Down, ctrl | KeyModifiers::ALT)],
+            "|ab\n#cd",
+        ),
+    ]);
 }
 
 #[test]
-fn caret_line_end_moves_without_selecting() {
-    let mut app = app();
-    app.push_tab(text_tab("t.rs", "hello"));
-    app.focus = Focus::Editor;
-    app.dispatch(Command::CaretLineEnd);
-    assert_eq!(app.tabs[app.active].editor.cursor(), LineCol::new(0, 5));
-    assert_eq!(app.tabs[app.active].editor.selection_range(), None);
-}
+fn esc_collapses_extra_carets_and_keeps_editor_focus() {
+    let mut rig = Rig::new("|ab\ncd");
+    rig.step(Step::Cmd(Command::AddCursorBelow));
+    assert!(rig.tab().editor.has_multiple_cursors());
+    rig.step(key(KeyCode::Esc));
+    assert!(!rig.tab().editor.has_multiple_cursors());
+    assert_eq!(rig.app.focus, Focus::Editor);
 
-#[test]
-fn add_cursor_below_then_esc_collapses() {
-    let mut app = app();
-    app.push_tab(text_tab("t.rs", "ab\ncd"));
-    app.focus = Focus::Editor;
-    app.dispatch(Command::AddCursorBelow);
-    assert!(app.tabs[app.active].editor.has_multiple_cursors());
-    // Esc with several carets collapses to the primary, keeping editor focus.
-    app.dispatch(Command::CollapseCarets);
-    assert!(!app.tabs[app.active].editor.has_multiple_cursors());
-    assert_eq!(app.focus, Focus::Editor);
-}
-
-#[test]
-fn esc_with_a_single_caret_keeps_editor_focus() {
-    let mut app = app();
-    app.push_tab(text_tab("t.rs", "ab"));
-    app.focus = Focus::Editor;
-    app.dispatch(Command::CollapseCarets);
-    assert_eq!(app.focus, Focus::Editor);
+    // With one caret Esc is a no-op that never leaves the editor.
+    rig.step(key(KeyCode::Esc));
+    assert_eq!(rig.app.focus, Focus::Editor);
 }
 
 #[test]
@@ -268,125 +296,93 @@ fn markdown_file_links_outside_the_workspace_require_confirmation() {
     let _ = std::fs::remove_dir_all(parent);
 }
 
+/// Click, multi-click, modifier-click and wheel rows (`docs/editing-behavior.md`).
 #[test]
-fn alt_click_adds_a_second_caret() {
-    let mut app = app();
-    app.push_tab(text_tab("t.rs", "foo bar baz"));
-    app.pane_frames = vec![content_frame(
-        &app,
-        Rect {
-            x: 0,
-            y: 0,
-            width: 40,
-            height: 5,
-        },
-    )];
-    let click = |col, mods| MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
-        column: col,
-        row: 0,
-        modifiers: mods,
-    };
-    app.handle_editor_click(click(3, KeyModifiers::NONE));
-    app.handle_editor_click(click(8, KeyModifiers::ALT));
-    assert!(app.tabs[app.active].editor.has_multiple_cursors());
+fn mouse_caret_and_selection_conformance() {
+    let alt = KeyModifiers::ALT;
+    let shift = KeyModifiers::SHIFT;
+    let lines: &'static str =
+        "|0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\n16\n17\n18\n19\n";
+    check(vec![
+        case(
+            "a click places the caret",
+            "|foo bar baz",
+            vec![click(text(0, 5))],
+            "foo b|ar baz",
+        ),
+        case(
+            "a click past the end of a line lands at the line end",
+            "|foo\nbar",
+            vec![click(At::Offset(0, 3, 4, 0))],
+            "foo|\nbar",
+        ),
+        case(
+            "a click drops every secondary caret",
+            "|foo\n#bar",
+            vec![click(text(0, 2))],
+            "fo|o\nbar",
+        ),
+        case(
+            "Alt+click adds a caret, which becomes primary",
+            "|foo bar baz",
+            vec![click(text(0, 0)), Step::Click(text(0, 5), alt)],
+            "|foo b#ar baz",
+        ),
+        case(
+            "a double click selects the word under the pointer",
+            "|foo bar baz",
+            vec![click(text(0, 5)), click(text(0, 5))],
+            "foo [bar|] baz",
+        ),
+        case(
+            "Shift+click extends forward from the caret",
+            "|foo bar baz",
+            vec![click(text(0, 0)), Step::Click(text(0, 5), shift)],
+            "[foo b|]ar baz",
+        ),
+        case(
+            "Shift+click extends backward when it precedes the caret",
+            "|foo bar baz",
+            vec![click(text(0, 10)), Step::Click(text(0, 3), shift)],
+            "foo[| bar ba]z",
+        ),
+        case(
+            "the wheel scrolls without moving the caret",
+            lines,
+            vec![Step::WheelDown(text(0, 0), KeyModifiers::NONE)],
+            "|0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\n16\n17\n18\n19\n",
+        )
+        .scrolled(3),
+        case(
+            "a wheel notch up scrolls back by the same step",
+            lines,
+            vec![
+                Step::WheelDown(text(0, 0), KeyModifiers::NONE),
+                Step::WheelDown(text(3, 0), KeyModifiers::NONE),
+                Step::WheelUp(text(6, 0), KeyModifiers::NONE),
+            ],
+            "|0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\n16\n17\n18\n19\n",
+        )
+        .scrolled(3)
+        .sized(40, 10),
+    ]);
 }
 
 #[test]
-fn double_click_selects_the_word() {
-    let mut app = app();
-    app.push_tab(text_tab("t.rs", "foo bar baz"));
-    app.pane_frames = vec![content_frame(
-        &app,
-        Rect {
-            x: 0,
-            y: 0,
-            width: 40,
-            height: 5,
-        },
-    )];
-    // Two quick clicks over the 'a' of "bar" (buffer col 5 -> screen col 8).
-    let click = |col| MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
-        column: col,
-        row: 0,
-        modifiers: KeyModifiers::NONE,
-    };
-    app.handle_editor_click(click(8));
-    app.handle_editor_click(click(8));
-    let sel = app.tabs[app.active].editor.selection_range();
-    assert_eq!(
-        sel,
-        Some(Range {
-            start: LineCol::new(0, 4),
-            end: LineCol::new(0, 7),
-        })
-    );
-}
+fn a_click_in_another_split_moves_focus_and_only_that_panes_caret() {
+    let mut rig = Rig::new("|alpha\nbeta");
+    rig.step(Step::Cmd(Command::SplitRight));
+    assert_eq!(rig.focused_index(), Some(1), "the new split is focused");
 
-#[test]
-fn shift_click_extends_selection_to_the_click() {
-    let mut app = app();
-    app.push_tab(text_tab("t.rs", "foo bar baz"));
-    app.pane_frames = vec![content_frame(
-        &app,
-        Rect {
-            x: 0,
-            y: 0,
-            width: 40,
-            height: 5,
-        },
-    )];
-    let click = |col, shift| MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
-        column: col,
-        row: 0,
-        modifiers: if shift {
-            KeyModifiers::SHIFT
-        } else {
-            KeyModifiers::NONE
-        },
-    };
-    // Place the caret at buffer col 0 (screen col 3 past the gutter), then
-    // Shift+click at buffer col 5 (screen col 8) to extend the selection.
-    app.handle_editor_click(click(3, false));
-    app.handle_editor_click(click(8, true));
-    assert_eq!(
-        app.tabs[app.active].editor.selection_range(),
-        Some(Range {
-            start: LineCol::new(0, 0),
-            end: LineCol::new(0, 5),
-        })
-    );
+    rig.step(click(At::Pane(0, 1, 2)));
 
-    // The same gesture selects backward when the click precedes the caret.
-    app.handle_editor_click(click(13, false));
-    app.handle_editor_click(click(6, true));
+    assert_eq!(rig.focused_index(), Some(0));
+    assert_eq!(rig.marked_in(0), "alpha\nbe|ta");
     assert_eq!(
-        app.tabs[app.active].editor.selection_range(),
-        Some(Range {
-            start: LineCol::new(0, 3),
-            end: LineCol::new(0, 10),
-        })
+        rig.marked_in(1),
+        "|alpha\nbeta",
+        "the other view keeps its caret"
     );
-}
-
-#[test]
-fn shift_arrow_extends_then_plain_arrow_clears() {
-    let mut app = app();
-    app.push_tab(text_tab("t.rs", "hello"));
-    app.focus = Focus::Editor;
-    app.dispatch(Command::SelectRight);
-    app.dispatch(Command::SelectRight);
-    assert_eq!(
-        app.tabs[app.active].editor.selection_range(),
-        Some(Range {
-            start: LineCol::new(0, 0),
-            end: LineCol::new(0, 2),
-        })
-    );
-    app.dispatch(Command::CaretLeft);
-    assert_eq!(app.tabs[app.active].editor.selection_range(), None);
 }
 
 #[test]
