@@ -236,15 +236,7 @@ impl App {
         // An in-progress text selection captures motion and the wheel until the
         // button is released (the release and any press were taken above).
         if self.editor_drag.is_some() {
-            let (col, row) = (mouse.column, mouse.row);
-            match mouse.kind {
-                MouseEventKind::Drag(MouseButton::Left) => self.drag_select_to(col, row),
-                MouseEventKind::ScrollDown => self.drag_wheel(3, 0, col, row),
-                MouseEventKind::ScrollUp => self.drag_wheel(-3, 0, col, row),
-                MouseEventKind::ScrollRight => self.drag_wheel(0, 3, col, row),
-                MouseEventKind::ScrollLeft => self.drag_wheel(0, -3, col, row),
-                _ => {},
-            }
+            self.editor_drag_mouse(&mouse);
             return;
         }
         if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))

@@ -239,10 +239,24 @@ impl App {
         }
     }
 
+    /// Route a mouse event to the live drag: motion extends the selection, and
+    /// a wheel notch scrolls three rows (or columns) and extends.
+    pub(super) fn editor_drag_mouse(&mut self, mouse: &MouseEvent) {
+        let (col, row) = (mouse.column, mouse.row);
+        match mouse.kind {
+            MouseEventKind::Drag(MouseButton::Left) => self.drag_select_to(col, row),
+            MouseEventKind::ScrollDown => self.drag_wheel(3, 0, col, row),
+            MouseEventKind::ScrollUp => self.drag_wheel(-3, 0, col, row),
+            MouseEventKind::ScrollRight => self.drag_wheel(0, 3, col, row),
+            MouseEventKind::ScrollLeft => self.drag_wheel(0, -3, col, row),
+            _ => {},
+        }
+    }
+
     /// Scroll the drag's view by a wheel notch and keep extending to the
     /// pointer, so a wheel under a held button moves the selection with the
     /// text the way a GUI editor's does.
-    pub(super) fn drag_wheel(&mut self, rows: i32, cols: i32, col: u16, row: u16) {
+    fn drag_wheel(&mut self, rows: i32, cols: i32, col: u16, row: u16) {
         if self.live_editor_drag().is_none() {
             return;
         }
