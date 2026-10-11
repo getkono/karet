@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::ops::RangeInclusive;
 
 use super::hint::HintIndex;
@@ -111,6 +112,17 @@ pub struct EditorState {
     ///
     /// [`longest_col`]: EditorState::longest_col
     pub(super) last_longest_col: u32,
+    /// The primary head, when a pointer placed it past the end of a wrapped
+    /// row: that position is also where the next row starts, and it is drawn
+    /// at the end of the row the user clicked rather than the start of the
+    /// next. Dropped by any keyboard move, and by the render once the head
+    /// has moved elsewhere.
+    pub(super) upstream: Option<LineCol>,
+    /// What the last [`pos_at`](Self::pos_at) resolved, when it resolved past
+    /// the end of a wrapped row, so the pointer move that consumes it
+    /// ([`set_caret`](Self::set_caret), [`extend_to`](Self::extend_to)) can
+    /// keep the caret on that row. A `Cell` because hit-testing is `&self`.
+    pub(super) pointer_upstream: Cell<Option<LineCol>>,
 }
 
 impl Default for EditorState {
@@ -133,6 +145,8 @@ impl Default for EditorState {
             sticky_height: 0,
             last_visible_lines: 0,
             last_longest_col: 0,
+            upstream: None,
+            pointer_upstream: Cell::new(None),
         }
     }
 }
@@ -202,6 +216,8 @@ impl EditorState {
     /// and [`add_caret`](Self::add_caret) — keep no margin instead: they
     /// scroll only when the target is off screen.
     pub fn reveal(&mut self, buffer: &TextBuffer, pos: LineCol) {
+        // A keyboard-placed caret at a wrap point opens the next row.
+        self.upstream = None;
         self.reveal_with(buffer, pos, Reveal::Margin);
     }
 
@@ -619,6 +635,7 @@ impl EditorState {
     pub fn set_caret(&mut self, buffer: &TextBuffer, pos: LineCol) {
         let p = clamp_to_buffer(buffer, pos);
         self.cursors = CursorState::single(Selection::caret(p));
+        self.upstream = self.pointer_upstream.take().filter(|hit| *hit == p);
         self.reveal_with(buffer, p, Reveal::Minimal);
     }
 
@@ -674,6 +691,7 @@ impl EditorState {
             s.head = p;
         }
         self.cursors.normalize();
+        self.upstream = self.pointer_upstream.take().filter(|hit| *hit == p);
         self.reveal_with(buffer, self.cursor(), Reveal::Minimal);
     }
 
@@ -686,6 +704,7 @@ impl EditorState {
         let anchor = clamp_to_buffer(buffer, anchor);
         let head = clamp_to_buffer(buffer, head);
         self.cursors = CursorState::single(Selection { anchor, head });
+        self.upstream = None;
         self.reveal_with(buffer, head, Reveal::Minimal);
     }
 
@@ -734,6 +753,7 @@ impl EditorState {
             return;
         }
         self.cursors.push(Selection::caret(p));
+        self.upstream = self.pointer_upstream.take().filter(|hit| *hit == p);
         self.reveal_with(buffer, p, Reveal::Minimal);
     }
 
@@ -814,6 +834,7 @@ impl EditorState {
         let gutter = 1 + digit_count(line_count) as u16 + 1;
         let content_x = area.x.saturating_add(gutter);
         let rel_col = u32::from(col.saturating_sub(content_x));
+        self.pointer_upstream.set(None);
         if rel_row < u32::from(self.sticky_height) {
             let line = self
                 .sticky_rows
@@ -858,12 +879,8 @@ impl EditorState {
                 .get(anchor.subrow as usize)
                 .copied()
                 .unwrap_or_else(|| VisualRange::empty(line_len(buffer, anchor.line)));
-            let chars: Vec<char> = buffer
-                .line(anchor.line as usize)
-                .unwrap_or_default()
-                .chars()
-                .collect();
-            return LineCol::new(
+            let chars = line_chars(buffer, anchor.line);
+            let hit = LineCol::new(
                 anchor.line,
                 source_col_at_display_offset(
                     &chars,
@@ -874,6 +891,12 @@ impl EditorState {
                     layout.hints_on(anchor.line),
                 ),
             );
+            // Past the end of a row the line continues below: the same column
+            // starts the next row, so remember which one was clicked.
+            let continues = (anchor.subrow as usize).saturating_add(1) < ranges.len();
+            self.pointer_upstream
+                .set((continues && hit.col == range.end).then_some(hit));
+            return hit;
         }
         // Walk visible lines from the (clamped) viewport top to the clicked row.
         let mut line = self.scroll_line;

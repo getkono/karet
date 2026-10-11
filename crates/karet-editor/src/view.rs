@@ -645,6 +645,13 @@ impl StatefulWidget for Editor<'_> {
                 subrow: state.scroll_subrow,
             },
         );
+        // A wrap affinity outlives only the caret it was set for.
+        if let Some(at) = state.upstream
+            && (!self.word_wrap || state.cursors().selections.iter().all(|s| s.head != at))
+        {
+            state.upstream = None;
+        }
+        let upstream = state.upstream == Some(state.cursor());
         let mut sticky = self.sticky_blocks(anchor, area.height);
         if state.follow_cursor {
             // Revealing moves the top, the top decides which headers stick,
@@ -664,6 +671,7 @@ impl StatefulWidget for Editor<'_> {
                         height,
                         anchor,
                         state.cursor(),
+                        upstream,
                     )
                 } else {
                     VisualAnchor {

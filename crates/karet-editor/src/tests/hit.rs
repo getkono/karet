@@ -79,6 +79,112 @@ fn a_click_rounds_to_the_nearer_edge_of_a_tab() {
     }
 }
 
+/// `alpha beta gamma` wrapped into ten content cells: `alpha ` on row 0
+/// (columns 0..6) and `beta gamma` on row 1 (6..16), so column 6 is both the
+/// end of row 0 and the start of row 1.
+fn wrapped(height: u16) -> (TextBuffer, Rect, EditorState) {
+    let buffer = TextBuffer::from_text("alpha beta gamma");
+    let area = Rect::new(0, 0, 13, height);
+    let mut state = EditorState::new();
+    let mut target = Buffer::empty(area);
+    Editor::new(&buffer)
+        .word_wrap(true)
+        .render(area, &mut target, &mut state);
+    (buffer, area, state)
+}
+
+/// Render `state` wrapped and report the primary caret's cell.
+fn caret_after_render(
+    buffer: &TextBuffer,
+    area: Rect,
+    state: &mut EditorState,
+) -> Option<(u16, u16)> {
+    let mut target = Buffer::empty(area);
+    Editor::new(buffer)
+        .word_wrap(true)
+        .render(area, &mut target, state);
+    state.primary_caret_cell(area, buffer, &[])
+}
+
+#[test]
+fn a_click_past_the_end_of_a_wrapped_row_keeps_the_caret_on_that_row() {
+    let (buffer, area, mut state) = wrapped(3);
+    let pos = state.pos_at(area, &buffer, &[], GUTTER + 8, 0);
+    assert_eq!(pos, LineCol::new(0, 6));
+    state.set_caret(&buffer, pos);
+    assert_eq!(
+        caret_after_render(&buffer, area, &mut state),
+        Some((GUTTER + 6, 0)),
+        "drawn at the end of the clicked row, not the start of the next"
+    );
+}
+
+#[test]
+fn a_click_at_the_start_of_a_continuation_row_draws_the_caret_there() {
+    let (buffer, area, mut state) = wrapped(3);
+    let pos = state.pos_at(area, &buffer, &[], GUTTER, 1);
+    assert_eq!(pos, LineCol::new(0, 6));
+    state.set_caret(&buffer, pos);
+    assert_eq!(
+        caret_after_render(&buffer, area, &mut state),
+        Some((GUTTER, 1))
+    );
+}
+
+#[test]
+fn a_drag_past_the_end_of_a_wrapped_row_keeps_the_head_on_that_row() {
+    let (buffer, area, mut state) = wrapped(3);
+    state.set_caret(&buffer, LineCol::new(0, 0));
+    let pos = state.pos_at(area, &buffer, &[], GUTTER + 9, 0);
+    state.extend_to(&buffer, pos);
+    assert_eq!(state.selection_range().map(|r| r.end), Some(pos));
+    assert_eq!(
+        caret_after_render(&buffer, area, &mut state),
+        Some((GUTTER + 6, 0))
+    );
+}
+
+#[test]
+fn a_keyboard_move_drops_the_wrap_affinity() {
+    let (buffer, area, mut state) = wrapped(3);
+    let pos = state.pos_at(area, &buffer, &[], GUTTER + 8, 0);
+    state.set_caret(&buffer, pos);
+    state.move_right(&buffer);
+    state.move_left(&buffer);
+    assert_eq!(state.cursor(), pos);
+    assert_eq!(
+        caret_after_render(&buffer, area, &mut state),
+        Some((GUTTER, 1)),
+        "a caret the keyboard placed at a wrap point opens the next row"
+    );
+}
+
+#[test]
+fn a_caret_placed_past_the_bottom_row_does_not_scroll_it_away() {
+    // Only row 0 is on screen; the click past its end must not reveal row 1.
+    let (buffer, area, mut state) = wrapped(1);
+    let pos = state.pos_at(area, &buffer, &[], GUTTER + 8, 0);
+    state.set_caret(&buffer, pos);
+    assert_eq!(
+        caret_after_render(&buffer, area, &mut state),
+        Some((GUTTER + 6, 0))
+    );
+    assert_eq!(state.scroll_subrow, 0);
+}
+
+#[test]
+fn a_stale_pointer_hit_does_not_reach_a_different_caret() {
+    let (buffer, area, mut state) = wrapped(3);
+    let _ = state.pos_at(area, &buffer, &[], GUTTER + 8, 0);
+    // Placed somewhere other than the hit: no affinity, and the hit is spent.
+    state.set_caret(&buffer, LineCol::new(0, 2));
+    state.set_caret(&buffer, LineCol::new(0, 6));
+    assert_eq!(
+        caret_after_render(&buffer, area, &mut state),
+        Some((GUTTER, 1))
+    );
+}
+
 #[test]
 fn a_click_below_the_last_line_lands_at_the_end_of_the_document() {
     let buffer = TextBuffer::from_text("one\ntwo three");

@@ -321,10 +321,23 @@ pub(super) fn visual_anchor_at_row(
     (anchor, false)
 }
 
+/// Whether a caret at `col` is drawn on the visual row `range`.
+///
+/// A row owns the columns it starts through the one before its end. Its end
+/// column is also where the next row starts, so the row draws it only when
+/// it is the line's last row, or when the caret is `upstream`: placed by a
+/// click past the end of this row rather than at the start of the next.
+pub(super) fn row_holds(range: VisualRange, last: bool, col: u32, upstream: bool) -> bool {
+    range.start <= col && (col < range.end || (col == range.end && (last || upstream)))
+}
+
+/// The visual row a caret at `pos` is drawn on; `upstream` as in
+/// [`row_holds`].
 pub(super) fn visual_anchor_for_position(
     buffer: &TextBuffer,
     layout: Layout<'_>,
     pos: LineCol,
+    upstream: bool,
 ) -> VisualAnchor {
     let line = pos.line.min(last_line(buffer));
     let ranges = visual_ranges(buffer, line, layout);
@@ -333,9 +346,7 @@ pub(super) fn visual_anchor_for_position(
         .iter()
         .enumerate()
         .find_map(|(index, range)| {
-            (range.start <= pos.col
-                && (pos.col < range.end || (index == last && pos.col == range.end)))
-                .then_some(index as u32)
+            row_holds(*range, index == last, pos.col, upstream).then_some(index as u32)
         })
         .unwrap_or(last as u32);
     VisualAnchor { line, subrow }
@@ -348,9 +359,10 @@ pub(super) fn reveal_visual_anchor(
     height: u16,
     current: VisualAnchor,
     cursor: LineCol,
+    upstream: bool,
 ) -> VisualAnchor {
     let current = normalize_visual_anchor(buffer, folds, layout, current);
-    let target = visual_anchor_for_position(buffer, layout, cursor);
+    let target = visual_anchor_for_position(buffer, layout, cursor, upstream);
     let mut probe = current;
     for _ in 0..height.max(1) {
         if probe == target {
@@ -562,9 +574,7 @@ pub(super) fn caret_cell(
                 .copied()
                 .unwrap_or_else(|| VisualRange::empty(0));
             let last = index + 1 == ranges.len();
-            if anchor.line == at.line
-                && (range.start <= at.col)
-                && (at.col < range.end || (last && at.col == range.end))
+            if anchor.line == at.line && row_holds(range, last, at.col, state.upstream == Some(at))
             {
                 let chars: Vec<char> = buffer
                     .line(at.line as usize)
