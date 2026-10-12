@@ -128,7 +128,11 @@ pub enum Event {
         doc: DocumentId,
         /// The document version the request was made against.
         version: u64,
-        /// The hints, positioned in buffer (UTF-32) columns.
+        /// The hints, positioned in buffer (UTF-32) columns. A label part's
+        /// location is in buffer columns when its file is open, and in the
+        /// server's UTF-16 columns otherwise: a hint list is not worth a
+        /// disk read per named file. [`Event::InlayHintResolved`] converts
+        /// every location.
         hints: Vec<InlayHint>,
     },
     /// A [`Command::InlayHints`] went unanswered: the server failed or timed

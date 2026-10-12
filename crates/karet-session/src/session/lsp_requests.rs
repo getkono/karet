@@ -115,8 +115,17 @@ impl Session {
 
     /// Move `hints` from the server's UTF-16 columns to buffer columns: each
     /// position against `doc`'s buffer, and each label part's location
-    /// against the file it names. Hints for a document closed since they were
-    /// asked for are left as they are; nobody will adopt them.
+    /// against the file it names when that file is open. Hints for a document
+    /// closed since they were asked for are left as they are; nobody will
+    /// adopt them.
+    ///
+    /// A part location into a file that is not open keeps the server's
+    /// columns. Hint lists arrive on every edit pause and scroll, so reading
+    /// each named file from disk here would put blocking I/O on that path for
+    /// locations nobody may follow; UTF-16 and buffer columns differ only
+    /// where an astral-plane character precedes the target on its line. A
+    /// resolve, which is asked for one hint on demand, converts against the
+    /// file on disk (see [`Self::part_locations_to_buffer_columns`]).
     pub(super) fn hints_to_buffer_columns(&self, doc: DocumentId, hints: &mut [InlayHint]) {
         let Some(document) = self.store.docs.get(&doc) else {
             return;
@@ -126,7 +135,21 @@ impl Session {
                 .buffer
                 .utf16_to_line_col(hint.position.line, hint.position.col);
         }
-        self.part_locations_to_buffer_columns(hints);
+        let locations = hints.iter_mut().flat_map(|hint| {
+            hint.parts
+                .iter_mut()
+                .filter_map(|part| part.location.as_mut())
+        });
+        for location in locations {
+            let open = self
+                .store
+                .by_path
+                .get(&location.path)
+                .and_then(|doc| self.store.docs.get(doc));
+            if let Some(open) = open {
+                location.range = utf16_range_to_buffer(&open.buffer, location.range);
+            }
+        }
     }
 
     /// Convert every label part's location in `hints` to buffer columns, each

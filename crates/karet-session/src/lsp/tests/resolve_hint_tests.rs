@@ -126,6 +126,50 @@ async fn a_hint_resolves_through_the_seam_in_buffer_columns() -> TestResult {
     Ok(())
 }
 
+/// A hint list's part locations are converted against the open file they
+/// name, and left in the server's columns for a file that is not open, which
+/// the list path never reads from disk.
+///
+/// Falsified by: the list path forwarding an open file's UTF-16 location
+/// unconverted (column 4, not 3), or reading `elsewhere.rs` from disk to
+/// convert its location (column 3, not 4).
+#[tokio::test]
+async fn hint_list_part_locations_convert_against_open_files_only() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let path = rust_file(&dir, "main.rs", "\u{1F600}ab = ab;\n").ok_or("write failed")?;
+    let elsewhere = rust_file(&dir, "elsewhere.rs", "\u{1F600}cd = cd;\n").ok_or("write failed")?;
+    let spawns = Arc::new(AtomicUsize::new(0));
+    let (session, mut events) =
+        session_with_connector(test_connector(Behavior::Normal, None, spawns));
+    let backend = local_session(session, None);
+    let (doc, _) = open(&backend, &mut events, path.clone()).await?;
+
+    let request = backend.next_id();
+    backend.send(
+        request,
+        Command::InlayHints {
+            doc,
+            range: whole_first_line(),
+        },
+    )?;
+    let Some(Event::InlayHints { hints, .. }) = answer_to(&mut events, request).await else {
+        return Err("no hints".into());
+    };
+    let hint = hints.first().ok_or("the double answers one hint")?;
+    let unopened = hint
+        .location_for(0)
+        .ok_or("the ': ' part leads somewhere")?;
+    assert_eq!(unopened.path, elsewhere);
+    assert_eq!(unopened.range.start, LineCol::new(0, 4));
+    let open_target = hint
+        .location_for(1)
+        .ok_or("the type part leads somewhere")?;
+    assert_eq!(open_target.path, path);
+    assert_eq!(open_target.range.start, LineCol::new(0, 3));
+    assert_eq!(open_target.range.end, LineCol::new(0, 4));
+    Ok(())
+}
+
 /// A server that does not resolve hints is never asked, and the hint still
 /// comes back, unchanged, so the client stops waiting on it.
 ///
