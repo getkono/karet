@@ -5,6 +5,22 @@ use karet_editor::Motion;
 use super::*;
 use crate::app::scroll::adjust;
 
+/// How soon a press must follow the last one to continue its multi-click streak.
+const MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(400);
+
+/// What a left click landed on, for multi-click counting: a press on another
+/// surface than the last one starts a new streak.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ClickSurface {
+    /// The text of the editor in this pane. A press within one cell of the last
+    /// one continues the streak, so a hand that drifts a cell between presses
+    /// still double-clicks.
+    Editor(PaneId),
+    /// Any other surface: tabs, sidebar rows, panels. Their rows are separate
+    /// targets, so only a press on the very same cell continues the streak.
+    Other,
+}
+
 impl App {
     /// The display width of hard tabs in `tab`, after per-document EditorConfig and
     /// language settings have been resolved.
@@ -361,18 +377,50 @@ impl App {
         }
     }
 
-    /// Update and return the multi-click streak for a click at `(col, row)`.
+    /// Update and return the multi-click streak for an unmodified click at
+    /// `(col, row)` on a surface other than the editor's text.
     pub(super) fn click_streak(&mut self, col: u16, row: u16) -> u8 {
+        self.click_streak_on(col, row, ClickSurface::Other, KeyModifiers::NONE)
+    }
+
+    /// Update and return the multi-click streak for a click at `(col, row)` on
+    /// `surface` with `modifiers` held.
+    ///
+    /// The click continues the streak when it comes within the multi-click
+    /// interval, on the same surface, with the same modifiers, and near enough
+    /// the last one (see [`ClickSurface`]); otherwise it starts a new one. In
+    /// the editor's text the streak stops counting at three, so a fourth quick
+    /// click keeps line granularity rather than wrapping back to a single click.
+    pub(super) fn click_streak_on(
+        &mut self,
+        col: u16,
+        row: u16,
+        surface: ClickSurface,
+        modifiers: KeyModifiers,
+    ) -> u8 {
         let now = Instant::now();
-        let streak = match self.last_click {
-            Some((t, c, r))
-                if c == col && r == row && now.duration_since(t) < Duration::from_millis(400) =>
-            {
-                self.click_streak % 3 + 1
-            },
-            _ => 1,
+        let editor = matches!(surface, ClickSurface::Editor(_));
+        let slack = u16::from(editor);
+        let continues = self.click_origin == (surface, modifiers)
+            && self.last_click.is_some_and(|(t, c, r)| {
+                now.duration_since(t) < MULTI_CLICK_INTERVAL
+                    && c.abs_diff(col) <= slack
+                    && r.abs_diff(row) <= slack
+            });
+        let streak = if !continues {
+            1
+        } else if editor {
+            // In text the count stops at three: a fourth quick click keeps the
+            // line rather than collapsing it back to a caret.
+            self.click_streak.saturating_add(1).min(3)
+        } else {
+            // Elsewhere only "a second click or later" is read, and the count
+            // keeps cycling 1, 2, 3, 1, so four quick clicks on a list row act
+            // as they always have.
+            self.click_streak % 3 + 1
         };
         self.last_click = Some((now, col, row));
+        self.click_origin = (surface, modifiers);
         self.click_streak = streak;
         streak
     }
@@ -442,7 +490,12 @@ impl App {
         }
         let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
         let alt = mouse.modifiers.contains(KeyModifiers::ALT);
-        let streak = self.click_streak(mouse.column, mouse.row);
+        let streak = self.click_streak_on(
+            mouse.column,
+            mouse.row,
+            ClickSurface::Editor(pane),
+            mouse.modifiers,
+        );
         // Double-clicking the commit view's signature badge reveals, for a few seconds,
         // what its "Verified" / "Signed" state means.
         if streak == 2
@@ -507,30 +560,28 @@ impl App {
                     .char_pos_at(area, buffer, &fold_lines, mouse.column, mouse.row),
             )
         });
-        // Ctrl/Cmd+click jumps to the definition of the symbol under the pointer.
-        // It is checked before the click-streak gestures below, which test the
-        // streak before any modifier — so a Ctrl+double-click would otherwise
-        // select the word instead of jumping. Alt and Shift keep their multi-caret
-        // and extend-selection meanings.
+        // Ctrl/Cmd+click jumps to the definition of the identifier under the
+        // pointer. Anywhere else (whitespace, punctuation, past the line end,
+        // the gutter) there is no symbol to resolve, and the click does nothing
+        // rather than ask for a definition that cannot exist. Alt and Shift keep
+        // their multi-caret and extend-selection meanings.
         if mouse
             .modifiers
             .intersects(KeyModifiers::CONTROL | KeyModifiers::SUPER)
             && !alt
             && !shift
-            && let Some(pos) = code_pos
         {
-            self.go_to_definition_at(pos);
+            if let Some((pos, _)) = self.identifier_under(area, point) {
+                self.go_to_definition_at(pos);
+            }
             // A Ctrl+drag must not turn into a text selection.
             self.editor_drag = None;
             return;
         }
-        if streak == 2
-            && let Some(pos) = code_pos
-            && self.open_spelling_menu(mouse.column, mouse.row, pos)
-        {
-            self.editor_drag = None;
-            return;
-        }
+        // A modifier outranks the click count: a quick second Alt+click toggles
+        // the caret it just added, and a quick second Shift+click extends again,
+        // neither selecting a word.
+        let modified = alt || shift;
         if let Some(Tab {
             kind:
                 TabKind::Code {
@@ -547,33 +598,38 @@ impl App {
             let pos = editor.pos_at(area, buffer, &fold_lines, mouse.column, mouse.row);
             let under = code_pos.unwrap_or(pos);
             match streak {
-                2 => {
-                    let (anchor, head) = word_at(buffer, under);
-                    editor.set_selection(buffer, anchor, head);
-                },
-                3 => {
-                    let (anchor, head) = line_span(buffer, under.line);
-                    editor.set_selection(buffer, anchor, head);
-                },
                 // Alt+click adds (or toggles off) a caret at the click, building a
                 // multi-cursor set.
                 _ if alt => editor.add_caret(buffer, pos),
                 // Shift+click extends the selection from the current caret to the click
-                // point (VS Code style); a plain click places the caret, discarding any
-                // secondary carets.
+                // point (VS Code style).
                 _ if shift => {
                     editor.collapse_to_primary();
                     editor.extend_to(buffer, pos);
                 },
-                _ => editor.set_caret(buffer, pos),
+                // A plain click places the caret, discarding any secondary carets.
+                1 => editor.set_caret(buffer, pos),
+                // A double click selects the word, punctuation run or whitespace
+                // run under the pointer.
+                2 => {
+                    let (anchor, head) = class_run_at(buffer, under);
+                    editor.set_selection(buffer, anchor, head);
+                },
+                // A triple click, and every quick click after it, selects the
+                // whole line with its line break.
+                _ => {
+                    let (anchor, head) = line_span(buffer, under.line);
+                    editor.set_selection(buffer, anchor, head);
+                },
             }
         }
         // Every click arms a drag; the streak decides the unit it extends by, so
         // a double-click drag grows word by word and a triple-click line by line.
         let granularity = match streak {
+            _ if modified => DragGranularity::Character,
+            1 => DragGranularity::Character,
             2 => DragGranularity::Word,
-            3 => DragGranularity::Line,
-            _ => DragGranularity::Character,
+            _ => DragGranularity::Line,
         };
         self.editor_drag = self.tabs.get(self.active).and_then(|tab| match &tab.kind {
             TabKind::Code { buffer, .. } => {

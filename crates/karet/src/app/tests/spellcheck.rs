@@ -37,12 +37,27 @@ fn spelling_app(root: PathBuf, message: &str) -> App {
     app
 }
 
+/// One-line editors have a three-cell gutter; column 4 is inside "wrod".
+const ON_WROD: (u16, u16) = (4, 0);
+
+fn right_click_at(app: &mut App, (column, row): (u16, u16)) {
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Right),
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    });
+}
+
 fn open_spelling_menu(app: &mut App) {
+    right_click_at(app, ON_WROD);
+}
+
+fn double_click_at(app: &mut App, (column, row): (u16, u16)) {
     let click = MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
-        // One-line editors have a three-cell gutter; column 4 is inside "wrod".
-        column: 4,
-        row: 0,
+        column,
+        row,
         modifiers: KeyModifiers::NONE,
     };
     app.handle_editor_click(click);
@@ -50,7 +65,44 @@ fn open_spelling_menu(app: &mut App) {
 }
 
 #[test]
-fn double_clicking_a_spell_warning_opens_replacements_and_add_word() {
+fn double_clicking_a_misspelled_word_selects_it_and_opens_no_menu() {
+    let mut app = spelling_app(PathBuf::from("."), "Unknown word “wrod”; try word, rod");
+
+    double_click_at(&mut app, ON_WROD);
+
+    assert!(app.context_menu.is_none(), "the keys stay with the text");
+    assert_eq!(
+        app.tabs[app.active].editor.selection_range(),
+        Some(Range {
+            start: LineCol::new(0, 0),
+            end: LineCol::new(0, 4),
+        })
+    );
+}
+
+#[test]
+fn right_clicking_off_a_misspelled_word_offers_no_spelling_rows() {
+    // Column 7 lies past the end of "wrod"; column 2 is the gutter beside it,
+    // which a pointer lookup would clamp onto the word's first letter.
+    for (point, what) in [((7, 0), "past the line end"), ((2, 0), "the gutter")] {
+        let mut app = spelling_app(PathBuf::from("."), "Unknown word “wrod”; try word, rod");
+        right_click_at(&mut app, point);
+
+        let menu = app.context_menu.as_ref().expect("the pane menu");
+        assert!(
+            menu.entries.iter().all(|entry| !matches!(
+                entry.action,
+                ContextMenuAction::ReplaceSpelling { .. }
+                    | ContextMenuAction::AddSpellingToDictionary { .. }
+            )),
+            "{what}"
+        );
+        assert_eq!(menu.entries[0].command(), Some(Command::Cut), "{what}");
+    }
+}
+
+#[test]
+fn right_clicking_a_spell_warning_leads_the_menu_with_replacements_and_add_word() {
     let mut app = spelling_app(PathBuf::from("."), "Unknown word “wrod”; try word, rod");
 
     open_spelling_menu(&mut app);
@@ -74,13 +126,24 @@ fn double_clicking_a_spell_warning_opens_replacements_and_add_word() {
             "Add “wrod” to User Dictionary",
         ]
     );
+    // The spelling rows lead; the ordinary pane menu follows them.
+    let commands: Vec<Command> = app
+        .context_menu
+        .as_ref()
+        .map(|menu| menu.entries.iter().filter_map(|e| e.command()).collect())
+        .unwrap_or_default();
     assert_eq!(
-        app.tabs[app.active].editor.selection_range(),
-        Some(Range {
-            start: LineCol::new(0, 0),
-            end: LineCol::new(0, 4),
-        })
+        commands.get(..3),
+        Some(&[Command::Cut, Command::Copy, Command::Paste][..])
     );
+    assert_eq!(
+        app.context_menu
+            .as_ref()
+            .and_then(|menu| menu.entries[4].command()),
+        Some(Command::Cut)
+    );
+    // The right click moved the caret to the click, as it does anywhere else.
+    assert_eq!(app.tabs[app.active].editor.selection_range(), None);
     let targets: Vec<DictionaryTarget> = app
         .context_menu
         .as_ref()

@@ -446,6 +446,66 @@ fn word_bounds_spans_the_word_under_pos() {
     );
 }
 
+/// The `(start, end)` columns of the run a double-click at `col` on line 0 selects.
+fn run_cols(text: &str, col: u32) -> (u32, u32) {
+    let (start, end) = class_run_at(&TextBuffer::from_text(text), LineCol::new(0, col));
+    (start.col, end.col)
+}
+
+#[test]
+fn class_run_at_selects_the_run_under_the_character_alone() {
+    // A word, wherever in it the pointer is.
+    assert_eq!(run_cols("foo.bar", 0), (0, 3));
+    assert_eq!(run_cols("foo.bar", 2), (0, 3));
+    // Punctuation right after a word is its own run, not the word before it.
+    assert_eq!(run_cols("foo.bar", 3), (3, 4));
+    assert_eq!(run_cols("a::b", 2), (1, 3));
+    // Whitespace between words is a run of its own.
+    assert_eq!(run_cols("foo  bar", 3), (3, 5));
+    assert_eq!(run_cols("foo bar", 3), (3, 4));
+    // Past the end of the line, the last character decides.
+    assert_eq!(run_cols("foo bar", 9), (4, 7));
+    assert_eq!(run_cols("foo;", 4), (3, 4));
+    // An empty line has nothing to select.
+    assert_eq!(run_cols("", 0), (0, 0));
+}
+
+#[test]
+fn identifier_at_answers_only_on_a_word_character() {
+    let buffer = TextBuffer::from_text("let x = foo(bar);");
+    let at = |col| identifier_at(&buffer, LineCol::new(0, col)).map(|(s, e)| (s.col, e.col));
+    assert_eq!(at(9), Some((8, 11)));
+    assert_eq!(at(4), Some((4, 5)));
+    // `(` directly after `foo` is not on `foo`, unlike `word_bounds`.
+    assert_eq!(at(11), None);
+    assert_eq!(at(3), None, "whitespace");
+    assert_eq!(at(17), None, "past the end of the line");
+    assert_eq!(
+        identifier_at(&buffer, LineCol::new(4, 0)),
+        None,
+        "past the last line"
+    );
+}
+
+#[test]
+fn line_span_includes_the_line_break_except_on_the_last_line() {
+    let buffer = TextBuffer::from_text("alpha\nbravo");
+    assert_eq!(
+        line_span(&buffer, 0),
+        (LineCol::new(0, 0), LineCol::new(1, 0))
+    );
+    assert_eq!(
+        line_span(&buffer, 1),
+        (LineCol::new(1, 0), LineCol::new(1, 5))
+    );
+    // A trailing newline leaves an empty last line, which the line before ends at.
+    let buffer = TextBuffer::from_text("alpha\n");
+    assert_eq!(
+        line_span(&buffer, 0),
+        (LineCol::new(0, 0), LineCol::new(1, 0))
+    );
+}
+
 #[test]
 fn gutter_marker_line_hits_only_the_marker_column() {
     let buffer = TextBuffer::from_text("a\nb\nc\nd\n");

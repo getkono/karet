@@ -362,6 +362,7 @@ impl App {
                     self.focus = Focus::Editor;
                     self.right_click_caret(area, mouse.column, mouse.row);
                     self.open_pane_context_menu(mouse.column, mouse.row, true);
+                    self.add_spelling_to_menu(area, mouse.column, mouse.row);
                 }
             },
             MouseEventKind::Down(MouseButton::Left) => {

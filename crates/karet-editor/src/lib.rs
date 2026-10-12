@@ -52,6 +52,8 @@ pub use state::EditorState;
 pub use state::Fold;
 pub use state::Motion;
 pub use state::resolve_folds;
+pub use text::class_run_at;
+pub use text::identifier_at;
 pub use text::line_span;
 pub use text::next_word_boundary;
 pub use text::previous_word_boundary;

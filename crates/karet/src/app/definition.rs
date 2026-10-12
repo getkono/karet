@@ -278,8 +278,40 @@ impl App {
             return None;
         }
         let tab = self.tabs.get(self.active)?;
+        if !matches!(tab.kind, TabKind::Code { doc: Some(_), .. }) {
+            return None;
+        }
+        let (_, range) = self.identifier_under(frame.editor_rect, point)?;
+        Some(DefinitionHover {
+            view: tab.view,
+            range,
+        })
+    }
+
+    /// The identifier the pointer at `point` is on in the active code tab, drawn
+    /// in the editor viewport `area`: the position under the pointer and the
+    /// identifier's range. `None` over whitespace, punctuation, the gutter, past
+    /// the end of a line, or below the last one, where Ctrl+click has nothing
+    /// to resolve.
+    pub(crate) fn identifier_under(
+        &self,
+        area: Rect,
+        point: (u16, u16),
+    ) -> Option<(LineCol, Range)> {
+        let pos = self.char_under(area, point)?;
+        let TabKind::Code { buffer, .. } = &self.tabs.get(self.active)?.kind else {
+            return None;
+        };
+        let (start, end) = karet_editor::identifier_at(buffer, pos)?;
+        Some((pos, Range { start, end }))
+    }
+
+    /// The character the pointer at `point` is on in the active code tab, drawn
+    /// in the editor viewport `area`, or `None` when the pointer is on no
+    /// character: in the gutter, past the end of a line, below the last line.
+    pub(crate) fn char_under(&self, area: Rect, point: (u16, u16)) -> Option<LineCol> {
+        let tab = self.tabs.get(self.active)?;
         let TabKind::Code {
-            doc: Some(_),
             buffer,
             folds,
             folded,
@@ -289,28 +321,27 @@ impl App {
             return None;
         };
         let fold_lines = resolve_folds(folds, folded);
-        let area = frame.editor_rect;
         let pos = tab
             .editor
-            .char_pos_at(area, buffer, &fold_lines, mouse.column, mouse.row);
+            .char_pos_at(area, buffer, &fold_lines, point.0, point.1);
         // Round-trip guard: `char_pos_at` clamps a point in the gutter, past the end of a
         // line, or in a reserved scrollbar track onto a real position, which would
-        // underline a word the pointer is not actually over. Asking where that
-        // position *renders* rejects all of those at once, without this code needing
-        // to know the geometry.
-        if tab.editor.screen_cell(area, buffer, &fold_lines, pos) != Some(point) {
-            return None;
-        }
-        let (start, end) = word_at(buffer, pos);
-        // `word_bounds` falls back to a single character off a word; only a real
-        // identifier is navigable.
-        if start == end {
-            return None;
-        }
-        Some(DefinitionHover {
-            view: tab.view,
-            range: Range { start, end },
-        })
+        // name a word the pointer is not actually over. Asking which cells that
+        // character *renders* in — from its own cell up to the next character's —
+        // rejects all of those at once, without this code needing to know the
+        // geometry, and still accepts the right half of a wide character.
+        let cell = tab.editor.screen_cell(area, buffer, &fold_lines, pos)?;
+        let next = LineCol::new(pos.line, pos.col.saturating_add(1));
+        let next = tab.editor.screen_cell(area, buffer, &fold_lines, next);
+        let on_it = point.1 == cell.1
+            && point.0 >= cell.0
+            && next.is_none_or(|next| next.1 != cell.1 || point.0 < next.0);
+        // The cell right after a line's last character maps to the line end,
+        // which is no character.
+        let len = buffer
+            .line(pos.line as usize)
+            .map_or(0, |line| line.chars().count());
+        (on_it && (pos.col as usize) < len).then_some(pos)
     }
 
     /// The underline decoration for the Ctrl-hovered symbol in the active tab.

@@ -22,8 +22,8 @@ use crossterm::event::MouseButton;
 use crossterm::event::MouseEvent;
 use crossterm::event::MouseEventKind;
 use karet_core::LineCol;
+use karet_editor::class_run_at;
 use karet_editor::line_span;
-use karet_editor::word_bounds as word_at;
 use karet_session::ViewId;
 use karet_text::TextBuffer;
 use karet_widgets::PaneId;
@@ -97,7 +97,7 @@ impl App {
     ) -> (LineCol, LineCol) {
         match granularity {
             DragGranularity::Character => (pos, pos),
-            DragGranularity::Word => word_at(buffer, pos),
+            DragGranularity::Word => class_run_at(buffer, pos),
             DragGranularity::Line => line_span(buffer, pos.line),
         }
     }
