@@ -12,6 +12,7 @@ mod diagnostics;
 mod display;
 mod hit;
 mod inlay;
+mod motion;
 mod pointer;
 mod reveal;
 mod selection;

@@ -45,7 +45,7 @@ fn hints_for_is_context_aware_and_deduped() {
     assert!(cmds.contains(&Command::OpenFind));
     // …while self-evident motion and text-editing keys are omitted.
     assert!(!cmds.contains(&Command::CaretDown));
-    assert!(!cmds.contains(&Command::PageDown));
+    assert!(!cmds.contains(&Command::CaretPageDown));
     assert!(!cmds.contains(&Command::DeleteBackward));
     // Every command appears at most once (dedup across layers).
     for &cmd in &cmds {

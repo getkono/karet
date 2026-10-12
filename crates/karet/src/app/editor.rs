@@ -321,6 +321,34 @@ impl App {
         let _ = self.send(SessionCommand::Format(FormatRequest { doc, scope }));
     }
 
+    /// Expand every collapsed fold that hides a caret, in every code tab of
+    /// every pane, so no caret is ever hidden.
+    ///
+    /// Caret motion never enters a fold and collapsing one lifts the carets
+    /// out of it, so what this catches is a jump made without regard to
+    /// folds — find, go to definition, an outline or problems entry, an undo
+    /// — which opens the fold it lands in, as VS Code does. Run before each
+    /// frame is drawn, so it covers every such path at once.
+    pub(crate) fn unfold_around_carets(&mut self) {
+        for tab in self.all_tabs_mut() {
+            let TabKind::Code { folds, folded, .. } = &mut tab.kind else {
+                continue;
+            };
+            if folded.is_empty() {
+                continue;
+            }
+            for selection in &tab.editor.cursors().selections {
+                let line = selection.head.line;
+                folded.retain(|start| {
+                    !folds
+                        .regions()
+                        .iter()
+                        .any(|r| r.start == *start && r.start < line && line <= r.end)
+                });
+            }
+        }
+    }
+
     /// Apply a caret `motion` to the active code tab, extending the selection when
     /// `extend` is set and collapsing it first otherwise.
     pub(super) fn caret_motion(&mut self, extend: bool, motion: Motion) {

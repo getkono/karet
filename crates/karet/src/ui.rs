@@ -161,6 +161,7 @@ use crate::tab::ViewMode;
 
 /// Draw one frame of the shell.
 pub fn draw(f: &mut Frame, app: &mut App) {
+    app.unfold_around_carets();
     let theme = app.theme.clone();
     let area = f.area();
     // Collected into a local and handed over at the end rather than cleared on `app`

@@ -122,6 +122,8 @@ impl App {
             Command::CaretLineEnd => self.caret_motion(false, Motion::LineEnd),
             Command::CaretDocStart => self.caret_motion(false, Motion::DocStart),
             Command::CaretDocEnd => self.caret_motion(false, Motion::DocEnd),
+            Command::CaretPageUp => self.caret_page(Motion::PageUp),
+            Command::CaretPageDown => self.caret_page(Motion::PageDown),
             Command::SelectWordLeft => self.caret_motion(true, Motion::WordLeft),
             Command::SelectWordRight => self.caret_motion(true, Motion::WordRight),
             Command::SelectLineStart => self.caret_motion(true, Motion::LineStart),
@@ -519,6 +521,28 @@ impl App {
             Command::SearchToggleRegex => self.search_toggle_regex(),
             Command::SearchToggleCase => self.search_toggle_case(),
             Command::SearchToggleWord => self.search_toggle_word(),
+        }
+    }
+
+    /// PageUp / PageDown in the editor layer: move the caret a page in a code tab.
+    ///
+    /// Every other tab the editor layer serves has no caret — a PDF document, an
+    /// image, a placeholder — so there the key keeps its scroll-only page turn
+    /// (a PDF turns one page), exactly as `PageUp` / `PageDown` do.
+    fn caret_page(&mut self, motion: Motion) {
+        let is_code = self
+            .tabs
+            .get(self.active)
+            .is_some_and(|tab| matches!(tab.kind, TabKind::Code { .. }));
+        if is_code {
+            self.caret_motion(false, motion);
+        } else {
+            let page = i32::from(self.main_rect.height.max(1));
+            self.scroll_lines(if motion == Motion::PageUp {
+                -page
+            } else {
+                page
+            });
         }
     }
 

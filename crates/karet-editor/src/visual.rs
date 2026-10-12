@@ -609,7 +609,8 @@ pub(super) fn caret_cell(
                 .copied()
                 .unwrap_or_else(|| VisualRange::empty(0));
             let last = index + 1 == ranges.len();
-            if anchor.line == at.line && row_holds(range, last, at.col, state.upstream == Some(at))
+            if anchor.line == at.line
+                && row_holds(range, last, at.col, state.upstream.contains(&at))
             {
                 let chars: Vec<char> = buffer
                     .line(at.line as usize)

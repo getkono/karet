@@ -474,6 +474,49 @@ trailer<</Size 7/Root 1 0 R>>\n%%EOF";
     assert_eq!(app.focus, Focus::Editor);
 }
 
+#[cfg(feature = "pdf")]
+#[test]
+fn page_keys_turn_a_documents_pages() {
+    // A document tab has no caret, so the editor layer's caret paging falls back
+    // to the page turn: PageDown/PageUp step one page, clamped at either end.
+    const PDF: &[u8] = b"%PDF-1.4\n\
+1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n\
+2 0 obj<</Type/Pages/Kids[3 0 R 4 0 R]/Count 2>>endobj\n\
+3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]>>endobj\n\
+4 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]>>endobj\n\
+trailer<</Size 5/Root 1 0 R>>\n%%EOF";
+    let Ok(doc) = karet_pdf::Document::load(PDF.to_vec()) else {
+        return;
+    };
+    let page_count = doc.page_count();
+    assert_eq!(page_count, 2);
+    let mut app = app();
+    app.tabs.push(Tab::new(
+        "doc.pdf",
+        TabKind::Document {
+            path: PathBuf::from("doc.pdf"),
+            doc,
+            page_count,
+            page: 0,
+            rendered: None,
+            outline: Vec::new(),
+        },
+    ));
+    app.active = app.tabs.len() - 1;
+    app.focus = Focus::Editor;
+    let page = |app: &App| match app.tabs.get(app.active).map(|t| &t.kind) {
+        Some(TabKind::Document { page, .. }) => Some(*page),
+        _ => None,
+    };
+
+    send_key(&mut app, KeyCode::PageDown, KeyModifiers::NONE);
+    assert_eq!(page(&app), Some(1));
+    send_key(&mut app, KeyCode::PageDown, KeyModifiers::NONE);
+    assert_eq!(page(&app), Some(1), "the last page is the end");
+    send_key(&mut app, KeyCode::PageUp, KeyModifiers::NONE);
+    assert_eq!(page(&app), Some(0));
+}
+
 #[test]
 fn sidebar_resize_sets_width_and_collapses_below_min() {
     let mut app = app();

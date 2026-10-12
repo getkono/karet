@@ -46,7 +46,9 @@ today. Each fix then adds its own failing reproductions.
   single-caret features (hover, completion, go to definition) act at it.
 - **Goal column**: the display column that vertical motion tries to return to.
   It is measured in display cells (tabs expanded, wide characters counted
-  twice), so it survives passing over shorter lines.
+  twice, inlay hints not counted), from the start of the visual row when word
+  wrap is on, so it survives passing over shorter lines. Each caret keeps its
+  own; a horizontal motion, an edit or a click resets it.
 - **Word**: a run of identifier characters (letters, digits, `_`). A run of
   punctuation and a run of whitespace are each one unit of their own for word
   motion and double-click.
@@ -62,15 +64,15 @@ end on the same position merge into one.
 | Input | Behaviour | Status |
 |---|---|---|
 | Left / Right | Move one character. With a selection, collapse to its start (Left) or end (Right) without moving further. | harness |
-| Up / Down | Move one line, keeping the goal column. On the first line Up goes to column 0; on the last line Down goes to the line end. With a selection, start from its start (Up) or end (Down). | harness (with a selection); #329 (goal column, first and last line) |
-| Home | Smart home: to the first non-blank character, or to column 0 if already there. | #329 |
+| Up / Down | Move one line, keeping the goal column. On the first line Up goes to column 0; on the last line Down goes to the line end. With a selection, start from its start (Up) or end (Down). | harness |
+| Home | Smart home: to the first non-blank character, or to column 0 if already there. | harness |
 | End | To the line end. | harness |
 | Ctrl+Home / Ctrl+End | To the start / end of the document. With several carets, leave one caret there. | harness |
 | Ctrl+Left / Ctrl+Right, Alt+Left / Alt+Right | To the previous word start / next word end. | harness |
 | Ctrl+Shift+\ | Go to Bracket: to the other bracket of the pair the caret touches (the bracket after it first, then the one before it), or, inside a pair, to its closing bracket. The caret lands just before the target, so pressing again goes back. Brackets in strings and comments are ignored. | harness |
-| PageUp / PageDown | Move the caret by the focused pane's visible rows, and scroll by the same amount. | #329 |
-| Word wrap on | Up, Down, Home, End and PageUp/PageDown act on visual rows; End pressed again goes to the logical line end. | #329 |
-| Collapsed folds | Motion skips over a fold; a jump into a fold (find, go to definition, outline) unfolds it. A caret is never hidden. | #329 |
+| PageUp / PageDown | Move the caret by the focused pane's visible rows, keeping the goal column, and scroll by the same amount so the caret keeps its screen row. With less than a page left, go to the start / end of the document. | harness |
+| Word wrap on | Up, Down, Home, End and PageUp/PageDown act on visual rows; End pressed again goes to the logical line end. | harness |
+| Collapsed folds | Motion skips over a fold; a jump into a fold (find, go to definition, outline) unfolds it. Collapsing a fold moves every caret inside it onto its header. A caret is never hidden. | harness |
 
 Alt+Left/Right are bound as well as Ctrl+Left/Right. Deviation: macOS terminals
 commonly deliver Option+arrow and not Cmd+arrow, so both bindings lead to the
@@ -104,7 +106,7 @@ Shrink Selection too, not word selection.
 
 | Input | Behaviour | Status |
 |---|---|---|
-| Ctrl+Alt+Down / Ctrl+Alt+Up | Add a caret on the line below / above, at the goal column. The new caret is primary. | harness (add, primary); #329 (goal column) |
+| Ctrl+Alt+Down / Ctrl+Alt+Up | Add a caret on the line below / above, at the goal column. The new caret is primary. | harness |
 | Alt+click | Add a caret at the click, which becomes primary. Alt+click on an existing caret removes it, and the primary stays the same caret. | harness |
 | Ctrl+D | With an empty caret, select the word under it. Then add the next occurrence after the most recently added one, wrapping and skipping ranges already selected. Matching is whole-word when the sequence began from an empty caret, and plain substring when it began from a selection. | #341 |
 | Esc, several carets | Keep only the first caret that was placed, with its selection; a second Esc clears that selection. | harness |

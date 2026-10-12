@@ -198,6 +198,10 @@ pub enum Command {
     CaretDocStart,
     /// Move the caret to the end of the document.
     CaretDocEnd,
+    /// Move the caret up one page, scrolling the view with it.
+    CaretPageUp,
+    /// Move the caret down one page, scrolling the view with it.
+    CaretPageDown,
     /// Extend the selection to the previous word boundary.
     SelectWordLeft,
     /// Extend the selection to the next word boundary.
@@ -831,6 +835,8 @@ impl Command {
             Self::CaretLineEnd => "Cursor Line End",
             Self::CaretDocStart => "Cursor Document Start",
             Self::CaretDocEnd => "Cursor Document End",
+            Self::CaretPageUp => "Cursor Page Up",
+            Self::CaretPageDown => "Cursor Page Down",
             Self::SelectWordLeft => "Select Word Left",
             Self::SelectWordRight => "Select Word Right",
             Self::SelectLineStart => "Select to Line Start",

@@ -143,7 +143,7 @@ impl EditorState {
             (from_end, to_start)
         };
         self.set_single(Selection { anchor, head });
-        self.upstream = None;
+        self.upstream.clear();
         self.follow_cursor = false;
         self.follow_col = None;
     }
