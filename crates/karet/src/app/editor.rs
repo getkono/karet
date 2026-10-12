@@ -584,6 +584,9 @@ impl App {
                     granularity,
                     pointer: (mouse.column, mouse.row),
                     area,
+                    pane,
+                    view: tab.view,
+                    last_step: None,
                 })
             },
             _ => None,

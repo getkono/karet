@@ -375,7 +375,13 @@ impl App {
     /// momentarily empty tab list) still moves `active` but records nothing.
     pub(super) fn set_active(&mut self, index: usize) {
         self.active = index;
-        if let Some(view) = self.tabs.get(index).map(|tab| tab.view) {
+        let view = self.tabs.get(index).map(|tab| tab.view);
+        // A pointer drag belongs to the tab it began in; it must never go on
+        // extending (or autoscrolling) whichever tab replaced it.
+        if self.editor_drag.is_some_and(|drag| Some(drag.view) != view) {
+            self.editor_drag = None;
+        }
+        if let Some(view) = view {
             self.note_activation(view);
         }
     }
