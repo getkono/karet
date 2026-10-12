@@ -116,18 +116,22 @@ fn take(buffer: &TextBuffer, source: &str, cursors: &CursorState, base: u64) -> 
     let order = in_document_order(cursors);
     let selected = cursors.selections.iter().any(|s| !s.range().is_empty());
     if selected {
-        let pieces = order
+        // The text of each selection; a range whose text cannot be read is
+        // neither copied nor cut.
+        let texts: Vec<Option<String>> = cursors
+            .selections
             .iter()
-            .map(|&i| cursors.selections[i].range())
-            .filter(|range| !range.is_empty())
-            .filter_map(|range| selection_text(buffer, source, range))
+            .map(|s| Some(s.range()).filter(|r| !r.is_empty()))
+            .map(|range| range.and_then(|range| selection_text(buffer, source, range)))
             .collect();
+        let pieces = order.iter().filter_map(|&i| texts[i].clone()).collect();
         let cuts = cursors
             .selections
             .iter()
-            .map(|selection| {
+            .zip(&texts)
+            .map(|(selection, text)| {
                 let range = selection.range();
-                let cut = (!range.is_empty()).then(|| deletion(range, range.start, base));
+                let cut = text.as_ref().map(|_| deletion(range, range.start, base));
                 (*selection, cut)
             })
             .collect();
