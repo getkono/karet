@@ -220,11 +220,16 @@ fn reopening_the_panel_lands_on_the_list_not_an_abandoned_filter_edit() {
     assert_eq!(app.input_context().modal, None);
 }
 
-/// Tab back to the panel after `leave` moved focus out mid-filter: the keys
-/// drive the list, so `j` moves the selection instead of joining the filter.
+/// Toggle focus back to the panel (the editor's focus key, since Tab indents
+/// there) after `leave` moved focus out mid-filter: the keys drive the list, so
+/// `j` moves the selection instead of joining the filter.
 fn tab_back_lands_on_the_list(app: &mut App) {
     assert_eq!(app.focus, Focus::Editor);
-    send_key(app, KeyCode::Tab, KeyModifiers::NONE);
+    send_key(
+        app,
+        KeyCode::Char('e'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    );
     assert_eq!(app.focus, Focus::Sidebar);
     assert_eq!(app.input_context().modal, None);
     let before = app.problems.selection.cursor();
