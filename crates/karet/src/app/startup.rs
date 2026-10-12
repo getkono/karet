@@ -14,6 +14,9 @@ impl App {
         let mut changes = staged;
         changes.extend(working);
         Self {
+            file_index: workspace::FileIndex::new(root.clone()),
+            recent: workspace::RecentStore::in_memory(),
+            relaunch: None,
             root,
             settings: Settings::default(),
             loaded_config: LoadedConfig::default(),

@@ -11,6 +11,7 @@ impl App {
     /// duplicate. This is the single entry point for every "open a file" flow
     /// (explorer, quick-open, search result, startup, reopen-closed).
     pub(super) fn open_path(&mut self, path: &Path) {
+        self.note_recent_file(path);
         let target = canonical(path);
         // Focus an existing editor view for this file, but not a diff tab — a diff
         // is a distinct view of the same path, so opening the file still opens it.
@@ -39,6 +40,11 @@ impl App {
     /// selection-follows-preview passes `false` so the sidebar keeps focus and
     /// the user can keep arrowing.
     pub(super) fn open_path_preview(&mut self, path: &Path, steal_focus: bool) {
+        // Only an explicit open (Enter / click) counts as opening the file:
+        // arrowing through the tree previews files the user is passing over.
+        if steal_focus {
+            self.note_recent_file(path);
+        }
         let target = canonical(path);
         if let Some(idx) = self
             .tabs

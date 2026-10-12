@@ -34,6 +34,7 @@ mod notifications;
 mod panes;
 mod pending;
 mod problems;
+mod quick_open;
 mod remote_actions;
 pub(crate) mod rename;
 mod review;
@@ -406,6 +407,12 @@ pub struct App {
     pub(crate) view_history: Vec<ViewId>,
     /// The open modal overlay (quick-open / command palette), if any.
     pub(crate) overlay: Option<Overlay>,
+    /// The workspace's file list behind quick-open, walked off the UI thread.
+    pub(crate) file_index: workspace::FileIndex,
+    /// Recently opened workspaces and files (persisted only by the live editor).
+    pub(crate) recent: workspace::RecentStore,
+    /// The workspace to reopen karet on once this window has quit (Open Recent).
+    relaunch: Option<PathBuf>,
     /// Whether the find-in-file bar is currently shown. The query/toggle data
     /// itself lives on the active tab (`Tab::find`), so this only tracks
     /// visibility — closing the bar (Esc) clears this without discarding that

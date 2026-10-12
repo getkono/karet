@@ -1,12 +1,6 @@
 use super::*;
 
 impl App {
-    /// Open the quick-open (go-to-file) overlay.
-    pub(super) fn open_quick_open(&mut self) {
-        let files = workspace::list_files(&self.root, 2000);
-        self.overlay = Some(Overlay::quick_open(files));
-    }
-
     /// Open the find-in-file bar (only over a text/code tab). Restores this tab's
     /// last query/toggles if it has one (from a previous open-then-Esc on the same
     /// tab) instead of always starting blank.

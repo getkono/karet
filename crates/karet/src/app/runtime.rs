@@ -76,6 +76,15 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
     // The real app persists crash-recovery swaps to the user data directory;
     // headless/test sessions leave this unset and keep no backups.
     let config = session_config(&app, karet_session::backup::default_swap_dir());
+    // Only the live editor remembers what was opened: tests and `--capture`
+    // keep the in-memory store and never write the user's state directory.
+    if let Some(path) = workspace::RecentStore::default_path() {
+        app.recent = workspace::RecentStore::open(path);
+    }
+    let root = app.root.clone();
+    app.recent.touch_workspace(&root);
+    // Walk now, so the list is ready by the first Go to File.
+    app.file_index.ensure_started();
 
     let mut terminal = ratatui::init();
     let _ = crossterm::execute!(
@@ -150,7 +159,42 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
     for line in std::mem::take(&mut app.farewell) {
         let _ = writeln!(stderr, "karet: {}", farewell_line(&line));
     }
-    result
+    drop(stderr);
+    let relaunch = app.take_relaunch();
+    // Shut this window down completely — the session and its language servers,
+    // the recent-store writes still queued — before another one starts.
+    drop(app);
+    drop(runtime);
+    match (result, relaunch) {
+        (Ok(()), Some(root)) => relaunch_on(&root),
+        (result, _) => result,
+    }
+}
+
+/// Start karet again on the workspace `root`, in this terminal. On Unix the
+/// process image is replaced, so the shell sees one editor session; elsewhere
+/// the new editor runs as a child and its exit status becomes this one's.
+fn relaunch_on(root: &Path) -> color_eyre::Result<()> {
+    let exe = std::env::current_exe().map_err(|e| eyre!("open recent: {e}"))?;
+    let mut command = std::process::Command::new(exe);
+    command.arg(root).current_dir(root);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // `exec` only returns when it failed.
+        let error = command.exec();
+        Err(eyre!(
+            "open recent: cannot start karet on {}: {error}",
+            root.display()
+        ))
+    }
+    #[cfg(not(unix))]
+    {
+        let status = command
+            .status()
+            .map_err(|e| eyre!("open recent: cannot start karet on {}: {e}", root.display()))?;
+        std::process::exit(status.code().unwrap_or(1));
+    }
 }
 
 /// `message` made safe to write raw to a terminal: every control character (C0,
@@ -189,6 +233,7 @@ async fn event_loop(
     });
 
     let mut decoded_images = preview_image_results(app);
+    let mut file_scans = app.file_index.take_receiver();
 
     loop {
         // Backend events (a definition answer, a debugger stop) move the caret
@@ -223,6 +268,9 @@ async fn event_loop(
                 app.on_snapshot(doc, &snap);
             },
             image = recv_decoded(&mut decoded_images) => accept_decoded(app, image),
+            scan = recv_decoded(&mut file_scans) => if let Some(scan) = scan {
+                app.on_file_index(scan);
+            },
             () = async move {
                 match deadline {
                     Some(d) => tokio::time::sleep(d).await,
@@ -250,6 +298,9 @@ async fn event_loop(
         }
         while let Some(image) = decoded_images.as_mut().and_then(|rx| rx.try_recv().ok()) {
             accept_decoded(app, Some(image));
+        }
+        while let Some(scan) = file_scans.as_mut().and_then(|rx| rx.try_recv().ok()) {
+            app.on_file_index(scan);
         }
 
         if app.should_quit {

@@ -1,5 +1,6 @@
-//! Workspace helpers: opening a file into the right tab, and collecting the files
-//! shown in the explorer's quick-open list.
+//! Workspace helpers: opening a file into the right tab, collecting the files
+//! shown in the quick-open list (kept off the UI thread by [`FileIndex`]), and
+//! the recently opened files and workspaces ([`RecentStore`]).
 //!
 //! Opening is routing, not decoding: the path is classified (via the shared
 //! `karet-filetype` registry) and the matching tab is reserved immediately.
@@ -24,6 +25,14 @@ use karet_treesitter::language_name_from_path;
 
 use crate::tab::Tab;
 use crate::tab::TabKind;
+
+mod file_index;
+mod recent;
+
+pub(crate) use file_index::FileIndex;
+pub(crate) use file_index::Scan;
+pub(crate) use recent::RecentStore;
+pub(crate) use recent::absolute;
 
 /// How many leading bytes to sample for file-type classification.
 pub(crate) const HEAD_BYTES: usize = 8192;
@@ -226,15 +235,27 @@ fn title(path: &Path) -> String {
         .map_or_else(|| path.display().to_string(), str::to_string)
 }
 
-/// Collect files under `root` (gitignore-aware) for the quick-open list, capped at
-/// `limit` to keep startup cheap. Returns repo-relative-ish display paths paired
-/// with their absolute path.
+/// Collect every file under `root` (gitignore-aware) for the quick-open list,
+/// sorted by display path. Returns workspace-relative display paths paired with
+/// their absolute path.
+///
+/// Uncapped and blocking: a large workspace takes a while to walk, so the app
+/// only ever calls this off the UI thread, through [`FileIndex`].
 #[must_use]
-pub fn list_files(root: &Path, limit: usize) -> Vec<(String, PathBuf)> {
-    let mut out = Vec::new();
-    // Aligned with the workspace-search walk: symlinks are never followed and
-    // the heavyweight dirs are pruned even without an ignore file.
-    for entry in ignore::WalkBuilder::new(root)
+pub fn list_files(root: &Path) -> Vec<(String, PathBuf)> {
+    let mut out: Vec<(String, PathBuf)> = walk(root)
+        .map(|abs| (display_path(root, &abs), abs))
+        .collect();
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+/// The files under `start` the quick-open list covers. Aligned with the
+/// workspace-search walk: symlinks are never followed, ignore files apply (those
+/// above `start` included), and the heavyweight dirs are pruned even without an
+/// ignore file.
+fn walk(start: &Path) -> impl Iterator<Item = PathBuf> {
+    ignore::WalkBuilder::new(start)
         .standard_filters(true)
         .require_git(false)
         .follow_links(false)
@@ -246,23 +267,16 @@ pub fn list_files(root: &Path, limit: usize) -> Vec<(String, PathBuf)> {
         })
         .build()
         .flatten()
-    {
-        if !entry.file_type().is_some_and(|t| t.is_file()) {
-            continue;
-        }
-        let abs = entry.path().to_path_buf();
-        let display = abs
-            .strip_prefix(root)
-            .unwrap_or(&abs)
-            .to_string_lossy()
-            .into_owned();
-        out.push((display, abs));
-        if out.len() >= limit {
-            break;
-        }
-    }
-    out.sort_by(|a, b| a.0.cmp(&b.0));
-    out
+        .filter(|entry| entry.file_type().is_some_and(|t| t.is_file()))
+        .map(ignore::DirEntry::into_path)
+}
+
+/// `path` relative to `root` for display, or the whole path when it lies outside.
+fn display_path(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .into_owned()
 }
 
 #[cfg(test)]
@@ -529,7 +543,7 @@ trailer<</Size 4/Root 1 0 R>>\n%%EOF";
         let dir = temp_dir();
         let _ = std::fs::write(dir.path.join("b.txt"), "b");
         let _ = std::fs::write(dir.path.join("a.txt"), "a");
-        let files = list_files(&dir.path, 100);
+        let files = list_files(&dir.path);
         let names: Vec<&str> = files.iter().map(|(d, _)| d.as_str()).collect();
         assert_eq!(names, vec!["a.txt", "b.txt"]);
     }

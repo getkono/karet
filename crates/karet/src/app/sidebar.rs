@@ -420,6 +420,9 @@ impl App {
             if let Some(tab) = self.tabs.get_mut(idx) {
                 tab.is_preview = false;
             }
+            // Enter on a file arrowing already previewed is still an explicit
+            // open; `open_path` below records the other case itself.
+            self.note_recent_file(&path);
             self.select_tab(idx);
         } else {
             self.open_path(&path);

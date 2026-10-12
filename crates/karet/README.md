@@ -76,7 +76,8 @@ See [docs/binary-size.md](../../docs/binary-size.md).
 
 ## Keymap
 
-**Global:** `Ctrl+P` quick-open · `Ctrl+Shift+P` (or `F1`) command palette · `Ctrl+F`
+**Global:** `Ctrl+P` quick-open (recently opened files first) · `Ctrl+R` open a
+recent workspace · `Ctrl+Shift+P` (or `F1`) command palette · `Ctrl+F`
 find in file · `Ctrl+Shift+F` workspace search · `Ctrl+B` toggle sidebar ·
 `Ctrl+1/2/3` Explorer/Search/Source Control · `Ctrl+K 1/2` Editor/GitHub
 view · `Ctrl+C` copy · `Tab` switch focus · `Ctrl+Q` quit (`q` also quits in a
