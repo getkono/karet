@@ -93,11 +93,26 @@ impl App {
         Overlay::document_symbols(path, symbols)
     }
 
+    /// Apply `edit` to the open overlay's query, then follow it into
+    /// quick-open's mode only when the text actually changed: a key that edits
+    /// nothing (an arrow, Home, Tab) keeps the computed line lists, and the row
+    /// highlighted in them, as they are.
+    pub(super) fn edit_overlay_query(&mut self, edit: impl FnOnce(&mut Overlay)) {
+        let Some(overlay) = self.overlay.as_mut() else {
+            return;
+        };
+        let before = overlay.query().to_string();
+        edit(overlay);
+        if overlay.query() != before {
+            self.sync_quick_open_mode();
+        }
+    }
+
     /// Follow an edit of an open quick-open's query into the mode its sigil now
     /// asks for: typing `@` lists the active document's symbols, `:` goes to a
     /// line, a trailing `:LINE` opens the chosen file there, and deleting them
     /// goes back to files. What was typed is kept.
-    pub(super) fn sync_quick_open_mode(&mut self) {
+    fn sync_quick_open_mode(&mut self) {
         let Some(overlay) = self.overlay.as_ref() else {
             return;
         };

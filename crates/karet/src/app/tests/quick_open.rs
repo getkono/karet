@@ -419,3 +419,46 @@ fn a_file_query_ending_in_a_line_opens_the_file_there() {
     assert_eq!(mode(&app), Some(QuickOpenMode::Files));
     assert_eq!(rows(&app), ["b.rs"]);
 }
+
+#[test]
+fn a_file_at_line_query_before_the_walk_waits_on_it() {
+    let (_dir, mut app, mut rx) = workspace_app(&["a.rs", "b.rs"]);
+    app.dispatch(Command::OpenQuickOpen);
+    type_keys(&mut app, "rs:2");
+    assert_eq!(mode(&app), Some(QuickOpenMode::FileAtLine));
+    assert!(rows(&app).is_empty(), "nothing is walked on the UI thread");
+    assert!(
+        app.quick_open_loading().is_some(),
+        "the file:line list waits on the walk like the file list"
+    );
+    land(&mut app, &mut rx);
+    assert_eq!(mode(&app), Some(QuickOpenMode::FileAtLine));
+    assert_eq!(rows(&app), ["a.rs", "b.rs"]);
+    assert!(app.quick_open_loading().is_none());
+}
+
+#[test]
+fn a_key_that_edits_nothing_keeps_the_highlighted_file_at_line() {
+    let (dir, mut app, mut rx) = workspace_app(&["a.rs", "b.rs"]);
+    app.dispatch(Command::OpenQuickOpen);
+    land(&mut app, &mut rx);
+    type_keys(&mut app, "rs:2");
+    if let Some(overlay) = app.overlay.as_mut() {
+        overlay.select_down();
+    }
+    let b = dir.path().join("b.rs");
+    for code in [
+        KeyCode::Left,
+        KeyCode::Right,
+        KeyCode::Home,
+        KeyCode::End,
+        KeyCode::Tab,
+    ] {
+        app.overlay_input(KeyEvent::new(code, KeyModifiers::NONE));
+        assert_eq!(
+            app.overlay.as_ref().and_then(Overlay::selected_file),
+            Some(b.as_path()),
+            "{code:?} edits no text, so the list is not rebuilt"
+        );
+    }
+}
