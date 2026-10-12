@@ -93,8 +93,20 @@ pub struct Diagnostic {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[non_exhaustive]
 pub enum DecorationKind {
-    /// A glyph in the gutter (e.g. a VCS change marker).
+    /// A glyph in the gutter's leading marker column (e.g. a breakpoint, a
+    /// diagnostic's severity sign).
     GutterMarker {
+        /// The glyph to draw.
+        glyph: char,
+    },
+    /// A glyph marking lines changed against a baseline (e.g. a VCS
+    /// uncommitted-change bar), drawn in a gutter column of its own so it
+    /// never competes with a [`GutterMarker`](Self::GutterMarker) on the same
+    /// line.
+    ///
+    /// A renderer with no such column may draw it in the marker column
+    /// instead, behind every `GutterMarker` on the line.
+    ChangeMarker {
         /// The glyph to draw.
         glyph: char,
     },
@@ -514,6 +526,12 @@ mod tests {
             role: Some(ThemeRole::DiagnosticError),
         };
         assert_eq!(dec.kind, DecorationKind::GutterMarker { glyph: '▎' });
+        // A change marker is its own kind, never equal to a marker with the
+        // same glyph, so a renderer can give it its own lane.
+        assert_ne!(
+            DecorationKind::ChangeMarker { glyph: '▎' },
+            DecorationKind::GutterMarker { glyph: '▎' }
+        );
     }
 
     /// A kind matches itself and whatever nests under it, never a mere
