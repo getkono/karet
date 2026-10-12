@@ -111,6 +111,8 @@ fn typing_with_find_and_search_active_never_copies_the_document() {
     );
 }
 
+/// The highlight worker's table lines ride the document snapshot (#433), so a
+/// Markdown file with a table costs no copy per keystroke either.
 #[test]
 fn a_markdown_table_still_reaches_the_renderer() {
     let mut app = markdown_app("| a | b |\n|---|---|\n| 1 | 2 |\n");
@@ -119,13 +121,30 @@ fn a_markdown_table_still_reaches_the_renderer() {
         .set_carets(&[LineCol::new(2, 9)]);
     app.dispatch(Command::InsertChar('\n'));
     draw(&mut app);
-    // A pipe gates the table scan in, which reads the shared snapshot.
-    assert!(materialized(&app));
-    assert_eq!(
-        app.tabs[app.active]
-            .markdown_table_lines
-            .as_ref()
-            .map(|(_, ranges)| ranges.clone()),
-        Some(vec![0..=2])
+    let buffer = match &app.tabs[app.active].kind {
+        TabKind::Code { buffer, .. } => buffer.clone(),
+        _ => panic!("expected the active tab to be a code tab"),
+    };
+    app.on_snapshot(
+        DocumentId(9),
+        &DocSnapshot {
+            version: buffer.version(),
+            buffer,
+            highlights: Arc::default(),
+            semantic_blocks: Arc::default(),
+            folds: Arc::default(),
+            decorations: Arc::default(),
+            syntax_error_lines: Arc::default(),
+            table_lines: Arc::new(vec![0..=2]),
+            language: Some("Markdown"),
+            dirty: true,
+            cursor: None,
+        },
+    );
+    draw(&mut app);
+    assert_eq!(*app.tabs[app.active].markdown_table_lines, [0..=2]);
+    assert!(
+        !materialized(&app),
+        "a Markdown table made a keystroke or a frame copy the whole document"
     );
 }
