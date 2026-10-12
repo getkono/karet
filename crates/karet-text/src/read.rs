@@ -174,6 +174,24 @@ impl From<&str> for TextSnapshot {
     }
 }
 
+impl From<String> for TextSnapshot {
+    fn from(text: String) -> Self {
+        Self::from(text.as_str())
+    }
+}
+
+impl PartialEq<str> for TextSnapshot {
+    fn eq(&self, other: &str) -> bool {
+        self.len_bytes() == other.len() && self.as_str() == other
+    }
+}
+
+impl PartialEq<&str> for TextSnapshot {
+    fn eq(&self, other: &&str) -> bool {
+        self == *other
+    }
+}
+
 impl fmt::Debug for TextSnapshot {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TextSnapshot")
@@ -301,6 +319,14 @@ mod tests {
     fn snapshot_conversions() {
         let snapshot = TextSnapshot::from("abc");
         assert_eq!(snapshot.as_ref(), "abc");
+        assert_eq!(TextSnapshot::from(String::from("abc")), "abc");
+        assert!(snapshot == *"abc");
+        let longer = TextSnapshot::from("abcd");
+        assert!(longer != "abc");
+        assert!(
+            !longer.is_materialized(),
+            "a length mismatch reads the rope only"
+        );
         assert_eq!(TextSnapshot::default().as_str(), "");
         assert!(format!("{snapshot:?}").contains("len_bytes: 3"));
     }
