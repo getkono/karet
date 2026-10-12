@@ -29,7 +29,10 @@ pub struct Applied {
     pub version: u64,
     /// The applied edits, descending by `start_byte`.
     pub edits: Vec<AppliedEdit>,
-    /// The cursor to restore (set by [`undo`](TextBuffer::undo); `None` otherwise).
+    /// The cursor to restore: always set by [`undo`](TextBuffer::undo) (the
+    /// state before the undone step), set by [`redo`](TextBuffer::redo) when a
+    /// cursor was reported after the redone step through
+    /// [`note_cursor_after`](TextBuffer::note_cursor_after), `None` otherwise.
     pub restored_cursor: Option<CursorState>,
 }
 
@@ -132,17 +135,27 @@ impl TextBuffer {
         })
     }
 
-    /// Redo the most recently undone edit group, or `None` when there is nothing
-    /// to redo.
+    /// Redo the most recently undone edit group, returning the re-applied edits
+    /// and the cursor reported right after the step (when one was), or `None`
+    /// when there is nothing to redo.
     pub fn redo(&mut self) -> Option<Applied> {
-        let changes = self.history.take_redo()?;
+        let (changes, cursor) = self.history.take_redo()?;
         let edits = self.replay(&changes);
         self.version += 1;
         Some(Applied {
             version: self.version,
             edits,
-            restored_cursor: None,
+            restored_cursor: cursor,
         })
+    }
+
+    /// Record the cursor/selection state as it stands right after the most
+    /// recent edit, so redoing that edit restores it. Only the first report
+    /// for the current version is kept, and only while the most recent
+    /// recorded edit is what produced it: a report after an undo, a redo, or a
+    /// caret move that followed the first report describes something else.
+    pub fn note_cursor_after(&mut self, cursor: &CursorState) {
+        self.history.note_cursor_after(self.version, cursor);
     }
 
     /// Apply a sequence of trusted changes (history replay) to the rope, with no
@@ -404,6 +417,29 @@ mod tests {
         assert!(undone.restored_cursor.is_some());
         assert!(b.redo().is_some());
         assert_eq!(b.line(0).as_deref(), Some("hello world"));
+    }
+
+    #[test]
+    fn redo_restores_the_cursor_first_reported_after_the_edit() {
+        let caret = |col| CursorState::single(karet_core::Selection::caret(LineCol::new(0, col)));
+        let mut b = TextBuffer::from_text("hello");
+        assert!(b.apply_simple(&ins(0, 0, 5, " world")).is_ok());
+        b.note_cursor_after(&caret(11));
+        // A later report at the same version is a caret move, not the edit's.
+        b.note_cursor_after(&caret(2));
+        assert!(b.undo().is_some());
+        // After the undo the head edit no longer produced the current version.
+        b.note_cursor_after(&caret(4));
+        let redone = b.redo().unwrap_or_default();
+        assert_eq!(redone.restored_cursor, Some(caret(11)));
+    }
+
+    #[test]
+    fn redo_without_a_reported_cursor_restores_none() {
+        let mut b = TextBuffer::from_text("hello");
+        assert!(b.apply_simple(&ins(0, 0, 5, "!")).is_ok());
+        assert!(b.undo().is_some());
+        assert_eq!(b.redo().unwrap_or_default().restored_cursor, None);
     }
 
     #[test]
