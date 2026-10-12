@@ -504,10 +504,7 @@ pub(super) fn draw_hover(f: &mut Frame, app: &mut App, theme: &Theme) {
     // only the draw knows how many rows the content wrapped to.
     ui.scroll = ui.scroll.min(content_rows.saturating_sub(height));
     ui.rect = rect;
-    let buf = f.buffer_mut();
-    for (row, line) in (rect.y..rect.bottom()).zip(lines.iter().skip(usize::from(ui.scroll))) {
-        buf.set_line(rect.x, row, line, rect.width);
-    }
+    f.render_widget(popup.scroll(ui.scroll), rect);
 }
 
 pub(super) fn draw_toasts(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {

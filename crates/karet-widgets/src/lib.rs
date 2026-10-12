@@ -94,13 +94,28 @@ pub mod hover {
         pub markup: &'a Markup,
         /// The theme resolving token colors and emphasis.
         pub theme: &'a Theme,
+        /// Rows of content scrolled off the top, for content taller than the popup.
+        pub scroll: u16,
     }
 
     impl<'a> HoverPopup<'a> {
         /// Build a popup for `markup`.
         #[must_use]
         pub fn new(markup: &'a Markup, theme: &'a Theme) -> Self {
-            Self { markup, theme }
+            Self {
+                markup,
+                theme,
+                scroll: 0,
+            }
+        }
+
+        /// Start painting `rows` rows into the content, so content taller than the
+        /// popup can be scrolled into view. The caller clamps it: a scroll past the
+        /// end paints nothing.
+        #[must_use]
+        pub fn scroll(mut self, rows: u16) -> Self {
+            self.scroll = rows;
+            self
         }
 
         /// The styled lines this popup paints, soft-wrapped to `width` columns.
@@ -134,6 +149,7 @@ pub mod hover {
             for (row, line) in self
                 .lines(area.width)
                 .iter()
+                .skip(self.scroll.into())
                 .take(area.height.into())
                 .enumerate()
             {
@@ -222,6 +238,27 @@ mod tests {
             let cell = buf.cell((0, 0)).cloned().unwrap_or_default();
             assert_eq!(cell.symbol(), "#");
             assert!(cell.modifier.is_empty(), "plain text carries no emphasis");
+        }
+
+        #[test]
+        fn a_scrolled_popup_paints_from_the_scrolled_row() {
+            let theme = Theme::dark();
+            let markup = Markup {
+                kind: MarkupKind::PlainText,
+                value: "one\ntwo\nthree".to_owned(),
+            };
+            let area = Rect::new(0, 0, 8, 2);
+            let mut buf = Buffer::empty(area);
+            HoverPopup::new(&markup, &theme)
+                .scroll(1)
+                .render(area, &mut buf);
+            let first = |y: u16| buf.cell((0, y)).map(|c| c.symbol().to_owned());
+            assert_eq!(first(0), Some("t".to_owned()), "row 0 shows `two`");
+            assert_eq!(
+                buf.cell((1, 1)).map(|c| c.symbol().to_owned()),
+                Some("h".to_owned()),
+                "row 1 shows `three`"
+            );
         }
 
         #[test]
