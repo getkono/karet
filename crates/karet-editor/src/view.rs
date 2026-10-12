@@ -320,8 +320,18 @@ impl Editor<'_> {
         let mut run_style: Option<Style> = None;
         let mut col: u32 = 0;
         let mut display_col = 0_u32;
-        let widths = cluster_widths(&content.chars().collect::<Vec<_>>());
+        let chars: Vec<char> = content.chars().collect();
+        let widths = cluster_widths(&chars);
         let cells = |col: u32| widths.get(col as usize).copied().unwrap_or(0);
+        // The shared horizontal scroll can start this row inside a cluster.
+        // Its earlier chars took the cluster's cells off screen, so the chars
+        // up to the next boundary are a fragment the width model counts as
+        // zero cells: painting them would shift the rest of the row away from
+        // the caret and hit-test columns.
+        let paint_from = cluster_bounds(&chars)
+            .into_iter()
+            .find(|&bound| bound >= range.start)
+            .unwrap_or(range.start);
         for (boff, ch) in content.char_indices() {
             if col < range.start {
                 // Hints before the row start still shift the running column,
@@ -355,6 +365,10 @@ impl Editor<'_> {
                     theme,
                 );
                 display_col = display_col.saturating_add(hints.width_at(col));
+            }
+            if col < paint_from {
+                col += 1;
+                continue;
             }
             let width = character_width(ch, cells(col), display_col, self.tab_width);
             let mut style = token_style(line_start + boff, hl, theme, default_fg);

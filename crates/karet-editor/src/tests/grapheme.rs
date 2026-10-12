@@ -5,7 +5,12 @@
 
 use super::*;
 use crate::editing;
+use crate::hint::HintIndex;
+use crate::visual::Reveal;
 use crate::visual::cluster_widths;
+use crate::visual::horizontal_extent;
+use crate::visual::offset_within_row;
+use crate::visual::reveal_column;
 
 /// `e` + COMBINING ACUTE ACCENT: one cluster of two chars.
 const E_ACUTE: &str = "e\u{301}";
@@ -232,4 +237,76 @@ fn a_tab_after_a_wide_cluster_stops_where_it_is_painted() {
         state.screen_cell(area, &buffer, &[], at(0, 3)),
         Some((GUTTER + 4, 0))
     );
+}
+
+#[test]
+fn horizontal_extent_counts_a_cluster_once() {
+    let none = HintIndex::new(&[]);
+    let extent = |text: &str, width| horizontal_extent(&chars(text), width, 4, none.line(0));
+    // A line that fits reports its last cell, the end-of-line caret slot:
+    // one cell, a two-cell family, one cell. Summing chars would say 8.
+    assert_eq!(extent(&format!("a{FAMILY}b"), 40), 4);
+    assert_eq!(
+        extent(&format!("{FLAGS}x"), 40),
+        5,
+        "two flags of two cells"
+    );
+    assert_eq!(
+        extent(&format!("{E_ACUTE}x"), 40),
+        2,
+        "the mark takes no cell"
+    );
+    // Two cells wide, the furthest scroll is the first origin that shows `b`
+    // and the caret slot after it, past the family's cells.
+    assert_eq!(extent(&format!("a{FAMILY}b"), 2), 3);
+}
+
+#[test]
+fn reveal_column_scrolls_by_cluster_cells() {
+    let none = HintIndex::new(&[]);
+    // Three families and `x`: the families start at columns 0, 5 and 10, on
+    // cells 0, 2 and 4. A caret after the third, on cell 6, is off a
+    // four-cell viewport. No origin falls on cell 3, so the least scroll
+    // that shows it starts the row at the third family, on cell 4, leaving
+    // the caret on cell 2. The column is inside the second family, whose
+    // cells are off screen: the row paints from the third.
+    let line = chars(&format!("{FAMILY}{FAMILY}{FAMILY}x"));
+    let scroll = reveal_column(&line, 0, 15, 4, 4, none.line(0), Reveal::Minimal);
+    assert_eq!(scroll, 6);
+    assert_eq!(offset_within_row(&line, scroll, 10, 4, none.line(0)), 0);
+    assert_eq!(offset_within_row(&line, scroll, 15, 4, none.line(0)), 2);
+
+    // Ten one-cell combining sequences: the caret after the eighth is on
+    // cell 8. A five-cell viewport keeps a two-cell margin, so the row
+    // origin is cell 6, the start of the seventh sequence.
+    let line = chars(&format!("{}x", E_ACUTE.repeat(10)));
+    let scroll = reveal_column(&line, 0, 16, 5, 4, none.line(0), Reveal::Margin);
+    assert_eq!(offset_within_row(&line, scroll, 16, 4, none.line(0)), 2);
+    assert_eq!(offset_within_row(&line, scroll, 12, 4, none.line(0)), 0);
+}
+
+#[test]
+fn a_row_scrolled_into_a_cluster_paints_from_the_next_one() {
+    // Column 2 is inside the family (columns 1..6), whose cells are scrolled
+    // off. Its remaining chars take no cell, so the row starts at `b`, where
+    // the caret and a click put column 6.
+    let buffer = TextBuffer::from_text(&format!("a{FAMILY}bcdef\n0123456789\n"));
+    let area = Rect::new(0, 0, GUTTER + 4, 3);
+    let mut state = EditorState::new();
+    let mut target = Buffer::empty(area);
+    Editor::new(&buffer).render(area, &mut target, &mut state);
+    state.scroll_columns(&buffer, 2);
+    assert_eq!(state.scroll_col, 2);
+    let mut target = Buffer::empty(area);
+    Editor::new(&buffer).render(area, &mut target, &mut state);
+    let row: String = (GUTTER..GUTTER + 4)
+        .map(|x| target[(x, 0)].symbol().to_owned())
+        .collect();
+    assert_eq!(row, "bcde");
+    assert_eq!(target[(GUTTER, 1)].symbol(), "2", "the shared scroll");
+    assert_eq!(
+        state.screen_cell(area, &buffer, &[], at(0, 6)),
+        Some((GUTTER, 0))
+    );
+    assert_eq!(state.pos_at(area, &buffer, &[], GUTTER + 1, 0), at(0, 7));
 }
