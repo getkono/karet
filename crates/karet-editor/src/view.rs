@@ -358,6 +358,7 @@ impl Editor<'_> {
                     .underline_color(color.to_ratatui())
                     .add_modifier(Modifier::UNDERLINED);
             }
+            style = style.add_modifier(diagnostic::tag_modifiers(self.diagnostics, l, col));
             let bg = if in_any(selections, l, col) {
                 Some(theme.role(ThemeRole::Selection))
             } else if let Some((swatch_bg, swatch_fg)) = self.swatch_style(l, col) {
@@ -472,15 +473,7 @@ impl Editor<'_> {
             .iter()
             .filter(|diagnostic| col_in_range(line, col, diagnostic.range))
             .min_by_key(|diagnostic| diagnostic.severity)
-            .map(|diagnostic| {
-                theme.role(match diagnostic.severity {
-                    Severity::Error => ThemeRole::DiagnosticError,
-                    Severity::Warning => ThemeRole::DiagnosticWarning,
-                    Severity::Information => ThemeRole::DiagnosticInfo,
-                    Severity::Hint => ThemeRole::DiagnosticHint,
-                    _ => ThemeRole::DiagnosticInfo,
-                })
-            })
+            .map(|diagnostic| theme.role(diagnostic::severity_role(diagnostic.severity)))
     }
 
     /// The underline color for column `col` on line `l`, from underline decorations.

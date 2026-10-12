@@ -12,6 +12,7 @@
 
 mod bracket;
 mod conflict;
+mod diagnostic;
 pub mod editing;
 mod hint;
 mod state;
@@ -28,10 +29,16 @@ pub use bracket::bracket_pair_at;
 pub use bracket::enclosing_pair;
 pub use bracket::matching_pair;
 pub use conflict::conflict_decorations;
+pub use diagnostic::InlineDiagnostics;
+pub use diagnostic::diagnostic_messages;
+pub use diagnostic::diagnostic_signs;
+pub use diagnostic::severity_role;
+pub use diagnostic::severity_sign;
 use karet_core::CursorState;
 use karet_core::Decoration;
 use karet_core::DecorationKind;
 use karet_core::Diagnostic;
+use karet_core::DiagnosticTag;
 use karet_core::LineCol;
 use karet_core::Range;
 use karet_core::Selection;

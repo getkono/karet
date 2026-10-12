@@ -32,6 +32,47 @@ fn color_swatch_decorations(buffer: &TextBuffer, first_line: u32, height: u16) -
 /// short line it is the blame that is cut, never the call to act.
 const MANIFEST_EOL_PRIORITY: u8 = crate::app::LiveBlame::BLAME_EOL_PRIORITY + 1;
 
+/// The end-of-line priority of a diagnostic message: above a dependency hint
+/// and inline blame, so a short line keeps the problem and cuts the rest.
+const DIAGNOSTIC_EOL_PRIORITY: u8 = MANIFEST_EOL_PRIORITY + 1;
+
+/// Which lines show their diagnostics' messages, until an
+/// `editor.inlineDiagnostics` setting chooses: the caret's lines, so the
+/// message is there when the caret is, without filling every line of a file
+/// with errors.
+const INLINE_DIAGNOSTICS: karet_editor::InlineDiagnostics =
+    karet_editor::InlineDiagnostics::CurrentLine;
+
+/// The diagnostics published for `doc`, or none.
+pub(super) fn doc_diagnostics<'a>(ctx: &PaneCtx<'a>, doc: Option<DocumentId>) -> &'a [Diagnostic] {
+    doc.and_then(|doc| ctx.diagnostics.get(&doc))
+        .map_or(&[][..], Vec::as_slice)
+}
+
+/// The `diagnostics` that earn a gutter sign and a caret-line message: the
+/// problems, as the Problems panel counts them. Misspellings keep their
+/// underline but would otherwise take the marker lane from change markers and
+/// the end-of-line slot from blame on every line of prose.
+pub(super) fn problems(diagnostics: &[Diagnostic]) -> Vec<Diagnostic> {
+    diagnostics
+        .iter()
+        .filter(|diagnostic| crate::app::is_problem(diagnostic))
+        .cloned()
+        .collect()
+}
+
+/// The end-of-line messages of `diagnostics` on the `caret_lines`, every
+/// severity included.
+pub(super) fn diagnostic_text(diagnostics: &[Diagnostic], caret_lines: &[u32]) -> Vec<VirtualText> {
+    karet_editor::diagnostic_messages(
+        diagnostics,
+        INLINE_DIAGNOSTICS,
+        karet_core::Severity::Hint,
+        caret_lines,
+        DIAGNOSTIC_EOL_PRIORITY,
+    )
+}
+
 /// End-of-line annotations for a manifest's dependency hints. Fresh
 /// dependencies stay quiet; the rest carry a state glyph, the newest
 /// version, and an advisory count, role-colored by severity.
@@ -133,8 +174,9 @@ pub(super) fn frame_decorations(
 
 /// The virtual text content assembles fresh each draw, in one slice: the
 /// document's inlay hints (one text per label part, so a part can be hovered
-/// and followed on its own), the manifest's dependency hints
-/// (version-guarded), and the inline blame last.
+/// and followed on its own), the messages of the `diagnostics` on the
+/// `caret_lines`, the manifest's dependency hints (version-guarded), and the
+/// inline blame last.
 ///
 /// Returns the slice; which `(hint, part)` each of its first texts is, in
 /// order, one per inlay-hint label part; and the blame's index in the slice.
@@ -144,7 +186,9 @@ pub(super) fn frame_virtual_text(
     ctx: &PaneCtx,
     doc: Option<DocumentId>,
     buffer: &TextBuffer,
+    (diagnostics, cursors): (&[Diagnostic], &karet_core::CursorState),
 ) -> (Vec<VirtualText>, Vec<(usize, usize)>, Option<usize>) {
+    let caret_lines: Vec<u32> = cursors.selections.iter().map(|s| s.head.line).collect();
     let mut out: Vec<VirtualText> = Vec::new();
     let mut inlay_parts = Vec::new();
     for (index, hint) in doc
@@ -158,6 +202,7 @@ pub(super) fn frame_virtual_text(
             inlay_parts.push((index, part));
         }
     }
+    out.extend(diagnostic_text(diagnostics, &caret_lines));
     if let Some((checked, hints)) = doc.and_then(|doc| ctx.manifest_hints.get(&doc))
         && *checked == buffer.version()
     {
@@ -192,6 +237,86 @@ pub(super) fn inlay_hits(
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod diagnostic_text_tests {
+    use karet_core::EolAlign;
+    use karet_core::LineCol;
+    use karet_core::Severity;
+    use karet_core::VirtualTextPlacement;
+
+    use super::*;
+
+    fn diagnostic(line: u32, severity: Severity, message: &str) -> Diagnostic {
+        Diagnostic {
+            range: karet_core::Range {
+                start: LineCol::new(line, 0),
+                end: LineCol::new(line, 1),
+            },
+            severity,
+            message: message.to_owned(),
+            source: None,
+            code: None,
+            tags: Vec::new(),
+            related: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn only_the_caret_lines_show_messages_of_every_severity() {
+        let all = [
+            diagnostic(0, Severity::Error, "off the caret"),
+            diagnostic(3, Severity::Hint, "a hint"),
+            diagnostic(3, Severity::Error, "an error"),
+        ];
+        let texts: Vec<(u32, String)> = diagnostic_text(&all, &[3])
+            .into_iter()
+            .map(|text| (text.line, text.text))
+            .collect();
+        assert_eq!(
+            texts,
+            [(3, "  an error".to_owned()), (3, "  a hint".to_owned())]
+        );
+    }
+
+    #[test]
+    fn misspellings_get_no_sign_and_no_caret_line_message() {
+        let mut misspelled = diagnostic(2, Severity::Warning, "Unknown word");
+        misspelled.source = Some("karet-spell".to_owned());
+        let all = [misspelled, diagnostic(2, Severity::Hint, "a hint")];
+        let kept = problems(&all);
+        let messages: Vec<String> = diagnostic_text(&kept, &[2])
+            .into_iter()
+            .map(|text| text.text)
+            .collect();
+        assert_eq!(messages, ["  a hint".to_owned()]);
+        let signs = karet_editor::diagnostic_signs(&kept);
+        assert_eq!(signs.len(), 1);
+        assert_eq!(
+            signs.first().and_then(|sign| sign.role),
+            Some(ThemeRole::DiagnosticHint)
+        );
+    }
+
+    #[test]
+    fn a_message_outranks_a_dependency_hint_and_the_blame() {
+        let texts = diagnostic_text(&[diagnostic(0, Severity::Warning, "w")], &[0]);
+        let Some(text) = texts.first() else {
+            panic!("the caret line's warning is shown");
+        };
+        assert_eq!(
+            text.placement,
+            VirtualTextPlacement::EndOfLine {
+                align: EolAlign::Left,
+                priority: DIAGNOSTIC_EOL_PRIORITY,
+            }
+        );
+        const {
+            assert!(DIAGNOSTIC_EOL_PRIORITY > MANIFEST_EOL_PRIORITY);
+            assert!(DIAGNOSTIC_EOL_PRIORITY > crate::app::LiveBlame::BLAME_EOL_PRIORITY);
+        }
+    }
 }
 
 #[cfg(test)]
