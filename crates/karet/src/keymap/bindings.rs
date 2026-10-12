@@ -227,6 +227,7 @@ pub(super) static BINDINGS: &[Binding] = &[
     // syntax-error auto-trigger gate).
     b(Editor, true,  false, false, Char(' '), Command::TriggerCompletion),
     b(Editor, false, false, false, F(12),      Command::GoToDefinition),
+    b(Editor, false, false, false, F(2),       Command::RenameSymbol),
     b(Editor, false, false, false, Enter,     Command::InsertNewline),
     b(Editor, false, false, false, Backspace, Command::DeleteBackward),
     b(Editor, false, false, false, Delete,    Command::DeleteForward),
@@ -240,6 +241,11 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(Editor, true,  true,  false, Char('z'), Command::Redo),
     b(Editor, true,  false, false, Char('x'), Command::Cut),
     b(Editor, true,  false, false, Char('v'), Command::Paste),
+    // Comment toggles (VS Code parity). A legacy terminal sends Ctrl+/ as 0x1F,
+    // which crossterm reports as Ctrl+7; the kitty protocol reports Ctrl+/ itself.
+    b(Editor, true,  false, false, Char('/'), Command::ToggleLineComment),
+    b(Editor, true,  false, false, Char('7'), Command::ToggleLineComment),
+    b(Editor, false, true,  true,  Char('a'), Command::ToggleBlockComment),
 
     // Live blame: toggle inline attribution, or open the attributed commit.
     b(Editor, true,  true,  false, Char('b'), Command::ToggleInlineBlame),
@@ -412,6 +418,12 @@ pub(super) static BINDINGS: &[Binding] = &[
     // Go-to-commit (revision) input.
     b(RevInput, false, false, false, Esc,   Command::RevInputCancel),
     b(RevInput, false, false, false, Enter, Command::RevInputSubmit),
+    // Inline rename prompt (F2).
+    b(Rename, false, false, false, Esc,   Command::RenameCancel),
+    b(Rename, false, false, false, Enter, Command::RenameSubmit),
+    b(Rename, true,  false, false, Char('c'), Command::Copy),
+    b(Rename, true,  false, false, Char('x'), Command::Cut),
+    b(Rename, true,  false, false, Char('v'), Command::Paste),
     // Context menu.
     b(ContextMenu, false, false, false, Esc,       Command::ContextMenuCancel),
     b(ContextMenu, false, false, false, Enter,     Command::ContextMenuAccept),

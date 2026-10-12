@@ -6,6 +6,7 @@ mod backend_events;
 mod capture;
 mod change_view;
 mod commands;
+mod comment;
 pub(crate) mod commit_console;
 mod completion;
 pub(crate) mod confirm;
@@ -34,6 +35,7 @@ mod panes;
 mod pending;
 mod problems;
 mod remote_actions;
+pub(crate) mod rename;
 mod review;
 mod runtime;
 pub(crate) mod scm;
@@ -529,6 +531,10 @@ pub struct App {
     pub(crate) markdown_link_hover: Option<(u16, u16)>,
     /// The definition request awaiting an answer, if any.
     pub(crate) pending_definition: Option<definition::PendingDefinition>,
+    /// The open inline rename prompt (F2), if any.
+    pub(crate) rename: Option<rename::RenamePrompt>,
+    /// The submitted rename awaiting the backend's answer, if any.
+    pub(crate) pending_rename: Option<rename::PendingRename>,
     /// Each pane's Go Back / Go Forward history, keyed by the pane it navigates.
     pub(crate) nav_history: HashMap<PaneId, navigation::NavHistory>,
     /// The Ctrl-hovered symbol the editor should underline as navigable.

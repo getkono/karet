@@ -27,7 +27,7 @@ impl Session {
     /// opened is left on disk for a later attempt.
     pub(super) fn recover_swaps(&mut self, id: RequestId) {
         for record in std::mem::take(&mut self.pending_swaps) {
-            self.open(id, record.meta.original.clone(), None);
+            self.open(Some(id), record.meta.original.clone(), None);
             let Some(&doc_id) = self.store.by_path.get(&record.meta.original) else {
                 continue;
             };

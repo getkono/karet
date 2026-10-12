@@ -225,6 +225,13 @@ impl Rig {
         let _ = frame(&mut self.app, self.width, self.height);
     }
 
+    /// Resize the terminal to `width` x `height` and draw a frame at the new size.
+    pub(crate) fn resize(&mut self, width: u16, height: u16) {
+        self.width = width;
+        self.height = height;
+        self.render();
+    }
+
     /// Apply every step in order.
     pub(crate) fn run(&mut self, steps: &[Step]) {
         for step in steps {
@@ -258,7 +265,7 @@ impl Rig {
             Step::WheelDown(at, modifiers) => self.mouse(MouseEventKind::ScrollDown, at, modifiers),
             Step::WheelUp(at, modifiers) => self.mouse(MouseEventKind::ScrollUp, at, modifiers),
             Step::Wait(gap) => self.since_click += gap,
-            Step::Tick => self.app.tick_drag_autoscroll(),
+            Step::Tick => self.app.tick_drag_autoscroll(Instant::now()),
         }
         self.render();
     }

@@ -271,6 +271,11 @@ pub enum Command {
     NotebookInterrupt,
     /// Restart the notebook kernel (outputs are marked stale).
     NotebookRestartKernel,
+    /// Toggle a line comment on every selected line, in the language at the caret
+    /// (Ctrl+/).
+    ToggleLineComment,
+    /// Toggle a block comment around each selection or caret line (Shift+Alt+A).
+    ToggleBlockComment,
     /// Toggle bold (`**`) around the selection or word (Markdown; Ctrl+B).
     ToggleBold,
     /// Toggle italic (`*`) around the selection or word (Markdown; Ctrl+I).
@@ -327,6 +332,12 @@ pub enum Command {
     CommitGraphCopyIssueUrls,
     /// Jump to the definition of the symbol at the caret (F12).
     GoToDefinition,
+    /// Rename the symbol at the caret across the workspace (F2).
+    RenameSymbol,
+    /// Apply the name typed into the rename prompt.
+    RenameSubmit,
+    /// Close the rename prompt without renaming.
+    RenameCancel,
     /// Return to the place the focused pane most recently left: a jump's origin
     /// or the start of a large caret move (Ctrl+Alt+Left, Alt+Left).
     JumpBack,
@@ -792,6 +803,8 @@ impl Command {
             Self::NotebookRunAll => "Notebook: Run All Cells",
             Self::NotebookInterrupt => "Notebook: Interrupt Kernel",
             Self::NotebookRestartKernel => "Notebook: Restart Kernel",
+            Self::ToggleLineComment => "Toggle Line Comment",
+            Self::ToggleBlockComment => "Toggle Block Comment",
             Self::ToggleBold => "Markdown: Toggle Bold",
             Self::ToggleItalic => "Markdown: Toggle Italic",
             Self::ToggleStrikethrough => "Markdown: Toggle Strikethrough",
@@ -820,6 +833,9 @@ impl Command {
             Self::CommitUnfoldFileTree => "Commit: Unfold All Directories",
             Self::CommitGraphCopyIssueUrls => "Commit Graph: Copy Issue URLs",
             Self::GoToDefinition => "Go to Definition",
+            Self::RenameSymbol => "Rename Symbol",
+            Self::RenameSubmit => "Rename Symbol: Confirm",
+            Self::RenameCancel => "Rename Symbol: Cancel",
             Self::JumpBack => "Go Back",
             Self::JumpForward => "Go Forward",
             Self::InsertNewline => "Insert Newline",

@@ -1,6 +1,6 @@
 use super::*;
 
-mod chrome;
+pub(super) mod chrome;
 
 impl App {
     /// Resize the sidebar so its right edge sits at column `col`. Dragging narrower
@@ -105,12 +105,18 @@ impl App {
         // Mouse clicks, drag-selection, tab switches, and pane focus changes can all
         // move the active caret without passing through the keyboard input hook.
         self.reconcile_completion();
+        self.reconcile_rename();
         self.request_live_blame();
     }
 
     fn handle_mouse_event(&mut self, mouse: MouseEvent) {
         self.update_definition_hover(&mouse);
         self.update_pointer_shape_hint(&mouse);
+        // Ahead of every surface that could swallow it: a release that an overlay
+        // or a toast took would otherwise leave the drag running behind it.
+        if self.end_editor_drag_on(&mouse) {
+            return;
+        }
         // Toasts float above everything (including the overlay), so hit-test them
         // first: left-click dismisses and right-click copies an error.
         if self.handle_toast_mouse(mouse) {
@@ -123,6 +129,11 @@ impl App {
         }
         if self.overlay.is_some() {
             return;
+        }
+        // A click anywhere settles the rename prompt as Esc would, then does
+        // what it would have done without it.
+        if matches!(mouse.kind, MouseEventKind::Down(_)) {
+            self.rename = None;
         }
         if self.handle_context_menu_mouse(mouse) {
             return;
@@ -228,15 +239,10 @@ impl App {
             }
             return;
         }
-        // An in-progress text selection captures motion until the button is released.
+        // An in-progress text selection captures motion and the wheel until the
+        // button is released (the release and any press were taken above).
         if self.editor_drag.is_some() {
-            match mouse.kind {
-                MouseEventKind::Drag(MouseButton::Left) => {
-                    self.drag_select_to(mouse.column, mouse.row);
-                },
-                MouseEventKind::Up(MouseButton::Left) => self.editor_drag = None,
-                _ => {},
-            }
+            self.editor_drag_mouse(&mouse);
             return;
         }
         if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
@@ -809,11 +815,4 @@ impl App {
             },
         }
     }
-}
-
-pub(super) fn notification_clipboard_text(notification: &Notification) -> String {
-    notification.body.as_ref().map_or_else(
-        || notification.title.clone(),
-        |body| format!("{}\n{body}", notification.title),
-    )
 }

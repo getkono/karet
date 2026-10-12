@@ -124,11 +124,28 @@ from. Both commands are in the palette as *Go to Definition* and *Go Back*. Some
 emulators consume `Ctrl+Click` for their own link handling, which is why `F12` also
 exists.
 
+**Editor — rename symbol.** `F2` (palette: *Rename Symbol*) opens an inline prompt
+under the symbol at the caret, its current name selected so typing replaces it; the
+language server's `prepareRename` answer corrects the span and the suggested name,
+or closes the prompt with its reason when nothing there can be renamed. `Enter`
+renames across the workspace and `Esc` cancels. Files the rename touches that are
+not open are opened in background tabs: every change is unsaved and undoable per
+file, and the notice says how many files changed.
+
 **Editor — multi-cursor.** `Ctrl+Alt+↑`/`Ctrl+Alt+↓` add a caret above / below the
 primary; `Ctrl+D` selects the word under the caret, then adds a caret at the next
 occurrence (wrapping); `Alt+Click` adds or removes a caret and `Alt+Drag` extends the
 newly-added one; `Esc` collapses back to a single caret. Typing, deletion and
 newlines then apply at every caret at once.
+
+**Editor — comments.** `Ctrl+/` toggles a line comment on every line the selections
+touch, aligning the markers at the lines' shared indent and skipping blank lines; a
+language with only block comments (HTML, CSS) wraps each line instead.
+`Shift+Alt+A` toggles a block comment around each selection, or around a bare
+caret's line. Both read the language *at the caret*, so a `<script>` body in HTML
+takes `//` and a fenced code block in Markdown takes its own language's comments.
+Terminals without the kitty keyboard protocol send `Ctrl+/` as `Ctrl+7`, which is
+bound too.
 
 Modifier conventions: **`Shift`** always *extends* the selection (paired with any
 motion key or click); **`Ctrl`** widens the granularity (word for arrows, document

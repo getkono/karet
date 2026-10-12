@@ -40,6 +40,7 @@ mod debug;
 mod event;
 mod github;
 mod language_servers;
+mod refactor;
 mod seam;
 mod search;
 mod vcs;
@@ -49,6 +50,7 @@ pub use debug::*;
 pub use event::Event;
 pub use github::*;
 pub use language_servers::*;
+pub use refactor::*;
 pub use seam::*;
 pub use search::*;
 pub use vcs::*;
@@ -439,7 +441,19 @@ pub enum Command {
         /// The query string.
         query: String,
     },
-    /// Rename the symbol at a position.
+    /// Ask whether the symbol at a position can be renamed, and what span and
+    /// name a rename prompt should show. Answered by [`Event::RenamePrepared`].
+    PrepareRename {
+        /// The target document.
+        doc: DocumentId,
+        /// The position of the symbol.
+        position: LineCol,
+    },
+    /// Rename the symbol at a position, and apply the language server's edit.
+    ///
+    /// Answered by [`Event::WorkspaceEdit`] once the edit is applied (or
+    /// refused: the document moved on since the request, the server found
+    /// nothing to rename, or a step failed).
     Rename {
         /// The target document.
         doc: DocumentId,
@@ -447,6 +461,17 @@ pub enum Command {
         position: LineCol,
         /// The new name.
         new_name: String,
+    },
+    /// Apply a workspace edit -- text edits to open and unopened files, and
+    /// file creates, renames, and deletes -- answered by
+    /// [`Event::WorkspaceEdit`].
+    ///
+    /// Ranges are in buffer (character) columns, as everywhere on this seam.
+    ApplyWorkspaceEdit {
+        /// The edit.
+        edit: WorkspaceEdit,
+        /// A label for the edit, echoed in the answer.
+        label: Option<String>,
     },
     /// Compile the LaTeX root containing an editable TeX document and produce a PDF.
     BuildLatex {

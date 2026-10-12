@@ -5,6 +5,7 @@ use super::text::*;
 use super::*;
 
 mod carets;
+mod comment;
 mod hit;
 mod inlay;
 mod pointer;

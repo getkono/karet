@@ -128,7 +128,7 @@ fn copied_notification_text_includes_the_body() {
     };
 
     assert_eq!(
-        mouse::notification_clipboard_text(&notification),
+        mouse::chrome::notification_clipboard_text(&notification),
         "server failed\npermission denied"
     );
 }

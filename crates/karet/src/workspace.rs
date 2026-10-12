@@ -51,6 +51,17 @@ pub fn open_file_ignoring_size(path: &Path) -> Tab {
     open_classified(path, kind, bytes, len)
 }
 
+/// Open `path` as an editable code tab whatever its file type, its buffer
+/// reserved empty and filled from the session's snapshot once the document
+/// registers. Backs a document the backend already holds as text -- one a
+/// workspace edit opened and changed -- which must stay editable (and its
+/// unsaved change reachable) even where [`open_file`] would route the path to
+/// a too-large placeholder, a notebook preview, or a byte view.
+#[must_use]
+pub fn open_as_text(path: &Path) -> Tab {
+    open_pending_code(path, language_name_from_path(path).unwrap_or("plaintext"))
+}
+
 /// Read `path`'s bytes (empty on error) and its length, the shared inputs to both
 /// open paths.
 fn read_file(path: &Path) -> (Vec<u8>, u64) {

@@ -321,3 +321,12 @@ impl App {
         }
     }
 }
+
+/// The text a toast's copy action puts on the clipboard: its title, then its
+/// body on the next line when it has one.
+pub(in crate::app) fn notification_clipboard_text(notification: &Notification) -> String {
+    notification.body.as_ref().map_or_else(
+        || notification.title.clone(),
+        |body| format!("{}\n{body}", notification.title),
+    )
+}
