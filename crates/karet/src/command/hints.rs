@@ -299,6 +299,7 @@ impl Command {
             | Self::InsertChar(_)
             | Self::TriggerCompletion
             | Self::Hover
+            | Self::SignatureHelp
             | Self::ToggleInlayHints
             | Self::ShowDiagnostic
             | Self::DebugStart

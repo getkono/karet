@@ -5,8 +5,8 @@
 //! so do **not** depend on the producers (`karet-lsp`/`karet-vcs`). This crate
 //! also hosts the LSP [`completion`] and [`signature`]-help popups, and (behind
 //! the `hover` feature) the LSP hover/doc popup, which render `karet-core`
-//! models supplied over the
-//! backend's event stream. The [`menu`] and [`dialog`] widgets share one row
+//! models supplied over the backend's event stream. The [`menu`] and
+//! [`dialog`] widgets share one row
 //! model ([`choice`]), so a context menu and a modal confirmation navigate
 //! identically. [`rowselect`] is the shared pointer-selection model for the
 //! read-only surfaces that paint their own rows (diffs, hex dumps, previews) and

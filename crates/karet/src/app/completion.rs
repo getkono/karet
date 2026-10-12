@@ -254,7 +254,11 @@ impl App {
     /// Drop the popup / pending request when the caret left the anchored span,
     /// the document changed, the active tab is no longer a code tab, or the
     /// editor gave up the keyboard (VS Code closes its suggest widget on blur).
+    ///
+    /// The signature popup is kept with the caret at the same moments, so
+    /// every path that reconciles one reconciles both.
     pub(crate) fn reconcile_completion(&mut self) {
+        self.reconcile_signature();
         if !self.editor_owns_keyboard() {
             self.dismiss_completion();
             return;

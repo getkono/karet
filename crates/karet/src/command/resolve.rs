@@ -31,6 +31,7 @@ static PALETTE: &[Command] = &[
     Command::OpenGlobalSearch,
     Command::TriggerCompletion,
     Command::Hover,
+    Command::SignatureHelp,
     Command::ToggleInlayHints,
     Command::ToggleLineComment,
     Command::ToggleBlockComment,
