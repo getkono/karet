@@ -107,20 +107,19 @@ impl App {
     }
 
     /// Rebuild the match highlights against the current text without moving the
-    /// caret or resetting the match counter. What a snapshot (an auto-save, a reload, an edit) and opening the bar
-    /// do: neither is a motion, so neither may move the caret, collapse a
-    /// multi-caret, or drop a selection.
+    /// caret; the counter points at the match at or after the caret. What a
+    /// snapshot (an auto-save, a reload, an edit) and opening the bar do: neither
+    /// is a motion, so neither may move the caret, collapse a multi-caret, or
+    /// drop a selection.
     pub(super) fn refresh_find(&mut self) {
         self.seek_find(false);
     }
 
-    /// Rebuild the active tab's match decorations. With `jump`, point the bar's
-    /// counter at the match at or after the caret and move the caret there;
-    /// without, keep the counter where it was (clamped to the new count).
+    /// Rebuild the active tab's match decorations and point the bar's counter at
+    /// the match at or after the caret. With `jump`, also move the caret there.
     fn seek_find(&mut self, jump: bool) {
-        let (q, previous) = match self.active_find() {
-            Some(find) => (find.query_spec(), find.current),
-            None => return,
+        let Some(q) = self.active_find().map(FindState::query_spec) else {
+            return;
         };
         let mut count = 0;
         let mut current = 0;
@@ -152,15 +151,16 @@ impl App {
                     })
                     .collect();
                 count = decos.len();
-                if jump {
-                    let caret = editor.cursors().primary().range().start;
-                    current = match_at_or_after(decos, caret);
-                    if let Some(deco) = decos.get(current) {
-                        let pos = deco.range.start;
-                        editor.goto(buffer, pos);
-                    }
-                } else {
-                    current = previous.min(count.saturating_sub(1));
+                // Resolved from the caret in both cases, never carried over by
+                // index: an edit that adds or removes a match earlier in the
+                // file shifts every index after it, while the caret moves with
+                // the text it sits in. The counter, the next Replace and the
+                // caret therefore always agree on which match is current.
+                let caret = editor.cursors().primary().range().start;
+                current = match_at_or_after(decos, caret);
+                if jump && let Some(deco) = decos.get(current) {
+                    let pos = deco.range.start;
+                    editor.goto(buffer, pos);
                 }
             }
         }
@@ -222,8 +222,9 @@ impl App {
     /// (undoable) and locally at once, so the matches are rebuilt against the new
     /// text here rather than waiting for the snapshot.
     pub(super) fn find_replace_current(&mut self) {
-        // Measured against the text as it is now: an edit typed since the last
-        // snapshot would otherwise leave the counter on a stale range.
+        // Measured against the text as it is now, and resolved from the caret:
+        // an edit since the last search would otherwise leave the counter on a
+        // stale range, or on an index that now names a different match.
         self.refresh_find();
         let Some(find) = self.active_find() else {
             return;

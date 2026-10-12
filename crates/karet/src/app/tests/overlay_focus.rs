@@ -160,8 +160,8 @@ fn a_snapshot_refreshes_the_matches_without_moving_the_caret() {
     );
     assert_eq!(
         find_state(&rig),
-        before_find,
-        "nor does it reset the counter"
+        (before_find.0, 1, before_find.2),
+        "nor does it reset the counter: it names the match the caret is on"
     );
     assert_eq!(find_state(&rig).0, 3, "the matches are still counted");
 }
@@ -219,6 +219,53 @@ fn replace_continues_from_the_replaced_match() {
             "aa1 |a2\n",
         ),
     ]);
+}
+
+/// Step to a match, leave the bar for the text, run `edit` there (which shifts
+/// the match indices), put the caret back on `target`, and return to the
+/// replacement field, ready for Enter.
+fn replace_after_edit(marked: &str, steps_to_match: usize, edit: &[Step], target: At) -> Rig {
+    let mut rig = Rig::new(marked);
+    rig.run(&find("a"));
+    rig.run(&[key(KeyCode::Tab)]);
+    rig.run(&typed("b"));
+    for _ in 0..steps_to_match {
+        rig.run(&[key(KeyCode::Down)]);
+    }
+    rig.run(&[click(text(0, 0))]);
+    rig.run(edit);
+    rig.run(&[click(target)]);
+    republish(&mut rig.app);
+    rig.render();
+    if let Some(field) = rig.app.find_rects.replace {
+        rig.run(&[click(At::Cell(field.x + 1, field.y))]);
+    }
+    rig
+}
+
+#[test]
+fn replace_after_an_edit_takes_the_match_at_the_caret() {
+    // A match added before the current one shifts every index after it.
+    let mut rig = replace_after_edit("|q a1 a2\n", 1, &typed("a"), text(0, 6));
+    assert_eq!(rig.marked(), "aq a1 |a2\n");
+    assert_eq!(
+        find_state(&rig).1,
+        2,
+        "the counter names the match the caret is on"
+    );
+    rig.run(&[key(KeyCode::Enter)]);
+    assert_eq!(
+        rig.marked(),
+        "|aq a1 b2\n",
+        "the match at the caret is replaced, then the search wraps"
+    );
+
+    // A match removed before the current one shifts them the other way.
+    let mut rig = replace_after_edit("|a1 a2 a3 a4\n", 2, &[key(KeyCode::Delete)], text(0, 5));
+    assert_eq!(rig.marked(), "1 a2 |a3 a4\n");
+    assert_eq!(find_state(&rig).1, 1);
+    rig.run(&[key(KeyCode::Enter)]);
+    assert_eq!(rig.marked(), "1 a2 b3 |a4\n");
 }
 
 #[test]
