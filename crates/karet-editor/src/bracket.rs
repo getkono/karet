@@ -237,6 +237,34 @@ pub fn enclosing_pair(
     })
 }
 
+/// The opening bracket a `close` bracket typed at `pos` would pair with: the
+/// nearest opening bracket of its kind strictly before `pos` that no closing
+/// bracket of that kind between them already answers. `None` when `close` is
+/// not a closing bracket or no such opener is in range.
+pub(crate) fn unclosed_opener(
+    buffer: &TextBuffer,
+    highlights: Option<&Highlights>,
+    pos: LineCol,
+    close: char,
+) -> Option<LineCol> {
+    let kind = CLOSE.iter().position(|&c| c == close)?;
+    let mut depth = 0u32;
+    scan(buffer, highlights, pos, false, |at, b| {
+        if b.kind != kind {
+            return None;
+        }
+        if !b.open {
+            depth += 1;
+            return None;
+        }
+        if depth == 0 {
+            return Some(at);
+        }
+        depth -= 1;
+        None
+    })
+}
+
 /// The pair a bracket command acts on at `pos`: the one touching it, else the
 /// one enclosing it.
 #[must_use]

@@ -12,6 +12,7 @@ use karet_core::Range;
 use karet_core::TextEdit;
 use karet_text::TextBuffer;
 
+pub mod autopair;
 mod batch;
 mod comment;
 mod indentation;
