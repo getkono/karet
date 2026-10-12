@@ -4,6 +4,8 @@ use super::hint::EolItem;
 use super::hint::HintIndex;
 use super::hint::LineHints;
 use super::hint::place_eol;
+use super::hint::record_virtual_text;
+use super::hint::row_room;
 use super::hint::text_width;
 use super::text::*;
 use super::visual::*;
@@ -935,44 +937,6 @@ impl StatefulWidget for Editor<'_> {
             for sel in &state.cursors().selections {
                 self.draw_caret(buf, area, state, sel.head);
             }
-        }
-    }
-}
-
-/// The cells of `area`'s width a row's `spans` (gutter included) leave free.
-fn row_room(area: Rect, spans: &[Span<'_>]) -> u32 {
-    let used = spans
-        .iter()
-        .fold(0_usize, |used, span| used.saturating_add(span.width()));
-    u32::try_from(usize::from(area.width).saturating_sub(used)).unwrap_or(0)
-}
-
-/// Record where the row at `y` paints virtual text: `painted` pairs each
-/// text's index with the position of its span in `spans`. Measured from the
-/// spans themselves, so the rect is exactly the cells the text went to,
-/// clipped to `area`.
-fn record_virtual_text(
-    rects: &mut Vec<(usize, Rect)>,
-    area: Rect,
-    y: u16,
-    spans: &[Span<'_>],
-    painted: &[(usize, usize)],
-) {
-    for &(index, position) in painted {
-        let (Some(before), Some(span)) = (spans.get(..position), spans.get(position)) else {
-            continue;
-        };
-        let x = before
-            .iter()
-            .fold(0_usize, |x, span| x.saturating_add(span.width()));
-        let start = u16::try_from(x).unwrap_or(u16::MAX);
-        let width = u16::try_from(span.width()).unwrap_or(u16::MAX);
-        let visible = width.min(area.width.saturating_sub(start));
-        if visible > 0 {
-            rects.push((
-                index,
-                Rect::new(area.x.saturating_add(start), y, visible, 1),
-            ));
         }
     }
 }
