@@ -5,7 +5,7 @@
 //! dimmed disabled rows, right-aligned hints). Resolving what a row *says*
 //! (labels, key hints) and what accepting it *does* stays with the consumer.
 //!
-//! The rows themselves are the shared [`ChoiceList`](crate::choice::ChoiceList)
+//! The rows themselves are the shared [`ChoiceList`]
 //! model, which the [dialog](crate::dialog) widget uses too; this module adds
 //! only what makes a menu a menu — anchoring at a point and clamping into view.
 

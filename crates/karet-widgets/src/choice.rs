@@ -129,7 +129,7 @@ impl<A> ChoiceList<A> {
     }
 
     /// The entry painted on the first row of the rect the last
-    /// [`render`](Self::render) drew into — `0` until a squeeze makes the list
+    /// `render` drew into — `0` until a squeeze makes the list
     /// scroll, and `0` again whenever nothing was painted.
     #[must_use]
     pub fn first_visible(&self) -> usize {
@@ -281,7 +281,7 @@ impl<A> ChoiceList<A> {
     }
 
     /// The index of the row at terminal point `(x, y)`, given the click
-    /// `target` a preceding [`render`](Self::render) painted the rows into.
+    /// `target` a preceding `render` painted the rows into.
     ///
     /// `target` is the **click target area**, not necessarily the painted rect:
     /// a caller may deliberately widen it horizontally (a bordered menu counts

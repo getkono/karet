@@ -40,7 +40,7 @@ pub struct WrapRow {
 /// The display width of `character` in cells, never less than one.
 ///
 /// A glyph the renderer emits into its own cell always occupies that cell, so a
-/// zero-width or combining character counts as one — see the [module docs](self).
+/// zero-width or combining character counts as one — see the `layout` module docs.
 #[must_use]
 pub fn glyph_width(character: char) -> usize {
     if character.is_control() {

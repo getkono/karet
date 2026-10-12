@@ -61,7 +61,7 @@ impl TextAreaStyle {
 ///
 /// Passing `cursor: None` (an unfocused field) paints no caret. This is the
 /// renderer for the single-line [`crate::textfield`]; the multi-line
-/// [`TextArea`] paints its own cells instead — see the [module docs](self).
+/// [`TextArea`] paints its own cells instead — see the `render` module docs.
 #[must_use]
 pub fn styled_text(
     text: &str,
