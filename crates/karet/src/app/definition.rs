@@ -179,8 +179,8 @@ impl App {
         let area = frame.editor_rect;
         let pos = tab
             .editor
-            .pos_at(area, buffer, &fold_lines, mouse.column, mouse.row);
-        // Round-trip guard: `pos_at` clamps a point in the gutter, past the end of a
+            .char_pos_at(area, buffer, &fold_lines, mouse.column, mouse.row);
+        // Round-trip guard: `char_pos_at` clamps a point in the gutter, past the end of a
         // line, or in a reserved scrollbar track onto a real position, which would
         // underline a word the pointer is not actually over. Asking where that
         // position *renders* rejects all of those at once, without this code needing

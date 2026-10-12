@@ -851,12 +851,45 @@ impl EditorState {
         col: u16,
         row: u16,
     ) -> LineCol {
+        self.pointer_upstream.set(None);
+        self.hit(area, buffer, folds, (col, row), Snap::Nearest)
+    }
+
+    /// The buffer position of the character under the screen cell
+    /// `(col, row)`: like [`pos_at`](Self::pos_at), except that a cell inside
+    /// a wide character or a tab resolves to that character's own column
+    /// rather than the nearer of its edges. This is what the pointer is
+    /// *over* — the position word selection, a word-drag anchor, and
+    /// anything that looks up the symbol under the pointer should use — where
+    /// `pos_at` is where a click puts the caret.
+    #[must_use]
+    pub fn char_pos_at(
+        &self,
+        area: Rect,
+        buffer: &TextBuffer,
+        folds: &[Fold],
+        col: u16,
+        row: u16,
+    ) -> LineCol {
+        self.hit(area, buffer, folds, (col, row), Snap::Containing)
+    }
+
+    /// The hit-test behind [`pos_at`](Self::pos_at) and
+    /// [`char_pos_at`](Self::char_pos_at). Only a [`Snap::Nearest`] hit
+    /// records the wrap-row affinity, since only a caret placement consumes it.
+    fn hit(
+        &self,
+        area: Rect,
+        buffer: &TextBuffer,
+        folds: &[Fold],
+        (col, row): (u16, u16),
+        snap: Snap,
+    ) -> LineCol {
         let line_count = buffer.line_count().max(1) as u32;
         let mut rel_row = u32::from(row.saturating_sub(area.y));
         let gutter = 1 + digit_count(line_count) as u16 + 1;
         let content_x = area.x.saturating_add(gutter);
         let rel_col = u32::from(col.saturating_sub(content_x));
-        self.pointer_upstream.set(None);
         if rel_row < u32::from(self.sticky_height) {
             let line = self
                 .sticky_rows
@@ -876,6 +909,7 @@ impl EditorState {
                     rel_col,
                     self.last_tab_width,
                     LineHints::EMPTY,
+                    snap,
                 ),
             );
         }
@@ -912,13 +946,16 @@ impl EditorState {
                     rel_col.saturating_sub(row_lead(hints, anchor.subrow == 0)),
                     self.last_tab_width,
                     hints,
+                    snap,
                 ),
             );
             // Past the end of a row the line continues below: the same column
             // starts the next row, so remember which one was clicked.
             let continues = (anchor.subrow as usize).saturating_add(1) < ranges.len();
-            self.pointer_upstream
-                .set((continues && hit.col == range.end).then_some(hit));
+            if snap == Snap::Nearest {
+                self.pointer_upstream
+                    .set((continues && hit.col == range.end).then_some(hit));
+            }
             return hit;
         }
         // Walk visible lines from the (clamped) viewport top to the clicked row.
@@ -950,6 +987,7 @@ impl EditorState {
                 rel_col.saturating_sub(row_lead(hints, true)),
                 self.last_tab_width,
                 hints,
+                snap,
             ),
         )
     }

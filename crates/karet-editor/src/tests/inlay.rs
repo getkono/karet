@@ -168,7 +168,15 @@ fn every_column_round_trips_through_the_mapping() {
 
     for col in 0..=chars.len() as u32 {
         let screen = display_col(&chars, col, 4, hints);
-        let back = source_col_at_display_offset(&chars, 0, chars.len() as u32, screen, 4, hints);
+        let back = source_col_at_display_offset(
+            &chars,
+            0,
+            chars.len() as u32,
+            screen,
+            4,
+            hints,
+            Snap::Nearest,
+        );
         assert_eq!(
             back, col,
             "column {col} did not round trip (screen {screen})"
@@ -281,7 +289,7 @@ fn a_hint_on_a_wrap_boundary_belongs_to_the_row_it_starts() {
     // And both invert: offset 0 and every hint cell resolve to the anchor.
     for offset in 0..3 {
         assert_eq!(
-            source_col_at_display_offset(&chars, 5, 10, offset, 4, hints),
+            source_col_at_display_offset(&chars, 5, 10, offset, 4, hints, Snap::Nearest),
             5,
             "offset {offset} left the anchor"
         );
@@ -303,7 +311,15 @@ fn a_hint_at_column_zero_still_round_trips() {
     assert_eq!(display_col(&chars, 1, 4, hints), 5);
     for col in 0..=chars.len() as u32 {
         let screen = offset_within_row(&chars, 0, col, 4, hints);
-        let back = source_col_at_display_offset(&chars, 0, chars.len() as u32, screen, 4, hints);
+        let back = source_col_at_display_offset(
+            &chars,
+            0,
+            chars.len() as u32,
+            screen,
+            4,
+            hints,
+            Snap::Nearest,
+        );
         assert_eq!(back, col, "column {col} did not round trip");
     }
 }

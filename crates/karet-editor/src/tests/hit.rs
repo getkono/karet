@@ -79,6 +79,43 @@ fn a_click_rounds_to_the_nearer_edge_of_a_tab() {
     }
 }
 
+#[test]
+fn char_pos_at_names_the_character_under_the_pointer_without_rounding() {
+    let buffer = TextBuffer::from_text("\t日x\n");
+    let area = Rect::new(0, 0, 20, 2);
+    let mut state = EditorState::new();
+    let mut target = Buffer::empty(area);
+    Editor::new(&buffer).render(area, &mut target, &mut state);
+    assert_eq!(symbol(&target, GUTTER + 6, 0), "x");
+
+    // The tab covers cells 0-3 and `日` cells 4-5: every cell of a character
+    // names that character, where `pos_at` rounds its right half past it.
+    let expected = [0, 0, 0, 0, 1, 1, 2];
+    for (offset, col) in (0_u16..).zip(expected) {
+        assert_eq!(
+            state.char_pos_at(area, &buffer, &[], GUTTER + offset, 0),
+            LineCol::new(0, col),
+            "content cell {offset}"
+        );
+    }
+    assert_eq!(
+        state.pos_at(area, &buffer, &[], GUTTER + 3, 0),
+        LineCol::new(0, 1)
+    );
+}
+
+#[test]
+fn char_pos_at_does_not_disturb_the_wrap_affinity_of_a_click() {
+    let (buffer, area, mut state) = wrapped(3);
+    let end_of_row = state.pos_at(area, &buffer, &[], GUTTER + 9, 0);
+    assert_eq!(end_of_row, LineCol::new(0, 6));
+    // A lookup of what is under the pointer between the hit and the caret
+    // placement must not clear the affinity the hit recorded.
+    let _ = state.char_pos_at(area, &buffer, &[], GUTTER + 2, 1);
+    state.set_caret(&buffer, end_of_row);
+    assert_eq!(state.upstream, Some(end_of_row));
+}
+
 /// `alpha beta gamma` wrapped into ten content cells: `alpha ` on row 0
 /// (columns 0..6) and `beta gamma` on row 1 (6..16), so column 6 is both the
 /// end of row 0 and the start of row 1.

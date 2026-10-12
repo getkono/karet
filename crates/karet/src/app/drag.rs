@@ -91,13 +91,16 @@ impl App {
             return;
         };
         let fold_lines = super::resolve_folds(folds, folded);
-        let pos = editor.pos_at(area, buffer, &fold_lines, col, row);
         if drag.granularity == DragGranularity::Character {
+            let pos = editor.pos_at(area, buffer, &fold_lines, col, row);
             editor.extend_to(buffer, pos);
             return;
         }
         // Word and line drags select the union of the opening span and the span
         // under the pointer, oriented so the caret leads in the direction of travel.
+        // The span is the one the pointer is over, not the one past the nearer
+        // edge `pos_at` rounds to.
+        let pos = editor.char_pos_at(area, buffer, &fold_lines, col, row);
         let (start, end) = Self::drag_span(buffer, pos, drag.granularity);
         if pos < drag.anchor.0 {
             editor.set_selection(buffer, drag.anchor.1, start);

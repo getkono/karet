@@ -53,6 +53,53 @@ fn drag_selection_conformance() {
 }
 
 #[test]
+fn a_double_click_on_a_tabs_trailing_cell_selects_the_tab_not_the_next_word() {
+    // A single click there rounds the caret past the tab, but the word
+    // gestures ask what is *under* the pointer, which is still the tab.
+    let mut rig = Rig::sized("|\tfoo bar", 40, 8);
+    let (x, y) = rig.cell(text(0, 0));
+    let trailing = At::Cell(x + 3, y);
+    rig.run(&[click(trailing), click(trailing)]);
+    assert_eq!(
+        rig.tab()
+            .editor
+            .selection_range()
+            .map(|range| (range.start.col, range.end.col)),
+        Some((0, 1))
+    );
+
+    // A double-click drag from the same cell keeps the tab as its anchor
+    // span and grows forward word by word from it.
+    let mut rig = Rig::sized("|\tfoo bar", 40, 8);
+    let (bar_x, _) = rig.cell(text(0, 6));
+    rig.run(&double_click_drag(trailing, At::Cell(bar_x, y)));
+    assert_eq!(
+        rig.tab()
+            .editor
+            .selection_range()
+            .map(|range| (range.start.col, range.end.col)),
+        Some((0, 8))
+    );
+}
+
+#[test]
+fn a_double_click_on_the_right_half_of_a_wide_punctuation_mark_selects_it() {
+    // `、` is a two-cell non-word character: rounding its right half past it
+    // would select `foo` instead.
+    let mut rig = Rig::sized("|、foo", 40, 8);
+    let (x, y) = rig.cell(text(0, 0));
+    let right_half = At::Cell(x + 1, y);
+    rig.run(&[click(right_half), click(right_half)]);
+    assert_eq!(
+        rig.tab()
+            .editor
+            .selection_range()
+            .map(|range| (range.start.col, range.end.col)),
+        Some((0, 1))
+    );
+}
+
+#[test]
 fn a_double_click_near_the_right_edge_selects_the_word_under_the_pointer() {
     // The pointer stays on one cell for both presses, as a real one does. Were
     // the first press to scroll the line (as the keyboard's margin would),

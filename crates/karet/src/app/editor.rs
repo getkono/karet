@@ -504,9 +504,13 @@ impl App {
                 return None;
             };
             let fold_lines = resolve_folds(folds, folded);
+            // The character under the pointer, not where a click would put the
+            // caret: `pos_at` rounds the right half of a wide character or a
+            // tab's trailing cells to the next column, which would make the
+            // word gestures below pick the neighbouring word.
             Some(
                 tab.editor
-                    .pos_at(area, buffer, &fold_lines, mouse.column, mouse.row),
+                    .char_pos_at(area, buffer, &fold_lines, mouse.column, mouse.row),
             )
         });
         // Ctrl/Cmd+click jumps to the definition of the symbol under the pointer.
@@ -547,13 +551,14 @@ impl App {
         {
             let fold_lines = resolve_folds(folds, folded);
             let pos = editor.pos_at(area, buffer, &fold_lines, mouse.column, mouse.row);
+            let under = code_pos.unwrap_or(pos);
             match streak {
                 2 => {
-                    let (anchor, head) = word_at(buffer, pos);
+                    let (anchor, head) = word_at(buffer, under);
                     editor.set_selection(buffer, anchor, head);
                 },
                 3 => {
-                    let (anchor, head) = line_span(buffer, pos.line);
+                    let (anchor, head) = line_span(buffer, under.line);
                     editor.set_selection(buffer, anchor, head);
                 },
                 // Alt+click adds (or toggles off) a caret at the click, building a
