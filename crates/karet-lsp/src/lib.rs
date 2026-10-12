@@ -38,7 +38,9 @@
 //!   possible later optimization behind the same method.
 //! - **Snippets are not advertised** (`completionItem.snippetSupport: false`), so
 //!   servers send plain-text completions; snippet syntax that leaks through anyway
-//!   is degraded to plain text at the completion mapping.
+//!   is degraded to plain text at the completion mapping. An item's
+//!   documentation, detail and additional edits may be deferred to
+//!   [`LspClient::resolve_completion`].
 //!
 //! Transport, lifecycle, document sync, diagnostics, completion, navigation,
 //! symbols, inlay hints, rename, signature help, code actions (with
@@ -70,6 +72,7 @@ pub use window::WorkProgressKind;
 mod apply_edit;
 mod capability;
 mod code_action;
+mod completion;
 mod config;
 mod conn;
 mod convert;
@@ -89,7 +92,6 @@ use std::path::PathBuf;
 use std::process::Stdio;
 
 use karet_core::Capabilities;
-use karet_core::CompletionItem;
 use karet_core::Diagnostic;
 use karet_core::Hover;
 use karet_core::LineCol;
@@ -775,41 +777,6 @@ impl LspClient {
             text_document: lsp_types::TextDocumentIdentifier::new(uri::path_to_uri(doc)?),
         };
         self.conn.notify("textDocument/didClose", params)
-    }
-
-    /// Request completions at `pos` in `doc` (`pos.col` in UTF-16 units, per
-    /// the crate docs).
-    ///
-    /// The response is flattened to a plain list: a `CompletionList`'s
-    /// `isIncomplete` flag is deliberately dropped because this contract
-    /// returns `Vec<CompletionItem>`. Consumers compensate by **re-requesting
-    /// on trigger characters** (and on any prefix the server might narrow
-    /// differently) instead of tracking incompleteness. Snippet-format insert
-    /// text is degraded to plain text — this client does not advertise
-    /// `snippetSupport`.
-    ///
-    /// # Errors
-    /// Returns [`LspError::Unsupported`] **without issuing a request** when the
-    /// server did not advertise the capability, else [`LspError::Server`] or
-    /// [`LspError::Timeout`].
-    pub async fn completion(
-        &self,
-        doc: &Path,
-        pos: LineCol,
-    ) -> Result<Vec<CompletionItem>, LspError> {
-        self.require_for(ServerFeature::Completion, "textDocument/completion", doc)?;
-        let params = lsp_types::CompletionParams {
-            text_document_position: lsp_types::TextDocumentPositionParams {
-                text_document: lsp_types::TextDocumentIdentifier::new(uri::path_to_uri(doc)?),
-                position: convert::position_to_lsp(pos),
-            },
-            work_done_progress_params: lsp_types::WorkDoneProgressParams::default(),
-            partial_result_params: lsp_types::PartialResultParams::default(),
-            context: None,
-        };
-        let response: Option<lsp_types::CompletionResponse> =
-            self.conn.request("textDocument/completion", params).await?;
-        Ok(convert::completions_from_lsp(response))
     }
 
     /// Request hover information at `pos` in `doc`.

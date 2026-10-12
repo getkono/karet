@@ -44,7 +44,9 @@ async fn an_unadvertised_capability_is_refused_without_issuing_a_request() -> Te
         })
     ));
     assert!(matches!(
-        client.completion(doc, pos).await,
+        client
+            .completion(doc, pos, karet_core::CompletionTrigger::Invoked)
+            .await,
         Err(LspError::Unsupported { .. })
     ));
     assert!(matches!(

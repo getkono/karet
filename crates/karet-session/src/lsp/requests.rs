@@ -5,6 +5,8 @@
 //! language, and did the command reach it -- and returns `false` when there is
 //! not, so the caller answers the request itself rather than leaving it hanging.
 
+use karet_core::CompletionItem;
+use karet_core::CompletionTrigger;
 use karet_core::InlayHint;
 use karet_core::Range;
 
@@ -22,7 +24,7 @@ impl LspManager {
         doc: DocumentId,
         version: u64,
         path: &Path,
-        position: LineCol,
+        (position, trigger): (LineCol, CompletionTrigger),
     ) -> bool {
         let path = absolute_path(path);
         let Some(tx) = self.existing_server(language, &path) else {
@@ -34,8 +36,29 @@ impl LspManager {
             version,
             path,
             position,
+            trigger,
         })
         .is_ok()
+    }
+
+    /// Forward a completion-item resolve to the server that answers `path`'s
+    /// completions. Returns whether a live server accepted it -- when
+    /// `false`, the caller answers that nothing was resolved.
+    pub(crate) fn resolve_completion(
+        &self,
+        language: Option<&str>,
+        request: RequestId,
+        doc: DocumentId,
+        path: &Path,
+        item: CompletionItem,
+    ) -> bool {
+        let path = absolute_path(path);
+        let Some(tx) = self.existing_server(language, &path) else {
+            return false;
+        };
+        let item = Box::new(item);
+        tx.try_send(ServerCmd::ResolveCompletion { request, doc, item })
+            .is_ok()
     }
 
     /// Forward a document-symbol request. Returns whether a live server accepted it.

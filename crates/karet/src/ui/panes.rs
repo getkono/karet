@@ -434,12 +434,45 @@ pub(super) fn draw_completion(f: &mut Frame, app: &mut App, theme: &Theme, hits:
         return;
     }
     let rect = Rect::new(x, y, width, height);
+    let ranked = popup.ranked();
     f.render_widget(Clear, rect);
     f.render_stateful_widget(popup, rect, list);
     // The popup lays itself out inside its own render, so the only way to learn
     // where its bar landed is to read it back afterwards. Recorded last, so it wins
     // the hit test over the editor bar it floats above.
     hits.record_track(list.track(), ScrollSurface::Completion);
+    let docs = ranked
+        .get(list.selected)
+        .and_then(|&index| items.get(index))
+        .and_then(|item| item.documentation.as_ref());
+    if let Some(docs) = docs {
+        draw_completion_docs(f, editor, rect, docs, theme);
+    }
+}
+
+/// Draw the selected candidate's documentation beside the completion popup at
+/// `popup`, rendered as markdown the way a hover is; not at all when neither
+/// side of the popup has room for it.
+fn draw_completion_docs(
+    f: &mut Frame,
+    editor: Rect,
+    popup: Rect,
+    docs: &karet_core::Markup,
+    theme: &Theme,
+) {
+    let pane = karet_widgets::hover::HoverPopup::new(docs, theme);
+    let rows_at = |width| u16::try_from(pane.lines(width).len()).unwrap_or(u16::MAX);
+    let Some(rect) = karet_widgets::completion::docs_pane_rect(editor, popup, rows_at) else {
+        return;
+    };
+    f.render_widget(Clear, rect);
+    f.render_widget(
+        ratatui::widgets::Block::default().style(
+            ratatui::style::Style::default().bg(theme.role(ThemeRole::Background).to_ratatui()),
+        ),
+        rect,
+    );
+    f.render_widget(pane, rect);
 }
 
 /// Draw the hover popup floating over the editor, anchored at the caret —

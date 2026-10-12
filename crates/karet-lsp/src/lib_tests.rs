@@ -410,7 +410,7 @@ async fn completion_end_to_end() -> TestResult {
     let server_task = tokio::spawn(async move {
         server.handshake().await;
 
-        // 1: a CompletionList (isIncomplete flattened) with a snippet edit.
+        // 1: an incomplete CompletionList with a snippet edit.
         let req = server.recv().await;
         assert_eq!(req["method"], "textDocument/completion");
         assert_eq!(
@@ -462,7 +462,10 @@ async fn completion_end_to_end() -> TestResult {
     let client = LspClient::connect(read, write, Path::new("/tmp/ws")).await?;
     let doc = Path::new("/tmp/ws/a.rs");
 
-    let items = client.completion(doc, LineCol::new(3, 7)).await?;
+    let invoked = karet_core::CompletionTrigger::Invoked;
+    let list = client.completion(doc, LineCol::new(3, 7), invoked).await?;
+    assert!(list.incomplete);
+    let items = list.items;
     assert_eq!(items.len(), 2);
     assert_eq!(items[0].label, "push");
     assert_eq!(items[0].kind, karet_core::CompletionKind::Method);
@@ -481,12 +484,13 @@ async fn completion_end_to_end() -> TestResult {
     assert_eq!(items[1].insert_text, "plain"); // label fallback
     assert_eq!(items[1].kind, karet_core::CompletionKind::Text);
 
-    let items = client.completion(doc, LineCol::new(0, 0)).await?;
-    assert_eq!(items.len(), 1);
-    assert_eq!(items[0].label, "sole");
+    let list = client.completion(doc, LineCol::new(0, 0), invoked).await?;
+    assert!(!list.incomplete, "a bare array is complete");
+    assert_eq!(list.items.len(), 1);
+    assert_eq!(list.items[0].label, "sole");
 
-    let items = client.completion(doc, LineCol::new(0, 0)).await?;
-    assert!(items.is_empty());
+    let list = client.completion(doc, LineCol::new(0, 0), invoked).await?;
+    assert!(list.items.is_empty());
 
     server_task.await?;
     Ok(())

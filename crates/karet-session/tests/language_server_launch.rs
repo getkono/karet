@@ -195,6 +195,7 @@ async fn a_real_server_completes_a_request_over_the_supervisor() -> Result<(), S
         Command::Completion {
             doc,
             position: karet_core::LineCol { line: 0, col: 0 },
+            trigger: karet_core::CompletionTrigger::Invoked,
         },
     );
     let completions = harness

@@ -4,10 +4,12 @@ use super::code_actions;
 use super::commands::OpenDocument;
 use super::commands::answer_empty;
 use super::commands::answer_reconnecting;
+use super::commands::complete;
 use super::commands::flush_pending;
 use super::commands::remember_document;
 use super::commands::report_unsupported;
 use super::commands::resolve_hint;
+use super::commands::resolve_item;
 use super::forward::forward_diagnostics;
 use super::health::FailureTally;
 use super::health::{self};
@@ -483,6 +485,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     version,
                     path,
                     position,
+                    trigger,
                 } => {
                     // The server must see the latest text before completing in it.
                     flush_pending(
@@ -495,23 +498,26 @@ pub(super) async fn server_task(task: ServerTask) {
                         token,
                     )
                     .await;
-                    let items = if dead {
-                        Vec::new()
-                    } else {
-                        match tally.observe(active.completion(&path, position).await) {
-                            Ok(items) => items,
-                            Err(e) => {
-                                tally.note::<()>(Err(e), &mut dead, &updates, &key, token);
-                                Vec::new()
-                            },
-                        }
-                    };
+                    let health = (&mut dead, &mut tally, &updates, &key, token);
+                    let at = (path.as_path(), position, trigger);
+                    let (list, options) = complete(active, at, health).await;
                     let _ = updates.send(LspUpdate::Completions {
                         generation,
                         request,
                         doc,
                         version,
-                        items,
+                        list,
+                        options,
+                    });
+                },
+                ServerCmd::ResolveCompletion { request, doc, item } => {
+                    let health = (&mut dead, &mut tally, &updates, &key, token);
+                    let resolved = resolve_item(active, &item, health).await;
+                    let _ = updates.send(LspUpdate::CompletionResolved {
+                        generation,
+                        request,
+                        doc,
+                        resolved,
                     });
                 },
                 ServerCmd::InlayHints {

@@ -1,37 +1,9 @@
+use karet_core::CompletionOptions;
+use karet_core::CompletionTrigger;
+
 use super::*;
 
-/// The last `count` characters before `caret` on its line (fewer at the start of
-/// the line).
-fn chars_before(buffer: &TextBuffer, caret: LineCol, count: u32) -> String {
-    let start = caret.col.saturating_sub(count) as usize;
-    let len = (caret.col as usize).saturating_sub(start);
-    buffer
-        .line(caret.line as usize)
-        .map(|line| line.chars().skip(start).take(len).collect())
-        .unwrap_or_default()
-}
-
-/// What an accepted completion replaces at one caret: the `typed` prefix when the
-/// text before the caret is that prefix (always so at the primary caret), else the
-/// caret's selection, else nothing (an insertion at the caret).
-fn completion_range(
-    typed: &str,
-    caret: LineCol,
-    selection: Option<Range>,
-    buffer: &TextBuffer,
-) -> Range {
-    let count = u32::try_from(typed.chars().count()).unwrap_or(u32::MAX);
-    if caret.col >= count && chars_before(buffer, caret, count) == typed {
-        return Range {
-            start: LineCol::new(caret.line, caret.col - count),
-            end: caret,
-        };
-    }
-    selection.unwrap_or(Range {
-        start: caret,
-        end: caret,
-    })
-}
+mod accept;
 
 impl App {
     /// The active code tab's completion target: `(document, caret)`.
@@ -47,6 +19,11 @@ impl App {
     /// syntax-error gate; automatic triggers hold off while the caret's line
     /// has an outright parse error (per issue #57).
     pub(crate) fn trigger_completion(&mut self, manual: bool) {
+        self.request_completion(manual, CompletionTrigger::Invoked);
+    }
+
+    /// [`Self::trigger_completion`], saying why through `trigger`.
+    fn request_completion(&mut self, manual: bool, trigger: CompletionTrigger) {
         let completion_enabled = self.tabs.get(self.active).is_some_and(|tab| {
             self.settings
                 .editor
@@ -83,26 +60,42 @@ impl App {
         let Some(backend) = self.backend.clone() else {
             return;
         };
-        let (anchor, _) = karet_editor::word_bounds(buffer, caret);
+        // Narrowing an incomplete list keeps the popup's own anchor: the word
+        // being completed has not changed, only how much of it is typed.
+        let anchor = match (trigger, &self.completion) {
+            (CompletionTrigger::Incomplete, Some(ui)) => ui.anchor,
+            _ => karet_editor::word_bounds(buffer, caret).0,
+        };
         let id = backend.next_id();
-        if backend
-            .send(
+        let command = SessionCommand::Completion {
+            doc,
+            position: caret,
+            trigger,
+        };
+        if backend.send(id, command).is_ok() {
+            self.pending_completion = Some(crate::completion::PendingCompletion {
                 id,
-                SessionCommand::Completion {
-                    doc,
-                    position: caret,
-                },
-            )
-            .is_ok()
-        {
-            self.pending_completion =
-                Some(crate::completion::PendingCompletion { id, doc, anchor });
+                doc,
+                anchor,
+                position: caret,
+            });
         }
     }
 
+    /// The trigger and commit characters of the server completing in `doc`,
+    /// as its last answer there said; empty before any did.
+    pub(crate) fn completion_characters(&self, doc: DocumentId) -> CompletionOptions {
+        self.completion_chars
+            .as_ref()
+            .filter(|(known, _)| *known == doc)
+            .map(|(_, options)| options.clone())
+            .unwrap_or_default()
+    }
+
     /// Auto-trigger after typing `c`: identifier characters open the popup (a
-    /// one-character prefix suffices), `.` and the second `:` of `::`
-    /// re-request at the new completion boundary, anything else does nothing.
+    /// one-character prefix suffices), the server's trigger characters (or,
+    /// before it named any, `.` and the second `:` of `::`) re-request at the
+    /// new completion boundary, anything else does nothing.
     pub(super) fn maybe_auto_complete(&mut self, c: char) {
         let completion = self.tabs.get(self.active).map(|tab| {
             self.settings
@@ -113,10 +106,13 @@ impl App {
         if !completion.is_some_and(|completion| completion.enabled() && completion.auto_trigger()) {
             return;
         }
-        let boundary = c == crate::completion::TRIGGER_DOT
-            || (c == crate::completion::TRIGGER_COLON && self.typed_second_colon());
-        if boundary {
-            self.trigger_completion(false);
+        let known = self
+            .completion_target()
+            .map(|(doc, _)| self.completion_characters(doc).trigger_characters)
+            .unwrap_or_default();
+        let second_colon = c == crate::completion::TRIGGER_COLON && self.typed_second_colon();
+        if let Some(trigger) = crate::completion::trigger_for(c, &known, second_colon) {
+            self.request_completion(false, trigger);
             return;
         }
         if self.completion.is_some() {
@@ -192,13 +188,34 @@ impl App {
     }
 
     /// Handle a key while the popup is open; returns whether it was consumed.
-    /// Up/Down navigate, Enter/Tab accept, Esc dismisses; everything else
-    /// falls through to normal editing (which refilters).
+    /// Up/Down navigate, Enter/Tab accept (inserting over the word up to the
+    /// caret), Shift+Enter/Shift+Tab accept replacing the rest of the word
+    /// too, Esc dismisses; everything else falls through to normal editing
+    /// (which refilters).
     ///
     /// Only while the owning editor has the keyboard: with the Explorer focused,
     /// Enter belongs to the Explorer, never to a popup over a document.
     pub(super) fn completion_key(&mut self, key: KeyEvent) -> bool {
-        if self.completion.is_none() || !key.modifiers.is_empty() || !self.editor_owns_keyboard() {
+        if self.completion.is_none() || !self.editor_owns_keyboard() {
+            return false;
+        }
+        let replace = matches!(
+            (key.code, key.modifiers),
+            (KeyCode::Enter, KeyModifiers::SHIFT)
+                | (KeyCode::BackTab, KeyModifiers::NONE | KeyModifiers::SHIFT)
+        );
+        if !key.modifiers.is_empty() && !replace {
+            return false;
+        }
+        if replace {
+            if self
+                .completion_ranked()
+                .is_some_and(|ranked| !ranked.is_empty())
+            {
+                self.accept_completion_replacing();
+                return true;
+            }
+            self.dismiss_completion();
             return false;
         }
         let len = self.completion_ranked().map_or(0, |ranked| ranked.len());
@@ -230,63 +247,6 @@ impl App {
             },
             _ => false,
         }
-    }
-
-    /// Accept the selected candidate: replace the typed prefix (anchor to
-    /// caret) with the item's resolved insert text, through the ordinary
-    /// session edit path. Every other caret takes the item too, replacing the
-    /// same prefix where it sits before that caret (VS Code's behaviour). (The
-    /// item's `insert_text` already carries its `textEdit.newText` per the LSP
-    /// precedence applied in karet-lsp.)
-    pub(super) fn accept_completion(&mut self) {
-        let Some(ranked) = self.completion_ranked() else {
-            self.dismiss_completion();
-            return;
-        };
-        let text = {
-            let Some(ui) = self.completion.as_ref() else {
-                return;
-            };
-            let selected = ui.list.selected.min(ranked.len().saturating_sub(1));
-            let Some(item) = ranked.get(selected).and_then(|&i| ui.items.get(i)) else {
-                self.dismiss_completion();
-                return;
-            };
-            item.insert_text.clone()
-        };
-        let Some(anchor) = self.completion.as_ref().map(|ui| ui.anchor) else {
-            return;
-        };
-        self.dismiss_completion();
-        // The prefix the primary caret typed since the popup opened; the item
-        // replaces it there and at every other caret it also sits before.
-        let typed = self.completion_target().and_then(|(_, caret)| {
-            let range = crate::completion::accept_range(anchor, caret)?;
-            let Some(Tab {
-                kind: TabKind::Code { buffer, .. },
-                ..
-            }) = self.tabs.get(self.active)
-            else {
-                return None;
-            };
-            Some(chars_before(buffer, caret, range.end.col - range.start.col))
-        });
-        let Some(typed) = typed else {
-            return;
-        };
-        self.submit_edit_with_cause(EditCause::Replace, move |caret, sel, buf, base| {
-            let range = completion_range(&typed, caret, sel, buf);
-            Some(editing::Edit {
-                change: Change::new(
-                    base,
-                    vec![TextEdit {
-                        range,
-                        new_text: text.clone(),
-                    }],
-                ),
-                caret: crate::completion::caret_after_insert(range.start, &text),
-            })
-        });
     }
 
     /// Close the popup and forget any in-flight request.
@@ -328,15 +288,41 @@ impl App {
         {
             self.completion = None;
         }
+        self.requery_incomplete_completion();
+        self.resolve_selected_completion();
     }
 
-    /// Adopt (or drop as stale) an answering `Event::Completions`.
+    /// Ask again over an incomplete list whose filter changed since it was
+    /// asked for -- typed further or deleted back -- unless a request is
+    /// already on its way.
+    fn requery_incomplete_completion(&mut self) {
+        if self.pending_completion.is_some() {
+            return;
+        }
+        let Some(ui) = self.completion.as_ref() else {
+            return;
+        };
+        if !ui.incomplete || ui.mode != crate::completion::CompletionMode::Filtered {
+            return;
+        }
+        let queried = ui.queried_filter.clone();
+        if self
+            .completion_filter()
+            .is_some_and(|filter| filter != queried)
+        {
+            self.request_completion(false, CompletionTrigger::Incomplete);
+        }
+    }
+
+    /// Adopt (or drop as stale) an answering `Event::Completions`: open the
+    /// popup, or replace an open one's candidates when it asked again over an
+    /// incomplete list, keeping what the server said about its characters.
     pub(super) fn on_completions(
         &mut self,
         id: Option<RequestId>,
         doc: DocumentId,
         version: u64,
-        items: Vec<karet_core::CompletionItem>,
+        (items, incomplete, options): (Vec<karet_core::CompletionItem>, bool, CompletionOptions),
     ) {
         // The request id is the primary staleness key (a newer request
         // supersedes); the anchor check below covers caret movement, which
@@ -352,28 +338,35 @@ impl App {
         if pending.doc != doc {
             return;
         }
+        if !options.trigger_characters.is_empty() || !options.commit_characters.is_empty() {
+            self.completion_chars = Some((doc, options));
+        }
         let still_valid = matches!(self.completion_target(), Some((d, caret))
             if d == doc && crate::completion::caret_still_anchored(pending.anchor, caret));
         if !still_valid {
             return;
         }
-        if items.is_empty() {
+        if items.is_empty() && !incomplete {
             self.completion = None;
             return;
         }
-        self.completion = Some(crate::completion::CompletionUi {
-            items,
-            list: karet_widgets::CompletionState::default(),
+        let mut ui = crate::completion::CompletionUi::new(
             doc,
-            anchor: pending.anchor,
-            last_filter: String::new(),
-            mode: crate::completion::CompletionMode::Filtered,
-        });
-        // Seed the filter so the first render doesn't spuriously reset it.
+            pending.anchor,
+            pending.position,
+            items,
+            crate::completion::CompletionMode::Filtered,
+        );
+        ui.incomplete = incomplete;
+        self.completion = Some(ui);
+        // Seed the filter so the first render doesn't spuriously reset it, and
+        // remember what the items were asked for.
         if let Some(filter) = self.completion_filter()
             && let Some(ui) = self.completion.as_mut()
         {
+            ui.queried_filter.clone_from(&filter);
             ui.last_filter = filter;
         }
+        self.resolve_selected_completion();
     }
 }

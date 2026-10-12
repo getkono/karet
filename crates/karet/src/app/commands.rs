@@ -247,6 +247,9 @@ impl App {
             Command::JumpForward => self.jump_forward(),
             Command::InsertChar(c) => {
                 if !self.try_inline_macro(karet_syntax::InlineMacroTrigger::Character(c)) {
+                    // A commit character accepts the selected candidate first,
+                    // then is typed after it.
+                    self.commit_completion_on(c);
                     let s = c.to_string();
                     self.submit_edit_with_cause(EditCause::Type, move |caret, sel, _b, base| {
                         Some(editing::insert(caret, sel, base, &s))

@@ -59,23 +59,16 @@ fn overlapping_edits_merge() {
 
 /// Open the completion popup over `items`, anchored at `anchor`.
 fn open_completion(rig: &mut Rig, anchor: LineCol, label: &str) {
-    rig.app.completion = Some(crate::completion::CompletionUi {
-        items: vec![karet_core::CompletionItem {
-            label: label.to_owned(),
-            kind: karet_core::CompletionKind::Function,
-            detail: None,
-            documentation: None,
-            insert_text: label.to_owned(),
-            edit: None,
-            sort_text: None,
-            deprecated: false,
-        }],
-        list: karet_widgets::CompletionState::default(),
-        doc: DocumentId(9),
+    rig.app.completion = Some(crate::completion::CompletionUi::new(
+        DocumentId(9),
         anchor,
-        last_filter: String::new(),
-        mode: crate::completion::CompletionMode::Filtered,
-    });
+        anchor,
+        vec![karet_core::CompletionItem::new(
+            label,
+            karet_core::CompletionKind::Function,
+        )],
+        crate::completion::CompletionMode::Filtered,
+    ));
     rig.render();
 }
 

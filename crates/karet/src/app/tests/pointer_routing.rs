@@ -158,29 +158,19 @@ fn a_link_in_a_background_split_resolves_in_that_split() {
 }
 
 fn item(label: &str) -> karet_core::CompletionItem {
-    karet_core::CompletionItem {
-        label: label.to_owned(),
-        kind: karet_core::CompletionKind::Function,
-        detail: None,
-        documentation: None,
-        insert_text: label.to_owned(),
-        edit: None,
-        sort_text: None,
-        deprecated: false,
-    }
+    karet_core::CompletionItem::new(label, karet_core::CompletionKind::Function)
 }
 
 /// Open the completion popup anchored at the caret, and draw it.
 fn open_completion(rig: &mut Rig, labels: &[String]) {
     let anchor = rig.tab().editor.cursor();
-    rig.app.completion = Some(crate::completion::CompletionUi {
-        items: labels.iter().map(|label| item(label)).collect(),
-        list: karet_widgets::CompletionState::default(),
-        doc: DocumentId(9),
+    rig.app.completion = Some(crate::completion::CompletionUi::new(
+        DocumentId(9),
         anchor,
-        last_filter: String::new(),
-        mode: crate::completion::CompletionMode::Filtered,
-    });
+        anchor,
+        labels.iter().map(|label| item(label)).collect(),
+        crate::completion::CompletionMode::Filtered,
+    ));
     rig.render();
 }
 

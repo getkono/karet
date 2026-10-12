@@ -158,7 +158,12 @@ impl App {
                 doc,
                 version,
                 items,
-            } => self.on_completions(id, doc, version, items),
+                incomplete,
+                options,
+            } => self.on_completions(id, doc, version, (items, incomplete, options)),
+            SessionEvent::CompletionResolved { doc, resolved } => {
+                self.on_completion_resolved(id, doc, resolved);
+            },
             SessionEvent::InlayHints {
                 doc,
                 version,

@@ -342,23 +342,16 @@ fn clicking_the_find_field_takes_the_keyboard_back() {
 #[test]
 fn completion_keys_belong_to_the_focused_editor_only() {
     let (_backend, mut app) = completion_app("fo\n", LineCol::new(0, 2));
-    app.completion = Some(crate::completion::CompletionUi {
-        items: vec![karet_core::CompletionItem {
-            label: "foobar".to_owned(),
-            kind: karet_core::CompletionKind::Function,
-            detail: None,
-            documentation: None,
-            insert_text: "foobar".to_owned(),
-            edit: None,
-            sort_text: None,
-            deprecated: false,
-        }],
-        list: karet_widgets::CompletionState::default(),
-        doc: DocumentId(9),
-        anchor: LineCol::new(0, 0),
-        last_filter: String::new(),
-        mode: crate::completion::CompletionMode::Filtered,
-    });
+    app.completion = Some(crate::completion::CompletionUi::new(
+        DocumentId(9),
+        LineCol::new(0, 0),
+        LineCol::new(0, 2),
+        vec![karet_core::CompletionItem::new(
+            "foobar",
+            karet_core::CompletionKind::Function,
+        )],
+        crate::completion::CompletionMode::Filtered,
+    ));
     app.focus = Focus::Sidebar;
     app.sidebar_panel = SidebarPanel::Explorer;
 

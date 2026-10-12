@@ -11,6 +11,8 @@ use karet_core::BlameAttribution;
 use karet_core::Change;
 use karet_core::CodeAction;
 use karet_core::CompletionItem;
+use karet_core::CompletionOptions;
+use karet_core::CompletionTrigger;
 use karet_core::CursorState;
 use karet_core::Diagnostic;
 use karet_core::Hover;
@@ -361,12 +363,26 @@ pub enum Command {
         /// The target document.
         doc: DocumentId,
     },
-    /// Request completions at a position.
+    /// Request completions at a position. Answered by [`Event::Completions`],
+    /// always: empty when no server completes there.
     Completion {
         /// The target document.
         doc: DocumentId,
         /// The position to complete at.
         position: LineCol,
+        /// Why: invoked, a trigger character typed, or narrowing an incomplete
+        /// list.
+        trigger: CompletionTrigger,
+    },
+    /// Fill in what the server deferred for one of `doc`'s completion items
+    /// -- its documentation, detail and additional edits -- when the user
+    /// selects it. Answered by [`Event::CompletionResolved`], always.
+    ResolveCompletion {
+        /// The document the item completes in.
+        doc: DocumentId,
+        /// The item as an [`Event::Completions`] answer delivered it, payload
+        /// included.
+        item: CompletionItem,
     },
     /// Request inlay hints for a range of a document.
     ///

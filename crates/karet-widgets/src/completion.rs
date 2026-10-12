@@ -162,8 +162,9 @@ impl CompletionState {
     }
 }
 
-/// A rank candidate: the label plus its index back into the item slice, so
-/// duplicate labels stay distinguishable after ranking.
+/// A rank candidate: the text matched (filter text, else label) plus its index
+/// back into the item slice, so duplicate labels stay distinguishable after
+/// ranking.
 struct Candidate<'a> {
     index: usize,
     label: &'a str,
@@ -193,7 +194,8 @@ impl<'a> CompletionPopup<'a> {
     }
 
     /// The candidate rows in display order, as indices into
-    /// [`items`](Self::items): fuzzy-ranked by the filter when one is typed,
+    /// [`items`](Self::items): fuzzy-ranked by the filter when one is typed --
+    /// matched against each item's filter text, falling back to its label --
     /// otherwise in the server's order (`sort_text`, falling back to the
     /// label). The caller uses the same list to resolve which item a selection
     /// accepts.
@@ -213,7 +215,7 @@ impl<'a> CompletionPopup<'a> {
             .enumerate()
             .map(|(index, item)| Candidate {
                 index,
-                label: &item.label,
+                label: item.filter_key(),
             })
             .collect();
         self.matcher
@@ -397,6 +399,37 @@ impl StatefulWidget for CompletionPopup<'_> {
     }
 }
 
+/// The narrowest a documentation pane beside the popup is drawn; with less
+/// room on either side it is not drawn at all.
+pub const MIN_DOCS_WIDTH: u16 = 24;
+
+/// The widest a documentation pane beside the popup grows.
+pub const MAX_DOCS_WIDTH: u16 = 60;
+
+/// Where the selected candidate's documentation goes beside a popup painted at
+/// `popup`, inside `bounds`: to its right when at least [`MIN_DOCS_WIDTH`]
+/// columns are free there, else to its left, up to [`MAX_DOCS_WIDTH`] wide.
+/// Top-aligned with the popup, and as tall as `rows_at(width)` -- the rows
+/// the content wraps to at that width -- up to the bottom of `bounds`.
+///
+/// `None` when neither side has room, or the content is empty.
+#[must_use]
+pub fn docs_pane_rect(bounds: Rect, popup: Rect, rows_at: impl Fn(u16) -> u16) -> Option<Rect> {
+    let right = bounds.right().saturating_sub(popup.right());
+    let left = popup.left().saturating_sub(bounds.left());
+    let (x, width) = if right >= MIN_DOCS_WIDTH {
+        (popup.right(), right.min(MAX_DOCS_WIDTH))
+    } else if left >= MIN_DOCS_WIDTH {
+        let width = left.min(MAX_DOCS_WIDTH);
+        (popup.left() - width, width)
+    } else {
+        return None;
+    };
+    let room = bounds.bottom().saturating_sub(popup.y);
+    let height = rows_at(width).min(room);
+    (height > 0).then_some(Rect::new(x, popup.y, width, height))
+}
+
 /// The span an accept replaces: from the popup's `anchor` to the current
 /// `caret` (the typed prefix). `None` when the caret has wandered somewhere an
 /// accept no longer makes sense (another line, or before the anchor).
@@ -427,15 +460,53 @@ mod tests {
 
     fn item(label: &str, kind: CompletionKind, detail: Option<&str>) -> CompletionItem {
         CompletionItem {
-            label: label.to_owned(),
-            kind,
             detail: detail.map(ToOwned::to_owned),
-            documentation: None,
-            insert_text: label.to_owned(),
-            edit: None,
-            sort_text: None,
-            deprecated: false,
+            ..CompletionItem::new(label, kind)
         }
+    }
+
+    /// Falsified by ranking on the label when the server gave filter text: a
+    /// label decorated beyond what is typed (`HashMap (use std::…)`) would
+    /// then rank by the decoration, and an item whose filter text matches
+    /// but label does not would vanish.
+    #[test]
+    fn typing_matches_the_filter_text_when_there_is_one() {
+        let items = [
+            CompletionItem {
+                filter_text: Some("deref".to_owned()),
+                ..item("*x", CompletionKind::Method, None)
+            },
+            item("debug", CompletionKind::Function, None),
+        ];
+        let theme = Theme::dark();
+        let mut matcher = Matcher::new();
+        let ranked = CompletionPopup::new(&items, &mut matcher, "deref", &theme).ranked();
+        assert_eq!(ranked, vec![0]);
+    }
+
+    /// Right of the popup when there is room, left when only that side has
+    /// it, nowhere when neither does; never taller than the room below the
+    /// popup's top.
+    #[test]
+    fn the_docs_pane_sits_beside_the_popup_where_it_fits() {
+        let bounds = Rect::new(0, 0, 100, 20);
+        let popup = Rect::new(10, 5, 20, 6);
+        let rect = docs_pane_rect(bounds, popup, |_| 4);
+        assert_eq!(rect, Some(Rect::new(30, 5, MAX_DOCS_WIDTH, 4)));
+        // Wrapped taller than the room left: clipped at the bottom.
+        let rect = docs_pane_rect(bounds, popup, |_| 40);
+        assert_eq!(rect, Some(Rect::new(30, 5, MAX_DOCS_WIDTH, 15)));
+        // Only the left side has room.
+        let popup = Rect::new(50, 0, 40, 6);
+        let rect = docs_pane_rect(bounds, popup, |width| {
+            assert_eq!(width, 50.min(MAX_DOCS_WIDTH));
+            2
+        });
+        assert_eq!(rect, Some(Rect::new(0, 0, 50, 2)));
+        // No room either side, or nothing to show.
+        let squeezed = Rect::new(20, 0, 70, 6);
+        assert_eq!(docs_pane_rect(bounds, squeezed, |_| 3), None);
+        assert_eq!(docs_pane_rect(bounds, Rect::new(10, 5, 20, 6), |_| 0), None);
     }
 
     fn render(

@@ -13,6 +13,7 @@
 //! in the frames before the worker answers.
 
 mod code_actions;
+mod completion;
 mod debug;
 mod docfile;
 // The document-file helpers stay reachable unqualified from the sibling
@@ -636,7 +637,9 @@ impl Session {
                     report: Box::new(self.config.loaded_config.clone()),
                 },
             ),
-            Command::Completion { doc, position } => self.completion(id, doc, position),
+            cmd @ (Command::Completion { .. } | Command::ResolveCompletion { .. }) => {
+                self.completion_command(id, cmd);
+            },
             Command::InlayHints { doc, range } => self.inlay_hints(id, doc, range),
             Command::ResolveInlayHint { doc, hint } => self.resolve_inlay_hint(id, doc, hint),
             Command::Hover { doc, position } => self.hover(id, doc, position),

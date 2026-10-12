@@ -96,8 +96,27 @@ pub(crate) fn initialize_params(root: &Path) -> Result<lsp_types::InitializePara
                     // Snippets degrade to plain text (see the crate docs).
                     snippet_support: Some(false),
                     deprecated_support: Some(true),
+                    commit_characters_support: Some(true),
+                    documentation_format: Some(vec![
+                        lsp_types::MarkupKind::Markdown,
+                        lsp_types::MarkupKind::PlainText,
+                    ]),
+                    tag_support: Some(lsp_types::TagSupport {
+                        value_set: vec![lsp_types::CompletionItemTag::DEPRECATED],
+                    }),
+                    insert_replace_support: Some(true),
+                    // What `LspClient::resolve_completion` may fill in later;
+                    // what an accept inserts is never among them.
+                    resolve_support: Some(lsp_types::CompletionItemCapabilityResolveSupport {
+                        properties: vec![
+                            "documentation".to_owned(),
+                            "detail".to_owned(),
+                            "additionalTextEdits".to_owned(),
+                        ],
+                    }),
                     ..lsp_types::CompletionItemCapability::default()
                 }),
+                context_support: Some(true),
                 ..lsp_types::CompletionClientCapabilities::default()
             }),
             publish_diagnostics: Some(lsp_types::PublishDiagnosticsClientCapabilities {

@@ -623,6 +623,11 @@ pub struct App {
     pub(crate) pending_completion: Option<crate::completion::PendingCompletion>,
     /// The open completion popup, if any.
     pub(crate) completion: Option<crate::completion::CompletionUi>,
+    /// The trigger and commit characters the server completing in a document
+    /// last answered with, and that document.
+    pub(crate) completion_chars: Option<(DocumentId, karet_core::CompletionOptions)>,
+    /// An accepted item's additional edits, still on their way.
+    pub(crate) completion_follow_up: Option<crate::completion::AcceptFollowUp>,
     /// The reusable fuzzy matcher backing the completion popup's filtering.
     pub(crate) completion_matcher: karet_fuzzy::Matcher,
     /// The in-flight hover request, if any (see [`crate::hover`]).

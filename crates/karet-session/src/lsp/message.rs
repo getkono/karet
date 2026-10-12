@@ -9,6 +9,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use karet_core::CompletionItem;
+use karet_core::CompletionList;
+use karet_core::CompletionOptions;
+use karet_core::CompletionTrigger;
 use karet_core::Diagnostic;
 use karet_core::Hover;
 use karet_core::InlayHint;
@@ -82,6 +85,19 @@ pub(crate) enum ServerCmd {
         path: PathBuf,
         /// The position, already converted to UTF-16 columns.
         position: LineCol,
+        /// Why the candidates are asked for.
+        trigger: CompletionTrigger,
+    },
+    /// Fill in what the server deferred for one of its completion items
+    /// (`completionItem/resolve`). Needs no text, so it never waits on a
+    /// flush.
+    ResolveCompletion {
+        /// The originating request, echoed on the answer.
+        request: RequestId,
+        /// The document the item completes in, echoed on the answer.
+        doc: DocumentId,
+        /// The item, payload included (boxed: it dwarfs every other command).
+        item: Box<CompletionItem>,
     },
     /// Request the document's structural symbols.
     DocumentSymbols {
@@ -255,8 +271,22 @@ pub(crate) enum LspUpdate {
         doc: DocumentId,
         /// The buffer version the request was made against.
         version: u64,
-        /// The mapped items.
-        items: Vec<CompletionItem>,
+        /// The mapped list.
+        list: CompletionList,
+        /// The answering server's trigger and commit characters.
+        options: CompletionOptions,
+    },
+    /// The answer to a [`ServerCmd::ResolveCompletion`]: what the server
+    /// filled in, ranges still in UTF-16 columns, or `None` when nothing was.
+    CompletionResolved {
+        /// The manager generation that spawned the server task.
+        generation: u64,
+        /// The originating request.
+        request: RequestId,
+        /// The document the item completes in.
+        doc: DocumentId,
+        /// What the server filled in.
+        resolved: Option<CompletionItem>,
     },
     /// Inlay hints answering a [`ServerCmd::InlayHints`] request. Positions
     /// remain in UTF-16 until the session adopts the update.

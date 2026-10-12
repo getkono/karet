@@ -35,6 +35,7 @@ async fn completion_round_trips_with_utf16_conversion() -> TestResult {
         Command::Completion {
             doc,
             position: LineCol::new(0, 3),
+            trigger: CompletionTrigger::Invoked,
         },
     )?;
 
@@ -139,6 +140,7 @@ async fn open_and_debounced_changes_reach_the_server() -> TestResult {
         Command::Completion {
             doc,
             position: LineCol::new(1, 1),
+            trigger: CompletionTrigger::Invoked,
         },
     )?;
     let _ = await_completions(&mut events).await.ok_or("no answer")?;

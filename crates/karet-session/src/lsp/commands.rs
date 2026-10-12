@@ -14,6 +14,10 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
 
+use karet_core::CompletionItem;
+use karet_core::CompletionList;
+use karet_core::CompletionOptions;
+use karet_core::CompletionTrigger;
 use karet_core::InlayHint;
 use karet_core::LineCol;
 use karet_core::Location;
@@ -107,6 +111,62 @@ pub(super) async fn resolve_hint(
     }
 }
 
+/// Ask `client` for completions at `position` in `path`, with the server's
+/// trigger and commit characters beside them: an empty list when the
+/// connection is dead or the request fails -- which counts against the
+/// connection's health like any other failure. The caller flushes first, so
+/// the server completes in the latest text.
+pub(super) async fn complete(
+    client: &LspClient,
+    (path, position, trigger): (&Path, LineCol, CompletionTrigger),
+    (dead, tally, updates, key, token): (
+        &mut bool,
+        &mut FailureTally,
+        &mpsc::UnboundedSender<LspUpdate>,
+        &SlotKey,
+        SlotToken,
+    ),
+) -> (CompletionList, CompletionOptions) {
+    let options = client.capabilities().completion;
+    if *dead {
+        return (CompletionList::default(), options);
+    }
+    match tally.observe(client.completion(path, position, trigger).await) {
+        Ok(list) => (list, options),
+        Err(error) => {
+            tally.note::<()>(Err(error), dead, updates, key, token);
+            (CompletionList::default(), options)
+        },
+    }
+}
+
+/// Resolve `item` on `client`: `None` when there is nothing to resolve, the
+/// connection is dead, or the request fails -- which counts against the
+/// connection's health like any other failure. No flush first: what is
+/// resolved is the item as the server sent it.
+pub(super) async fn resolve_item(
+    client: &LspClient,
+    item: &CompletionItem,
+    (dead, tally, updates, key, token): (
+        &mut bool,
+        &mut FailureTally,
+        &mpsc::UnboundedSender<LspUpdate>,
+        &SlotKey,
+        SlotToken,
+    ),
+) -> Option<CompletionItem> {
+    if *dead {
+        return None;
+    }
+    match tally.observe(client.resolve_completion(item).await) {
+        Ok(resolved) => resolved,
+        Err(error) => {
+            tally.note::<()>(Err(error), dead, updates, key, token);
+            None
+        },
+    }
+}
+
 /// The capability a navigation request is gated on: Go to Definition's own
 /// for `None`, else the one its kind names.
 pub(super) fn location_feature(kind: Option<LocationKind>) -> ServerFeature {
@@ -184,7 +244,16 @@ pub(super) fn answer_empty(
                 request,
                 doc,
                 version,
-                items: Vec::new(),
+                list: CompletionList::default(),
+                options: CompletionOptions::default(),
+            });
+        },
+        ServerCmd::ResolveCompletion { request, doc, .. } => {
+            let _ = updates.send(LspUpdate::CompletionResolved {
+                generation,
+                request,
+                doc,
+                resolved: None,
             });
         },
         ServerCmd::InlayHints {
@@ -368,6 +437,7 @@ pub(super) fn remember_document(documents: &mut HashMap<PathBuf, OpenDocument>, 
             documents.remove(path);
         },
         ServerCmd::Completion { .. }
+        | ServerCmd::ResolveCompletion { .. }
         | ServerCmd::InlayHints { .. }
         | ServerCmd::ResolveInlayHint { .. }
         | ServerCmd::DocumentSymbols { .. }
