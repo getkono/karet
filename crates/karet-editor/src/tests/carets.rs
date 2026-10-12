@@ -351,7 +351,8 @@ fn a_plain_motion_collapses_each_selection_to_its_leading_edge() {
         head: forward.anchor,
     };
     // (motion, where it lands from a forward and from a backward selection
-    // over `ghi`): Left/Right stop at the edge, the rest move on from it.
+    // over `ghi`): Left/Right stop at the edge, the rest move on from it. A
+    // four-row page overshoots three lines, so it runs to the document's ends.
     for (motion, want) in [
         (Motion::Left, at(1, 1)),
         (Motion::Right, at(1, 4)),
@@ -359,8 +360,8 @@ fn a_plain_motion_collapses_each_selection_to_its_leading_edge() {
         (Motion::Down, at(2, 4)),
         (Motion::LineStart, at(1, 0)),
         (Motion::LineEnd, at(1, 5)),
-        (Motion::PageUp, at(0, 1)),
-        (Motion::PageDown, at(2, 4)),
+        (Motion::PageUp, at(0, 0)),
+        (Motion::PageDown, at(2, 5)),
     ] {
         for sel in [forward, backward] {
             let mut state = EditorState::new();

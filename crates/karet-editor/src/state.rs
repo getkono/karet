@@ -8,10 +8,12 @@ use super::visual::*;
 use super::*;
 
 mod gutter;
+mod motion;
 mod syntax_select;
 
 pub use gutter::GutterHit;
 pub use gutter::GutterLane;
+pub use motion::Motion;
 
 /// A fold region resolved for rendering: an inclusive line range plus whether it is
 /// currently collapsed. When collapsed, the interior lines `start + 1 ..= end` are
@@ -45,79 +47,6 @@ pub fn resolve_folds(
             collapsed: folded.contains(&r.start),
         })
         .collect()
-}
-
-/// A caret motion, applied to every caret by [`EditorState::move_carets`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Motion {
-    /// One line up, column clamped to the shorter line.
-    Up,
-    /// One line down, column clamped to the shorter line.
-    Down,
-    /// One character left, wrapping to the previous line's end.
-    Left,
-    /// One character right, wrapping to the next line's start.
-    Right,
-    /// One viewport height up.
-    PageUp,
-    /// One viewport height down.
-    PageDown,
-    /// To column 0 of the line.
-    LineStart,
-    /// To the end of the line.
-    LineEnd,
-    /// To the start of the document.
-    DocStart,
-    /// To the end of the document.
-    DocEnd,
-    /// To the start of the previous word, wrapping across lines.
-    WordLeft,
-    /// To the end of the next word, wrapping across lines.
-    WordRight,
-}
-
-impl Motion {
-    /// Whether the motion heads toward the start of the document, which decides
-    /// the selection edge a non-extending motion collapses to.
-    #[must_use]
-    pub const fn is_backward(self) -> bool {
-        matches!(
-            self,
-            Self::Up
-                | Self::Left
-                | Self::PageUp
-                | Self::LineStart
-                | Self::DocStart
-                | Self::WordLeft
-        )
-    }
-}
-
-/// Where `motion` takes a caret at `from`, with `page` lines to a page.
-fn step(buffer: &TextBuffer, motion: Motion, page: u32, from: LineCol) -> LineCol {
-    let to_line = |line: u32| LineCol::new(line, from.col.min(line_len(buffer, line)));
-    let last = last_line(buffer);
-    match motion {
-        Motion::Up => to_line(from.line.saturating_sub(1)),
-        Motion::Down => to_line((from.line + 1).min(last)),
-        Motion::PageUp => to_line(from.line.saturating_sub(page)),
-        Motion::PageDown => to_line(from.line.saturating_add(page).min(last)),
-        Motion::Left if from.col > 0 => LineCol::new(from.line, from.col - 1),
-        Motion::Left if from.line > 0 => {
-            LineCol::new(from.line - 1, line_len(buffer, from.line - 1))
-        },
-        Motion::Right if from.col < line_len(buffer, from.line) => {
-            LineCol::new(from.line, from.col + 1)
-        },
-        Motion::Right if from.line < last => LineCol::new(from.line + 1, 0),
-        Motion::Left | Motion::Right => from,
-        Motion::LineStart => LineCol::new(from.line, 0),
-        Motion::LineEnd => LineCol::new(from.line, line_len(buffer, from.line)),
-        Motion::DocStart => LineCol::new(0, 0),
-        Motion::DocEnd => LineCol::new(last, line_len(buffer, last)),
-        Motion::WordLeft => previous_word_boundary(buffer, from),
-        Motion::WordRight => next_word_boundary(buffer, from),
-    }
 }
 
 /// The persistent, per-view editor state: scroll position and the cursor/selection
@@ -202,12 +131,17 @@ pub struct EditorState {
     ///
     /// [`longest_col`]: EditorState::longest_col
     pub(super) last_longest_col: u32,
-    /// The primary head, when a pointer placed it past the end of a wrapped
-    /// row: that position is also where the next row starts, and it is drawn
-    /// at the end of the row the user clicked rather than the start of the
-    /// next. Dropped by any keyboard move, and by the render once the head
-    /// has moved elsewhere.
-    pub(super) upstream: Option<LineCol>,
+    /// The heads placed at the end of a wrapped row rather than the start of
+    /// the next: that position is also where the next row starts, and these
+    /// are drawn at the end of the row they were placed on. A pointer sets it
+    /// for the primary head it placed past the end of a row; End and vertical
+    /// motion set it for every caret they leave at a row's end. Dropped by any
+    /// other keyboard move, and by the render for a head that has moved
+    /// elsewhere.
+    pub(super) upstream: Vec<LineCol>,
+    /// The goal columns vertical motion steers each caret back toward — see
+    /// [`motion::Goals`].
+    pub(super) goals: Option<motion::Goals>,
     /// What the last [`pos_at`](Self::pos_at) resolved, when it resolved past
     /// the end of a wrapped row, so the pointer move that consumes it
     /// ([`set_caret`](Self::set_caret), [`extend_to`](Self::extend_to)) can
@@ -254,7 +188,8 @@ impl Default for EditorState {
             sticky_height: 0,
             last_visible_lines: 0,
             last_longest_col: 0,
-            upstream: None,
+            upstream: Vec::new(),
+            goals: None,
             pointer_upstream: Cell::new(None),
             last_virtual_text: Vec::new(),
             last_fold_ellipses: Vec::new(),
@@ -331,7 +266,7 @@ impl EditorState {
     /// scroll only when the target is off screen.
     pub fn reveal(&mut self, buffer: &TextBuffer, pos: LineCol) {
         // A keyboard-placed caret at a wrap point opens the next row.
-        self.upstream = None;
+        self.upstream.clear();
         self.reveal_with(buffer, pos, Reveal::Margin);
     }
 
@@ -633,38 +568,6 @@ impl EditorState {
             .collect()
     }
 
-    /// Apply `motion` to every caret, then merge carets that collide and keep the
-    /// primary head in view.
-    ///
-    /// With `extend` each head moves and its anchor stays, so the selection grows
-    /// or shrinks (Shift + motion). Without it each selection first collapses to
-    /// its edge in the motion's direction (its start for a backward motion, its
-    /// end for a forward one) and the caret moves from there; [`Motion::Left`]
-    /// and [`Motion::Right`] stop at that edge. Carets are moved independently,
-    /// so two carets merge only when they end on the same position.
-    pub fn move_carets(&mut self, buffer: &TextBuffer, motion: Motion, extend: bool) {
-        let page = u32::from(self.last_height.max(1));
-        let backward = motion.is_backward();
-        for s in &mut self.cursors.selections {
-            if extend {
-                s.head = step(buffer, motion, page, s.head);
-            } else if s.is_empty() {
-                *s = Selection::caret(step(buffer, motion, page, s.head));
-            } else {
-                let range = s.range();
-                let edge = if backward { range.start } else { range.end };
-                let to = match motion {
-                    Motion::Left | Motion::Right => edge,
-                    _ => step(buffer, motion, page, edge),
-                };
-                *s = Selection::caret(to);
-            }
-        }
-        self.normalize();
-        let head = self.cursor();
-        self.reveal(buffer, head);
-    }
-
     /// Sort and merge the cursor set, following the first-placed caret.
     fn normalize(&mut self) {
         self.original = self.cursors.normalize_tracking(self.original);
@@ -827,7 +730,7 @@ impl EditorState {
     pub fn set_caret(&mut self, buffer: &TextBuffer, pos: LineCol) {
         let p = clamp_to_buffer(buffer, pos);
         self.set_single(Selection::caret(p));
-        self.upstream = self.pointer_upstream.take().filter(|hit| *hit == p);
+        self.pointer_moved(p);
         self.reveal_with(buffer, p, Reveal::Minimal);
     }
 
@@ -850,6 +753,7 @@ impl EditorState {
             selections,
             primary,
         };
+        self.goals = None;
         self.normalize();
     }
 
@@ -867,6 +771,7 @@ impl EditorState {
             .primary
             .min(cursors.selections.len().saturating_sub(1));
         self.cursors = cursors;
+        self.goals = None;
         self.normalize();
         self.reveal(buffer, self.cursor());
     }
@@ -884,8 +789,10 @@ impl EditorState {
             selection.anchor = clamp_to_buffer(buffer, map(selection.anchor));
             selection.head = clamp_to_buffer(buffer, map(selection.head));
         }
-        // A pointer hint or an occurrence run names positions in the old text.
-        self.upstream = None;
+        // A pointer hint, a goal or an occurrence run names positions in the
+        // old text.
+        self.upstream.clear();
+        self.goals = None;
         self.word_occurrences = None;
         self.syntax_steps.clear();
         self.normalize();
@@ -902,7 +809,7 @@ impl EditorState {
             s.head = p;
         }
         self.normalize();
-        self.upstream = self.pointer_upstream.take().filter(|hit| *hit == p);
+        self.pointer_moved(p);
         self.reveal_with(buffer, self.cursor(), Reveal::Minimal);
     }
 
@@ -915,7 +822,7 @@ impl EditorState {
         let anchor = clamp_to_buffer(buffer, anchor);
         let head = clamp_to_buffer(buffer, head);
         self.set_single(Selection { anchor, head });
-        self.upstream = None;
+        self.upstream.clear();
         self.reveal_with(buffer, head, Reveal::Minimal);
     }
 
@@ -944,29 +851,20 @@ impl EditorState {
     fn set_single(&mut self, sel: Selection) {
         self.cursors = CursorState::single(sel);
         self.original = 0;
+        self.goals = None;
     }
 
-    /// Add a bare caret one line above the primary (column clamped to the shorter
-    /// line), merging if it collides. A no-op when the primary is already on line 0.
-    pub fn add_caret_above(&mut self, buffer: &TextBuffer) {
-        let h = self.cursor();
-        if h.line == 0 {
-            return;
-        }
-        let p = clamp_to_buffer(buffer, LineCol::new(h.line - 1, h.col));
-        self.push(Selection::caret(p));
-        self.reveal(buffer, self.cursor());
-    }
-
-    /// Add a bare caret one line below the primary. A no-op on the last line.
-    pub fn add_caret_below(&mut self, buffer: &TextBuffer) {
-        let h = self.cursor();
-        if h.line >= last_line(buffer) {
-            return;
-        }
-        let p = clamp_to_buffer(buffer, LineCol::new(h.line + 1, h.col));
-        self.push(Selection::caret(p));
-        self.reveal(buffer, self.cursor());
+    /// Record what a pointer move to `p` leaves: the wrap-row affinity the
+    /// hit-test found for it, and no goal column (the pointer chose the
+    /// column).
+    fn pointer_moved(&mut self, p: LineCol) {
+        self.upstream = self
+            .pointer_upstream
+            .take()
+            .filter(|hit| *hit == p)
+            .into_iter()
+            .collect();
+        self.goals = None;
     }
 
     /// Toggle a caret at `pos` (Alt+click): remove a coincident bare caret unless it is
@@ -997,7 +895,7 @@ impl EditorState {
             return;
         }
         self.push(Selection::caret(p));
-        self.upstream = self.pointer_upstream.take().filter(|hit| *hit == p);
+        self.pointer_moved(p);
         self.reveal_with(buffer, p, Reveal::Minimal);
     }
 

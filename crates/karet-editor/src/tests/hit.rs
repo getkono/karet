@@ -113,7 +113,7 @@ fn char_pos_at_does_not_disturb_the_wrap_affinity_of_a_click() {
     // placement must not clear the affinity the hit recorded.
     let _ = state.char_pos_at(area, &buffer, &[], GUTTER + 2, 1);
     state.set_caret(&buffer, end_of_row);
-    assert_eq!(state.upstream, Some(end_of_row));
+    assert_eq!(state.upstream, vec![end_of_row]);
 }
 
 /// `alpha beta gamma` wrapped into ten content cells: `alpha ` on row 0

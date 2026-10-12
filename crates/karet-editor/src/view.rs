@@ -701,12 +701,15 @@ impl StatefulWidget for Editor<'_> {
             },
         );
         // A wrap affinity outlives only the caret it was set for.
-        if let Some(at) = state.upstream
-            && (!self.word_wrap || state.cursors().selections.iter().all(|s| s.head != at))
-        {
-            state.upstream = None;
+        if self.word_wrap {
+            let heads = &state.cursors.selections;
+            state
+                .upstream
+                .retain(|at| heads.iter().any(|s| s.head == *at));
+        } else {
+            state.upstream.clear();
         }
-        let upstream = state.upstream == Some(state.cursor());
+        let upstream = state.upstream.contains(&state.cursor());
         let mut sticky = self.sticky_blocks(anchor, area.height);
         let off = state.reveal_margin();
         if state.follow_cursor {
