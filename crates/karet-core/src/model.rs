@@ -99,13 +99,6 @@ pub enum DecorationKind {
     /// The decoration's `role` colors the underline; `None` underlines in the
     /// text's own foreground, which no theme can render illegibly.
     Underline,
-    /// Inline "ghost" text (e.g. VCS blame, parameter names).
-    InlineText {
-        /// The text to render.
-        text: String,
-        /// Whether to render before (`true`) or after (`false`) the range.
-        before: bool,
-    },
     /// A color chip over the range, carrying an arbitrary color instead of a
     /// theme role (e.g. a CSS color literal). The renderer paints the range's
     /// background in this color and picks a contrasting foreground itself.

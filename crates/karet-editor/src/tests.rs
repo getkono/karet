@@ -10,31 +10,22 @@ mod hit;
 mod inlay;
 mod pointer;
 mod reveal;
+mod virtual_text;
 
 #[test]
-fn inline_text_decoration_renders_after_the_line() {
+fn end_of_line_text_renders_after_the_line() {
     let buffer = TextBuffer::from_text("let answer = 42;\n");
-    let Ok(range) = Range::new(LineCol::new(0, 0), LineCol::new(0, 1)) else {
-        return;
-    };
-    let decoration = Decoration {
-        range,
-        kind: DecorationKind::InlineText {
-            text: "  Ada, initial".to_string(),
-            before: false,
-        },
-        role: Some(ThemeRole::Muted),
-    };
+    let text = VirtualText::end_of_line(0, "  Ada, initial", ThemeRole::Muted, 0);
     let mut state = EditorState::new();
     let area = Rect::new(0, 0, 40, 1);
     let mut target = Buffer::empty(area);
     Editor::new(&buffer)
-        .decorations(&[decoration])
+        .virtual_text(&[text])
         .render(area, &mut target, &mut state);
     let rendered: String = (0..area.width)
         .map(|x| target[(x, 0)].symbol().chars().next().unwrap_or(' '))
         .collect();
-    assert!(rendered.contains("Ada, initial"));
+    assert!(rendered.starts_with(" 1 let answer = 42;  Ada, initial"));
 }
 
 #[test]

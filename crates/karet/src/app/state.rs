@@ -3,6 +3,7 @@
 //! caches. Pure data — behavior stays on `App`.
 
 use karet_core::InlayHint;
+use karet_core::VirtualText;
 
 use super::inlay::HintRange;
 use super::inlay::PendingInlay;
@@ -480,21 +481,20 @@ impl LiveBlame {
         }
     }
 
-    /// Compact current-line attribution rendered as editor virtual text.
-    pub(crate) fn decoration(&self) -> Option<Decoration> {
-        let text = self.text()?;
-        Some(Decoration {
-            range: Range {
-                start: LineCol::new(self.line, 0),
-                end: LineCol::new(self.line, 1),
-            },
-            kind: DecorationKind::InlineText {
-                text,
-                before: false,
-            },
-            role: Some(ThemeRole::Muted),
-        })
+    /// Compact current-line attribution in the line's end-of-line slot, at
+    /// [`BLAME_EOL_PRIORITY`](Self::BLAME_EOL_PRIORITY).
+    pub(crate) fn virtual_text(&self) -> Option<VirtualText> {
+        Some(VirtualText::end_of_line(
+            self.line,
+            self.text()?,
+            ThemeRole::Muted,
+            Self::BLAME_EOL_PRIORITY,
+        ))
     }
+
+    /// Inline blame is cut first when a line's end-of-line slot is short: it
+    /// is context, where a dependency hint on the same line is a call to act.
+    pub(crate) const BLAME_EOL_PRIORITY: u8 = 0;
 }
 
 impl Scm {

@@ -188,7 +188,7 @@ pub(super) fn visual_ranges(
     let mut start = 0_u32;
     while start < len {
         let mut hard_end = start;
-        let mut used = row_lead(hints, start == 0);
+        let mut used = 0_u32;
         // `display_col(start)` stops short of the hint at `start`: this row
         // paints it, so its cells are counted below.
         let mut absolute = display_col(&chars, start, layout.tab_width, hints);
@@ -402,15 +402,6 @@ pub(super) fn reveal_visual_anchor(
     revealed
 }
 
-/// The cells a row paints ahead of its first caret slot: the line's `before`
-/// inline text, which goes on its `first_row` (an unwrapped line's only row).
-///
-/// One function for every side of the mapping — wrapping, the caret, a
-/// click — so none of them can disagree with the painter about it.
-pub(super) fn row_lead(hints: LineHints<'_>, first_row: bool) -> u32 {
-    if first_row { hints.prefix() } else { 0 }
-}
-
 /// The screen offset of `col` within the row that begins at `row_start`.
 ///
 /// The row's origin is `display_col(row_start)`, which excludes the hint
@@ -466,11 +457,9 @@ pub(super) fn horizontal_extent(
     // The caret slot at end-of-line takes a cell even when no hint follows it.
     let needed = end.saturating_add(trailing.max(1));
     let width = width.max(1);
-    // `before` inline text holds the row's first cells whatever the scroll.
-    let room = width.saturating_sub(hints.prefix()).max(1);
-    let first = cols.partition_point(|&origin| needed.saturating_sub(origin) > room) as u32;
+    let first = cols.partition_point(|&origin| needed.saturating_sub(origin) > width) as u32;
     if first == 0 {
-        needed.saturating_add(hints.prefix()).saturating_sub(1)
+        needed.saturating_sub(1)
     } else {
         first.saturating_add(width).saturating_sub(1)
     }
@@ -529,8 +518,7 @@ pub(super) fn reveal_column(
     let caret = cols.get(col).copied().unwrap_or(0);
     // Candidate origins are the columns up to the caret's own.
     let origins = cols.get(..=col).unwrap_or_default();
-    // `before` inline text holds the row's first cells whatever the scroll.
-    let width = width.saturating_sub(hints.prefix()).max(1);
+    let width = width.max(1);
     let margin = reveal.margin(width);
     let offset_at = |origin: usize| {
         origins
@@ -607,10 +595,13 @@ pub(super) fn caret_cell(
                     .unwrap_or_default()
                     .chars()
                     .collect();
-                let hints = layout.hints_on(at.line);
-                let rel =
-                    offset_within_row(&chars, range.start, at.col, state.last_tab_width, hints)
-                        .saturating_add(row_lead(hints, index == 0));
+                let rel = offset_within_row(
+                    &chars,
+                    range.start,
+                    at.col,
+                    state.last_tab_width,
+                    layout.hints_on(at.line),
+                );
                 let x = content_x.saturating_add(
                     u16::try_from(rel.min(u32::from(content_width.saturating_sub(1))))
                         .unwrap_or(u16::MAX),
@@ -654,15 +645,13 @@ pub(super) fn caret_cell(
     if at.col < state.scroll_col {
         return None;
     }
-    let hints = state.hints_on(at.line);
     let rel = offset_within_row(
         &chars,
         state.scroll_col,
         at.col,
         state.last_tab_width,
-        hints,
-    )
-    .saturating_add(row_lead(hints, true));
+        state.hints_on(at.line),
+    );
     if rel >= u32::from(content_width) {
         return None;
     }

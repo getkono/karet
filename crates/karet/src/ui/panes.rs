@@ -100,7 +100,7 @@ pub(super) fn draw_panes(
             let blame = app
                 .live_blame
                 .as_ref()
-                .and_then(crate::app::LiveBlame::decoration);
+                .and_then(crate::app::LiveBlame::virtual_text);
             let ctx = PaneCtx {
                 theme,
                 root: &app.root,

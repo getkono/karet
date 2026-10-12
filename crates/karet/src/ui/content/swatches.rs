@@ -1,3 +1,5 @@
+use karet_core::VirtualText;
+
 use super::*;
 
 /// Swatch decorations for the color literals on the lines a viewport of
@@ -26,10 +28,14 @@ fn color_swatch_decorations(buffer: &TextBuffer, first_line: u32, height: u16) -
     out
 }
 
+/// The end-of-line priority of a dependency hint: above inline blame, so on a
+/// short line it is the blame that is cut, never the call to act.
+const MANIFEST_EOL_PRIORITY: u8 = crate::app::LiveBlame::BLAME_EOL_PRIORITY + 1;
+
 /// End-of-line annotations for a manifest's dependency hints. Fresh
 /// dependencies stay quiet; the rest carry a state glyph, the newest
 /// version, and an advisory count, role-colored by severity.
-pub(super) fn manifest_hint_decorations(hints: &[karet_session::ManifestHint]) -> Vec<Decoration> {
+pub(super) fn manifest_hint_text(hints: &[karet_session::ManifestHint]) -> Vec<VirtualText> {
     use karet_session::ManifestHintState;
     hints
         .iter()
@@ -55,17 +61,12 @@ pub(super) fn manifest_hint_decorations(hints: &[karet_session::ManifestHint]) -
                 };
                 text.push_str(&format!("  {advisories} {noun}"));
             }
-            Some(Decoration {
-                range: karet_core::Range {
-                    start: karet_core::LineCol::new(hint.line, 0),
-                    end: karet_core::LineCol::new(hint.line, 0),
-                },
-                kind: karet_core::DecorationKind::InlineText {
-                    text,
-                    before: false,
-                },
-                role: Some(role),
-            })
+            Some(VirtualText::end_of_line(
+                hint.line,
+                text,
+                role,
+                MANIFEST_EOL_PRIORITY,
+            ))
         })
         .collect()
 }
@@ -116,31 +117,51 @@ pub(super) fn debug_decorations(ctx: &PaneCtx, path: &std::path::Path) -> Vec<De
 }
 
 /// The per-frame decorations content assembles fresh each draw: color
-/// swatches over the visible slice, and the manifest's dependency hints
-/// (version-guarded).
+/// swatches over the visible slice.
 pub(super) fn frame_decorations(
     ctx: &PaneCtx,
-    doc: Option<DocumentId>,
     buffer: &TextBuffer,
     scroll_line: u32,
     area: Rect,
 ) -> Vec<Decoration> {
-    let mut out = if ctx.color_highlight {
+    if ctx.color_highlight {
         color_swatch_decorations(buffer, scroll_line, area.height)
     } else {
         Vec::new()
-    };
+    }
+}
+
+/// The virtual text content assembles fresh each draw, in one slice: the
+/// document's inlay hints, the manifest's dependency hints (version-guarded),
+/// and the inline blame last. Returns the slice and the blame's index in it,
+/// which is how the painted blame is found again for its click target.
+pub(super) fn frame_virtual_text(
+    ctx: &PaneCtx,
+    doc: Option<DocumentId>,
+    buffer: &TextBuffer,
+) -> (Vec<VirtualText>, Option<usize>) {
+    let mut out: Vec<VirtualText> = doc
+        .and_then(|doc| ctx.inlay_hints.get(&doc))
+        .into_iter()
+        .flatten()
+        .map(VirtualText::from)
+        .collect();
     if let Some((checked, hints)) = doc.and_then(|doc| ctx.manifest_hints.get(&doc))
         && *checked == buffer.version()
     {
-        out.extend(manifest_hint_decorations(hints));
+        out.extend(manifest_hint_text(hints));
     }
-    out
+    let blame = ctx.blame.clone().map(|blame| {
+        out.push(blame);
+        out.len() - 1
+    });
+    (out, blame)
 }
 
 #[cfg(test)]
 mod manifest_hint_tests {
-    use karet_core::DecorationKind;
+    use karet_core::EolAlign;
+    use karet_core::VirtualTextPlacement;
     use karet_session::ManifestHint;
     use karet_session::ManifestHintState;
 
@@ -159,66 +180,68 @@ mod manifest_hint_tests {
         }
     }
 
-    /// The ghost text of the first decoration, if there is one.
-    fn ghost(decorations: &[Decoration]) -> Option<String> {
-        match decorations.first().map(|d| &d.kind) {
-            Some(DecorationKind::InlineText { text, before }) => {
-                assert!(!before, "a manifest hint trails its line");
-                Some(text.clone())
+    /// The text of the first hint, if there is one.
+    fn ghost(texts: &[VirtualText]) -> Option<String> {
+        let text = texts.first()?;
+        assert_eq!(
+            text.placement,
+            VirtualTextPlacement::EndOfLine {
+                align: EolAlign::Left,
+                priority: MANIFEST_EOL_PRIORITY,
             },
-            _ => None,
-        }
+            "a manifest hint trails its line"
+        );
+        Some(text.text.clone())
     }
 
     #[test]
     fn an_up_to_date_dependency_stays_quiet() {
-        let decorations =
-            manifest_hint_decorations(&[hint(ManifestHintState::UpToDate, None, &[])]);
+        let decorations = manifest_hint_text(&[hint(ManifestHintState::UpToDate, None, &[])]);
         assert!(decorations.is_empty());
     }
 
     #[test]
     fn an_outdated_dependency_names_the_newest_release() {
         let decorations =
-            manifest_hint_decorations(&[hint(ManifestHintState::Outdated, Some("0.3.55"), &[])]);
+            manifest_hint_text(&[hint(ManifestHintState::Outdated, Some("0.3.55"), &[])]);
         assert_eq!(ghost(&decorations).as_deref(), Some("  ↑ 0.3.55"));
         assert_eq!(
             decorations[0].role,
-            Some(ThemeRole::DiagnosticWarning),
+            ThemeRole::DiagnosticWarning,
             "outdated reads as a warning"
         );
     }
 
     #[test]
     fn one_advisory_is_singular_and_two_are_not() {
-        let one = manifest_hint_decorations(&[hint(
+        let one = manifest_hint_text(&[hint(
             ManifestHintState::Vulnerable,
             Some("0.3.55"),
             &["RUSTSEC-2020-0071"],
         )]);
         assert_eq!(ghost(&one).as_deref(), Some("  ✗ 0.3.55  1 advisory"));
 
-        let two = manifest_hint_decorations(&[hint(
+        let two = manifest_hint_text(&[hint(
             ManifestHintState::Vulnerable,
             Some("0.3.55"),
             &["RUSTSEC-2020-0071", "RUSTSEC-2020-0159"],
         )]);
         assert_eq!(ghost(&two).as_deref(), Some("  ✗ 0.3.55  2 advisories"));
-        assert_eq!(two[0].role, Some(ThemeRole::DiagnosticError));
+        assert_eq!(two[0].role, ThemeRole::DiagnosticError);
     }
 
     #[test]
     fn a_hint_with_no_known_latest_still_marks_the_line() {
-        let decorations = manifest_hint_decorations(&[hint(ManifestHintState::Error, None, &[])]);
+        let decorations = manifest_hint_text(&[hint(ManifestHintState::Error, None, &[])]);
         assert_eq!(ghost(&decorations).as_deref(), Some("  !"));
-        assert_eq!(decorations[0].role, Some(ThemeRole::Muted));
+        assert_eq!(decorations[0].role, ThemeRole::Muted);
     }
 
     #[test]
-    fn the_decoration_anchors_to_the_hint_s_line() {
+    fn the_text_anchors_to_the_hint_s_line() {
         let decorations =
-            manifest_hint_decorations(&[hint(ManifestHintState::Patch, Some("0.1.45"), &[])]);
-        assert_eq!(decorations[0].range.start.line, 7);
-        assert_eq!(decorations[0].role, Some(ThemeRole::DiagnosticInfo));
+            manifest_hint_text(&[hint(ManifestHintState::Patch, Some("0.1.45"), &[])]);
+        assert_eq!(decorations[0].line, 7);
+        assert_eq!(decorations[0].role, ThemeRole::DiagnosticInfo);
     }
 }

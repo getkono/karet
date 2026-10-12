@@ -282,19 +282,9 @@ fn a_click_below_a_collapsed_last_fold_lands_at_the_end_of_its_header() {
     );
 }
 
-/// `before` inline text `text` over line 0.
-fn before_text(text: &str) -> Vec<Decoration> {
-    Range::new(LineCol::new(0, 0), LineCol::new(0, 1))
-        .map(|range| Decoration {
-            range,
-            kind: DecorationKind::InlineText {
-                text: text.to_owned(),
-                before: true,
-            },
-            role: None,
-        })
-        .into_iter()
-        .collect()
+/// Inline text `text` at the start of line 0.
+fn before_text(text: &str) -> Vec<VirtualText> {
+    vec![VirtualText::inline(0, 0, text, ThemeRole::Muted)]
 }
 
 /// The row `y` as painted.
@@ -305,7 +295,7 @@ fn row(target: &Buffer, y: u16) -> String {
 }
 
 #[test]
-fn before_inline_text_shifts_clicks_and_the_caret_as_it_shifts_the_text() {
+fn line_start_inline_text_shifts_clicks_and_the_caret_as_it_shifts_the_text() {
     let buffer = TextBuffer::from_text("abc\ndef");
     let decorations = before_text("» ");
     let area = Rect::new(0, 0, 20, 2);
@@ -313,7 +303,7 @@ fn before_inline_text_shifts_clicks_and_the_caret_as_it_shifts_the_text() {
     state.place_caret(LineCol::new(0, 1));
     let mut target = Buffer::empty(area);
     Editor::new(&buffer)
-        .decorations(&decorations)
+        .virtual_text(&decorations)
         .render(area, &mut target, &mut state);
 
     assert_eq!(symbol(&target, GUTTER + 2, 0), "a");
@@ -336,10 +326,16 @@ fn before_inline_text_shifts_clicks_and_the_caret_as_it_shifts_the_text() {
         state.pos_at(area, &buffer, &[], GUTTER + 1, 1),
         LineCol::new(1, 1)
     );
+    // Column 0's caret slot is ahead of the text anchored there.
+    state.place_caret(LineCol::new(0, 0));
+    assert_eq!(
+        state.primary_caret_cell(area, &buffer, &[]),
+        Some((GUTTER, 0))
+    );
 }
 
 #[test]
-fn before_inline_text_takes_its_cells_from_the_first_wrapped_row() {
+fn line_start_inline_text_takes_its_cells_from_the_first_wrapped_row() {
     let buffer = TextBuffer::from_text("alpha beta gamma");
     let decorations = before_text("»»»» ");
     let area = Rect::new(0, 0, 13, 3);
@@ -347,7 +343,7 @@ fn before_inline_text_takes_its_cells_from_the_first_wrapped_row() {
     state.place_caret(LineCol::new(0, 3));
     let mut target = Buffer::empty(area);
     Editor::new(&buffer)
-        .decorations(&decorations)
+        .virtual_text(&decorations)
         .word_wrap(true)
         .render(area, &mut target, &mut state);
 
@@ -378,7 +374,7 @@ fn before_inline_text_takes_its_cells_from_the_first_wrapped_row() {
 }
 
 #[test]
-fn before_inline_text_narrows_the_room_a_reveal_scrolls_into() {
+fn line_start_inline_text_does_not_hide_a_revealed_line_end() {
     let line: String = ('a'..='z').collect();
     let buffer = TextBuffer::from_text(&line);
     let decorations = before_text("»»»» ");
@@ -387,7 +383,7 @@ fn before_inline_text_narrows_the_room_a_reveal_scrolls_into() {
     let mut target = Buffer::empty(area);
     let mut render = |state: &mut EditorState| {
         Editor::new(&buffer)
-            .decorations(&decorations)
+            .virtual_text(&decorations)
             .render(area, &mut target, state);
     };
     render(&mut state);
@@ -400,78 +396,4 @@ fn before_inline_text_narrows_the_room_a_reveal_scrolls_into() {
         );
     };
     assert!(x < area.right());
-}
-
-/// `after` inline text `text` over line 0.
-fn after_text(text: &str) -> Vec<Decoration> {
-    before_text(text)
-        .into_iter()
-        .map(|decoration| Decoration {
-            kind: DecorationKind::InlineText {
-                text: text.to_owned(),
-                before: false,
-            },
-            ..decoration
-        })
-        .collect()
-}
-
-/// The text painted inside `rect`.
-fn painted_in(target: &Buffer, rect: Rect) -> String {
-    (rect.x..rect.right())
-        .map(|x| target[(x, rect.y)].symbol().to_owned())
-        .collect()
-}
-
-#[test]
-fn inline_text_reports_the_cells_it_was_painted_in_after_hints_and_fold_marker() {
-    let buffer = TextBuffer::from_text("let x\nbody\n");
-    let hints = [InlayHint {
-        position: LineCol::new(0, 5),
-        label: ": i32".to_owned(),
-        kind: karet_core::InlayHintKind::Type,
-        padding_left: false,
-        padding_right: false,
-    }];
-    let folds = [Fold {
-        start: 0,
-        end: 1,
-        collapsed: true,
-    }];
-    let decorations = after_text("  Ada");
-    let area = Rect::new(0, 0, 30, 2);
-    let mut state = EditorState::new();
-    let mut target = Buffer::empty(area);
-    Editor::new(&buffer)
-        .inlay_hints(&hints)
-        .folds(&folds)
-        .decorations(&decorations)
-        .render(area, &mut target, &mut state);
-
-    // `let x` then the hint, then ` ⋯`, and only then the inline text: not
-    // at the end-of-line caret cell, where the hint begins.
-    let Some(rect) = state.inline_text_rect(0) else {
-        unreachable!("the inline text is on screen: {:?}", row(&target, 0));
-    };
-    assert_eq!(rect, Rect::new(GUTTER + 12, 0, 5, 1));
-    assert_eq!(painted_in(&target, rect), "  Ada");
-    assert_eq!(state.inline_text_rect(1), None, "no such decoration");
-}
-
-#[test]
-fn inline_text_cut_off_by_the_edge_reports_only_its_visible_cells() {
-    let buffer = TextBuffer::from_text("let x\n");
-    let decorations = after_text("  Ada, a long while ago");
-    let area = Rect::new(4, 0, 14, 1);
-    let mut state = EditorState::new();
-    let mut target = Buffer::empty(area);
-    Editor::new(&buffer)
-        .decorations(&decorations)
-        .render(area, &mut target, &mut state);
-
-    // Gutter 3 + `let x` 5 leaves six of the editor's fourteen cells.
-    assert_eq!(
-        state.inline_text_rect(0),
-        Some(Rect::new(4 + GUTTER + 5, 0, 6, 1))
-    );
 }
