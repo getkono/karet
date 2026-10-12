@@ -410,11 +410,11 @@ fn folding_remaps_the_row_immediately_below_the_index() {
     );
 }
 
-/// The rail's wheel writes the *active* tab's offset, so only the focused pane's
-/// rail may claim a notch. Over another pane's rail the notch has to keep falling
-/// through to the document scroll instead of landing on a view it cannot address.
+/// The wheel scrolls the pane under the pointer, focused or not (#339): a notch
+/// over another pane's rail pans that rail, and neither the focus nor the focused
+/// document moves.
 #[test]
-fn an_unfocused_panes_rail_does_not_swallow_the_wheel() {
+fn an_unfocused_panes_rail_takes_the_wheel_without_taking_focus() {
     let mut app = deep_commit_app();
     app.dispatch(Command::SplitRight);
     assert_eq!(app.layout.pane_count(), 2);
@@ -422,24 +422,40 @@ fn an_unfocused_panes_rail_does_not_swallow_the_wheel() {
     app.push_tab(code_tab("a.rs"));
     let _ = screen(&mut app, 240, 24);
     let focused = app.focus_pane();
-    let Some(other) = app
+    let Some((pane, other)) = app
         .pane_frames
         .iter()
         .find(|frame| frame.pane != focused && frame.commit_rail_rect.height > 0)
-        .map(|frame| frame.commit_rail_rect)
+        .map(|frame| (frame.pane, frame.commit_rail_rect))
     else {
         panic!("the unfocused pane paints a rail");
     };
+    let rail_scroll = |app: &App| match app
+        .stored
+        .get(&pane)
+        .and_then(|stored| stored.tabs.get(stored.active))
+        .map(|tab| &tab.kind)
+    {
+        Some(TabKind::Commit { view, .. }) => view.rail_scroll,
+        _ => panic!("the other pane shows the commit view"),
+    };
 
     let before = app.tabs[app.active].editor.scroll_line;
+    let rail_before = rail_scroll(&app);
     wheel(
         &mut app,
         MouseEventKind::ScrollDown,
         other.x + 1,
         other.y + 1,
     );
-    assert_ne!(
+    assert_eq!(app.focus_pane(), focused, "the wheel does not move focus");
+    assert_eq!(
         app.tabs[app.active].editor.scroll_line, before,
-        "the notch fell through to the focused document instead of being swallowed"
+        "the focused document does not scroll"
+    );
+    assert_eq!(
+        rail_scroll(&app),
+        rail_before + 3,
+        "the rail under the pointer does"
     );
 }

@@ -129,7 +129,10 @@ of a wide character or of a tab's cells resolves to after it (#337).
 | Ctrl+click (Super+click where the terminal reports it) | Go to the definition of the identifier under the pointer. On anything else (whitespace, past the line end, the gutter) nothing happens. | — (needs a language server); #338 (non-identifiers) |
 | Click in an unfocused split | Focus that split and place its caret; the other split's carets do not move. | harness |
 | Click while the find bar is open | The editor takes keyboard focus; the find bar stays open. | #333 |
-| Right click | Move the caret to the click if it is outside the selection, then open the context menu (Cut, Copy, Paste, spelling suggestions). | #339 |
+| Right click | Move the caret to the click if it is outside the selection, then open the context menu (Cut, Copy, Paste, spelling suggestions). | harness (caret, menu, unfocused split; `pointer_routing.rs`); #338 (spelling suggestions) |
+| Click on a completion row | Accept that candidate, as Enter would. | harness |
+| Click outside the hover popup | Close the popup, then do what the click would have done without it. A click inside it is kept. | harness |
+| Click while the diagnostic view is open | It is modal: a click outside it closes it and does nothing else; a click inside it is kept. | harness |
 | Line-number gutter | A click selects the whole line, newline included; a drag selects whole lines; Shift+click extends by lines. | #335 |
 | Breakpoint lane, fold chevron | Toggle a breakpoint / toggle the fold; these never move the caret. | #335 |
 
@@ -174,8 +177,8 @@ A press in the text starts a drag that owns the pointer until it is released.
 |---|---|---|
 | Wheel | Scroll three lines per notch. The caret and the selection do not move. | harness |
 | Shift+wheel, horizontal wheel | Scroll three columns per notch. | — |
-| Wheel over an unfocused split | Scroll that split without moving focus to it. | #339 |
-| Wheel over a popup (hover, completion) | Scroll the popup, not the editor under it. | #339 |
+| Wheel over an unfocused split | Scroll that split without moving focus to it. | harness |
+| Wheel over a popup (hover, completion) | Scroll the popup, not the editor under it. | harness |
 
 Deviation: many terminals keep Shift+wheel and Shift+click for their own text
 selection and never send them to the application. karet honours them when they

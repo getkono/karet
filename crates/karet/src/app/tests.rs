@@ -31,6 +31,7 @@ mod language_servers;
 mod lifecycle;
 mod line_changes;
 mod markdown_edit;
+mod pointer_routing;
 mod preview;
 #[cfg(feature = "images")]
 mod preview_images;

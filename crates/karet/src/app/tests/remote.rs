@@ -38,6 +38,9 @@ async fn pane_context_menu_lists_file_actions_and_disables_links_outside_a_repo(
     assert_eq!(
         commands,
         vec![
+            Command::Cut,
+            Command::Copy,
+            Command::Paste,
             Command::CopyPath,
             Command::CopyRelativePath,
             Command::RevealActiveInExplorer,
@@ -49,8 +52,8 @@ async fn pane_context_menu_lists_file_actions_and_disables_links_outside_a_repo(
             Command::CopyGithubHeadLink,
         ]
     );
-    assert!(menu.entries[..3].iter().all(|e| e.enabled));
-    for entry in &menu.entries[3..] {
+    assert!(menu.entries[..6].iter().all(|e| e.enabled));
+    for entry in &menu.entries[6..] {
         assert!(
             !entry.enabled,
             "{:?} is disabled outside a repo",

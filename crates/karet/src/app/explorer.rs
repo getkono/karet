@@ -576,11 +576,25 @@ impl App {
     /// build them (the same call their dispatch runs), with its refusal reason as
     /// the disabled note.
     pub(super) fn pane_context_entries(&mut self, path: &Path) -> Vec<ContextMenuEntry> {
-        let mut entries = vec![
+        // Text first, over a text document: the clipboard verbs act on the
+        // selection, or on the caret a right click has just placed.
+        let mut entries = if matches!(
+            self.tabs.get(self.active).map(|tab| &tab.kind),
+            Some(TabKind::Code { .. })
+        ) {
+            vec![
+                ContextMenuEntry::enabled(Command::Cut),
+                ContextMenuEntry::enabled(Command::Copy),
+                ContextMenuEntry::enabled(Command::Paste),
+            ]
+        } else {
+            Vec::new()
+        };
+        entries.extend([
             ContextMenuEntry::enabled(Command::CopyPath),
             ContextMenuEntry::enabled(Command::CopyRelativePath),
             ContextMenuEntry::enabled(Command::RevealActiveInExplorer),
-        ];
+        ]);
         // Owned disabled-notes computed up front, so the facts borrow does not
         // overlap the &mut calls below. `None` = enabled.
         let link_notes: [Option<String>; 3] = {

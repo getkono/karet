@@ -70,15 +70,6 @@ pub(super) fn draw_panes(
         .collect();
     for (pane, rect) in app.layout.layout(area) {
         let is_focused = pane == focused;
-        // Only the focused pane's bars are grabbable, for the same reason only its
-        // `editor_rect` is kept: every write-back path here targets the active tab.
-        // A background pane's bars are painted, then dropped on the floor.
-        let mut unfocused = ScrollHits::default();
-        let sink = if is_focused {
-            &mut *hits
-        } else {
-            &mut unfocused
-        };
         let stored_tab_width = (!is_focused)
             .then(|| app.stored.get(&pane))
             .flatten()
@@ -144,7 +135,7 @@ pub(super) fn draw_panes(
                 selection: app.surface_selection,
                 lsp_badge: lsp_badges.get(&pane).copied().flatten(),
             };
-            render_pane(f, &mut app.tabs, app.active, rect, &ctx, sink)
+            render_pane(f, &mut app.tabs, app.active, rect, &ctx, hits)
         } else if let Some(stored) = app.stored.get_mut(&pane) {
             let resolved = stored.tabs.get(stored.active).map(|tab| {
                 app.settings
@@ -190,7 +181,10 @@ pub(super) fn draw_panes(
                 selection: None,
                 lsp_badge: lsp_badges.get(&pane).copied().flatten(),
             };
-            render_pane(f, &mut stored.tabs, stored.active, rect, &ctx, sink)
+            // Every pane's bars are recorded, not just the focused pane's. Their
+            // surfaces name "the active tab", so the mouse lends a background
+            // pane the focus for the length of a gesture on one (`App::with_pane`).
+            render_pane(f, &mut stored.tabs, stored.active, rect, &ctx, hits)
         } else {
             continue;
         };
@@ -199,10 +193,12 @@ pub(super) fn draw_panes(
             app.markdown_preview_rect = rendered.markdown_preview_rect;
             app.image_area = rendered.image_area;
             app.blame_rect = rendered.blame_rect;
-            app.markdown_link_hits = rendered.markdown_link_hits;
             app.commit_badge_rect = rendered.commit_badge_rect;
             app.find_rects = rendered.find_rects;
         }
+        // A background pane's links are as live as the focused pane's: the
+        // Ctrl+click that follows one focuses the pane it lands in first.
+        app.markdown_link_hits.extend(rendered.markdown_link_hits);
         app.pane_frames.push(crate::app::PaneFrame {
             pane,
             tabstrip_rect: rendered.tabstrip_rect,
@@ -213,6 +209,7 @@ pub(super) fn draw_panes(
             lsp_badge_hit: rendered.lsp_badge_hit,
             content_rect: rendered.content_rect,
             editor_rect: rendered.editor_rect,
+            markdown_preview_rect: rendered.markdown_preview_rect,
             commit_file_hits: rendered.commit_file_hits,
             commit_dir_hits: rendered.commit_dir_hits,
             commit_rail_rect: rendered.commit_rail_rect,
@@ -364,6 +361,11 @@ pub(super) fn draw_drop_preview(f: &mut Frame, app: &App, theme: &Theme) {
 /// visible within the editor area (the widget truncates details with an
 /// ellipsis when the editor itself is too narrow).
 pub(super) fn draw_completion(f: &mut Frame, app: &mut App, theme: &Theme, hits: &mut ScrollHits) {
+    // Forgotten first, so a frame that ends up not painting it leaves nothing for
+    // the pointer to hit; the render below records where it went.
+    if let Some(ui) = app.completion.as_mut() {
+        ui.list.hide();
+    }
     // The filter doubles as the "popup still applies" check.
     let Some(filter) = app.completion_filter() else {
         return;
@@ -438,11 +440,14 @@ pub(super) fn draw_completion(f: &mut Frame, app: &mut App, theme: &Theme, hits:
 /// Draw the hover popup floating over the editor, anchored at the caret —
 /// above it when there is room (the line under discussion stays visible),
 /// below otherwise. Content is pre-wrapped to the chosen width; overflow past
-/// the available height is clipped.
+/// the available height is clipped, and scrolls into view under the wheel.
 pub(super) fn draw_hover(f: &mut Frame, app: &mut App, theme: &Theme) {
-    let Some(ui) = &app.hover_ui else {
+    let Some(ui) = app.hover_ui.as_mut() else {
         return;
     };
+    // Forgotten first, so a frame that does not paint the popup leaves nothing
+    // for the pointer to hit.
+    ui.rect = Rect::default();
     let editor = app.editor_rect;
     if editor.width < 8 || editor.height < 3 {
         return;
@@ -493,7 +498,14 @@ pub(super) fn draw_hover(f: &mut Frame, app: &mut App, theme: &Theme) {
         ),
         rect,
     );
-    f.render_widget(popup, rect);
+    // Content taller than the room left scrolls under the wheel; clamped here, as
+    // only the draw knows how many rows the content wrapped to.
+    ui.scroll = ui.scroll.min(content_rows.saturating_sub(height));
+    ui.rect = rect;
+    let buf = f.buffer_mut();
+    for (row, line) in (rect.y..rect.bottom()).zip(lines.iter().skip(usize::from(ui.scroll))) {
+        buf.set_line(rect.x, row, line, rect.width);
+    }
 }
 
 pub(super) fn draw_toasts(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {

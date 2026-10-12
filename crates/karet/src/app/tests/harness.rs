@@ -65,6 +65,8 @@ pub(crate) enum Step {
     Up(At, KeyModifiers),
     /// A full left click: press then release.
     Click(At, KeyModifiers),
+    /// A full right click: press then release.
+    RightClick(At, KeyModifiers),
     /// One wheel notch down (toward the end of the document).
     WheelDown(At, KeyModifiers),
     /// One wheel notch up.
@@ -262,6 +264,13 @@ impl Rig {
                 self.render();
                 self.mouse(MouseEventKind::Up(MouseButton::Left), at, modifiers);
             },
+            Step::RightClick(at, modifiers) => {
+                let (col, row) = self.cell(at);
+                let at = At::Cell(col, row);
+                self.mouse(MouseEventKind::Down(MouseButton::Right), at, modifiers);
+                self.render();
+                self.mouse(MouseEventKind::Up(MouseButton::Right), at, modifiers);
+            },
             Step::WheelDown(at, modifiers) => self.mouse(MouseEventKind::ScrollDown, at, modifiers),
             Step::WheelUp(at, modifiers) => self.mouse(MouseEventKind::ScrollUp, at, modifiers),
             Step::Wait(gap) => self.since_click += gap,
@@ -388,6 +397,15 @@ impl Rig {
     /// The focused pane's first visible line.
     pub(crate) fn scroll_line(&self) -> u32 {
         self.tab().editor.scroll_line
+    }
+
+    /// The `n`th pane's first visible line, in layout order.
+    pub(crate) fn scroll_line_in(&self, n: usize) -> u32 {
+        let frames = self.frames();
+        let Some((pane, _)) = frames.get(n) else {
+            panic!("no pane {n}");
+        };
+        self.pane_tab(*pane).editor.scroll_line
     }
 
     /// The index, in layout order, of the focused pane.

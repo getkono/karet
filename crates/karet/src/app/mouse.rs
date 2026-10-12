@@ -105,6 +105,7 @@ impl App {
         // Mouse clicks, drag-selection, tab switches, and pane focus changes can all
         // move the active caret without passing through the keyboard input hook.
         self.reconcile_completion();
+        self.reconcile_hover();
         self.reconcile_rename();
         self.request_live_blame();
     }
@@ -130,11 +131,16 @@ impl App {
         if self.overlay.is_some() {
             return;
         }
+        if self.handle_diagnostic_view_mouse(mouse) {
+            return;
+        }
         // A click anywhere settles the rename prompt as Esc would, then does
-        // what it would have done without it.
+        // what it would have done without it. A click outside the hover popup
+        // closes it the same way.
         if matches!(mouse.kind, MouseEventKind::Down(_)) {
             self.rename = None;
         }
+        self.dismiss_hover_on_press_outside(mouse);
         if self.handle_context_menu_mouse(mouse) {
             return;
         }
@@ -259,7 +265,12 @@ impl App {
         // Ahead of every region test: a track sits inside the rect of whatever it
         // scrolls, and those rects were narrowed to exclude it precisely so the bar
         // could claim the column.
-        if self.scrollbar_mouse(mouse) {
+        if self.background_scrollbar_mouse(mouse) || self.scrollbar_mouse(mouse) {
+            return;
+        }
+        // The popups float over the editor, so they claim the pointer over them
+        // before anything beneath them can.
+        if self.handle_completion_mouse(mouse) || self.handle_hover_mouse(mouse) {
             return;
         }
         if self.handle_tabstrip_mouse(mouse) {
@@ -296,8 +307,6 @@ impl App {
         let in_sidebar = self.sidebar_visible && rect_contains(self.sidebar_rect, point);
         let in_outline = self.outline.visible && rect_contains(self.outline.rect, point);
         let in_editor = rect_contains(self.editor_rect, point);
-        let in_markdown_preview = rect_contains(self.markdown_preview_rect, point);
-        let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
         if in_editor && !in_outline && !matches!(mouse.kind, MouseEventKind::Moved) {
             self.dismiss_outline_overlay();
         }
@@ -305,18 +314,11 @@ impl App {
         // before any pane's — otherwise a notch over it would scroll the editor
         // behind it.
         let in_console = self.commit_console.open && rect_contains(self.commit_console.rect, point);
-        // The commit view's file rail scrolls independently of the diff beside it, so
-        // it claims the wheel inside its own column. It refines the pane rather than
-        // floating over it, so it is claimed after every surface that does float.
-        //
-        // The *focused* pane's rail only: the wheel writes the active tab's offset, so
-        // a notch over some other pane's rail has to keep falling through to the
-        // document scroll rather than landing on a view it does not address.
-        let focused = self.focus_pane();
-        let in_rail = self
-            .pane_frames
-            .iter()
-            .any(|frame| frame.pane == focused && rect_contains(frame.commit_rail_rect, point));
+        // Past every surface that floats over the panes, the wheel scrolls the pane
+        // under the pointer — focused or not — and leaves the focus alone.
+        if !in_console && !in_outline && !in_sidebar && self.pane_wheel(mouse) {
+            return;
+        }
         match mouse.kind {
             MouseEventKind::ScrollDown if in_console => self.commit_console_scroll(3),
             MouseEventKind::ScrollUp if in_console => self.commit_console_scroll(-3),
@@ -324,18 +326,6 @@ impl App {
             MouseEventKind::ScrollUp if in_outline => self.outline_step(-1),
             MouseEventKind::ScrollDown if in_sidebar => self.sidebar_wheel(3, mouse.row),
             MouseEventKind::ScrollUp if in_sidebar => self.sidebar_wheel(-3, mouse.row),
-            MouseEventKind::ScrollDown if in_markdown_preview => {
-                self.scroll_markdown_preview(3);
-            },
-            MouseEventKind::ScrollUp if in_markdown_preview => {
-                self.scroll_markdown_preview(-3);
-            },
-            MouseEventKind::ScrollDown if in_rail => self.commit_rail_scroll(3),
-            MouseEventKind::ScrollUp if in_rail => self.commit_rail_scroll(-3),
-            MouseEventKind::ScrollRight if in_editor => self.scroll_columns(3),
-            MouseEventKind::ScrollLeft if in_editor => self.scroll_columns(-3),
-            MouseEventKind::ScrollDown if in_editor && shift => self.scroll_columns(3),
-            MouseEventKind::ScrollUp if in_editor && shift => self.scroll_columns(-3),
             MouseEventKind::ScrollDown => self.scroll_lines(3),
             MouseEventKind::ScrollUp => self.scroll_lines(-3),
             MouseEventKind::Down(MouseButton::Left) if in_outline => {
@@ -355,14 +345,15 @@ impl App {
             MouseEventKind::Down(MouseButton::Right) => {
                 // Right-click in a pane's content area opens the pane context menu
                 // for that pane's active tab.
-                if let Some(pane) = self
+                if let Some((pane, area)) = self
                     .pane_frames
                     .iter()
                     .find(|f| rect_contains(f.content_rect, point))
-                    .map(|f| f.pane)
+                    .map(|f| (f.pane, f.editor_rect))
                 {
                     self.focus_pane_switch(pane);
                     self.focus = Focus::Editor;
+                    self.right_click_caret(area, mouse.column, mouse.row);
                     self.open_pane_context_menu(mouse.column, mouse.row);
                 }
             },

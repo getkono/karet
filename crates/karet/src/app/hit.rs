@@ -103,6 +103,9 @@ pub(crate) struct PaneFrame {
     pub(crate) content_rect: Rect,
     /// The exact editable editor viewport within the content area.
     pub(crate) editor_rect: Rect,
+    /// The Markdown preview beside a code tab, so a wheel notch over it scrolls the
+    /// preview rather than the source. Zero-sized when no preview is on screen.
+    pub(crate) markdown_preview_rect: Rect,
     /// Changed-file rows clickable within the pane's commit-like view.
     pub(crate) commit_file_hits: Vec<CommitFileHit>,
     /// Directory rows of that view's changed-file index, and the folds they toggle.
