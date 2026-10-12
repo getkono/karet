@@ -5,6 +5,7 @@ use super::*;
 use crate::view::View;
 
 mod context;
+mod navigation;
 mod search;
 
 fn key(code: KeyCode, mods: KeyModifiers) -> KeyEvent {

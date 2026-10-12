@@ -228,6 +228,11 @@ pub(super) static BINDINGS: &[Binding] = &[
     // syntax-error auto-trigger gate).
     b(Editor, true,  false, false, Char(' '), Command::TriggerCompletion),
     b(Editor, false, false, false, F(12),      Command::GoToDefinition),
+    // VS Code parity: Shift+F12 lists references, Ctrl+F12 jumps to the
+    // implementations. Declaration and type definition have no default chord
+    // there either; they are reached through the palette.
+    b(Editor, false, true,  false, F(12),      Command::FindReferences),
+    b(Editor, true,  false, false, F(12),      Command::GoToImplementation),
     b(Editor, false, false, false, F(2),       Command::RenameSymbol),
     // Quick fix (VS Code parity). Ctrl+. needs a terminal that disambiguates
     // modified punctuation (the kitty keyboard protocol); Alt+Enter, the

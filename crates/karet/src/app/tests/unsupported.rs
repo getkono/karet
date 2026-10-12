@@ -60,6 +60,34 @@ fn go_to_definition_on_a_server_without_it_says_so_once() {
 }
 
 #[test]
+fn go_to_declaration_on_a_server_without_it_names_declaration_once() {
+    let (backend, mut app) = completion_app("let x = target();\n", LineCol::new(0, 9));
+    app.dispatch(Command::GoToDeclaration);
+    let Some(id) = sent_id(&backend, |c| {
+        matches!(c, SessionCommand::FindLocations { .. })
+    }) else {
+        unreachable!("the command issues a request");
+    };
+
+    app.on_backend_event(
+        Some(id),
+        SessionEvent::FeatureUnsupported {
+            server: LanguageServerId::RustAnalyzer,
+            feature: ServerFeature::Declaration,
+        },
+    );
+    app.on_backend_event(
+        Some(id),
+        SessionEvent::Locations {
+            kind: karet_session::LocationKind::Declaration,
+            locations: Vec::new(),
+        },
+    );
+
+    assert_eq!(titles(&app), vec![notice("go to declaration")]);
+}
+
+#[test]
 fn hover_on_a_server_without_it_says_so_instead_of_no_information() {
     let (backend, mut app) = completion_app("let x = target();\n", LineCol::new(0, 9));
     app.request_hover();

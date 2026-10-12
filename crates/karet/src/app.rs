@@ -144,6 +144,7 @@ use karet_session::LanguageServerPlanId;
 use karet_session::LanguageServerRuntimeState;
 use karet_session::LanguageServerStatus;
 use karet_session::LoadedConfig;
+use karet_session::LocationKind;
 use karet_session::PreparedChange;
 use karet_session::PullRequestSummary;
 use karet_session::RangeSpec;
