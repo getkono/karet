@@ -23,45 +23,140 @@ pub(super) fn is_word_char(c: char) -> bool {
 /// double-click selects; reused by the app's click handling.
 #[must_use]
 pub fn word_bounds(buffer: &TextBuffer, pos: LineCol) -> (LineCol, LineCol) {
-    let chars: Vec<char> = buffer
-        .line(pos.line as usize)
-        .unwrap_or_default()
-        .chars()
-        .collect();
+    word_at(buffer, pos).unwrap_or_else(|| {
+        let col = pos.col.min(line_len(buffer, pos.line));
+        let end = (col + 1).min(line_len(buffer, pos.line));
+        (LineCol::new(pos.line, col), LineCol::new(pos.line, end))
+    })
+}
+
+/// The `(start, end)` of the word touching `pos` on its line — the word `pos` is
+/// inside, or ends or starts at — or `None` when no word character touches it.
+pub(super) fn word_at(buffer: &TextBuffer, pos: LineCol) -> Option<(LineCol, LineCol)> {
+    let chars = line_chars(buffer, pos.line);
     let n = chars.len() as u32;
     let col = pos.col.min(n);
+    let word = |i: u32| chars.get(i as usize).copied().is_some_and(is_word_char);
     let mut start = col;
-    while start > 0 && is_word_char(chars[start as usize - 1]) {
+    while start > 0 && word(start - 1) {
         start -= 1;
     }
     let mut end = col;
-    while end < n && is_word_char(chars[end as usize]) {
+    while end < n && word(end) {
         end += 1;
     }
-    if start == end {
-        (
-            LineCol::new(pos.line, col),
-            LineCol::new(pos.line, (col + 1).min(n)),
-        )
-    } else {
-        (LineCol::new(pos.line, start), LineCol::new(pos.line, end))
+    (start < end).then(|| (LineCol::new(pos.line, start), LineCol::new(pos.line, end)))
+}
+
+/// The text within `range`, read line by line so the document is never copied
+/// whole. Lines are joined with `\n`, the buffer's normalized line break.
+pub(super) fn range_text(buffer: &TextBuffer, range: Range) -> String {
+    (range.start.line..=range.end.line)
+        .map(|l| {
+            let chars = line_chars(buffer, l);
+            let n = chars.len();
+            let lo = if l == range.start.line {
+                (range.start.col as usize).min(n)
+            } else {
+                0
+            };
+            let hi = if l == range.end.line {
+                (range.end.col as usize).clamp(lo, n)
+            } else {
+                n
+            };
+            chars
+                .get(lo..hi)
+                .unwrap_or_default()
+                .iter()
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The first occurrence of `needle` starting at or after `from`, wrapping past the
+/// end of the buffer back to its start, that `taken` does not reject. With
+/// `whole_word`, a match must not continue a word on either side.
+///
+/// Reads the buffer a line at a time, so a search never copies the document. The
+/// line holding `from` is visited twice: first for matches at or after `from`, then,
+/// after the wrap, for those before it. `None` once every occurrence is rejected.
+pub(super) fn find_next(
+    buffer: &TextBuffer,
+    needle: &str,
+    from: LineCol,
+    whole_word: bool,
+    taken: impl Fn(Range) -> bool,
+) -> Option<Range> {
+    if needle.is_empty() {
+        return None;
     }
+    let parts: Vec<&str> = needle.split('\n').collect();
+    let lines = (from.line..=last_line(buffer)).chain(0..=from.line);
+    lines.enumerate().find_map(|(i, l)| {
+        matches_on_line(buffer, l, &parts, whole_word)
+            .into_iter()
+            .filter(|r| match (i, l == from.line) {
+                (0, _) => r.start >= from,
+                (_, true) => r.start < from,
+                _ => true,
+            })
+            .find(|r| !taken(*r))
+    })
 }
 
-/// The text within `range`, or `None` if either end can't be resolved to a byte.
-pub(super) fn slice_text(buffer: &TextBuffer, range: Range) -> Option<String> {
-    let start = buffer.line_col_to_byte(range.start).ok()?.0;
-    let end = buffer.line_col_to_byte(range.end).ok()?.0;
-    buffer.text().get(start..end).map(str::to_string)
-}
-
-/// The byte offset of the next occurrence of `needle` in `hay` at or after `from`,
-/// wrapping around to the start of the buffer.
-pub(super) fn find_next(hay: &str, needle: &str, from: usize) -> Option<usize> {
-    let from = from.min(hay.len());
-    hay.get(from..)
-        .and_then(|tail| tail.find(needle).map(|i| from + i))
-        .or_else(|| hay.get(..from).and_then(|head| head.find(needle)))
+/// Every occurrence of the needle `parts` (its text split at line breaks) that starts
+/// on line `line`, left to right and non-overlapping.
+fn matches_on_line(buffer: &TextBuffer, line: u32, parts: &[&str], whole_word: bool) -> Vec<Range> {
+    let Some(text) = buffer.line(line as usize) else {
+        return Vec::new();
+    };
+    let col_of = |s: &str, byte: usize| s.get(..byte).map_or(0, |h| h.chars().count() as u32);
+    let bounded = |before: Option<char>, after: Option<char>| {
+        !whole_word || !(before.is_some_and(is_word_char) || after.is_some_and(is_word_char))
+    };
+    match parts {
+        [] => Vec::new(),
+        [needle] => text
+            .match_indices(needle)
+            .filter(|(b, m)| {
+                let before = text.get(..*b).and_then(|h| h.chars().next_back());
+                let after = text.get(b + m.len()..).and_then(|t| t.chars().next());
+                bounded(before, after)
+            })
+            .map(|(b, m)| {
+                let start = col_of(&text, b);
+                Range {
+                    start: LineCol::new(line, start),
+                    end: LineCol::new(line, start + m.chars().count() as u32),
+                }
+            })
+            .collect(),
+        [first, middle @ .., last] => {
+            let Some(head) = text.strip_suffix(first) else {
+                return Vec::new();
+            };
+            let end_line = line + 1 + middle.len() as u32;
+            let middle_matches = middle
+                .iter()
+                .zip(line + 1..)
+                .all(|(part, l)| buffer.line(l as usize).as_deref() == Some(*part));
+            let Some(tail) = buffer.line(end_line as usize) else {
+                return Vec::new();
+            };
+            let after = tail.strip_prefix(last).map(|t| t.chars().next());
+            match after {
+                Some(after) if middle_matches && bounded(head.chars().next_back(), after) => {
+                    vec![Range {
+                        start: LineCol::new(line, head.chars().count() as u32),
+                        end: LineCol::new(end_line, last.chars().count() as u32),
+                    }]
+                },
+                _ => Vec::new(),
+            }
+        },
+    }
 }
 
 /// The start of the word before `pos`, wrapping to the previous line's end when at

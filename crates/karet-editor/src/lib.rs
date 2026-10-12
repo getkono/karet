@@ -22,7 +22,6 @@ mod visual;
 mod tests;
 
 pub use conflict::conflict_decorations;
-use karet_core::BytePos;
 use karet_core::CursorState;
 use karet_core::Decoration;
 use karet_core::DecorationKind;
