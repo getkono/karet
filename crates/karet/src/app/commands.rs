@@ -159,6 +159,8 @@ impl App {
             Command::NotebookRunAll => self.notebook_run_all(),
             Command::NotebookInterrupt => self.debug_send(SessionCommand::NotebookInterrupt),
             Command::NotebookRestartKernel => self.debug_send(SessionCommand::NotebookRestart),
+            Command::ToggleLineComment => self.toggle_comment(false),
+            Command::ToggleBlockComment => self.toggle_comment(true),
             Command::ToggleBold => {
                 self.toggle_markdown_surround("**", Some(Command::ToggleSidebar));
             },
@@ -209,6 +211,9 @@ impl App {
             Command::CommitGraphCopyIssueUrls => self.commit_graph_copy_issue_urls(),
             Command::TodoToggleGrouping => self.todos_toggle_grouping(),
             Command::GoToDefinition => self.request_definition(),
+            Command::RenameSymbol => self.start_rename(),
+            Command::RenameSubmit => self.rename_submit(),
+            Command::RenameCancel => self.rename_cancel(),
             Command::JumpBack => self.jump_back(),
             Command::JumpForward => self.jump_forward(),
             Command::InsertChar(c) => {

@@ -12,6 +12,7 @@ mod lsp_badge;
 mod markdown_images;
 mod osc8;
 mod panes;
+mod rename;
 mod scm;
 mod seam;
 mod secondary;
@@ -266,6 +267,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // The hover popup floats the same way (they never overlap in practice —
     // one follows typing, the other an explicit keystroke).
     draw_hover(f, app, &theme);
+    // The rename prompt floats over both: while it is open, nothing else is
+    // being typed into.
+    rename::draw_rename(f, app, &theme);
     draw_diagnostic_view(f, app, &theme, area);
 
     if let Some(overlay) = &app.overlay {

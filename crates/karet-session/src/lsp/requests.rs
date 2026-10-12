@@ -142,10 +142,13 @@ impl LspManager {
             .is_ok()
     }
 
+    #[allow(clippy::too_many_arguments)] // one request's identity, flattened as its siblings are
     pub(crate) fn rename(
         &self,
         language: Option<&str>,
         request: RequestId,
+        doc: DocumentId,
+        version: u64,
         path: &Path,
         position: LineCol,
         new_name: String,
@@ -156,9 +159,41 @@ impl LspManager {
         };
         tx.try_send(ServerCmd::Rename {
             request,
+            doc,
+            version,
             path,
             position,
             new_name,
+        })
+        .is_ok()
+    }
+
+    /// Ask the document's server whether the symbol at `position` can be
+    /// renamed. `false` when no server runs for it, so the caller answers.
+    /// `position` is in UTF-16 columns and `caret` the same point in buffer
+    /// columns.
+    #[allow(clippy::too_many_arguments)] // one request's identity, flattened as its siblings are
+    pub(crate) fn prepare_rename(
+        &self,
+        language: Option<&str>,
+        request: RequestId,
+        doc: DocumentId,
+        version: u64,
+        path: &Path,
+        position: LineCol,
+        caret: LineCol,
+    ) -> bool {
+        let path = absolute_path(path);
+        let Some(tx) = self.existing_server(language, &path) else {
+            return false;
+        };
+        tx.try_send(ServerCmd::PrepareRename {
+            request,
+            doc,
+            version,
+            path,
+            position,
+            caret,
         })
         .is_ok()
     }

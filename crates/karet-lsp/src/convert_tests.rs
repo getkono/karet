@@ -417,9 +417,25 @@ fn maps_workspace_edits_signatures_and_actions() -> Result<(), Box<dyn std::erro
             }]
         }]
     }))?;
-    let mapped = workspace_edit_from_lsp(edit);
-    assert_eq!(mapped.changes.len(), 2);
-    assert_eq!(mapped.changes[0].0, PathBuf::from("/tmp/a.rs"));
+    // A client that understands `documentChanges` uses them and ignores
+    // `changes` (LSP 3.17, `WorkspaceEdit`): applying both would edit a.rs
+    // although the server meant the versioned b.rs edit alone.
+    let mapped = workspace_edit_from_lsp(edit)?;
+    assert!(mapped.changes.is_empty());
+    assert_eq!(
+        mapped.document_changes,
+        vec![DocumentChange::Edit(DocumentEdit {
+            path: PathBuf::from("/tmp/b.rs"),
+            version: Some(4),
+            edits: vec![TextEdit {
+                range: Range {
+                    start: LineCol::new(1, 0),
+                    end: LineCol::new(1, 3),
+                },
+                new_text: "new".into(),
+            }],
+        })]
+    );
 
     let help: lsp_types::SignatureHelp = serde_json::from_value(serde_json::json!({
         "signatures": [{
@@ -446,6 +462,165 @@ fn maps_workspace_edits_signatures_and_actions() -> Result<(), Box<dyn std::erro
     assert_eq!(mapped.len(), 1);
     assert_eq!(mapped[0].command, Some(CommandId("fix.run".into())));
     Ok(())
+}
+
+#[test]
+fn unversioned_changes_map_sorted_by_path() -> Result<(), Box<dyn std::error::Error>> {
+    let edit: lsp_types::WorkspaceEdit = serde_json::from_value(serde_json::json!({
+        "changes": {
+            "file:///tmp/z.rs": [{
+                "range": {"start": {"line": 0, "character": 0},
+                          "end": {"line": 0, "character": 1}},
+                "newText": "z"
+            }],
+            "file:///tmp/a.rs": []
+        }
+    }))?;
+    let mapped = workspace_edit_from_lsp(edit)?;
+    assert!(mapped.document_changes.is_empty());
+    let paths: Vec<_> = mapped
+        .changes
+        .iter()
+        .map(|(path, _)| path.clone())
+        .collect();
+    assert_eq!(
+        paths,
+        vec![PathBuf::from("/tmp/a.rs"), PathBuf::from("/tmp/z.rs")]
+    );
+    Ok(())
+}
+
+#[test]
+fn resource_operations_keep_their_order_and_options() -> Result<(), Box<dyn std::error::Error>> {
+    let edit: lsp_types::WorkspaceEdit = serde_json::from_value(serde_json::json!({
+        "documentChanges": [
+            {"kind": "create", "uri": "file:///tmp/new.rs",
+             "options": {"ignoreIfExists": true}},
+            {"textDocument": {"uri": "file:///tmp/new.rs", "version": null},
+             "edits": [{
+                "range": {"start": {"line": 0, "character": 0},
+                          "end": {"line": 0, "character": 0}},
+                "newText": "fn main() {}"
+             }]},
+            {"kind": "rename", "oldUri": "file:///tmp/old.rs",
+             "newUri": "file:///tmp/moved.rs", "options": {"overwrite": true}},
+            {"kind": "delete", "uri": "file:///tmp/gone",
+             "options": {"recursive": true, "ignoreIfNotExists": true}}
+        ]
+    }))?;
+    let mapped = workspace_edit_from_lsp(edit)?;
+    // Order matters: the edit lands in the file the step before it created.
+    assert_eq!(
+        mapped.document_changes,
+        vec![
+            DocumentChange::Create {
+                path: PathBuf::from("/tmp/new.rs"),
+                options: FileOptions {
+                    overwrite: false,
+                    ignore_if_exists: true,
+                },
+            },
+            DocumentChange::Edit(DocumentEdit {
+                path: PathBuf::from("/tmp/new.rs"),
+                version: None,
+                edits: vec![TextEdit {
+                    range: Range {
+                        start: LineCol::new(0, 0),
+                        end: LineCol::new(0, 0),
+                    },
+                    new_text: "fn main() {}".into(),
+                }],
+            }),
+            DocumentChange::Rename {
+                from: PathBuf::from("/tmp/old.rs"),
+                to: PathBuf::from("/tmp/moved.rs"),
+                options: FileOptions {
+                    overwrite: true,
+                    ignore_if_exists: false,
+                },
+            },
+            DocumentChange::Delete {
+                path: PathBuf::from("/tmp/gone"),
+                options: DeleteOptions {
+                    recursive: true,
+                    ignore_if_not_exists: true,
+                },
+            },
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn a_non_file_uri_refuses_the_whole_edit() -> Result<(), Box<dyn std::error::Error>> {
+    // Dropping the step would apply the rest and report success for an edit
+    // the server meant as a whole.
+    let edit: lsp_types::WorkspaceEdit = serde_json::from_value(serde_json::json!({
+        "documentChanges": [
+            {"kind": "create", "uri": "file:///tmp/a.rs"},
+            {"kind": "create", "uri": "untitled:Untitled-1"}
+        ]
+    }))?;
+    let Err(LspError::Protocol(message)) = workspace_edit_from_lsp(edit) else {
+        return Err("expected a protocol error".into());
+    };
+    assert!(message.contains("untitled:Untitled-1"), "{message}");
+    // A code action carrying such an edit still lists, but offers no edit.
+    let actions: lsp_types::CodeActionResponse = serde_json::from_value(serde_json::json!([{
+        "title": "Fix",
+        "edit": {"changes": {"untitled:Untitled-1": []}}
+    }]))?;
+    let mapped = code_actions_from_lsp(Some(actions));
+    assert_eq!(mapped.len(), 1);
+    assert_eq!(mapped[0].edit, None);
+    Ok(())
+}
+
+#[test]
+fn prepare_rename_answers_map_to_targets() -> Result<(), Box<dyn std::error::Error>> {
+    let answer = |value: serde_json::Value| -> Result<_, serde_json::Error> {
+        Ok(prepare_rename_from_lsp(serde_json::from_value(value)?))
+    };
+    let range = serde_json::json!({"start": {"line": 2, "character": 4},
+                                   "end": {"line": 2, "character": 9}});
+    let expected_range = Range {
+        start: LineCol::new(2, 4),
+        end: LineCol::new(2, 9),
+    };
+    assert_eq!(
+        answer(range.clone())?,
+        Some(PrepareRename::Range {
+            range: expected_range,
+            placeholder: None,
+        })
+    );
+    assert_eq!(
+        answer(serde_json::json!({"range": range, "placeholder": "value"}))?,
+        Some(PrepareRename::Range {
+            range: expected_range,
+            placeholder: Some("value".into()),
+        })
+    );
+    assert_eq!(
+        answer(serde_json::json!({"defaultBehavior": true}))?,
+        Some(PrepareRename::DefaultBehavior)
+    );
+    // Out of spec, but unambiguous: a server saying "false" is saying no.
+    assert_eq!(answer(serde_json::json!({"defaultBehavior": false}))?, None);
+    assert_eq!(answer(serde_json::Value::Null)?, None);
+    Ok(())
+}
+
+#[test]
+fn apply_results_map_to_the_wire_reply() {
+    let reply = apply_result_to_lsp(ApplyWorkspaceEditResult::failed("stale", Some(3)));
+    assert!(!reply.applied);
+    assert_eq!(reply.failure_reason.as_deref(), Some("stale"));
+    assert_eq!(reply.failed_change, Some(3));
+    let reply = apply_result_to_lsp(ApplyWorkspaceEditResult::applied());
+    assert!(reply.applied);
+    assert_eq!(reply.failure_reason, None);
+    assert_eq!(reply.failed_change, None);
 }
 
 #[test]

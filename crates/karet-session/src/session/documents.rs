@@ -40,14 +40,14 @@ impl Session {
 impl Session {
     // --- command handlers -------------------------------------------------
 
-    pub(super) fn open(&mut self, id: RequestId, path: PathBuf, language: Option<&str>) {
+    pub(super) fn open(&mut self, id: Option<RequestId>, path: PathBuf, language: Option<&str>) {
         if let Some(&existing) = self.store.by_path.get(&path) {
             if let Some(doc) = self.store.docs.get_mut(&existing) {
                 doc.refs += 1;
                 let version = doc.buffer.version();
                 let settings = doc.settings;
                 self.emit(
-                    Some(id),
+                    id,
                     Event::Opened {
                         doc: existing,
                         version,
@@ -74,12 +74,12 @@ impl Session {
                 // text form); tell the client so it can fall back to a read-only
                 // view instead of leaving this path's tab registered with no
                 // document forever.
-                self.emit(Some(id), Event::NotUtf8 { path });
+                self.emit(id, Event::NotUtf8 { path });
                 return;
             },
             Err(e) => {
                 self.emit(
-                    Some(id),
+                    id,
                     Event::Notification {
                         severity: Severity::Error,
                         kind: NotificationKind::Io,
@@ -100,7 +100,7 @@ impl Session {
         apply_serialization_settings(&mut buffer, document_settings);
         if let Some(message) = editorconfig_error {
             self.emit(
-                Some(id),
+                id,
                 Event::Notification {
                     severity: Severity::Warning,
                     kind: NotificationKind::Io,
@@ -158,7 +158,7 @@ impl Session {
         // documents. Adopting first hid the root of the file being opened.
         self.adopt_retirement(retired);
         self.emit(
-            Some(id),
+            id,
             Event::Opened {
                 doc: doc_id,
                 version,
@@ -704,9 +704,9 @@ impl Session {
         true
     }
 
-    pub(super) fn retarget(&mut self, id: RequestId, doc_id: DocumentId, path: PathBuf) {
+    pub(super) fn retarget(&mut self, id: Option<RequestId>, doc_id: DocumentId, path: PathBuf) {
         let Some(doc) = self.store.docs.get_mut(&doc_id) else {
-            self.emit(Some(id), unknown_document(doc_id));
+            self.emit(id, unknown_document(doc_id));
             return;
         };
         let old = doc.path.clone();
@@ -732,7 +732,7 @@ impl Session {
         ));
         self.adopt_retirement(retired);
         self.store.by_path.insert(path.clone(), doc_id);
-        self.emit(Some(id), Event::Retargeted { doc: doc_id, path });
+        self.emit(id, Event::Retargeted { doc: doc_id, path });
         self.refresh_document_settings(&[doc_id]);
         self.publish(doc_id, None);
         if spell_without_syntax {

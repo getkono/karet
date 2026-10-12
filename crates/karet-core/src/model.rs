@@ -382,6 +382,25 @@ pub struct SignatureHelp {
     pub active_parameter: usize,
 }
 
+/// A server's answer to "can the symbol here be renamed?" (LSP
+/// `textDocument/prepareRename`), when the answer is yes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
+pub enum PrepareRename {
+    /// Rename the text in `range`.
+    Range {
+        /// The span the new name replaces.
+        range: Range,
+        /// The text to prefill the new name with; `None` means the text in
+        /// `range`.
+        placeholder: Option<String>,
+    },
+    /// The position is renameable, and the client picks the identifier around
+    /// it by its own rules.
+    DefaultBehavior,
+}
+
 /// A code action (quick fix / refactor) offered for a range.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

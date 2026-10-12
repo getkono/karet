@@ -40,6 +40,7 @@ mod search;
 mod spelling;
 mod updates;
 mod vcs;
+mod workspace_edit;
 
 #[cfg(test)]
 mod tests;
@@ -84,6 +85,7 @@ use karet_vcs::VcsError;
 use karet_watch::FsEvent;
 use karet_watch::Watcher;
 use tokio::sync::mpsc;
+use workspace_edit::Columns;
 
 use crate::api::Command;
 use crate::api::DocumentEncoding;
@@ -426,13 +428,15 @@ impl Session {
                 self.cancel_format_on_save(request);
                 self.cancellations.cancel(request);
             },
-            Command::OpenDocument { path, language } => self.open(id, path, language.as_deref()),
+            Command::OpenDocument { path, language } => {
+                self.open(Some(id), path, language.as_deref())
+            },
             Command::CloseDocument { doc } => self.close(id, doc),
             Command::ApplyChange { doc, change, cause } => self.apply(id, doc, &change, cause),
             Command::Undo { doc } => self.undo_redo(id, doc, true),
             Command::Redo { doc } => self.undo_redo(id, doc, false),
             Command::Save { doc, cause } => self.save(id, doc, cause),
-            Command::RetargetDocument { doc, path } => self.retarget(id, doc, path),
+            Command::RetargetDocument { doc, path } => self.retarget(Some(id), doc, path),
             Command::BuildLatex { doc } => self.request_latex_build(id, doc),
             // The caret is UI-local; the backend keeps only the last report per
             // document, so a save's own rewrites can undo back to it.
@@ -636,11 +640,16 @@ impl Session {
             Command::Definition { doc, position } => self.definition(id, doc, position),
             Command::DocumentSymbols { doc } => self.document_symbols(id, doc),
             Command::WorkspaceSymbols { query } => self.workspace_symbols(id, query),
+            Command::PrepareRename { doc, position } => self.prepare_rename(id, doc, position),
             Command::Rename {
                 doc,
                 position,
                 new_name,
             } => self.rename(id, doc, position, new_name),
+            Command::ApplyWorkspaceEdit { edit, label } => {
+                let applied = self.apply_workspace_edit(edit, Columns::Buffer, label);
+                self.emit(Some(id), Event::WorkspaceEdit { applied });
+            },
             Command::RemoteFacts { path } => {
                 self.submit_vcs(id, |id, cancel| crate::vcs_worker::VcsJob::RemoteFacts {
                     id,

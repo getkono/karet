@@ -27,6 +27,10 @@ impl App {
                 }
             },
             Modal::ExplorerEdit => self.explorer.edit_selected_text().map(str::to_string),
+            Modal::Rename => {
+                let prompt = self.rename.as_ref()?;
+                prompt.edit.selected_text(&prompt.text).map(str::to_string)
+            },
             _ => None,
         }
     }
@@ -47,6 +51,11 @@ impl App {
                 }
             },
             Modal::ExplorerEdit => self.explorer.edit_cut(),
+            Modal::Rename => {
+                let prompt = self.rename.as_mut()?;
+                prompt.touched = true;
+                prompt.edit.cut(&mut prompt.text)
+            },
             _ => None,
         }
     }
@@ -70,6 +79,11 @@ impl App {
                 }
             },
             Some(Modal::ExplorerEdit) => self.explorer.edit_select_all(),
+            Some(Modal::Rename) => {
+                if let Some(prompt) = self.rename.as_mut() {
+                    prompt.edit.select_all(&prompt.text);
+                }
+            },
             _ => return false,
         }
         true
@@ -158,6 +172,7 @@ impl App {
         // request whose anchor no longer holds is dismissed.
         self.reconcile_completion();
         self.reconcile_hover();
+        self.reconcile_rename();
         self.request_live_blame();
         if dismiss_outline_after {
             self.dismiss_outline_overlay();
@@ -178,6 +193,8 @@ impl App {
             Some(Modal::CommitConsole)
         } else if self.overlay.is_some() {
             Some(Modal::Overlay)
+        } else if self.rename.as_ref().is_some_and(|prompt| prompt.shown) {
+            Some(Modal::Rename)
         } else if self.commit_input.focused {
             Some(Modal::CommitInput)
         } else if self.rev_input.is_some() {
@@ -276,6 +293,7 @@ impl App {
             Modal::Find => self.find_input(key),
             Modal::CommitInput => self.commit_edit(key),
             Modal::RevInput => self.rev_edit(key),
+            Modal::Rename => self.rename_input(key),
             Modal::ExplorerEdit => self.explorer_edit(key),
             Modal::SearchInput => self.search_edit(key),
             Modal::SearchList => {},
@@ -328,6 +346,7 @@ impl App {
                 }
             },
             Modal::ExplorerEdit => self.explorer.edit_paste(text),
+            Modal::Rename => self.rename_paste(text),
             Modal::ProblemsFilter => self.problems_filter_paste(text),
             Modal::SearchInput => {
                 let (target, edit) = self.search.active_field();

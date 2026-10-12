@@ -6,6 +6,7 @@ mod aicommit;
 pub(crate) mod support;
 
 mod blame;
+mod comment;
 mod commit_file_tree;
 mod commit_graph;
 mod commit_navigation;
@@ -36,6 +37,7 @@ mod preview;
 mod preview_images;
 mod problems;
 mod remote;
+mod rename;
 mod review;
 mod save;
 mod save_cursor;

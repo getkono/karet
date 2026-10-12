@@ -234,6 +234,13 @@ impl App {
                 self.notifications.dismiss_tagged(Self::DEPS_CHECK_TAG);
             },
             SessionEvent::Definitions { locations } => self.on_definitions(id, locations),
+            SessionEvent::RenamePrepared {
+                doc,
+                target,
+                reason,
+                ..
+            } => self.on_rename_prepared(id, doc, target, reason),
+            SessionEvent::WorkspaceEdit { applied } => self.on_workspace_edit(id, applied),
             SessionEvent::LanguageServerInstallRequired {
                 server,
                 language,

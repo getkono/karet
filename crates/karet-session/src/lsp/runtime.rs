@@ -679,12 +679,62 @@ pub(super) async fn server_task(task: ServerTask) {
                         symbols,
                     });
                 },
+                ServerCmd::PrepareRename {
+                    request,
+                    doc,
+                    version,
+                    path,
+                    position,
+                    caret,
+                } => {
+                    flush_pending(
+                        active,
+                        &mut pending,
+                        &mut dead,
+                        &mut tally,
+                        &updates,
+                        &key,
+                        token,
+                    )
+                    .await;
+                    let answer = if dead {
+                        RenameAnswer::NoServer
+                    } else if !active.supports_for(ServerFeature::Rename, &path) {
+                        RenameAnswer::Unsupported
+                    } else if !active.supports_for(ServerFeature::PrepareRename, &path) {
+                        RenameAnswer::Identifier
+                    } else {
+                        match tally.observe(active.prepare_rename(&path, position).await) {
+                            Ok(Some(karet_core::PrepareRename::DefaultBehavior)) => {
+                                RenameAnswer::Identifier
+                            },
+                            Ok(Some(span)) => RenameAnswer::Span(span),
+                            Ok(None) => RenameAnswer::Refused(None),
+                            // A server explains "you cannot rename this" as an
+                            // error reply; that reply is the user's answer.
+                            Err(LspError::Server(reason)) => RenameAnswer::Refused(Some(reason)),
+                            Err(error) => {
+                                tally.note::<()>(Err(error), &mut dead, &updates, &key, token);
+                                RenameAnswer::NoServer
+                            },
+                        }
+                    };
+                    let _ = updates.send(LspUpdate::PrepareRename {
+                        generation,
+                        request,
+                        doc,
+                        version,
+                        caret,
+                        answer,
+                    });
+                },
                 ServerCmd::Rename {
                     request,
+                    doc,
+                    version,
                     path,
                     position,
                     new_name,
-                    ..
                 } => {
                     flush_pending(
                         active,
@@ -697,7 +747,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     )
                     .await;
                     let edit = if dead {
-                        WorkspaceEdit::default()
+                        Ok(WorkspaceEdit::default())
                     } else {
                         let result = active.rename(&path, position, &new_name).await;
                         report_unsupported(
@@ -708,14 +758,26 @@ pub(super) async fn server_task(task: ServerTask) {
                             &key,
                             ServerFeature::Rename,
                         );
-                        tally.observe(result).unwrap_or_else(|error| {
-                            tally.note::<()>(Err(error), &mut dead, &updates, &key, token);
-                            WorkspaceEdit::default()
-                        })
+                        // Every error is the user's answer: a server explains
+                        // "you cannot rename this" as an error reply, and an
+                        // edit naming a non-file URI is refused whole.
+                        match tally.observe(result) {
+                            Ok(edit) => Ok(edit),
+                            Err(LspError::Server(reason) | LspError::Protocol(reason)) => {
+                                Err(reason)
+                            },
+                            Err(error) => {
+                                let reason = error.to_string();
+                                tally.note::<()>(Err(error), &mut dead, &updates, &key, token);
+                                Err(reason)
+                            },
+                        }
                     };
                     let _ = updates.send(LspUpdate::WorkspaceEdit {
                         generation,
                         request,
+                        doc,
+                        version,
                         edit,
                     });
                 },
