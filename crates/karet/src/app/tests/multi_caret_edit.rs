@@ -89,6 +89,16 @@ fn completion_accept_applies_at_every_caret() {
 }
 
 #[test]
+fn completion_accept_replaces_a_secondary_carets_selection() {
+    // The second caret's text does not end in the typed `fo`, so the completion
+    // replaces its selection `xy` instead.
+    let mut rig = Rig::new("fo#\n[xy|]");
+    open_completion(&mut rig, LineCol::new(0, 0), "foobar");
+    rig.step(key(KeyCode::Enter));
+    assert_eq!(rig.marked(), "foobar#\nfoobar|");
+}
+
+#[test]
 fn completion_accept_with_one_caret_replaces_the_typed_prefix() {
     let mut rig = Rig::new("let fo|");
     open_completion(&mut rig, LineCol::new(0, 4), "foobar");

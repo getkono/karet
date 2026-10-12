@@ -161,6 +161,25 @@ fn the_checkbox_toggles_without_moving_the_caret() {
 }
 
 #[test]
+fn the_checkbox_toggles_once_with_two_carets_on_its_line() {
+    let mut app = markdown_app("- [ ] buy milk\n", LineCol::new(0, 9));
+    let idx = app.active;
+    app.tabs[idx]
+        .editor
+        .set_carets(&[LineCol::new(0, 7), LineCol::new(0, 11)]);
+    app.dispatch(Command::ToggleTaskCheckbox);
+    assert_eq!(code_tab_text(&app), "- [x] buy milk\n");
+    let carets: Vec<LineCol> = app.tabs[idx]
+        .editor
+        .cursors()
+        .selections
+        .iter()
+        .map(|s| s.head)
+        .collect();
+    assert_eq!(carets, vec![LineCol::new(0, 7), LineCol::new(0, 11)]);
+}
+
+#[test]
 fn a_line_without_a_checkbox_says_so() {
     let mut app = markdown_app("just prose\n", LineCol::new(0, 3));
     app.dispatch(Command::ToggleTaskCheckbox);
