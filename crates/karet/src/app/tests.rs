@@ -6,6 +6,7 @@ mod aicommit;
 pub(crate) mod support;
 
 mod blame;
+mod box_select;
 mod brackets;
 mod clipboard;
 mod code_actions;
