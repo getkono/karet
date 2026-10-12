@@ -143,6 +143,15 @@ pub(crate) fn describe_paths(paths: &[PathBuf], root: &Path) -> String {
     lines.join(", ")
 }
 
+/// The answer declining `dialog` runs: its first, safe row.
+fn first_action(dialog: ConfirmDialog) -> Option<ConfirmAction> {
+    dialog
+        .choices
+        .entries
+        .first()
+        .map(|choice| choice.action.clone())
+}
+
 impl App {
     /// Open `dialog`, replacing any confirmation already up.
     ///
@@ -155,7 +164,11 @@ impl App {
         // while a dialog is up — a language server reporting itself missing, say,
         // over an unanswered close prompt — and without this the close would stay
         // parked in `pending_close` with nothing left on screen to release it.
-        self.confirm_cancel();
+        // A waiting server question stays queued behind `dialog` rather than
+        // being put up here, where `dialog` would overwrite it unanswered.
+        if let Some(action) = self.confirm.take().and_then(first_action) {
+            self.run_action(action);
+        }
         // A confirmation outranks a context menu, and the menu's rows would
         // otherwise keep painting under it.
         self.context_menu = None;
@@ -195,15 +208,7 @@ impl App {
     /// (drop a parked close, keep crash backups) puts that in row zero and gets
     /// it run however the user backs out.
     pub(super) fn confirm_cancel(&mut self) {
-        let Some(dialog) = self.confirm.take() else {
-            return;
-        };
-        let Some(action) = dialog
-            .choices
-            .entries
-            .first()
-            .map(|choice| choice.action.clone())
-        else {
+        let Some(action) = self.confirm.take().and_then(first_action) else {
             return;
         };
         self.run_confirmed(action);
@@ -223,6 +228,14 @@ impl App {
     /// Run a confirmed action. Split from [`confirm_accept`](Self::confirm_accept)
     /// so the mouse path can share it.
     pub(super) fn run_confirmed(&mut self, action: ConfirmAction) {
+        self.run_action(action);
+        // A server's question that arrived while this dialog was up waited for
+        // it to close rather than displacing it.
+        self.ask_next_language_server_question();
+    }
+
+    /// Run `action` alone, leaving any waiting server question queued.
+    fn run_action(&mut self, action: ConfirmAction) {
         match action {
             ConfirmAction::Cancel => {},
             ConfirmAction::Command(command) => self.dispatch(command),
@@ -272,9 +285,6 @@ impl App {
                 self.send_command(SessionCommand::AnswerLanguageServerMessage { request, action });
             },
         }
-        // A server's question that arrived while this dialog was up waited for
-        // it to close rather than displacing it.
-        self.ask_next_language_server_question();
     }
 
     /// Route a mouse event at the open confirmation, reporting whether it was

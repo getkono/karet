@@ -194,6 +194,33 @@ fn a_question_waits_for_an_open_dialog_instead_of_declining_it() {
 }
 
 #[test]
+fn a_waiting_question_outlasts_a_dialog_that_displaces_another() {
+    let (backend, mut app) = rust_app();
+    let ask = |app: &mut App, title: &str| {
+        app.confirm_action(title, "body", "Keep", "Go", ConfirmAction::Cancel);
+    };
+    ask(&mut app, "First?");
+    app.on_backend_event(None, question(7));
+    ask(&mut app, "Second?");
+    assert!(
+        app.confirm
+            .as_ref()
+            .is_some_and(|dialog| dialog.title == "Second?"),
+        "the displacing dialog is up"
+    );
+
+    app.confirm_cancel();
+    assert!(
+        app.confirm
+            .as_ref()
+            .is_some_and(|dialog| dialog.title.starts_with("rust-analyzer asks")),
+        "the question still waits for its turn"
+    );
+    app.confirm_cancel();
+    assert_eq!(answers(&backend), vec![(LanguageServerMessageId(7), None)]);
+}
+
+#[test]
 fn the_log_tab_is_reserved_at_once_and_filled_by_the_answer() {
     let (backend, mut app) = rust_app();
     app.dispatch(Command::ShowLanguageServerLog);
