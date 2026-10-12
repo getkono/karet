@@ -174,10 +174,10 @@ fn scroll_off_keeps_rows_below_and_above_a_keyboard_caret() {
         paint(&buffer, &mut state, wrap);
         assert_eq!(state.scroll_line, 0, "line 6 has three rows below it");
         state.move_down(&buffer);
-        assert_eq!(
-            state.scroll_line, 1,
-            "resolved by the motion (wrap: {wrap})"
-        );
+        if !wrap {
+            // A wrapped view leaves the margin to the render, in rows.
+            assert_eq!(state.scroll_line, 1, "resolved by the motion");
+        }
         paint(&buffer, &mut state, wrap);
         assert_eq!(state.scroll_line, 1, "and kept by the render");
 
@@ -190,6 +190,41 @@ fn scroll_off_keeps_rows_below_and_above_a_keyboard_caret() {
         paint(&buffer, &mut state, wrap);
         assert_eq!(state.scroll_line, 13, "line 16 three rows from the top");
     }
+}
+
+#[test]
+fn a_wrapped_margin_counts_rows_not_lines() {
+    // Thirty-one lines take a 4-cell gutter, leaving 12 cells: every
+    // 20-character line wraps onto two rows.
+    let text: String = (0..30).map(|_| format!("{}\n", "a".repeat(20))).collect();
+    let buffer = TextBuffer::from_text(&text);
+    let area = Rect::new(0, 0, 16, 10);
+    let mut state = EditorState::new();
+    let mut target = Buffer::empty(area);
+    let mut paint = |state: &mut EditorState| {
+        Editor::new(&buffer)
+            .scroll_off(3)
+            .word_wrap(true)
+            .render(area, &mut target, state);
+    };
+    paint(&mut state);
+    state.goto(&buffer, LineCol::new(3, 0));
+    paint(&mut state);
+    assert_eq!(state.scroll_line, 0, "row 6 has three rows below it");
+    state.goto(&buffer, LineCol::new(4, 0));
+    paint(&mut state);
+    assert_eq!(
+        (state.scroll_line, state.scroll_subrow),
+        (1, 0),
+        "row 8 scrolls two rows, not three lines"
+    );
+    state.goto(&buffer, LineCol::new(2, 0));
+    paint(&mut state);
+    assert_eq!(
+        (state.scroll_line, state.scroll_subrow),
+        (0, 1),
+        "three rows above: line 0's second row on top"
+    );
 }
 
 #[test]

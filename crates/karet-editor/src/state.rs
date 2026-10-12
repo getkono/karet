@@ -347,7 +347,15 @@ impl EditorState {
     fn scroll_vertically_to(&mut self, pos: LineCol, last: u32) {
         self.follow_cursor = true;
         let height = u32::from(self.last_height.max(1));
-        let margin = (self.reveal_margin(), last);
+        // A wrapped line takes several rows, so a margin counted in lines
+        // could scroll further than the rows the margin asks for; the render
+        // keeps it in rows instead.
+        let off = if self.last_word_wrap {
+            0
+        } else {
+            self.reveal_margin()
+        };
+        let margin = (off, last);
         let top = reveal_line(&self.last_folds, self.scroll_line, pos.line, height, margin);
         if top != self.scroll_line {
             self.scroll_line = top;
