@@ -237,6 +237,7 @@ pub struct InlayHint {
 /// text keeps to.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum EolAlign {
     /// Immediately after the line's content (and any left-aligned text before
     /// it).
