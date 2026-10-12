@@ -28,6 +28,7 @@ use super::slot::SlotToken;
 use crate::api::DocumentId;
 use crate::api::LanguageServerId;
 use crate::api::LanguageServerRuntimeState;
+use crate::api::LocationKind;
 use crate::api::RequestId;
 
 /// A command for one per-language server task.
@@ -109,13 +110,16 @@ pub(crate) enum ServerCmd {
         path: PathBuf,
         position: LineCol,
     },
-    /// Request definition locations.
+    /// Request definition locations, or with a `kind` the locations a
+    /// [`crate::api::Command::FindLocations`] asks for.
     Definition {
         request: RequestId,
         doc: DocumentId,
         version: u64,
         path: PathBuf,
         position: LineCol,
+        /// `None` for Go to Definition itself.
+        kind: Option<LocationKind>,
     },
     WorkspaceSymbols {
         request: RequestId,
@@ -292,12 +296,15 @@ pub(crate) enum LspUpdate {
         version: u64,
         hover: Option<Hover>,
     },
-    /// Definition response in UTF-16 coordinates.
+    /// Definition (or, with a `kind`, other navigation) response in UTF-16
+    /// coordinates.
     Definitions {
         generation: u64,
         request: RequestId,
         doc: DocumentId,
         version: u64,
+        /// What was asked, as on [`ServerCmd::Definition`].
+        kind: Option<LocationKind>,
         locations: Vec<Location>,
     },
     WorkspaceSymbols {

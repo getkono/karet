@@ -9,6 +9,7 @@
 
         use crate::api::Command;
         use crate::api::Event;
+        use crate::api::LocationKind;
         use crate::lsp::LspUpdate;
         use crate::session::Session;
         use crate::session::SessionConfig;
@@ -58,6 +59,7 @@
                 request: crate::api::RequestId(2),
                 doc,
                 version,
+                kind: None,
                 locations,
             });
             while let Some((_, event)) = events.try_recv() {
@@ -66,6 +68,81 @@
                 }
             }
             None
+        }
+
+        #[test]
+        fn a_navigation_with_no_server_is_answered_empty_with_its_kind() {
+            let Ok(dir) = tempfile::tempdir() else { return };
+            let path = dir.path().join("notes.txt");
+            if std::fs::write(&path, "plain text\n").is_err() {
+                return;
+            }
+            let Some((mut session, doc, mut events)) = session_with(&path) else {
+                return;
+            };
+            session.handle(
+                crate::api::RequestId(9),
+                Command::FindLocations {
+                    doc,
+                    position: LineCol::new(0, 0),
+                    kind: LocationKind::Implementation,
+                },
+            );
+            let mut answer = None;
+            while let Some((id, event)) = events.try_recv() {
+                if let Event::Locations { kind, locations } = event {
+                    answer = Some((id, kind, locations.len()));
+                }
+            }
+            // Never left hanging: the caller is owed an answer even with
+            // nobody to ask.
+            assert_eq!(
+                answer,
+                Some((Some(crate::api::RequestId(9)), LocationKind::Implementation, 0))
+            );
+        }
+
+        #[test]
+        fn a_navigation_answer_is_converted_and_keeps_its_kind() {
+            let Ok(dir) = tempfile::tempdir() else { return };
+            let path = dir.path().join("here.rs");
+            if std::fs::write(&path, NON_BMP).is_err() {
+                return;
+            }
+            let Some((mut session, doc, mut events)) = session_with(&path) else {
+                return;
+            };
+            let Some(version) = session.document(doc).map(|doc| doc.version()) else {
+                return;
+            };
+            session.apply_lsp_update(LspUpdate::Definitions {
+                generation: 0,
+                request: crate::api::RequestId(2),
+                doc,
+                version,
+                kind: Some(LocationKind::References),
+                locations: vec![Location {
+                    path,
+                    range: range(0, 6),
+                }],
+            });
+            let mut answer = None;
+            while let Some((_, event)) = events.try_recv() {
+                assert!(
+                    !matches!(event, Event::Definitions { .. }),
+                    "a references answer must not read as a definition"
+                );
+                if let Event::Locations { kind, locations } = event {
+                    answer = Some((kind, locations));
+                }
+            }
+            assert_eq!(
+                answer.as_ref().map(|(kind, _)| *kind),
+                Some(LocationKind::References)
+            );
+            // UTF-16 column 6 is buffer column 5, as for a definition.
+            let column = answer.and_then(|(_, l)| l.first().map(|l| l.range.start.col));
+            assert_eq!(column, Some(5));
         }
 
         #[test]

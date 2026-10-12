@@ -5,14 +5,25 @@
 //! per-file code line ceiling. Everything here has one shape: resolve the
 //! document, hand the request to the LSP manager, emit the answer.
 
+use karet_core::Location;
 use karet_text::TextBuffer;
 
 use super::updates::utf16_caret;
 use super::updates::utf16_range_to_buffer;
 use super::*;
 use crate::api::AppliedWorkspaceEdit;
+use crate::api::LocationKind;
 use crate::api::RenameTarget;
 use crate::lsp::RenameAnswer;
+
+/// The event answering a navigation request: [`Event::Definitions`] for Go to
+/// Definition (`kind` `None`), else [`Event::Locations`] naming what was asked.
+pub(super) fn locations_event(kind: Option<LocationKind>, locations: Vec<Location>) -> Event {
+    match kind {
+        None => Event::Definitions { locations },
+        Some(kind) => Event::Locations { kind, locations },
+    }
+}
 
 /// Clamp `at` to a position `buffer` actually has.
 pub(super) fn clamp_to_document(buffer: &TextBuffer, at: LineCol) -> LineCol {
@@ -155,22 +166,27 @@ impl Session {
         }
     }
 
-    pub(super) fn definition(&mut self, id: RequestId, doc_id: DocumentId, position: LineCol) {
+    /// Answer a [`Command::Definition`] (`kind` `None`) or a
+    /// [`Command::FindLocations`]: forward it, or answer it empty when no
+    /// server serves the document.
+    pub(super) fn definition(
+        &mut self,
+        id: RequestId,
+        doc_id: DocumentId,
+        position: LineCol,
+        kind: Option<LocationKind>,
+    ) {
         let Some(doc) = Self::doc_or_report(&self.store, &self.events, id, doc_id) else {
             return;
         };
         let version = doc.buffer.version();
         let utf16 = utf16_caret(doc, position);
+        let (language, path) = (doc.language_selector, doc.path.clone());
         if !self
             .lsp
-            .definition(doc.language_selector, id, doc_id, version, &doc.path, utf16)
+            .definition(language, id, doc_id, version, &path, utf16, kind)
         {
-            self.emit(
-                Some(id),
-                Event::Definitions {
-                    locations: Vec::new(),
-                },
-            );
+            self.emit(Some(id), locations_event(kind, Vec::new()));
         }
     }
 

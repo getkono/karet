@@ -175,6 +175,7 @@ impl Session {
                 request,
                 doc,
                 version,
+                kind,
                 mut locations,
                 ..
             } => {
@@ -193,7 +194,10 @@ impl Session {
                         location.range = utf16_range_to_buffer(&buffer, location.range);
                     }
                 }
-                self.emit(Some(request), Event::Definitions { locations });
+                self.emit(
+                    Some(request),
+                    lsp_requests::locations_event(kind, locations),
+                );
             },
             LspUpdate::WorkspaceSymbols {
                 request, symbols, ..
