@@ -5,6 +5,7 @@
 mod backend_events;
 mod capture;
 mod change_view;
+pub(crate) mod code_actions;
 mod commands;
 mod comment;
 pub(crate) mod commit_console;
@@ -542,6 +543,9 @@ pub struct App {
     pub(crate) rename: Option<rename::RenamePrompt>,
     /// The submitted rename awaiting the backend's answer, if any.
     pub(crate) pending_rename: Option<rename::PendingRename>,
+    /// The quick-fix menu's pending request, the action being run, and the
+    /// gutter lightbulb's probe.
+    pub(crate) code_actions: code_actions::CodeActions,
     /// Each pane's Go Back / Go Forward history, keyed by the pane it navigates.
     pub(crate) nav_history: HashMap<PaneId, navigation::NavHistory>,
     /// The Ctrl-hovered symbol the editor should underline as navigable.

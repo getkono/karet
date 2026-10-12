@@ -124,6 +124,7 @@ impl App {
             pending_definition: None,
             rename: None,
             pending_rename: None,
+            code_actions: code_actions::CodeActions::default(),
             nav_history: HashMap::new(),
             definition_hover: None,
             markdown_link_hover: None,

@@ -900,6 +900,17 @@ pub(crate) enum ContextMenuAction {
         /// The configuration layer to update.
         target: DictionaryTarget,
     },
+    /// Run one code action from the quick-fix menu.
+    CodeAction {
+        /// The document the actions were listed for.
+        doc: DocumentId,
+        /// The document version they were listed at.
+        version: u64,
+        /// The action, as the language server listed it.
+        action: Box<karet_core::CodeAction>,
+    },
+    /// A group heading: shown, never selectable, does nothing.
+    Heading,
 }
 
 /// One row of the app's context menu (the shared widget over
@@ -925,7 +936,9 @@ impl ContextMenuEntryExt for ContextMenuEntry {
         match &self.action {
             ContextMenuAction::Command(command) => Some(*command),
             ContextMenuAction::ReplaceSpelling { .. }
-            | ContextMenuAction::AddSpellingToDictionary { .. } => None,
+            | ContextMenuAction::AddSpellingToDictionary { .. }
+            | ContextMenuAction::CodeAction { .. }
+            | ContextMenuAction::Heading => None,
         }
     }
 }

@@ -81,20 +81,22 @@ fn double_clicking_a_spell_warning_opens_replacements_and_add_word() {
             end: LineCol::new(0, 4),
         })
     );
-    let targets: Vec<DictionaryTarget> =
-        app.context_menu
-            .as_ref()
-            .map(|menu| {
-                menu.entries
-                    .iter()
-                    .filter_map(|entry| match entry.action {
-                        ContextMenuAction::AddSpellingToDictionary { target, .. } => Some(target),
-                        ContextMenuAction::Command(_)
-                        | ContextMenuAction::ReplaceSpelling { .. } => None,
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+    let targets: Vec<DictionaryTarget> = app
+        .context_menu
+        .as_ref()
+        .map(|menu| {
+            menu.entries
+                .iter()
+                .filter_map(|entry| match entry.action {
+                    ContextMenuAction::AddSpellingToDictionary { target, .. } => Some(target),
+                    ContextMenuAction::Command(_)
+                    | ContextMenuAction::ReplaceSpelling { .. }
+                    | ContextMenuAction::CodeAction { .. }
+                    | ContextMenuAction::Heading => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     assert_eq!(
         targets,
         vec![DictionaryTarget::Project, DictionaryTarget::User]
