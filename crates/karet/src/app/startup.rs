@@ -130,6 +130,7 @@ impl App {
             markdown_link_hover: None,
             commit_badge_rect: None,
             editor_drag: None,
+            column_select: None,
             find_rects: crate::ui::FindBarRects::default(),
             surface_selection: None,
             surface_selecting: None,

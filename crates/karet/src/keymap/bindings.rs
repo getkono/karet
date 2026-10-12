@@ -226,6 +226,12 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(Editor, true,  false, true,  Up,        Command::AddCursorAbove),
     b(Editor, true,  false, true,  Down,      Command::AddCursorBelow),
     b(Editor, true,  false, false, Char('d'), Command::AddCursorNextOccurrence),
+    // Box selection (VS Code parity): the keyboard path for Shift+Alt+drag,
+    // which terminals and window managers that keep Alt or Shift lose.
+    b(Editor, true,  true,  true,  Up,        Command::ColumnSelectUp),
+    b(Editor, true,  true,  true,  Down,      Command::ColumnSelectDown),
+    b(Editor, true,  true,  true,  Left,      Command::ColumnSelectLeft),
+    b(Editor, true,  true,  true,  Right,     Command::ColumnSelectRight),
     // Editing.
     // Ctrl+Space asks the language server for completions (bypasses the
     // syntax-error auto-trigger gate).

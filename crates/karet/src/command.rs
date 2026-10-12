@@ -217,6 +217,14 @@ pub enum Command {
     AddCursorBelow,
     /// Select the word under the caret, then add a caret at the next occurrence.
     AddCursorNextOccurrence,
+    /// Grow the box (column) selection one line up.
+    ColumnSelectUp,
+    /// Grow the box (column) selection one line down.
+    ColumnSelectDown,
+    /// Move the box (column) selection's moving edge one cell left.
+    ColumnSelectLeft,
+    /// Move the box (column) selection's moving edge one cell right.
+    ColumnSelectRight,
     /// Collapse multiple carets to the primary; with one caret, leave the editor.
     CollapseCarets,
     /// Scroll the active tab up one line.
@@ -801,6 +809,10 @@ impl Command {
             Self::AddCursorAbove => "Add Cursor Above",
             Self::AddCursorBelow => "Add Cursor Below",
             Self::AddCursorNextOccurrence => "Add Cursor to Next Occurrence",
+            Self::ColumnSelectUp => "Column Select Up",
+            Self::ColumnSelectDown => "Column Select Down",
+            Self::ColumnSelectLeft => "Column Select Left",
+            Self::ColumnSelectRight => "Column Select Right",
             Self::CollapseCarets => "Collapse Cursors",
             Self::ScrollUp => "Scroll Up",
             Self::ScrollDown => "Scroll Down",

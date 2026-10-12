@@ -338,6 +338,10 @@ impl App {
             MouseEventKind::Down(MouseButton::Left) if in_outline => {
                 self.handle_outline_click(mouse.row);
             },
+            // Past the tab strip, which closes a tab on a middle click.
+            MouseEventKind::Down(MouseButton::Middle) if !in_sidebar && !in_outline => {
+                self.middle_click_paste(mouse);
+            },
             MouseEventKind::Down(MouseButton::Right)
                 if in_sidebar && self.sidebar_panel == SidebarPanel::Explorer =>
             {
