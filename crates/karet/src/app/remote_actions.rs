@@ -282,8 +282,16 @@ impl App {
     /// Reserve a diff tab and ask the backend to diff the active file at `rev`
     /// against its current content (the live buffer for a code tab, the file on
     /// disk otherwise); the answering [`SessionEvent::DiffPrepared`] fills the
-    /// tab. `label` names the old side in the tab title.
+    /// tab. `label` names the old side in the tab title. The filled tab opens
+    /// at its top.
     pub(super) fn open_changes_with(&mut self, rev: &str, label: &str) {
+        self.open_changes_landing(rev, label, None);
+    }
+
+    /// [`Self::open_changes_with`], landing the filled tab on the hunk that
+    /// covers 0-based buffer line `landing` (or the deletion just below it)
+    /// when one is given, as a change-marker click does.
+    pub(super) fn open_changes_landing(&mut self, rev: &str, label: &str, landing: Option<u32>) {
         let Some((path, live)) = self.active_file_and_text() else {
             self.notify(
                 Report::Refusal,
@@ -312,7 +320,7 @@ impl App {
             live,
         }) {
             Some(request) => {
-                self.pending_prepared_diffs.insert(request, view);
+                self.pending_prepared_diffs.insert(request, (view, landing));
             },
             None => self.fail_diff_tab(view, "diff backend is unavailable"),
         }

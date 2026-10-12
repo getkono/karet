@@ -685,8 +685,10 @@ pub struct App {
     /// Conflict-side reads owned by their exact editable view.
     pending_merge_conflicts: HashMap<RequestId, (ViewId, PathBuf)>,
     /// In-flight ad-hoc diff preparations (revision/two-file diffs), owned by the
-    /// reserved diff tab's view.
-    pending_prepared_diffs: HashMap<RequestId, ViewId>,
+    /// reserved diff tab's view, with the 0-based buffer line whose hunk the
+    /// filled tab scrolls to (a change-marker click), or `None` to open at the
+    /// top.
+    pending_prepared_diffs: HashMap<RequestId, (ViewId, Option<u32>)>,
     /// In-flight document conversions (DOCX → markdown), owned by the reserved
     /// preview tab's view.
     pending_conversions: HashMap<RequestId, ViewId>,
