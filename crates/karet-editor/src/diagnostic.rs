@@ -117,6 +117,58 @@ pub fn diagnostic_messages(
         .collect()
 }
 
+/// The modifier that marks an underline as a diagnostic's while the editor
+/// paints a frame, so [`finish_underlines`] can tell it from a navigable
+/// symbol's. ratatui has no modifier for an underline's shape, and the marked
+/// run must not merge with an equally colored plain-underlined one.
+///
+/// Blinking is never otherwise painted in the text, and the mark never leaves
+/// the editor: [`finish_underlines`] strips it from every cell it covers.
+pub(crate) const DIAGNOSTIC_UNDERLINE: Modifier = Modifier::RAPID_BLINK;
+
+/// Turn the underline the cell already has curly (SGR `4:3`).
+const CURLY: &str = "\u{1b}[4:3m";
+
+/// Turn it straight again (SGR `4`), so the next cell starts with the
+/// underline the backend believes is set and never inherits the curl.
+const STRAIGHT: &str = "\u{1b}[4m";
+
+/// End the frame's diagnostic underlines in `area`: strip the
+/// [`DIAGNOSTIC_UNDERLINE`] mark from every cell, and with `undercurl` wrap
+/// each marked cell's symbol in the SGR that curls its underline.
+///
+/// The backend writes styles before a cell's symbol and diffs them from the
+/// cell before, so the wrapped symbol is self-contained: it curls the
+/// underline the backend set for it and straightens it again, leaving the
+/// terminal in the state the backend expects. Each cell is wrapped on its
+/// own, since the backend repaints cells, not runs. The walk advances by each
+/// symbol's width, and the wrapped cell keeps that width (`ForcedWidth`), so
+/// the escape bytes never count as text.
+pub(crate) fn finish_underlines(buf: &mut Buffer, area: Rect, undercurl: bool) {
+    let area = area.intersection(buf.area);
+    for y in area.top()..area.bottom() {
+        let mut x = area.left();
+        while x < area.right() {
+            let Some(cell) = buf.cell_mut((x, y)) else {
+                break;
+            };
+            let width = unicode_width::UnicodeWidthStr::width(cell.symbol()).max(1);
+            let width = u16::try_from(width).unwrap_or(u16::MAX);
+            if cell.modifier.contains(DIAGNOSTIC_UNDERLINE) {
+                cell.modifier.remove(DIAGNOSTIC_UNDERLINE);
+                if undercurl && cell.modifier.contains(Modifier::UNDERLINED) {
+                    let symbol = format!("{CURLY}{}{STRAIGHT}", cell.symbol());
+                    cell.set_symbol(&symbol);
+                    if let Some(width) = std::num::NonZeroU16::new(width) {
+                        cell.set_diff_option(ratatui::buffer::CellDiffOption::ForcedWidth(width));
+                    }
+                }
+            }
+            x = x.saturating_add(width);
+        }
+    }
+}
+
 /// The modifiers the tags of the diagnostics covering column `col` on line
 /// `l` add: [`DiagnosticTag::Deprecated`] strikes the text through and
 /// [`DiagnosticTag::Unnecessary`] dims it.
