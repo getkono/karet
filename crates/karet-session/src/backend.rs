@@ -206,4 +206,7 @@ mod line_changes_tests;
 mod merge_conflict_tests;
 
 #[cfg(test)]
+mod retarget_tests;
+
+#[cfg(test)]
 mod tests;

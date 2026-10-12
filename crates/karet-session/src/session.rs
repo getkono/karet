@@ -881,6 +881,10 @@ fn update_syntax(
         doc.folds = Arc::new(FoldRegions::default());
         doc.semantic_blocks = Arc::new(SemanticBlocks::default());
         doc.syntax_symbols = Arc::default();
+        // No worker result will replace these, so ranges from a previous grammar
+        // (a Markdown file saved as `.txt`) would otherwise linger on the snapshot.
+        doc.error_lines = Arc::default();
+        doc.table_lines = Arc::default();
         return true;
     };
 
