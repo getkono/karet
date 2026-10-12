@@ -180,3 +180,24 @@ fn outside_text_equal_to_a_line_has_no_marker() -> Result<(), crate::clipboard::
     assert_eq!(rig.marked(), "aab\n|b");
     Ok(())
 }
+
+/// Carets sharing a line keep every line piece dealt to them: each goes in
+/// above that line, in document order. A line copy every caret takes whole
+/// goes in once.
+#[test]
+fn line_pieces_for_carets_on_one_line() -> Result<(), crate::clipboard::ClipboardError> {
+    let rows: [(&str, &[&str], &str); 2] = [
+        ("one piece per caret", &["x\n", "y\n"], "x\ny\na|b#"),
+        ("one piece for every caret", &["x\n"], "x\na|b#"),
+    ];
+    for (name, pieces, expect) in rows {
+        let mut rig = Rig::new("a|b#");
+        rig.app.clipboard.set_copied(crate::clipboard::Copied {
+            pieces: pieces.iter().map(|p| (*p).to_string()).collect(),
+            whole_lines: true,
+        })?;
+        rig.run(&[ctrl('v')]);
+        assert_eq!(rig.marked(), expect, "{name}");
+    }
+    Ok(())
+}

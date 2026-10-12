@@ -8,6 +8,7 @@
 //! in above the caret's line, and when the clipboard holds one piece (or one
 //! line) per caret, each caret gets its own.
 
+use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
 use karet_core::CursorState;
@@ -178,7 +179,9 @@ fn take(buffer: &TextBuffer, source: &str, cursors: &CursorState, base: u64) -> 
 /// With several carets, each one takes its own piece when the entry has one per
 /// caret, else its own line when `text` has one line per caret; otherwise every
 /// caret takes all of `text`. A whole-line piece goes in above an empty caret's
-/// line (once per line), with the caret staying on its text; anywhere else the
+/// line, with the caret staying on its text: a line holding several carets takes
+/// every piece dealt to them, in document order, or `text` once when every caret
+/// took all of it. Anywhere else the
 /// piece replaces the selection or goes in at the caret.
 fn paste_edit(
     cursors: &CursorState,
@@ -192,17 +195,40 @@ fn paste_edit(
         .unwrap_or(text)
         .split('\n')
         .collect();
-    let (pieces, whole_lines): (Vec<&str>, bool) = match copied {
+    // `dealt`: each caret took a piece of its own, rather than all of `text`.
+    let (pieces, whole_lines, dealt): (Vec<&str>, bool, bool) = match copied {
         Some(copied) if count > 1 && copied.pieces.len() == count => (
             copied.pieces.iter().map(String::as_str).collect(),
             copied.whole_lines,
+            true,
         ),
-        _ if count > 1 && lines.len() == count => (lines, false),
-        _ => (vec![text; count], copied.is_some_and(|c| c.whole_lines)),
+        _ if count > 1 && lines.len() == count => (lines, false, true),
+        _ => (
+            vec![text; count],
+            copied.is_some_and(|c| c.whole_lines),
+            false,
+        ),
     };
+    let order = in_document_order(cursors);
     let mut piece_of = vec![""; count];
-    for (rank, &i) in in_document_order(cursors).iter().enumerate() {
+    for (rank, &i) in order.iter().enumerate() {
         piece_of[i] = pieces[rank];
+    }
+    // The whole-line text going in above each empty caret's line: every piece
+    // dealt to a caret on that line, in document order, or `text` once when
+    // every caret took all of it.
+    let mut above: BTreeMap<u32, String> = BTreeMap::new();
+    if whole_lines {
+        for &i in &order {
+            let selection = &cursors.selections[i];
+            if !selection.range().is_empty() {
+                continue;
+            }
+            let block = above.entry(selection.head.line).or_default();
+            if dealt || block.is_empty() {
+                block.push_str(piece_of[i]);
+            }
+        }
     }
     let mut pasted_lines = BTreeSet::new();
     let items: Vec<_> = cursors
@@ -224,13 +250,14 @@ fn paste_edit(
                 );
             }
             let head = selection.head;
+            let block = above.get(&head.line).map_or(piece, String::as_str);
             if !pasted_lines.insert(head.line) {
-                // The line already takes the piece from another caret; this one
-                // moves down with it.
+                // Another caret on the line already inserts its whole block,
+                // this caret's piece included; this one moves down with it.
                 return (*selection, None);
             }
-            let mut edit = editing::insert(LineCol::new(head.line, 0), None, base, piece);
-            let added = u32::try_from(piece.matches('\n').count()).unwrap_or(u32::MAX);
+            let mut edit = editing::insert(LineCol::new(head.line, 0), None, base, block);
+            let added = u32::try_from(block.matches('\n').count()).unwrap_or(u32::MAX);
             edit.caret = LineCol::new(head.line.saturating_add(added), head.col);
             (*selection, Some(edit))
         })
