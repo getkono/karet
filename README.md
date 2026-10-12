@@ -111,8 +111,9 @@ VS Code where VS Code has an answer.
 | Key | Action |
 | --- | --- |
 | `Ctrl+Shift+P` / `F1` | Command palette (`F1` for terminals that swallow the chord) |
-| `Ctrl+P` | Quick open (recently opened files first; type `@` to list the file's symbols) |
+| `Ctrl+P` | Quick open (recently opened files first; `name:LINE[:COL]` opens a file there; type `@` to list the file's symbols, `:` to go to a line) |
 | `Ctrl+Shift+O` | Go to a symbol in the active file (quick open's `@` mode) |
+| `Ctrl+G` | Go to a line (`LINE[:COL]`) in the active file (quick open's `:` mode) |
 | `Ctrl+R` | Open a recent workspace |
 | `Ctrl+B` / `Ctrl+K O` | Toggle the sidebar / the outline |
 | `Ctrl+1`…`Ctrl+7` | Explorer, Search, Source Control, Spelling, Todos, Debug, Problems |

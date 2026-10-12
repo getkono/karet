@@ -1,5 +1,5 @@
-//! Centered modal overlays: quick-open (go to file, and `@` go to symbol in
-//! editor), the command palette, the
+//! Centered modal overlays: quick-open (go to file, `:` go to line, and `@` go
+//! to symbol in editor), the command palette, the
 //! diff-target picker, and the branch/stash forms and prompts.
 //!
 //! Every list-style overlay is one shared fuzzy [`Picker`] (from
@@ -261,9 +261,12 @@ pub struct DiffTarget {
 }
 
 mod aicommit;
+mod goto_line;
 mod symbols;
 
 pub(crate) use aicommit::AiCommitForm;
+pub use goto_line::GO_TO_LINE_PREFIX;
+pub use goto_line::LineTarget;
 pub use karet_widgets::picker::Picker;
 pub use symbols::DOCUMENT_SYMBOL_PREFIX;
 pub use symbols::QuickOpenMode;
@@ -340,7 +343,9 @@ impl Overlay {
         Self::Picker(Picker::new(QUICK_OPEN_TITLE, items))
     }
 
-    /// Whether this is the quick-open (go to file) picker.
+    /// Whether this is the quick-open (go to file) picker. Only tests ask: the
+    /// app tells quick-open's modes apart through `quick_open_mode`.
+    #[cfg(test)]
     #[must_use]
     pub fn is_quick_open(&self) -> bool {
         matches!(self, Self::Picker(picker) if picker.title() == QUICK_OPEN_TITLE)
@@ -350,10 +355,7 @@ impl Overlay {
     #[must_use]
     pub fn selected_file(&self) -> Option<&Path> {
         match self {
-            Self::Picker(picker) => match picker.accepted() {
-                Some(OverlayEvent::AcceptFile(path)) => Some(path),
-                _ => None,
-            },
+            Self::Picker(picker) => picker.accepted().and_then(goto_line::opened_file),
             _ => None,
         }
     }
@@ -366,7 +368,7 @@ impl Overlay {
         let row = picker
             .values()
             .iter()
-            .position(|event| matches!(event, OverlayEvent::AcceptFile(p) if p == path));
+            .position(|event| goto_line::opened_file(event) == Some(path));
         for _ in 0..row.unwrap_or_default() {
             picker.select_down();
         }

@@ -337,3 +337,128 @@ fn typing_the_sigil_in_quick_open_switches_to_symbols_and_back() {
     assert_eq!(mode(&app), Some(QuickOpenMode::DocumentSymbols));
     assert_eq!(app.overlay.as_ref().map(Overlay::query), Some("@ru"));
 }
+
+fn type_keys(app: &mut App, text: &str) {
+    for c in text.chars() {
+        app.overlay_input(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+}
+
+fn backspace(app: &mut App, times: usize) {
+    for _ in 0..times {
+        app.overlay_input(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+    }
+}
+
+fn mode(app: &App) -> Option<QuickOpenMode> {
+    app.overlay.as_ref().and_then(Overlay::quick_open_mode)
+}
+
+#[test]
+fn go_to_line_opens_on_the_caret_and_jumps_to_what_is_typed() {
+    let (_dir, mut app, _backend) = symbol_app();
+    app.dispatch(Command::GoToLine);
+    assert_eq!(mode(&app), Some(QuickOpenMode::Line));
+    assert_eq!(app.overlay.as_ref().map(Overlay::query), Some(":"));
+    assert_eq!(
+        rows(&app),
+        ["Current line 1, column 1 · type a line number between 1 and 4"]
+    );
+    assert!(app.quick_open_loading().is_none(), "nothing to wait for");
+
+    type_keys(&mut app, "3:4");
+    assert_eq!(rows(&app), ["Go to line 3, column 4"]);
+    backspace(&mut app, 2);
+    assert_eq!(rows(&app), ["Go to line 3"], "each edit recomputes the row");
+    app.overlay_accept();
+    assert!(app.overlay.is_none());
+    assert_eq!(app.tabs[app.active].editor.cursor(), LineCol::new(2, 0));
+}
+
+#[test]
+fn typing_a_colon_in_quick_open_goes_to_a_line_and_back() {
+    let (_dir, mut app, _backend) = symbol_app();
+    app.dispatch(Command::OpenQuickOpen);
+    type_keys(&mut app, ":2");
+    assert_eq!(mode(&app), Some(QuickOpenMode::Line));
+    assert_eq!(rows(&app), ["Go to line 2"]);
+    backspace(&mut app, 1);
+    assert_eq!(
+        rows(&app),
+        ["Current line 1, column 1 · type a line number between 1 and 4"]
+    );
+    backspace(&mut app, 1);
+    assert_eq!(mode(&app), Some(QuickOpenMode::Files), "the sigil is gone");
+}
+
+#[test]
+fn a_file_query_ending_in_a_line_opens_the_file_there() {
+    let (dir, mut app, mut rx) = workspace_app(&["a.rs", "b.rs"]);
+    let _ = std::fs::write(dir.path().join("b.rs"), "one\ntwo\nthree\n");
+    app.dispatch(Command::OpenQuickOpen);
+    land(&mut app, &mut rx);
+    app.modal_paste(Modal::Overlay, "rs:2");
+    assert_eq!(mode(&app), Some(QuickOpenMode::FileAtLine));
+    assert_eq!(rows(&app), ["a.rs", "b.rs"]);
+    // The list follows the filesystem without losing the line.
+    let gone = dir.path().join("a.rs");
+    let _ = std::fs::remove_file(&gone);
+    app.on_backend_event(None, SessionEvent::FsChanged { paths: vec![gone] });
+    assert_eq!(mode(&app), Some(QuickOpenMode::FileAtLine));
+    assert_eq!(rows(&app), ["b.rs"]);
+    type_keys(&mut app, ":3");
+    assert_eq!(app.overlay.as_ref().map(Overlay::query), Some("rs:2:3"));
+    app.overlay_accept();
+    let tab = &app.tabs[app.active];
+    assert_eq!(tab.path(), Some(dir.path().join("b.rs").as_path()));
+    assert_eq!(tab.editor.cursor(), LineCol::new(1, 2));
+    // Backspacing the line away is a plain file search again.
+    app.dispatch(Command::OpenQuickOpen);
+    app.modal_paste(Modal::Overlay, "b.rs:2");
+    backspace(&mut app, 2);
+    assert_eq!(mode(&app), Some(QuickOpenMode::Files));
+    assert_eq!(rows(&app), ["b.rs"]);
+}
+
+#[test]
+fn a_file_at_line_query_before_the_walk_waits_on_it() {
+    let (_dir, mut app, mut rx) = workspace_app(&["a.rs", "b.rs"]);
+    app.dispatch(Command::OpenQuickOpen);
+    type_keys(&mut app, "rs:2");
+    assert_eq!(mode(&app), Some(QuickOpenMode::FileAtLine));
+    assert!(rows(&app).is_empty(), "nothing is walked on the UI thread");
+    assert!(
+        app.quick_open_loading().is_some(),
+        "the file:line list waits on the walk like the file list"
+    );
+    land(&mut app, &mut rx);
+    assert_eq!(mode(&app), Some(QuickOpenMode::FileAtLine));
+    assert_eq!(rows(&app), ["a.rs", "b.rs"]);
+    assert!(app.quick_open_loading().is_none());
+}
+
+#[test]
+fn a_key_that_edits_nothing_keeps_the_highlighted_file_at_line() {
+    let (dir, mut app, mut rx) = workspace_app(&["a.rs", "b.rs"]);
+    app.dispatch(Command::OpenQuickOpen);
+    land(&mut app, &mut rx);
+    type_keys(&mut app, "rs:2");
+    if let Some(overlay) = app.overlay.as_mut() {
+        overlay.select_down();
+    }
+    let b = dir.path().join("b.rs");
+    for code in [
+        KeyCode::Left,
+        KeyCode::Right,
+        KeyCode::Home,
+        KeyCode::End,
+        KeyCode::Tab,
+    ] {
+        app.overlay_input(KeyEvent::new(code, KeyModifiers::NONE));
+        assert_eq!(
+            app.overlay.as_ref().and_then(Overlay::selected_file),
+            Some(b.as_path()),
+            "{code:?} edits no text, so the list is not rebuilt"
+        );
+    }
+}

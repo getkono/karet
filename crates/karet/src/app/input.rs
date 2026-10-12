@@ -323,10 +323,7 @@ impl App {
     pub(super) fn modal_paste(&mut self, modal: Modal, text: &str) {
         match modal {
             Modal::Overlay => {
-                if let Some(overlay) = self.overlay.as_mut() {
-                    overlay.push_str(text);
-                }
-                self.sync_quick_open_mode();
+                self.edit_overlay_query(|overlay| overlay.push_str(text));
             },
             Modal::Find => {
                 let Some(find) = self.active_find_mut() else {
@@ -538,10 +535,8 @@ impl App {
 
     /// Edit the overlay query with an unbound key (backspace / printable).
     pub(super) fn overlay_input(&mut self, key: KeyEvent) {
-        let Some(overlay) = self.overlay.as_mut() else {
-            return;
-        };
-        match key.code {
+        // A sigil typed or deleted switches quick-open's list (`@` symbols).
+        self.edit_overlay_query(|overlay| match key.code {
             KeyCode::Backspace => overlay.pop_char(),
             KeyCode::Char(c)
                 if !key
@@ -551,9 +546,7 @@ impl App {
                 overlay.push_char(c);
             },
             _ => {},
-        }
-        // A sigil typed or deleted switches quick-open's list (`@` symbols).
-        self.sync_quick_open_mode();
+        });
     }
 }
 

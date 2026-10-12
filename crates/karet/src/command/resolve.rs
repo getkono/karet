@@ -5,6 +5,7 @@ use super::*;
 static PALETTE: &[Command] = &[
     Command::OpenQuickOpen,
     Command::GoToSymbolInEditor,
+    Command::GoToLine,
     Command::OpenRecentWorkspace,
     Command::SelectView(View::Editor),
     Command::SelectView(View::GitHub),

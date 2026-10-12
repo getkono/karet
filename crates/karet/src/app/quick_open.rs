@@ -1,5 +1,5 @@
-//! Quick-open (go to file, and `@` go to symbol in editor) and Open Recent
-//! (workspaces).
+//! Quick-open (go to file, `:` go to line, and `@` go to symbol in editor) and
+//! Open Recent (workspaces).
 //!
 //! The picker opens at once over the [`FileIndex`](workspace::FileIndex), which
 //! walks the workspace off the UI thread and follows filesystem changes; a walk
@@ -9,6 +9,8 @@
 
 use super::*;
 use crate::overlay::DOCUMENT_SYMBOL_PREFIX;
+use crate::overlay::GO_TO_LINE_PREFIX;
+use crate::overlay::LineTarget;
 use crate::overlay::QuickOpenMode;
 
 impl App {
@@ -21,6 +23,12 @@ impl App {
 
     /// The quick-open picker: recently opened files first, then the rest.
     fn quick_open_overlay(&self) -> Overlay {
+        self.quick_open_overlay_for("")
+    }
+
+    /// The quick-open file picker for `query`, which may end in `:LINE[:COL]`
+    /// to open the chosen file there.
+    fn quick_open_overlay_for(&self, query: &str) -> Overlay {
         // The store keeps absolute paths; the index lists them under the root as
         // it was given (`.` for a bare `karet`), so rank them in that form.
         let absolute_root = workspace::absolute(&self.root);
@@ -31,7 +39,7 @@ impl App {
             .filter_map(|file| file.strip_prefix(&absolute_root).ok())
             .map(|relative| self.root.join(relative))
             .collect();
-        Overlay::quick_open(self.file_index.ranked(&recent))
+        Overlay::quick_open_for(self.file_index.ranked(&recent), query)
     }
 
     /// What an open quick-open is still waiting on — the first walk of the
@@ -39,9 +47,30 @@ impl App {
     /// note anchors on.
     pub(crate) fn quick_open_loading(&self) -> Option<Pending> {
         match self.overlay.as_ref()?.quick_open_mode()? {
-            QuickOpenMode::Files => self.file_index.loading(),
+            QuickOpenMode::Files | QuickOpenMode::FileAtLine => self.file_index.loading(),
             QuickOpenMode::DocumentSymbols => self.active_outline_loading(),
+            // Computed from the open buffer: nothing to wait for.
+            QuickOpenMode::Line => None,
         }
+    }
+
+    /// Open quick-open already in its `:` mode: Go to Line in the active editor.
+    pub(super) fn open_go_to_line(&mut self) {
+        self.overlay = Some(Overlay::go_to_line(GO_TO_LINE_PREFIX, self.line_target()));
+    }
+
+    /// The active text editor, as Go to Line moves in it; `None` when the
+    /// active tab is not a text buffer.
+    fn line_target(&self) -> Option<LineTarget<'_>> {
+        let tab = self.tabs.get(self.active)?;
+        let TabKind::Code { path, buffer, .. } = &tab.kind else {
+            return None;
+        };
+        Some(LineTarget {
+            path,
+            lines: buffer.line_count(),
+            caret: tab.editor.cursor(),
+        })
     }
 
     /// Open quick-open already in its `@` mode: Go to Symbol in Editor over the
@@ -64,10 +93,26 @@ impl App {
         Overlay::document_symbols(path, symbols)
     }
 
+    /// Apply `edit` to the open overlay's query, then follow it into
+    /// quick-open's mode only when the text actually changed: a key that edits
+    /// nothing (an arrow, Home, Tab) keeps the computed line lists, and the row
+    /// highlighted in them, as they are.
+    pub(super) fn edit_overlay_query(&mut self, edit: impl FnOnce(&mut Overlay)) {
+        let Some(overlay) = self.overlay.as_mut() else {
+            return;
+        };
+        let before = overlay.query().to_string();
+        edit(overlay);
+        if overlay.query() != before {
+            self.sync_quick_open_mode();
+        }
+    }
+
     /// Follow an edit of an open quick-open's query into the mode its sigil now
-    /// asks for: typing `@` lists the active document's symbols, and deleting
-    /// it goes back to files. What was typed is kept.
-    pub(super) fn sync_quick_open_mode(&mut self) {
+    /// asks for: typing `@` lists the active document's symbols, `:` goes to a
+    /// line, a trailing `:LINE` opens the chosen file there, and deleting them
+    /// goes back to files. What was typed is kept.
+    fn sync_quick_open_mode(&mut self) {
         let Some(overlay) = self.overlay.as_ref() else {
             return;
         };
@@ -76,16 +121,19 @@ impl App {
         };
         let query = overlay.query().to_string();
         let wanted = QuickOpenMode::of_query(&query);
-        if wanted == mode {
+        // The fuzzy lists filter themselves as the query changes; the two
+        // line modes are computed from the whole query, so every edit rebuilds
+        // them (and an edit that leaves one rebuilds the list it returns to).
+        let computed = |mode| matches!(mode, QuickOpenMode::Line | QuickOpenMode::FileAtLine);
+        if wanted == mode && !computed(mode) {
             return;
         }
         let next = match wanted {
-            QuickOpenMode::Files => {
+            QuickOpenMode::Files | QuickOpenMode::FileAtLine => {
                 self.file_index.ensure_started();
-                let mut files = self.quick_open_overlay();
-                files.push_str(&query);
-                files
+                self.quick_open_overlay_for(&query)
             },
+            QuickOpenMode::Line => Overlay::go_to_line(&query, self.line_target()),
             QuickOpenMode::DocumentSymbols => {
                 let mut symbols = self.document_symbols_overlay();
                 symbols.push_str(query.strip_prefix(DOCUMENT_SYMBOL_PREFIX).unwrap_or(&query));
@@ -129,13 +177,16 @@ impl App {
     /// Rebuild an open quick-open over the current list, keeping what the user
     /// typed and, where it is still listed, the row they had highlighted.
     fn refresh_quick_open(&mut self) {
-        let Some(open) = self.overlay.as_ref().filter(|o| o.is_quick_open()) else {
+        let Some(open) = self
+            .overlay
+            .as_ref()
+            .filter(|o| o.quick_open_mode().is_some_and(QuickOpenMode::lists_files))
+        else {
             return;
         };
         let query = open.query().to_string();
         let selected = open.selected_file().map(Path::to_path_buf);
-        let mut overlay = self.quick_open_overlay();
-        overlay.push_str(&query);
+        let mut overlay = self.quick_open_overlay_for(&query);
         if let Some(selected) = selected {
             overlay.select_file(&selected);
         }

@@ -1,7 +1,8 @@
 //! Go to Symbol in Editor: quick-open's `@` mode.
 //!
 //! Quick-open is one surface with modes, chosen by the query's leading sigil:
-//! plain text finds files, and `@` lists the active document's symbols. The
+//! plain text finds files, `:` goes to a line (see the `goto_line` module), and
+//! `@` lists the active document's symbols. The
 //! symbol rows come from the session's [`Event::Symbols`] answer — the
 //! language server's when one serves the document, the tree-sitter outline
 //! otherwise — and may arrive after the picker opened, so the picker fills in
@@ -18,6 +19,9 @@ use super::Overlay;
 use super::OverlayEvent;
 use super::Picker;
 use super::QUICK_OPEN_TITLE;
+use super::goto_line::FILE_AT_LINE_TITLE;
+use super::goto_line::GO_TO_LINE_PREFIX;
+use super::goto_line::GO_TO_LINE_TITLE;
 
 /// The sigil that turns quick-open into Go to Symbol in Editor.
 pub const DOCUMENT_SYMBOL_PREFIX: &str = "@";
@@ -30,6 +34,11 @@ const DOCUMENT_SYMBOLS_TITLE: &str = "Go to Symbol in Editor";
 pub enum QuickOpenMode {
     /// Files in the workspace (no sigil).
     Files,
+    /// Files in the workspace, opened at the line the query ends with
+    /// (`main.rs:42[:7]`).
+    FileAtLine,
+    /// A line in the active document (`:42[:7]`).
+    Line,
     /// The active document's symbols (`@`).
     DocumentSymbols,
 }
@@ -40,9 +49,19 @@ impl QuickOpenMode {
     pub fn of_query(query: &str) -> Self {
         if query.starts_with(DOCUMENT_SYMBOL_PREFIX) {
             Self::DocumentSymbols
+        } else if query.starts_with(GO_TO_LINE_PREFIX) {
+            Self::Line
+        } else if crate::cli::split_goto_suffix(query).1.is_some() {
+            Self::FileAtLine
         } else {
             Self::Files
         }
+    }
+
+    /// Whether this mode lists the workspace's files.
+    #[must_use]
+    pub fn lists_files(self) -> bool {
+        matches!(self, Self::Files | Self::FileAtLine)
     }
 }
 
@@ -66,6 +85,10 @@ impl Overlay {
             Self::Picker(picker) if picker.title() == DOCUMENT_SYMBOLS_TITLE => {
                 Some(QuickOpenMode::DocumentSymbols)
             },
+            Self::Picker(picker) if picker.title() == FILE_AT_LINE_TITLE => {
+                Some(QuickOpenMode::FileAtLine)
+            },
+            Self::Picker(picker) if picker.title() == GO_TO_LINE_TITLE => Some(QuickOpenMode::Line),
             _ => None,
         }
     }
@@ -218,6 +241,13 @@ mod tests {
             QuickOpenMode::of_query("@ma"),
             QuickOpenMode::DocumentSymbols
         );
+        assert_eq!(QuickOpenMode::of_query(":"), QuickOpenMode::Line);
+        assert_eq!(QuickOpenMode::of_query(":12:3"), QuickOpenMode::Line);
+        assert_eq!(QuickOpenMode::of_query("a:12"), QuickOpenMode::FileAtLine);
+        assert_eq!(QuickOpenMode::of_query("a:"), QuickOpenMode::Files);
+        assert_eq!(QuickOpenMode::of_query("a:b"), QuickOpenMode::Files);
+        assert!(QuickOpenMode::FileAtLine.lists_files());
+        assert!(!QuickOpenMode::Line.lists_files());
     }
 
     #[test]
