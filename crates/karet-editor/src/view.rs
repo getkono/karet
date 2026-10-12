@@ -11,6 +11,11 @@ use super::text::*;
 use super::visual::*;
 use super::*;
 
+mod display;
+
+pub use display::LineNumbers;
+pub(crate) use display::gutter_width;
+
 /// The editor widget: a builder over the buffer and the (borrowed) data layers
 /// the application supplies. Render it as a ratatui [`StatefulWidget`] with an
 /// [`EditorState`].
@@ -32,6 +37,10 @@ pub struct Editor<'a> {
     unwrapped_lines: &'a [RangeInclusive<u32>],
     semantic_blocks: Option<&'a SemanticBlocks>,
     sticky_scroll: bool,
+    line_numbers: LineNumbers,
+    cursor_line: bool,
+    rulers: &'a [u16],
+    scroll_off: u16,
 }
 
 impl<'a> Editor<'a> {
@@ -54,6 +63,10 @@ impl<'a> Editor<'a> {
             unwrapped_lines: &[],
             semantic_blocks: None,
             sticky_scroll: false,
+            line_numbers: LineNumbers::Absolute,
+            cursor_line: true,
+            rulers: &[],
+            scroll_off: 0,
         }
     }
 
@@ -180,19 +193,6 @@ impl<'a> Editor<'a> {
 }
 
 impl Editor<'_> {
-    /// The gutter marker glyph + color for line `l`, if a decoration places one.
-    fn gutter_marker(&self, l: u32, theme: &Theme, default_fg: Rgba) -> Option<(char, Rgba)> {
-        for d in self.decorations {
-            if let DecorationKind::GutterMarker { glyph } = &d.kind
-                && line_in_range(l, d.range)
-            {
-                let color = d.role.map_or(default_fg, |r| theme.role(r));
-                return Some((*glyph, color));
-            }
-        }
-        None
-    }
-
     /// The background color for column `col` on line `l`, from line/text-background
     /// decorations (e.g. search matches).
     fn decoration_bg(&self, l: u32, col: u32, theme: &Theme) -> Option<Rgba> {
@@ -574,33 +574,14 @@ impl Editor<'_> {
             },
             Style::default().bg(background.to_ratatui()),
         );
-        let fold = self.fold_at(line);
-        let (marker, marker_color) = fold.map_or_else(
-            || {
-                self.gutter_marker(line, theme, default_fg)
-                    .unwrap_or((' ', default_fg))
-            },
-            |fold| {
-                (
-                    if fold.collapsed {
-                        '\u{25b8}'
-                    } else {
-                        '\u{25be}'
-                    },
-                    theme.role(ThemeRole::LineNumberActive),
-                )
-            },
+        let number_fg = theme.role(ThemeRole::LineNumberActive);
+        let mut spans = self.gutter_spans(
+            Some(line),
+            state.cursor().line,
+            digits,
+            theme,
+            (default_fg, number_fg),
         );
-        let mut spans = vec![
-            Span::styled(
-                marker.to_string(),
-                Style::default().fg(marker_color.to_ratatui()),
-            ),
-            Span::styled(
-                format!("{:>width$} ", line + 1, width = digits),
-                Style::default().fg(theme.role(ThemeRole::LineNumberActive).to_ratatui()),
-            ),
-        ];
         let mut painted = Vec::new();
         // Painted with its inline text, as `EditorState::pos_at` resolves a
         // click on it: the same mapping on both sides, so a click lands on
@@ -662,12 +643,15 @@ impl StatefulWidget for Editor<'_> {
         let default_fg = theme.role(ThemeRole::Foreground);
         let digits = digit_count(line_count.max(1));
 
-        let gutter = 1 + digits as u16 + 1;
+        let gutter = gutter_width(line_count, self.line_numbers);
         let content_width = area.width.saturating_sub(gutter).max(1);
 
         // Clamp scroll to the buffer and record horizontal geometry. The vertical
         // content height is resolved after semantic sticky rows are selected.
         state.last_content_width = content_width;
+        state.last_line_numbers = self.line_numbers;
+        state.last_scroll_off = self.scroll_off;
+        state.last_line = line_count.saturating_sub(1);
         state.last_word_wrap = self.word_wrap;
         state.last_tab_width = self.tab_width;
         state.last_unwrapped_lines = self.unwrapped_lines.to_vec();
@@ -723,6 +707,7 @@ impl StatefulWidget for Editor<'_> {
         }
         let upstream = state.upstream == Some(state.cursor());
         let mut sticky = self.sticky_blocks(anchor, area.height);
+        let off = state.reveal_margin();
         if state.follow_cursor {
             // Revealing moves the top, the top decides which headers stick,
             // and the headers decide how many rows are left for the caret. So
@@ -742,6 +727,7 @@ impl StatefulWidget for Editor<'_> {
                         anchor,
                         state.cursor(),
                         upstream,
+                        off,
                     )
                 } else {
                     VisualAnchor {
@@ -750,6 +736,7 @@ impl StatefulWidget for Editor<'_> {
                             anchor.line,
                             state.cursor().line,
                             u32::from(height),
+                            (off, state.last_line),
                         ),
                         subrow: 0,
                     }
@@ -832,7 +819,7 @@ impl StatefulWidget for Editor<'_> {
                 .saturating_add(row);
             // In read-only (pager) mode there is no active cursor line to emphasize.
             let is_cursor = !self.read_only && caret_lines.contains(&l);
-            let row_bg = if is_cursor {
+            let row_bg = if is_cursor && self.cursor_line {
                 cursor_line_bg
             } else {
                 background
@@ -847,39 +834,20 @@ impl StatefulWidget for Editor<'_> {
                 Style::default().bg(row_bg.to_ratatui()),
             );
 
-            // A fold header shows a collapse/expand chevron in the marker column;
-            // other lines show their usual decoration marker (git/diagnostic).
             let first_row = !self.word_wrap || anchor.subrow == 0;
             let fold = self.fold_at(l);
-            let (marker_ch, marker_color) = match (first_row, fold) {
-                (true, Some(f)) => (
-                    if f.collapsed { '\u{25b8}' } else { '\u{25be}' },
-                    theme.role(ThemeRole::LineNumberActive),
-                ),
-                (true, None) => self
-                    .gutter_marker(l, theme, default_fg)
-                    .unwrap_or((' ', default_fg)),
-                (false, _) => (' ', default_fg),
-            };
             let number_color = if is_cursor {
                 theme.role(ThemeRole::LineNumberActive)
             } else {
                 theme.role(ThemeRole::LineNumber)
             };
-            let mut spans = vec![
-                Span::styled(
-                    marker_ch.to_string(),
-                    Style::default().fg(marker_color.to_ratatui()),
-                ),
-                Span::styled(
-                    if first_row {
-                        format!("{:>width$} ", l + 1, width = digits)
-                    } else {
-                        " ".repeat(digits + 1)
-                    },
-                    Style::default().fg(number_color.to_ratatui()),
-                ),
-            ];
+            let mut spans = self.gutter_spans(
+                first_row.then_some(l),
+                state.cursor().line,
+                digits,
+                theme,
+                (default_fg, number_color),
+            );
             let ranges = if self.word_wrap {
                 visual_ranges(self.buffer, l, layout)
             } else {
@@ -968,6 +936,15 @@ impl StatefulWidget for Editor<'_> {
                 .max(widest_visible)
                 .max(state.scroll_col.saturating_add(u32::from(content_width)));
         }
+
+        let content = Rect {
+            x: area.x.saturating_add(gutter),
+            width: area.width.saturating_sub(gutter),
+            ..area
+        };
+        let plain = [background, cursor_line_bg];
+        let ruler = theme.role(ThemeRole::IndentGuide);
+        self.paint_rulers(buf, content, state.scroll_col, plain, ruler);
 
         // Draw a reversed caret cell for every head when focused and editable.
         if self.focused && self.cell_caret && !self.read_only {

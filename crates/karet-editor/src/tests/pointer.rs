@@ -188,34 +188,38 @@ fn select_all_does_not_scroll() {
 #[test]
 fn reveal_line_counts_shown_rows() {
     // Without folds a row is a line.
-    assert_eq!(reveal_line(&[], 0, 9, 10), 0, "last row");
-    assert_eq!(reveal_line(&[], 0, 10, 10), 1, "one below");
-    assert_eq!(reveal_line(&[], 5, 2, 10), 2, "above: to the top row");
+    assert_eq!(reveal_line(&[], 0, 9, 10, (0, u32::MAX)), 0, "last row");
+    assert_eq!(reveal_line(&[], 0, 10, 10, (0, u32::MAX)), 1, "one below");
+    assert_eq!(
+        reveal_line(&[], 5, 2, 10, (0, u32::MAX)),
+        2,
+        "above: to the top row"
+    );
 
     let fold = [Fold {
         start: 1,
         end: 50,
         collapsed: true,
     }];
-    assert_eq!(reveal_line(&fold, 0, 60, 30), 0, "row 11");
+    assert_eq!(reveal_line(&fold, 0, 60, 30, (0, u32::MAX)), 0, "row 11");
     assert_eq!(
-        reveal_line(&fold, 0, 80, 30),
+        reveal_line(&fold, 0, 80, 30, (0, u32::MAX)),
         51,
         "walks back over shown rows"
     );
-    assert_eq!(reveal_line(&fold, 0, 51, 3), 0, "row 2 of 3");
+    assert_eq!(reveal_line(&fold, 0, 51, 3, (0, u32::MAX)), 0, "row 2 of 3");
     assert_eq!(
-        reveal_line(&fold, 0, 52, 3),
+        reveal_line(&fold, 0, 52, 3, (0, u32::MAX)),
         1,
         "the walk back jumps the fold"
     );
     assert_eq!(
-        reveal_line(&fold, 60, 20, 30),
+        reveal_line(&fold, 60, 20, 30, (0, u32::MAX)),
         1,
         "a hidden target is shown by its header"
     );
     assert_eq!(
-        reveal_line(&fold, 10, 51, 1),
+        reveal_line(&fold, 10, 51, 1, (0, u32::MAX)),
         10,
         "a top inside the fold paints from the line after it"
     );
@@ -232,12 +236,16 @@ fn reveal_line_counts_shown_rows() {
             collapsed: true,
         },
     ];
-    assert_eq!(reveal_line(&nested, 60, 15, 5), 1, "the outermost header");
+    assert_eq!(
+        reveal_line(&nested, 60, 15, 5, (0, u32::MAX)),
+        1,
+        "the outermost header"
+    );
     // An expanded fold hides nothing.
     let open = [Fold {
         start: 1,
         end: 50,
         collapsed: false,
     }];
-    assert_eq!(reveal_line(&open, 0, 60, 30), 31);
+    assert_eq!(reveal_line(&open, 0, 60, 30, (0, u32::MAX)), 31);
 }

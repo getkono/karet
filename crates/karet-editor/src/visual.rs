@@ -366,6 +366,20 @@ pub(super) fn visual_anchor_for_position(
     VisualAnchor { line, subrow }
 }
 
+/// The scroll margin a viewport of `height` rows can honour: `off` rows,
+/// capped so the rows above and below the caret still fit (a margin of half
+/// the viewport or more would pin the caret and scroll on every move).
+pub(super) fn scroll_margin(off: u32, height: u32) -> u32 {
+    off.min(height.max(1).saturating_sub(1) / 2)
+}
+
+/// The top row that shows the caret at `cursor` in a soft-wrapped viewport of
+/// `height` rows currently starting at `current`, keeping `off` rows (see
+/// [`scroll_margin`]) between it and either edge. The margin stops at the
+/// buffer's first and last rows, so it never scrolls past either end.
+#[allow(clippy::too_many_arguments)]
+// The wrapped twin of `reveal_line`: the geometry, the viewport and the
+// caret are each needed, and bundling them would add a type used once.
 pub(super) fn reveal_visual_anchor(
     buffer: &TextBuffer,
     folds: &[Fold],
@@ -374,9 +388,19 @@ pub(super) fn reveal_visual_anchor(
     current: VisualAnchor,
     cursor: LineCol,
     upstream: bool,
+    off: u32,
 ) -> VisualAnchor {
     let current = normalize_visual_anchor(buffer, folds, layout, current);
-    let target = visual_anchor_for_position(buffer, layout, cursor, upstream);
+    let caret = visual_anchor_for_position(buffer, layout, cursor, upstream);
+    let off = scroll_margin(off, u32::from(height));
+    let (mut upper, mut target) = (caret, caret);
+    for _ in 0..off {
+        upper = previous_visual_anchor(buffer, folds, layout, upper);
+        target = next_visual_anchor(buffer, folds, layout, target);
+    }
+    if upper < current {
+        return upper;
+    }
     let mut probe = current;
     for _ in 0..height.max(1) {
         if probe == target {
@@ -387,9 +411,6 @@ pub(super) fn reveal_visual_anchor(
             break;
         }
         probe = next;
-    }
-    if target < current {
-        return target;
     }
     let mut revealed = target;
     for _ in 1..height.max(1) {
@@ -560,7 +581,7 @@ pub(super) fn caret_cell(
     at: LineCol,
 ) -> Option<(u16, u16)> {
     let line_count = buffer.line_count() as u32;
-    let gutter = 1 + digit_count(line_count.max(1)) as u16 + 1;
+    let gutter = gutter_width(line_count, state.last_line_numbers);
     let content_x = area.x.saturating_add(gutter);
     let content_y = area.y.saturating_add(state.sticky_height);
     let content_height = area.height.saturating_sub(state.sticky_height);
@@ -714,12 +735,30 @@ fn next_shown_line(folds: &[Fold], line: u32) -> u32 {
 /// Soft-wrapped lines take more than one row, so for a wrapped view this is an
 /// under-estimate that never scrolls further than needed; the render then
 /// completes it against the real wrap.
-pub(super) fn reveal_line(folds: &[Fold], top: u32, target: u32, height: u32) -> u32 {
-    let target = shown_line(folds, target);
-    if target < top {
-        return target;
-    }
+///
+/// `off` rows (see [`scroll_margin`]) are kept between `target` and either
+/// edge, counting shown lines and stopping at line 0 and at `last`, so the
+/// margin never scrolls before the first line or past the last.
+pub(super) fn reveal_line(
+    folds: &[Fold],
+    top: u32,
+    target: u32,
+    height: u32,
+    (off, last): (u32, u32),
+) -> u32 {
     let height = height.max(1);
+    let caret = shown_line(folds, target);
+    let (mut upper, mut target) = (caret, caret);
+    for _ in 0..scroll_margin(off, height) {
+        upper = shown_line(folds, upper.saturating_sub(1));
+        let next = next_shown_line(folds, target);
+        if next <= last {
+            target = next;
+        }
+    }
+    if upper < top {
+        return upper;
+    }
     // A top inside a collapsed fold paints from the first line after it, as
     // the render normalizes it.
     let mut line = if hidden_until(folds, top).is_some() {

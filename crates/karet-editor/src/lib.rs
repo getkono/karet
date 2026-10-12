@@ -66,3 +66,5 @@ pub use text::previous_word_boundary;
 pub use text::selection_text;
 pub use text::word_bounds;
 pub use view::Editor;
+pub use view::LineNumbers;
+use view::gutter_width;
