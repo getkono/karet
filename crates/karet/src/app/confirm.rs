@@ -69,6 +69,13 @@ pub(crate) enum ConfirmAction {
         /// The settings file to create.
         path: PathBuf,
     },
+    /// Answer a language server's question with one of its actions, or none.
+    AnswerLanguageServerMessage {
+        /// The question.
+        request: LanguageServerMessageId,
+        /// Index into its actions; `None` declines them all.
+        action: Option<usize>,
+    },
     /// Delete this branch from the remote.
     DeleteRemoteBranch {
         /// The remote holding the branch.
@@ -108,6 +115,7 @@ pub(crate) fn confirm_label(action: &ConfirmAction) -> String {
         ConfirmAction::OpenOutsideWorkspaceLink(_) => "Open".to_string(),
         ConfirmAction::CreateProjectDictionary { .. } => "Create".to_string(),
         ConfirmAction::DeleteRemoteBranch { .. } => "Delete".to_string(),
+        ConfirmAction::AnswerLanguageServerMessage { .. } => "Dismiss".to_string(),
     }
 }
 
@@ -260,7 +268,13 @@ impl App {
             ConfirmAction::DeleteRemoteBranch { remote, branch } => {
                 self.run_vcs_action(VcsAction::DeleteRemoteBranch { remote, branch });
             },
+            ConfirmAction::AnswerLanguageServerMessage { request, action } => {
+                self.send_command(SessionCommand::AnswerLanguageServerMessage { request, action });
+            },
         }
+        // A server's question that arrived while this dialog was up waited for
+        // it to close rather than displacing it.
+        self.ask_next_language_server_question();
     }
 
     /// Route a mouse event at the open confirmation, reporting whether it was

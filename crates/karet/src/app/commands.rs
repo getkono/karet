@@ -320,6 +320,8 @@ impl App {
                 self.open_language_servers();
                 self.check_all_language_servers();
             },
+            Command::ShowLanguageServerLog => self.show_language_server_log(),
+            Command::CancelLanguageServerWork => self.cancel_language_server_work(),
             Command::LanguageServerUp => self.language_server_select(-1),
             Command::LanguageServerDown => self.language_server_select(1),
             Command::LanguageServerRefresh => self.refresh_language_servers(),

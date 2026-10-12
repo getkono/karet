@@ -1,6 +1,7 @@
 mod badge;
 mod progress;
 mod prompts;
+mod work;
 
 use super::*;
 use crate::tab::LanguageServerAction;
@@ -16,10 +17,13 @@ pub(crate) struct LanguageServerRuntimeModel {
     inventory_request: Option<RequestId>,
     operations: Vec<LanguageServerPending>,
     operation_error: Option<String>,
+    /// Work servers report and questions waiting to be asked.
+    pub(crate) window: work::WindowModel,
 }
 
 pub(crate) use badge::LanguageServerBadge;
 pub(crate) use badge::LanguageServerBadgeSummary;
+pub(crate) use work::Question as LanguageServerQuestion;
 
 impl LanguageServerRuntimeModel {
     /// Adopt an inventory, unless a newer request is already out for a better one.
@@ -76,8 +80,19 @@ impl LanguageServerRuntimeModel {
         true
     }
 
+    /// The badge for `path`, reading `busy` rather than `ready` while one of
+    /// its servers reports work in flight.
     fn badge_for(&self, path: &Path, language: &str) -> Option<LanguageServerBadgeSummary> {
-        badge::badge_for(&self.servers, path, language)
+        let mut summary = badge::badge_for(&self.servers, path, language)?;
+        if summary.state == LanguageServerBadge::Ready
+            && self
+                .window
+                .for_file(&self.servers, path, language)
+                .is_some()
+        {
+            summary.state = LanguageServerBadge::Busy;
+        }
+        Some(summary)
     }
 
     fn start_operation(&mut self, operation: LanguageServerPending) {
@@ -854,6 +869,10 @@ impl App {
         // for. This event being the *only* thing that ever corrected the cache
         // is what left a dead Restart on screen.
         let patched = self.lsp_runtime.update(&server, &root, state, &error);
+        // Work ends with the connection doing it, and no `End` says so.
+        if state != LanguageServerRuntimeState::Running {
+            self.lsp_runtime.window.clear(&server, &root);
+        }
         if !patched && self.lsp_runtime.inventory_request.is_none() {
             // A transition for a provider or root the cache has never heard of:
             // the inventory predates it, so ask for one that does not.

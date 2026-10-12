@@ -33,8 +33,8 @@ pub(super) fn draw_status(f: &mut Frame, app: &mut App, theme: &Theme, area: Rec
     //
     // Segment order, left to right: the workspace's error and warning counts,
     // cursor position (code tabs only), encoding and EOL, today's coding total,
-    // the debug session, the language, its spelling language, and the
-    // language-server badge.
+    // the debug session, the language, its spelling language, the work its
+    // language server reports, and the language-server badge.
     let mut segments: Vec<String> = Vec::new();
     // Each clickable segment: its index, its colour, and the command it runs.
     let mut actions: Vec<(usize, Style, Command)> = Vec::new();
@@ -92,6 +92,20 @@ pub(super) fn draw_status(f: &mut Frame, app: &mut App, theme: &Theme, area: Rec
         _ => None,
     }) {
         segments.push(spelling.display_name().to_owned());
+    }
+    // The work the file's server reports, just before its badge. A click
+    // cancels it when the server allows that, so only then is it a target.
+    if let Some(work) = active_tab.and(app.active_language_server_work()) {
+        let mut label = work.label();
+        if work.cancellable {
+            actions.push((
+                segments.len(),
+                bar.fg(theme.role(ThemeRole::DiagnosticInfo).to_ratatui()),
+                Command::CancelLanguageServerWork,
+            ));
+            label.push_str(" \u{d7}");
+        }
+        segments.push(label);
     }
     if let Some(badge) = active_tab.and(app.active_language_server_badge()) {
         actions.push((

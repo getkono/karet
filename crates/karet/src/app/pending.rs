@@ -116,6 +116,7 @@ impl App {
                 TabKind::MarkdownPreview { pending_since, .. } => {
                     pendings.extend(*pending_since);
                 },
+                TabKind::ServerLog { loading_since, .. } => pendings.extend(*loading_since),
                 TabKind::Commit { files, .. } | TabKind::Compare { files, .. } => {
                     pendings.extend(files.loading_since);
                 },

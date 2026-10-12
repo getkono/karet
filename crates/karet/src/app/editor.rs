@@ -93,6 +93,7 @@ impl App {
             },
             TabKind::Diff { pager, .. }
             | TabKind::StashPreview { pager, .. }
+            | TabKind::ServerLog { pager, .. }
             | TabKind::Graph { pager, .. }
             | TabKind::LoadedConfig { pager, .. }
             | TabKind::CommitLoading { pager, .. } => adjust(&mut pager.scroll, delta),
@@ -182,6 +183,7 @@ impl App {
             },
             TabKind::Diff { pager, .. }
             | TabKind::StashPreview { pager, .. }
+            | TabKind::ServerLog { pager, .. }
             | TabKind::Graph { pager, .. }
             | TabKind::LoadedConfig { pager, .. }
             | TabKind::CommitLoading { pager, .. } => {

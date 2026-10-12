@@ -107,6 +107,8 @@ impl Command {
             Self::ShowLoadedConfig => "settings",
             Self::ManageLanguageServers => "language servers",
             Self::CheckLanguageServerUpdates => "lsp updates",
+            Self::ShowLanguageServerLog => "lsp log",
+            Self::CancelLanguageServerWork => "cancel",
             Self::LanguageServerRefresh => "refresh",
             Self::LanguageServerCheckSelected => "check",
             Self::LanguageServerCheckAll => "check all",

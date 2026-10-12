@@ -462,6 +462,7 @@ impl App {
                 | TabKind::Commit { .. }
                 | TabKind::Compare { .. }
                 | TabKind::StashPreview { .. }
+                | TabKind::ServerLog { .. }
                 | TabKind::Graph { .. }
                 | TabKind::LoadedConfig { .. }
                 | TabKind::MarkdownPreview { .. }

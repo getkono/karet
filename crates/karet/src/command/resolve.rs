@@ -89,6 +89,8 @@ static PALETTE: &[Command] = &[
     Command::ShowLoadedConfig,
     Command::ManageLanguageServers,
     Command::CheckLanguageServerUpdates,
+    Command::ShowLanguageServerLog,
+    Command::CancelLanguageServerWork,
     Command::ExplorerNewFile,
     Command::ExplorerNewFolder,
     Command::ExplorerRename,
