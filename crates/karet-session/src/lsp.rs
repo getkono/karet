@@ -279,6 +279,7 @@ impl LspManager {
             LspUpdate::Completions { generation, .. }
             | LspUpdate::InlayHints { generation, .. }
             | LspUpdate::InlayHintsFailed { generation, .. }
+            | LspUpdate::InlayHintResolved { generation, .. }
             | LspUpdate::Symbols { generation, .. }
             | LspUpdate::Hover { generation, .. }
             | LspUpdate::Unsupported { generation, .. }

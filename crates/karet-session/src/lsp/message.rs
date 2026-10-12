@@ -107,6 +107,16 @@ pub(crate) enum ServerCmd {
         /// The range, already converted to UTF-16 columns.
         range: Range,
     },
+    /// Fill in what the server deferred for one of its inlay hints
+    /// (`inlayHint/resolve`). Needs no text, so it never waits on a flush.
+    ResolveInlayHint {
+        /// The originating request, echoed on the answer.
+        request: RequestId,
+        /// The document the hint annotates, echoed on the answer.
+        doc: DocumentId,
+        /// The hint, payload included.
+        hint: InlayHint,
+    },
     /// Request hover information.
     Hover {
         request: RequestId,
@@ -274,6 +284,19 @@ pub(crate) enum LspUpdate {
         doc: DocumentId,
         /// The buffer version the request was made against.
         version: u64,
+    },
+    /// The answer to a [`ServerCmd::ResolveInlayHint`]: the hint as resolved,
+    /// or unchanged when it could not be. Positions and part locations remain
+    /// in UTF-16 until the session adopts the update.
+    InlayHintResolved {
+        /// The manager generation that spawned the server task.
+        generation: u64,
+        /// The originating request.
+        request: RequestId,
+        /// The document the hint annotates.
+        doc: DocumentId,
+        /// The hint.
+        hint: InlayHint,
     },
     /// Document symbols answering a [`ServerCmd::DocumentSymbols`] request. Ranges
     /// remain in UTF-16 until the session adopts the update.

@@ -5,6 +5,7 @@
 //! language, and did the command reach it -- and returns `false` when there is
 //! not, so the caller answers the request itself rather than leaving it hanging.
 
+use karet_core::InlayHint;
 use karet_core::Range;
 
 use super::*;
@@ -82,6 +83,27 @@ impl LspManager {
             range,
         })
         .is_ok()
+    }
+
+    /// Forward an inlay-hint resolve to the server that answers `path`'s
+    /// hints. Hands the hint back when no live server accepted it, so the
+    /// caller can answer with it unchanged.
+    pub(crate) fn resolve_inlay_hint(
+        &self,
+        language: Option<&str>,
+        request: RequestId,
+        doc: DocumentId,
+        path: &Path,
+        hint: InlayHint,
+    ) -> Option<InlayHint> {
+        let path = absolute_path(path);
+        let Some(tx) = self.existing_server(language, &path) else {
+            return Some(hint);
+        };
+        let unchanged = hint.clone();
+        tx.try_send(ServerCmd::ResolveInlayHint { request, doc, hint })
+            .is_err()
+            .then_some(unchanged)
     }
 
     pub(crate) fn hover(

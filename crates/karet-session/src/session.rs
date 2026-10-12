@@ -638,6 +638,7 @@ impl Session {
             ),
             Command::Completion { doc, position } => self.completion(id, doc, position),
             Command::InlayHints { doc, range } => self.inlay_hints(id, doc, range),
+            Command::ResolveInlayHint { doc, hint } => self.resolve_inlay_hint(id, doc, hint),
             Command::Hover { doc, position } => self.hover(id, doc, position),
             Command::Definition { doc, position } => self.definition(id, doc, position, None),
             Command::FindLocations {

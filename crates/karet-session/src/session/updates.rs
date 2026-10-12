@@ -111,14 +111,10 @@ impl Session {
                 mut hints,
                 ..
             } => {
-                let Some(d) = self.store.docs.get(&doc) else {
+                if !self.store.docs.contains_key(&doc) {
                     return; // closed since the request: stale by definition
-                };
-                for hint in &mut hints {
-                    hint.position = d
-                        .buffer
-                        .utf16_to_line_col(hint.position.line, hint.position.col);
                 }
+                self.hints_to_buffer_columns(doc, &mut hints);
                 self.emit(
                     Some(request),
                     Event::InlayHints {
@@ -134,6 +130,15 @@ impl Session {
                 version,
                 ..
             } => self.emit(Some(request), Event::InlayHintsFailed { doc, version }),
+            LspUpdate::InlayHintResolved {
+                request,
+                doc,
+                mut hint,
+                ..
+            } => {
+                self.part_locations_to_buffer_columns(std::slice::from_mut(&mut hint));
+                self.emit(Some(request), Event::InlayHintResolved { doc, hint });
+            },
             LspUpdate::Symbols {
                 request,
                 doc,

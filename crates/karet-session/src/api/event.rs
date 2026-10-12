@@ -143,6 +143,17 @@ pub enum Event {
         /// The document version the request was made against.
         version: u64,
     },
+    /// The answer to a [`Command::ResolveInlayHint`]: the hint with whatever
+    /// the server filled in, or unchanged when it filled in nothing.
+    ///
+    /// Its position is the one the command carried, and its label parts'
+    /// locations are in their own files' buffer (UTF-32) columns.
+    InlayHintResolved {
+        /// The document the hint annotates.
+        doc: DocumentId,
+        /// The resolved hint.
+        hint: InlayHint,
+    },
     /// A language server said every inlay hint it answered may be stale
     /// (`workspace/inlayHint/refresh`), so a client should drop what it
     /// holds as covered and re-issue [`Command::InlayHints`] for what it

@@ -379,6 +379,18 @@ pub enum Command {
         /// The range to annotate, usually the visible viewport.
         range: Range,
     },
+    /// Fill in what the server deferred for one of `doc`'s inlay hints --
+    /// its tooltip, its label parts' tooltips and locations -- when a hover
+    /// or a Ctrl+click needs it. Answered by [`Event::InlayHintResolved`],
+    /// always: with the hint unchanged when there is no server to ask, it does
+    /// not resolve hints, or the request failed.
+    ResolveInlayHint {
+        /// The document the hint annotates.
+        doc: DocumentId,
+        /// The hint as an [`Event::InlayHints`] answer delivered it, payload
+        /// included.
+        hint: InlayHint,
+    },
     /// Request hover information at a position.
     Hover {
         /// The target document.

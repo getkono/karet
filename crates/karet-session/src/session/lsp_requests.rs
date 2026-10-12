@@ -5,6 +5,7 @@
 //! per-file code line ceiling. Everything here has one shape: resolve the
 //! document, hand the request to the LSP manager, emit the answer.
 
+use karet_core::InlayHint;
 use karet_core::Location;
 use karet_text::TextBuffer;
 
@@ -83,7 +84,10 @@ impl Session {
     /// many hits in one file costs one read rather than one per hit. A file that
     /// cannot be read keeps the server's columns, as [`Self::buffer_for_path`]
     /// explains.
-    pub(super) fn locations_to_buffer_columns(&self, locations: &mut [Location]) {
+    pub(super) fn locations_to_buffer_columns<'a>(
+        &self,
+        locations: impl IntoIterator<Item = &'a mut Location>,
+    ) {
         let mut read: HashMap<PathBuf, Option<TextBuffer>> = HashMap::new();
         for location in locations {
             let open = self
@@ -107,6 +111,33 @@ impl Session {
                 location.range = utf16_range_to_buffer(buffer, location.range);
             }
         }
+    }
+
+    /// Move `hints` from the server's UTF-16 columns to buffer columns: each
+    /// position against `doc`'s buffer, and each label part's location
+    /// against the file it names. Hints for a document closed since they were
+    /// asked for are left as they are; nobody will adopt them.
+    pub(super) fn hints_to_buffer_columns(&self, doc: DocumentId, hints: &mut [InlayHint]) {
+        let Some(document) = self.store.docs.get(&doc) else {
+            return;
+        };
+        for hint in hints.iter_mut() {
+            hint.position = document
+                .buffer
+                .utf16_to_line_col(hint.position.line, hint.position.col);
+        }
+        self.part_locations_to_buffer_columns(hints);
+    }
+
+    /// Convert every label part's location in `hints` to buffer columns, each
+    /// against the file it names, as a definition's is. A resolved hint needs
+    /// only this: it keeps the position the client asked about.
+    pub(super) fn part_locations_to_buffer_columns(&self, hints: &mut [InlayHint]) {
+        self.locations_to_buffer_columns(hints.iter_mut().flat_map(|hint| {
+            hint.parts
+                .iter_mut()
+                .filter_map(|part| part.location.as_mut())
+        }));
     }
 
     /// Serve [`Command::Completion`]: convert the caret to the server's UTF-16
@@ -163,6 +194,27 @@ impl Session {
                     hints: Vec::new(),
                 },
             );
+        }
+    }
+
+    /// Serve [`Command::ResolveInlayHint`] from the server that answered the
+    /// hint: the document's primary, which is the only one asked for hints.
+    /// With no server to ask the hint comes straight back, so the client
+    /// stops waiting on it and does not ask again.
+    pub(super) fn resolve_inlay_hint(
+        &mut self,
+        id: RequestId,
+        doc_id: DocumentId,
+        hint: InlayHint,
+    ) {
+        let Some(doc) = Self::doc_or_report(&self.store, &self.events, id, doc_id) else {
+            return;
+        };
+        let unanswered =
+            self.lsp
+                .resolve_inlay_hint(doc.language_selector, id, doc_id, &doc.path, hint);
+        if let Some(hint) = unanswered {
+            self.emit(Some(id), Event::InlayHintResolved { doc: doc_id, hint });
         }
     }
 

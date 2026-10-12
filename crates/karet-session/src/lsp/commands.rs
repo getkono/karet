@@ -23,10 +23,12 @@ use karet_lsp::LspError;
 use tokio::sync::mpsc;
 
 use super::code_actions::UNAVAILABLE;
+use super::health::FailureTally;
 use super::message::LspUpdate;
 use super::message::RenameAnswer;
 use super::message::ServerCmd;
 use super::slot::SlotKey;
+use super::slot::SlotToken;
 use crate::RequestId;
 use crate::api::LocationKind;
 
@@ -53,6 +55,27 @@ pub(super) fn report_unsupported<T>(
             server: key.provider.clone(),
             feature,
         });
+    }
+}
+
+/// Send the pending `didChange`, if any -- what a command that must see the
+/// latest text does before it is served.
+pub(super) async fn flush_pending(
+    client: &LspClient,
+    pending: &mut Option<(PathBuf, i32, String)>,
+    dead: &mut bool,
+    tally: &mut FailureTally,
+    updates: &mpsc::UnboundedSender<LspUpdate>,
+    key: &SlotKey,
+    token: SlotToken,
+) {
+    if *dead {
+        *pending = None;
+        return;
+    }
+    if let Some((path, version, text)) = pending.take() {
+        let result = client.did_change(&path, version, &text).await;
+        tally.note(result, dead, updates, key, token);
     }
 }
 
@@ -148,6 +171,14 @@ pub(super) fn answer_empty(
                 doc,
                 version,
                 hints: Vec::new(),
+            });
+        },
+        ServerCmd::ResolveInlayHint { request, doc, hint } => {
+            let _ = updates.send(LspUpdate::InlayHintResolved {
+                generation,
+                request,
+                doc,
+                hint,
             });
         },
         ServerCmd::DocumentSymbols {
@@ -310,6 +341,7 @@ pub(super) fn remember_document(documents: &mut HashMap<PathBuf, OpenDocument>, 
         },
         ServerCmd::Completion { .. }
         | ServerCmd::InlayHints { .. }
+        | ServerCmd::ResolveInlayHint { .. }
         | ServerCmd::DocumentSymbols { .. }
         | ServerCmd::Hover { .. }
         | ServerCmd::Definition { .. }
@@ -485,6 +517,39 @@ mod tests {
                 doc: DocumentId(5),
                 version: 6,
             })
+        ));
+    }
+
+    /// A resolve no server can serve is answered with the hint as it was, so
+    /// the editor stops waiting on it and spends its payload.
+    #[test]
+    fn an_unserved_resolve_hands_the_hint_back_unchanged() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let hint = karet_core::InlayHint {
+            payload: Some("{}".to_owned()),
+            ..karet_core::InlayHint::new(
+                LineCol::new(1, 2),
+                ": i32",
+                karet_core::InlayHintKind::Type,
+            )
+        };
+        answer_reconnecting(
+            &tx,
+            ServerCmd::ResolveInlayHint {
+                request: RequestId(3),
+                doc: DocumentId(5),
+                hint: hint.clone(),
+            },
+            7,
+        );
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(LspUpdate::InlayHintResolved {
+                generation: 7,
+                request: RequestId(3),
+                doc: DocumentId(5),
+                hint: ref answered,
+            }) if *answered == hint
         ));
     }
 

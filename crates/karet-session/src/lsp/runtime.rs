@@ -4,6 +4,7 @@ use super::code_actions;
 use super::commands::OpenDocument;
 use super::commands::answer_empty;
 use super::commands::answer_reconnecting;
+use super::commands::flush_pending;
 use super::commands::remember_document;
 use super::commands::report_unsupported;
 use super::forward::forward_diagnostics;
@@ -535,6 +536,27 @@ pub(super) async fn server_task(task: ServerTask) {
                         generation,
                     );
                 },
+                ServerCmd::ResolveInlayHint { request, doc, hint } => {
+                    // No flush: what is resolved is the hint as the server sent
+                    // it, whatever the text has done since.
+                    let hint = if dead {
+                        hint
+                    } else {
+                        match tally.observe(active.resolve_inlay_hint(&hint).await) {
+                            Ok(resolved) => resolved,
+                            Err(e) => {
+                                tally.note::<()>(Err(e), &mut dead, &updates, &key, token);
+                                hint
+                            },
+                        }
+                    };
+                    let _ = updates.send(LspUpdate::InlayHintResolved {
+                        generation,
+                        request,
+                        doc,
+                        hint,
+                    });
+                },
                 ServerCmd::DocumentSymbols {
                     request,
                     doc,
@@ -943,24 +965,4 @@ pub(super) async fn server_task(task: ServerTask) {
     //
     // The manager reports the retirement instead, at the moment it retires the
     // slot, where the fact is true by construction rather than raced for.
-}
-
-/// Send the pending `didChange`, if any.
-async fn flush_pending(
-    client: &LspClient,
-    pending: &mut Option<(PathBuf, i32, String)>,
-    dead: &mut bool,
-    tally: &mut FailureTally,
-    updates: &mpsc::UnboundedSender<LspUpdate>,
-    key: &SlotKey,
-    token: SlotToken,
-) {
-    if *dead {
-        *pending = None;
-        return;
-    }
-    if let Some((path, version, text)) = pending.take() {
-        let result = client.did_change(&path, version, &text).await;
-        tally.note(result, dead, updates, key, token);
-    }
 }
