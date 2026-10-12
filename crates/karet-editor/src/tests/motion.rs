@@ -299,3 +299,28 @@ fn an_added_caret_keeps_the_goal_column() {
     assert_eq!(heads(&state), vec![at(0, 5), at(1, 2), at(2, 5)]);
     assert_eq!(state.cursor(), at(2, 5), "the newest caret is primary");
 }
+
+#[test]
+fn only_row_motions_are_vertical() {
+    let vertical = [Motion::Up, Motion::Down, Motion::PageUp, Motion::PageDown];
+    for motion in [
+        Motion::Up,
+        Motion::Down,
+        Motion::Left,
+        Motion::Right,
+        Motion::PageUp,
+        Motion::PageDown,
+        Motion::LineStart,
+        Motion::LineEnd,
+        Motion::DocStart,
+        Motion::DocEnd,
+        Motion::WordLeft,
+        Motion::WordRight,
+    ] {
+        assert_eq!(
+            motion.is_vertical(),
+            vertical.contains(&motion),
+            "{motion:?}"
+        );
+    }
+}
