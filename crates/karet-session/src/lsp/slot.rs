@@ -11,7 +11,10 @@
 use std::collections::HashSet;
 use std::fmt;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::RwLock;
 
+use serde_json::Value;
 use tokio::sync::mpsc;
 
 use super::message::ServerCmd;
@@ -153,11 +156,29 @@ pub(super) struct ServerSlot {
     pub(super) runtime: LanguageServerRuntimeState,
     /// The most recent concise failure the task reported, if any.
     pub(super) error: Option<String>,
+    /// The settings every connection this slot makes starts with.
+    ///
+    /// Shared with the task's connector rather than copied into its spec, so
+    /// a live settings reload reaches the *next* connection too: the push
+    /// itself only reaches the one that is up, and a reconnect after it must
+    /// not start over with what the user has since changed.
+    pub(super) settings: SettingsCell,
+    /// The `lsp.servers` entry those settings are read from: the provider's
+    /// own, or the one keyed by the language that started it.
+    pub(super) settings_key: String,
 }
+
+/// A slot's current server settings, read by each connection it makes.
+pub(super) type SettingsCell = Arc<RwLock<Option<Value>>>;
 
 impl ServerSlot {
     /// A slot for a task that is starting up.
-    pub(super) fn new(token: SlotToken, tx: mpsc::Sender<ServerCmd>, primary: bool) -> Self {
+    pub(super) fn new(
+        token: SlotToken,
+        tx: mpsc::Sender<ServerCmd>,
+        primary: bool,
+        settings: SettingsCell,
+    ) -> Self {
         Self {
             token,
             tx,
@@ -165,6 +186,8 @@ impl ServerSlot {
             primary,
             runtime: LanguageServerRuntimeState::Starting,
             error: None,
+            settings,
+            settings_key: String::new(),
         }
     }
 }

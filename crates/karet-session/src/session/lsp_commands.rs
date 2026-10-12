@@ -79,6 +79,29 @@ impl Session {
                 self.restart_lsp(server.clone());
                 return true;
             },
+            Command::CancelLanguageServerWork {
+                server,
+                root,
+                token,
+            } => {
+                self.lsp.cancel_work(server, root, token);
+                return true;
+            },
+            Command::AnswerLanguageServerMessage { request, action } => {
+                self.lsp.window.answer(*request, *action);
+                return true;
+            },
+            Command::LanguageServerLog { server } => {
+                let entries = self.lsp.window.entries(server);
+                self.emit(
+                    Some(id),
+                    Event::LanguageServerLog {
+                        server: server.clone(),
+                        entries,
+                    },
+                );
+                return true;
+            },
             _ => return false,
         };
         self.queue_lsp_registry(id, job);

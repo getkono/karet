@@ -54,7 +54,7 @@ async fn a_document_is_routed_only_to_a_primary_that_holds_it() -> TestResult {
     let companion = SlotKey::new(LanguageServerId::new("companion"), Path::new("/tmp"));
     let (tx, _companion_rx) = mpsc::channel(4);
     let token = manager.take_token();
-    let mut slot = ServerSlot::new(token, tx, false);
+    let mut slot = ServerSlot::new(token, tx, false, std::sync::Arc::default());
     slot.documents.insert(held.clone());
     manager.servers.insert(companion.clone(), slot);
     let answering = manager

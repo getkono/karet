@@ -26,6 +26,7 @@ pub(super) fn forward_diagnostics(
     key: SlotKey,
     token: SlotToken,
 ) -> tokio::task::JoinHandle<()> {
+    super::window::forward_window(client, &updates, &key, token);
     let mut diagnostic_rx = client.diagnostics();
     let mut raw_rx = client.raw_notifications();
     let mut refresh_rx = client.refreshes();
