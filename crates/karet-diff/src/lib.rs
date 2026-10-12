@@ -52,11 +52,15 @@ pub use view::pad_diff_lines;
 #[cfg(feature = "view")]
 pub use view::side_by_side_hunk_at_row;
 #[cfg(feature = "view")]
+pub use view::side_by_side_hunk_row;
+#[cfg(feature = "view")]
 pub use view::side_by_side_lines;
 #[cfg(feature = "view")]
 pub use view::side_by_side_row;
 #[cfg(feature = "view")]
 pub use view::unified_hunk_at_row;
+#[cfg(feature = "view")]
+pub use view::unified_hunk_row;
 #[cfg(feature = "view")]
 pub use view::unified_lines;
 #[cfg(feature = "view")]

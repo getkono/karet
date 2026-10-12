@@ -151,6 +151,44 @@ fn hunk_at_row(
     Some(found)
 }
 
+/// The unified view's display row on which hunk `index` of `prepared` opens:
+/// its scope line when it has one, otherwise its header.
+///
+/// The inverse of [`unified_hunk_at_row`]: scrolling the view to this row puts
+/// the hunk at the top of the viewport. `None` for a binary or hunkless diff,
+/// or an `index` past the last hunk.
+#[must_use]
+pub fn unified_hunk_row(prepared: &PreparedDiff, index: usize) -> Option<usize> {
+    hunk_row(prepared, index, |hunk| hunk.lines.len())
+}
+
+/// The side-by-side view's display row on which hunk `index` of `prepared`
+/// opens; the inverse of [`side_by_side_hunk_at_row`], with the conventions of
+/// [`unified_hunk_row`].
+#[must_use]
+pub fn side_by_side_hunk_row(prepared: &PreparedDiff, index: usize) -> Option<usize> {
+    hunk_row(prepared, index, |hunk| crate::align_hunk(&hunk.lines).len())
+}
+
+fn hunk_row(
+    prepared: &PreparedDiff,
+    index: usize,
+    body_rows: impl Fn(&crate::Hunk) -> usize,
+) -> Option<usize> {
+    if prepared.is_binary() || index >= prepared.diff.hunks.len() {
+        return None;
+    }
+    Some(
+        prepared
+            .diff
+            .hunks
+            .iter()
+            .take(index)
+            .map(|hunk| usize::from(hunk.scope.is_some()) + 1 + body_rows(hunk))
+            .sum(),
+    )
+}
+
 /// The copyable content of one painted diff row.
 ///
 /// The text is the line's own content — the line-number gutter and the
@@ -586,6 +624,79 @@ mod tests {
         binary_diff.hunks.clear();
         let binary = PreparedDiff::new(binary_diff, Vec::new(), Vec::new());
         assert_eq!(unified_hunk_at_row(&binary, 0), None);
+    }
+
+    /// Three hunks, the first rewriting two lines (so the side-by-side body,
+    /// which pairs them, is shorter than the unified one) and the second
+    /// carrying a scope line.
+    fn three_hunks() -> PreparedDiff {
+        let old: String = (0..30).map(|n| format!("l{n}\n")).collect();
+        let new = old
+            .replacen("l0\nl1\n", "L0\nL1\n", 1)
+            .replacen("l14\n", "L14\n", 1)
+            .replacen("l29\n", "", 1);
+        let mut prep = prepared(&old, &new);
+        if let Some(hunk) = prep.diff.hunks.get_mut(1) {
+            hunk.scope = Some("fn middle".to_string());
+        }
+        prep
+    }
+
+    #[test]
+    fn hunk_row_opens_each_hunk_on_its_first_painted_row() {
+        let prep = three_hunks();
+        assert_eq!(prep.diff.hunks.len(), 3);
+        let token_fg = |_: TokenId| Color::White;
+        let unified = unified_lines(&prep, &palette(&token_fg));
+        let (left, _) = side_by_side_lines(&prep, &palette(&token_fg));
+        for (index, hunk) in prep.diff.hunks.iter().enumerate() {
+            let opening = hunk
+                .scope
+                .as_ref()
+                .map_or(hunk.header.clone(), |scope| format!("  {scope}"));
+            let row = unified_hunk_row(&prep, index);
+            assert_eq!(
+                row.and_then(|row| unified_hunk_at_row(&prep, row)),
+                Some(index)
+            );
+            let painted = row
+                .and_then(|row| unified.get(row))
+                .map(|line| rendered_text(std::slice::from_ref(line)));
+            assert_eq!(
+                painted.as_deref().map(str::trim_end),
+                Some(opening.trim_end())
+            );
+            let row = side_by_side_hunk_row(&prep, index);
+            assert_eq!(
+                row.and_then(|row| side_by_side_hunk_at_row(&prep, row)),
+                Some(index)
+            );
+            let painted = row
+                .and_then(|row| left.get(row))
+                .map(|line| rendered_text(std::slice::from_ref(line)));
+            assert_eq!(
+                painted.as_deref().map(str::trim_end),
+                Some(opening.trim_end())
+            );
+        }
+        assert_eq!(unified_hunk_row(&prep, 0), Some(0));
+        assert_ne!(
+            unified_hunk_row(&prep, 1),
+            side_by_side_hunk_row(&prep, 1),
+            "the paired rewrite takes fewer side-by-side rows"
+        );
+    }
+
+    #[test]
+    fn hunk_row_has_no_answer_past_the_hunks_or_for_a_binary_diff() {
+        let prep = three_hunks();
+        assert_eq!(unified_hunk_row(&prep, 3), None);
+        assert_eq!(side_by_side_hunk_row(&prep, usize::MAX), None);
+        let mut binary_diff = diff_text("a\n", "b\n", &DiffOptions::default());
+        binary_diff.is_binary = true;
+        let binary = PreparedDiff::new(binary_diff, Vec::new(), Vec::new());
+        assert_eq!(unified_hunk_row(&binary, 0), None);
+        assert_eq!(side_by_side_hunk_row(&binary, 0), None);
     }
 
     /// The text a painted row shows after its gutter, for cross-checking the
