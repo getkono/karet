@@ -115,7 +115,7 @@ fn an_open_completion_takes_tab_first() {
     rig.app.completion = Some(crate::completion::CompletionUi::new(
         DocumentId(9),
         LineCol::new(0, 0),
-        LineCol::new(0, 2),
+        LineCol::new(0, 0),
         vec![karet_core::CompletionItem::new(
             "foobar",
             karet_core::CompletionKind::Function,
