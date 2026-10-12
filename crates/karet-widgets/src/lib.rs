@@ -3,8 +3,9 @@
 //! A lightweight (ratatui-only) crate of the UI widgets an editor needs. Widgets
 //! render data fed in by the application — they consume `karet-core` models, and
 //! so do **not** depend on the producers (`karet-lsp`/`karet-vcs`). This crate
-//! also hosts the LSP [`completion`] popup, and (behind the `hover` feature) the
-//! LSP hover/doc popup, which render `karet-core` models supplied over the
+//! also hosts the LSP [`completion`] and [`signature`]-help popups, and (behind
+//! the `hover` feature) the LSP hover/doc popup, which render `karet-core`
+//! models supplied over the
 //! backend's event stream. The [`menu`] and [`dialog`] widgets share one row
 //! model ([`choice`]), so a context menu and a modal confirmation navigate
 //! identically. [`rowselect`] is the shared pointer-selection model for the
@@ -29,6 +30,7 @@ pub mod picker;
 pub mod rowselect;
 pub mod scroll;
 pub mod select;
+pub mod signature;
 pub mod spinner;
 pub mod status;
 pub mod text;
@@ -68,6 +70,7 @@ pub use rowselect::RowGeometry;
 pub use rowselect::RowPos;
 pub use rowselect::RowSelection;
 pub use select::ListSelection;
+pub use signature::SignaturePopup;
 pub use spinner::Spinner;
 pub use transcript::Transcript;
 pub use transcript::TranscriptBody;
