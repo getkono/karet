@@ -6,6 +6,7 @@ pub(crate) mod commit;
 mod commit_console;
 mod confirm;
 mod content;
+mod display;
 mod github;
 mod language_servers;
 mod lsp_badge;
@@ -31,6 +32,7 @@ use std::time::Instant;
 pub(crate) use commit::relative_time;
 use commit::*;
 use content::*;
+use display::EditorDisplay;
 use github::*;
 use karet_core::Decoration;
 use karet_core::Diagnostic;
@@ -399,8 +401,9 @@ struct PaneCtx<'a> {
     graphical_cursor: bool,
     /// Language-resolved word-wrap override; `None` delegates to the active file type.
     word_wrap: Option<bool>,
-    /// Language-resolved semantic sticky-scroll setting.
-    sticky_scroll: bool,
+    /// Language-resolved gutter, cursor-line, ruler, scroll-margin and
+    /// sticky-scroll settings.
+    display: EditorDisplay<'a>,
     /// Per-document hard-tab display width.
     tab_width: u16,
     /// Complete diagnostic sets keyed by backend document.

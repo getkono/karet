@@ -451,7 +451,7 @@
           "default": true
         },
         "rulers": {
-          "description": "Columns to draw vertical rulers at (empty = none).",
+          "description": "Columns to draw vertical rulers after (empty = none).",
           "type": "array",
           "default": [],
           "items": {
@@ -462,7 +462,7 @@
           }
         },
         "scrollOff": {
-          "description": "Keep at least this many lines visible above and below the caret.",
+          "description": "Keep at least this many lines visible above and below the caret when\nthe keyboard moves it (capped to what the viewport can spare; a click\nnever scrolls).",
           "type": "integer",
           "format": "uint16",
           "default": 3,

@@ -48,11 +48,11 @@ Keys use the VS Code / Zed camelCase style. Defaults shown.
 |---|---|---|---|
 | `tabSize` | number | `4` | Columns per indent level. |
 | `insertSpaces` | bool | `true` | Insert spaces instead of a hard tab. |
-| `lineNumbers` | `"on"`\|`"off"`\|`"relative"` | `"on"` | Line-number gutter mode. |
-| `cursorLine` | bool | `true` | Highlight the caret's line. |
+| `lineNumbers` | `"on"`\|`"off"`\|`"relative"` | `"on"` | Line-number gutter mode; `"relative"` counts buffer lines from the caret, whose line shows its own number. |
+| `cursorLine` | bool | `true` | Highlight the caret's line (its number stays emphasized either way). |
 | `graphicalCursor` | bool\|null | `null` | Draw a graphical caret when supported; `true` reports a visible error if incompatible. |
-| `scrollOff` | number | `3` | Lines kept visible above/below the caret. |
-| `rulers` | number[] | `[]` | Columns to draw vertical rulers at. |
+| `scrollOff` | number | `3` | Lines kept visible above/below the caret when the keyboard moves it; capped to what the viewport can spare, and a click never scrolls. |
+| `rulers` | number[] | `[]` | Columns to draw vertical rulers after, tinted on the plain background. |
 | `wordWrap` | bool\|null | `null` | Override long-line handling; `null` uses the file-type default, `true` wraps, and `false` scrolls horizontally. |
 | `stickyScroll` | bool | `true` | Pin the active semantic block hierarchy above scrolled text. Multi-line signatures collapse to one row with an ellipsis. |
 | `middleClickPaste` | bool\|null | `null` | Paste the primary selection (the X11/Wayland "last selected text") at a middle click in the text, read through `wl-paste`, `xclip` or `xsel`. `null` turns it on for Linux and off elsewhere. A middle click on a tab closes it either way. Global only; not a per-language override. |
