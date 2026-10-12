@@ -33,6 +33,7 @@ pub(super) fn draw_pane_content(
     let mut rail_rect = None;
     let mut collapse_hits = Vec::new();
     let mut blame_rect = None;
+    let mut inlay_hits = Vec::new();
     let mut markdown_link_hits = Vec::new();
     let mut select_regions = Vec::new();
     let mut editor_rect = area;
@@ -166,7 +167,8 @@ pub(super) fn draw_pane_content(
                 let diagnostics = doc
                     .and_then(|doc| ctx.diagnostics.get(&doc))
                     .map_or(&[][..], Vec::as_slice);
-                let (virtual_text, blame_index) = swatches::frame_virtual_text(ctx, *doc, buffer);
+                let (virtual_text, inlay_parts, blame_index) =
+                    swatches::frame_virtual_text(ctx, *doc, buffer);
                 let editor = Editor::new(buffer)
                     .highlights(highlights)
                     .semantic_blocks(semantic_blocks)
@@ -222,6 +224,7 @@ pub(super) fn draw_pane_content(
                 if ctx.blame_clickable {
                     blame_rect = blame_index.and_then(|index| tab.editor.virtual_text_rect(index));
                 }
+                inlay_hits = swatches::inlay_hits(&inlay_parts, *doc, &tab.editor);
                 if let Some(preview) = tab.markdown_preview.as_mut()
                     && markdown_preview_rect.width > 0
                 {
@@ -651,6 +654,7 @@ pub(super) fn draw_pane_content(
         rail_rect,
         collapse_hits,
         blame_rect,
+        inlay_hits,
         markdown_link_hits,
         select_regions,
     }

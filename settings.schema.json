@@ -807,12 +807,28 @@
       "type": "object",
       "properties": {
         "enabled": {
-          "description": "Draw inlay hints for languages whose server supplies them.",
-          "type": "boolean",
+          "description": "Whether inlay hints are drawn: `true`/`\"on\"` and `false`/`\"off\"`, or\n`\"onUnlessPressed\"`/`\"offUnlessPressed\"` to show them, or hide them,\nexcept for a moment after the Toggle Inlay Hints key.",
+          "$ref": "#/$defs/InlayHintsEnabled",
           "default": true
         }
       },
       "additionalProperties": false
+    },
+    "InlayHintsEnabled": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "string",
+          "enum": [
+            "on",
+            "off",
+            "onUnlessPressed",
+            "offUnlessPressed"
+          ]
+        }
+      ]
     },
     "Latex": {
       "description": "`latex.*` — external LaTeX compilation and preview behavior.",

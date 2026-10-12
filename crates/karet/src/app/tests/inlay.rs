@@ -12,6 +12,7 @@ use karet_core::InlayHint;
 use karet_core::InlayHintKind;
 use karet_core::LineCol;
 use karet_session::LSP_CHANGE_DEBOUNCE;
+use karet_session::config::schema::InlayHintsEnabled;
 
 use super::support::*;
 use crate::app::*;
@@ -106,7 +107,7 @@ fn a_frame_asks_for_the_visible_range_once() {
 #[test]
 fn a_disabled_setting_asks_for_nothing() {
     let (backend, mut app) = hinted_app("let a = 1;\n");
-    app.settings.editor.inlay_hints.enabled = false;
+    app.settings.editor.inlay_hints.enabled = InlayHintsEnabled::Off;
     app.request_inlay_hints();
     assert!(inlay_requests(&backend).is_empty());
 }
@@ -576,7 +577,7 @@ fn a_failure_for_a_superseded_request_is_ignored() {
 /// Reload the configuration with hints `enabled` or not, as the watcher does.
 fn reload_with_hints(app: &mut App, enabled: bool) {
     let mut settings = app.settings.clone();
-    settings.editor.inlay_hints.enabled = enabled;
+    settings.editor.inlay_hints.enabled = enabled.into();
     app.on_backend_event(
         None,
         SessionEvent::ConfigChanged {

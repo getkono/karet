@@ -93,6 +93,12 @@ impl App {
     /// [input context](Self::input_context) and dispatch, or fall through to the
     /// active modal's text input when nothing is bound.
     pub(super) fn handle_key(&mut self, key: KeyEvent) {
+        self.begin_inlay_key();
+        self.handle_key_inner(key);
+        self.end_inlay_key();
+    }
+
+    fn handle_key_inner(&mut self, key: KeyEvent) {
         // Typing means the pointer is no longer the subject; a Ctrl release that
         // produces no mouse event would otherwise leave the underline behind.
         self.definition_hover = None;

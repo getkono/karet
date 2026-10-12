@@ -157,6 +157,7 @@ impl App {
             completion_matcher: karet_fuzzy::Matcher::new(),
             pending_hover: None,
             hover_ui: None,
+            inlay_ui: inlay::InlayUi::default(),
             diagnostic_view: None,
             debug_state: karet_session::DebugSessionState::Idle,
             debug_detail: String::new(),
@@ -253,14 +254,18 @@ impl App {
             }
         }
 
-        if !settings.editor.inlay_hints.enabled {
-            self.forget_all_inlay_hints();
-        }
+        // A changed hint setting is the user's latest word: it ends any flip
+        // the toggle key made against the old one.
+        let inlay_changed = settings.editor.inlay_hints != self.settings.editor.inlay_hints;
         let decorations_turned_on = settings.git.decorations && !self.settings.git.decorations;
         if !settings.git.decorations {
             self.forget_line_changes(None);
         }
         self.settings = settings;
+        if inlay_changed {
+            self.inlay_ui.flipped = false;
+        }
+        self.apply_inlay_visibility();
         if decorations_turned_on {
             self.request_all_line_changes();
         }

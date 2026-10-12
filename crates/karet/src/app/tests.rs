@@ -24,6 +24,7 @@ mod github;
 pub(crate) mod harness;
 mod hover;
 mod inlay;
+mod inlay_pointer;
 mod inline_macros;
 mod keystroke_copies;
 mod language_server_badge;

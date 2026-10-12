@@ -12,6 +12,7 @@ pub(super) fn clear_pane_render_state(app: &mut App) {
     app.editor_rect = Rect::default();
     app.markdown_preview_rect = Rect::default();
     app.blame_rect = None;
+    app.inlay_ui.hits.clear();
     app.markdown_link_hits.clear();
     app.commit_badge_rect = None;
     app.find_rects = crate::ui::FindBarRects::default();
@@ -195,6 +196,7 @@ pub(super) fn draw_panes(
             app.markdown_preview_rect = rendered.markdown_preview_rect;
             app.image_area = rendered.image_area;
             app.blame_rect = rendered.blame_rect;
+            app.inlay_ui.hits = rendered.inlay_hits;
             app.commit_badge_rect = rendered.commit_badge_rect;
             app.find_rects = rendered.find_rects;
         }
@@ -327,6 +329,7 @@ pub(super) fn render_pane(
         commit_rail_rect: painted.rail_rect.unwrap_or_default(),
         commit_collapse_hits: painted.collapse_hits,
         blame_rect: painted.blame_rect,
+        inlay_hits: painted.inlay_hits,
         markdown_link_hits: painted.markdown_link_hits,
         select_regions: painted.select_regions,
         find_rects,
@@ -505,6 +508,50 @@ pub(super) fn draw_hover(f: &mut Frame, app: &mut App, theme: &Theme) {
     ui.scroll = ui.scroll.min(content_rows.saturating_sub(height));
     ui.rect = rect;
     f.render_widget(popup.scroll(ui.scroll), rect);
+}
+
+/// Draw the tooltip of the inlay hint the pointer rests on, against the
+/// cells of the part it describes: above them when there is room, so the
+/// line it annotates stays readable, below otherwise. Clipped to the editor,
+/// like the hover popup.
+pub(super) fn draw_inlay_tooltip(f: &mut Frame, app: &App, theme: &Theme) {
+    let Some(tooltip) = app.inlay_ui.tooltip.as_ref() else {
+        return;
+    };
+    let editor = app.editor_rect;
+    if editor.width < 8 || editor.height < 3 {
+        return;
+    }
+    let anchor = tooltip.anchor;
+    let popup = karet_widgets::hover::HoverPopup::new(&tooltip.markup, theme);
+    let width = editor.width.saturating_sub(2).clamp(8, 72);
+    let rows = u16::try_from(popup.lines(width).len())
+        .unwrap_or(u16::MAX)
+        .max(1);
+    let above = anchor.y.saturating_sub(editor.top());
+    let below = editor.bottom().saturating_sub(anchor.y.saturating_add(1));
+    let (y, height) = if above >= rows || above >= below {
+        let height = rows.min(above);
+        (anchor.y.saturating_sub(height), height)
+    } else {
+        (anchor.y.saturating_add(1), rows.min(below))
+    };
+    if height == 0 {
+        return;
+    }
+    let x = anchor.x.clamp(
+        editor.left(),
+        editor.right().saturating_sub(width).max(editor.left()),
+    );
+    let rect = Rect::new(x, y, width, height);
+    f.render_widget(Clear, rect);
+    f.render_widget(
+        ratatui::widgets::Block::default().style(
+            ratatui::style::Style::default().bg(theme.role(ThemeRole::Background).to_ratatui()),
+        ),
+        rect,
+    );
+    f.render_widget(popup, rect);
 }
 
 pub(super) fn draw_toasts(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {

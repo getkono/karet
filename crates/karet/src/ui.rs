@@ -267,6 +267,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // The hover popup floats the same way (they never overlap in practice —
     // one follows typing, the other an explicit keystroke).
     draw_hover(f, app, &theme);
+    // An inlay hint's tooltip, against the hint the pointer rests on.
+    draw_inlay_tooltip(f, app, &theme);
     // The rename prompt floats over both: while it is open, nothing else is
     // being typed into.
     rename::draw_rename(f, app, &theme);
@@ -470,6 +472,7 @@ struct RenderedPane {
     commit_rail_rect: Rect,
     commit_collapse_hits: Vec<crate::app::CommitCollapseHit>,
     blame_rect: Option<Rect>,
+    inlay_hits: Vec<crate::app::InlayHintHit>,
     markdown_link_hits: Vec<crate::app::MarkdownLinkHit>,
     select_regions: Vec<crate::app::SelectRegion>,
     find_rects: FindBarRects,
@@ -488,6 +491,8 @@ struct PaneContent {
     rail_rect: Option<Rect>,
     collapse_hits: Vec<crate::app::CommitCollapseHit>,
     blame_rect: Option<Rect>,
+    /// Where each inlay-hint label part was painted.
+    inlay_hits: Vec<crate::app::InlayHintHit>,
     markdown_link_hits: Vec<crate::app::MarkdownLinkHit>,
     select_regions: Vec<crate::app::SelectRegion>,
 }

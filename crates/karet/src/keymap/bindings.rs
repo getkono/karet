@@ -272,6 +272,10 @@ pub(super) static BINDINGS: &[Binding] = &[
     // diagnostics under the caret.
     seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('i'))], Command::Hover),
 
+    // Inlay hints on and off. `T` for types, since `Ctrl+H` is Backspace on a
+    // legacy terminal and could never reach this chord.
+    seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('t'))], Command::ToggleInlayHints),
+
     // The scrollable diagnostic detail view, for errors too long for a popup.
     seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('m'))], Command::ShowDiagnostic),
 

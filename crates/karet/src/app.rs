@@ -99,6 +99,7 @@ use crossterm::terminal::SetTitle;
 pub(crate) use drag::DragGranularity;
 pub(crate) use drag::EditorDrag;
 pub(crate) use hit::*;
+pub(crate) use inlay::InlayHintHit;
 use karet_core::BlameAttribution;
 use karet_core::BytePos;
 use karet_core::Change;
@@ -623,6 +624,8 @@ pub struct App {
     pub(crate) pending_hover: Option<crate::hover::PendingHover>,
     /// The open hover popup, if any.
     pub(crate) hover_ui: Option<crate::hover::HoverUi>,
+    /// Inlay-hint tooltips, Ctrl+click, resolving, and the toggle key.
+    pub(crate) inlay_ui: inlay::InlayUi,
     /// The open scrollable diagnostic detail view, if any.
     pub(crate) diagnostic_view: Option<crate::hover::DiagnosticView>,
     /// The debug session's lifecycle, mirrored from `Event::DebugState`.

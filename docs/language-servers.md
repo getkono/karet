@@ -303,6 +303,11 @@ What the client declares at the handshake is kept to what it honours:
   its hints — edit a return type in one file and the `: u32` shown at a call
   site in another is stale. karet answers it at once and re-asks for the hints
   of every visible document.
+- `textDocument.inlayHint.resolveSupport` for `tooltip`, `label.tooltip` and
+  `label.location`. A server may leave those out of its answer; resting the
+  pointer on a hint, or Ctrl+clicking one of its label parts, sends
+  `inlayHint/resolve` with the hint exactly as the server sent it, and the
+  tooltip shows, or the click goes where the part leads, once it is filled in.
 - `dynamicRegistration` for the gated requests whose registration carries
   nothing karet reads beyond "on": hover, definition, implementation, type
   hierarchy, document and workspace symbols, rename, formatting, range
