@@ -1,5 +1,7 @@
 use std::ops::RangeInclusive;
 
+use unicode_segmentation::UnicodeSegmentation;
+
 use super::hint::HintIndex;
 use super::hint::LineHints;
 use super::text::*;
@@ -48,16 +50,48 @@ impl<'a> Layout<'a> {
     }
 }
 
-/// Split one logical line into source-column ranges for soft wrapping. Whitespace is
-/// kept in the range before the break so every source column maps to exactly one row;
-/// words wider than the viewport are split at the hard width.
-pub(super) fn character_width(ch: char, display_col: u32, tab_width: u16) -> u32 {
+/// The screen cells `ch` occupies when it starts at `display_col`.
+///
+/// `cells` is the char's entry in [`cluster_widths`]: a hard tab ignores it and
+/// expands to the next tab stop from `display_col`.
+pub(super) fn character_width(ch: char, cells: u32, display_col: u32, tab_width: u16) -> u32 {
     if ch == '\t' {
         let width = u32::from(tab_width.max(1));
         width - (display_col % width)
     } else {
-        u32::try_from(unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0)).unwrap_or(u32::MAX)
+        cells
     }
+}
+
+/// The cells each char of `chars` occupies, tabs aside: an extended grapheme
+/// cluster's width sits on its first char and every later char of the cluster
+/// takes none. A terminal lays a cluster out as one glyph, so summing its chars
+/// would over-count a ZWJ emoji sequence (`👨‍👩‍👧` is two cells, not six) or an
+/// emoji presentation sequence. A one-char cluster keeps the char's own width.
+/// A hard tab reports 0 here: its cells depend on where it starts.
+#[must_use]
+pub fn cluster_widths(chars: &[char]) -> Vec<u32> {
+    let text: String = chars.iter().collect();
+    let mut widths = Vec::with_capacity(chars.len());
+    for cluster in text.graphemes(true) {
+        let mut members = cluster.chars();
+        let width = match (members.next(), members.next()) {
+            (Some(ch), None) => unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0),
+            _ => unicode_width::UnicodeWidthStr::width(cluster),
+        };
+        widths.push(u32::try_from(width).unwrap_or(u32::MAX));
+        widths.extend(cluster.chars().skip(1).map(|_| 0));
+    }
+    widths
+}
+
+/// The cells the char at `index` of `chars` occupies at `display_col`, given
+/// the line's [`cluster_widths`].
+fn width_at(chars: &[char], widths: &[u32], index: u32, display_col: u32, tab_width: u16) -> u32 {
+    chars.get(index as usize).map_or(0, |&ch| {
+        let cells = widths.get(index as usize).copied().unwrap_or(0);
+        character_width(ch, cells, display_col, tab_width)
+    })
 }
 
 /// The screen column a buffer column renders at.
@@ -75,23 +109,14 @@ pub(super) fn display_col(
     tab_width: u16,
     hints: LineHints<'_>,
 ) -> u32 {
-    if hints.is_empty() {
-        return chars
-            .iter()
-            .take(source_col as usize)
-            .fold(0_u32, |col, ch| {
-                col.saturating_add(character_width(*ch, col, tab_width))
-            });
-    }
+    let widths = cluster_widths(chars);
     // Clamped to the line: past its end there are no characters left to walk,
     // so a hint anchored beyond it cannot shift anything.
     let limit = source_col.min(chars.len() as u32);
     let mut col = 0_u32;
     for index in 0..limit {
         col = col.saturating_add(hints.width_at(index));
-        if let Some(ch) = chars.get(index as usize) {
-            col = col.saturating_add(character_width(*ch, col, tab_width));
-        }
+        col = col.saturating_add(width_at(chars, &widths, index, col, tab_width));
     }
     col
 }
@@ -131,32 +156,44 @@ pub(super) fn source_col_at_display_offset(
     hints: LineHints<'_>,
     snap: Snap,
 ) -> u32 {
-    let mut source = start.min(chars.len() as u32);
-    let end = end.min(chars.len() as u32);
+    let len = chars.len() as u32;
+    let mut source = start.min(len);
+    let end = end.min(len);
     let mut absolute = display_col(chars, source, tab_width, hints);
     let target = absolute.saturating_add(offset);
+    let widths = cluster_widths(chars);
+    let bounds = cluster_bounds(chars);
+    // Walk whole grapheme clusters: a column inside one is never a caret
+    // position, so a cell resolves to a cluster's start or its end.
     while source < end {
-        let Some(ch) = chars.get(source as usize) else {
-            break;
-        };
+        let next = bounds
+            .iter()
+            .copied()
+            .find(|&bound| bound > source)
+            .unwrap_or(len);
         // The hint anchored at `source` paints between its caret slot and the
         // character there, so its cells belong to this column.
         let after_hint = absolute.saturating_add(hints.width_at(source));
         if target < after_hint {
             return source;
         }
-        let width = character_width(*ch, after_hint, tab_width);
+        let width = width_at(chars, &widths, source, after_hint, tab_width);
         if target < after_hint.saturating_add(width) {
             // Round to the nearer boundary: the right half of a wide
             // character, or a tab's trailing cells, put the caret after it.
             if snap == Snap::Nearest && target.saturating_sub(after_hint).saturating_mul(2) >= width
             {
-                source = source.saturating_add(1);
+                source = next;
             }
             break;
         }
-        absolute = after_hint.saturating_add(width);
-        source = source.saturating_add(1);
+        // A cluster's later chars take no cells of their own; a hint anchored
+        // between them still does.
+        absolute = (source.saturating_add(1)..next)
+            .fold(after_hint.saturating_add(width), |col, inner| {
+                col.saturating_add(hints.width_at(inner))
+            });
+        source = next;
     }
     source
 }
@@ -184,43 +221,49 @@ pub(super) fn visual_ranges(
     }
     let hints = layout.hints_on(line);
     let width = layout.width.max(1);
+    let widths = cluster_widths(&chars);
+    // Rows break between grapheme clusters only, so a wrap never splits a
+    // combining sequence, a ZWJ emoji or a flag across two rows.
+    let runs = clusters(&chars);
     let mut ranges = Vec::new();
-    let mut start = 0_u32;
-    while start < len {
-        let mut hard_end = start;
+    let mut first = 0_usize;
+    while let Some(&(start, ..)) = runs.get(first) {
+        let mut next = first;
         let mut used = 0_u32;
         // `display_col(start)` stops short of the hint at `start`: this row
         // paints it, so its cells are counted below.
         let mut absolute = display_col(&chars, start, layout.tab_width, hints);
-        while hard_end < len {
-            let hint = hints.width_at(hard_end);
-            let char_width = character_width(
-                chars[hard_end as usize],
-                absolute.saturating_add(hint),
-                layout.tab_width,
-            );
-            let step = hint.saturating_add(char_width);
-            if hard_end > start && used.saturating_add(step) > width {
+        while let Some(&(from, to, _)) = runs.get(next) {
+            let step = (from..to).fold(0_u32, |step, index| {
+                let hint = hints.width_at(index);
+                let at = absolute.saturating_add(step).saturating_add(hint);
+                let cells = width_at(&chars, &widths, index, at, layout.tab_width);
+                step.saturating_add(hint).saturating_add(cells)
+            });
+            if next > first && used.saturating_add(step) > width {
                 break;
             }
             used = used.saturating_add(step);
             absolute = absolute.saturating_add(step);
-            hard_end += 1;
+            next += 1;
             if used >= width {
                 break;
             }
         }
-        let end = if hard_end < len {
-            chars[start as usize..hard_end as usize]
-                .iter()
-                .rposition(|ch| ch.is_whitespace())
-                .map_or(hard_end, |index| start + index as u32 + 1)
+        let row = runs.get(first..next).unwrap_or_default();
+        let end = if next < runs.len() {
+            row.iter()
+                .rposition(|cluster| cluster.2.is_whitespace())
+                .map_or(next, |index| first + index + 1)
         } else {
-            hard_end
+            next
         };
-        let end = end.max(start.saturating_add(1)).min(len);
-        ranges.push(VisualRange { start, end });
-        start = end;
+        let end = end.max(first + 1);
+        ranges.push(VisualRange {
+            start,
+            end: runs.get(end).map_or(len, |cluster| cluster.0),
+        });
+        first = end;
     }
     ranges
 }
@@ -444,12 +487,13 @@ pub(super) fn offset_within_row(
 ///
 /// Non-decreasing, so the horizontal-scroll searches below can bisect it.
 fn display_cols(chars: &[char], tab_width: u16, hints: LineHints<'_>) -> Vec<u32> {
+    let widths = cluster_widths(chars);
     let mut cols = Vec::with_capacity(chars.len().saturating_add(1));
     let mut col = 0_u32;
     cols.push(col);
-    for (index, ch) in (0_u32..).zip(chars) {
+    for index in (0_u32..).take(chars.len()) {
         col = col.saturating_add(hints.width_at(index));
-        col = col.saturating_add(character_width(*ch, col, tab_width));
+        col = col.saturating_add(width_at(chars, &widths, index, col, tab_width));
         cols.push(col);
     }
     cols

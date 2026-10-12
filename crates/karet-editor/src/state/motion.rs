@@ -314,15 +314,17 @@ impl Rows<'_> {
 }
 
 /// Where a motion that does not depend on the layout takes a caret at `from`.
+/// [`Motion::Left`] and [`Motion::Right`] step a whole grapheme cluster, so a
+/// caret never lands inside a combining sequence, a ZWJ emoji or a flag.
 fn step(buffer: &TextBuffer, motion: Motion, from: LineCol) -> LineCol {
     let last = last_line(buffer);
     match motion {
-        Motion::Left if from.col > 0 => LineCol::new(from.line, from.col - 1),
+        Motion::Left if from.col > 0 => LineCol::new(from.line, previous_cluster_col(buffer, from)),
         Motion::Left if from.line > 0 => {
             LineCol::new(from.line - 1, line_len(buffer, from.line - 1))
         },
         Motion::Right if from.col < line_len(buffer, from.line) => {
-            LineCol::new(from.line, from.col + 1)
+            LineCol::new(from.line, next_cluster_col(buffer, from))
         },
         Motion::Right if from.line < last => LineCol::new(from.line + 1, 0),
         Motion::DocStart => LineCol::new(0, 0),

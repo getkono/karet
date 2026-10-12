@@ -21,6 +21,7 @@ karet-text.workspace = true
 karet-syntax.workspace = true
 karet-theme = { workspace = true, features = ["view"] }
 ratatui.workspace = true
+unicode-segmentation.workspace = true
 unicode-width.workspace = true
 
 [dev-dependencies]
