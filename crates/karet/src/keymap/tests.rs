@@ -332,6 +332,42 @@ fn word_motion_and_select_all_bind_in_editor() {
     );
 }
 
+/// The keyboard paths `docs/editing-behavior.md` lists for the pointer
+/// gestures a terminal may swallow (its "Modifiers terminals may not deliver"
+/// table) are all bound, so none of those gestures is the only way in.
+#[test]
+fn every_swallowable_gesture_has_a_bound_keyboard_path() {
+    use KeyCode::*;
+    let ctrl = KeyModifiers::CONTROL;
+    let shift = KeyModifiers::SHIFT;
+    let alt = KeyModifiers::ALT;
+    let none = KeyModifiers::NONE;
+    for (code, modifiers, command) in [
+        // Ctrl/Super+click: go to definition.
+        (F(12), none, Command::GoToDefinition),
+        // Alt+click: add carets.
+        (Up, ctrl | alt, Command::AddCursorAbove),
+        (Down, ctrl | alt, Command::AddCursorBelow),
+        (Char('d'), ctrl, Command::AddCursorNextOccurrence),
+        // Shift+click: extend the selection.
+        (Left, shift, Command::SelectLeft),
+        (Right, shift, Command::SelectRight),
+        (Up, shift, Command::SelectUp),
+        (Down, shift, Command::SelectDown),
+        // Shift+Alt+drag: box selection.
+        (Up, ctrl | shift | alt, Command::ColumnSelectUp),
+        (Down, ctrl | shift | alt, Command::ColumnSelectDown),
+        (Left, ctrl | shift | alt, Command::ColumnSelectLeft),
+        (Right, ctrl | shift | alt, Command::ColumnSelectRight),
+    ] {
+        assert_eq!(
+            res(Focus::Editor, false, key(code, modifiers)),
+            Some(command),
+            "{modifiers:?}+{code:?}"
+        );
+    }
+}
+
 #[test]
 fn multi_cursor_chords_bind_in_editor() {
     assert_eq!(
@@ -708,20 +744,32 @@ fn ctrl_shift_i_formats_markdown_tables() {
 }
 
 #[test]
-fn ctrl_alt_shift_arrows_resize_panes() {
-    let ctx = Context::focus(FocusTarget::Editor);
-    for (key_code, command) in [
-        (KeyCode::Left, Command::ResizePaneLeft),
-        (KeyCode::Right, Command::ResizePaneRight),
-        (KeyCode::Up, Command::ResizePaneUp),
-        (KeyCode::Down, Command::ResizePaneDown),
-    ] {
-        let chord = KeyChord::from_event(key(
-            key_code,
-            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
-        ));
-        assert_eq!(resolve(ctx, &[chord]), Resolved::Command(command));
+fn ctrl_alt_shift_arrows_resize_panes_outside_the_text_editor() {
+    for focus in [FocusTarget::Explorer, FocusTarget::Pager] {
+        let ctx = Context::focus(focus);
+        for (key_code, command) in [
+            (KeyCode::Left, Command::ResizePaneLeft),
+            (KeyCode::Right, Command::ResizePaneRight),
+            (KeyCode::Up, Command::ResizePaneUp),
+            (KeyCode::Down, Command::ResizePaneDown),
+        ] {
+            let chord = KeyChord::from_event(key(
+                key_code,
+                KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+            ));
+            assert_eq!(resolve(ctx, &[chord]), Resolved::Command(command));
+        }
     }
+    // In the text editor the chord is box selection, so the palette resizes.
+    let chord = KeyChord::from_event(key(
+        KeyCode::Left,
+        KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+    ));
+    assert_eq!(
+        resolve(Context::focus(FocusTarget::Editor), &[chord]),
+        Resolved::Command(Command::ColumnSelectLeft)
+    );
+    assert!(crate::command::palette().contains(&Command::ResizePaneLeft));
 }
 
 #[test]

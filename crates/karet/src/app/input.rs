@@ -245,6 +245,7 @@ impl App {
         match keymap::resolve(ctx, &self.pending) {
             Resolved::Command(command) => {
                 self.pending.clear();
+                let command = self.keyboard_command(command);
                 self.dispatch(command);
             },
             Resolved::Pending => {

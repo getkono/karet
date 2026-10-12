@@ -217,6 +217,14 @@ pub enum Command {
     AddCursorBelow,
     /// Select the word under the caret, then add a caret at the next occurrence.
     AddCursorNextOccurrence,
+    /// Grow the box (column) selection one line up.
+    ColumnSelectUp,
+    /// Grow the box (column) selection one line down.
+    ColumnSelectDown,
+    /// Move the box (column) selection's moving edge one cell left.
+    ColumnSelectLeft,
+    /// Move the box (column) selection's moving edge one cell right.
+    ColumnSelectRight,
     /// Move each caret to the other bracket of the pair it touches, or to the
     /// closing bracket of the pair enclosing it (Ctrl+Shift+\).
     GoToBracket,
@@ -807,6 +815,10 @@ impl Command {
             Self::AddCursorAbove => "Add Cursor Above",
             Self::AddCursorBelow => "Add Cursor Below",
             Self::AddCursorNextOccurrence => "Add Cursor to Next Occurrence",
+            Self::ColumnSelectUp => "Column Select Up",
+            Self::ColumnSelectDown => "Column Select Down",
+            Self::ColumnSelectLeft => "Column Select Left",
+            Self::ColumnSelectRight => "Column Select Right",
             Self::GoToBracket => "Go to Bracket",
             Self::SelectToBracket => "Select to Bracket",
             Self::CollapseCarets => "Collapse Cursors",

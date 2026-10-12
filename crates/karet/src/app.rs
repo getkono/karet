@@ -98,6 +98,8 @@ use crossterm::event::{self};
 use crossterm::terminal::SetTitle;
 pub(crate) use drag::DragGranularity;
 pub(crate) use drag::EditorDrag;
+pub(crate) use editor::column::ColumnSelect;
+pub(crate) use editor::column::ColumnStep;
 pub(crate) use hit::*;
 use karet_core::BlameAttribution;
 use karet_core::BytePos;
@@ -560,6 +562,9 @@ pub struct App {
     pub(crate) commit_badge_rect: Option<Rect>,
     /// The editor's in-progress pointer selection drag, if one is under way.
     pub(crate) editor_drag: Option<drag::EditorDrag>,
+    /// The box selection last made, so the next Shift+Alt press or
+    /// Ctrl+Shift+Alt+arrow grows it rather than starting over.
+    column_select: Option<ColumnSelect>,
     /// The live pointer selection on a read-only surface (diff, viewer), if any.
     pub(crate) surface_selection: Option<select::SurfaceSelection>,
     /// The surface currently capturing a selection drag, if one is under way.
