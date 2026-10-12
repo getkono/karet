@@ -549,6 +549,7 @@ async fn crashed_server_restarts_and_replays_open_documents() -> TestResult {
     Ok(())
 }
 
+mod code_action_tests;
 mod disabled_tests;
 mod failure_policy_tests;
 mod format_tests;

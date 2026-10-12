@@ -21,6 +21,8 @@ use karet_core::TextEdit;
 use karet_core::WorkspaceEdit;
 use karet_lsp::Indentation;
 
+use super::code_actions::CodeActionAnswer;
+use super::code_actions::CodeActionCmd;
 use super::slot::SlotKey;
 use super::slot::SlotToken;
 use crate::api::DocumentId;
@@ -148,6 +150,9 @@ pub(crate) enum ServerCmd {
         path: PathBuf,
         ask: FormattingAsk,
     },
+    /// One step of listing or running code actions; always answered with an
+    /// [`LspUpdate::CodeAction`].
+    CodeAction(CodeActionCmd),
 }
 
 /// What one format-on-save asks of its server beyond the document itself.
@@ -347,6 +352,11 @@ pub(crate) enum LspUpdate {
         /// use its own formatter instead.
         formatted: bool,
         edits: Vec<TextEdit>,
+    },
+    /// The answer to a [`ServerCmd::CodeAction`]; ranges in UTF-16 columns.
+    CodeAction {
+        generation: u64,
+        answer: CodeActionAnswer,
     },
     /// A complete server diagnostic layer for one file.
     Diagnostics {

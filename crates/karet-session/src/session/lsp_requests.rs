@@ -15,7 +15,7 @@ use crate::api::RenameTarget;
 use crate::lsp::RenameAnswer;
 
 /// Clamp `at` to a position `buffer` actually has.
-fn clamp_to_document(buffer: &TextBuffer, at: LineCol) -> LineCol {
+pub(super) fn clamp_to_document(buffer: &TextBuffer, at: LineCol) -> LineCol {
     let last_line = (buffer.line_count() as u32).saturating_sub(1);
     let line = at.line.min(last_line);
     let width = buffer.line(line as usize).map_or(0, |text| {
@@ -30,7 +30,7 @@ impl Session {
     ///
     /// An associated function over the disjoint fields (not `&self`) so the
     /// returned borrow leaves `self.lsp` free for the forwarding call.
-    fn doc_or_report<'a>(
+    pub(super) fn doc_or_report<'a>(
         store: &'a DocumentStore,
         events: &mpsc::UnboundedSender<(Option<RequestId>, Event)>,
         id: RequestId,
@@ -321,10 +321,10 @@ impl Session {
 }
 
 /// The refusal when no language server serves the document.
-const NO_SERVER: &str = "no language server is running for this file";
+pub(super) const NO_SERVER: &str = "no language server is running for this file";
 
 /// An edit refused before anything was applied.
-fn refused(reason: &str) -> AppliedWorkspaceEdit {
+pub(super) fn refused(reason: &str) -> AppliedWorkspaceEdit {
     AppliedWorkspaceEdit {
         result: karet_core::ApplyWorkspaceEditResult::failed(reason, None),
         ..AppliedWorkspaceEdit::default()

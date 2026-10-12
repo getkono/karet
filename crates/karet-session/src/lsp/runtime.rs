@@ -1,5 +1,6 @@
 use karet_core::ServerFeature;
 
+use super::code_actions;
 use super::commands::OpenDocument;
 use super::commands::answer_empty;
 use super::commands::answer_reconnecting;
@@ -780,6 +781,32 @@ pub(super) async fn server_task(task: ServerTask) {
                         version,
                         edit,
                     });
+                },
+                ServerCmd::CodeAction(cmd) => {
+                    flush_pending(
+                        active,
+                        &mut pending,
+                        &mut dead,
+                        &mut tally,
+                        &updates,
+                        &key,
+                        token,
+                    )
+                    .await;
+                    let answer = if dead {
+                        cmd.unanswered(code_actions::UNAVAILABLE)
+                    } else {
+                        let mut context = code_actions::StepContext {
+                            tally: &mut tally,
+                            dead: &mut dead,
+                            updates: &updates,
+                            key: &key,
+                            token,
+                            generation,
+                        };
+                        code_actions::serve(active, cmd, &mut context).await
+                    };
+                    let _ = updates.send(LspUpdate::CodeAction { generation, answer });
                 },
                 ServerCmd::Formatting {
                     request,
