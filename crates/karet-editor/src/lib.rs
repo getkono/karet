@@ -50,6 +50,7 @@ use ratatui::text::Span;
 use ratatui::widgets::StatefulWidget;
 pub use state::EditorState;
 pub use state::Fold;
+pub use state::Motion;
 pub use state::resolve_folds;
 pub use text::line_span;
 pub use text::next_word_boundary;

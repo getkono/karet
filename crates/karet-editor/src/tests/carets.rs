@@ -163,6 +163,154 @@ fn add_next_occurrence_selects_word_then_next_match() {
     }));
 }
 
+fn at(line: u32, col: u32) -> LineCol {
+    LineCol::new(line, col)
+}
+
+fn heads(state: &EditorState) -> Vec<LineCol> {
+    state.cursors().selections.iter().map(|s| s.head).collect()
+}
+
+#[test]
+fn a_plain_motion_collapses_each_selection_to_its_leading_edge() {
+    let buffer = TextBuffer::from_text("abcde\nfghij\nklmno");
+    let forward = Selection {
+        anchor: at(1, 1),
+        head: at(1, 4),
+    };
+    let backward = Selection {
+        anchor: forward.head,
+        head: forward.anchor,
+    };
+    // (motion, where it lands from a forward and from a backward selection
+    // over `ghi`): Left/Right stop at the edge, the rest move on from it.
+    for (motion, want) in [
+        (Motion::Left, at(1, 1)),
+        (Motion::Right, at(1, 4)),
+        (Motion::Up, at(0, 1)),
+        (Motion::Down, at(2, 4)),
+        (Motion::LineStart, at(1, 0)),
+        (Motion::LineEnd, at(1, 5)),
+        (Motion::PageUp, at(0, 1)),
+        (Motion::PageDown, at(2, 4)),
+    ] {
+        for sel in [forward, backward] {
+            let mut state = EditorState::new();
+            state.last_height = 4;
+            state.set_cursor_state(&buffer, CursorState::single(sel));
+            state.move_carets(&buffer, motion, false);
+            assert_eq!(
+                state.cursors().selections,
+                vec![Selection::caret(want)],
+                "{motion:?} from {sel:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn an_extending_motion_moves_heads_and_keeps_anchors() {
+    let buffer = TextBuffer::from_text("abcde");
+    let mut state = EditorState::new();
+    state.set_cursor_state(
+        &buffer,
+        CursorState {
+            selections: vec![Selection::caret(at(0, 1)), Selection::caret(at(0, 3))],
+            primary: 1,
+        },
+    );
+    state.move_carets(&buffer, Motion::Right, true);
+    // The selections now touch at (0, 3) and stay apart.
+    assert_eq!(
+        state.cursors().selections,
+        vec![
+            Selection {
+                anchor: at(0, 1),
+                head: at(0, 2),
+            },
+            Selection {
+                anchor: at(0, 3),
+                head: at(0, 4),
+            },
+        ]
+    );
+    assert_eq!(state.cursors().primary, 1);
+}
+
+#[test]
+fn plain_motions_move_carets_independently() {
+    let buffer = TextBuffer::from_text("abc\nabc\nabc");
+    let mut state = EditorState::new();
+    state.last_height = 4;
+    state.set_carets(&[at(0, 1), at(1, 1)]);
+    state.move_carets(&buffer, Motion::Down, false);
+    assert_eq!(heads(&state), vec![at(1, 1), at(2, 1)]);
+    // Carets that end on one position merge.
+    state.move_carets(&buffer, Motion::DocStart, false);
+    assert_eq!(heads(&state), vec![at(0, 0)]);
+}
+
+#[test]
+fn removing_a_caret_keeps_the_primary_on_the_same_caret() {
+    let buffer = TextBuffer::from_text("abc\nabc\nabc");
+    let mut state = EditorState::new();
+    state.last_height = 4;
+    state.place_caret(at(0, 1));
+    state.add_caret(&buffer, at(2, 1));
+    state.add_caret(&buffer, at(1, 1));
+    assert_eq!(state.cursor(), at(1, 1));
+    // Removing a caret before the primary shifts its index, not its role.
+    state.add_caret(&buffer, at(0, 1));
+    assert_eq!(heads(&state), vec![at(1, 1), at(2, 1)]);
+    assert_eq!(state.cursor(), at(1, 1));
+    // Removing the primary itself hands the role to the caret before it, or
+    // the next one when it was first.
+    state.add_caret(&buffer, at(1, 1));
+    assert_eq!(state.cursor(), at(2, 1));
+}
+
+#[test]
+fn collapse_to_original_keeps_the_first_placed_caret_and_its_selection() {
+    let buffer = TextBuffer::from_text("abc\nabc\nabc");
+    let mut state = EditorState::new();
+    state.last_height = 4;
+    state.set_selection(&buffer, at(1, 0), at(1, 2));
+    state.add_caret_above(&buffer);
+    state.add_caret(&buffer, at(2, 3));
+    assert_eq!(state.cursors().selections.len(), 3);
+    state.collapse_to_original(&buffer);
+    assert_eq!(
+        state.cursors().selections,
+        vec![Selection {
+            anchor: at(1, 0),
+            head: at(1, 2),
+        }]
+    );
+    assert_eq!(state.cursors().primary, 0);
+}
+
+#[test]
+fn the_original_caret_survives_a_merge_and_a_reset() {
+    let buffer = TextBuffer::from_text("abcdef");
+    let mut state = EditorState::new();
+    state.last_height = 4;
+    state.place_caret(at(0, 1));
+    state.add_caret(&buffer, at(0, 0));
+    state.add_caret(&buffer, at(0, 4));
+    // The original meets the caret at the start of the document and merges
+    // with it; the merged caret is the original.
+    state.move_carets(&buffer, Motion::Left, false);
+    assert_eq!(heads(&state), vec![at(0, 0), at(0, 3)]);
+    state.collapse_to_original(&buffer);
+    assert_eq!(heads(&state), vec![at(0, 0)]);
+
+    // After the set becomes one caret, a new set's original is that caret.
+    state.goto(&buffer, at(0, 4));
+    state.add_caret(&buffer, at(0, 0));
+    state.collapse_to_original(&buffer);
+    assert_eq!(heads(&state), vec![at(0, 4)]);
+}
+
 #[test]
 fn word_bounds_spans_the_word_under_pos() {
     let buffer = TextBuffer::from_text("foo bar");
