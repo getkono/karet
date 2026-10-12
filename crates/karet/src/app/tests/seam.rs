@@ -559,6 +559,31 @@ fn a_wheel_notch_moves_the_selection_by_one_row() {
     assert_eq!(state.selected_id(), Some("pkg::two"));
 }
 
+/// The wheel scrolls the split under the pointer (#339), and a background split showing
+/// the Seam view is no exception: the notch moves that view's selection, and the focus
+/// stays in the split the user was working in.
+#[test]
+fn a_wheel_notch_over_a_background_seam_split_moves_its_selection() {
+    let (_backend, mut app) = moused_app();
+    press(&mut app, 22, 1);
+    let frame = content_frame(&app, Rect::new(0, 0, 100, 24));
+    app.dispatch(Command::SplitRight);
+    let focused = app.focus_pane();
+    assert_ne!(focused, frame.pane, "the new split took the focus");
+    app.pane_frames = vec![frame];
+
+    wheel(&mut app, MouseEventKind::ScrollDown, 22, 1);
+    assert_eq!(
+        app.focus_pane(),
+        focused,
+        "the wheel leaves the focus alone"
+    );
+    let selected = app
+        .seam_view()
+        .and_then(|state| state.selected_id().map(str::to_owned));
+    assert_eq!(selected.as_deref(), Some("pkg::two"));
+}
+
 #[test]
 fn a_horizontal_wheel_moves_between_columns() {
     let (_backend, mut app) = moused_app();

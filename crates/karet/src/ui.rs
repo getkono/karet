@@ -335,6 +335,9 @@ fn draw_diagnostic_view(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect)
     let width = area.width.saturating_sub(8).clamp(24, 100);
     let height = area.height.saturating_sub(4).clamp(5, 28);
     let rect = centered(area, width, height);
+    // The view is modal for the pointer too: a click inside it is kept, one
+    // outside it dismisses it, so the mouse needs to know where it is.
+    view.rect = rect;
     let block = Block::default()
         .borders(Borders::ALL)
         .title("Diagnostics · ↑↓ scroll · Esc closes")
