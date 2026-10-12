@@ -90,6 +90,13 @@ impl TextBuffer {
         None
     }
 
+    /// The text as the rope stores it: consecutive pieces that concatenate to
+    /// the whole buffer, borrowed in place (no copy). Piece boundaries fall on
+    /// character boundaries but are otherwise arbitrary, and may split a line.
+    pub fn chunks(&self) -> impl Iterator<Item = &str> {
+        self.rope.chunks()
+    }
+
     /// A shared, read-only view of the whole text that copies it into one
     /// contiguous `&str` only when (and the first time) a consumer asks for it.
     ///
@@ -297,6 +304,18 @@ mod tests {
         assert_eq!(b.find(needle, span(101, 20_000)), Some(BytePos(9_000)));
         assert_eq!(b.find(needle, span(9_001, 20_000)), Some(BytePos(15_000)));
         assert_eq!(b.find(needle, span(9_001, 15_005)), None);
+    }
+
+    #[test]
+    fn chunks_concatenate_to_the_text() {
+        let text = multi_chunk("héllo\n", &[3, 9_000], 20_000);
+        let b = TextBuffer::from_text(&text);
+        assert!(
+            b.chunks().count() > 2,
+            "the fixture must span several chunks"
+        );
+        assert_eq!(b.chunks().collect::<String>(), text);
+        assert_eq!(TextBuffer::new().chunks().collect::<String>(), "");
     }
 
     #[test]
