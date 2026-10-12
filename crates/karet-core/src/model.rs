@@ -402,15 +402,48 @@ pub enum PrepareRename {
 }
 
 /// A code action (quick fix / refactor) offered for a range.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// Running one means applying its [`edit`](Self::edit), then its
+/// [`command`](Self::command). An action may arrive with neither filled in
+/// yet: its producer fills them in on request, from
+/// [`payload`](Self::payload).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CodeAction {
     /// The action title.
     pub title: String,
+    /// The action's kind, a dot-separated hierarchy such as `quickfix`,
+    /// `refactor.extract`, or `source.organizeImports`; `None` when the
+    /// producer gave none.
+    pub kind: Option<String>,
+    /// Whether the producer marks this the preferred way to act (the fix a
+    /// "fix all" or auto-fix would pick).
+    pub preferred: bool,
+    /// Why the action cannot run right now, when the producer offers it
+    /// anyway so the user can see it exists.
+    pub disabled: Option<String>,
     /// An edit to apply.
     pub edit: Option<WorkspaceEdit>,
     /// A command to run.
     pub command: Option<CommandId>,
+    /// The producer's own encoding of the action, opaque to everyone else.
+    ///
+    /// Handed back to the producer to fill in a deferred edit or to run the
+    /// command; `None` when the producer needs nothing back.
+    pub payload: Option<String>,
+}
+
+impl CodeAction {
+    /// Whether this action's kind is `kind` or nested under it (`refactor`
+    /// matches `refactor.extract`, but not `refactoring`). An action with no
+    /// kind matches no kind.
+    #[must_use]
+    pub fn is_kind(&self, kind: &str) -> bool {
+        self.kind.as_deref().is_some_and(|own| {
+            own.strip_prefix(kind)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with('.'))
+        })
+    }
 }
 
 #[cfg(test)]
@@ -440,6 +473,23 @@ mod tests {
             role: Some(ThemeRole::DiagnosticError),
         };
         assert_eq!(dec.kind, DecorationKind::GutterMarker { glyph: '▎' });
+    }
+
+    /// A kind matches itself and whatever nests under it, never a mere
+    /// string prefix, and an action without a kind matches nothing.
+    #[test]
+    fn code_action_kinds_match_by_hierarchy() {
+        let action = |kind: Option<&str>| CodeAction {
+            kind: kind.map(str::to_owned),
+            ..CodeAction::default()
+        };
+        let extract = action(Some("refactor.extract"));
+        assert!(extract.is_kind("refactor"));
+        assert!(extract.is_kind("refactor.extract"));
+        assert!(!extract.is_kind("refactor.ex"));
+        assert!(!extract.is_kind("source"));
+        assert!(!action(Some("refactoring")).is_kind("refactor"));
+        assert!(!action(None).is_kind("quickfix"));
     }
 
     #[test]
