@@ -48,9 +48,15 @@ pub struct DocSnapshot {
     pub language: Option<&'static str>,
     /// Whether the buffer has unsaved changes.
     pub dirty: bool,
-    /// A caret to move the editor to when this snapshot is applied. Set only for
-    /// undo/redo (so the caret jumps to the edit site); `None` for ordinary
-    /// publishes, which leave the editor's cursor where the UI placed it.
+    /// The full selection set to restore when this snapshot is applied. Set
+    /// only for undo/redo, and meant only for the view that issued the
+    /// command: undo restores the set from before the undone step, redo the
+    /// set the client reported (through `SetCursor`) right after the step.
+    /// `None` for ordinary publishes.
+    ///
+    /// The snapshot does not carry the change set itself: a view whose text
+    /// is older than [`version`](Self::version) derives it from its own text
+    /// and [`buffer`](Self::buffer), and maps its carets through it.
     pub cursor: Option<CursorState>,
 }
 
