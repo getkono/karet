@@ -152,6 +152,43 @@ fn a_ruler_moves_with_horizontal_scroll_and_leaves_with_it() {
     );
 }
 
+#[test]
+fn a_sticky_header_is_numbered_in_the_active_mode() {
+    // Eleven lines (two digits): line 0's block covers the rest, so once the
+    // view scrolls past it, it sticks to the top row.
+    let buffer = lines(10);
+    let blocks = SemanticBlocks::new(vec![SemanticBlock {
+        header_start: 0,
+        header_end: 0,
+        scope_end: 9,
+    }]);
+    let area = Rect::new(0, 0, 14, 5);
+    let render = |numbers: LineNumbers| {
+        let mut state = EditorState::new();
+        state.place_caret(LineCol::new(6, 0));
+        state.scroll_line = 4;
+        let mut target = Buffer::empty(area);
+        Editor::new(&buffer)
+            .semantic_blocks(&blocks)
+            .sticky_scroll(true)
+            .line_numbers(numbers)
+            .render(area, &mut target, &mut state);
+        assert_eq!(state.sticky_rows, vec![0], "line 0 is the sticky header");
+        row_text(&target, 0, 0, 10)
+    };
+    assert_eq!(render(LineNumbers::Absolute), "  1 line 0");
+    assert_eq!(
+        render(LineNumbers::Relative),
+        "  6 line 0",
+        "six lines above the caret"
+    );
+    assert_eq!(
+        render(LineNumbers::Off),
+        "  line 0  ",
+        "the narrowed gutter: marker + spacer"
+    );
+}
+
 /// Render `buffer` in a 10-row viewport with a 3-line keyboard margin.
 fn paint(buffer: &TextBuffer, state: &mut EditorState, wrap: bool) {
     let area = Rect::new(0, 0, 20, 10);
