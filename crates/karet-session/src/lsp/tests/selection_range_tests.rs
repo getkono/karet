@@ -163,3 +163,44 @@ async fn an_answer_to_a_document_that_moved_on_carries_no_ranges() -> TestResult
     assert_eq!(chains, vec![Vec::<Range>::new(); 2]);
     Ok(())
 }
+
+/// An answer begun under a settings snapshot that `reconfigure` has since
+/// retired is fenced out, but the request it answers is still answered --
+/// with empty chains -- so a client waiting on it is never left waiting.
+#[test]
+fn an_answer_from_a_retired_generation_still_answers_empty() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let path = rust_file(&dir, "notes.txt", TEXT).ok_or("write failed")?;
+    let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
+    session.handle(
+        RequestId(1),
+        Command::OpenDocument {
+            path,
+            language: None,
+        },
+    );
+    let version = session
+        .document(DocumentId(1))
+        .map(|d| d.version())
+        .ok_or("no document")?;
+    let doc = DocumentId(1);
+
+    session.apply_lsp_update(LspUpdate::SelectionRanges {
+        generation: u64::MAX,
+        answer: SelectionRangesAnswer {
+            request: RequestId(2),
+            doc,
+            version,
+            chains: vec![vec![range((0, 2), (0, 3))]; 2],
+        },
+    });
+
+    let mut answer = None;
+    while let Some((id, event)) = events.try_recv() {
+        if let (Some(RequestId(2)), Event::SelectionRanges { chains, .. }) = (id, event) {
+            answer = Some(chains);
+        }
+    }
+    assert_eq!(answer, Some(vec![Vec::<Range>::new(); 2]));
+    Ok(())
+}
