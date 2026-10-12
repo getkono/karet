@@ -143,7 +143,7 @@ pub(super) fn draw_pane_content(
                 // fields (so closing/rerunning one can't wipe the other) and
                 // combined only here, at render time.
                 let mut frame_decos =
-                    swatches::frame_decorations(ctx, *doc, buffer, tab.editor.scroll_line, area);
+                    swatches::frame_decorations(ctx, buffer, tab.editor.scroll_line, area);
                 frame_decos.extend(swatches::debug_decorations(ctx, path));
                 // The lightbulb shares the marker lane too: after a breakpoint,
                 // which is state the user set, but ahead of the change markers,
@@ -156,7 +156,6 @@ pub(super) fn draw_pane_content(
                     .iter()
                     .chain(search_decos.iter())
                     .chain(conflict_decorations.iter())
-                    .chain(ctx.blame.iter())
                     .chain(ctx.definition_underline.iter())
                     .chain(frame_decos.iter())
                     .cloned()
@@ -164,16 +163,14 @@ pub(super) fn draw_pane_content(
                 let diagnostics = doc
                     .and_then(|doc| ctx.diagnostics.get(&doc))
                     .map_or(&[][..], Vec::as_slice);
-                let inlay_hints = doc
-                    .and_then(|doc| ctx.inlay_hints.get(&doc))
-                    .map_or(&[][..], Vec::as_slice);
+                let (virtual_text, blame_index) = swatches::frame_virtual_text(ctx, *doc, buffer);
                 let editor = Editor::new(buffer)
                     .highlights(highlights)
                     .semantic_blocks(semantic_blocks)
                     .theme(theme)
                     .decorations(&combined)
                     .diagnostics(diagnostics)
-                    .inlay_hints(inlay_hints)
+                    .virtual_text(&virtual_text)
                     .folds(&fold_lines)
                     .focused(ctx.editor_focused)
                     .cell_caret(!ctx.graphical_cursor)
@@ -217,14 +214,10 @@ pub(super) fn draw_pane_content(
                     ScrollSurface::TabColumns,
                 );
                 // The cells the widget actually painted the label in: after any
-                // trailing inlay hint or fold marker, not at the end-of-line caret.
-                if ctx.blame_clickable
-                    && let Some(blame) = ctx.blame.as_ref()
-                {
-                    blame_rect = combined
-                        .iter()
-                        .position(|decoration| decoration == blame)
-                        .and_then(|index| tab.editor.inline_text_rect(index));
+                // trailing inlay hint or fold marker, not at the end-of-line
+                // caret, and only what a short slot left of it.
+                if ctx.blame_clickable {
+                    blame_rect = blame_index.and_then(|index| tab.editor.virtual_text_rect(index));
                 }
                 if let Some(preview) = tab.markdown_preview.as_mut()
                     && markdown_preview_rect.width > 0

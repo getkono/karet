@@ -19,7 +19,7 @@
 //! - Blame: [`BlameAttribution`], [`BlameCommit`].
 //! - Text coordinates: [`BytePos`], [`LineCol`], [`Span`], [`Range`], [`LineIndex`].
 //! - Neutral models: [`Diagnostic`], [`Decoration`], [`Symbol`], [`CompletionItem`],
-//!   [`Hover`], [`InlayHint`], [`SignatureHelp`], [`CodeAction`], ….
+//!   [`Hover`], [`InlayHint`], [`VirtualText`], [`SignatureHelp`], [`CodeAction`], ….
 //! - Graph: [`GraphView`] and its nodes/edges, for visualizations.
 //! - Edits & cursors: [`TextEdit`], [`Change`], [`AppliedEdit`], [`EditCause`],
 //!   [`Selection`], [`CursorState`].
@@ -89,6 +89,7 @@ pub use model::Decoration;
 pub use model::DecorationKind;
 pub use model::Diagnostic;
 pub use model::DiagnosticTag;
+pub use model::EolAlign;
 pub use model::Hover;
 pub use model::InlayHint;
 pub use model::InlayHintKind;
@@ -103,6 +104,8 @@ pub use model::Signature;
 pub use model::SignatureHelp;
 pub use model::Symbol;
 pub use model::SymbolKind;
+pub use model::VirtualText;
+pub use model::VirtualTextPlacement;
 pub use notify::Notification;
 pub use notify::NotificationId;
 pub use notify::NotificationKind;

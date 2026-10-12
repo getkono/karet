@@ -1,7 +1,12 @@
 use std::ops::RangeInclusive;
 
+use super::hint::EolItem;
 use super::hint::HintIndex;
 use super::hint::LineHints;
+use super::hint::place_eol;
+use super::hint::record_virtual_text;
+use super::hint::row_room;
+use super::hint::text_width;
 use super::text::*;
 use super::visual::*;
 use super::*;
@@ -17,7 +22,7 @@ pub struct Editor<'a> {
     theme: Option<&'a Theme>,
     decorations: &'a [Decoration],
     diagnostics: &'a [Diagnostic],
-    inlay_hints: &'a [InlayHint],
+    virtual_text: &'a [VirtualText],
     folds: &'a [Fold],
     focused: bool,
     cell_caret: bool,
@@ -39,7 +44,7 @@ impl<'a> Editor<'a> {
             theme: None,
             decorations: &[],
             diagnostics: &[],
-            inlay_hints: &[],
+            virtual_text: &[],
             folds: &[],
             focused: false,
             cell_caret: true,
@@ -145,10 +150,18 @@ impl<'a> Editor<'a> {
         self
     }
 
-    /// Supply inlay hints.
+    /// Supply virtual text: inlay hints (convert them with
+    /// `VirtualText::from`), inline blame, dependency versions, and anything
+    /// else painted on a line without being in the buffer.
+    ///
+    /// Inline text takes part in wrapping, caret placement, hit-testing and
+    /// horizontal reveal; end-of-line text fills the cells a line's last row
+    /// leaves free (see [`VirtualTextPlacement`](karet_core::VirtualTextPlacement)).
+    /// Where each one was painted is reported by
+    /// [`EditorState::virtual_text_rect`], keyed by its index in this slice.
     #[must_use]
-    pub fn inlay_hints(mut self, inlay_hints: &'a [InlayHint]) -> Self {
-        self.inlay_hints = inlay_hints;
+    pub fn virtual_text(mut self, virtual_text: &'a [VirtualText]) -> Self {
+        self.virtual_text = virtual_text;
         self
     }
 
@@ -222,47 +235,65 @@ impl Editor<'_> {
         None
     }
 
-    /// Inline virtual text attached to `l`, filtered by whether it belongs before or
-    /// after the decorated range. Returns the index in `decorations` of each
-    /// span pushed, in order.
-    fn push_inline_spans(
+    /// The style the virtual text at `source` paints in: its role's color over
+    /// the row's own background.
+    fn virtual_style(&self, source: usize, theme: &Theme) -> Style {
+        let role = self
+            .virtual_text
+            .get(source)
+            .map_or(ThemeRole::Muted, |text| text.role);
+        Style::default().fg(theme.role(role).to_ratatui())
+    }
+
+    /// Fit line `l`'s end-of-line virtual text into the `room` cells its last
+    /// row leaves free and append it, noting in `painted` the index and span
+    /// of each text that got any cells.
+    fn push_eol_spans(
         &self,
         spans: &mut Vec<Span<'static>>,
+        painted: &mut Vec<(usize, usize)>,
+        index: &HintIndex,
         l: u32,
-        before: bool,
+        room: u32,
         theme: &Theme,
-    ) -> Vec<usize> {
-        let mut pushed = Vec::new();
-        for (index, decoration) in self.decorations.iter().enumerate() {
-            if let DecorationKind::InlineText {
-                text,
-                before: decoration_before,
-            } = &decoration.kind
-                && *decoration_before == before
-                && line_in_range(l, decoration.range)
-            {
-                let color = decoration
-                    .role
-                    .map_or_else(|| theme.role(ThemeRole::Muted), |role| theme.role(role));
-                spans.push(Span::styled(
-                    text.clone(),
-                    Style::default().fg(color.to_ratatui()),
-                ));
-                pushed.push(index);
+    ) {
+        let items: Vec<EolItem<'_>> = index
+            .eol_on(l)
+            .filter_map(|source| {
+                let text = self.virtual_text.get(source)?;
+                match text.placement {
+                    VirtualTextPlacement::EndOfLine { align, priority } => Some(EolItem {
+                        source,
+                        text: &text.text,
+                        align,
+                        priority,
+                    }),
+                    _ => None,
+                }
+            })
+            .collect();
+        let mut at = 0_u32;
+        for placed in place_eol(&items, room) {
+            if placed.offset > at {
+                spans.push(Span::raw(" ".repeat((placed.offset - at) as usize)));
             }
+            at = placed.offset.saturating_add(text_width(&placed.text));
+            painted.push((placed.source, spans.len()));
+            let style = self.virtual_style(placed.source, theme);
+            spans.push(Span::styled(placed.text, style));
         }
-        pushed
     }
 
     /// Append the syntax-colored content spans for line `l`, honoring horizontal
     /// scroll, active selections, and text-background decorations.
     #[allow(clippy::too_many_arguments)]
     // The already-resolved render palette and geometry for one row, plus the
-    // row's hints. Bundling them would duplicate the widget/state split for a
-    // single private helper.
+    // row's inline text and the record of where it went. Bundling them would
+    // duplicate the widget/state split for a single private helper.
     fn push_content_spans(
         &self,
         spans: &mut Vec<Span<'static>>,
+        painted: &mut Vec<(usize, usize)>,
         l: u32,
         theme: &Theme,
         default_fg: Rgba,
@@ -303,7 +334,14 @@ impl Editor<'_> {
             // the caret slot of this column, so the caret stays against the
             // text the hint describes.
             if !hints.is_empty() {
-                self.push_hint_spans(spans, &mut run, &mut run_style, hints, col, theme);
+                self.push_hint_spans(
+                    spans,
+                    painted,
+                    (&mut run, &mut run_style),
+                    hints,
+                    col,
+                    theme,
+                );
                 display_col = display_col.saturating_add(hints.width_at(col));
             }
             let width = character_width(ch, display_col, self.tab_width);
@@ -363,29 +401,37 @@ impl Editor<'_> {
         // always true, and a line scrolled entirely off to the left would paint
         // its trailing hint at the left margin over nothing.
         if !hints.is_empty() && range.start <= line_len && range.end >= line_len {
-            self.push_hint_spans(spans, &mut run, &mut run_style, hints, line_len, theme);
+            self.push_hint_spans(
+                spans,
+                painted,
+                (&mut run, &mut run_style),
+                hints,
+                line_len,
+                theme,
+            );
         }
         if let Some(prev) = run_style {
             spans.push(Span::styled(run, prev));
         }
     }
 
-    /// Flush the pending run and emit the hints anchored at `col`.
-    #[allow(clippy::too_many_arguments)]
-    // Threading the in-progress run through is what keeps a hint from
-    // splitting a styled run it does not belong to.
+    /// Flush the pending run and emit the inline text anchored at `col`,
+    /// noting each one's index and span in `painted`.
+    ///
+    /// Threading the in-progress run through is what keeps inline text from
+    /// splitting a styled run it does not belong to.
     fn push_hint_spans(
         &self,
         spans: &mut Vec<Span<'static>>,
-        run: &mut String,
-        run_style: &mut Option<Style>,
+        painted: &mut Vec<(usize, usize)>,
+        (run, run_style): (&mut String, &mut Option<Style>),
         hints: LineHints<'_>,
         col: u32,
         theme: &Theme,
     ) {
         let mut first = true;
         for index in hints.at(col) {
-            let Some(hint) = self.inlay_hints.get(index) else {
+            let Some(text) = self.virtual_text.get(index) else {
                 continue;
             };
             if first {
@@ -394,17 +440,10 @@ impl Editor<'_> {
                 }
                 first = false;
             }
-            let mut text = String::new();
-            if hint.padding_left {
-                text.push(' ');
-            }
-            text.push_str(&hint.label);
-            if hint.padding_right {
-                text.push(' ');
-            }
+            painted.push((index, spans.len()));
             spans.push(Span::styled(
-                text,
-                Style::default().fg(theme.role(ThemeRole::InlayHint).to_ratatui()),
+                text.text.clone(),
+                self.virtual_style(index, theme),
             ));
         }
     }
@@ -505,6 +544,8 @@ impl Editor<'_> {
         default_fg: Rgba,
         digits: usize,
         selections: &[Range],
+        index: &HintIndex,
+        rects: &mut Vec<(usize, Rect)>,
     ) {
         let line = block.header_start;
         let background = theme.role(ThemeRole::CursorLine);
@@ -544,8 +585,13 @@ impl Editor<'_> {
                 Style::default().fg(theme.role(ThemeRole::LineNumberActive).to_ratatui()),
             ),
         ];
+        let mut painted = Vec::new();
+        // Painted with its inline text, as `EditorState::pos_at` resolves a
+        // click on it: the same mapping on both sides, so a click lands on
+        // the character it is over.
         self.push_content_spans(
             &mut spans,
+            &mut painted,
             line,
             theme,
             default_fg,
@@ -554,12 +600,15 @@ impl Editor<'_> {
                 end: u32::MAX,
             },
             selections,
-            // Deliberately unhinted. A sticky row is a compressed header
-            // preview, and `EditorState::pos_at` resolves a click on one through
-            // the same unhinted mapping -- painting hints here would shift the
-            // text without shifting that, so every click would land wrong.
-            LineHints::EMPTY,
+            index.line(line),
         );
+        if state.scroll_col <= line_len(self.buffer, line) {
+            // The multi-line header's `…` takes the last cell.
+            let marker = u32::from(block.has_multiline_header());
+            let room = row_room(area, &spans).saturating_sub(marker);
+            self.push_eol_spans(&mut spans, &mut painted, index, line, room, theme);
+        }
+        record_virtual_text(rects, area, y, &spans, &painted);
         buf.set_line(area.x, y, &Line::from(spans), area.width);
         if block.has_multiline_header() && area.width > 0 {
             buf.set_string(
@@ -578,7 +627,7 @@ impl StatefulWidget for Editor<'_> {
     type State = EditorState;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut EditorState) {
-        state.last_inline_text.clear();
+        state.last_virtual_text.clear();
         if area.width == 0 || area.height == 0 {
             return;
         }
@@ -615,10 +664,10 @@ impl StatefulWidget for Editor<'_> {
 
         let width = u32::from(content_width);
         // Indexed once per frame and handed to `state` after the row loop, so
-        // a later mouse click resolves against the hints this frame painted.
-        // Held locally until then because `layout` borrows it while the loop
-        // is still assigning scroll positions.
-        let hint_index = HintIndex::new(self.inlay_hints).with_prefixes(self.decorations);
+        // a later mouse click resolves against the virtual text this frame
+        // painted. Held locally until then because `layout` borrows it while
+        // the loop is still assigning scroll positions.
+        let hint_index = HintIndex::new(self.virtual_text);
         let layout = Layout {
             width,
             tab_width: self.tab_width,
@@ -722,6 +771,7 @@ impl StatefulWidget for Editor<'_> {
         // Base background for the whole editor area (covers rows past end-of-file).
         buf.set_style(area, Style::default().bg(background.to_ratatui()));
 
+        let mut rects = Vec::new();
         for (row, block) in sticky.iter().copied().enumerate() {
             let y = area
                 .y
@@ -736,8 +786,11 @@ impl StatefulWidget for Editor<'_> {
                 default_fg,
                 digits,
                 &selections,
+                &hint_index,
+                &mut rects,
             );
         }
+        state.last_virtual_text = rects;
 
         // Measured as the row loop walks anchors, so the scrollbar extents cost a
         // couple of comparisons per painted row rather than a second pass.
@@ -828,20 +881,10 @@ impl StatefulWidget for Editor<'_> {
                 .get(range_index)
                 .copied()
                 .unwrap_or_else(|| VisualRange::empty(0));
-            if range_index == 0 {
-                let first = spans.len();
-                let painted = self.push_inline_spans(&mut spans, l, true, theme);
-                record_inline_text(
-                    &mut state.last_inline_text,
-                    area,
-                    y,
-                    &spans,
-                    first,
-                    &painted,
-                );
-            }
+            let mut painted = Vec::new();
             self.push_content_spans(
                 &mut spans,
+                &mut painted,
                 l,
                 theme,
                 default_fg,
@@ -856,18 +899,14 @@ impl StatefulWidget for Editor<'_> {
                     Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui()),
                 ));
             }
-            if range_index + 1 == ranges.len() {
-                let first = spans.len();
-                let painted = self.push_inline_spans(&mut spans, l, false, theme);
-                record_inline_text(
-                    &mut state.last_inline_text,
-                    area,
-                    y,
-                    &spans,
-                    first,
-                    &painted,
-                );
+            // The end-of-line slot is on the last row, and only while the
+            // line's end is not scrolled off to the left: past it, the slot
+            // would float at the margin over nothing.
+            if range_index + 1 == ranges.len() && range.start <= line_len(self.buffer, l) {
+                let room = row_room(area, &spans);
+                self.push_eol_spans(&mut spans, &mut painted, &hint_index, l, room, theme);
             }
+            record_virtual_text(&mut state.last_virtual_text, area, y, &spans, &painted);
             buf.set_line(area.x, y, &Line::from(spans), area.width);
 
             let next = if self.word_wrap {
@@ -899,35 +938,5 @@ impl StatefulWidget for Editor<'_> {
                 self.draw_caret(buf, area, state, sel.head);
             }
         }
-    }
-}
-
-/// Record where the row at `y` paints the inline text spans `spans[first..]`,
-/// one per decoration index in `painted`: measured from the spans themselves,
-/// so the rect is exactly the cells the text went to, clipped to `area`.
-fn record_inline_text(
-    rects: &mut Vec<(usize, Rect)>,
-    area: Rect,
-    y: u16,
-    spans: &[Span<'_>],
-    first: usize,
-    painted: &[usize],
-) {
-    let mut x = spans
-        .get(..first)
-        .unwrap_or_default()
-        .iter()
-        .fold(0_usize, |x, span| x.saturating_add(span.width()));
-    for (span, &index) in spans.get(first..).unwrap_or_default().iter().zip(painted) {
-        let start = u16::try_from(x).unwrap_or(u16::MAX);
-        let width = u16::try_from(span.width()).unwrap_or(u16::MAX);
-        let visible = width.min(area.width.saturating_sub(start));
-        if visible > 0 {
-            rects.push((
-                index,
-                Rect::new(area.x.saturating_add(start), y, visible, 1),
-            ));
-        }
-        x = x.saturating_add(span.width());
     }
 }

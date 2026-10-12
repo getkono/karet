@@ -412,8 +412,8 @@ struct PaneCtx<'a> {
     /// Owned (not borrowed): it now lives on the active `Tab` itself, and
     /// `render_pane` needs a mutable borrow of the tabs slice at the same time.
     find: Option<FindState>,
-    /// Stale-checked virtual text for the focused editor.
-    blame: Option<Decoration>,
+    /// Stale-checked inline blame for the focused editor.
+    blame: Option<karet_core::VirtualText>,
     /// The Ctrl-hovered symbol to underline as navigable (focused pane only).
     definition_underline: Option<Decoration>,
     /// The code-action lightbulb on the caret line (focused pane only).

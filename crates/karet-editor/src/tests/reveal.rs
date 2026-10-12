@@ -4,8 +4,6 @@
 //! view that mirrors this editor's offset (the merge-conflict side panes) reads
 //! it before the editor paints.
 
-use karet_core::InlayHintKind;
-
 use crate::visual::*;
 use crate::*;
 
@@ -14,14 +12,8 @@ const AREA: Rect = Rect::new(0, 0, 33, 1);
 const GUTTER: u16 = 3;
 const MARGIN: u16 = 10;
 
-fn hint(col: u32, label: &str) -> InlayHint {
-    InlayHint {
-        position: LineCol::new(0, col),
-        label: label.to_owned(),
-        kind: InlayHintKind::Type,
-        padding_left: false,
-        padding_right: false,
-    }
+fn hint(col: u32, label: &str) -> VirtualText {
+    VirtualText::inline(0, col, label, ThemeRole::InlayHint)
 }
 
 /// Paint `buffer` into `target`, returning the character under the caret and
@@ -47,7 +39,7 @@ fn a_hinted_line_reveals_leftward_by_display_cells_before_any_render() {
     let hints = [hint(20, "::::::::")];
     let mut state = EditorState::new();
     let mut target = Buffer::empty(AREA);
-    let editor = || Editor::new(&buffer).inlay_hints(&hints);
+    let editor = || Editor::new(&buffer).virtual_text(&hints);
     let _ = paint(editor(), &buffer, &mut target, &mut state);
 
     state.move_line_end(&buffer);

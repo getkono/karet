@@ -5,30 +5,22 @@
 //! it — otherwise the caret sits one place, a click resolves to another, and a
 //! wrapped line breaks where nothing is.
 
-use karet_core::InlayHintKind;
-
 use super::*;
 use crate::visual::*;
 
 /// A type hint of `label` rendering before `col` on `line`.
-fn hint(line: u32, col: u32, label: &str) -> InlayHint {
-    InlayHint {
-        position: LineCol::new(line, col),
-        label: label.to_owned(),
-        kind: InlayHintKind::Type,
-        padding_left: false,
-        padding_right: false,
-    }
+fn hint(line: u32, col: u32, label: &str) -> VirtualText {
+    VirtualText::inline(line, col, label, ThemeRole::InlayHint)
 }
 
 /// Render `text` with `hints` and return the first row as a string.
-fn painted(text: &str, hints: &[InlayHint], width: u16) -> String {
+fn painted(text: &str, hints: &[VirtualText], width: u16) -> String {
     let buffer = TextBuffer::from_text(text);
     let mut state = EditorState::new();
     let area = Rect::new(0, 0, width, 1);
     let mut target = Buffer::empty(area);
     Editor::new(&buffer)
-        .inlay_hints(hints)
+        .virtual_text(hints)
         .render(area, &mut target, &mut state);
     (0..area.width)
         .map(|x| target[(x, 0)].symbol().chars().next().unwrap_or(' '))
@@ -39,7 +31,7 @@ fn painted(text: &str, hints: &[InlayHint], width: u16) -> String {
 /// resolves each screen column back to.
 fn geometry(
     text: &str,
-    hints: &[InlayHint],
+    hints: &[VirtualText],
     at: LineCol,
     width: u16,
 ) -> (Option<(u16, u16)>, EditorState, TextBuffer) {
@@ -49,7 +41,7 @@ fn geometry(
     let area = Rect::new(0, 0, width, 4);
     let mut target = Buffer::empty(area);
     Editor::new(&buffer)
-        .inlay_hints(hints)
+        .virtual_text(hints)
         .focused(true)
         .render(area, &mut target, &mut state);
     let cell = caret_cell(area, &buffer, &[], &state, at);
@@ -217,7 +209,7 @@ fn a_hint_is_not_part_of_the_buffer_so_the_line_is_unchanged() {
     let area = Rect::new(0, 0, 40, 2);
     let mut target = Buffer::empty(area);
     Editor::new(&buffer)
-        .inlay_hints(&[hint(0, 9, ": i32")])
+        .virtual_text(&[hint(0, 9, ": i32")])
         .render(area, &mut target, &mut state);
     assert_eq!(
         buffer.line(0).unwrap_or_default(),
@@ -336,7 +328,7 @@ fn a_trailing_hint_stays_off_a_line_scrolled_past_its_end() {
     let area = Rect::new(0, 0, 40, 2);
     let mut target = Buffer::empty(area);
     Editor::new(&buffer)
-        .inlay_hints(&[hint(0, 6, " -> i32")])
+        .virtual_text(&[hint(0, 6, " -> i32")])
         .render(area, &mut target, &mut state);
     let row: String = (0..area.width)
         .map(|x| target[(x, 0)].symbol().chars().next().unwrap_or(' '))
@@ -371,7 +363,7 @@ fn a_tab_after_the_row_start_lands_where_the_mapping_says() {
 /// `goto` asked for it to be revealed. Returns the state and the painted row.
 fn revealed(
     text: &str,
-    hints: &[InlayHint],
+    hints: &[VirtualText],
     at: LineCol,
     width: u16,
 ) -> (EditorState, TextBuffer, Buffer) {
@@ -379,7 +371,7 @@ fn revealed(
     let mut state = EditorState::new();
     let area = Rect::new(0, 0, width, 1);
     let mut target = Buffer::empty(area);
-    let editor = || Editor::new(&buffer).inlay_hints(hints).focused(true);
+    let editor = || Editor::new(&buffer).virtual_text(hints).focused(true);
     // The first render records the viewport width the reveal measures against.
     editor().render(area, &mut target, &mut state);
     state.goto(&buffer, at);
@@ -437,7 +429,7 @@ fn a_hinted_tail_is_reachable_by_scrolling() {
     let area = Rect::new(0, 0, 33, 1);
     let mut target = Buffer::empty(area);
     Editor::new(&buffer)
-        .inlay_hints(&hints)
+        .virtual_text(&hints)
         .render(area, &mut target, &mut state);
     state.scroll_columns(&buffer, i32::MAX);
 
@@ -447,7 +439,7 @@ fn a_hinted_tail_is_reachable_by_scrolling() {
         state.longest_col() + 1 - u32::from(state.content_width())
     );
     Editor::new(&buffer)
-        .inlay_hints(&hints)
+        .virtual_text(&hints)
         .render(area, &mut target, &mut state);
     let row: String = (0..area.width)
         .map(|x| target[(x, 0)].symbol().chars().next().unwrap_or(' '))

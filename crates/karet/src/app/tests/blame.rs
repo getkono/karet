@@ -108,15 +108,16 @@ fn committed_blame_is_compact_muted_text_and_opens_commit_detail() {
             author_time: i64::MAX,
         })),
     });
-    let decoration = app.live_blame.as_ref().and_then(LiveBlame::decoration);
-    assert!(decoration.is_some());
-    let Some(decoration) = decoration else { return };
-    assert_eq!(decoration.role, Some(ThemeRole::Muted));
-    assert!(matches!(
-        decoration.kind,
-        DecorationKind::InlineText { ref text, before: false }
-            if text == "  Ada just now"
-    ));
+    let text = app.live_blame.as_ref().and_then(LiveBlame::virtual_text);
+    assert_eq!(
+        text,
+        Some(karet_core::VirtualText::end_of_line(
+            4,
+            "  Ada just now",
+            ThemeRole::Muted,
+            LiveBlame::BLAME_EOL_PRIORITY,
+        ))
+    );
 
     app.dispatch(Command::OpenBlameDetail);
     assert!(matches!(

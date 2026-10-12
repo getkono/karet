@@ -99,13 +99,6 @@ pub enum DecorationKind {
     /// The decoration's `role` colors the underline; `None` underlines in the
     /// text's own foreground, which no theme can render illegibly.
     Underline,
-    /// Inline "ghost" text (e.g. VCS blame, parameter names).
-    InlineText {
-        /// The text to render.
-        text: String,
-        /// Whether to render before (`true`) or after (`false`) the range.
-        before: bool,
-    },
     /// A color chip over the range, carrying an arbitrary color instead of a
     /// theme role (e.g. a CSS color literal). The renderer paints the range's
     /// background in this color and picks a contrasting foreground itself.
@@ -238,6 +231,124 @@ pub struct InlayHint {
     pub padding_left: bool,
     /// Render padding after the hint.
     pub padding_right: bool,
+}
+
+/// Which edge of the end-of-line slot a [`VirtualTextPlacement::EndOfLine`]
+/// text keeps to.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
+pub enum EolAlign {
+    /// Immediately after the line's content (and any left-aligned text before
+    /// it).
+    #[default]
+    Left,
+    /// Flush against the viewport's right edge, when the row leaves room for
+    /// it; otherwise immediately after the left-aligned text.
+    Right,
+}
+
+/// Where a [`VirtualText`] sits on its line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
+pub enum VirtualTextPlacement {
+    /// Between characters: immediately before the character at `col`, after
+    /// that column's caret slot, so a caret at `col` sits against the text it
+    /// edits rather than past the annotation. A `col` at or past the line's
+    /// end trails its last character.
+    ///
+    /// It is part of the line's layout: it takes cells when the line wraps,
+    /// shifts every caret and click after it, and a horizontal reveal scrolls
+    /// as far as it is drawn. A click on it resolves to `col`.
+    Inline {
+        /// The buffer column (in `char`s) it renders before.
+        col: u32,
+    },
+    /// The end-of-line slot: the cells a line's last row leaves free after
+    /// its content and trailing inline text. It never wraps, never shifts the
+    /// text, and no caret enters it (a click on it resolves to the end of the
+    /// line). When the slot is too narrow for everything on the line, higher
+    /// `priority` keeps its cells first, and a text cut short ends in `…`.
+    ///
+    /// The slot begins at the end-of-line caret cell: a text that should
+    /// stand apart from the code carries its own leading gap.
+    EndOfLine {
+        /// Which edge of the slot it keeps to.
+        align: EolAlign,
+        /// Truncation priority: higher is cut last. Equal priorities are cut
+        /// last-supplied first.
+        priority: u8,
+    },
+}
+
+/// Presentation-neutral virtual text: cells a renderer paints on a line that
+/// are not in the buffer (inlay hints, inline blame, dependency versions,
+/// inline diagnostics, ghost text).
+///
+/// One model for every producer, so a renderer has one path that wrapping,
+/// caret placement, hit-testing and horizontal scrolling all account for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct VirtualText {
+    /// The line it is on.
+    pub line: u32,
+    /// Where on the line.
+    pub placement: VirtualTextPlacement,
+    /// The text to paint, on one row (a renderer does not break it).
+    pub text: String,
+    /// The theme role supplying its color.
+    pub role: ThemeRole,
+}
+
+impl VirtualText {
+    /// Text anchored before the character at `col` on `line`
+    /// ([`VirtualTextPlacement::Inline`]).
+    #[must_use]
+    pub fn inline(line: u32, col: u32, text: impl Into<String>, role: ThemeRole) -> Self {
+        Self {
+            line,
+            placement: VirtualTextPlacement::Inline { col },
+            text: text.into(),
+            role,
+        }
+    }
+
+    /// Left-aligned text in `line`'s end-of-line slot at `priority`
+    /// ([`VirtualTextPlacement::EndOfLine`]).
+    #[must_use]
+    pub fn end_of_line(line: u32, text: impl Into<String>, role: ThemeRole, priority: u8) -> Self {
+        Self {
+            line,
+            placement: VirtualTextPlacement::EndOfLine {
+                align: EolAlign::Left,
+                priority,
+            },
+            text: text.into(),
+            role,
+        }
+    }
+}
+
+impl From<&InlayHint> for VirtualText {
+    /// The hint's label at its position, with its padding as one space either
+    /// side, in the [`ThemeRole::InlayHint`] color.
+    fn from(hint: &InlayHint) -> Self {
+        let mut text = String::with_capacity(hint.label.len().saturating_add(2));
+        if hint.padding_left {
+            text.push(' ');
+        }
+        text.push_str(&hint.label);
+        if hint.padding_right {
+            text.push(' ');
+        }
+        Self::inline(
+            hint.position.line,
+            hint.position.col,
+            text,
+            ThemeRole::InlayHint,
+        )
+    }
 }
 
 /// An opaque, application-resolved command identifier.
@@ -451,6 +562,45 @@ mod tests {
     use super::*;
 
     #[test]
+    fn an_inlay_hint_becomes_inline_virtual_text_with_its_padding_as_spaces() {
+        let hint = InlayHint {
+            position: LineCol::new(2, 9),
+            label: "i32".to_owned(),
+            kind: InlayHintKind::Type,
+            padding_left: true,
+            padding_right: false,
+        };
+        assert_eq!(
+            VirtualText::from(&hint),
+            VirtualText {
+                line: 2,
+                placement: VirtualTextPlacement::Inline { col: 9 },
+                text: " i32".to_owned(),
+                role: ThemeRole::InlayHint,
+            }
+        );
+        let both = InlayHint {
+            padding_right: true,
+            ..hint
+        };
+        assert_eq!(VirtualText::from(&both).text, " i32 ");
+    }
+
+    #[test]
+    fn end_of_line_text_defaults_to_the_left_edge_of_the_slot() {
+        let text = VirtualText::end_of_line(4, "  Ada", ThemeRole::Muted, 3);
+        assert_eq!(text.line, 4);
+        assert_eq!(
+            text.placement,
+            VirtualTextPlacement::EndOfLine {
+                align: EolAlign::Left,
+                priority: 3,
+            }
+        );
+        assert_eq!(EolAlign::default(), EolAlign::Left);
+    }
+
+    #[test]
     fn diagnostic_constructs_and_clones() {
         let d = Diagnostic {
             range: Range::default(),
@@ -572,12 +722,19 @@ mod tests {
         })?;
         rt(&Decoration {
             range: Range::default(),
-            kind: DecorationKind::InlineText {
-                text: "blame".into(),
-                before: false,
-            },
+            kind: DecorationKind::ColorSwatch { rgba: [1, 2, 3, 4] },
             role: Some(ThemeRole::Muted),
         })?;
+        rt(&VirtualText {
+            line: 3,
+            placement: VirtualTextPlacement::EndOfLine {
+                align: EolAlign::Right,
+                priority: 7,
+            },
+            text: "blame".into(),
+            role: ThemeRole::Muted,
+        })?;
+        rt(&VirtualText::inline(0, 4, ": i32", ThemeRole::InlayHint))?;
         rt(&Symbol {
             name: "f".into(),
             kind: SymbolKind::Function,
