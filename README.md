@@ -196,13 +196,14 @@ Settings live in `setting.jsonc` across three layers, with per-language override
 
 | Document | What it answers |
 | --- | --- |
+| [`goals.md`](docs/goals.md) | The design goals, each with a checkable rule |
 | [`configuration.md`](docs/configuration.md) | Every setting, the three layers, per-language overrides |
 | [`file-formats.md`](docs/file-formats.md) | What opens how: grammars per extension, media and document formats |
 | [`language-servers.md`](docs/language-servers.md) | The canonical language-support matrix and managed installs |
 | [`debugging.md`](docs/debugging.md) | The DAP debugger: adapters, configurations, keys, breakpoints |
 | [`seam.md`](docs/seam.md) | The Seam view and its query language |
 | [`visualizations.md`](docs/visualizations.md) | Graph lenses and their status |
-| [`scope.md`](docs/scope.md) | Deliberate non-goals |
+| [`scope.md`](docs/scope.md) | Deliberate non-goals, and features weighed and kept in scope |
 | [`binary-size.md`](docs/binary-size.md) | What the optional features cost, measured |
 
 Diagnostics are written to daily `karet.log.*` files in the platform state directory;
