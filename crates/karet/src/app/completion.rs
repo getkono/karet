@@ -235,8 +235,9 @@ impl App {
     /// Accept the selected candidate: replace the typed prefix (anchor to
     /// caret) with the item's resolved insert text, through the ordinary
     /// session edit path. Every other caret takes the item too, replacing the
-    /// same prefix where it sits before that caret (VS Code's behaviour). (The item's `insert_text` already carries its
-    /// `textEdit.newText` per the LSP precedence applied in karet-lsp.)
+    /// same prefix where it sits before that caret (VS Code's behaviour). (The
+    /// item's `insert_text` already carries its `textEdit.newText` per the LSP
+    /// precedence applied in karet-lsp.)
     pub(super) fn accept_completion(&mut self) {
         let Some(ranked) = self.completion_ranked() else {
             self.dismiss_completion();
