@@ -84,7 +84,8 @@ pub(super) static BINDINGS: &[Binding] = &[
     seq(Global, chord(true, false, false, Char('k')), &[chord(false, false, false, Right)], Command::FocusNextPane),
     seq(Global, chord(true, false, false, Char('k')), &[chord(false, false, false, Left)],  Command::FocusPrevPane),
     // Tiling-WM-style pane growth. Shift keeps these distinct from multi-cursor
-    // Ctrl+Alt+Up/Down in the editor layer.
+    // Ctrl+Alt+Up/Down in the editor layer. In the text editor the same chords
+    // are box selection (VS Code parity), so there the palette resizes.
     b(Global, true, true, true, Left,  Command::ResizePaneLeft),
     // Go Back/Forward live in the Global layer: a jump can leave focus in the
     // sidebar, and the way back should still work from there. Ctrl+Alt is listed
@@ -232,6 +233,14 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(Editor, true,  true,  true,  Down,      Command::ColumnSelectDown),
     b(Editor, true,  true,  true,  Left,      Command::ColumnSelectLeft),
     b(Editor, true,  true,  true,  Right,     Command::ColumnSelectRight),
+    // Bracket pairs: Ctrl+Shift+\ jumps to the matching bracket (VS Code parity),
+    // and Alt added selects the pair. A terminal reporting alternate keys (kitty)
+    // sends Shift+\ as `|`; one that does not sends `\` with Shift. A legacy
+    // terminal cannot tell either from Ctrl+\, so both are also in the palette.
+    b(Editor, true,  true,  false, Char('|'), Command::GoToBracket),
+    b(Editor, true,  true,  false, Char('\\'), Command::GoToBracket),
+    b(Editor, true,  true,  true,  Char('|'), Command::SelectToBracket),
+    b(Editor, true,  true,  true,  Char('\\'), Command::SelectToBracket),
     // Editing.
     // Ctrl+Space asks the language server for completions (bypasses the
     // syntax-error auto-trigger gate).

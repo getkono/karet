@@ -67,6 +67,7 @@ end on the same position merge into one.
 | End | To the line end. | harness |
 | Ctrl+Home / Ctrl+End | To the start / end of the document. With several carets, leave one caret there. | harness |
 | Ctrl+Left / Ctrl+Right, Alt+Left / Alt+Right | To the previous word start / next word end. | harness |
+| Ctrl+Shift+\ | Go to Bracket: to the other bracket of the pair the caret touches (the bracket after it first, then the one before it), or, inside a pair, to its closing bracket. The caret lands just before the target, so pressing again goes back. Brackets in strings and comments are ignored. | harness |
 | PageUp / PageDown | Move the caret by the focused pane's visible rows, and scroll by the same amount. | #329 |
 | Word wrap on | Up, Down, Home, End and PageUp/PageDown act on visual rows; End pressed again goes to the logical line end. | #329 |
 | Collapsed folds | Motion skips over a fold; a jump into a fold (find, go to definition, outline) unfolds it. A caret is never hidden. | #329 |
@@ -81,9 +82,15 @@ same motion.
 |---|---|---|
 | Shift + any motion above | Extend: the head moves and the anchor stays. | harness (Shift+Left, Shift+Right, Shift+End) |
 | Ctrl+A | Select the whole document, with the head at its end. Does not scroll. | harness |
+| Ctrl+Shift+Alt+\ | Select to Bracket: select the pair Go to Bracket would use, brackets included, with the head after the closing bracket. Pressed on a selection that is exactly a pair, widen to the pair around it. | harness |
 | Esc, one caret with a selection | Clear the selection and keep the caret at its head. | harness |
 | Esc, one caret, no selection | Nothing. Focus stays in the editor. | harness |
 | Plain arrow after a selection | Clear the selection (see Motion for where the caret lands). | harness |
+
+Deviation: VS Code binds no key to Select to Bracket. karet binds
+Ctrl+Shift+Alt+\, Go to Bracket's chord with Alt, so the command has a key at
+all. A legacy terminal sends neither chord apart from Ctrl+\; both commands
+are in the command palette.
 
 ## Multiple carets
 

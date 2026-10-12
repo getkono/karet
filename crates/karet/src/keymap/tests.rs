@@ -401,6 +401,34 @@ fn multi_cursor_chords_bind_in_editor() {
 }
 
 #[test]
+fn bracket_chords_bind_in_editor_under_both_shift_encodings() {
+    let ctrl_shift = KeyModifiers::CONTROL | KeyModifiers::SHIFT;
+    for ch in ['|', '\\'] {
+        assert_eq!(
+            res(Focus::Editor, false, key(KeyCode::Char(ch), ctrl_shift)),
+            Some(Command::GoToBracket)
+        );
+        assert_eq!(
+            res(
+                Focus::Editor,
+                false,
+                key(KeyCode::Char(ch), ctrl_shift | KeyModifiers::ALT)
+            ),
+            Some(Command::SelectToBracket)
+        );
+    }
+    // Ctrl+\ alone still splits the pane.
+    assert_eq!(
+        res(
+            Focus::Editor,
+            false,
+            key(KeyCode::Char('\\'), KeyModifiers::CONTROL)
+        ),
+        Some(Command::SplitRight)
+    );
+}
+
+#[test]
 fn panel_selection_and_quit() {
     assert_eq!(
         res(
@@ -716,20 +744,32 @@ fn ctrl_shift_i_formats_markdown_tables() {
 }
 
 #[test]
-fn ctrl_alt_shift_arrows_resize_panes() {
-    let ctx = Context::focus(FocusTarget::Editor);
-    for (key_code, command) in [
-        (KeyCode::Left, Command::ResizePaneLeft),
-        (KeyCode::Right, Command::ResizePaneRight),
-        (KeyCode::Up, Command::ResizePaneUp),
-        (KeyCode::Down, Command::ResizePaneDown),
-    ] {
-        let chord = KeyChord::from_event(key(
-            key_code,
-            KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
-        ));
-        assert_eq!(resolve(ctx, &[chord]), Resolved::Command(command));
+fn ctrl_alt_shift_arrows_resize_panes_outside_the_text_editor() {
+    for focus in [FocusTarget::Explorer, FocusTarget::Pager] {
+        let ctx = Context::focus(focus);
+        for (key_code, command) in [
+            (KeyCode::Left, Command::ResizePaneLeft),
+            (KeyCode::Right, Command::ResizePaneRight),
+            (KeyCode::Up, Command::ResizePaneUp),
+            (KeyCode::Down, Command::ResizePaneDown),
+        ] {
+            let chord = KeyChord::from_event(key(
+                key_code,
+                KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+            ));
+            assert_eq!(resolve(ctx, &[chord]), Resolved::Command(command));
+        }
     }
+    // In the text editor the chord is box selection, so the palette resizes.
+    let chord = KeyChord::from_event(key(
+        KeyCode::Left,
+        KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT,
+    ));
+    assert_eq!(
+        resolve(Context::focus(FocusTarget::Editor), &[chord]),
+        Resolved::Command(Command::ColumnSelectLeft)
+    );
+    assert!(crate::command::palette().contains(&Command::ResizePaneLeft));
 }
 
 #[test]

@@ -225,6 +225,12 @@ pub enum Command {
     ColumnSelectLeft,
     /// Move the box (column) selection's moving edge one cell right.
     ColumnSelectRight,
+    /// Move each caret to the other bracket of the pair it touches, or to the
+    /// closing bracket of the pair enclosing it (Ctrl+Shift+\).
+    GoToBracket,
+    /// Select each caret's bracket pair, brackets included; repeating widens to
+    /// the enclosing pair.
+    SelectToBracket,
     /// Collapse multiple carets to the primary; with one caret, leave the editor.
     CollapseCarets,
     /// Scroll the active tab up one line.
@@ -813,6 +819,8 @@ impl Command {
             Self::ColumnSelectDown => "Column Select Down",
             Self::ColumnSelectLeft => "Column Select Left",
             Self::ColumnSelectRight => "Column Select Right",
+            Self::GoToBracket => "Go to Bracket",
+            Self::SelectToBracket => "Select to Bracket",
             Self::CollapseCarets => "Collapse Cursors",
             Self::ScrollUp => "Scroll Up",
             Self::ScrollDown => "Scroll Down",

@@ -716,6 +716,48 @@ impl EditorState {
         self.follow_col = None;
     }
 
+    /// Go to Bracket: move each caret to the other bracket of the pair it
+    /// touches, or, inside a pair, to that pair's closing bracket; a caret with
+    /// no pair stays put. The caret lands *on* the target bracket (just before
+    /// it), so pressing again toggles between the two ends. Brackets inside
+    /// strings and comments, per `highlights`, are ignored.
+    pub fn go_to_bracket(&mut self, buffer: &TextBuffer, highlights: Option<&Highlights>) {
+        for s in &mut self.cursors.selections {
+            let head = s.head;
+            if let Some(pair) = crate::bracket_pair_at(buffer, highlights, head) {
+                let at_close = head == pair.close || head == pair.outer().end;
+                *s = Selection::caret(if at_close { pair.open } else { pair.close });
+            }
+        }
+        self.normalize();
+        self.reveal(buffer, self.cursor());
+    }
+
+    /// Select to Bracket: select each caret's pair — the one it touches, else
+    /// the one enclosing it — brackets included, with the caret after the
+    /// closing bracket. A selection that already covers exactly its pair grows
+    /// to the enclosing one, so repeating the command widens outward.
+    pub fn select_to_bracket(&mut self, buffer: &TextBuffer, highlights: Option<&Highlights>) {
+        for s in &mut self.cursors.selections {
+            let range = s.range();
+            let pair = match crate::matching_pair(buffer, highlights, range.start) {
+                Some(own) if !s.is_empty() && own.outer() == range => {
+                    crate::enclosing_pair(buffer, highlights, own.open)
+                },
+                _ => crate::bracket_pair_at(buffer, highlights, s.head),
+            };
+            if let Some(pair) = pair {
+                let outer = pair.outer();
+                *s = Selection {
+                    anchor: outer.start,
+                    head: outer.end,
+                };
+            }
+        }
+        self.normalize();
+        self.reveal(buffer, self.cursor());
+    }
+
     /// Jump the caret to `pos` (clamped), collapsing to a single bare caret there.
     /// Used to place the caret at a target (search match, go-to-line).
     pub fn goto(&mut self, buffer: &TextBuffer, pos: LineCol) {
