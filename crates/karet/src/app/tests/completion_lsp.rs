@@ -273,6 +273,34 @@ fn deferred_additional_edits_follow_an_early_accept() {
     }
 }
 
+/// An unresolved item that listed its additional edits up front applies them
+/// at the accept and asks for nothing more, so a server echoing them on
+/// resolve cannot apply the import twice.
+#[test]
+fn eager_additional_edits_are_not_asked_for_again() {
+    let (backend, mut app) = completion_app("x\nHa\n", LineCol::new(1, 2));
+    let item = CompletionItem {
+        payload: Some("{}".to_owned()),
+        additional_edits: vec![TextEdit {
+            range: span((0, 0), (0, 0)),
+            new_text: "use m::HashMap;\n".to_owned(),
+        }],
+        ..CompletionItem::new("HashMap", CompletionKind::Struct)
+    };
+    answer(
+        &mut app,
+        &backend,
+        vec![item],
+        false,
+        CompletionOptions::default(),
+    );
+    let asked = resolves(&backend).len();
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(code_tab_text(&app), "use m::HashMap;\nx\nHashMap\n");
+    assert_eq!(resolves(&backend).len(), asked, "no follow-up resolve");
+    assert!(app.completion_follow_up.is_none());
+}
+
 /// A server's commit character accepts the selection and is then typed; a
 /// character it did not name is just typed.
 #[test]

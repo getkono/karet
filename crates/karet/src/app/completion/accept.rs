@@ -92,8 +92,8 @@ impl App {
     /// [`crate::completion::edit_range`]); every other caret takes the item
     /// too, replacing the same text where it sits around that caret (VS Code's
     /// behaviour). Additional edits apply once. When they may still be
-    /// deferred -- the item was never resolved -- they are asked for now and
-    /// follow as their own change.
+    /// deferred -- the item was never resolved and listed none -- they are
+    /// asked for now and follow as their own change.
     fn apply_completion(
         &mut self,
         item: &CompletionItem,
@@ -139,7 +139,10 @@ impl App {
         let applied = multi.change.edits.clone();
         let multi = crate::completion::with_additional_edits(multi, &item.additional_edits);
         self.submit_multi_edit(EditCause::Replace, multi);
-        if item.payload.is_some() {
+        // Eager additional edits are final (a resolve keeps them, as
+        // `CompletionItem::adopt_resolved` does): only an item that listed
+        // none may still have some deferred.
+        if item.payload.is_some() && item.additional_edits.is_empty() {
             self.follow_up_completion(doc, item, applied);
         }
     }
