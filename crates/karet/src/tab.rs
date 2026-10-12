@@ -456,8 +456,10 @@ pub struct Tab {
     pub(crate) is_symlink: bool,
     /// Cached merge-conflict decorations, keyed by the code buffer version.
     pub(crate) conflict_decorations: Option<(u64, Vec<Decoration>)>,
-    /// Cached GFM table source-line ranges, keyed by the code buffer version.
-    pub(crate) markdown_table_lines: Option<(u64, Vec<RangeInclusive<u32>>)>,
+    /// GFM table source-line ranges for a code view, as the session's highlight
+    /// worker last parsed them ([`karet_session::DocSnapshot::table_lines`]);
+    /// like the highlights, they trail an edit by one worker round-trip.
+    pub(crate) markdown_table_lines: std::sync::Arc<Vec<RangeInclusive<u32>>>,
     /// A rendered Markdown preview shown inside this editor view, when enabled.
     pub(crate) markdown_preview: Option<MarkdownPreviewState>,
     /// Dedicated three-way conflict presentation for this editable code document.
@@ -482,7 +484,7 @@ impl Tab {
             is_preview: false,
             is_symlink,
             conflict_decorations: None,
-            markdown_table_lines: None,
+            markdown_table_lines: std::sync::Arc::default(),
             markdown_preview: None,
             merge_conflict: None,
         }

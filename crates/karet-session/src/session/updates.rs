@@ -571,7 +571,7 @@ impl Session {
         doc.folds = result.folds;
         doc.semantic_blocks = result.semantic_blocks;
         doc.syntax_symbols = result.symbols;
-        doc.error_lines = result.error_lines;
+        (doc.error_lines, doc.table_lines) = (result.error_lines, result.table_lines);
         self.publish(result.doc, None);
         self.schedule_spell(result.doc);
     }

@@ -1,14 +1,15 @@
 //! Whole-document scans a code view re-runs once per buffer version, gated so
 //! the common case reads the rope in place instead of copying the document.
 //!
-//! Both scans need one contiguous `&str` once they run (a line parser and a
-//! CommonMark parser), so each first asks the rope whether the one marker it
-//! cannot do without appears at all. Nearly every file has no merge-conflict
-//! marker, and a Markdown file with no `|` has no table, so those versions cost
-//! no copy; the rest read the tab's shared [`TextSnapshot`], materialized at most
-//! once per version for every reader of it.
-
-use std::ops::RangeInclusive;
+//! The merge-conflict scan needs one contiguous `&str` once it runs (a line
+//! parser), so it first asks the rope whether the one marker it cannot do
+//! without appears at all. Nearly every file has no merge-conflict marker, so
+//! those versions cost no copy; the rest read the tab's shared [`TextSnapshot`],
+//! materialized at most once per version for every reader of it.
+//!
+//! Markdown table lines are not scanned here: the session's highlight worker
+//! reads them off the tree it already parses and publishes them on the
+//! document snapshot.
 
 use karet_core::BytePos;
 use karet_core::Decoration;
@@ -18,9 +19,6 @@ use karet_text::TextSnapshot;
 
 /// The start marker every complete merge conflict opens with (in column zero).
 const CONFLICT_START: &str = "<<<<<<<";
-
-/// The pipe every GFM table's delimiter row carries.
-const TABLE_PIPE: &str = "|";
 
 fn contains(buffer: &TextBuffer, needle: &str) -> bool {
     let whole = Span {
@@ -36,17 +34,6 @@ pub(super) fn conflict_decorations(buffer: &TextBuffer, text: &TextSnapshot) -> 
         return Vec::new();
     }
     karet_editor::conflict_decorations(text)
-}
-
-/// [`karet_markdown::table_line_ranges`] for `buffer`, whose text `text` is.
-pub(super) fn table_line_ranges(
-    buffer: &TextBuffer,
-    text: &TextSnapshot,
-) -> Vec<RangeInclusive<u32>> {
-    if !contains(buffer, TABLE_PIPE) {
-        return Vec::new();
-    }
-    karet_markdown::table_line_ranges(text)
 }
 
 #[cfg(test)]
@@ -74,20 +61,5 @@ mod tests {
         assert_eq!(found, karet_editor::conflict_decorations(source));
         assert!(!found.is_empty());
         assert!(copied);
-    }
-
-    #[test]
-    fn markdown_without_a_pipe_is_never_copied() {
-        let (found, copied) = scan("# Title\n\n- item\n", table_line_ranges);
-        assert!(found.is_empty());
-        assert!(!copied, "no pipe: no table, and no copy");
-    }
-
-    #[test]
-    fn a_table_is_still_found() {
-        let source = "intro\n\n| a | b |\n|---|---|\n| 1 | 2 |\n";
-        let (found, _) = scan(source, table_line_ranges);
-        assert_eq!(found, karet_markdown::table_line_ranges(source));
-        assert_eq!(found, vec![2..=4]);
     }
 }

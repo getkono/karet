@@ -125,6 +125,7 @@ impl Session {
             semantic_blocks: Arc::new(SemanticBlocks::default()),
             syntax_symbols: Arc::default(),
             error_lines: Arc::default(),
+            table_lines: Arc::default(),
             spell_diagnostics: Vec::new(),
             lint_diagnostics: Vec::new(),
             lsp_diagnostics: HashMap::new(),

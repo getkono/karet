@@ -467,6 +467,7 @@ fn an_edit_in_one_split_leaves_a_far_click_in_the_other_a_step_back() {
         folds: Arc::new(FoldRegions::default()),
         decorations: Arc::new(Vec::new()),
         syntax_error_lines: Arc::new(Vec::new()),
+        table_lines: Arc::default(),
         language: Some("Rust"),
         dirty: true,
         cursor: None,
