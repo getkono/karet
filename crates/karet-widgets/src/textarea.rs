@@ -16,7 +16,7 @@
 //!
 //! # One layout, two halves
 //!
-//! [`layout`] owns the soft-wrap model, and both halves of the widget derive from
+//! The private `layout` module owns the soft-wrap model, and both halves of the widget derive from
 //! it: [`TextArea`] paints the rows it produces, and [`byte_at_row_col`] maps a
 //! clicked cell back through the same rows. Where those two once had separate
 //! answers — a character-cell model for the hit test against `Paragraph`'s word
@@ -168,7 +168,7 @@ impl TextAreaState {
     }
 
     /// The wrapped display row the caret sits on, for a viewport `width` cells
-    /// wide. See [`layout`] on the wrap model.
+    /// wide. See the `layout` module on the wrap model.
     #[must_use]
     pub fn cursor_row(&self, text: &str, width: u16) -> u16 {
         cursor_row(text, self.field.cursor(), width)

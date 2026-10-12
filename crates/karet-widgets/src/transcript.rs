@@ -30,7 +30,7 @@
 //! more visual rows, which overflows the viewport, which reserves a column.*
 //!
 //! [`Transcript::paint`] therefore calls
-//! [`reserve_tracks`](crate::scroll::reserve_tracks) **first** and derives the wrap
+//! [`reserve_tracks`] **first** and derives the wrap
 //! width from the content rect it hands back. The row count is computed after that
 //! and never feeds back into the reservation.
 //!
