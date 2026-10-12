@@ -30,6 +30,9 @@ pub(crate) struct TerminalCaps {
     pub(crate) placeholders: bool,
     /// The pixel size of one terminal cell, as the terminal last reported it.
     pub(crate) cell_px: (u32, u32),
+    /// Whether the environment names a terminal that draws a curly underline,
+    /// which diagnostics then use instead of a straight one.
+    pub(crate) undercurl: bool,
 }
 
 impl TerminalCaps {
@@ -45,6 +48,7 @@ impl TerminalCaps {
             pointer_shape: None,
             placeholders: graphics == GraphicsProtocol::Kitty && unicode_placeholders(),
             cell_px: karet_markdown::DEFAULT_CELL_PIXELS,
+            undercurl: crate::term_caps::probe_undercurl(),
         }
     }
 }

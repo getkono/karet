@@ -750,12 +750,19 @@ fn draw_merge_conflict(
         ctx,
         hits,
     );
+    let (decorations, messages) = swatches::merged_pane_diagnostics(
+        ctx.display.inline_diagnostics(),
+        decorations,
+        diagnostics,
+        merged_editor.cursors(),
+    );
     let editor = Editor::new(merged)
         .highlights(highlights)
         .semantic_blocks(semantic_blocks)
         .theme(theme)
-        .decorations(decorations)
+        .decorations(&decorations)
         .diagnostics(diagnostics)
+        .virtual_text(&messages)
         .folds(folds)
         .focused(ctx.editor_focused)
         .cell_caret(!ctx.graphical_cursor)
