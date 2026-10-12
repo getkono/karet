@@ -345,6 +345,9 @@ pub struct Editor {
     pub inlay_hints: InlayHints,
     /// Inline swatches on color literals (hex, `rgb()`, `hsl()`).
     pub color_highlight: ColorHighlight,
+    /// `editor.inlineDiagnostics.*` — which diagnostics show their message at
+    /// the end of their line.
+    pub inline_diagnostics: InlineDiagnostics,
     /// Per-language patches keyed by selectors such as `[rust]`.
     ///
     /// This map is flattened in `setting.jsonc`, so its entries sit beside the
@@ -414,6 +417,7 @@ impl Default for Editor {
             hover: HoverPopup::default(),
             inlay_hints: InlayHints::default(),
             color_highlight: ColorHighlight::default(),
+            inline_diagnostics: InlineDiagnostics::default(),
             language_overrides: BTreeMap::new(),
         }
     }
@@ -450,19 +454,25 @@ pub use aicommit::AiCommitEffort;
 pub use aicommit::DEFAULT_TIMEOUT_MS as AI_COMMIT_DEFAULT_TIMEOUT_MS;
 pub use inlay_hints::InlayHints;
 pub use inlay_hints::InlayHintsEnabled;
+pub use inline_diagnostics::DiagnosticSeverity;
+pub use inline_diagnostics::InlineDiagnostics;
+pub use inline_diagnostics::InlineDiagnosticsMode;
 pub use lsp::Lsp;
 pub use lsp::LspLanguage;
 pub use lsp::LspServer;
 pub use lsp::ManagedDownloads;
 pub use overrides::EditorOverride;
+pub use overrides::InlineDiagnosticsOverride;
 pub use overrides::LanguageSelector;
 pub use overrides::NullableOverride;
 pub use overrides::ResolvedCompletion;
 pub use overrides::ResolvedEditor;
+pub use overrides::ResolvedInlineDiagnostics;
 pub use overrides::ResolvedSemanticComments;
 
 mod aicommit;
 mod inlay_hints;
+mod inline_diagnostics;
 mod lsp;
 mod overrides;
 
@@ -1019,7 +1029,9 @@ mod tests {
                 "semanticComments": { "enabled": true, "tags": ["TODO"] },
                 "completion": { "enabled": true, "autoTrigger": true },
                 "autoClosingQuotes": "always",
+                "inlineDiagnostics": { "mode": "all", "minSeverity": "warning" },
                 "[Rust]": {
+                    "inlineDiagnostics": { "minSeverity": "error" },
                     "autoClosingBrackets": "never",
                     "tabSize": 2,
                     "insertSpaces": false,
@@ -1059,10 +1071,19 @@ mod tests {
         assert!(!rust.completion().auto_trigger());
         assert_eq!(rust.auto_closing_brackets(), AutoClosing::Never);
         assert_eq!(rust.auto_closing_quotes(), AutoClosing::Always);
+        assert_eq!(rust.inline_diagnostics().mode(), InlineDiagnosticsMode::All);
+        assert_eq!(
+            rust.inline_diagnostics().min_severity(),
+            DiagnosticSeverity::Error
+        );
 
         let python = parsed.for_language(Some("python"));
         assert_eq!(python.auto_closing_brackets(), AutoClosing::LanguageDefined);
         assert_eq!(python.tab_size(), 8);
+        assert_eq!(
+            python.inline_diagnostics().min_severity(),
+            DiagnosticSeverity::Warning
+        );
         assert_eq!(python.graphical_cursor(), Some(true));
         assert_eq!(python.word_wrap(), Some(true));
         assert!(python.sticky_scroll());

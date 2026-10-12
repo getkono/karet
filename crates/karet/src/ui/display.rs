@@ -1,11 +1,14 @@
 //! The `editor.*` display settings — `lineNumbers`, `cursorLine`, `rulers`,
-//! `scrollOff` and `stickyScroll` — resolved for one pane and handed to its
-//! editor widget.
+//! `scrollOff`, `stickyScroll` and `inlineDiagnostics` — resolved for one
+//! pane and handed to its editor widget, with whether the terminal curls a
+//! diagnostic's underline.
 //!
 //! Read from the live settings on every frame, so a configuration reload
 //! takes effect on the next paint without any reload-specific plumbing.
 
+use karet_core::Severity;
 use karet_editor::Editor;
+use karet_editor::InlineDiagnostics;
 use karet_editor::LineNumbers;
 use karet_session::config::schema;
 use karet_session::config::schema::ResolvedEditor;
@@ -18,6 +21,12 @@ pub(super) struct EditorDisplay<'a> {
     rulers: &'a [u16],
     scroll_off: u16,
     sticky_scroll: bool,
+    /// Which lines show their diagnostics' messages, and the least severe
+    /// one shown.
+    inline_diagnostics: (InlineDiagnostics, Severity),
+    /// Whether a diagnostic's underline is curly: the terminal's, not a
+    /// setting, so off until [`with_undercurl`](Self::with_undercurl).
+    undercurl: bool,
 }
 
 impl<'a> EditorDisplay<'a> {
@@ -33,7 +42,29 @@ impl<'a> EditorDisplay<'a> {
             rulers: resolved.rulers(),
             scroll_off: resolved.scroll_off(),
             sticky_scroll: resolved.sticky_scroll(),
+            inline_diagnostics: {
+                let inline = resolved.inline_diagnostics();
+                let mode = match inline.mode() {
+                    schema::InlineDiagnosticsMode::Off => InlineDiagnostics::Off,
+                    schema::InlineDiagnosticsMode::CurrentLine => InlineDiagnostics::CurrentLine,
+                    schema::InlineDiagnosticsMode::All => InlineDiagnostics::All,
+                };
+                (mode, inline.min_severity().severity())
+            },
+            undercurl: false,
         }
+    }
+
+    /// These settings, curling a diagnostic's underline when `undercurl`
+    /// says the terminal draws one.
+    pub(super) fn with_undercurl(self, undercurl: bool) -> Self {
+        Self { undercurl, ..self }
+    }
+
+    /// Which lines show their diagnostics' messages, and the least severe
+    /// diagnostic whose message is shown.
+    pub(super) fn inline_diagnostics(self) -> (InlineDiagnostics, Severity) {
+        self.inline_diagnostics
     }
 
     /// `editor` painting with every one of these settings.
@@ -47,6 +78,7 @@ impl<'a> EditorDisplay<'a> {
             .rulers(self.rulers)
             .scroll_off(self.scroll_off)
             .sticky_scroll(self.sticky_scroll)
+            .undercurl(self.undercurl)
     }
 
     /// `editor`, a read-only pane that mirrors another's scroll, painting
@@ -79,6 +111,10 @@ mod tests {
         settings.editor.rulers = vec![80, 100];
         settings.editor.scroll_off = 5;
         settings.editor.sticky_scroll = false;
+        settings.editor.inline_diagnostics = schema::InlineDiagnostics {
+            mode: schema::InlineDiagnosticsMode::All,
+            min_severity: schema::DiagnosticSeverity::Warning,
+        };
         let base = EditorDisplay::resolve(settings.editor.for_language(None));
         assert_eq!(
             base,
@@ -88,8 +124,11 @@ mod tests {
                 rulers: &[80, 100],
                 scroll_off: 5,
                 sticky_scroll: false,
+                inline_diagnostics: (InlineDiagnostics::All, Severity::Warning),
+                undercurl: false,
             }
         );
+        assert!(base.with_undercurl(true).undercurl);
 
         let defaults = Settings::default();
         let defaults = EditorDisplay::resolve(defaults.editor.for_language(None));
@@ -97,6 +136,39 @@ mod tests {
         assert!(defaults.cursor_line);
         assert_eq!(defaults.scroll_off, 3);
         assert!(defaults.rulers.is_empty());
+        assert_eq!(
+            defaults.inline_diagnostics(),
+            (InlineDiagnostics::CurrentLine, Severity::Hint)
+        );
+    }
+
+    #[test]
+    fn inline_diagnostics_resolve_per_language_field_by_field() {
+        let parsed: Option<schema::Editor> = serde_json::from_str(
+            r#"{
+                "inlineDiagnostics": { "mode": "all", "minSeverity": "info" },
+                "[rust]": { "inlineDiagnostics": { "mode": "off" } },
+                "[python]": { "inlineDiagnostics": { "minSeverity": "error" } }
+            }"#,
+        )
+        .ok();
+        let Some(editor) = parsed else {
+            panic!("the settings parse");
+        };
+        let resolve =
+            |language| EditorDisplay::resolve(editor.for_language(language)).inline_diagnostics();
+        assert_eq!(
+            resolve(None),
+            (InlineDiagnostics::All, Severity::Information)
+        );
+        assert_eq!(
+            resolve(Some("Rust")),
+            (InlineDiagnostics::Off, Severity::Information)
+        );
+        assert_eq!(
+            resolve(Some("python")),
+            (InlineDiagnostics::All, Severity::Error)
+        );
     }
 
     #[test]

@@ -19,7 +19,10 @@ use serde::Serialize;
 
 use super::AutoClosing;
 use super::Completion;
+use super::DiagnosticSeverity;
 use super::Editor;
+use super::InlineDiagnostics;
+use super::InlineDiagnosticsMode;
 use super::LineNumbers;
 use super::SemanticComments;
 
@@ -135,6 +138,19 @@ pub struct EditorOverride {
     pub semantic_comments: Option<SemanticCommentsOverride>,
     /// Partially override completion behavior.
     pub completion: Option<CompletionOverride>,
+    /// Partially override which diagnostics show their message inline.
+    pub inline_diagnostics: Option<InlineDiagnosticsOverride>,
+}
+
+/// A partial per-language patch for [`InlineDiagnostics`].
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct InlineDiagnosticsOverride {
+    /// Override which lines show their diagnostics' messages.
+    pub mode: Option<InlineDiagnosticsMode>,
+    /// Override the least severe diagnostic whose message is shown.
+    pub min_severity: Option<DiagnosticSeverity>,
 }
 
 /// A partial per-language patch for [`Completion`].
@@ -340,6 +356,40 @@ impl<'a> ResolvedEditor<'a> {
             base: &self.base.completion,
             override_: self.override_.and_then(|o| o.completion.as_ref()),
         }
+    }
+
+    /// Final inline-diagnostic settings.
+    #[must_use]
+    pub fn inline_diagnostics(self) -> ResolvedInlineDiagnostics<'a> {
+        ResolvedInlineDiagnostics {
+            base: &self.base.inline_diagnostics,
+            override_: self.override_.and_then(|o| o.inline_diagnostics.as_ref()),
+        }
+    }
+}
+
+/// A zero-copy view of resolved inline-diagnostic settings.
+#[derive(Clone, Copy, Debug)]
+pub struct ResolvedInlineDiagnostics<'a> {
+    base: &'a InlineDiagnostics,
+    override_: Option<&'a InlineDiagnosticsOverride>,
+}
+
+impl ResolvedInlineDiagnostics<'_> {
+    /// Which lines show their diagnostics' messages.
+    #[must_use]
+    pub fn mode(self) -> InlineDiagnosticsMode {
+        self.override_
+            .and_then(|o| o.mode)
+            .unwrap_or(self.base.mode)
+    }
+
+    /// The least severe diagnostic whose message is shown.
+    #[must_use]
+    pub fn min_severity(self) -> DiagnosticSeverity {
+        self.override_
+            .and_then(|o| o.min_severity)
+            .unwrap_or(self.base.min_severity)
     }
 }
 

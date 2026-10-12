@@ -147,6 +147,15 @@ pub(crate) fn evaluate(probes: &Probes, settings: &Settings) -> Vec<Finding> {
                 "not supported — mouse pointer-shape hints are disabled",
             ),
         },
+        if caps.undercurl {
+            Finding::new(Severity::Ok, "curly underlines", "supported")
+        } else {
+            Finding::new(
+                Severity::Info,
+                "curly underlines",
+                "not detected — diagnostics use a straight underline",
+            )
+        },
         Finding::new(
             Severity::Info,
             "TERM",
@@ -232,6 +241,7 @@ mod tests {
                 graphics_env: GraphicsProtocol::Kitty,
                 kitty_graphics: Some(true),
                 osc22_pointer_shape: Some(true),
+                undercurl: true,
             },
             term: Some("xterm-kitty".to_string()),
             term_program: None,
@@ -246,6 +256,7 @@ mod tests {
                 graphics_env: GraphicsProtocol::Halfblocks,
                 kitty_graphics: None,
                 osc22_pointer_shape: None,
+                undercurl: false,
             },
             term: Some("xterm-256color".to_string()),
             term_program: None,
@@ -350,6 +361,17 @@ mod tests {
                 finding(&findings, "OSC 22 pointer shapes").severity,
                 expected
             );
+        }
+    }
+
+    #[test]
+    fn a_straight_underline_is_never_an_error() {
+        for (probes, expected) in [
+            (none_supported(), Severity::Info),
+            (all_supported(), Severity::Ok),
+        ] {
+            let findings = evaluate(&probes, &Settings::default());
+            assert_eq!(finding(&findings, "curly underlines").severity, expected);
         }
     }
 

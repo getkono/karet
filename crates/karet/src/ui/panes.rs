@@ -85,7 +85,8 @@ pub(super) fn draw_panes(
             let word_wrap = resolved.map_or(app.settings.editor.word_wrap, |r| r.word_wrap());
             let display = EditorDisplay::resolve(
                 resolved.unwrap_or_else(|| app.settings.editor.for_language(None)),
-            );
+            )
+            .with_undercurl(app.caps.undercurl);
             let tab_width = app
                 .tabs
                 .get(app.active)
@@ -148,7 +149,8 @@ pub(super) fn draw_panes(
             let word_wrap = resolved.map_or(app.settings.editor.word_wrap, |r| r.word_wrap());
             let display = EditorDisplay::resolve(
                 resolved.unwrap_or_else(|| app.settings.editor.for_language(None)),
-            );
+            )
+            .with_undercurl(app.caps.undercurl);
             let tab_width = stored_tab_width.unwrap_or(4);
             let ctx = PaneCtx {
                 theme,

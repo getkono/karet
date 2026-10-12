@@ -36,13 +36,6 @@ const MANIFEST_EOL_PRIORITY: u8 = crate::app::LiveBlame::BLAME_EOL_PRIORITY + 1;
 /// and inline blame, so a short line keeps the problem and cuts the rest.
 const DIAGNOSTIC_EOL_PRIORITY: u8 = MANIFEST_EOL_PRIORITY + 1;
 
-/// Which lines show their diagnostics' messages, until an
-/// `editor.inlineDiagnostics` setting chooses: the caret's lines, so the
-/// message is there when the caret is, without filling every line of a file
-/// with errors.
-const INLINE_DIAGNOSTICS: karet_editor::InlineDiagnostics =
-    karet_editor::InlineDiagnostics::CurrentLine;
-
 /// The diagnostics published for `doc`, or none.
 pub(super) fn doc_diagnostics<'a>(ctx: &PaneCtx<'a>, doc: Option<DocumentId>) -> &'a [Diagnostic] {
     doc.and_then(|doc| ctx.diagnostics.get(&doc))
@@ -61,16 +54,45 @@ pub(super) fn problems(diagnostics: &[Diagnostic]) -> Vec<Diagnostic> {
         .collect()
 }
 
-/// The end-of-line messages of `diagnostics` on the `caret_lines`, every
-/// severity included.
-pub(super) fn diagnostic_text(diagnostics: &[Diagnostic], caret_lines: &[u32]) -> Vec<VirtualText> {
+/// The end-of-line messages of `diagnostics` on the lines `inline` selects
+/// (`mode`, with the `caret_lines`), at least as severe as its threshold
+/// (`editor.inlineDiagnostics`).
+pub(super) fn diagnostic_text(
+    diagnostics: &[Diagnostic],
+    inline: (karet_editor::InlineDiagnostics, karet_core::Severity),
+    caret_lines: &[u32],
+) -> Vec<VirtualText> {
+    let (mode, min_severity) = inline;
     karet_editor::diagnostic_messages(
         diagnostics,
-        INLINE_DIAGNOSTICS,
-        karet_core::Severity::Hint,
+        mode,
+        min_severity,
         caret_lines,
         DIAGNOSTIC_EOL_PRIORITY,
     )
+}
+
+/// The lines the carets of `cursors` are on.
+fn caret_lines(cursors: &karet_core::CursorState) -> Vec<u32> {
+    cursors.selections.iter().map(|s| s.head.line).collect()
+}
+
+/// The merged pane of a merge conflict's decorations and virtual text: its
+/// `decorations` followed by the gutter signs of the problems among
+/// `diagnostics` (after, so a marker already on a line keeps the lane, as in
+/// the plain editor), and those problems' messages on the lines `inline`
+/// (`editor.inlineDiagnostics`) selects.
+pub(super) fn merged_pane_diagnostics(
+    inline: (karet_editor::InlineDiagnostics, karet_core::Severity),
+    decorations: &[Decoration],
+    diagnostics: &[Diagnostic],
+    cursors: &karet_core::CursorState,
+) -> (Vec<Decoration>, Vec<VirtualText>) {
+    let problems = problems(diagnostics);
+    let mut out = decorations.to_vec();
+    out.extend(karet_editor::diagnostic_signs(&problems));
+    let messages = diagnostic_text(&problems, inline, &caret_lines(cursors));
+    (out, messages)
 }
 
 /// End-of-line annotations for a manifest's dependency hints. Fresh
@@ -188,7 +210,6 @@ pub(super) fn frame_virtual_text(
     buffer: &TextBuffer,
     (diagnostics, cursors): (&[Diagnostic], &karet_core::CursorState),
 ) -> (Vec<VirtualText>, Vec<(usize, usize)>, Option<usize>) {
-    let caret_lines: Vec<u32> = cursors.selections.iter().map(|s| s.head.line).collect();
     let mut out: Vec<VirtualText> = Vec::new();
     let mut inlay_parts = Vec::new();
     for (index, hint) in doc
@@ -202,7 +223,11 @@ pub(super) fn frame_virtual_text(
             inlay_parts.push((index, part));
         }
     }
-    out.extend(diagnostic_text(diagnostics, &caret_lines));
+    out.extend(diagnostic_text(
+        diagnostics,
+        ctx.display.inline_diagnostics(),
+        &caret_lines(cursors),
+    ));
     if let Some((checked, hints)) = doc.and_then(|doc| ctx.manifest_hints.get(&doc))
         && *checked == buffer.version()
     {
@@ -263,14 +288,18 @@ mod diagnostic_text_tests {
         }
     }
 
+    /// The default `editor.inlineDiagnostics`: the caret lines, every severity.
+    const DEFAULT: (karet_editor::InlineDiagnostics, Severity) =
+        (karet_editor::InlineDiagnostics::CurrentLine, Severity::Hint);
+
     #[test]
-    fn only_the_caret_lines_show_messages_of_every_severity() {
+    fn by_default_only_the_caret_lines_show_messages_of_every_severity() {
         let all = [
             diagnostic(0, Severity::Error, "off the caret"),
             diagnostic(3, Severity::Hint, "a hint"),
             diagnostic(3, Severity::Error, "an error"),
         ];
-        let texts: Vec<(u32, String)> = diagnostic_text(&all, &[3])
+        let texts: Vec<(u32, String)> = diagnostic_text(&all, DEFAULT, &[3])
             .into_iter()
             .map(|text| (text.line, text.text))
             .collect();
@@ -281,12 +310,30 @@ mod diagnostic_text_tests {
     }
 
     #[test]
+    fn the_setting_chooses_the_lines_and_the_threshold() {
+        let all = [
+            diagnostic(0, Severity::Error, "off the caret"),
+            diagnostic(3, Severity::Hint, "a hint"),
+        ];
+        let lines = |inline| -> Vec<u32> {
+            diagnostic_text(&all, inline, &[3])
+                .into_iter()
+                .map(|text| text.line)
+                .collect()
+        };
+        use karet_editor::InlineDiagnostics;
+        assert_eq!(lines((InlineDiagnostics::All, Severity::Hint)), [0, 3]);
+        assert_eq!(lines((InlineDiagnostics::All, Severity::Warning)), [0]);
+        assert!(lines((InlineDiagnostics::Off, Severity::Hint)).is_empty());
+    }
+
+    #[test]
     fn misspellings_get_no_sign_and_no_caret_line_message() {
         let mut misspelled = diagnostic(2, Severity::Warning, "Unknown word");
         misspelled.source = Some("karet-spell".to_owned());
         let all = [misspelled, diagnostic(2, Severity::Hint, "a hint")];
         let kept = problems(&all);
-        let messages: Vec<String> = diagnostic_text(&kept, &[2])
+        let messages: Vec<String> = diagnostic_text(&kept, DEFAULT, &[2])
             .into_iter()
             .map(|text| text.text)
             .collect();
@@ -300,8 +347,49 @@ mod diagnostic_text_tests {
     }
 
     #[test]
+    fn the_merged_pane_signs_its_problems_after_its_markers_and_shows_caret_messages() {
+        let marker = Decoration {
+            range: karet_core::Range {
+                start: LineCol::new(1, 0),
+                end: LineCol::new(1, 0),
+            },
+            kind: karet_core::DecorationKind::GutterMarker { glyph: '│' },
+            role: Some(ThemeRole::Muted),
+        };
+        let mut misspelled = diagnostic(1, Severity::Warning, "Unknown word");
+        misspelled.source = Some("karet-spell".to_owned());
+        let all = [
+            diagnostic(1, Severity::Error, "on the caret"),
+            diagnostic(4, Severity::Warning, "off it"),
+            misspelled,
+        ];
+        let cursors =
+            karet_core::CursorState::single(karet_core::Selection::caret(LineCol::new(1, 2)));
+        let (decorations, messages) =
+            merged_pane_diagnostics(DEFAULT, std::slice::from_ref(&marker), &all, &cursors);
+        let lanes: Vec<(u32, Option<ThemeRole>)> = decorations
+            .iter()
+            .map(|decoration| (decoration.range.start.line, decoration.role))
+            .collect();
+        assert_eq!(
+            lanes,
+            [
+                (1, Some(ThemeRole::Muted)),
+                (1, Some(ThemeRole::DiagnosticError)),
+                (4, Some(ThemeRole::DiagnosticWarning)),
+            ],
+            "the existing marker first; the misspelling earns no sign"
+        );
+        let messages: Vec<(u32, String)> = messages
+            .into_iter()
+            .map(|text| (text.line, text.text))
+            .collect();
+        assert_eq!(messages, [(1, "  on the caret".to_owned())]);
+    }
+
+    #[test]
     fn a_message_outranks_a_dependency_hint_and_the_blame() {
-        let texts = diagnostic_text(&[diagnostic(0, Severity::Warning, "w")], &[0]);
+        let texts = diagnostic_text(&[diagnostic(0, Severity::Warning, "w")], DEFAULT, &[0]);
         let Some(text) = texts.first() else {
             panic!("the caret line's warning is shown");
         };
