@@ -215,6 +215,64 @@
         );
     }
 
+    #[test]
+    fn a_manual_format_is_its_own_undo_step_apart_from_a_later_save() {
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        let path = dir.path().join("main.rs");
+        if std::fs::write(&path, "fn  main() {}\n").is_err() {
+            return;
+        }
+        // No format-on-save: the save below only cleans up, so the one format
+        // is the one asked for by hand.
+        let (mut session, mut events, mut snaps) = Session::new(SessionConfig::default());
+        session.handle(
+            RequestId(1),
+            Command::OpenDocument {
+                path: path.clone(),
+                language: None,
+            },
+        );
+        let Some(doc) = opened_doc(&mut events) else {
+            return;
+        };
+        let version = session.document(doc).map(|d| d.version()).unwrap_or(0);
+        // Format Document answers with an edit that leaves trailing whitespace,
+        // so the save after it has its own cleanup to make.
+        session.apply_lsp_update(crate::lsp::LspUpdate::Formatting {
+            generation: 0,
+            request: RequestId(2),
+            doc,
+            version,
+            formatted: true,
+            edits: vec![TextEdit {
+                range: Range {
+                    start: LineCol::new(0, 0),
+                    end: LineCol::new(1, 0),
+                },
+                new_text: "fn main() {}   \n".to_string(),
+            }],
+            scope: crate::lsp::FormattingScope::Document,
+        });
+        assert_eq!(text_of(&session, doc), "fn main() {}   \n");
+        save_now(&mut session, doc);
+        assert_eq!(std::fs::read_to_string(&path).unwrap_or_default(), "fn main() {}\n");
+
+        let _ = undo_caret(&mut session, &mut snaps, doc);
+        assert_eq!(
+            text_of(&session, doc),
+            "fn main() {}   \n",
+            "the first undo reverts only the save's cleanup, not the format before it"
+        );
+        let _ = undo_caret(&mut session, &mut snaps, doc);
+        assert_eq!(
+            text_of(&session, doc),
+            "fn  main() {}\n",
+            "the next undo reverts the manual format as one step"
+        );
+    }
+
     // ---- undo/redo restore the client's whole selection set (#331).
     //
     // The client reports its selection set right before an edit and right
