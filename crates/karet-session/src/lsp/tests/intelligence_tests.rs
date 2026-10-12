@@ -443,3 +443,101 @@ async fn a_to_end_of_line_hint_request_reaches_the_wire_as_the_real_end() -> Tes
         }
     }
 }
+
+/// Ask for signature help in `doc` and collect the answer, with any
+/// refusal notice that came ahead of it.
+async fn ask_signature_help(
+    backend: &impl Backend,
+    events: &mut EventRx,
+    (doc, position, manual): (DocumentId, LineCol, bool),
+) -> Result<
+    (
+        Option<karet_core::SignatureHelp>,
+        karet_core::SignatureHelpOptions,
+        Option<karet_core::ServerFeature>,
+    ),
+    Box<dyn std::error::Error + Send + Sync>,
+> {
+    let request = backend.next_id();
+    backend.send(
+        request,
+        Command::SignatureHelp {
+            doc,
+            position,
+            manual,
+        },
+    )?;
+    let mut notice = None;
+    loop {
+        let (id, event) = next_event(events).await.ok_or("no SignatureHelp answer")?;
+        match event {
+            Event::FeatureUnsupported { feature, .. } if id == Some(request) => {
+                notice = Some(feature);
+            },
+            Event::SignatureHelp {
+                doc: answered,
+                help,
+                options,
+            } if id == Some(request) => {
+                assert_eq!(answered, doc, "the answer names the document asked about");
+                return Ok((help, options, notice));
+            },
+            _ => {},
+        }
+    }
+}
+
+#[tokio::test]
+async fn signature_help_reaches_the_client_with_the_servers_characters() -> TestResult {
+    // The parameter labels arrive as UTF-16 offsets into the signature label
+    // and leave as the text they cover; the trigger characters the client
+    // keys its auto-trigger on travel beside them.
+    let dir = tempfile::tempdir()?;
+    let path = rust_file(&dir, "main.rs", "fn main() { add(1, 2) }\n").ok_or("write failed")?;
+    let spawns = Arc::new(AtomicUsize::new(0));
+    let (session, mut events) =
+        session_with_connector(test_connector(Behavior::Normal, None, spawns));
+    let backend = local_session(session, None);
+    let (doc, _) = open(&backend, &mut events, path).await?;
+
+    let at = (doc, LineCol::new(0, 19), false);
+    let (help, options, notice) = ask_signature_help(&backend, &mut events, at).await?;
+    let help = help.ok_or("the server's signature was dropped")?;
+    assert_eq!(notice, None, "a server that offers it was reported as not");
+    assert_eq!(help.active_parameter, 1);
+    let labels: Vec<&str> = help.signatures[0]
+        .parameters
+        .iter()
+        .map(|parameter| parameter.label.as_str())
+        .collect();
+    assert_eq!(labels, ["a: i32", "b: i32"]);
+    assert_eq!(options.trigger_characters, ['(']);
+    assert_eq!(options.retrigger_characters, [',']);
+    Ok(())
+}
+
+#[tokio::test]
+async fn only_a_manual_signature_help_request_reports_a_server_without_it() -> TestResult {
+    // A typed `(` asks on every call; a server that has no signature help
+    // must not raise a notice each time. Asked for by hand, it says why the
+    // answer is empty -- and both are still answered.
+    let dir = tempfile::tempdir()?;
+    let path = rust_file(&dir, "main.rs", "fn main() { f(1) }\n").ok_or("write failed")?;
+    let spawns = Arc::new(AtomicUsize::new(0));
+    let (session, mut events) =
+        session_with_connector(test_connector(Behavior::Bare, None, spawns));
+    let backend = local_session(session, None);
+    let (doc, _) = open(&backend, &mut events, path).await?;
+
+    let typed =
+        ask_signature_help(&backend, &mut events, (doc, LineCol::new(0, 14), false)).await?;
+    assert_eq!(
+        typed,
+        (None, karet_core::SignatureHelpOptions::default(), None)
+    );
+    let manual =
+        ask_signature_help(&backend, &mut events, (doc, LineCol::new(0, 14), true)).await?;
+    assert_eq!(manual.0, None);
+    assert_eq!(manual.2, Some(karet_core::ServerFeature::SignatureHelp));
+    Ok(())
+}

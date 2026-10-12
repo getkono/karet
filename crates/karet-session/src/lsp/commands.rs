@@ -22,6 +22,7 @@ use karet_core::InlayHint;
 use karet_core::LineCol;
 use karet_core::Location;
 use karet_core::ServerFeature;
+use karet_core::SignatureHelpOptions;
 use karet_core::WorkspaceEdit;
 use karet_lsp::LspClient;
 use karet_lsp::LspError;
@@ -167,6 +168,102 @@ pub(super) async fn resolve_item(
     }
 }
 
+/// Serve a request about the caret that the user reads in a popup -- a
+/// [`ServerCmd::Hover`] or a [`ServerCmd::SignatureHelp`] -- and answer it:
+/// with nothing when the connection is dead or the request fails, which
+/// counts against the connection's health like any other failure. Flushes
+/// first, so the server answers about the latest text.
+///
+/// A refusal is reported for a hover, which is always asked by hand, and for
+/// signature help only when it was: typing `(` in a file whose server has no
+/// signature help must not raise a notice every time.
+pub(super) async fn caret_query(
+    client: &LspClient,
+    cmd: ServerCmd,
+    (generation, pending): (u64, &mut Option<(PathBuf, i32, String)>),
+    (dead, tally, updates, key, token): (
+        &mut bool,
+        &mut FailureTally,
+        &mpsc::UnboundedSender<LspUpdate>,
+        &SlotKey,
+        SlotToken,
+    ),
+) {
+    flush_pending(client, pending, dead, tally, updates, key, token).await;
+    if *dead {
+        // Nothing to ask: answer exactly as when there is no connection.
+        return answer_empty(updates, cmd, generation);
+    }
+    let health = (dead, tally, updates, key, token);
+    match cmd {
+        ServerCmd::Hover {
+            request,
+            doc,
+            version,
+            path,
+            position,
+        } => {
+            let result = client.hover(&path, position).await;
+            let hover = settle(
+                result,
+                Some((request, ServerFeature::Hover)),
+                generation,
+                health,
+            );
+            let _ = updates.send(LspUpdate::Hover {
+                generation,
+                request,
+                doc,
+                version,
+                hover,
+            });
+        },
+        ServerCmd::SignatureHelp {
+            request,
+            doc,
+            path,
+            position,
+            manual,
+        } => {
+            let result = client.signature_help(&path, position).await;
+            let refused = manual.then_some((request, ServerFeature::SignatureHelp));
+            let help = settle(result, refused, generation, health);
+            let _ = updates.send(LspUpdate::SignatureHelp {
+                generation,
+                request,
+                doc,
+                help,
+                options: client.capabilities().signature_help,
+            });
+        },
+        cmd => answer_empty(updates, cmd, generation),
+    }
+}
+
+/// Settle a [`caret_query`] answer: report a refusal the user asked to hear
+/// about (`refused`), then keep the answer, or charge the failure and answer
+/// nothing.
+fn settle<T>(
+    result: Result<Option<T>, LspError>,
+    refused: Option<(RequestId, ServerFeature)>,
+    generation: u64,
+    (dead, tally, updates, key, token): (
+        &mut bool,
+        &mut FailureTally,
+        &mpsc::UnboundedSender<LspUpdate>,
+        &SlotKey,
+        SlotToken,
+    ),
+) -> Option<T> {
+    if let Some((request, feature)) = refused {
+        report_unsupported(&result, updates, generation, request, key, feature);
+    }
+    tally.observe(result).unwrap_or_else(|error| {
+        tally.note::<()>(Err(error), dead, updates, key, token);
+        None
+    })
+}
+
 /// The capability a navigation request is gated on: Go to Definition's own
 /// for `None`, else the one its kind names.
 pub(super) fn location_feature(kind: Option<LocationKind>) -> ServerFeature {
@@ -306,6 +403,15 @@ pub(super) fn answer_empty(
                 hover: None,
             });
         },
+        ServerCmd::SignatureHelp { request, doc, .. } => {
+            let _ = updates.send(LspUpdate::SignatureHelp {
+                generation,
+                request,
+                doc,
+                help: None,
+                options: SignatureHelpOptions::default(),
+            });
+        },
         ServerCmd::Definition {
             request,
             doc,
@@ -442,6 +548,7 @@ pub(super) fn remember_document(documents: &mut HashMap<PathBuf, OpenDocument>, 
         | ServerCmd::ResolveInlayHint { .. }
         | ServerCmd::DocumentSymbols { .. }
         | ServerCmd::Hover { .. }
+        | ServerCmd::SignatureHelp { .. }
         | ServerCmd::Definition { .. }
         | ServerCmd::WorkspaceSymbols { .. }
         | ServerCmd::Rename { .. }

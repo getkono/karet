@@ -251,6 +251,10 @@ pub(super) static BINDINGS: &[Binding] = &[
     // Ctrl+Space asks the language server for completions (bypasses the
     // syntax-error auto-trigger gate).
     b(Editor, true,  false, false, Char(' '), Command::TriggerCompletion),
+    // Ctrl+Shift+Space shows the parameter hints (VS Code parity). Only a
+    // terminal that reports Shift with Space (kitty protocol) can send it;
+    // the palette reaches it everywhere.
+    b(Editor, true,  true,  false, Char(' '), Command::SignatureHelp),
     b(Editor, false, false, false, F(12),      Command::GoToDefinition),
     // VS Code parity: Shift+F12 lists references, Ctrl+F12 jumps to the
     // implementations. Declaration and type definition have no default chord

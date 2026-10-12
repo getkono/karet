@@ -263,6 +263,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     draw_drop_preview(f, app, &theme);
     draw_status(f, app, &theme, rows[2]);
 
+    // The signature popup sits above the caret, under the completion popup
+    // that may open below it (and over it, where the editor is too short).
+    draw_signature(f, app, &theme);
     // The completion popup floats over the editor, anchored at the caret; it
     // sits under modal overlays and toasts.
     draw_completion(f, app, &theme, &mut hits);
@@ -328,6 +331,63 @@ fn draw_operation_blocker(f: &mut Frame, blocker: &OperationBlocker, theme: &The
         Line::raw(format!("Waiting up to {remaining}s · Esc cancels quit")),
     ];
     f.render_widget(Paragraph::new(text).wrap(Wrap { trim: true }), inner);
+}
+
+/// Draw the signature-help popup above the caret, so the completion popup
+/// below it can show at the same time; below the caret only when there is no
+/// row above. Shifted left to stay inside the editor, and not drawn under an
+/// open hover popup, which the user asked for more recently.
+fn draw_signature(f: &mut Frame, app: &App, theme: &Theme) {
+    let Some(ui) = app.signature.ui.as_ref() else {
+        return;
+    };
+    let editor = app.editor_rect;
+    if app.hover_ui.is_some() || editor.width == 0 || editor.height == 0 {
+        return;
+    }
+    let caret_cell = {
+        let Some(tab) = app.tabs.get(app.active) else {
+            return;
+        };
+        let TabKind::Code {
+            doc: Some(doc),
+            buffer,
+            folds,
+            folded,
+            ..
+        } = &tab.kind
+        else {
+            return;
+        };
+        if *doc != ui.doc {
+            return;
+        }
+        let fold_lines = crate::app::resolve_folds(folds, folded);
+        tab.editor.primary_caret_cell(editor, buffer, &fold_lines)
+    };
+    let Some((caret_x, caret_y)) = caret_cell else {
+        return; // caret scrolled out of view
+    };
+    let popup = karet_widgets::SignaturePopup::new(&ui.help, theme).shown(ui.shown());
+    let (width, rows) = popup.desired_size(editor.width);
+    let above = caret_y.saturating_sub(editor.top());
+    let below = editor.bottom().saturating_sub(caret_y.saturating_add(1));
+    let (y, height) = if above > 0 {
+        let height = rows.min(above);
+        (caret_y - height, height)
+    } else {
+        (caret_y.saturating_add(1), rows.min(below))
+    };
+    if width == 0 || height == 0 {
+        return;
+    }
+    let x = caret_x.clamp(
+        editor.left(),
+        editor.right().saturating_sub(width).max(editor.left()),
+    );
+    let rect = Rect::new(x, y, width, height);
+    f.render_widget(Clear, rect);
+    f.render_widget(popup, rect);
 }
 
 /// Draw the scrollable diagnostic detail view (Ctrl+K Ctrl+M): a centered

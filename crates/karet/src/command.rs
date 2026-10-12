@@ -266,6 +266,9 @@ pub enum Command {
     TriggerCompletion,
     /// Show hover documentation and diagnostics for the caret (Ctrl+K Ctrl+I).
     Hover,
+    /// Show the parameter hints of the call around the caret
+    /// (Ctrl+Shift+Space).
+    SignatureHelp,
     /// Show or hide inlay hints (Ctrl+K Ctrl+T); under an `…UnlessPressed`
     /// setting, only until the next key.
     ToggleInlayHints,
@@ -850,6 +853,7 @@ impl Command {
             Self::InsertChar(_) => "Insert Character",
             Self::TriggerCompletion => "Trigger Suggest",
             Self::Hover => "Show Hover",
+            Self::SignatureHelp => "Trigger Parameter Hints",
             Self::ToggleInlayHints => "Toggle Inlay Hints",
             Self::ShowDiagnostic => "Show Diagnostic Detail",
             Self::DebugStart => "Debug: Start / Continue",

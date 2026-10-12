@@ -63,6 +63,7 @@ mod scroll;
 mod seam;
 mod search_completion;
 mod search_panel;
+mod signature;
 mod spellcheck;
 mod spelling_panel;
 mod startup;
