@@ -22,6 +22,7 @@ mod diff_view;
 mod editor_drag;
 mod editor_mouse;
 mod explorer;
+mod external_edits;
 mod github;
 pub(crate) mod harness;
 mod hover;

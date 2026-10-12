@@ -263,10 +263,26 @@ impl TextBuffer {
         }
     }
 
+    /// The nearest valid position to `pos`: a line past the end becomes the
+    /// last line, and the column is clamped to that line's content length
+    /// (excluding the trailing line break), so the result always round-trips
+    /// through [`line_col_to_byte`](Self::line_col_to_byte) unchanged.
+    #[must_use]
+    pub fn clamp(&self, pos: LineCol) -> LineCol {
+        let last = self.rope.len_lines().saturating_sub(1);
+        let line = (pos.line as usize).min(last);
+        let content_chars = line_content_chars(self.rope.line(line));
+        LineCol {
+            line: line as u32,
+            col: (pos.col as usize).min(content_chars) as u32,
+        }
+    }
+
     /// Convert a line/column position to an absolute byte offset.
     ///
-    /// `col` is interpreted in `char`s and clamped to the line's content length
-    /// (excluding the trailing line break).
+    /// `col` is interpreted in `char`s and silently clamped to the line's
+    /// content length (excluding the trailing line break); use
+    /// [`clamp`](Self::clamp) to learn the position that was actually used.
     ///
     /// # Errors
     /// Returns [`TextError::OutOfBounds`] if the line is past the buffer end.
@@ -440,6 +456,20 @@ mod tests {
         assert_eq!(b.byte_to_line_col(BytePos(7)), LineCol::new(1, 0));
         // 'r' is char 2 on line 1 → byte 10 (w=1, ö=2 from byte 7).
         assert_eq!(b.byte_to_line_col(BytePos(10)), LineCol::new(1, 2));
+    }
+
+    #[test]
+    fn clamp_pulls_a_position_onto_the_text() {
+        let b = TextBuffer::from_text("héllo\r\nwö\n");
+        // Inside the text: unchanged.
+        assert_eq!(b.clamp(LineCol::new(1, 1)), LineCol::new(1, 1));
+        // Past a CRLF line's content: its end, before the `\r`.
+        assert_eq!(b.clamp(LineCol::new(0, 40)), LineCol::new(0, 5));
+        // Past the last line: the empty line after the final newline.
+        assert_eq!(b.clamp(LineCol::new(9, 3)), LineCol::new(2, 0));
+        // The empty buffer has exactly one position.
+        let empty = TextBuffer::from_text("");
+        assert_eq!(empty.clamp(LineCol::new(4, 4)), LineCol::new(0, 0));
     }
 
     #[test]

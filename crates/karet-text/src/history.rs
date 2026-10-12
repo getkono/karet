@@ -57,6 +57,9 @@ struct Revision {
     group: u64,
     /// The cursor before this edit, restored when the group is undone.
     cursor_before: CursorState,
+    /// The cursor right after this edit, restored when the group is redone;
+    /// `None` until the client reports it (see [`History::note_cursor_after`]).
+    cursor_after: Option<CursorState>,
 }
 
 /// The undo/redo stacks plus coalescing and save-point bookkeeping.
@@ -148,6 +151,7 @@ impl History {
             forward,
             group,
             cursor_before: ctx.cursor_before.clone(),
+            cursor_after: None,
         });
         self.last_tick_ms = ctx.tick_ms;
         self.last_caret_after = edit_end;
@@ -171,18 +175,36 @@ impl History {
     }
 
     /// Pop the top redo group, moving it back to the undo stack. Returns the
-    /// forward changes to re-apply (in order).
-    pub(crate) fn take_redo(&mut self) -> Option<Vec<Change>> {
+    /// forward changes to re-apply (in order) and the cursor recorded right
+    /// after the group's last edit, when one was.
+    pub(crate) fn take_redo(&mut self) -> Option<(Vec<Change>, Option<CursorState>)> {
         let group = self.redo.last()?.group;
         let mut changes = Vec::new();
+        let mut cursor = None;
         while self.redo.last().is_some_and(|r| r.group == group) {
             if let Some(rev) = self.redo.pop() {
                 changes.push(rev.forward.clone());
+                // Popped oldest first, so the last one seen is the newest edit.
+                cursor.clone_from(&rev.cursor_after);
                 self.undo.push(rev);
             }
         }
         self.last_caret_after = None;
-        Some(changes)
+        Some((changes, cursor))
+    }
+
+    /// Record `cursor` as the state right after the newest edit, provided that
+    /// edit is what produced `version` (an undo or redo since leaves the head
+    /// on an older edit, so the report is about something else) and nothing
+    /// was recorded for it yet. The first report after an edit is the one that
+    /// describes it; later ones at the same version are caret moves made since.
+    pub(crate) fn note_cursor_after(&mut self, version: u64, cursor: &CursorState) {
+        if let Some(rev) = self.undo.last_mut()
+            && rev.inverse.base_version == version
+            && rev.cursor_after.is_none()
+        {
+            rev.cursor_after = Some(cursor.clone());
+        }
     }
 }
 
@@ -337,8 +359,9 @@ mod tests {
         let group = group_of(&h, 0);
         h.take_undo();
         assert!(h.undo.is_empty());
-        let redo = h.take_redo().unwrap_or_default();
+        let (redo, cursor) = h.take_redo().unwrap_or_default();
         assert_eq!(redo.len(), 1);
+        assert_eq!(cursor, None, "no cursor was reported after the edit");
         assert_eq!(h.undo.len(), 1);
         assert_eq!(group_of(&h, 0), group);
     }

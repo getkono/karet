@@ -441,9 +441,12 @@ impl Session {
             Command::RetargetDocument { doc, path } => self.retarget(Some(id), doc, path),
             Command::BuildLatex { doc } => self.request_latex_build(id, doc),
             // The caret is UI-local; the backend keeps only the last report per
-            // document, so a save's own rewrites can undo back to it.
+            // document, so the next edit -- the client's own, or a save's
+            // rewrite -- can undo back to it. The first report after an edit
+            // is also the cursor redoing that edit restores.
             Command::SetCursor { doc, cursors, .. } => {
                 if let Some(doc) = self.store.docs.get_mut(&doc) {
+                    doc.buffer.note_cursor_after(&cursors);
                     doc.reported_cursor = Some((doc.buffer.version(), cursors));
                 }
             },
@@ -956,9 +959,11 @@ fn whole_document_change(doc: &Document, new_text: String) -> Option<Change> {
     ))
 }
 
-fn edit_context(tick_ms: u64, cause: EditCause, change: &Change) -> EditContext {
-    let cursor_before = change.edits.first().map_or_else(CursorState::default, |e| {
-        CursorState::single(Selection::caret(e.range.start))
+fn edit_context(tick_ms: u64, cause: EditCause, doc: &Document, change: &Change) -> EditContext {
+    let cursor_before = reported_cursor(doc).unwrap_or_else(|| {
+        change.edits.first().map_or_else(CursorState::default, |e| {
+            CursorState::single(Selection::caret(e.range.start))
+        })
     });
     EditContext {
         tick_ms,
@@ -970,30 +975,31 @@ fn edit_context(tick_ms: u64, cause: EditCause, change: &Change) -> EditContext 
 /// The context for a rewrite the session makes on its own at save time
 /// (formatting, whitespace cleanup). Undoing it should put the caret back where
 /// the user was, not at the rewrite's first edit -- which, for a whole-document
-/// replacement, is the top of the file. The client's last [`Command::SetCursor`]
-/// report says where that is, as long as no edit has landed since it; failing
-/// that, the first edit's start is the only position there is.
+/// replacement, is the top of the file. See [`edit_context`] for where that is.
 fn save_edit_context(tick_ms: u64, doc: &Document, change: &Change) -> EditContext {
-    let mut ctx = edit_context(tick_ms, EditCause::Replace, change);
-    if let Some((version, cursors)) = &doc.reported_cursor
-        && *version == doc.buffer.version()
-        && !cursors.selections.is_empty()
-    {
-        let clamp = |pos: LineCol| {
-            let byte = doc
-                .buffer
-                .line_col_to_byte(pos)
-                .unwrap_or(BytePos(doc.buffer.len_bytes()));
-            doc.buffer.byte_to_line_col(byte)
-        };
-        let mut cursor_before = cursors.clone();
-        for selection in &mut cursor_before.selections {
-            selection.anchor = clamp(selection.anchor);
-            selection.head = clamp(selection.head);
-        }
-        ctx.cursor_before = cursor_before;
+    edit_context(tick_ms, EditCause::Replace, doc, change)
+}
+
+/// The cursor/selection set the client last reported through
+/// [`Command::SetCursor`], clamped to the buffer, as long as no edit has landed
+/// since it: that is the whole set an undo of the next edit restores. A stale
+/// or missing report yields `None`, and the caller falls back to the first
+/// edit's start -- the only position the change itself says anything about.
+fn reported_cursor(doc: &Document) -> Option<CursorState> {
+    let (version, cursors) = doc.reported_cursor.as_ref()?;
+    if *version != doc.buffer.version() || cursors.selections.is_empty() {
+        return None;
     }
-    ctx
+    Some(clamp_cursor(&doc.buffer, cursors.clone()))
+}
+
+/// `cursors` with every anchor and head pulled onto `buffer`'s text.
+pub(super) fn clamp_cursor(buffer: &TextBuffer, mut cursors: CursorState) -> CursorState {
+    for selection in &mut cursors.selections {
+        selection.anchor = buffer.clamp(selection.anchor);
+        selection.head = buffer.clamp(selection.head);
+    }
+    cursors
 }
 
 /// Map an explicit LSP-style language id (e.g. `"rust"`) to karet's display name,

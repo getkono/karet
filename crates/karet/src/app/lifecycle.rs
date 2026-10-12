@@ -26,11 +26,21 @@ impl App {
         self.tabs.get_mut(self.active)?.find.as_mut()
     }
 
-    /// Submit a backend command against the active code tab's document, if any.
-    pub(super) fn send_doc_command(&mut self, make: impl FnOnce(DocumentId) -> SessionCommand) {
-        if let Some(doc) = self.active_code_doc() {
-            let _ = self.send(make(doc));
+    /// Send an undo (`undo`) or redo for the active code tab's document, if
+    /// any, remembering this view as the one whose selection set the answer
+    /// restores.
+    pub(super) fn send_history(&mut self, undo: bool) {
+        let Some(doc) = self.active_code_doc() else {
+            return;
+        };
+        if let Some(tab) = self.tabs.get(self.active) {
+            self.docs.history_view.insert(doc, tab.view);
         }
+        let _ = self.send(if undo {
+            SessionCommand::Undo { doc }
+        } else {
+            SessionCommand::Redo { doc }
+        });
     }
 
     /// Handle a quit request through the unified close guard.

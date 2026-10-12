@@ -34,9 +34,26 @@ impl App {
         // the contiguous text (find, a Markdown scan, the edit recovery above)
         // builds it once for all of them.
         let snap_text = snap.buffer.text_snapshot();
+        // An undo/redo's selection set belongs to the view that asked for it;
+        // failing a record of one, to the focused view when it shows this
+        // document. Every other view keeps its own carets.
+        let shows =
+            |tab: &Tab| matches!(&tab.kind, TabKind::Code { doc: Some(d), .. } if *d == doc);
+        let restore_in = snap.cursor.as_ref().and_then(|_| {
+            self.docs
+                .history_view
+                .get(&doc)
+                .copied()
+                .filter(|view| self.all_tabs().any(|tab| tab.view == *view && shows(tab)))
+                .or_else(|| {
+                    self.tabs
+                        .get(self.active)
+                        .filter(|tab| shows(tab))
+                        .map(|tab| tab.view)
+                })
+        });
         for tab in self.all_tabs_mut() {
-            let matches = matches!(&tab.kind, TabKind::Code { doc: Some(d), .. } if *d == doc);
-            if !matches {
+            if !shows(tab) {
                 continue;
             }
             if let TabKind::Code {
@@ -58,14 +75,38 @@ impl App {
                 if snap.version >= buffer.version() {
                     let old_version = buffer.version();
                     advanced |= snap.version > old_version;
-                    if carried.is_none()
-                        && snap.version > old_version
-                        && wanted_versions.contains(&old_version)
-                    {
-                        carried = Some((old_version, super::inlay::diff_edit(text, &snap_text)));
+                    // What turned this view's text into the snapshot's: the
+                    // change it did not make itself (another view's edit, a
+                    // formatter, a reload, an undo). Recovered only when
+                    // something reads it: the view an undo restores does not
+                    // map its carets.
+                    let restore = snap
+                        .cursor
+                        .as_ref()
+                        .filter(|_| restore_in == Some(tab.view));
+                    let want_carried = carried.is_none() && wanted_versions.contains(&old_version);
+                    let change = (snap.version > old_version
+                        && (restore.is_none() || want_carried))
+                        .then(|| super::inlay::diff_edit(text, &snap_text))
+                        .flatten();
+                    if want_carried && snap.version > old_version {
+                        carried = Some((old_version, change.clone()));
                     }
                     *buffer = snap.buffer.clone();
                     *text = snap_text.clone();
+                    match restore {
+                        Some(cursor) => tab.editor.set_cursor_state(buffer, cursor.clone()),
+                        // Every caret follows the text it sat in, and none is
+                        // left past the end of a line or of the buffer. A
+                        // republish of the version on screen changed nothing.
+                        None if snap.version > old_version => {
+                            tab.editor.map_cursors(buffer, |pos| match &change {
+                                Some(edit) => map_caret(pos, edit),
+                                None => pos,
+                            });
+                        },
+                        None => {},
+                    }
                 }
                 *highlights = (*snap.highlights).clone();
                 *semantic_blocks = (*snap.semantic_blocks).clone();
@@ -84,19 +125,6 @@ impl App {
                 tab.is_preview = false;
             }
             tab.dirty = snap.dirty;
-            // Undo/redo snapshots carry the caret to jump to; ordinary edits carry
-            // `None` so the optimistic placement from `submit_edit` is preserved.
-            if let Some(cursor) = &snap.cursor {
-                let heads: Vec<LineCol> = cursor.selections.iter().map(|s| s.head).collect();
-                if !heads.is_empty() {
-                    tab.editor.set_carets(&heads);
-                    let head = cursor.primary().head;
-                    match &tab.kind {
-                        TabKind::Code { buffer, .. } => tab.editor.reveal(buffer, head),
-                        _ => tab.editor.scroll_to(head),
-                    }
-                }
-            }
         }
         if let Some((from, edit)) = carried {
             self.shift_inlay_hints(doc, from, snap.version, edit.as_slice());
@@ -139,4 +167,22 @@ impl App {
         self.reconcile_completion();
         self.request_live_blame();
     }
+}
+
+/// Where a caret at `pos` in the text before `edit` sits in the text after it.
+///
+/// Before the edit it stays, and after it, it moves with the text. Inside the
+/// replaced span it keeps its place, but not past the replacement's end: the
+/// span is the smallest single edit that explains two texts, so for a
+/// formatter or several separate changes it can cover far more than what
+/// changed, and keeping the line is truer than collapsing onto its start.
+fn map_caret(pos: LineCol, edit: &karet_core::TextEdit) -> LineCol {
+    let karet_core::Range { start, end } = edit.range;
+    if pos > start && pos < end {
+        return pos.min(karet_editor::editing::caret_after_insert(
+            start,
+            &edit.new_text,
+        ));
+    }
+    super::inlay::map_position(pos, std::slice::from_ref(edit))
 }

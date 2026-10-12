@@ -213,3 +213,173 @@
             "one undo reverts both the formatting and the cleanup"
         );
     }
+
+    // ---- undo/redo restore the client's whole selection set (#331).
+    //
+    // The client reports its selection set right before an edit and right
+    // after it. Undo puts back the first, redo the second -- every caret and
+    // every selection, not one bare caret at the edit.
+
+    /// Undo (`undo`) or redo, and return the cursor the resulting snapshot carries.
+    fn history_cursor(
+        session: &mut Session,
+        snaps: &mut SnapshotRx,
+        doc: DocumentId,
+        undo: bool,
+    ) -> Option<CursorState> {
+        while snaps.try_recv().is_some() {}
+        let command = if undo {
+            Command::Undo { doc }
+        } else {
+            Command::Redo { doc }
+        };
+        session.handle(RequestId(91), command);
+        let mut last = None;
+        while let Some((_, snap)) = snaps.try_recv() {
+            last = Some(snap);
+        }
+        last.and_then(|snap| snap.cursor.clone())
+    }
+
+    /// Report `before`, apply `edits` at the current version, then report `after`,
+    /// the way the client wraps every edit.
+    fn reported_edit(
+        session: &mut Session,
+        doc: DocumentId,
+        before: CursorState,
+        edits: Vec<TextEdit>,
+        after: CursorState,
+    ) {
+        report_cursor(session, doc, before);
+        let version = session.document(doc).map(|d| d.version()).unwrap_or(0);
+        session.handle(
+            RequestId(2),
+            Command::ApplyChange {
+                doc,
+                change: Change::new(version, edits),
+                cause: EditCause::Replace,
+            },
+        );
+        report_cursor(session, doc, after);
+    }
+
+    fn replace(line: u32, from: u32, to: u32, text: &str) -> TextEdit {
+        TextEdit {
+            range: Range {
+                start: LineCol::new(line, from),
+                end: LineCol::new(line, to),
+            },
+            new_text: text.to_string(),
+        }
+    }
+
+    #[test]
+    fn undo_and_redo_restore_every_selection_around_the_edit() {
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        let path = dir.path().join("notes.txt");
+        if std::fs::write(&path, "alpha\nbeta\n").is_err() {
+            return;
+        }
+        let Some((mut session, doc, _events, mut snaps)) = undo_save_session(&path) else {
+            return;
+        };
+        // Two selections, the second primary, typed over with `x`.
+        let before = CursorState {
+            selections: vec![
+                Selection {
+                    anchor: LineCol::new(0, 1),
+                    head: LineCol::new(0, 3),
+                },
+                Selection {
+                    anchor: LineCol::new(1, 2),
+                    head: LineCol::new(1, 0),
+                },
+            ],
+            primary: 1,
+        };
+        let after = CursorState {
+            selections: vec![
+                Selection::caret(LineCol::new(0, 2)),
+                Selection::caret(LineCol::new(1, 1)),
+            ],
+            primary: 1,
+        };
+        reported_edit(
+            &mut session,
+            doc,
+            before.clone(),
+            vec![replace(0, 1, 3, "x"), replace(1, 0, 2, "x")],
+            after.clone(),
+        );
+        assert_eq!(text_of(&session, doc), "axha\nxta\n");
+
+        assert_eq!(
+            history_cursor(&mut session, &mut snaps, doc, true),
+            Some(before),
+            "undo restores both selections, their directions, and the primary"
+        );
+        assert_eq!(text_of(&session, doc), "alpha\nbeta\n");
+        assert_eq!(
+            history_cursor(&mut session, &mut snaps, doc, false),
+            Some(after),
+            "redo restores the carets the edit left"
+        );
+    }
+
+    #[test]
+    fn undoing_a_backspace_puts_the_caret_back_after_the_character() {
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        let path = dir.path().join("notes.txt");
+        if std::fs::write(&path, "hello\n").is_err() {
+            return;
+        }
+        let Some((mut session, doc, _events, mut snaps)) = undo_save_session(&path) else {
+            return;
+        };
+        reported_edit(
+            &mut session,
+            doc,
+            caret_at(0, 5),
+            vec![replace(0, 4, 5, "")],
+            caret_at(0, 4),
+        );
+        assert_eq!(
+            history_cursor(&mut session, &mut snaps, doc, true),
+            Some(caret_at(0, 5)),
+            "the caret was after the `o`, not at the start of the deleted range"
+        );
+    }
+
+    #[test]
+    fn a_caret_moved_after_the_edit_is_not_what_redo_restores() {
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        let path = dir.path().join("notes.txt");
+        if std::fs::write(&path, "hello\n").is_err() {
+            return;
+        }
+        let Some((mut session, doc, _events, mut snaps)) = undo_save_session(&path) else {
+            return;
+        };
+        reported_edit(
+            &mut session,
+            doc,
+            caret_at(0, 5),
+            vec![replace(0, 5, 5, "!")],
+            caret_at(0, 6),
+        );
+        // A later report at the same version (e.g. before a save) is a move.
+        report_cursor(&mut session, doc, caret_at(0, 0));
+        let _ = history_cursor(&mut session, &mut snaps, doc, true);
+        // A report made after the undo describes the undone text, not the edit.
+        report_cursor(&mut session, doc, caret_at(0, 2));
+        assert_eq!(
+            history_cursor(&mut session, &mut snaps, doc, false),
+            Some(caret_at(0, 6))
+        );
+    }

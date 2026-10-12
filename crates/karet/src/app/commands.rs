@@ -276,8 +276,8 @@ impl App {
             Command::DeleteWordForward => {
                 self.submit_edit_with_cause(EditCause::Delete, editing::delete_word_forward);
             },
-            Command::Undo => self.send_doc_command(|doc| SessionCommand::Undo { doc }),
-            Command::Redo => self.send_doc_command(|doc| SessionCommand::Redo { doc }),
+            Command::Undo => self.send_history(true),
+            Command::Redo => self.send_history(false),
             Command::Save => self.save_active(),
             Command::Cut => self.cut(),
             Command::Paste => self.paste_from_clipboard(),

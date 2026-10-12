@@ -185,7 +185,6 @@ impl Session {
         cause: EditCause,
     ) {
         let tick = self.elapsed_ms();
-        let ctx = edit_context(tick, cause, change);
         // `None` means the change was stale or overlapping (the client's local
         // speculative state has diverged from ours); either way we still publish
         // below so the authoritative buffer flows back down to the client instead
@@ -199,6 +198,7 @@ impl Session {
                 self.events.send((Some(id), unknown_document(doc_id))).ok();
                 return;
             };
+            let ctx = edit_context(tick, cause, doc, change);
             let version = match doc.buffer.apply(change, ctx) {
                 Ok(applied) => {
                     let _ =
@@ -274,10 +274,16 @@ impl Session {
                 applied.version,
                 || doc.buffer.text(),
             ));
-            // Jump the caret to the change: undo restores the exact pre-edit cursor;
-            // redo (which records none) lands at the end of the re-applied edit that
-            // reaches furthest into the document.
-            let cursor = applied.restored_cursor.clone().or_else(|| {
+            // Jump the caret to the change: undo restores the whole pre-edit
+            // selection set, redo the set the client reported right after the
+            // edit. A redo with no report lands at the end of the re-applied
+            // edit that reaches furthest into the document.
+            let restored = applied
+                .restored_cursor
+                .clone()
+                .filter(|cursor| !cursor.selections.is_empty())
+                .map(|cursor| clamp_cursor(&doc.buffer, cursor));
+            let cursor = restored.or_else(|| {
                 applied
                     .edits
                     .iter()
