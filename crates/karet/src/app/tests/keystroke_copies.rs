@@ -148,3 +148,16 @@ fn a_markdown_table_still_reaches_the_renderer() {
         "a Markdown table made a keystroke or a frame copy the whole document"
     );
 }
+
+/// A split view of a Markdown tab keeps the worker's table lines it was split
+/// from, rather than wrapping the table until the next snapshot arrives.
+#[test]
+fn a_split_view_keeps_the_markdown_table_lines() {
+    let mut app = markdown_app("| a | b |\n|---|---|\n| 1 | 2 |\n");
+    app.tabs[app.active].markdown_table_lines = Arc::new(vec![0..=2]);
+    let original = app.tabs[app.active].view;
+    app.split_focused(karet_widgets::SplitDir::Right);
+    let split = &app.tabs[app.active];
+    assert_ne!(split.view, original, "the split should focus the new view");
+    assert_eq!(*split.markdown_table_lines, [0..=2]);
+}
