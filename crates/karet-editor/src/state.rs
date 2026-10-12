@@ -8,6 +8,7 @@ use super::visual::*;
 use super::*;
 
 mod gutter;
+mod syntax_select;
 
 pub use gutter::GutterHit;
 pub use gutter::GutterLane;
@@ -227,6 +228,9 @@ pub struct EditorState {
     /// [`add_next_occurrence`](Self::add_next_occurrence). The next press keeps
     /// matching whole words only while the set is still exactly this one.
     pub(super) word_occurrences: Option<Vec<Selection>>,
+    /// The Expand Selection presses Shrink Selection can still walk back,
+    /// oldest first — see [`expand_selection`](Self::expand_selection).
+    pub(super) syntax_steps: Vec<syntax_select::SyntaxStep>,
 }
 
 impl Default for EditorState {
@@ -259,6 +263,7 @@ impl Default for EditorState {
             last_virtual_text: Vec::new(),
             last_fold_ellipses: Vec::new(),
             word_occurrences: None,
+            syntax_steps: Vec::new(),
         }
     }
 }
@@ -886,6 +891,7 @@ impl EditorState {
         // A pointer hint or an occurrence run names positions in the old text.
         self.upstream = None;
         self.word_occurrences = None;
+        self.syntax_steps.clear();
         self.normalize();
     }
 

@@ -152,6 +152,8 @@ static PALETTE: &[Command] = &[
     Command::ColumnSelectRight,
     Command::GoToBracket,
     Command::SelectToBracket,
+    Command::ExpandSelection,
+    Command::ShrinkSelection,
     Command::ScmStageAll,
     Command::ScmUnstageAll,
     Command::ScmCommit,

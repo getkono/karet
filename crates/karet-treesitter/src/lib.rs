@@ -195,6 +195,35 @@ impl SyntaxTree {
         nodes
     }
 
+    /// The byte spans of every node that covers `span`, innermost first, each span
+    /// listed once — the steps Expand Selection grows through.
+    ///
+    /// Anonymous nodes count as well as named ones, so a selection inside a keyword
+    /// grows to the keyword. A node covers `span` when it contains both ends; an
+    /// empty `span` is covered by the node that starts at or before it and ends
+    /// after it, so a caret between two tokens resolves to the one that follows.
+    /// For an injected layer, nodes outside its included ranges never cover
+    /// anything, and a `span` outside the tree yields nothing.
+    #[must_use]
+    pub fn enclosing_spans(&self, span: Span) -> Vec<Span> {
+        let root = self.tree.root_node();
+        let (start, end) = (span.start.0, span.end.0.max(span.start.0));
+        let mut node = root.descendant_for_byte_range(start, end);
+        let mut spans: Vec<Span> = Vec::new();
+        while let Some(current) = node {
+            let covering = Span {
+                start: BytePos(current.start_byte()),
+                end: BytePos(current.end_byte()),
+            };
+            let covers = covering.start.0 <= start && end <= covering.end.0;
+            if covers && spans.last() != Some(&covering) {
+                spans.push(covering);
+            }
+            node = current.parent();
+        }
+        spans
+    }
+
     /// The inclusive line ranges (0-based rows) covered by syntax errors: the
     /// outermost `ERROR` nodes plus zero-width *missing* nodes the parser
     /// inserted to recover (a missing `;` is as much an error as a stray one).
@@ -773,6 +802,25 @@ impl LayeredTree {
     pub fn error_lines(&self) -> Vec<(u32, u32)> {
         let mut out: Vec<(u32, u32)> = self.layers().flat_map(SyntaxTree::error_lines).collect();
         out.sort_unstable();
+        out
+    }
+
+    /// [`SyntaxTree::enclosing_spans`] across every layer that contains
+    /// `span.start`: an injected language's nodes first, then its host's, ordered
+    /// smallest first and each span listed once.
+    ///
+    /// Sorting by length rather than concatenating keeps the order right where an
+    /// injected layer's own root is wider than the host node holding the caret (a
+    /// combined injection spanning several comments).
+    #[must_use]
+    pub fn enclosing_spans(&self, span: Span) -> Vec<Span> {
+        let mut out: Vec<Span> = self
+            .layers_at(span.start)
+            .into_iter()
+            .flat_map(|layer| layer.enclosing_spans(span))
+            .collect();
+        out.sort_by_key(|s| (s.end.0 - s.start.0, s.start.0));
+        out.dedup();
         out
     }
 }
