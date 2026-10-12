@@ -244,9 +244,12 @@ pub enum Event {
         server: LanguageServerId,
         /// How urgent the server says it is.
         severity: Severity,
-        /// The question, verbatim.
+        /// The question, reduced to one short printable line: control and
+        /// invisible formatting characters become spaces, whitespace runs
+        /// collapse, and long text is capped.
         message: String,
-        /// The actions offered, in the server's order.
+        /// The actions offered, in the server's order, each reduced the same
+        /// way.
         actions: Vec<String>,
     },
     /// One provider's log, answering [`Command::LanguageServerLog`]: the most

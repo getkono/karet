@@ -50,9 +50,11 @@ pub struct LanguageServerWork {
     pub token: WorkToken,
     /// Which step this is.
     pub phase: WorkPhase,
-    /// What the work is (`Indexing`), on `Begin` only.
+    /// What the work is (`Indexing`), on `Begin` only, reduced to one
+    /// printable line.
     pub title: Option<String>,
-    /// What it is doing now, when the server says.
+    /// What it is doing now, when the server says, reduced to one printable
+    /// line.
     pub message: Option<String>,
     /// How far along, 0–100, when the server can say.
     pub percentage: Option<u32>,
@@ -78,6 +80,8 @@ pub struct LanguageServerLogEntry {
     /// How urgent the server said it was. Log and debug detail read as
     /// [`Severity::Hint`].
     pub severity: Severity,
-    /// The text, verbatim.
+    /// The text, its lines kept but made safe to paint: control and
+    /// invisible formatting characters (escape sequences, bidi overrides,
+    /// tabs) become spaces.
     pub text: String,
 }
