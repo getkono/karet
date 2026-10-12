@@ -28,6 +28,7 @@ fn glyph(state: LanguageServerBadge, style: IconStyle) -> char {
             LanguageServerBadge::Off => '\u{f111}',          // circle
             LanguageServerBadge::Idle => '\u{f111}',         // circle
             LanguageServerBadge::Ready => '\u{f00c}',        // check
+            LanguageServerBadge::Busy => '\u{f110}',         // spinner
             LanguageServerBadge::Starting => '\u{f021}',     // refresh
             LanguageServerBadge::Retrying => '\u{f021}',     // refresh
             LanguageServerBadge::NeedsSetup => '\u{f071}',   // warning
@@ -38,6 +39,7 @@ fn glyph(state: LanguageServerBadge, style: IconStyle) -> char {
             LanguageServerBadge::Off => '\u{2219}',   // ∙ bullet operator
             LanguageServerBadge::Idle => '\u{25e6}',  // ◦ white bullet
             LanguageServerBadge::Ready => '\u{25c6}', // ◆ black diamond
+            LanguageServerBadge::Busy => '\u{25c7}',  // ◇ white diamond
             LanguageServerBadge::Starting => '\u{25cc}', // ◌ dotted circle
             LanguageServerBadge::Retrying => '\u{21bb}', // ↻ clockwise arrow
             LanguageServerBadge::NeedsSetup => '\u{2621}', // ☡ caution sign
@@ -50,6 +52,7 @@ fn glyph(state: LanguageServerBadge, style: IconStyle) -> char {
             LanguageServerBadge::Off => '-',
             LanguageServerBadge::Idle => 'o',
             LanguageServerBadge::Ready => '=',
+            LanguageServerBadge::Busy => '*',
             LanguageServerBadge::Starting => '~',
             LanguageServerBadge::Retrying => '~',
             LanguageServerBadge::NeedsSetup => '!',
@@ -65,6 +68,7 @@ pub(super) fn label(state: LanguageServerBadge) -> &'static str {
         LanguageServerBadge::Off => "LSP off",
         LanguageServerBadge::Idle => "LSP idle",
         LanguageServerBadge::Ready => "LSP ready",
+        LanguageServerBadge::Busy => "LSP busy",
         LanguageServerBadge::Starting => "LSP starting",
         LanguageServerBadge::Retrying => "LSP retrying",
         LanguageServerBadge::NeedsSetup => "LSP needs setup",
@@ -82,6 +86,7 @@ pub(super) fn label(state: LanguageServerBadge) -> &'static str {
 pub(super) fn role(state: LanguageServerBadge) -> ThemeRole {
     match state {
         LanguageServerBadge::Ready => ThemeRole::DiagnosticHint,
+        LanguageServerBadge::Busy => ThemeRole::DiagnosticInfo,
         LanguageServerBadge::Starting | LanguageServerBadge::Retrying => {
             ThemeRole::DiagnosticWarning
         },

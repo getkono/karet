@@ -89,6 +89,112 @@ impl LspManager {
             slot.error = error;
         }
     }
+
+    /// Start the task serving `key` with `spec`, unless a slot already holds
+    /// it. `None` when there is no async runtime to run a task on: a session
+    /// driven synchronously (unit tests, bare library use) runs without LSP.
+    ///
+    /// `settings_key` is the `lsp.servers` entry the spec's settings came from
+    /// (see [`Self::configure`]).
+    pub(super) fn spawn_slot(
+        &mut self,
+        key: &SlotKey,
+        spec: &LspSpec,
+        primary: bool,
+        settings_key: String,
+    ) -> Option<()> {
+        if self.servers.contains_key(key) {
+            return Some(());
+        }
+        let handle = tokio::runtime::Handle::try_current().ok()?;
+        let (tx, rx) = mpsc::channel(SERVER_COMMAND_CAPACITY);
+        let token = self.take_token();
+        let settings: SettingsCell = Arc::new(std::sync::RwLock::new(spec.settings.clone()));
+        let connector = with_settings(&self.connector, Arc::clone(&settings));
+        // Inserted before the task is spawned, not after. The task's first act
+        // is to report `Starting`, and a report is accepted only against a live
+        // slot -- so spawning first leaves a window in which the provider's own
+        // opening move is thrown away.
+        let mut slot = ServerSlot::new(token, tx, primary, settings);
+        slot.settings_key = settings_key;
+        self.servers.insert(key.clone(), slot);
+        handle.spawn(runtime::server_task(runtime::ServerTask {
+            spec: spec.clone(),
+            key: key.clone(),
+            token,
+            rx,
+            updates: self.updates.clone(),
+            connector,
+            generation: self.generation,
+        }));
+        Some(())
+    }
+
+    /// Attach what `lsp.servers` says about `provider` beyond the launch: its
+    /// settings, and initialization options that replace any karet chose.
+    ///
+    /// The provider's own entry, else -- for a language's primary -- the one
+    /// keyed by `language`, the key `lsp.servers` has always been documented
+    /// by, which a commandless entry now leaves launching karet's provider.
+    /// Returns the key the settings are read from, which a reload reads them
+    /// from again.
+    pub(super) fn configure(
+        &self,
+        spec: &mut LspSpec,
+        provider: &LanguageServerId,
+        language: Option<&str>,
+    ) -> String {
+        let servers = &self.settings.servers;
+        let key = std::iter::once(provider.key())
+            .chain(language)
+            .find(|key| servers.contains_key(*key))
+            .unwrap_or(provider.key());
+        if let Some(entry) = servers.get(key) {
+            spec.settings.clone_from(&entry.settings);
+            if entry.initialization_options.is_some() {
+                spec.initialization_options
+                    .clone_from(&entry.initialization_options);
+            }
+        }
+        key.to_owned()
+    }
+
+    /// Hand every running slot whose provider's settings changed its new
+    /// settings: into its cell, for the connections it makes from now on, and
+    /// to the live one with `workspace/didChangeConfiguration`.
+    pub(super) fn push_settings(&self) {
+        for (key, slot) in &self.servers {
+            let current = self
+                .settings
+                .servers
+                .get(&slot.settings_key)
+                .and_then(|entry| entry.settings.clone());
+            let Ok(mut held) = slot.settings.write() else {
+                continue;
+            };
+            if *held == current {
+                continue;
+            }
+            held.clone_from(&current);
+            drop(held);
+            let notice = Notice::Configure(current.unwrap_or(serde_json::Value::Null));
+            if slot.tx.try_send(ServerCmd::Notify(notice)).is_err() {
+                tracing::warn!(slot = %key, "settings push not queued; the next connection has them");
+            }
+        }
+    }
+}
+
+/// `inner`, with each spec it connects carrying the settings `cell` holds at
+/// that moment rather than the ones the slot started with.
+fn with_settings(inner: &Connector, cell: SettingsCell) -> Connector {
+    let inner = Arc::clone(inner);
+    Arc::new(move |mut spec: LspSpec, root| {
+        if let Ok(current) = cell.read() {
+            spec.settings.clone_from(&current);
+        }
+        inner(spec, root)
+    })
 }
 
 #[cfg(test)]

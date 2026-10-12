@@ -474,6 +474,7 @@ pub(super) async fn server_task(task: ServerTask) {
                         tally.note(result, &mut dead, &updates, &key, token);
                     }
                 },
+                ServerCmd::Notify(notice) => notice.send(active),
                 ServerCmd::Completion {
                     request,
                     doc,

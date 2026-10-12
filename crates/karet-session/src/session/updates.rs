@@ -265,6 +265,7 @@ impl Session {
                     server: key.provider,
                 },
             ),
+            LspUpdate::Window { key, update, .. } => self.adopt_window_update(&key, update),
             LspUpdate::ServerStatus { key, message, .. } => {
                 let server = key.provider.display_name();
                 // Progress rather than a notification: the client shows these under
@@ -728,6 +729,7 @@ impl Session {
             );
             return;
         }
+        self.lsp.files_changed(&event);
         let config_paths: Vec<PathBuf> = self
             .config_manager
             .as_ref()

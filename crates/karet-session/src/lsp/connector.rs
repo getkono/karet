@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 
+use karet_lsp::ConnectOptions;
 use karet_lsp::LaunchFailure;
 use karet_lsp::LspClient;
 use karet_lsp::LspError;
@@ -137,7 +138,7 @@ pub(super) fn spawn_connector(
             // has neither.
             #[cfg(feature = "toml-lsp")]
             if crate::toml_lsp::is_builtin(&spec) {
-                return crate::toml_lsp::connect(&root, spec.initialization_options.clone()).await;
+                return crate::toml_lsp::connect(&root, ConnectOptions::from(&spec)).await;
             }
             let Some(supervisor) = supervisor else {
                 // Not `Host`: a host problem may be over by the next attempt,
@@ -171,11 +172,11 @@ pub(super) fn spawn_connector(
                     }
                 })?;
                 let (read, write) = tokio::io::split(stream);
-                return LspClient::connect_with(
+                return LspClient::connect_configured(
                     read,
                     write,
                     &root,
-                    spec.initialization_options.clone(),
+                    ConnectOptions::from(&spec),
                 )
                 .await
                 .map_err(|error| {
@@ -194,11 +195,11 @@ pub(super) fn spawn_connector(
                 &root,
             )
             .map_err(|error| host_failure(&spec, error))?;
-            LspClient::spawn_command_with(
+            LspClient::spawn_command_configured(
                 command,
                 &spec.command,
                 &root,
-                spec.initialization_options.clone(),
+                ConnectOptions::from(&spec),
             )
             .await
         })

@@ -256,10 +256,13 @@ pub(super) fn answer_empty(
                 answer: cmd.unanswered(UNAVAILABLE),
             });
         },
+        // A notice is not a request: nobody waits on it, and one that finds no
+        // connection means nothing to the next (see `window::Notice`).
         ServerCmd::DidOpen { .. }
         | ServerCmd::DidChange { .. }
         | ServerCmd::DidClose { .. }
-        | ServerCmd::DidSave { .. } => {},
+        | ServerCmd::DidSave { .. }
+        | ServerCmd::Notify(_) => {},
     }
 }
 
@@ -314,7 +317,8 @@ pub(super) fn remember_document(documents: &mut HashMap<PathBuf, OpenDocument>, 
         | ServerCmd::Rename { .. }
         | ServerCmd::PrepareRename { .. }
         | ServerCmd::CodeAction(_)
-        | ServerCmd::Formatting { .. } => {},
+        | ServerCmd::Formatting { .. }
+        | ServerCmd::Notify(_) => {},
     }
 }
 

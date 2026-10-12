@@ -45,6 +45,7 @@ mod navigation;
 mod refactor;
 mod seam;
 mod search;
+mod server_window;
 mod vcs;
 
 pub use aicommit::*;
@@ -56,6 +57,7 @@ pub use navigation::*;
 pub use refactor::*;
 pub use seam::*;
 pub use search::*;
+pub use server_window::*;
 pub use vcs::*;
 
 /// Per-document editing and serialization behavior after application settings and
@@ -448,6 +450,30 @@ pub enum Command {
     /// Restart this session's processes for an already-approved active version.
     RestartLanguageServer {
         /// Provider whose running slots should restart.
+        server: LanguageServerId,
+    },
+    /// Ask a language server to cancel work it reported as cancellable
+    /// ([`Event::LanguageServerWork`]). The server still reports the `End`.
+    CancelLanguageServerWork {
+        /// The provider doing the work.
+        server: LanguageServerId,
+        /// The repository root of its connection.
+        root: PathBuf,
+        /// The work, as the event named it.
+        token: WorkToken,
+    },
+    /// Answer a language server's question
+    /// ([`Event::LanguageServerMessageRequest`]) with the index of the chosen
+    /// action, or `None` for none. Answering one already answered is a no-op.
+    AnswerLanguageServerMessage {
+        /// The question being answered.
+        request: LanguageServerMessageId,
+        /// Index into the question's actions.
+        action: Option<usize>,
+    },
+    /// Read one provider's log, answered by [`Event::LanguageServerLog`].
+    LanguageServerLog {
+        /// The provider whose log to read.
         server: LanguageServerId,
     },
     /// Search workspace symbols.

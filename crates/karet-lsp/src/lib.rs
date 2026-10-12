@@ -11,13 +11,18 @@
 //! child process's stdio, and [`LspClient::connect`] accepts any
 //! `AsyncRead`/`AsyncWrite` pair — the seam the in-memory (`tokio::io::duplex`)
 //! tests and embedders use. A reader task correlates responses by id, broadcasts
-//! pushed diagnostics, and answers the few server→client requests a headless
-//! client must not leave hanging (`workspace/configuration`,
+//! pushed diagnostics, work-done progress ([`LspClient::work_progress`]) and
+//! show/log messages ([`LspClient::messages`]), and answers the few
+//! server→client requests a headless client must not leave hanging
+//! (`workspace/configuration` from the consumer's [`ConnectOptions::settings`],
 //! `client/registerCapability`, `window/workDoneProgress/create`,
 //! `workspace/inlayHint/refresh` -- the last also surfaced through
-//! [`LspClient::refreshes`]). The one server request that must wait on the
-//! editor, `workspace/applyEdit`, is handed out through
-//! [`LspClient::apply_edit_requests`] instead.
+//! [`LspClient::refreshes`]). The server requests that must wait on the
+//! editor, `workspace/applyEdit` and `window/showMessageRequest`, are handed
+//! out through [`LspClient::apply_edit_requests`] and
+//! [`LspClient::message_requests`] instead. File watchers a server registers
+//! are kept, and [`LspClient::did_change_watched_files`] filters a consumer's
+//! file changes through them.
 //!
 //! Three protocol choices are deliberate and documented here once:
 //!
@@ -47,22 +52,36 @@
 /// is this crate's published surface.
 pub use apply_edit::ApplyEditRequest;
 pub use code_action::CodeActionTrigger;
+pub use config::ConnectOptions;
 pub use karet_jsonrpc::framing::content_length as codec;
 pub use launch::ExitReport;
 pub use launch::LaunchCause;
 pub use launch::LaunchFailure;
+pub use watch::FileChange;
+pub use watch::FileChangeKind;
+pub use window::MessageLevel;
+pub use window::MessageRequest;
+pub use window::ProgressToken;
+pub use window::ServerMessage;
+pub use window::ServerMessageKind;
+pub use window::WorkProgress;
+pub use window::WorkProgressKind;
 
 mod apply_edit;
 mod capability;
 mod code_action;
+mod config;
 mod conn;
 mod convert;
 mod gate;
+mod handshake;
 mod launch;
 mod navigation;
 mod selector;
 mod snippet;
 mod uri;
+mod watch;
+mod window;
 
 use std::path::Path;
 use std::path::PathBuf;
@@ -203,6 +222,9 @@ pub struct LspSpec {
     /// than looking for one itself — no argv can substitute, because the option
     /// is part of the protocol rather than the command line.
     pub initialization_options: Option<Value>,
+    /// The settings `workspace/configuration` is answered from, keyed by
+    /// section (see [`ConnectOptions::settings`]).
+    pub settings: Option<Value>,
 }
 
 impl LspSpec {
@@ -217,6 +239,7 @@ impl LspSpec {
             args,
             languages,
             initialization_options: None,
+            settings: None,
         }
     }
 
@@ -224,6 +247,13 @@ impl LspSpec {
     #[must_use]
     pub fn with_initialization_options(mut self, options: Option<Value>) -> Self {
         self.initialization_options = options;
+        self
+    }
+
+    /// Attach the settings `workspace/configuration` is answered from.
+    #[must_use]
+    pub fn with_settings(mut self, settings: Option<Value>) -> Self {
+        self.settings = settings;
         self
     }
 }
@@ -301,7 +331,8 @@ impl LspClient {
     pub async fn spawn(spec: LspSpec, root: &Path) -> Result<Self, LspError> {
         let mut command = tokio::process::Command::new(&spec.command);
         command.args(&spec.args).current_dir(root);
-        Self::spawn_command_with(command, &spec.command, root, spec.initialization_options).await
+        Self::spawn_command_configured(command, &spec.command, root, ConnectOptions::from(&spec))
+            .await
     }
 
     /// Spawn and initialize a server through a caller-prepared command.
@@ -331,10 +362,25 @@ impl LspClient {
     /// # Errors
     /// As [`Self::spawn_command`].
     pub async fn spawn_command_with(
-        mut command: tokio::process::Command,
+        command: tokio::process::Command,
         display_name: &str,
         root: &Path,
         initialization_options: Option<Value>,
+    ) -> Result<Self, LspError> {
+        let options = ConnectOptions::default().with_initialization_options(initialization_options);
+        Self::spawn_command_configured(command, display_name, root, options).await
+    }
+
+    /// Spawn as [`Self::spawn_command`], connecting with `options` (see
+    /// [`Self::connect_configured`]).
+    ///
+    /// # Errors
+    /// As [`Self::spawn_command`].
+    pub async fn spawn_command_configured(
+        mut command: tokio::process::Command,
+        display_name: &str,
+        root: &Path,
+        options: ConnectOptions,
     ) -> Result<Self, LspError> {
         // Recovered from the prepared command rather than taken as a parameter,
         // so the reported argv is what was actually run. `display_name` stays
@@ -373,7 +419,7 @@ impl LspClient {
         let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
             return Err(fail(launch::LaunchCause::NoStdio, None, tail.lines()));
         };
-        match Self::connect_with(stdout, stdin, root, initialization_options).await {
+        match Self::connect_configured(stdout, stdin, root, options).await {
             Ok(mut client) => {
                 client.child = Some(child);
                 // Dropping the drain's handle detaches it rather than
@@ -480,9 +526,34 @@ impl LspClient {
         R: AsyncRead + Send + Unpin + 'static,
         W: AsyncWrite + Send + Unpin + 'static,
     {
-        let mut params = initialize_params(root)?;
-        params.initialization_options = initialization_options;
+        let options = ConnectOptions::default().with_initialization_options(initialization_options);
+        Self::connect_configured(read, write, root, options).await
+    }
+
+    /// Connect as [`Self::connect`], with `options`: `initializationOptions`
+    /// sent with the handshake, and the settings `workspace/configuration` is
+    /// answered from -- held before `initialize` goes out, so a server that
+    /// asks at once is answered from them, and pushed once with
+    /// `workspace/didChangeConfiguration` after `initialized`.
+    ///
+    /// # Errors
+    /// As [`Self::connect`].
+    pub async fn connect_configured<R, W>(
+        read: R,
+        write: W,
+        root: &Path,
+        options: ConnectOptions,
+    ) -> Result<Self, LspError>
+    where
+        R: AsyncRead + Send + Unpin + 'static,
+        W: AsyncWrite + Send + Unpin + 'static,
+    {
+        let mut params = handshake::initialize_params(root)?;
+        params.initialization_options = options.initialization_options;
         let conn = conn::Connection::start(read, write);
+        if let Some(settings) = &options.settings {
+            conn.set_settings(settings.clone());
+        }
         let result: Value = conn.request("initialize", params).await?;
         // Seeded into the gate the handler already owns. Registrations are kept
         // apart from the advertised set, so one that arrives between here and
@@ -499,6 +570,12 @@ impl LspClient {
             live.advertise(parsed);
         }
         conn.notify("initialized", lsp_types::InitializedParams {})?;
+        if let Some(settings) = options.settings {
+            conn.notify(
+                "workspace/didChangeConfiguration",
+                serde_json::json!({ "settings": settings }),
+            )?;
+        }
         Ok(Self {
             conn,
             child: None,
@@ -1184,155 +1261,6 @@ fn formatting_options(indentation: Indentation) -> lsp_types::FormattingOptions 
         insert_spaces: indentation.insert_spaces,
         ..lsp_types::FormattingOptions::default()
     }
-}
-
-/// What this client does with code actions: literals of every kind it groups
-/// by, preferred and disabled flags, and edits deferred to
-/// `codeAction/resolve` (whose `data` it hands back untouched).
-fn code_action_capabilities() -> lsp_types::CodeActionClientCapabilities {
-    let kinds = [
-        "",
-        "quickfix",
-        "refactor",
-        "refactor.extract",
-        "refactor.inline",
-        "refactor.rewrite",
-        "source",
-        "source.organizeImports",
-        "source.fixAll",
-    ];
-    lsp_types::CodeActionClientCapabilities {
-        code_action_literal_support: Some(lsp_types::CodeActionLiteralSupport {
-            code_action_kind: lsp_types::CodeActionKindLiteralSupport {
-                value_set: kinds.into_iter().map(str::to_owned).collect(),
-            },
-        }),
-        is_preferred_support: Some(true),
-        disabled_support: Some(true),
-        data_support: Some(true),
-        resolve_support: Some(lsp_types::CodeActionCapabilityResolveSupport {
-            properties: vec!["edit".to_owned()],
-        }),
-        ..lsp_types::CodeActionClientCapabilities::default()
-    }
-}
-
-/// Build the `initialize` params advertising what this client actually does.
-fn initialize_params(root: &Path) -> Result<lsp_types::InitializeParams, LspError> {
-    let root_uri = uri::path_to_uri(root)?;
-    let folder_name = root.file_name().map_or_else(
-        || "workspace".to_owned(),
-        |n| n.to_string_lossy().into_owned(),
-    );
-    // `dynamicRegistration` is declared exactly where the registration handler
-    // honours it: a gated request whose registration carries nothing karet
-    // reads beyond "on" and its `documentSelector`. Completion, signature help and code actions are left
-    // out on purpose -- their registrations carry trigger characters and
-    // action kinds the handler would drop, so a server switching to dynamic
-    // registration for them would lose what its handshake would have said.
-    let dynamic = lsp_types::DynamicRegistrationClientCapabilities {
-        dynamic_registration: Some(true),
-    };
-    let goto = lsp_types::GotoCapability {
-        dynamic_registration: Some(true),
-        link_support: None,
-    };
-    let capabilities = lsp_types::ClientCapabilities {
-        general: Some(lsp_types::GeneralClientCapabilities {
-            position_encodings: Some(vec![lsp_types::PositionEncodingKind::UTF16]),
-            ..lsp_types::GeneralClientCapabilities::default()
-        }),
-        text_document: Some(lsp_types::TextDocumentClientCapabilities {
-            completion: Some(lsp_types::CompletionClientCapabilities {
-                completion_item: Some(lsp_types::CompletionItemCapability {
-                    // Snippets degrade to plain text (see the crate docs).
-                    snippet_support: Some(false),
-                    deprecated_support: Some(true),
-                    ..lsp_types::CompletionItemCapability::default()
-                }),
-                ..lsp_types::CompletionClientCapabilities::default()
-            }),
-            publish_diagnostics: Some(lsp_types::PublishDiagnosticsClientCapabilities {
-                related_information: Some(true),
-                ..lsp_types::PublishDiagnosticsClientCapabilities::default()
-            }),
-            // Declared at all so a server knows the client renders hints;
-            // some only compute them for a client that says so.
-            inlay_hint: Some(lsp_types::InlayHintClientCapabilities {
-                dynamic_registration: Some(true),
-                resolve_support: None,
-            }),
-            hover: Some(lsp_types::HoverClientCapabilities {
-                dynamic_registration: Some(true),
-                content_format: None,
-            }),
-            definition: Some(goto),
-            implementation: Some(goto),
-            type_hierarchy: Some(dynamic),
-            document_symbol: Some(lsp_types::DocumentSymbolClientCapabilities {
-                dynamic_registration: Some(true),
-                ..lsp_types::DocumentSymbolClientCapabilities::default()
-            }),
-            rename: Some(lsp_types::RenameClientCapabilities {
-                dynamic_registration: Some(true),
-                // `LspClient::prepare_rename`; a "default behavior" answer is
-                // resolved by the consumer to the identifier at the position.
-                prepare_support: Some(true),
-                prepare_support_default_behavior: Some(
-                    lsp_types::PrepareSupportDefaultBehavior::IDENTIFIER,
-                ),
-                ..lsp_types::RenameClientCapabilities::default()
-            }),
-            formatting: Some(dynamic),
-            range_formatting: Some(dynamic),
-            code_action: Some(code_action_capabilities()),
-            ..lsp_types::TextDocumentClientCapabilities::default()
-        }),
-        workspace: Some(lsp_types::WorkspaceClientCapabilities {
-            symbol: Some(lsp_types::WorkspaceSymbolClientCapabilities {
-                dynamic_registration: Some(true),
-                ..lsp_types::WorkspaceSymbolClientCapabilities::default()
-            }),
-            // Answered, and relayed through `LspClient::refreshes`.
-            inlay_hint: Some(lsp_types::InlayHintWorkspaceClientCapabilities {
-                refresh_support: Some(true),
-            }),
-            // Relayed through `LspClient::apply_edit_requests`.
-            apply_edit: Some(true),
-            // `LspClient::execute_command`; declared without dynamic
-            // registration, which would carry a command list the gate drops.
-            execute_command: Some(lsp_types::DynamicRegistrationClientCapabilities::default()),
-            // What `karet_core::WorkspaceEdit` carries. Failure handling is
-            // what karet-session's apply path does: an edit of text alone is
-            // checked whole before anything changes, while one with file
-            // operations stops at the first step that fails.
-            workspace_edit: Some(lsp_types::WorkspaceEditClientCapabilities {
-                document_changes: Some(true),
-                resource_operations: Some(vec![
-                    lsp_types::ResourceOperationKind::Create,
-                    lsp_types::ResourceOperationKind::Rename,
-                    lsp_types::ResourceOperationKind::Delete,
-                ]),
-                failure_handling: Some(lsp_types::FailureHandlingKind::TextOnlyTransactional),
-                ..lsp_types::WorkspaceEditClientCapabilities::default()
-            }),
-            ..lsp_types::WorkspaceClientCapabilities::default()
-        }),
-        ..lsp_types::ClientCapabilities::default()
-    };
-    // `root_uri` is deprecated in favour of `workspace_folders`, but older
-    // servers read it exclusively, so we deliberately send both.
-    #[allow(deprecated)]
-    Ok(lsp_types::InitializeParams {
-        process_id: Some(std::process::id()),
-        root_uri: Some(root_uri.clone()),
-        workspace_folders: Some(vec![lsp_types::WorkspaceFolder {
-            uri: root_uri,
-            name: folder_name,
-        }]),
-        capabilities,
-        ..lsp_types::InitializeParams::default()
-    })
 }
 
 #[cfg(test)]

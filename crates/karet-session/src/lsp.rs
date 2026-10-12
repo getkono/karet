@@ -30,6 +30,7 @@ mod runtime;
 mod slot;
 #[cfg(test)]
 mod tests;
+mod window;
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -67,6 +68,7 @@ use provider::uses_biome;
 pub(crate) use provider::version_i32;
 pub(crate) use slot::Retired;
 use slot::ServerSlot;
+use slot::SettingsCell;
 pub(crate) use slot::SlotKey;
 use slot::SlotToken;
 use tokio::sync::mpsc;
@@ -74,6 +76,11 @@ use tokio::sync::mpsc;
 // window and diagnostic grace all measure time with it, so a test can pause
 // and advance it rather than wait those delays out.
 use tokio::time::Instant;
+use window::Notice;
+pub(crate) use window::WindowState;
+pub(crate) use window::WindowUpdate;
+pub(crate) use window::severity as message_severity;
+pub(crate) use window::work as work_report;
 
 use crate::api::DocumentId;
 use crate::api::LanguageServerId;
@@ -136,16 +143,19 @@ pub(crate) struct LspManager {
     /// Source of slot tokens. Never reused, and never zero, so a task holding a
     /// token can always be told apart from every task that held its key before.
     next_token: SlotToken,
+    /// Each provider's log and the questions servers are waiting on.
+    pub(crate) window: WindowState,
 }
 
 /// What the user's `lsp.servers` table says about one provider id.
 enum Configured {
     /// No entry: the built-in launch table decides.
     Absent,
-    /// An entry that forbids a launch -- `enabled = false`, or an empty command.
+    /// An entry that forbids a launch: `enabled = false`.
     Suppressed,
-    /// An entry naming exactly what to run.
-    Spec(LspSpec),
+    /// An entry naming exactly what to run. Boxed: a spec is large beside
+    /// the two empty verdicts.
+    Spec(Box<LspSpec>),
 }
 
 impl LspManager {
@@ -171,6 +181,7 @@ impl LspManager {
                 updates,
                 connector: spawn_connector(supervisor, registry_root),
                 next_token: SlotToken::FIRST,
+                window: WindowState::default(),
             },
             rx,
         )
@@ -188,8 +199,13 @@ impl LspManager {
     /// carries the retirement the caller must adopt, and is also its signal to
     /// reopen documents against fresh servers.
     ///
-    /// Every slot is retired, not only the ones whose settings moved, and that
-    /// is deliberate. Which slots an `lsp.*` edit touches is not a function of
+    /// The one exception is a change confined to servers' `settings`: nothing
+    /// a server was launched or initialized with moved, so no slot is retired
+    /// and `None` is returned; each slot whose provider's settings changed is
+    /// told with `workspace/didChangeConfiguration` instead.
+    ///
+    /// Otherwise every slot is retired, not only the ones whose settings
+    /// moved, and that is deliberate. Which slots an `lsp.*` edit touches is not a function of
     /// the slot key: `enabled` reaches all of them, a `languages` entry can move
     /// the primary flag or the formatter owner of a slot serving several
     /// languages, and the repository defaults (Ruff, Biome) are resolved per
@@ -208,6 +224,14 @@ impl LspManager {
     #[must_use]
     pub(crate) fn reconfigure(&mut self, settings: LspSettings) -> Option<Retired> {
         if self.settings == settings {
+            return None;
+        }
+        // Settings are the one thing a running server can be told about
+        // instead of replaced: nothing it was launched or initialized with
+        // moved, so every slot stays and only the changed ones hear about it.
+        if self.settings.differs_only_in_settings(&settings) {
+            self.settings = settings;
+            self.push_settings();
             return None;
         }
         self.settings = settings;
@@ -237,6 +261,7 @@ impl LspManager {
     pub(crate) fn accepts(&self, update: &LspUpdate) -> bool {
         match update {
             LspUpdate::ServerStatus { token, key, .. }
+            | LspUpdate::Window { token, key, .. }
             | LspUpdate::InlayHintsRefresh { token, key }
             | LspUpdate::ApplyEdit { token, key, .. }
             | LspUpdate::Diagnostics {
@@ -304,7 +329,7 @@ impl LspManager {
     /// language name -- an identity no other part of the manager ever produced.
     fn spec_for(&self, language: &str, root: &Path) -> Option<(LspSpec, LanguageServerId)> {
         match self.configured_primary(language) {
-            Some((server_id, Configured::Spec(spec))) => return Some((spec, server_id)),
+            Some((server_id, Configured::Spec(spec))) => return Some((*spec, server_id)),
             // An entry that forbids a launch is the whole answer: the built-in
             // table does not get a second vote on a server switched off.
             Some((_, Configured::Suppressed)) => return None,
@@ -328,14 +353,19 @@ impl LspManager {
         let Some(server) = self.settings.servers.get(server_id) else {
             return Configured::Absent;
         };
-        if !server.enabled || server.command.is_empty() {
+        if !server.enabled {
             return Configured::Suppressed;
         }
-        Configured::Spec(LspSpec::new(
+        // No command names no launch: the entry only configures the provider
+        // (`settings`, `initializationOptions`), and karet's own launch stands.
+        if server.command.is_empty() {
+            return Configured::Absent;
+        }
+        Configured::Spec(Box::new(LspSpec::new(
             server.command.clone(),
             server.args.clone(),
             vec![language.to_owned()],
-        ))
+        )))
     }
 
     fn resolve_provider(
@@ -497,6 +527,7 @@ impl LspManager {
         if !self.jdtls_launch_gate(&mut spec, &root) {
             return None;
         }
+        let settings_key = self.configure(&mut spec, &provider, Some(&language));
         // The preflight diagnoses a command *karet* chose. A user who named
         // their own is entitled to have it run: a wrapper that supplies its own
         // `tsdk` is exactly why someone configures one.
@@ -508,28 +539,7 @@ impl LspManager {
         // Built-in JavaScript and TypeScript share one provider process, so the
         // key names the *provider*, not the language that selected it.
         let key = SlotKey::new(provider, root.clone());
-        if !self.servers.contains_key(&key) {
-            // Server tasks need an async runtime; a session driven synchronously
-            // (unit tests, bare library use) simply runs without LSP.
-            let handle = tokio::runtime::Handle::try_current().ok()?;
-            let (tx, rx) = mpsc::channel(SERVER_COMMAND_CAPACITY);
-            let token = self.take_token();
-            // Inserted before the task is spawned, not after. The task's first
-            // act is to report `Starting`, and a report is accepted only against
-            // a live slot -- so spawning first leaves a window in which the
-            // provider's own opening move is thrown away.
-            self.servers
-                .insert(key.clone(), ServerSlot::new(token, tx, true));
-            handle.spawn(runtime::server_task(runtime::ServerTask {
-                spec: spec.clone(),
-                key: key.clone(),
-                token,
-                rx,
-                updates: self.updates.clone(),
-                connector: Arc::clone(&self.connector),
-                generation: self.generation,
-            }));
-        }
+        self.spawn_slot(&key, &spec, true, settings_key)?;
         self.servers.get(&key).map(|slot| (&slot.tx, key))
     }
 
@@ -541,7 +551,7 @@ impl LspManager {
     ) -> Option<(mpsc::Sender<ServerCmd>, SlotKey)> {
         let root = nearest_repository_root(path, self.root.as_deref());
         let spec = match self.configured_spec(provider.key(), language) {
-            Configured::Spec(spec) => Some(spec),
+            Configured::Spec(spec) => Some(*spec),
             // `enabled = false` is a decision about the provider, not about the
             // slot it was named in: a companion the user switched off stays off.
             Configured::Suppressed => return None,
@@ -552,28 +562,15 @@ impl LspManager {
                 spec
             },
         };
-        let Some(spec) = spec else {
+        let Some(mut spec) = spec else {
             self.report_unresolved(provider, language);
             return None;
         };
+        // A companion reads only its own entry: the language's belongs to
+        // the language's primary.
+        let settings_key = self.configure(&mut spec, &provider, None);
         let key = SlotKey::new(provider, root);
-        if !self.servers.contains_key(&key) {
-            let handle = tokio::runtime::Handle::try_current().ok()?;
-            let (tx, rx) = mpsc::channel(SERVER_COMMAND_CAPACITY);
-            let token = self.take_token();
-            // Insert before spawn -- see `ensure_server`.
-            self.servers
-                .insert(key.clone(), ServerSlot::new(token, tx, false));
-            handle.spawn(runtime::server_task(runtime::ServerTask {
-                spec: spec.clone(),
-                key: key.clone(),
-                token,
-                rx,
-                updates: self.updates.clone(),
-                connector: Arc::clone(&self.connector),
-                generation: self.generation,
-            }));
-        }
+        self.spawn_slot(&key, &spec, false, settings_key)?;
         self.servers.get(&key).map(|slot| (slot.tx.clone(), key))
     }
 

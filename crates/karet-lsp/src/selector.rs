@@ -38,8 +38,10 @@ struct Filter {
 }
 
 /// A filter's `pattern`: a glob over the whole path, or one relative to a base.
+///
+/// Also the shape of a file watcher's `globPattern` (see [`crate::watch`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum Pattern {
+pub(crate) enum Pattern {
     Glob(String),
     Relative { base: PathBuf, glob: String },
 }
@@ -115,7 +117,7 @@ impl Pattern {
     /// whose braces do not balance or expand too far. The filter then has no
     /// pattern and covers every document its other fields allow, failing open
     /// for the same reason an unrecognised selector does.
-    fn parse(value: &Value) -> Option<Self> {
+    pub(crate) fn parse(value: &Value) -> Option<Self> {
         let pattern = Self::parse_shape(value)?;
         let glob = match &pattern {
             Self::Glob(glob) | Self::Relative { glob, .. } => glob,
@@ -139,7 +141,7 @@ impl Pattern {
         Some(Self::Relative { base, glob })
     }
 
-    fn matches(&self, path: &Path) -> bool {
+    pub(crate) fn matches(&self, path: &Path) -> bool {
         match self {
             Self::Glob(glob) => glob_matches(glob, &slashed(path)),
             Self::Relative { base, glob } => path

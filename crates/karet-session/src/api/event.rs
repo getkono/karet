@@ -228,6 +228,38 @@ pub enum Event {
         /// Expected bytes, when upstream supplied a size.
         total: Option<u64>,
     },
+    /// A running language server reported progress on its work (see
+    /// [`LanguageServerWork`] for the lifecycle).
+    LanguageServerWork {
+        /// The report.
+        work: LanguageServerWork,
+    },
+    /// A running language server asked the user to choose an action
+    /// (`window/showMessageRequest`). Answer with
+    /// [`Command::AnswerLanguageServerMessage`]; until then the server waits.
+    LanguageServerMessageRequest {
+        /// The question, for the answer to name.
+        request: LanguageServerMessageId,
+        /// The provider asking.
+        server: LanguageServerId,
+        /// How urgent the server says it is.
+        severity: Severity,
+        /// The question, reduced to one short printable line: control and
+        /// invisible formatting characters become spaces, whitespace runs
+        /// collapse, and long text is capped.
+        message: String,
+        /// The actions offered, in the server's order, each reduced the same
+        /// way.
+        actions: Vec<String>,
+    },
+    /// One provider's log, answering [`Command::LanguageServerLog`]: the most
+    /// recent entries this session kept, oldest first.
+    LanguageServerLog {
+        /// The provider.
+        server: LanguageServerId,
+        /// Its entries, across every root it runs at.
+        entries: Vec<LanguageServerLogEntry>,
+    },
     /// A managed provider was atomically installed or updated.
     LanguageServerChanged {
         /// Changed provider.

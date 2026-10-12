@@ -29,6 +29,7 @@ mod keystroke_copies;
 mod language_server_badge;
 mod language_server_progress;
 mod language_server_staleness;
+mod language_server_window;
 mod language_servers;
 mod lifecycle;
 mod line_changes;

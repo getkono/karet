@@ -16,6 +16,8 @@ use karet_core::Capabilities;
 use karet_core::ServerFeature;
 
 use crate::selector::Selector;
+use crate::watch::FileChangeKind;
+use crate::watch::Watcher;
 
 /// One live dynamic registration.
 #[derive(Debug)]
@@ -37,6 +39,9 @@ pub(crate) struct Gate {
     /// The `languageId` each open document was announced with, which a
     /// selector's `language` filter is matched against.
     languages: HashMap<PathBuf, String>,
+    /// The file watchers each `workspace/didChangeWatchedFiles` registration
+    /// named, by registration id, so unregistering one drops only its own.
+    watchers: HashMap<String, Vec<Watcher>>,
 }
 
 impl Gate {
@@ -59,9 +64,23 @@ impl Gate {
 
     /// Withdraw registration `id`, returning the feature it had turned on.
     pub(crate) fn unregister(&mut self, id: &str) -> Option<ServerFeature> {
+        self.watchers.remove(id);
         self.registrations
             .remove(id)
             .map(|registration| registration.feature)
+    }
+
+    /// Record the file watchers registration `id` names.
+    pub(crate) fn watch(&mut self, id: String, watchers: Vec<Watcher>) {
+        self.watchers.insert(id, watchers);
+    }
+
+    /// Whether any registered watcher wants `kind` of change to `path`.
+    pub(crate) fn watches(&self, path: &Path, kind: FileChangeKind) -> bool {
+        self.watchers
+            .values()
+            .flatten()
+            .any(|watcher| watcher.wants(path, kind))
     }
 
     /// Record that `path` was opened as `language`.

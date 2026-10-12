@@ -297,6 +297,23 @@ impl App {
                 server,
                 cleanup_pending,
             } => self.finish_language_server_remove(id, server, cleanup_pending),
+            SessionEvent::LanguageServerWork { work } => self.on_language_server_work(work),
+            SessionEvent::LanguageServerMessageRequest {
+                request,
+                server,
+                severity,
+                message,
+                actions,
+            } => self.on_language_server_question(LanguageServerQuestion {
+                request,
+                server,
+                severity,
+                message,
+                actions,
+            }),
+            SessionEvent::LanguageServerLog { server, entries } => {
+                self.on_language_server_log(&server, entries);
+            },
             SessionEvent::LanguageServerRuntimeChanged {
                 server,
                 root,

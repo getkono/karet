@@ -136,6 +136,7 @@ async fn a_companion_the_user_disabled_is_not_started() -> TestResult {
         enabled: false,
         command: command.clone(),
         args: vec!["--stdio".to_owned()],
+        ..LspServer::default()
     }));
     let (mut manager, _updates, mut launched) = manager_with_recorder(settings, dir.path());
 
@@ -393,6 +394,7 @@ async fn a_disabled_primary_server_is_not_reported_as_missing() -> TestResult {
             enabled: false,
             command: "gopls".to_owned(),
             args: Vec::new(),
+            ..LspServer::default()
         },
     );
     settings.languages.insert(

@@ -25,6 +25,8 @@ use super::code_actions::CodeActionAnswer;
 use super::code_actions::CodeActionCmd;
 use super::slot::SlotKey;
 use super::slot::SlotToken;
+use super::window::Notice;
+use super::window::WindowUpdate;
 use crate::api::DocumentId;
 use crate::api::LanguageServerId;
 use crate::api::LanguageServerRuntimeState;
@@ -58,6 +60,9 @@ pub(crate) enum ServerCmd {
         /// The document path.
         path: PathBuf,
     },
+    /// Send a notification outside document sync on the live connection, or
+    /// drop it when there is none (see [`Notice`]).
+    Notify(Notice),
     /// Forward `textDocument/didSave`.
     DidSave {
         /// Saved document path.
@@ -206,6 +211,17 @@ pub(crate) enum LspUpdate {
         key: SlotKey,
         /// The human-readable status message.
         message: String,
+    },
+    /// Something the server said to the user: progress, a message, or a
+    /// question. Fenced on the slot: a retired server's question is dropped,
+    /// which answers it "none".
+    Window {
+        /// The incarnation of the slot whose server spoke.
+        token: SlotToken,
+        /// The slot whose server spoke.
+        key: SlotKey,
+        /// What it said.
+        update: WindowUpdate,
     },
     /// The server asked for every inlay hint it answered to be re-fetched
     /// (`workspace/inlayHint/refresh`).
