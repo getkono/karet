@@ -128,7 +128,7 @@ of a wide character or of a tab's cells resolves to after it (#337).
 | Shift+click | Extend the primary selection from its anchor to the click; drop the other carets. | harness (forward and backward) |
 | Ctrl+click (Super+click where the terminal reports it) | Go to the definition of the identifier under the pointer. On anything else (whitespace, past the line end, the gutter) nothing happens. | — (needs a language server); #338 (non-identifiers) |
 | Click in an unfocused split | Focus that split and place its caret; the other split's carets do not move. | harness |
-| Click while the find bar is open | The editor takes keyboard focus; the find bar stays open. | #333 |
+| Click while the find bar is open | The editor takes keyboard focus; the find bar stays open. Esc from the text then closes it; a click in its field takes the keys back. | harness |
 | Right click | Move the caret to the click if it is outside the selection, then open the context menu (Cut, Copy, Paste, spelling suggestions). | #339 |
 | Line-number gutter | A click selects the whole line, newline included; a drag selects whole lines; Shift+click extends by lines. | #335 |
 | Breakpoint lane, fold chevron | Toggle a breakpoint / toggle the fold; these never move the caret. | #335 |

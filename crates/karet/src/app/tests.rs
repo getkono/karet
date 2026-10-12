@@ -32,6 +32,7 @@ mod lifecycle;
 mod line_changes;
 mod markdown_edit;
 mod multi_caret;
+mod overlay_focus;
 mod preview;
 #[cfg(feature = "images")]
 mod preview_images;
