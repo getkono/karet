@@ -106,7 +106,8 @@ are in the command palette.
 | Find: Replace / Replace All | Replace changes the current match once, whatever the number of carets. Replace All changes every match in one undoable edit and leaves every caret and selection on the text it was on. | harness |
 | Undo / Redo | Restore the full set of carets and selections from before / after the edit, only in the view that ran the command. | harness (which view, `tests/external_edits.rs`); the restored set in `karet-session`'s `tests/undo_save.rs` |
 | External edit (another split, the language server, a reload) | Every view maps its carets through the change; no caret is left outside the text. | harness (`tests/external_edits.rs`) |
-| Box selection: Shift+Alt+drag, Ctrl+Shift+Alt+arrows | One caret per row over a rectangle of display cells. | #343 |
+| Box selection: Shift+Alt+click, Shift+Alt+drag | Select a rectangle of display cells (tabs expanded to their stops, wide characters counted twice) from the box in progress, or else from the primary selection's anchor, to the cell under the pointer: one selection per line, its head toward the pointer. A line that ends left of the box gets no selection; one that ends inside it is selected to its end. A column past a line's end is kept, so the box stays as wide as the pointer when it reaches a longer line. The selection on the pointer's line is primary. | harness |
+| Box selection: Ctrl+Shift+Alt+Up / Down / Left / Right | Grow or shrink the same box one line or one display cell at a time, starting from the primary selection when no box is in progress. Right stops at the end of the longest line the box spans. Any other change of selection ends the box. | harness |
 
 Deviation: VS Code numbers its original caret as the primary one. karet makes
 the newest caret primary, because the viewport and every single-caret feature
@@ -121,7 +122,7 @@ at. Esc still keeps the original caret, as in VS Code.
 | Ctrl+C, no selection | Copy the whole line, newline included, marked as a line copy. | #332 |
 | Ctrl+X | As Ctrl+C, then delete exactly what was copied: every selection, or every caret's whole line. | #332 |
 | Ctrl+V | Insert at every caret. A line copy is inserted above the caret's line. When the clipboard has as many lines as there are carets, each caret gets one line. | #332 |
-| Middle click (Linux) | Paste the primary selection at the click, behind `editor.middleClickPaste`. | #343 |
+| Middle click in the text | With `editor.middleClickPaste` on (by default on Linux only), place a single caret at the click and paste the primary selection there. With no primary selection to read, a notification says so and nothing is edited. A middle click on a tab closes it instead. | harness |
 
 ## Click
 
@@ -191,7 +192,12 @@ A press in the text starts a drag that owns the pointer until it is released.
 
 Deviation: many terminals keep Shift+wheel and Shift+click for their own text
 selection and never send them to the application. karet honours them when they
-arrive and offers a keyboard path for each (#343).
+arrive and offers another path for each (see below).
+
+Deviation, middle click: VS Code calls the setting `editor.selectionClipboard`
+and also copies every selection into the primary selection. karet only reads
+the primary selection, which the terminal or another application fills; it
+does not write it.
 
 ## Modifiers terminals may not deliver
 
@@ -200,8 +206,15 @@ arrive and offers a keyboard path for each (#343).
 | Super/Cmd + click | Every terminal under SGR mouse reporting | Ctrl+click, F12 |
 | Ctrl+click | macOS terminals (sent as a right click) | F12 |
 | Alt/Option + click | macOS terminals, Linux window managers that move windows on Alt+drag | Ctrl+Alt+Up/Down, Ctrl+D |
-| Shift+click, Shift+wheel | Terminals that reserve Shift for native selection | Shift+arrows; horizontal wheel |
-| Shift+Alt+drag | All of the above | Ctrl+Shift+Alt+arrows (#343) |
+| Shift+click | Terminals that reserve Shift for native selection | Shift+arrows |
+| Shift+wheel | Terminals that reserve Shift for native selection | The horizontal wheel; Left/Right, which the view follows |
+| Shift+Alt+click, Shift+Alt+drag | All of the above | Ctrl+Shift+Alt+arrows |
 
-Each gesture must have a bound keyboard path, so nothing in this document
-depends on a modifier reaching karet (#343).
+Every gesture has a bound keyboard path, so nothing in this document depends on
+a modifier reaching karet; a keymap test
+(`every_swallowable_gesture_has_a_bound_keyboard_path`) checks each chord in
+the table. Where the chord's own modifiers are lost too, as Option is in some
+macOS terminals, each of these commands is also in the command palette
+(Ctrl+Shift+P, or F1), under the names Go to Definition, Add Cursor Above, Add
+Cursor Below, Add Cursor to Next Occurrence and Column Select Up / Down / Left
+/ Right.

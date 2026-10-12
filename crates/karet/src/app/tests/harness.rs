@@ -67,6 +67,8 @@ pub(crate) enum Step {
     Click(At, KeyModifiers),
     /// A full right click: press then release.
     RightClick(At, KeyModifiers),
+    /// A full middle click: press then release.
+    MiddleClick(At, KeyModifiers),
     /// One wheel notch down (toward the end of the document).
     WheelDown(At, KeyModifiers),
     /// One wheel notch up.
@@ -264,12 +266,9 @@ impl Rig {
                 self.render();
                 self.mouse(MouseEventKind::Up(MouseButton::Left), at, modifiers);
             },
-            Step::RightClick(at, modifiers) => {
-                let (col, row) = self.cell(at);
-                let at = At::Cell(col, row);
-                self.mouse(MouseEventKind::Down(MouseButton::Right), at, modifiers);
-                self.render();
-                self.mouse(MouseEventKind::Up(MouseButton::Right), at, modifiers);
+            Step::RightClick(at, modifiers) => self.click_with(MouseButton::Right, at, modifiers),
+            Step::MiddleClick(at, modifiers) => {
+                self.click_with(MouseButton::Middle, at, modifiers);
             },
             Step::WheelDown(at, modifiers) => self.mouse(MouseEventKind::ScrollDown, at, modifiers),
             Step::WheelUp(at, modifiers) => self.mouse(MouseEventKind::ScrollUp, at, modifiers),
@@ -277,6 +276,15 @@ impl Rig {
             Step::Tick => self.app.tick_drag_autoscroll(Instant::now()),
         }
         self.render();
+    }
+
+    /// Press and release `button` at `at`, the pointer held still between.
+    fn click_with(&mut self, button: MouseButton, at: At, modifiers: KeyModifiers) {
+        let (col, row) = self.cell(at);
+        let at = At::Cell(col, row);
+        self.mouse(MouseEventKind::Down(button), at, modifiers);
+        self.render();
+        self.mouse(MouseEventKind::Up(button), at, modifiers);
     }
 
     fn mouse(&mut self, kind: MouseEventKind, at: At, modifiers: KeyModifiers) {

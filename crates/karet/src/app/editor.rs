@@ -1,3 +1,4 @@
+pub(super) mod column;
 mod render;
 
 use karet_editor::Motion;
@@ -580,6 +581,23 @@ impl App {
             self.editor_drag = None;
             return;
         }
+        // Shift+Alt+click box-selects from the box in progress (or the primary
+        // selection's anchor) to the cell under the pointer, and arms a drag
+        // that keeps growing the box.
+        if alt && shift {
+            self.column_select_pointer(area, mouse.column, mouse.row);
+            let view = self.tabs.get(self.active).map(|tab| tab.view);
+            self.editor_drag = code_pos.zip(view).map(|(pos, view)| EditorDrag {
+                anchor: (pos, pos),
+                granularity: DragGranularity::Column,
+                pointer: (mouse.column, mouse.row),
+                area,
+                pane,
+                view,
+                last_step: None,
+            });
+            return;
+        }
         // A modifier outranks the click count: a quick second Alt+click toggles
         // the caret it just added, and a quick second Shift+click extends again,
         // neither selecting a word.
@@ -648,6 +666,65 @@ impl App {
             },
             _ => None,
         });
+    }
+
+    /// Paste the primary selection at a middle click in a code tab's text, as
+    /// X11 and Wayland applications do (`editor.middleClickPaste`): focus the
+    /// pane, put a single caret at the click, and insert there. With the
+    /// setting off, or outside editable text, it does nothing.
+    pub(super) fn middle_click_paste(&mut self, mouse: MouseEvent) {
+        if !self.settings.editor.middle_click_paste() {
+            return;
+        }
+        let point = (mouse.column, mouse.row);
+        let Some((pane, area)) = self
+            .pane_frames
+            .iter()
+            .find(|frame| rect_contains(frame.editor_rect, point))
+            .map(|frame| (frame.pane, frame.editor_rect))
+        else {
+            return;
+        };
+        self.focus_pane_switch(pane);
+        if !matches!(
+            self.tabs.get(self.active).map(|tab| &tab.kind),
+            Some(TabKind::Code { doc: Some(_), .. })
+        ) {
+            return;
+        }
+        self.focus = Focus::Editor;
+        let text = match self.clipboard.get_primary() {
+            Ok(text) => text.replace("\r\n", "\n").replace('\r', "\n"),
+            Err(_) => {
+                self.notify(
+                    Report::Failure,
+                    NotificationKind::System,
+                    "paste: no primary selection available",
+                );
+                return;
+            },
+        };
+        if let Some(Tab {
+            kind:
+                TabKind::Code {
+                    buffer,
+                    folds,
+                    folded,
+                    ..
+                },
+            editor,
+            ..
+        }) = self.tabs.get_mut(self.active)
+        {
+            let fold_lines = resolve_folds(folds, folded);
+            let pos = editor.pos_at(area, buffer, &fold_lines, mouse.column, mouse.row);
+            editor.set_caret(buffer, pos);
+        }
+        if !text.is_empty() {
+            self.submit_edit_with_cause(EditCause::Paste, move |caret, sel, _, base| {
+                Some(editing::insert(caret, sel, base, &text))
+            });
+        }
     }
 
     // Editing routes through the headless session backend and reflects its

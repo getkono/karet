@@ -281,6 +281,10 @@ impl Command {
             | Self::SelectDocEnd
             | Self::SelectPageUp
             | Self::SelectPageDown
+            | Self::ColumnSelectUp
+            | Self::ColumnSelectDown
+            | Self::ColumnSelectLeft
+            | Self::ColumnSelectRight
             | Self::EditorSelectAll
             | Self::AddCursorAbove
             | Self::AddCursorBelow

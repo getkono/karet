@@ -59,6 +59,8 @@ pub(crate) enum DragGranularity {
     Word,
     /// A triple click: extend to whole lines.
     Line,
+    /// A Shift+Alt press: grow a box selection to the cell under the pointer.
+    Column,
 }
 
 /// An in-progress editor text-selection drag.
@@ -96,7 +98,7 @@ impl App {
         granularity: DragGranularity,
     ) -> (LineCol, LineCol) {
         match granularity {
-            DragGranularity::Character => (pos, pos),
+            DragGranularity::Character | DragGranularity::Column => (pos, pos),
             DragGranularity::Word => class_run_at(buffer, pos),
             DragGranularity::Line => line_span(buffer, pos.line),
         }
@@ -159,7 +161,7 @@ impl App {
     }
 
     /// The first screen column of `area` that shows text, right of the gutter.
-    fn drag_text_left(&self, area: Rect) -> u16 {
+    pub(super) fn drag_text_left(&self, area: Rect) -> u16 {
         let width = self
             .tabs
             .get(self.active)
@@ -214,6 +216,10 @@ impl App {
         }
         let row = row.clamp(self.drag_text_top(area), area.bottom() - 1);
         let col = col.min(area.right() - 1);
+        if drag.granularity == DragGranularity::Column {
+            self.column_select_pointer(area, col, row);
+            return;
+        }
         let Some(Tab {
             kind:
                 TabKind::Code {

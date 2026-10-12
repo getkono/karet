@@ -156,7 +156,9 @@ action of that kind directly.
 **Editor — multi-cursor.** `Ctrl+Alt+↑`/`Ctrl+Alt+↓` add a caret above / below the
 primary; `Ctrl+D` selects the word under the caret, then adds a caret at the next
 occurrence (wrapping); `Alt+Click` adds or removes a caret and `Alt+Drag` extends the
-newly-added one; `Esc` collapses back to a single caret. Typing, deletion and
+newly-added one; `Shift+Alt+Click`/`Shift+Alt+Drag` select a box of display
+cells, one selection per line, and `Ctrl+Shift+Alt+arrows` grow the same box from
+the keyboard; `Esc` collapses back to a single caret. Typing, deletion and
 newlines then apply at every caret at once.
 
 **Editor — comments.** `Ctrl+/` toggles a line comment on every line the selections
@@ -205,7 +207,9 @@ toggle folders and the header `1 2 3` to switch panels; click SCM / search rows 
 open them; click to place the caret and drag to select text (double / triple-click
 select word / line, and *dragging* from one extends by whole words / lines); a
 drag that leaves the viewport keeps scrolling and selecting; `Alt+Click`/`Alt+Drag`
-add and grow extra carets; the wheel scrolls; click a status-bar segment to run it.
+add and grow extra carets; a middle click in the text pastes the primary selection
+there (`editor.middleClickPaste`, on by default on Linux); the wheel scrolls; click
+a status-bar segment to run it.
 
 **Mouse — selecting outside the editor.** Dragging highlights text on every
 surface that shows it, and `Ctrl+C` copies **what the text is, not what it looks

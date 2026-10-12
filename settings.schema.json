@@ -437,6 +437,14 @@
           "$ref": "#/$defs/LineNumbers",
           "default": "on"
         },
+        "middleClickPaste": {
+          "description": "Paste the primary selection at a middle click in the text: `null` turns\nit on for Linux, where the primary selection is a platform convention,\nand off elsewhere.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        },
         "prettyErrors": {
           "description": "Re-render TypeScript diagnostics as markdown (quoted types lifted into\nhighlighted code blocks) wherever rich rendering is available.",
           "type": "boolean",
