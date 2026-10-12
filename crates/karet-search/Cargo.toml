@@ -21,6 +21,7 @@ serde = ["dep:serde"]
 ignore.workspace = true
 serde = { workspace = true, optional = true }
 regex.workspace = true
+regex-syntax.workspace = true
 memchr.workspace = true
 thiserror.workspace = true
 

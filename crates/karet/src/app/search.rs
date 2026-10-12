@@ -118,13 +118,7 @@ impl App {
         let mut count = 0;
         let mut current = 0;
         if let Some(Tab {
-            kind:
-                TabKind::Code {
-                    buffer,
-                    text,
-                    decos,
-                    ..
-                },
+            kind: TabKind::Code { buffer, decos, .. },
             editor,
             ..
         }) = self.tabs.get_mut(self.active)
@@ -132,7 +126,9 @@ impl App {
             if q.pattern.is_empty() {
                 decos.clear();
             } else {
-                let matches = search_in_file(text, &q).unwrap_or_default();
+                // Over the rope's chunks, so a find bar left open while typing
+                // never copies the whole document per keystroke (#420).
+                let matches = search_chunks(buffer.chunks(), &q).unwrap_or_default();
                 *decos = matches
                     .iter()
                     .map(|m| Decoration {
@@ -625,13 +621,12 @@ impl App {
             if let TabKind::Code {
                 path,
                 buffer,
-                text,
                 search_decos,
                 ..
             } = &mut tab.kind
             {
                 *search_decos = if !query.pattern.is_empty() && hit_paths.contains(path.as_path()) {
-                    search_in_file(text, &query)
+                    search_chunks(buffer.chunks(), &query)
                         .unwrap_or_default()
                         .iter()
                         .map(|m| Decoration {

@@ -3748,6 +3748,7 @@ dependencies = [
  "ignore",
  "memchr",
  "regex",
+ "regex-syntax 0.8.11",
  "serde",
  "thiserror 2.0.19",
 ]

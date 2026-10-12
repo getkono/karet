@@ -7,7 +7,8 @@
 //! types.
 //!
 //! Search and replace (both in-file and workspace) are implemented via
-//! [`search_in_file`]/[`WorkspaceSearch::run`] and
+//! [`search_in_file`]/[`WorkspaceSearch::run`] (or [`search_chunks`] for a
+//! buffer held in pieces, such as a rope, with no whole-text copy) and
 //! [`plan_replacements`]/[`apply_replacements`]/[`WorkspaceSearch::replace`]. The
 //! walk itself is also public as [`walk_text_files`], for consumers that want the
 //! same filtered corpus without a pattern. The workspace walk is currently
@@ -19,6 +20,10 @@ use std::path::PathBuf;
 
 use regex::Regex;
 use regex::RegexBuilder;
+
+mod lines;
+
+pub use lines::search_chunks;
 
 /// Directory names every workspace walk prunes outright, on top of the
 /// gitignore/hidden filters (kept in parity with `karet-watch`'s watcher
@@ -89,20 +94,25 @@ pub struct Replacement {
 /// Shared by [`search_in_file`] and the workspace walk so both honor the same
 /// semantics.
 fn compile(query: &SearchQuery) -> Result<Regex, SearchError> {
+    RegexBuilder::new(&regex_pattern(query))
+        .case_insensitive(!query.case_sensitive)
+        .build()
+        .map_err(|_| SearchError::InvalidPattern)
+}
+
+/// The regex source [`compile`] builds for `query`: the pattern, escaped unless
+/// it is a regex, and wrapped in `\b…\b` for a whole-word query.
+fn regex_pattern(query: &SearchQuery) -> String {
     let base = if query.regex {
         query.pattern.clone()
     } else {
         regex::escape(&query.pattern)
     };
-    let pattern = if query.whole_word {
+    if query.whole_word {
         format!(r"\b(?:{base})\b")
     } else {
         base
-    };
-    RegexBuilder::new(&pattern)
-        .case_insensitive(!query.case_sensitive)
-        .build()
-        .map_err(|_| SearchError::InvalidPattern)
+    }
 }
 
 /// Advance `line`/`line_start` by counting the newlines in `text[from..to]`.
@@ -173,7 +183,13 @@ fn regex_matches(text: &str, re: &Regex) -> Vec<Match> {
 /// assert_eq!((first.len(), second.len()), (1, 0));
 /// # Ok::<(), karet_search::SearchError>(())
 /// ```
-pub struct Matcher(MatcherKind);
+pub struct Matcher {
+    /// The compiled query.
+    kind: MatcherKind,
+    /// Whether no match can cross a line break, so a buffer can be searched one
+    /// line at a time (see [`Matcher::find_chunks`]).
+    line_bounded: bool,
+}
 
 /// A compiled query: a literal needle (fast-path) or a regex.
 enum MatcherKind {
@@ -190,9 +206,15 @@ impl Matcher {
     /// Returns [`SearchError::InvalidPattern`] for a malformed regex.
     pub fn new(query: &SearchQuery) -> Result<Self, SearchError> {
         if !query.regex && query.case_sensitive && !query.whole_word {
-            Ok(Self(MatcherKind::Literal(query.pattern.clone())))
+            Ok(Self {
+                kind: MatcherKind::Literal(query.pattern.clone()),
+                line_bounded: !query.pattern.contains('\n'),
+            })
         } else {
-            Ok(Self(MatcherKind::Regex(compile(query)?)))
+            Ok(Self {
+                kind: MatcherKind::Regex(compile(query)?),
+                line_bounded: lines::is_line_bounded(query),
+            })
         }
     }
 
@@ -201,7 +223,7 @@ impl Matcher {
     /// An empty pattern never matches, matching [`search_in_file`]'s behavior.
     #[must_use]
     pub fn find(&self, text: &str) -> Vec<Match> {
-        match &self.0 {
+        match &self.kind {
             MatcherKind::Literal(needle) if needle.is_empty() => Vec::new(),
             MatcherKind::Literal(needle) => literal_matches(text, needle),
             MatcherKind::Regex(re) => regex_matches(text, re),
@@ -213,7 +235,7 @@ impl Matcher {
     /// against each match's captures; otherwise `replacement` is inserted literally
     /// (so a literal or whole-word query never mis-reads a `$` in the replacement).
     fn plan(&self, text: &str, replacement: &str, expand: bool) -> Vec<Replacement> {
-        match &self.0 {
+        match &self.kind {
             MatcherKind::Literal(needle) if needle.is_empty() => Vec::new(),
             MatcherKind::Literal(needle) => literal_matches(text, needle)
                 .into_iter()
