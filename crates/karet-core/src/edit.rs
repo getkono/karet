@@ -329,7 +329,8 @@ impl CursorState {
         self.normalize();
     }
 
-    /// Collapse the set to just the primary selection (e.g. the `Esc` fold-back).
+    /// Collapse the set to just the primary selection (e.g. before a Shift+click
+    /// extends it).
     pub fn collapse_to_primary(&mut self) {
         let p = self.primary();
         self.selections = vec![p];

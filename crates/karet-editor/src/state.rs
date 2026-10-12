@@ -77,7 +77,12 @@ impl Motion {
     pub const fn is_backward(self) -> bool {
         matches!(
             self,
-            Self::Up | Self::Left | Self::PageUp | Self::LineStart | Self::DocStart | Self::WordLeft
+            Self::Up
+                | Self::Left
+                | Self::PageUp
+                | Self::LineStart
+                | Self::DocStart
+                | Self::WordLeft
         )
     }
 }
@@ -92,7 +97,9 @@ fn step(buffer: &TextBuffer, motion: Motion, page: u32, from: LineCol) -> LineCo
         Motion::PageUp => to_line(from.line.saturating_sub(page)),
         Motion::PageDown => to_line(from.line.saturating_add(page).min(last)),
         Motion::Left if from.col > 0 => LineCol::new(from.line, from.col - 1),
-        Motion::Left if from.line > 0 => LineCol::new(from.line - 1, line_len(buffer, from.line - 1)),
+        Motion::Left if from.line > 0 => {
+            LineCol::new(from.line - 1, line_len(buffer, from.line - 1))
+        },
         Motion::Right if from.col < line_len(buffer, from.line) => {
             LineCol::new(from.line, from.col + 1)
         },
@@ -867,7 +874,13 @@ impl EditorState {
             // Every index past the removed caret shifts down one, so the primary
             // and the first-placed caret stay the carets they were. Removing one of
             // them hands its role to the caret before it (or after it, at the start).
-            let shift = |index: usize| if i <= index { index.saturating_sub(1) } else { index };
+            let shift = |index: usize| {
+                if i <= index {
+                    index.saturating_sub(1)
+                } else {
+                    index
+                }
+            };
             self.cursors.primary = shift(self.cursors.primary);
             self.original = shift(self.original);
             return;
