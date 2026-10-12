@@ -138,6 +138,39 @@ async fn show_and_log_messages_are_relayed_with_their_level() -> TestResult {
     Ok(())
 }
 
+#[tokio::test]
+async fn what_a_server_says_during_the_handshake_reaches_the_first_subscriber() -> TestResult {
+    let ((read, write), mut server) = wire();
+    let server_task = tokio::spawn(async move {
+        let init = server.recv().await;
+        // Before answering `initialize`, as the protocol allows for messages.
+        server
+            .send(&json!({"jsonrpc": "2.0", "method": "window/logMessage",
+                          "params": {"type": 3, "message": "starting"}}))
+            .await;
+        server
+            .send(&json!({"jsonrpc": "2.0", "method": "$/progress",
+                          "params": {"token": 1, "value": {"kind": "begin", "title": "Load"}}}))
+            .await;
+        server
+            .respond(&init["id"].clone(), json!({"capabilities": {}}))
+            .await;
+        server.recv().await
+    });
+    let client = LspClient::connect(read, write, Path::new("/w")).await?;
+    assert_eq!(server_task.await?["method"], "initialized");
+    let mut messages = client.messages();
+    let logged = tokio::time::timeout(WAIT, messages.recv()).await??;
+    assert_eq!(logged.text, "starting");
+    let mut progress = client.work_progress();
+    let begin = tokio::time::timeout(WAIT, progress.recv()).await??;
+    assert_eq!(begin.title.as_deref(), Some("Load"));
+    // The backlog went to the first subscriber only.
+    assert!(client.messages().try_recv().is_err());
+    assert!(client.work_progress().try_recv().is_err());
+    Ok(())
+}
+
 /// Send one `window/showMessageRequest` with id `id` and return the answer.
 async fn ask(server: &mut FakeServer, id: i64) -> Value {
     server

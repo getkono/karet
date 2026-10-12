@@ -105,10 +105,11 @@ pub(crate) struct LspHandler {
     /// fix for some (ruff) -- and in the server's coordinates, which is what
     /// it expects to be handed.
     published: Arc<Mutex<PublishedSets>>,
-    /// `$/progress` work-done reports, fanned out to every subscriber.
-    progress: broadcast::Sender<WorkProgress>,
-    /// `window/showMessage` and `window/logMessage`, fanned out.
-    messages: broadcast::Sender<ServerMessage>,
+    /// `$/progress` work-done reports, fanned out to every subscriber; the
+    /// first also gets those sent before it subscribed.
+    progress: window::Backlogged<WorkProgress>,
+    /// `window/showMessage` and `window/logMessage`, fanned out the same way.
+    messages: window::Backlogged<ServerMessage>,
     /// What `workspace/configuration` is answered from.
     settings: config::Settings,
 }
@@ -120,8 +121,8 @@ impl Default for LspHandler {
     fn default() -> Self {
         let (diagnostics, _) = broadcast::channel(DIAGNOSTICS_CHANNEL_CAPACITY);
         let (refreshes, _) = broadcast::channel(REFRESH_CHANNEL_CAPACITY);
-        let (progress, _) = broadcast::channel(window::PROGRESS_CHANNEL_CAPACITY);
-        let (messages, _) = broadcast::channel(window::MESSAGE_CHANNEL_CAPACITY);
+        let progress = window::Backlogged::new(window::PROGRESS_CHANNEL_CAPACITY);
+        let messages = window::Backlogged::new(window::MESSAGE_CHANNEL_CAPACITY);
         Self {
             diagnostics,
             refreshes,
@@ -229,7 +230,7 @@ impl karet_jsonrpc::Handler for LspHandler {
             "$/progress" => window::route_progress(&params, &self.progress),
             "window/showMessage" | "window/logMessage" => {
                 if let Some(message) = ServerMessage::from_notification(method, &params) {
-                    let _ = self.messages.send(message);
+                    self.messages.send(message);
                 }
             },
             // Telemetry and server-specific notifications reach a consumer

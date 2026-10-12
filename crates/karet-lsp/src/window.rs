@@ -18,6 +18,8 @@
 //!   the server is never left waiting.
 
 use std::fmt;
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 
@@ -45,6 +47,45 @@ pub(crate) const PROGRESS_CHANNEL_CAPACITY: usize = 64;
 /// Message broadcast capacity. Log traffic can be bursty (a server's startup
 /// banner), and a lagging subscriber loses the oldest lines.
 pub(crate) const MESSAGE_CHANNEL_CAPACITY: usize = 256;
+
+/// A fan-out whose first subscriber also receives what was sent before it
+/// subscribed, up to the channel's capacity.
+///
+/// A consumer can subscribe only once `connect` returns, after the handshake,
+/// and a server's startup log and first progress arrive during it. Holding one
+/// receiver from the start keeps them for that first subscriber instead of
+/// broadcasting them to nobody.
+#[derive(Clone)]
+pub(crate) struct Backlogged<T> {
+    tx: broadcast::Sender<T>,
+    first: Arc<Mutex<Option<broadcast::Receiver<T>>>>,
+}
+
+impl<T: Clone> Backlogged<T> {
+    /// A fan-out keeping up to `capacity` entries for its first subscriber.
+    pub(crate) fn new(capacity: usize) -> Self {
+        let (tx, rx) = broadcast::channel(capacity);
+        Self {
+            tx,
+            first: Arc::new(Mutex::new(Some(rx))),
+        }
+    }
+
+    /// Send `value` to every subscriber, and to the first one still to come.
+    pub(crate) fn send(&self, value: T) {
+        let _ = self.tx.send(value);
+    }
+
+    /// The held receiver, backlog included, on the first call; a fresh one
+    /// after that.
+    pub(crate) fn subscribe(&self) -> broadcast::Receiver<T> {
+        self.first
+            .lock()
+            .ok()
+            .and_then(|mut first| first.take())
+            .unwrap_or_else(|| self.tx.subscribe())
+    }
+}
 
 /// The token naming one piece of work-done progress, as the server chose it.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -318,11 +359,9 @@ pub(crate) fn route_message_request(
 }
 
 /// Broadcast one decoded progress report, ignoring partial-result progress.
-pub(crate) fn route_progress(params: &Value, progress: &broadcast::Sender<WorkProgress>) {
+pub(crate) fn route_progress(params: &Value, progress: &Backlogged<WorkProgress>) {
     match WorkProgress::from_params(params) {
-        Some(report) => {
-            let _ = progress.send(report);
-        },
+        Some(report) => progress.send(report),
         None => tracing::debug!("$/progress that is not work-done progress"),
     }
 }
@@ -334,6 +373,10 @@ impl LspClient {
     /// token. A slow subscriber drops the oldest entries, so a consumer that
     /// tracks work should treat a missed `end` as possible and clear work the
     /// connection no longer reports (it ends with the connection).
+    ///
+    /// The first subscriber also receives the reports sent since the
+    /// connection started, the handshake included, up to the channel's
+    /// capacity; later subscribers see only what follows their subscription.
     #[must_use]
     pub fn work_progress(&self) -> broadcast::Receiver<WorkProgress> {
         self.conn.work_progress()
@@ -358,6 +401,11 @@ impl LspClient {
 
     /// Subscribe to the server's `window/showMessage` and `window/logMessage`
     /// notifications (see [`ServerMessage`]).
+    ///
+    /// The first subscriber also receives the messages sent since the
+    /// connection started -- a server's startup log, sent during the
+    /// handshake -- up to the channel's capacity; later subscribers see only
+    /// what follows their subscription.
     #[must_use]
     pub fn messages(&self) -> broadcast::Receiver<ServerMessage> {
         self.conn.messages()
