@@ -269,6 +269,30 @@ impl App {
         self.column_select_to(head, false);
     }
 
+    /// The command a keyboard chord runs, given that the Editor layer binds
+    /// Ctrl+Shift+Alt+arrows to box selection.
+    ///
+    /// That layer is live on every editor tab the keymap does not tell apart
+    /// from a code tab: the Welcome tab, an image, a document, a placeholder
+    /// and an empty pane. None of them holds text a box could select, so there
+    /// the chord keeps its Global meaning and resizes the focused pane.
+    pub(in crate::app) fn keyboard_command(&self, command: Command) -> Command {
+        let code_tab = matches!(
+            self.tabs.get(self.active).map(|tab| &tab.kind),
+            Some(TabKind::Code { .. })
+        );
+        if code_tab {
+            return command;
+        }
+        match command {
+            Command::ColumnSelectUp => Command::ResizePaneUp,
+            Command::ColumnSelectDown => Command::ResizePaneDown,
+            Command::ColumnSelectLeft => Command::ResizePaneLeft,
+            Command::ColumnSelectRight => Command::ResizePaneRight,
+            other => other,
+        }
+    }
+
     /// Box-select from the current box's anchor (or the primary selection's)
     /// to the cell under the pointer at `(col, row)` in the editor `area`
     /// (Shift+Alt+click, and every step of a Shift+Alt+drag).

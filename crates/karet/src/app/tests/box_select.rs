@@ -200,3 +200,31 @@ fn a_middle_click_on_a_tab_still_closes_it_rather_than_pasting() {
         "the code tab closed"
     );
 }
+
+/// The width of the left pane after Ctrl+Shift+Alt+Left in the right one,
+/// which holds `tab` and has focus.
+fn left_width_after_the_box_chord(tab: Tab) -> Option<u16> {
+    let mut app = super::support::app();
+    app.main_rect = Rect::new(0, 0, 80, 24);
+    app.tabs = vec![tab];
+    app.active = 0;
+    app.focus = Focus::Editor;
+    let left = app.layout.root_pane();
+    let right = app.layout.split(left, SplitDir::Right);
+    app.layout.set_focus(right);
+    super::support::send_key(&mut app, KeyCode::Left, CTRL | SHIFT | ALT);
+    app.layout
+        .pane_rect(left, app.main_rect)
+        .map(|rect| rect.width)
+}
+
+/// The box chords outrank the Global resize chords only where there is text
+/// to box: on a tab without text the chord still resizes the pane.
+#[test]
+fn the_box_chord_resizes_the_pane_on_a_tab_without_text() {
+    assert_eq!(left_width_after_the_box_chord(Tab::welcome()), Some(38));
+    assert_eq!(
+        left_width_after_the_box_chord(super::support::code_tab("a.rs")),
+        Some(40)
+    );
+}
