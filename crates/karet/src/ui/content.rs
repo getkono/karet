@@ -138,15 +138,13 @@ pub(super) fn draw_pane_content(
                     swatches::frame_decorations(ctx, buffer, tab.editor.scroll_line, area);
                 frame_decos.extend(swatches::debug_decorations(ctx, path));
                 // The lightbulb shares the marker lane too: after a breakpoint,
-                // which is state the user set, but ahead of the change markers,
-                // which would otherwise hide it on nearly every edited line.
+                // which is state the user set.
                 frame_decos.extend(ctx.code_action_bulb.iter().cloned());
                 let diagnostics = swatches::doc_diagnostics(ctx, *doc);
-                // A diagnostic's severity sign is ahead of the change markers
-                // too, since errors sit mostly on edited lines.
                 let problems = swatches::problems(diagnostics);
                 frame_decos.extend(karet_editor::diagnostic_signs(&problems));
-                // After the breakpoints: they share the marker lane and win it.
+                // Change markers draw in the change lane, reserved below while
+                // `git.decorations` is on, so none of the above hides them.
                 let line_changes = doc.and_then(|doc| ctx.line_changes?.get(&doc));
                 frame_decos.extend(line_changes.into_iter().flatten().cloned());
                 // Last, so a search match on a bracket keeps its own color.
@@ -178,7 +176,8 @@ pub(super) fn draw_pane_content(
                     .cell_caret(!ctx.graphical_cursor)
                     .word_wrap(word_wrap)
                     .tab_width(ctx.tab_width)
-                    .unwrapped_lines(table_lines);
+                    .unwrapped_lines(table_lines)
+                    .change_lane(ctx.line_changes.is_some());
                 let editor = ctx.display.apply(editor);
                 // Reserve the tracks before rendering, and keep `editor_rect` as the
                 // reserved rect: it is the single value used both to paint the widget

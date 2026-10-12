@@ -1,5 +1,5 @@
 //! Uncommitted-line gutter markers: request coalescing, answer adoption, the
-//! `git.decorations` switch, and painting into the editor's marker lane.
+//! `git.decorations` switch, and painting into the editor's change lane.
 
 use super::support::*;
 use crate::app::*;
@@ -25,7 +25,7 @@ fn added(line: u32) -> Decoration {
             start: LineCol::new(line, 0),
             end: LineCol::new(line, 0),
         },
-        kind: DecorationKind::GutterMarker { glyph: '\u{258e}' },
+        kind: DecorationKind::ChangeMarker { glyph: '\u{258e}' },
         role: Some(ThemeRole::GutterAdded),
     }
 }
@@ -244,7 +244,11 @@ fn held_markers_paint_in_the_gutter_lane_in_their_role() {
         buffer[(x, y)].fg,
         app.theme.role(ThemeRole::GutterAdded).to_ratatui()
     );
-    // The marker sits on the row whose line number is 2 (zero-based line 1).
-    let row: String = (x..x + 4).map(|col| buffer[(col, y)].symbol()).collect();
-    assert!(row.contains('2'), "marker row reads {row:?}");
+    // The marker sits in the change lane right after the number 2 (zero-based
+    // line 1), not in the marker lane before it.
+    assert_eq!(
+        buffer[(x - 1, y)].symbol(),
+        "2",
+        "the marker follows the number"
+    );
 }

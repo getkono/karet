@@ -93,14 +93,14 @@ fn normalized(text: &str) -> String {
     out
 }
 
-/// One gutter decoration spanning zero-based lines `first..=last`.
+/// One change-lane decoration spanning zero-based lines `first..=last`.
 fn marker(first: u32, last: u32, glyph: char, role: ThemeRole) -> Decoration {
     Decoration {
         range: Range {
             start: LineCol::new(first, 0),
             end: LineCol::new(last, 0),
         },
-        kind: DecorationKind::GutterMarker { glyph },
+        kind: DecorationKind::ChangeMarker { glyph },
         role: Some(role),
     }
 }
@@ -115,7 +115,7 @@ mod tests {
             .into_iter()
             .map(|decoration| {
                 let glyph = match decoration.kind {
-                    DecorationKind::GutterMarker { glyph } => glyph,
+                    DecorationKind::ChangeMarker { glyph } => glyph,
                     _ => '?',
                 };
                 (

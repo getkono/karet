@@ -746,7 +746,7 @@ pub enum Event {
         doc: DocumentId,
         /// The buffer version that was compared.
         version: u64,
-        /// One [`DecorationKind::GutterMarker`](karet_core::DecorationKind::GutterMarker)
+        /// One [`DecorationKind::ChangeMarker`](karet_core::DecorationKind::ChangeMarker)
         /// per changed run, colored by
         /// [`GutterAdded`](karet_core::ThemeRole::GutterAdded),
         /// [`GutterModified`](karet_core::ThemeRole::GutterModified), or

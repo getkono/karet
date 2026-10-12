@@ -44,8 +44,8 @@ pub(super) fn doc_diagnostics<'a>(ctx: &PaneCtx<'a>, doc: Option<DocumentId>) ->
 
 /// The `diagnostics` that earn a gutter sign and a caret-line message: the
 /// problems, as the Problems panel counts them. Misspellings keep their
-/// underline but would otherwise take the marker lane from change markers and
-/// the end-of-line slot from blame on every line of prose.
+/// underline but would otherwise fill the marker lane, and take the
+/// end-of-line slot from blame, on every line of prose.
 pub(super) fn problems(diagnostics: &[Diagnostic]) -> Vec<Diagnostic> {
     diagnostics
         .iter()

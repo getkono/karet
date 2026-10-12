@@ -35,8 +35,9 @@ fn a_reload_repaints_the_gutter_cursor_line_and_rulers() {
     let mut rig = Rig::sized(&thirty_lines(), SIZE.0, SIZE.1);
     let screen = frame(&mut rig.app, SIZE.0, SIZE.1);
     let area = rig.app.editor_rect;
-    // Thirty-one lines: a marker cell, two digits and a spacer.
-    assert_eq!(screen[(area.x + 4, area.y)].symbol(), "l");
+    // Thirty-one lines: a marker cell, two digits, the change lane and the
+    // fold lane.
+    assert_eq!(screen[(area.x + 5, area.y)].symbol(), "l");
     let theme = rig.app.theme.clone();
     let color = |role| theme.role(role).to_ratatui();
     assert_eq!(
@@ -52,7 +53,7 @@ fn a_reload_repaints_the_gutter_cursor_line_and_rulers() {
     let screen = frame(&mut rig.app, SIZE.0, SIZE.1);
     let area = rig.app.editor_rect;
     assert_eq!(
-        screen[(area.x + 2, area.y)].symbol(),
+        screen[(area.x + 3, area.y)].symbol(),
         "l",
         "the numbers are gone"
     );
@@ -61,13 +62,13 @@ fn a_reload_repaints_the_gutter_cursor_line_and_rulers() {
         color(ThemeRole::Background)
     );
     assert_eq!(
-        screen[(area.x + 4, area.y + 1)].bg,
+        screen[(area.x + 5, area.y + 1)].bg,
         color(ThemeRole::IndentGuide),
         "the ruler after column 2"
     );
 
     // A click maps through the narrower gutter.
-    rig.step(click(At::Cell(area.x + 4, area.y + 3)));
+    rig.step(click(At::Cell(area.x + 5, area.y + 3)));
     assert_eq!(rig.tab().editor.cursor(), LineCol::new(3, 2));
 
     reload(&mut rig, |settings| {
