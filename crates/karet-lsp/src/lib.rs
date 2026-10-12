@@ -59,6 +59,7 @@ mod conn;
 mod convert;
 mod gate;
 mod launch;
+mod navigation;
 mod selector;
 mod snippet;
 mod uri;

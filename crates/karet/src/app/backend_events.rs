@@ -237,6 +237,9 @@ impl App {
                 self.notifications.dismiss_tagged(Self::DEPS_CHECK_TAG);
             },
             SessionEvent::Definitions { locations } => self.on_definitions(id, locations),
+            SessionEvent::Locations { kind, locations } => {
+                self.on_locations(id, Some(kind), locations);
+            },
             SessionEvent::RenamePrepared {
                 doc,
                 target,

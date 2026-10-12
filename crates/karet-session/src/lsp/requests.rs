@@ -8,6 +8,7 @@
 use karet_core::Range;
 
 use super::*;
+use crate::api::LocationKind;
 
 impl LspManager {
     /// Forward a completion request (`position` already in UTF-16 columns).
@@ -106,6 +107,9 @@ impl LspManager {
         .is_ok()
     }
 
+    /// Forward a definition request, or with a `kind` the navigation request a
+    /// [`crate::api::Command::FindLocations`] names.
+    #[allow(clippy::too_many_arguments)] // one request's identity, flattened as its siblings are
     pub(crate) fn definition(
         &self,
         language: Option<&str>,
@@ -114,6 +118,7 @@ impl LspManager {
         version: u64,
         path: &Path,
         position: LineCol,
+        kind: Option<LocationKind>,
     ) -> bool {
         let path = absolute_path(path);
         let Some(tx) = self.existing_server(language, &path) else {
@@ -125,6 +130,7 @@ impl LspManager {
             version,
             path,
             position,
+            kind,
         })
         .is_ok()
     }

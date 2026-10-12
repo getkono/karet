@@ -11,10 +11,14 @@
 //! feature, the user who asked is told so rather than left to read "nothing".
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::path::PathBuf;
 
+use karet_core::LineCol;
+use karet_core::Location;
 use karet_core::ServerFeature;
 use karet_core::WorkspaceEdit;
+use karet_lsp::LspClient;
 use karet_lsp::LspError;
 use tokio::sync::mpsc;
 
@@ -24,6 +28,7 @@ use super::message::RenameAnswer;
 use super::message::ServerCmd;
 use super::slot::SlotKey;
 use crate::RequestId;
+use crate::api::LocationKind;
 
 /// Tell the client a request it asked for by hand was refused because the
 /// server never offered `feature` -- ahead of the empty answer that follows.
@@ -48,6 +53,32 @@ pub(super) fn report_unsupported<T>(
             server: key.provider.clone(),
             feature,
         });
+    }
+}
+
+/// The capability a navigation request is gated on: Go to Definition's own
+/// for `None`, else the one its kind names.
+pub(super) fn location_feature(kind: Option<LocationKind>) -> ServerFeature {
+    kind.map_or(ServerFeature::Definition, LocationKind::feature)
+}
+
+/// Issue the navigation request `kind` names on `client`.
+///
+/// References include the declaration, as an editor's "find all references"
+/// conventionally does: the user asked where the symbol is *used*, and the
+/// place it is introduced is the first answer to that.
+pub(super) async fn locations(
+    client: &LspClient,
+    kind: Option<LocationKind>,
+    path: &Path,
+    position: LineCol,
+) -> Result<Vec<Location>, LspError> {
+    match kind {
+        None => client.definition(path, position).await,
+        Some(LocationKind::Declaration) => client.declaration(path, position).await,
+        Some(LocationKind::TypeDefinition) => client.type_definition(path, position).await,
+        Some(LocationKind::Implementation) => client.implementations(path, position).await,
+        Some(LocationKind::References) => client.references(path, position, true).await,
     }
 }
 
@@ -151,6 +182,7 @@ pub(super) fn answer_empty(
             request,
             doc,
             version,
+            kind,
             ..
         } => {
             let _ = updates.send(LspUpdate::Definitions {
@@ -158,6 +190,7 @@ pub(super) fn answer_empty(
                 request,
                 doc,
                 version,
+                kind,
                 locations: Vec::new(),
             });
         },

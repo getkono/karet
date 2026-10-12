@@ -215,6 +215,14 @@ impl App {
             Command::CommitGraphCopyIssueUrls => self.commit_graph_copy_issue_urls(),
             Command::TodoToggleGrouping => self.todos_toggle_grouping(),
             Command::GoToDefinition => self.request_definition(),
+            Command::GoToDeclaration => self.request_locations(Some(LocationKind::Declaration)),
+            Command::GoToTypeDefinition => {
+                self.request_locations(Some(LocationKind::TypeDefinition));
+            },
+            Command::GoToImplementation => {
+                self.request_locations(Some(LocationKind::Implementation));
+            },
+            Command::FindReferences => self.request_locations(Some(LocationKind::References)),
             Command::RenameSymbol => self.start_rename(),
             Command::RenameSubmit => self.rename_submit(),
             Command::RenameCancel => self.rename_cancel(),
