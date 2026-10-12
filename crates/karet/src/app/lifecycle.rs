@@ -615,7 +615,8 @@ impl App {
         }
     }
 
-    /// Cut the current selection (copy then delete); a no-op without a selection.
+    /// Cut every selection (copy then delete), or every caret's whole line when
+    /// nothing is selected.
     pub(super) fn cut(&mut self) {
         if matches!(
             self.input_context().modal,
@@ -637,16 +638,7 @@ impl App {
             self.explorer_cut_files();
             return;
         }
-        let has_selection = matches!(
-            self.tabs.get(self.active),
-            Some(Tab { kind: TabKind::Code { .. }, editor, .. })
-                if editor.selection_range().is_some_and(|r| !r.is_empty())
-        );
-        if !has_selection {
-            return;
-        }
-        self.copy_selection();
-        self.submit_edit_with_cause(EditCause::Cut, editing::backspace);
+        self.cut_code_selection();
     }
 
     /// Paste the system clipboard at the caret (or the active modal's text field).
@@ -678,9 +670,7 @@ impl App {
             self.modal_paste(modal, &normalized);
             return;
         }
-        self.submit_edit_with_cause(EditCause::Paste, move |caret, sel, _b, base| {
-            Some(editing::insert(caret, sel, base, &normalized))
-        });
+        self.paste_into_editor(&normalized);
     }
 }
 

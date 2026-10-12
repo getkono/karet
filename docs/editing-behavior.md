@@ -118,10 +118,10 @@ at. Esc still keeps the original caret, as in VS Code.
 
 | Input | Behaviour | Status |
 |---|---|---|
-| Ctrl+C, a selection | Copy the selected text. With several carets, copy every selection, joined by newlines. | #332 (several carets) |
-| Ctrl+C, no selection | Copy the whole line, newline included, marked as a line copy. | #332 |
-| Ctrl+X | As Ctrl+C, then delete exactly what was copied: every selection, or every caret's whole line. | #332 |
-| Ctrl+V | Insert at every caret. A line copy is inserted above the caret's line. When the clipboard has as many lines as there are carets, each caret gets one line. | #332 |
+| Ctrl+C, a selection | Copy the selected text. With several carets, copy every selection in document order, joined by newlines; an empty caret beside a selection adds nothing. | harness (`clipboard.rs`) |
+| Ctrl+C, no selection | Copy the whole line, newline included, marked as a line copy. With several carets, copy each caret's line once. | harness |
+| Ctrl+X | As Ctrl+C, then delete exactly what was copied: every selection, or every caret's whole line. Nothing is deleted when the copy fails. | harness |
+| Ctrl+V | Insert at every caret. A line copy is inserted above the caret's line (a selection is replaced instead). When the clipboard has as many pieces, or lines, as there are carets, each caret gets one. The line-copy marker and the pieces hold only while the clipboard still has the exact text karet copied. | harness |
 | Middle click in the text | With `editor.middleClickPaste` on (by default on Linux only), place a single caret at the click and paste the primary selection there. With no primary selection to read, a notification says so and nothing is edited. A middle click on a tab closes it instead. | harness |
 
 ## Click
