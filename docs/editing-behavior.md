@@ -94,6 +94,12 @@ Ctrl+Shift+Alt+\, Go to Bracket's chord with Alt, so the command has a key at
 all. A legacy terminal sends neither chord apart from Ctrl+\; both commands
 are in the command palette.
 
+Deviation: VS Code asks the language server for Expand Selection's ranges
+(`textDocument/selectionRange`) when there is one. karet grows along the
+tree-sitter syntax tree only, until #451 prefers the server's ranges. macOS
+terminals deliver Option+Shift+arrow as Shift+Alt+arrow, so there it is Expand /
+Shrink Selection too, not word selection.
+
 ## Multiple carets
 
 | Input | Behaviour | Status |
