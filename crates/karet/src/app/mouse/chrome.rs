@@ -362,6 +362,11 @@ impl App {
         };
         let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
         self.with_pane(pane, |app| {
+            // The Seam view answers the wheel itself, from the hit map it recorded in
+            // whichever pane painted it; the document scroll below has nothing to move.
+            if app.seam_mouse(mouse) {
+                return;
+            }
             if horizontal {
                 if in_editor {
                     app.scroll_columns(delta);
