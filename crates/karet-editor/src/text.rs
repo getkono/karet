@@ -44,16 +44,25 @@ pub fn word_bounds(buffer: &TextBuffer, pos: LineCol) -> (LineCol, LineCol) {
 pub(super) fn slice_text(buffer: &TextBuffer, range: Range) -> Option<String> {
     let start = buffer.line_col_to_byte(range.start).ok()?.0;
     let end = buffer.line_col_to_byte(range.end).ok()?.0;
-    buffer.text().get(start..end).map(str::to_string)
+    buffer.slice(karet_core::Span {
+        start: BytePos(start),
+        end: BytePos(end),
+    })
 }
 
-/// The byte offset of the next occurrence of `needle` in `hay` at or after `from`,
-/// wrapping around to the start of the buffer.
-pub(super) fn find_next(hay: &str, needle: &str, from: usize) -> Option<usize> {
-    let from = from.min(hay.len());
-    hay.get(from..)
-        .and_then(|tail| tail.find(needle).map(|i| from + i))
-        .or_else(|| hay.get(..from).and_then(|head| head.find(needle)))
+/// The byte offset of the next occurrence of `needle` in `buffer` at or after
+/// `from`, wrapping around to a match wholly before `from`. Searches the rope in
+/// place, so a press costs no whole-document copy.
+pub(super) fn find_next(buffer: &TextBuffer, needle: &str, from: usize) -> Option<usize> {
+    let from = from.min(buffer.len_bytes());
+    let span = |start: usize, end: usize| karet_core::Span {
+        start: BytePos(start),
+        end: BytePos(end),
+    };
+    buffer
+        .find(needle, span(from, buffer.len_bytes()))
+        .or_else(|| buffer.find(needle, span(0, from)))
+        .map(|pos| pos.0)
 }
 
 /// The start of the word before `pos`, wrapping to the previous line's end when at

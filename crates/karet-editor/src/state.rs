@@ -909,7 +909,6 @@ impl EditorState {
         if needle.is_empty() {
             return;
         }
-        let hay = buffer.text();
         let from = self
             .cursors
             .selections
@@ -918,7 +917,7 @@ impl EditorState {
             .map(|b| b.0)
             .max()
             .unwrap_or(0);
-        if let Some(byte) = find_next(&hay, &needle, from) {
+        if let Some(byte) = find_next(buffer, &needle, from) {
             let start = buffer.byte_to_line_col(BytePos(byte));
             let end = buffer.byte_to_line_col(BytePos(byte + needle.len()));
             self.push(Selection {
