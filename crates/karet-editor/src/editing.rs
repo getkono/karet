@@ -17,7 +17,7 @@ mod comment;
 
 pub use batch::compose;
 pub use batch::map_position;
-pub use batch::map_range;
+pub use batch::map_selection;
 pub use comment::LineComment;
 pub use comment::MultiEdit;
 pub use comment::toggle_block_comment;

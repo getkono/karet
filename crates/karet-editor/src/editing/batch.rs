@@ -10,7 +10,6 @@
 use karet_core::Change;
 use karet_core::CursorState;
 use karet_core::LineCol;
-use karet_core::Range;
 use karet_core::Selection;
 use karet_core::TextEdit;
 
@@ -65,24 +64,22 @@ pub fn compose(
         .map(|(owner, (selection, edit))| {
             let first = groups.iter().position(|g| g.owners.contains(&owner));
             match (edit, first) {
-                (Some(edit), Some(k)) => {
+                (Some(edit), Some(first)) => {
                     let merged = groups
                         .iter()
-                        .any(|g| g.owners.contains(&owner) && g.owners.len() > 1);
-                    let local = if merged {
-                        let group = &groups[k].edit;
-                        caret_after_insert(group.range.start, &group.new_text)
-                    } else {
-                        edit.caret
+                        .position(|g| g.owners.len() > 1 && g.owners.contains(&owner));
+                    let (local, k) = match merged {
+                        Some(m) => {
+                            let group = &groups[m].edit;
+                            (caret_after_insert(group.range.start, &group.new_text), m)
+                        },
+                        None => (edit.caret, first),
                     };
                     Selection::caret(reflow_caret(local, &edits[..k]))
                 },
                 // An edit with no text change still places its caret.
                 (Some(edit), None) => Selection::caret(map_position(edit.caret, &edits)),
-                (None, _) => Selection {
-                    anchor: map_position(selection.anchor, &edits),
-                    head: map_position(selection.head, &edits),
-                },
+                (None, _) => map_selection(*selection, &edits),
             }
         })
         .collect();
@@ -136,17 +133,19 @@ pub fn map_position(pos: LineCol, edits: &[TextEdit]) -> LineCol {
     }
 }
 
-/// [`map_position`] over both ends of `range`.
+/// [`map_position`] over both ends of `selection`, keeping its direction.
 #[must_use]
-pub fn map_range(range: Range, edits: &[TextEdit]) -> Range {
-    Range {
-        start: map_position(range.start, edits),
-        end: map_position(range.end, edits),
+pub fn map_selection(selection: Selection, edits: &[TextEdit]) -> Selection {
+    Selection {
+        anchor: map_position(selection.anchor, edits),
+        head: map_position(selection.head, edits),
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use karet_core::Range;
+
     use super::*;
 
     fn at(line: u32, col: u32) -> LineCol {
@@ -344,7 +343,7 @@ mod tests {
     }
 
     #[test]
-    fn map_range_maps_both_ends() {
+    fn map_selection_maps_both_ends_and_keeps_direction() {
         let edits = vec![TextEdit {
             range: Range {
                 start: at(0, 0),
@@ -352,16 +351,52 @@ mod tests {
             },
             new_text: String::new(),
         }];
-        let range = Range {
-            start: at(0, 3),
-            end: at(0, 5),
+        let backward = Selection {
+            anchor: at(0, 5),
+            head: at(0, 3),
         };
         assert_eq!(
-            map_range(range, &edits),
-            Range {
-                start: at(0, 2),
-                end: at(0, 4),
+            map_selection(backward, &edits),
+            Selection {
+                anchor: at(0, 4),
+                head: at(0, 2),
             }
         );
+    }
+
+    #[test]
+    fn a_caret_whose_second_edit_merges_lands_after_the_merged_edit() {
+        // The first caret edits twice; only its second edit overlaps the other
+        // caret's, so it lands after the merged edit, not after its first one.
+        let first = Edit {
+            change: Change::new(
+                0,
+                vec![
+                    TextEdit {
+                        range: Range {
+                            start: at(0, 0),
+                            end: at(0, 0),
+                        },
+                        new_text: "(".to_string(),
+                    },
+                    TextEdit {
+                        range: Range {
+                            start: at(0, 2),
+                            end: at(0, 4),
+                        },
+                        new_text: String::new(),
+                    },
+                ],
+            ),
+            caret: at(0, 3),
+        };
+        let items = vec![
+            (caret(at(0, 2)), Some(first)),
+            (caret(at(0, 5)), Some(delete(at(0, 3), at(0, 5)))),
+        ];
+        let out = composed(0, 0, &items);
+        assert_eq!(out.change.edits.len(), 2);
+        // `(` shifts the merged `2..5` deletion's landing one column right.
+        assert_eq!(heads(&out), vec![at(0, 3), at(0, 3)]);
     }
 }
