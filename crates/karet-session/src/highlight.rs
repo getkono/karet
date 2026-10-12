@@ -11,6 +11,7 @@
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
+use std::ops::RangeInclusive;
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
@@ -27,6 +28,8 @@ use karet_treesitter::Edit;
 use karet_treesitter::LanguageId;
 use karet_treesitter::LayeredParser;
 use karet_treesitter::LayeredTree;
+use karet_treesitter::Query;
+use karet_treesitter::SyntaxTree;
 use tokio::sync::mpsc as tokio_mpsc;
 
 use crate::api::DocumentId;
@@ -69,6 +72,9 @@ pub(crate) struct HighlightResult {
     pub symbols: Arc<Vec<karet_core::Symbol>>,
     /// Line ranges covered by syntax errors (see `SyntaxTree::error_lines`).
     pub error_lines: Arc<Vec<(u32, u32)>>,
+    /// Inclusive 0-based line ranges of the GFM tables in the root layer (see
+    /// [`TableFinder`]); empty for a language with no table node.
+    pub table_lines: Arc<Vec<RangeInclusive<u32>>>,
 }
 
 /// Start the worker thread, returning its job sender and result receiver.
@@ -101,6 +107,7 @@ fn run(jobs: &Receiver<HighlightJob>, results: &tokio_mpsc::UnboundedSender<High
     let mut highlighter = LayeredHighlighter::new();
     let mut blocker = SemanticBlocker::new();
     let mut outline = OutlineExtractor::new();
+    let mut tables = TableFinder::default();
     let mut trees: HashMap<DocumentId, LayeredTree> = HashMap::new();
     let mut pending: HashMap<DocumentId, HighlightRequest> = HashMap::new();
 
@@ -123,6 +130,7 @@ fn run(jobs: &Receiver<HighlightJob>, results: &tokio_mpsc::UnboundedSender<High
                 &mut highlighter,
                 &mut blocker,
                 &mut outline,
+                &mut tables,
                 &mut trees,
                 request,
             ) && results.send(result).is_err()
@@ -179,6 +187,7 @@ fn compute(
     highlighter: &mut LayeredHighlighter,
     blocker: &mut SemanticBlocker,
     outline: &mut OutlineExtractor,
+    tables: &mut TableFinder,
     trees: &mut HashMap<DocumentId, LayeredTree>,
     request: HighlightRequest,
 ) -> Option<HighlightResult> {
@@ -218,7 +227,88 @@ fn compute(
         semantic_blocks: Arc::new(blocker.analyze(tree.root(), text)),
         symbols: Arc::new(outline.analyze_layers(tree, text)),
         error_lines: Arc::new(tree.error_lines()),
+        table_lines: Arc::new(tables.line_ranges(tree.root(), text)),
     })
+}
+
+/// The query naming a GFM table: tree-sitter-md's block grammar parses one as
+/// a `pipe_table`, and never inside a fenced code block.
+const TABLE_QUERY: &str = "(pipe_table) @table";
+
+/// Finds the source lines GFM tables occupy, from the tree the worker already
+/// parsed, so no reader has to re-parse the document to learn them.
+///
+/// Only the root layer is read: a table inside an injected layer (a fenced
+/// `markdown` block) is fence content in the document, not a table of it.
+#[derive(Default)]
+struct TableFinder {
+    /// The compiled query per root language; `None` for a grammar without a
+    /// table node, remembered so it is not recompiled for every version.
+    queries: HashMap<LanguageId, Option<Query>>,
+}
+
+impl TableFinder {
+    /// The inclusive 0-based line ranges of every table in `tree`, whose
+    /// source `text` is — the same ranges `karet_markdown::table_line_ranges`
+    /// reports: a table's trailing newline does not claim the next line.
+    fn line_ranges(&mut self, tree: &SyntaxTree, text: &str) -> Vec<RangeInclusive<u32>> {
+        let lang = tree.language();
+        let query = self
+            .queries
+            .entry(lang)
+            .or_insert_with(|| Query::compile(lang, TABLE_QUERY).ok());
+        let Some(query) = query.as_ref() else {
+            return Vec::new();
+        };
+        let mut lines = LineCounter::new(text);
+        tree.captures(query, text)
+            .into_iter()
+            .map(|capture| {
+                let (start, end) = (capture.span.start.0, capture.span.end.0);
+                let first = lines.line_of(start);
+                // The line holding the table's last byte.
+                let last = lines.line_of(end.saturating_sub(1).max(start));
+                first..=last.max(first)
+            })
+            .collect()
+    }
+}
+
+/// Maps byte offsets to 0-based line numbers by counting newlines forward, so
+/// offsets asked for in ascending order cost one pass over the text in total.
+struct LineCounter<'a> {
+    text: &'a [u8],
+    /// The byte offset counted up to so far.
+    at: usize,
+    /// The newlines in `text[..at]`.
+    line: usize,
+}
+
+impl<'a> LineCounter<'a> {
+    fn new(text: &'a str) -> Self {
+        Self {
+            text: text.as_bytes(),
+            at: 0,
+            line: 0,
+        }
+    }
+
+    /// The line `byte` sits on (clamped to the text's end).
+    fn line_of(&mut self, byte: usize) -> u32 {
+        let byte = byte.min(self.text.len());
+        if byte < self.at {
+            // Out of order: count again from the start.
+            self.at = 0;
+            self.line = 0;
+        }
+        let newlines = self
+            .text
+            .get(self.at..byte)
+            .map_or(0, |bytes| bytes.iter().filter(|b| **b == b'\n').count());
+        self.line += newlines;
+        self.at = byte;
+        u32::try_from(self.line).unwrap_or(u32::MAX)
+    }
 }
 
 #[cfg(test)]
@@ -321,6 +411,7 @@ mod tests {
         let mut highlighter = LayeredHighlighter::new();
         let mut blocker = SemanticBlocker::new();
         let mut outline = OutlineExtractor::new();
+        let mut tables = TableFinder::default();
         let mut trees = HashMap::new();
         let request = HighlightRequest {
             doc: DocumentId(1),
@@ -335,6 +426,7 @@ mod tests {
             &mut highlighter,
             &mut blocker,
             &mut outline,
+            &mut tables,
             &mut trees,
             request,
         )?;
@@ -367,6 +459,102 @@ mod tests {
             !tokens.contains(&mark),
             "disabled pass must leave comments unmarked, got {tokens:?}"
         );
+    }
+
+    /// The table line ranges `compute` publishes for `text` parsed as Markdown.
+    fn table_lines(text: &str) -> Option<Vec<RangeInclusive<u32>>> {
+        let markdown = karet_treesitter::language_id_from_path(std::path::Path::new("a.md"))?;
+        let mut trees = HashMap::new();
+        let request = HighlightRequest {
+            doc: DocumentId(1),
+            version: 1,
+            lang: markdown,
+            text: text.into(),
+            semantic: None,
+            edits: None,
+        };
+        let result = compute(
+            &mut LayeredParser::new(),
+            &mut LayeredHighlighter::new(),
+            &mut SemanticBlocker::new(),
+            &mut OutlineExtractor::new(),
+            &mut TableFinder::default(),
+            &mut trees,
+            request,
+        )?;
+        Some(result.table_lines.as_ref().clone())
+    }
+
+    #[test]
+    fn a_table_publishes_the_lines_it_occupies() {
+        let found = table_lines("intro\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\nafter\n");
+        assert_eq!(found, Some(vec![2..=4]));
+    }
+
+    #[test]
+    fn a_table_ending_the_file_without_a_newline_keeps_its_last_line() {
+        let found = table_lines("| a | b |\n|---|---|\n| 1 | 2 |");
+        assert_eq!(found, Some(vec![0..=2]));
+    }
+
+    #[test]
+    fn every_table_is_found_in_document_order() {
+        let source = "| a |\n|---|\n\ntext\n\n| b |\n|---|\n| 2 |\n";
+        assert_eq!(table_lines(source), Some(vec![0..=1, 5..=7]));
+    }
+
+    #[test]
+    fn a_table_inside_a_fenced_block_is_not_a_table() {
+        // Even a `markdown` fence, whose injected layer parses the table: it is
+        // fence content in this document, so only the root layer counts.
+        for fence in ["```", "```markdown"] {
+            let source = format!("{fence}\n| a | b |\n|---|---|\n| 1 | 2 |\n```\n");
+            assert_eq!(table_lines(&source), Some(Vec::new()), "{fence}");
+        }
+    }
+
+    #[test]
+    fn a_quoted_table_is_a_table() {
+        let found = table_lines("> | a | b |\n> |---|---|\n> | 1 | 2 |\n\nafter\n");
+        assert_eq!(found, Some(vec![0..=2]));
+    }
+
+    #[test]
+    fn a_table_in_a_list_item_is_a_table() {
+        let found = table_lines("- item\n\n  | a | b |\n  |---|---|\n  | 1 | 2 |\n");
+        assert_eq!(found, Some(vec![2..=4]));
+    }
+
+    #[test]
+    fn pipes_without_a_delimiter_row_are_not_a_table() {
+        assert_eq!(table_lines("a | b\nc | d\n"), Some(Vec::new()));
+    }
+
+    #[test]
+    fn a_grammar_without_tables_publishes_none() {
+        let Some(rust) = karet_treesitter::language_id_from_injection_name("rust") else {
+            return; // rust grammar not compiled in; nothing to test
+        };
+        let mut pool = LayeredParser::new();
+        let Ok(tree) = pool.parse(rust, "fn main() { let x = a | b; }\n") else {
+            return;
+        };
+        let mut finder = TableFinder::default();
+        assert!(
+            finder
+                .line_ranges(tree.root(), "fn main() { let x = a | b; }\n")
+                .is_empty()
+        );
+        assert!(finder.queries.get(&rust).is_some_and(Option::is_none));
+    }
+
+    #[test]
+    fn line_counter_answers_out_of_order_offsets() {
+        let mut lines = LineCounter::new("a\nb\nc\n");
+        assert_eq!(lines.line_of(4), 2);
+        assert_eq!(lines.line_of(2), 1);
+        assert_eq!(lines.line_of(0), 0);
+        assert_eq!(lines.line_of(99), 3);
     }
 
     #[test]

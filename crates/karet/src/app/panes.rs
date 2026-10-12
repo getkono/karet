@@ -190,24 +190,29 @@ impl App {
                     decos,
                     search_decos,
                     syntax_errors,
-                } => Tab::new(
-                    t.title.clone(),
-                    TabKind::Code {
-                        path: path.clone(),
-                        language,
-                        doc: *doc,
-                        next_version: *next_version,
-                        buffer: buffer.clone(),
-                        text: text.clone(),
-                        highlights: highlights.clone(),
-                        semantic_blocks: semantic_blocks.clone(),
-                        folds: folds.clone(),
-                        folded: folded.clone(),
-                        decos: decos.clone(),
-                        search_decos: search_decos.clone(),
-                        syntax_errors: syntax_errors.clone(),
-                    },
-                ),
+                } => Tab {
+                    // The worker's table lines for this document, so the new view
+                    // keeps them until the next snapshot rather than losing them.
+                    markdown_table_lines: t.markdown_table_lines.clone(),
+                    ..Tab::new(
+                        t.title.clone(),
+                        TabKind::Code {
+                            path: path.clone(),
+                            language,
+                            doc: *doc,
+                            next_version: *next_version,
+                            buffer: buffer.clone(),
+                            text: text.clone(),
+                            highlights: highlights.clone(),
+                            semantic_blocks: semantic_blocks.clone(),
+                            folds: folds.clone(),
+                            folded: folded.clone(),
+                            decos: decos.clone(),
+                            search_decos: search_decos.clone(),
+                            syntax_errors: syntax_errors.clone(),
+                        },
+                    )
+                },
                 _ => Tab::welcome(),
             },
             None => Tab::welcome(),

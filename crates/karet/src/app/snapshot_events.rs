@@ -112,6 +112,7 @@ impl App {
                 *semantic_blocks = (*snap.semantic_blocks).clone();
                 *folds = (*snap.folds).clone();
                 *syntax_errors = snap.syntax_error_lines.as_ref().clone();
+                tab.markdown_table_lines = std::sync::Arc::clone(&snap.table_lines);
                 *next_version = (*next_version).max(snap.version);
                 // Drop collapsed markers whose fold no longer starts where it did (an
                 // edit shifted or removed it), so stale hidden lines can't linger.

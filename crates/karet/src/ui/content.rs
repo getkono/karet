@@ -128,21 +128,9 @@ pub(super) fn draw_pane_content(
                     .conflict_decorations
                     .as_ref()
                     .map_or(&[][..], |(_, decorations)| decorations.as_slice());
-                let table_lines = if karet_filetype::file_type_for_path(path).name() == "Markdown" {
-                    if tab
-                        .markdown_table_lines
-                        .as_ref()
-                        .is_none_or(|(cached, _)| *cached != version)
-                    {
-                        tab.markdown_table_lines =
-                            Some((version, scans::table_line_ranges(buffer, text)));
-                    }
-                    tab.markdown_table_lines
-                        .as_ref()
-                        .map_or(&[][..], |(_, ranges)| ranges.as_slice())
-                } else {
-                    &[]
-                };
+                // The highlight worker's ranges, published on the snapshot: reading
+                // them copies nothing, however large the document.
+                let table_lines = tab.markdown_table_lines.as_slice();
                 // Local find and global search highlights are kept in separate
                 // fields (so closing/rerunning one can't wipe the other) and
                 // combined only here, at render time.
