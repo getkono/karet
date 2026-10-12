@@ -178,3 +178,25 @@ fn a_middle_click_without_a_primary_selection_says_so_and_edits_nothing() {
         Some("paste: no primary selection available")
     );
 }
+
+#[test]
+fn a_middle_click_on_a_tab_still_closes_it_rather_than_pasting() {
+    let mut rig = middle_click_rig("ab|cd", Some("XY"), true);
+    let tab = rig
+        .app
+        .pane_frames
+        .iter()
+        .find_map(|frame| Some((frame.tab_hits.first()?.start, frame.tabstrip_rect.y)));
+    let Some((col, row)) = tab else {
+        panic!("the tab strip was not drawn");
+    };
+    rig.step(Step::MiddleClick(At::Cell(col, row), KeyModifiers::NONE));
+    // The sole tab gives way to the Welcome tab.
+    assert!(
+        rig.app
+            .tabs
+            .iter()
+            .all(|tab| !matches!(tab.kind, TabKind::Code { .. })),
+        "the code tab closed"
+    );
+}
