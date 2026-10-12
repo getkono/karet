@@ -5,6 +5,18 @@
 //! `runtime` spends one arm on them. The session sequences the steps -- it
 //! applies an action's edit between resolving it and running its command,
 //! because only the session holds the documents the edit lands in.
+//!
+//! An *automatic* listing -- the lightbulb probe the editor sends each time
+//! the caret settles -- is the exception: it is background work nobody is
+//! waiting on, so it never reaches [`serve`]. The task hands it to a
+//! [`ProbeFlight`] instead, which keeps it off the serial path exactly as
+//! `hint_flight` keeps inlay hints off it: deferred until the server has its
+//! text rather than flushing the debounced edit, at most one running per
+//! document, and only the newest waiting probe launched. [`deliver`] then
+//! reports its outcome without charging the hang streak.
+
+use std::path::PathBuf;
+use std::sync::Arc;
 
 use karet_core::CodeAction;
 use karet_core::Range;
@@ -15,6 +27,12 @@ use tokio::sync::mpsc;
 
 use super::commands::report_unsupported;
 use super::health::FailureTally;
+use super::hint_flight::Answer;
+use super::hint_flight::Ask;
+use super::hint_flight::Background;
+use super::hint_flight::Flight;
+use super::hint_flight::FlightTag;
+use super::hint_flight::is_cancellation;
 use super::message::LspUpdate;
 use super::slot::SlotKey;
 use super::slot::SlotToken;
@@ -82,7 +100,69 @@ pub(crate) enum CodeActionAnswer {
     },
 }
 
+/// What a lightbulb probe asks besides its document: the range (UTF-16
+/// columns) and the kind filter.
+pub(super) struct ProbeParams {
+    range: Range,
+    kinds: Vec<String>,
+}
+
+/// Automatic code-action listings -- the lightbulb probe -- as a
+/// [`Background`] kind.
+pub(super) enum Probes {}
+
+impl Background for Probes {
+    type Output = Vec<CodeAction>;
+    type Params = ProbeParams;
+
+    const WHAT: &'static str = "code-action probe";
+
+    async fn request(
+        client: Arc<LspClient>,
+        path: PathBuf,
+        params: ProbeParams,
+    ) -> Result<Vec<CodeAction>, LspError> {
+        let trigger = karet_lsp::CodeActionTrigger::Automatic;
+        client
+            .code_actions(&path, params.range, &params.kinds, trigger)
+            .await
+    }
+
+    fn unanswered(updates: &mpsc::UnboundedSender<LspUpdate>, tag: FlightTag, generation: u64) {
+        answer_listed(updates, tag, Err(UNAVAILABLE.to_owned()), generation);
+    }
+}
+
+/// The lightbulb probes of one server task.
+pub(super) type ProbeFlight = Flight<Probes>;
+
 impl CodeActionCmd {
+    /// This step as a lightbulb probe, when it is one: an automatic listing,
+    /// which the task keeps off its serial path. Any other step comes back
+    /// unchanged.
+    pub(super) fn into_probe(self) -> Result<Ask<ProbeParams>, Self> {
+        match self {
+            Self::List {
+                request,
+                doc,
+                version,
+                path,
+                range,
+                kinds,
+                trigger: CodeActionTrigger::Automatic,
+            } => Ok(Ask {
+                tag: FlightTag {
+                    request,
+                    doc,
+                    version,
+                },
+                path,
+                params: ProbeParams { range, kinds },
+            }),
+            other => Err(other),
+        }
+    }
+
     /// The answer when no server can take this step, saying `reason`.
     pub(crate) fn unanswered(self, reason: &str) -> CodeActionAnswer {
         let reason = reason.to_owned();
@@ -134,6 +214,9 @@ impl StepContext<'_> {
     /// A request's error as the user's answer. A refusal or a server's error
     /// reply belongs to the request; anything else (a timeout, a closed
     /// connection) also counts against the connection.
+    ///
+    /// Only for steps the user is waiting on, which is what the hang streak
+    /// measures; a lightbulb probe is reported by [`deliver`] instead.
     fn settle<T>(&mut self, result: Result<T, LspError>) -> Result<T, String> {
         match self.tally.observe(result) {
             Ok(value) => Ok(value),
@@ -218,8 +301,69 @@ pub(super) async fn serve(
     }
 }
 
+/// Report one finished lightbulb probe: note what it says about the
+/// connection, then answer it.
+///
+/// Charged as `hint_flight::deliver` charges an inlay-hint request, and for
+/// the same reason: a probe is background work, sent on every caret settle,
+/// that runs beside the requests the hang streak is calibrated for. An answer
+/// arms the liveness gate without resetting the streak, a timeout is not
+/// counted toward it, and only a closed connection is a death. A server
+/// without code actions stays quiet too -- only a listing the user asked for
+/// by hand explains that.
+pub(super) fn deliver(
+    answer: Answer<Vec<CodeAction>>,
+    tally: &mut FailureTally,
+    dead: &mut bool,
+    updates: &mpsc::UnboundedSender<LspUpdate>,
+    key: &SlotKey,
+    token: SlotToken,
+    generation: u64,
+) {
+    let actions = match answer.result {
+        Ok(actions) => {
+            tally.note_background_answer();
+            Ok(actions)
+        },
+        Err(LspError::Closed) => {
+            tally.note::<()>(Err(LspError::Closed), dead, updates, key, token);
+            Err(LspError::Closed.to_string())
+        },
+        Err(error @ (LspError::Timeout | LspError::Unsupported { .. })) => {
+            tracing::debug!(language = %key, %error, "code-action probe unanswered; not charged");
+            Err(error.to_string())
+        },
+        Err(error) if is_cancellation(&error) => {
+            tracing::debug!(language = %key, %error, "code-action probe cancelled; not charged");
+            Err(error.to_string())
+        },
+        Err(error) => {
+            tracing::warn!(language = %key, %error, "code-action probe failed; not charged");
+            Err(error.to_string())
+        },
+    };
+    answer_listed(updates, answer.tag, actions, generation);
+}
+
+/// Answer the listing `tag` echoes with `actions`.
+fn answer_listed(
+    updates: &mpsc::UnboundedSender<LspUpdate>,
+    tag: FlightTag,
+    actions: Result<Vec<CodeAction>, String>,
+    generation: u64,
+) {
+    let answer = CodeActionAnswer::Listed {
+        request: tag.request,
+        doc: tag.doc,
+        version: tag.version,
+        actions,
+    };
+    let _ = updates.send(LspUpdate::CodeAction { generation, answer });
+}
+
 #[cfg(test)]
 mod tests {
+    use super::super::health;
     use super::*;
 
     /// Every step asked of no server still answers, with the reason, so a
@@ -276,5 +420,165 @@ mod tests {
                 result: Err(_),
             } if **kept == applied
         ));
+    }
+
+    fn list(trigger: CodeActionTrigger) -> CodeActionCmd {
+        CodeActionCmd::List {
+            request: RequestId(1),
+            doc: DocumentId(2),
+            version: 3,
+            path: "/w/a.rs".into(),
+            range: Range::default(),
+            kinds: vec!["quickfix".to_owned()],
+            trigger,
+        }
+    }
+
+    /// Only an automatic listing leaves the serial path; one the user asked
+    /// for, and the resolve and execute steps, are served in line.
+    #[test]
+    fn only_an_automatic_listing_is_a_probe() {
+        let probe = list(CodeActionTrigger::Automatic).into_probe();
+        assert!(
+            matches!(&probe, Ok(ask) if ask.tag.request == RequestId(1)
+                && ask.tag.version == 3
+                && ask.params.kinds == ["quickfix"]),
+            "an automatic listing was served in line, or lost what it asked"
+        );
+        assert!(list(CodeActionTrigger::Invoked).into_probe().is_err());
+        let resolve = CodeActionCmd::Resolve {
+            request: RequestId(4),
+            doc: DocumentId(2),
+            version: 3,
+            action: Box::default(),
+        };
+        assert!(resolve.into_probe().is_err());
+    }
+
+    fn key() -> SlotKey {
+        SlotKey::new(crate::api::LanguageServerId::new("rust"), "/w")
+    }
+
+    /// Deliver one finished probe with `result`, as the task loop does.
+    fn deliver_one(
+        tally: &mut FailureTally,
+        dead: &mut bool,
+        tx: &mpsc::UnboundedSender<LspUpdate>,
+        result: Result<Vec<CodeAction>, LspError>,
+    ) {
+        let tag = FlightTag {
+            request: RequestId(1),
+            doc: DocumentId(2),
+            version: 3,
+        };
+        let answer = Answer { tag, result };
+        deliver(answer, tally, dead, tx, &key(), SlotToken::FIRST, 0);
+    }
+
+    /// Charge one timed-out request the task awaited in line -- a hover, say.
+    fn serial_timeout(
+        tally: &mut FailureTally,
+        dead: &mut bool,
+        tx: &mpsc::UnboundedSender<LspUpdate>,
+    ) {
+        tally.note::<()>(Err(LspError::Timeout), dead, tx, &key(), SlotToken::FIRST);
+    }
+
+    /// Every listing answered so far: `Ok(count)` or the reason.
+    fn listings(rx: &mut mpsc::UnboundedReceiver<LspUpdate>) -> Vec<Result<usize, String>> {
+        std::iter::from_fn(|| rx.try_recv().ok())
+            .filter_map(|update| match update {
+                LspUpdate::CodeAction {
+                    answer: CodeActionAnswer::Listed { actions, .. },
+                    ..
+                } => Some(actions.map(|actions| actions.len())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn died(rx: &mut mpsc::UnboundedReceiver<LspUpdate>) -> bool {
+        std::iter::from_fn(|| rx.try_recv().ok())
+            .any(|update| matches!(update, LspUpdate::ServerDied { .. }))
+    }
+
+    /// Probes are sent on every caret settle and run beside the requests the
+    /// hang streak measures, so their timeouts never count toward it -- and
+    /// each is still answered.
+    ///
+    /// Falsified by: settling a probe through `StepContext::settle`, which
+    /// charges its timeouts and condemns a slow server.
+    #[test]
+    fn probe_timeouts_never_mark_a_server_hung() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut tally = FailureTally::default();
+        let mut dead = false;
+        let _answered = tally.observe(Ok::<(), LspError>(()));
+        let many = health::TIMEOUT_DEATH_LIMIT.saturating_mul(3);
+        for _ in 0..many {
+            deliver_one(&mut tally, &mut dead, &tx, Err(LspError::Timeout));
+        }
+        assert!(!dead, "probe timeouts condemned the connection");
+        assert_eq!(
+            listings(&mut rx).len(),
+            usize::try_from(many).unwrap_or_default(),
+            "a timed-out probe went unanswered"
+        );
+        for _ in 0..health::TIMEOUT_DEATH_LIMIT.saturating_sub(1) {
+            serial_timeout(&mut tally, &mut dead, &tx);
+        }
+        assert!(!dead, "probe timeouts were counted toward the streak");
+        serial_timeout(&mut tally, &mut dead, &tx);
+        assert!(dead, "hover and completion timeouts must still condemn it");
+        assert!(died(&mut rx));
+    }
+
+    /// A server still answering probes but no longer hover and completion is
+    /// hung on what the user waits for: an answered probe must not clear the
+    /// streak. It does prove the server is up, so it arms the liveness gate.
+    #[test]
+    fn an_answered_probe_arms_the_gate_without_clearing_the_streak() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut tally = FailureTally::default();
+        let mut dead = false;
+        deliver_one(&mut tally, &mut dead, &tx, Ok(vec![CodeAction::default()]));
+        assert_eq!(listings(&mut rx), [Ok(1)]);
+        for _ in 0..health::TIMEOUT_DEATH_LIMIT.saturating_sub(1) {
+            serial_timeout(&mut tally, &mut dead, &tx);
+        }
+        deliver_one(&mut tally, &mut dead, &tx, Ok(Vec::new()));
+        assert!(!dead);
+        serial_timeout(&mut tally, &mut dead, &tx);
+        assert!(
+            dead,
+            "an answered probe reset the streak, or never armed the gate"
+        );
+        assert!(died(&mut rx));
+    }
+
+    /// A probe on a closed connection is still a death, answered with why.
+    #[test]
+    fn a_probe_on_a_closed_connection_is_still_a_death() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut tally = FailureTally::default();
+        let mut dead = false;
+        deliver_one(&mut tally, &mut dead, &tx, Err(LspError::Closed));
+        assert!(dead);
+        let updates: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert!(
+            updates
+                .iter()
+                .any(|update| matches!(update, LspUpdate::ServerDied { .. }))
+        );
+        assert!(updates.iter().any(|update| matches!(
+            update,
+            LspUpdate::CodeAction {
+                answer: CodeActionAnswer::Listed {
+                    actions: Err(_),
+                    ..
+                },
+                ..
+            }
+        )));
     }
 }

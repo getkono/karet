@@ -224,3 +224,85 @@ async fn a_probe_of_a_server_without_code_actions_stays_quiet() -> TestResult {
     }
     Ok(())
 }
+
+/// A lightbulb probe right after an edit leaves the debounce alone: the edit
+/// goes out once it has been quiet for `CHANGE_DEBOUNCE`, and the probe waits
+/// for it -- reaching the server after the text it was asked against, and
+/// still answered.
+///
+/// Falsified by: serving an automatic listing on the serial path, which
+/// flushes the pending `didChange` the moment the probe arrives -- the edit
+/// reaches the server well inside the debounce.
+#[tokio::test]
+async fn a_probe_waits_for_the_debounced_flush_instead_of_forcing_it() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let path = rust_file(&dir, "main.rs", "fn main() {}\n").ok_or("write failed")?;
+    let (observed_tx, mut observed) = mpsc::unbounded_channel::<serde_json::Value>();
+    let spawns = Arc::new(AtomicUsize::new(0));
+    let (session, mut events) =
+        session_with_connector(test_connector(Behavior::Normal, Some(observed_tx), spawns));
+    let backend = local_session(session, None);
+    backend.send(
+        backend.next_id(),
+        Command::OpenDocument {
+            path,
+            language: None,
+        },
+    )?;
+    let (doc, version) = await_opened(&mut events).await.ok_or("no Opened")?;
+    let next_method = async |observed: &mut mpsc::UnboundedReceiver<serde_json::Value>| {
+        let message = tokio::time::timeout(Duration::from_secs(5), observed.recv())
+            .await
+            .ok()
+            .flatten();
+        message.map(|message| message["method"].as_str().unwrap_or_default().to_owned())
+    };
+    while next_method(&mut observed).await.ok_or("no didOpen")? != "textDocument/didOpen" {}
+
+    let edited = std::time::Instant::now();
+    backend.send(
+        backend.next_id(),
+        Command::ApplyChange {
+            doc,
+            change: Change::new(
+                version,
+                vec![TextEdit {
+                    range: caret(0),
+                    new_text: "x".to_owned(),
+                }],
+            ),
+            cause: EditCause::Type,
+        },
+    )?;
+    let probe = backend.next_id();
+    backend.send(
+        probe,
+        Command::CodeActions {
+            doc,
+            range: caret(1),
+            kinds: Vec::new(),
+            trigger: CodeActionTrigger::Automatic,
+        },
+    )?;
+
+    let mut flushed = None;
+    loop {
+        let method = next_method(&mut observed).await.ok_or("no codeAction")?;
+        match method.as_str() {
+            "textDocument/didChange" => flushed = Some(edited.elapsed()),
+            "textDocument/codeAction" => break,
+            _ => {},
+        }
+    }
+    let flushed = flushed.ok_or("the probe reached the server before the edit")?;
+    assert!(
+        flushed >= CHANGE_DEBOUNCE,
+        "the probe forced the edit out after {flushed:?}"
+    );
+    let (listed_at, _, reason) = await_actions(&mut events, probe)
+        .await
+        .ok_or("the probe went unanswered")?;
+    assert_eq!(reason, None);
+    assert!(listed_at > version, "listed against the edited text");
+    Ok(())
+}

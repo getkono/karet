@@ -9,9 +9,9 @@ use super::commands::report_unsupported;
 use super::forward::forward_diagnostics;
 use super::health::FailureTally;
 use super::health::{self};
+use super::hint_flight::FlightTag;
+use super::hint_flight::Flights;
 use super::hint_flight::HintAsk;
-use super::hint_flight::HintFlight;
-use super::hint_flight::HintTag;
 use super::hint_flight::{self};
 use super::*;
 
@@ -90,7 +90,8 @@ pub(super) async fn server_task(task: ServerTask) {
     // Shared, not owned outright, because a launched inlay-hint request runs
     // as its own task and holds the client for as long as it is in flight.
     let mut client: Option<Arc<LspClient>> = None;
-    let mut hints = HintFlight::default();
+    // So does a lightbulb probe, kept off the serial path the same way.
+    let mut flights = Flights::default();
     let mut diagnostic_task: Option<tokio::task::JoinHandle<()>> = None;
     let mut documents = HashMap::<PathBuf, OpenDocument>::new();
     let mut pending: Option<(PathBuf, i32, String)> = None;
@@ -295,19 +296,20 @@ pub(super) async fn server_task(task: ServerTask) {
         // own is the one that was missing: without that arm a server that exits
         // while the user reads rather than types stays `Running` until the next
         // request happens to fail. A launched hint request finishing is the
-        // other newcomer -- see `hint_flight` for why it is not awaited in line.
+        // other newcomer (and a lightbulb probe, its sibling) -- see
+        // `hint_flight` for why neither is awaited in line.
         let wake = health::next_wake(
             &mut rx,
             client.as_deref(),
             pending.is_some().then_some(flush_at),
-            &mut hints,
+            &mut flights,
         )
         .await;
         let mut dead = false;
         let cmd = match wake {
             health::Wake::Lost => {
                 let _ = client.take();
-                hints.abandon(&updates, generation);
+                flights.abandon(&updates, generation);
                 if let Some(task) = diagnostic_task.take() {
                     task.abort();
                 }
@@ -345,14 +347,14 @@ pub(super) async fn server_task(task: ServerTask) {
                     token,
                 )
                 .await;
-                // The flush is what a hint request for the edited path was
-                // waiting on.
+                // The flush is what a hint request or probe for the edited
+                // path was waiting on.
                 if !dead {
-                    hints.launch_ready(active, None);
+                    flights.launch_ready(active, None);
                 }
                 if dead {
                     let _ = client.take();
-                    hints.abandon(&updates, generation);
+                    flights.abandon(&updates, generation);
                     if let Some(task) = diagnostic_task.take() {
                         task.abort();
                     }
@@ -373,6 +375,12 @@ pub(super) async fn server_task(task: ServerTask) {
             },
             health::Wake::Hint(answer) => {
                 hint_flight::deliver(
+                    answer, &mut tally, &mut dead, &updates, &key, token, generation,
+                );
+                None
+            },
+            health::Wake::Probe(answer) => {
+                code_actions::deliver(
                     answer, &mut tally, &mut dead, &updates, &key, token, generation,
                 );
                 None
@@ -512,15 +520,15 @@ pub(super) async fn server_task(task: ServerTask) {
                 } => {
                     // Deliberately no flush, and no await: see `hint_flight`. The
                     // request launches below, once the server has its text.
-                    hints.ask(
+                    flights.hints.ask(
                         HintAsk {
-                            tag: HintTag {
+                            tag: FlightTag {
                                 request,
                                 doc,
                                 version,
                             },
                             path,
-                            range,
+                            params: range,
                         },
                         &updates,
                         generation,
@@ -782,31 +790,37 @@ pub(super) async fn server_task(task: ServerTask) {
                         edit,
                     });
                 },
-                ServerCmd::CodeAction(cmd) => {
-                    flush_pending(
-                        active,
-                        &mut pending,
-                        &mut dead,
-                        &mut tally,
-                        &updates,
-                        &key,
-                        token,
-                    )
-                    .await;
-                    let answer = if dead {
-                        cmd.unanswered(code_actions::UNAVAILABLE)
-                    } else {
-                        let mut context = code_actions::StepContext {
-                            tally: &mut tally,
-                            dead: &mut dead,
-                            updates: &updates,
-                            key: &key,
+                ServerCmd::CodeAction(cmd) => match cmd.into_probe() {
+                    // A lightbulb probe is background work: no flush, and no
+                    // await -- it launches below, as a hint request does. See
+                    // `code_actions`.
+                    Ok(probe) => flights.probes.ask(probe, &updates, generation),
+                    Err(cmd) => {
+                        flush_pending(
+                            active,
+                            &mut pending,
+                            &mut dead,
+                            &mut tally,
+                            &updates,
+                            &key,
                             token,
-                            generation,
+                        )
+                        .await;
+                        let answer = if dead {
+                            cmd.unanswered(code_actions::UNAVAILABLE)
+                        } else {
+                            let mut context = code_actions::StepContext {
+                                tally: &mut tally,
+                                dead: &mut dead,
+                                updates: &updates,
+                                key: &key,
+                                token,
+                                generation,
+                            };
+                            code_actions::serve(active, cmd, &mut context).await
                         };
-                        code_actions::serve(active, cmd, &mut context).await
-                    };
-                    let _ = updates.send(LspUpdate::CodeAction { generation, answer });
+                        let _ = updates.send(LspUpdate::CodeAction { generation, answer });
+                    },
                 },
                 ServerCmd::Formatting {
                     request,
@@ -883,13 +897,13 @@ pub(super) async fn server_task(task: ServerTask) {
         }
         // Any command may have flushed the pending edit, a hint request may
         // have just arrived for a path with none, and a finished one frees its
-        // document for the next: launch what is ready.
+        // document for the next: launch what is ready. Probes alike.
         if !dead && let Some(active) = client.as_ref() {
-            hints.launch_ready(active, pending.as_ref().map(|(path, ..)| path.as_path()));
+            flights.launch_ready(active, pending.as_ref().map(|(path, ..)| path.as_path()));
         }
         if dead {
             let _ = client.take();
-            hints.abandon(&updates, generation);
+            flights.abandon(&updates, generation);
             if let Some(task) = diagnostic_task.take() {
                 task.abort();
             }
@@ -911,7 +925,7 @@ pub(super) async fn server_task(task: ServerTask) {
     // shutdown owns it outright rather than falling back to a kill on drop. The
     // requests are answered, not dropped: an answer to a request is not a report
     // about the slot, so it is still true after retirement (see `accepts`).
-    hints.shutdown(&updates, generation).await;
+    flights.shutdown(&updates, generation).await;
     if let Some(client) = client.and_then(Arc::into_inner) {
         let _ = client.shutdown().await;
     }
