@@ -159,6 +159,7 @@ impl App {
             Command::OpenDiffFile => self.open_diff_file(),
             Command::TriggerCompletion => self.trigger_completion(true),
             Command::Hover => self.request_hover(),
+            Command::SignatureHelp => self.request_signature_help(true),
             Command::ToggleInlayHints => self.toggle_inlay_hints(),
             Command::ShowDiagnostic => self.show_diagnostic(),
             Command::DebugStart => self.debug_start_or_continue(),
@@ -262,6 +263,7 @@ impl App {
                         );
                     }
                     self.maybe_auto_complete(c);
+                    self.maybe_signature_help(c);
                 }
             },
             Command::InsertNewline => {

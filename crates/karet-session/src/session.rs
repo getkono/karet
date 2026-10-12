@@ -648,7 +648,7 @@ impl Session {
             },
             Command::InlayHints { doc, range } => self.inlay_hints(id, doc, range),
             Command::ResolveInlayHint { doc, hint } => self.resolve_inlay_hint(id, doc, hint),
-            Command::Hover { doc, position } => self.hover(id, doc, position),
+            cmd @ (Command::Hover { .. } | Command::SignatureHelp { .. }) => self.at_caret(id, cmd),
             Command::Definition { doc, position } => self.definition(id, doc, position, None),
             Command::FindLocations {
                 doc,

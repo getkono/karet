@@ -40,6 +40,19 @@ impl<'a> Editor<'a> {
         self.scroll_off = lines;
         self
     }
+
+    /// Draw a diagnostic's underline curly (SGR `4:3`) rather than straight
+    /// (off by default).
+    ///
+    /// Turn it on only for a terminal known to draw a curly underline: one
+    /// that does not may read `4:3` as two attributes and paint the text
+    /// italic. The underline color and every other style are the same either
+    /// way, and a navigable-symbol underline stays straight.
+    #[must_use]
+    pub fn undercurl(mut self, curly: bool) -> Self {
+        self.undercurl = curly;
+        self
+    }
 }
 
 /// How the gutter numbers lines (see [`Editor::line_numbers`]).

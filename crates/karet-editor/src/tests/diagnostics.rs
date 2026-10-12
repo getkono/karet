@@ -177,3 +177,95 @@ fn messages_trail_their_line_most_severe_first_and_cut_short_with_an_ellipsis() 
         "the least severe message is the one cut"
     );
 }
+
+/// `text` on one row of `width` with an Error over the `diagnosed` columns
+/// and a navigable-symbol underline over the `navigable` ones, painted with
+/// or without `undercurl`.
+fn render_underlines(
+    text: &str,
+    width: u16,
+    (diagnosed, navigable): ((u32, u32), (u32, u32)),
+    undercurl: bool,
+) -> Buffer {
+    let buffer = TextBuffer::from_text(text);
+    let diagnostics = [diagnostic(0, diagnosed, Severity::Error, "boom")];
+    let link = [Decoration {
+        range: Range {
+            start: LineCol::new(0, navigable.0),
+            end: LineCol::new(0, navigable.1),
+        },
+        kind: DecorationKind::Underline,
+        role: None,
+    }];
+    let area = Rect::new(0, 0, width, 1);
+    let mut target = Buffer::empty(area);
+    Editor::new(&buffer)
+        .diagnostics(&diagnostics)
+        .decorations(&link)
+        .undercurl(undercurl)
+        .render(area, &mut target, &mut EditorState::new());
+    target
+}
+
+/// The SGR-wrapped symbol a curled cell holding `symbol` carries.
+fn curled(symbol: &str) -> String {
+    format!("\u{1b}[4:3m{symbol}\u{1b}[4m")
+}
+
+#[test]
+fn without_undercurl_a_diagnostic_keeps_a_plain_colored_underline() {
+    let target = render_underlines("ab cd\n", 12, ((0, 2), (3, 5)), false);
+    let error = Theme::dark().role(ThemeRole::DiagnosticError).to_ratatui();
+    // Gutter: marker, digit, space; text starts at x = 3.
+    for (x, symbol) in [(3, "a"), (4, "b")] {
+        let cell = &target[(x, 0)];
+        assert!(cell.modifier.contains(Modifier::UNDERLINED), "column {x}");
+        assert_eq!(cell.underline_color, error, "column {x}");
+        assert_eq!(cell.symbol(), symbol, "column {x} carries no escape");
+    }
+    assert!(
+        (0..12).all(|x| !target[(x, 0)].modifier.contains(Modifier::RAPID_BLINK)),
+        "the diagnostic mark never leaves the editor"
+    );
+}
+
+#[test]
+fn with_undercurl_only_the_diagnostic_cells_are_curled() {
+    let target = render_underlines("ab cd\n", 12, ((0, 2), (3, 5)), true);
+    assert_eq!(target[(3, 0)].symbol(), curled("a"));
+    assert_eq!(target[(4, 0)].symbol(), curled("b"));
+    assert!(target[(3, 0)].modifier.contains(Modifier::UNDERLINED));
+    assert_eq!(target[(5, 0)].symbol(), " ", "between the two: untouched");
+    for (x, symbol) in [(6, "c"), (7, "d")] {
+        let cell = &target[(x, 0)];
+        assert!(cell.modifier.contains(Modifier::UNDERLINED), "column {x}");
+        assert_eq!(
+            cell.symbol(),
+            symbol,
+            "a navigable underline stays straight"
+        );
+    }
+    assert!(
+        (0..12).all(|x| !target[(x, 0)].modifier.contains(Modifier::RAPID_BLINK)),
+        "the mark is stripped when the underline curls too"
+    );
+}
+
+#[test]
+fn a_curled_wide_glyph_is_wrapped_once_and_keeps_its_width() {
+    let target = render_underlines("界x\n", 12, ((0, 2), (5, 5)), true);
+    assert_eq!(target[(3, 0)].symbol(), curled("界"));
+    assert_eq!(
+        target[(4, 0)].symbol(),
+        " ",
+        "the continuation cell is not wrapped again"
+    );
+    assert_eq!(target[(5, 0)].symbol(), curled("x"));
+    assert!(
+        matches!(
+            target[(3, 0)].diff_option,
+            ratatui::buffer::CellDiffOption::ForcedWidth(width) if width.get() == 2
+        ),
+        "the escape bytes do not count as text: the glyph stays two cells wide"
+    );
+}

@@ -161,6 +161,7 @@ impl App {
             completion_matcher: karet_fuzzy::Matcher::new(),
             pending_hover: None,
             hover_ui: None,
+            signature: signature::SignatureState::default(),
             inlay_ui: inlay::InlayUi::default(),
             diagnostic_view: None,
             debug_state: karet_session::DebugSessionState::Idle,

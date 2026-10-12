@@ -128,7 +128,10 @@ fn advertised_capabilities(behavior: Behavior) -> Value {
         "documentRangeFormattingProvider": true,
         "codeActionProvider": {"resolveProvider": true},
         "executeCommandProvider": {"commands": ["double.fix"]},
-        "signatureHelpProvider": {},
+        "signatureHelpProvider": {
+            "triggerCharacters": ["("],
+            "retriggerCharacters": [","]
+        },
         "inlayHintProvider": {"resolveProvider": true},
         "implementationProvider": true,
         "typeHierarchyProvider": true,
@@ -349,6 +352,25 @@ pub(super) fn test_connector(
                                         "end": {"line": 0, "character": 5}
                                     }
                                 }]}),
+                            )
+                            .await;
+                        },
+                        // One signature whose second parameter is active,
+                        // labelled by UTF-16 offsets as rust-analyzer does.
+                        Some("textDocument/signatureHelp") => {
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": {
+                                    "signatures": [{
+                                        "label": "fn add(a: i32, b: i32) -> i32",
+                                        "parameters": [
+                                            {"label": [7, 13]},
+                                            {"label": [15, 21]}
+                                        ]
+                                    }],
+                                    "activeSignature": 0,
+                                    "activeParameter": 1
+                                }}),
                             )
                             .await;
                         },

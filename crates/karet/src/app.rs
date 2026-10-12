@@ -49,6 +49,7 @@ pub(crate) mod seam;
 mod search;
 pub(crate) mod select;
 mod sidebar;
+pub(crate) mod signature;
 mod snapshot_events;
 mod spellcheck;
 mod spelling;
@@ -640,6 +641,9 @@ pub struct App {
     pub(crate) pending_hover: Option<crate::hover::PendingHover>,
     /// The open hover popup, if any.
     pub(crate) hover_ui: Option<crate::hover::HoverUi>,
+    /// Signature help: the request in flight, the open popup, and each
+    /// document's trigger characters (see [`signature`]).
+    pub(crate) signature: signature::SignatureState,
     /// Inlay-hint tooltips, Ctrl+click, resolving, and the toggle key.
     pub(crate) inlay_ui: inlay::InlayUi,
     /// The open scrollable diagnostic detail view, if any.

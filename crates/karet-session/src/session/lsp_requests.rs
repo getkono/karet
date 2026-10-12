@@ -240,7 +240,45 @@ impl Session {
         }
     }
 
-    pub(super) fn hover(&mut self, id: RequestId, doc_id: DocumentId, position: LineCol) {
+    /// Serve a [`Command::Hover`] or a [`Command::SignatureHelp`]: the
+    /// requests about the caret whose answers the client shows in a popup.
+    pub(super) fn at_caret(&mut self, id: RequestId, cmd: Command) {
+        match cmd {
+            Command::Hover { doc, position } => self.hover(id, doc, position),
+            Command::SignatureHelp {
+                doc,
+                position,
+                manual,
+            } => self.signature_help(id, doc, position, manual),
+            _ => {},
+        }
+    }
+
+    /// Forward a [`Command::SignatureHelp`], or answer it empty when no
+    /// server serves the document.
+    fn signature_help(&mut self, id: RequestId, doc_id: DocumentId, at: LineCol, manual: bool) {
+        let Some(doc) = Self::doc_or_report(&self.store, &self.events, id, doc_id) else {
+            return;
+        };
+        let utf16 = utf16_caret(doc, at);
+        if !self.lsp.signature_help(
+            doc.language_selector,
+            (id, doc_id),
+            &doc.path,
+            utf16,
+            manual,
+        ) {
+            let options = karet_core::SignatureHelpOptions::default();
+            let empty = Event::SignatureHelp {
+                doc: doc_id,
+                help: None,
+                options,
+            };
+            self.emit(Some(id), empty);
+        }
+    }
+
+    fn hover(&mut self, id: RequestId, doc_id: DocumentId, position: LineCol) {
         let Some(doc) = Self::doc_or_report(&self.store, &self.events, id, doc_id) else {
             return;
         };

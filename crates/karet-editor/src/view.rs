@@ -41,6 +41,7 @@ pub struct Editor<'a> {
     cursor_line: bool,
     rulers: &'a [u16],
     scroll_off: u16,
+    undercurl: bool,
 }
 
 impl<'a> Editor<'a> {
@@ -67,6 +68,7 @@ impl<'a> Editor<'a> {
             cursor_line: true,
             rulers: &[],
             scroll_off: 0,
+            undercurl: false,
         }
     }
 
@@ -349,14 +351,19 @@ impl Editor<'_> {
             let width = character_width(ch, display_col, self.tab_width);
             let mut style = token_style(line_start + boff, hl, theme, default_fg);
             // Diagnostics win an overlap: a squiggle carries more information than
-            // "this is navigable", and losing it would hide a real problem.
-            if let Some(color) = self
+            // "this is navigable", and losing it would hide a real problem. Theirs
+            // is marked, so the frame's last pass can curl it.
+            if let Some((color, mark)) = self
                 .diagnostic_underline(l, col, theme)
-                .or_else(|| self.decoration_underline(l, col, theme, default_fg))
+                .map(|color| (color, diagnostic::DIAGNOSTIC_UNDERLINE))
+                .or_else(|| {
+                    let color = self.decoration_underline(l, col, theme, default_fg)?;
+                    Some((color, Modifier::empty()))
+                })
             {
                 style = style
                     .underline_color(color.to_ratatui())
-                    .add_modifier(Modifier::UNDERLINED);
+                    .add_modifier(Modifier::UNDERLINED | mark);
             }
             style = style.add_modifier(diagnostic::tag_modifiers(self.diagnostics, l, col));
             let bg = if in_any(selections, l, col) {
@@ -938,6 +945,7 @@ impl StatefulWidget for Editor<'_> {
         let plain = [background, cursor_line_bg];
         let ruler = theme.role(ThemeRole::IndentGuide);
         self.paint_rulers(buf, content, state.scroll_col, plain, ruler);
+        diagnostic::finish_underlines(buf, area, self.undercurl);
 
         // Draw a reversed caret cell for every head when focused and editable.
         if self.focused && self.cell_caret && !self.read_only {

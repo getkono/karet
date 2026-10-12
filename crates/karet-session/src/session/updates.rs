@@ -151,6 +151,15 @@ impl Session {
                 }
                 self.emit(Some(request), Event::HoverResult { hover });
             },
+            // Positions-free, so delivered whatever the buffer did since: the
+            // client judges whether its caret is still in the call.
+            LspUpdate::SignatureHelp {
+                request,
+                doc,
+                help,
+                options,
+                ..
+            } => self.emit(Some(request), Event::SignatureHelp { doc, help, options }),
             LspUpdate::Definitions {
                 request,
                 doc,

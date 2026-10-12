@@ -152,6 +152,30 @@ impl LspManager {
         .is_ok()
     }
 
+    /// Forward a signature-help request; `false` when no server serves `path`
+    /// or its queue is full, so the caller answers it empty.
+    pub(crate) fn signature_help(
+        &self,
+        language: Option<&str>,
+        (request, doc): (RequestId, DocumentId),
+        path: &Path,
+        position: LineCol,
+        manual: bool,
+    ) -> bool {
+        let path = absolute_path(path);
+        let Some(tx) = self.existing_server(language, &path) else {
+            return false;
+        };
+        tx.try_send(ServerCmd::SignatureHelp {
+            request,
+            doc,
+            path,
+            position,
+            manual,
+        })
+        .is_ok()
+    }
+
     /// Forward a definition request, or with a `kind` the navigation request a
     /// [`crate::api::Command::FindLocations`] names.
     #[allow(clippy::too_many_arguments)] // one request's identity, flattened as its siblings are

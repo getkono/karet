@@ -19,6 +19,8 @@ use karet_core::LineCol;
 use karet_core::Location;
 use karet_core::Range;
 use karet_core::ServerFeature;
+use karet_core::SignatureHelp;
+use karet_core::SignatureHelpOptions;
 use karet_core::Symbol;
 use karet_core::TextEdit;
 use karet_core::WorkspaceEdit;
@@ -140,6 +142,15 @@ pub(crate) enum ServerCmd {
         version: u64,
         path: PathBuf,
         position: LineCol,
+    },
+    /// Request signature help; `manual` as on
+    /// [`crate::api::Command::SignatureHelp`].
+    SignatureHelp {
+        request: RequestId,
+        doc: DocumentId,
+        path: PathBuf,
+        position: LineCol,
+        manual: bool,
     },
     /// Request definition locations, or with a `kind` the locations a
     /// [`crate::api::Command::FindLocations`] asks for.
@@ -381,6 +392,15 @@ pub(crate) enum LspUpdate {
         doc: DocumentId,
         version: u64,
         hover: Option<Hover>,
+    },
+    /// Signature-help response, with the server's trigger characters beside
+    /// it. Carries no positions, so it needs no conversion on the actor.
+    SignatureHelp {
+        generation: u64,
+        request: RequestId,
+        doc: DocumentId,
+        help: Option<SignatureHelp>,
+        options: SignatureHelpOptions,
     },
     /// Definition (or, with a `kind`, other navigation) response in UTF-16
     /// coordinates.

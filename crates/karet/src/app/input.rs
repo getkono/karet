@@ -161,6 +161,11 @@ impl App {
                 if self.completion_key(key) {
                     return;
                 }
+                // The signature popup under it takes only Esc, and Up/Down
+                // when there are overloads to cycle.
+                if self.signature_key(key) {
+                    return;
+                }
                 // A find bar left open behind the editor still closes on Esc
                 // from the text, as VS Code's does.
                 if key.code == KeyCode::Esc

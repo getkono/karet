@@ -285,6 +285,7 @@ impl LspManager {
             | LspUpdate::InlayHintResolved { generation, .. }
             | LspUpdate::Symbols { generation, .. }
             | LspUpdate::Hover { generation, .. }
+            | LspUpdate::SignatureHelp { generation, .. }
             | LspUpdate::Unsupported { generation, .. }
             | LspUpdate::Definitions { generation, .. }
             | LspUpdate::WorkspaceSymbols { generation, .. }

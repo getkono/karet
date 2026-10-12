@@ -331,7 +331,9 @@ pub enum Event {
     ///
     /// Emitted only for requests a user asks for by hand --
     /// [`Command::Hover`], [`Command::Definition`], [`Command::FindLocations`], [`Command::Rename`],
-    /// [`Command::WorkspaceSymbols`], [`Command::Format`]. Background requests (inlay hints,
+    /// [`Command::WorkspaceSymbols`], [`Command::Format`], and a
+    /// [`Command::SignatureHelp`] marked `manual`. Background requests (inlay
+    /// hints, typed signature help,
     /// completion, document symbols, format-on-save) are refused silently: a
     /// notice nobody asked for, repeated on every keystroke or save, is noise.
     FeatureUnsupported {
@@ -344,6 +346,21 @@ pub enum Event {
     HoverResult {
         /// The hover, if any.
         hover: Option<Hover>,
+    },
+    /// Signature help answering a [`Command::SignatureHelp`].
+    ///
+    /// Delivered whatever the document did since it was asked: signature help
+    /// carries no positions to go stale, and a typist who follows `(` with an
+    /// argument before the server answers still wants the hint.
+    SignatureHelp {
+        /// The document the request was made in.
+        doc: DocumentId,
+        /// The signatures of the enclosing call; `None` when there is none, or
+        /// no server could answer.
+        help: Option<SignatureHelp>,
+        /// The answering server's trigger and retrigger characters; empty when
+        /// no server answered.
+        options: SignatureHelpOptions,
     },
     /// Definition locations answering a [`Command::Definition`].
     Definitions {

@@ -43,6 +43,9 @@ pub(crate) struct TerminalCapabilities {
     /// The runtime OSC 22 pointer-shape handshake result, with the same tri-state
     /// semantics as [`kitty_graphics`](Self::kitty_graphics).
     pub osc22_pointer_shape: Option<bool>,
+    /// Whether the environment names a terminal that draws a curly underline
+    /// (see [`probe_undercurl`]).
+    pub undercurl: bool,
 }
 
 impl TerminalCapabilities {
@@ -95,7 +98,45 @@ pub(crate) fn probe_all() -> TerminalCapabilities {
         graphics_env: image::detect_protocol(),
         kitty_graphics: probe_kitty_graphics(PROBE_TIMEOUT),
         osc22_pointer_shape: probe_osc22_pointer_shape(PROBE_TIMEOUT),
+        undercurl: probe_undercurl(),
     }
+}
+
+/// Whether the terminal draws a curly underline (SGR `4:3`), which diagnostics
+/// are underlined with when it does.
+///
+/// Read from the environment, like the graphics heuristic: no query reports
+/// underline styles, and a terminal that does not know `4:3` can read it as
+/// underline-then-italic, so only a terminal known to draw it qualifies.
+#[must_use]
+pub(crate) fn probe_undercurl() -> bool {
+    undercurl_in(|key| std::env::var(key).ok())
+}
+
+/// [`probe_undercurl`], reading the environment through `var`.
+///
+/// kitty, Ghostty, WezTerm, foot, Alacritty, iTerm2, VS Code's terminal, and
+/// VTE 0.51.2 or later (GNOME Terminal, Tilix, …) draw it. tmux forwards
+/// `4:3` only when the outer terminal is declared to take it, which nothing
+/// here can see, so inside tmux or screen it is off.
+pub(crate) fn undercurl_in(var: impl Fn(&str) -> Option<String>) -> bool {
+    let term = var("TERM").unwrap_or_default();
+    if var("TMUX").is_some() || term.starts_with("tmux") || term.starts_with("screen") {
+        return false;
+    }
+    let program = var("TERM_PROGRAM").unwrap_or_default().to_ascii_lowercase();
+    let named = ["kitty", "ghostty", "wezterm", "foot", "alacritty"]
+        .iter()
+        .any(|name| term.contains(name))
+        || ["ghostty", "wezterm", "iterm.app", "vscode"].contains(&program.as_str());
+    let vte = var("VTE_VERSION")
+        .and_then(|version| version.trim().parse::<u32>().ok())
+        .is_some_and(|version| version >= 5102);
+    named
+        || vte
+        || var("KITTY_WINDOW_ID").is_some()
+        || var("WEZTERM_EXECUTABLE").is_some()
+        || var("ALACRITTY_WINDOW_ID").is_some()
 }
 
 /// Probe whether the terminal speaks the Kitty graphics protocol via a real handshake.
@@ -208,6 +249,57 @@ mod tests {
             graphics_env,
             kitty_graphics,
             osc22_pointer_shape,
+            undercurl: false,
+        }
+    }
+
+    /// [`undercurl_in`] over exactly the `vars` given.
+    fn undercurl(vars: &[(&str, &str)]) -> bool {
+        undercurl_in(|key| {
+            vars.iter()
+                .find(|(name, _)| *name == key)
+                .map(|(_, value)| (*value).to_owned())
+        })
+    }
+
+    #[test]
+    fn undercurl_is_on_for_the_terminals_known_to_draw_it() {
+        for vars in [
+            &[("TERM", "xterm-kitty")][..],
+            &[("TERM", "xterm-ghostty")],
+            &[("TERM", "foot-extra")],
+            &[("TERM", "alacritty")],
+            &[("TERM", "xterm-256color"), ("TERM_PROGRAM", "WezTerm")],
+            &[("TERM", "xterm-256color"), ("TERM_PROGRAM", "iTerm.app")],
+            &[("TERM", "xterm-256color"), ("TERM_PROGRAM", "vscode")],
+            &[("TERM", "xterm-256color"), ("KITTY_WINDOW_ID", "1")],
+            &[("TERM", "xterm-256color"), ("VTE_VERSION", "7600")],
+            &[("TERM", "xterm-256color"), ("VTE_VERSION", "5102")],
+        ] {
+            assert!(undercurl(vars), "{vars:?}");
+        }
+    }
+
+    #[test]
+    fn undercurl_is_off_for_an_unknown_terminal_an_old_vte_and_tmux() {
+        for vars in [
+            &[][..],
+            &[("TERM", "xterm-256color")],
+            &[("TERM", "linux")],
+            &[("TERM", "xterm-256color"), ("VTE_VERSION", "5101")],
+            &[("TERM", "xterm-256color"), ("VTE_VERSION", "not a version")],
+            &[
+                ("TERM", "xterm-256color"),
+                ("TERM_PROGRAM", "Apple_Terminal"),
+            ],
+            &[("TERM", "tmux-256color"), ("TERM_PROGRAM", "tmux")],
+            &[("TERM", "screen-256color")],
+            &[
+                ("TERM", "xterm-kitty"),
+                ("TMUX", "/tmp/tmux-1000/default,1,0"),
+            ],
+        ] {
+            assert!(!undercurl(vars), "{vars:?}");
         }
     }
 

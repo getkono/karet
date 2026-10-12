@@ -4,6 +4,7 @@ use super::code_actions;
 use super::commands::OpenDocument;
 use super::commands::answer_empty;
 use super::commands::answer_reconnecting;
+use super::commands::caret_query;
 use super::commands::complete;
 use super::commands::flush_pending;
 use super::commands::remember_document;
@@ -587,47 +588,9 @@ pub(super) async fn server_task(task: ServerTask) {
                         symbols,
                     });
                 },
-                ServerCmd::Hover {
-                    request,
-                    doc,
-                    version,
-                    path,
-                    position,
-                } => {
-                    flush_pending(
-                        active,
-                        &mut pending,
-                        &mut dead,
-                        &mut tally,
-                        &updates,
-                        &key,
-                        token,
-                    )
-                    .await;
-                    let hover = if dead {
-                        None
-                    } else {
-                        let result = active.hover(&path, position).await;
-                        report_unsupported(
-                            &result,
-                            &updates,
-                            generation,
-                            request,
-                            &key,
-                            ServerFeature::Hover,
-                        );
-                        tally.observe(result).unwrap_or_else(|error| {
-                            tally.note::<()>(Err(error), &mut dead, &updates, &key, token);
-                            None
-                        })
-                    };
-                    let _ = updates.send(LspUpdate::Hover {
-                        generation,
-                        request,
-                        doc,
-                        version,
-                        hover,
-                    });
+                cmd @ (ServerCmd::Hover { .. } | ServerCmd::SignatureHelp { .. }) => {
+                    let health = (&mut dead, &mut tally, &updates, &key, token);
+                    caret_query(active, cmd, (generation, &mut pending), health).await;
                 },
                 ServerCmd::Definition {
                     request,
