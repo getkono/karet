@@ -194,6 +194,7 @@
                 },
                 new_text: "fn main() {}   \n".to_string(),
             }],
+            scope: crate::lsp::FormattingScope::Save,
         });
         let mut saved = false;
         while let Some((_, ev)) = events.try_recv() {

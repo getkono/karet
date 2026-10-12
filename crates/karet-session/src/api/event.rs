@@ -331,7 +331,7 @@ pub enum Event {
     ///
     /// Emitted only for requests a user asks for by hand --
     /// [`Command::Hover`], [`Command::Definition`], [`Command::FindLocations`], [`Command::Rename`],
-    /// [`Command::WorkspaceSymbols`]. Background requests (inlay hints,
+    /// [`Command::WorkspaceSymbols`], [`Command::Format`]. Background requests (inlay hints,
     /// completion, document symbols, format-on-save) are refused silently: a
     /// notice nobody asked for, repeated on every keystroke or save, is noise.
     FeatureUnsupported {

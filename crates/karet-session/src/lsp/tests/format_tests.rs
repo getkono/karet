@@ -593,3 +593,311 @@ async fn a_formatting_request_carries_the_editorconfig_indentation() -> TestResu
     );
     Ok(())
 }
+
+// ---- Format Document and Format Selection: `Command::Format`, asked for by hand.
+
+/// A session that does not format on save, so only a `Format` formats, with
+/// its snapshot stream kept so a test can watch the text change.
+fn manual_session(connector: Option<Connector>) -> (Session, EventRx, crate::local::SnapshotRx) {
+    let mut settings = crate::config::Settings::default();
+    settings.editor.format_on_save = false;
+    let (mut session, events, snaps) = Session::new(SessionConfig {
+        settings,
+        ..SessionConfig::default()
+    });
+    if let Some(connector) = connector {
+        session.set_lsp_connector(connector);
+    }
+    (session, events, snaps)
+}
+
+fn format_command(doc: DocumentId, scope: crate::api::FormatScope) -> Command {
+    Command::Format(crate::api::FormatRequest { doc, scope })
+}
+
+fn caret(line: u32, col: u32) -> Range {
+    let at = karet_core::LineCol::new(line, col);
+    Range { start: at, end: at }
+}
+
+/// Whether a snapshot of `doc` holding exactly `text` arrives, bounded.
+async fn await_text(snaps: &mut crate::local::SnapshotRx, doc: DocumentId, text: &str) -> bool {
+    loop {
+        match tokio::time::timeout(Duration::from_secs(10), snaps.recv()).await {
+            Ok(Some((id, snap))) if id == doc && snap.buffer.text() == text => return true,
+            Ok(Some(_)) => {},
+            _ => return false,
+        }
+    }
+}
+
+/// Open `path` on a backend running `session`, returning the backend and the
+/// opened document.
+async fn open_on_backend(
+    session: Session,
+    events: &mut EventRx,
+    path: &Path,
+) -> Result<(crate::backend::LocalBackend, DocumentId), Box<dyn std::error::Error + Send + Sync>> {
+    let backend = local_session(session, None);
+    backend.send(
+        backend.next_id(),
+        Command::OpenDocument {
+            path: path.to_path_buf(),
+            language: None,
+        },
+    )?;
+    let (doc, _version) = await_opened(events).await.ok_or("no Opened")?;
+    Ok((backend, doc))
+}
+
+/// Format Document puts the server's edits in the buffer, and only there: it
+/// is an edit like any other, so the file on disk waits for a save.
+#[tokio::test]
+async fn format_document_applies_the_servers_edits_to_the_buffer_only() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let path = rust_file(&dir, "main.rs", "original\nkept\n").ok_or("write failed")?;
+    let spawns = Arc::new(AtomicUsize::new(0));
+    let (session, mut events, mut snaps) =
+        manual_session(Some(test_connector(Behavior::Formats, None, spawns)));
+    let (backend, doc) = open_on_backend(session, &mut events, &path).await?;
+
+    backend.send(
+        backend.next_id(),
+        format_command(doc, crate::api::FormatScope::Document),
+    )?;
+
+    assert!(
+        await_text(&mut snaps, doc, "formatted\nkept\n").await,
+        "the server's edit must reach the buffer"
+    );
+    assert_eq!(std::fs::read_to_string(&path)?, "original\nkept\n");
+    Ok(())
+}
+
+/// Format Selection asks for each selected stretch once: a bare caret stands
+/// for its line, two carets on one line are one request, and every answer
+/// lands together, against the text the requests were made for.
+#[tokio::test]
+async fn format_selection_formats_each_selected_stretch_once() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let path = rust_file(&dir, "main.rs", "aaa\nbbb\nccc\n").ok_or("write failed")?;
+    let spawns = Arc::new(AtomicUsize::new(0));
+    let (observed_tx, mut observed) = mpsc::unbounded_channel();
+    let (session, mut events, mut snaps) = manual_session(Some(test_connector(
+        Behavior::Normal,
+        Some(observed_tx),
+        spawns,
+    )));
+    let (backend, doc) = open_on_backend(session, &mut events, &path).await?;
+
+    let selection = Range {
+        start: karet_core::LineCol::new(2, 0),
+        end: karet_core::LineCol::new(2, 3),
+    };
+    backend.send(
+        backend.next_id(),
+        format_command(
+            doc,
+            crate::api::FormatScope::Ranges(vec![caret(0, 1), selection, caret(0, 2)]),
+        ),
+    )?;
+
+    assert!(
+        await_text(&mut snaps, doc, "formatted\nbbb\nformatted\n").await,
+        "both selected lines must be formatted, and nothing between them"
+    );
+    let mut asked = Vec::new();
+    while let Ok(message) = observed.try_recv() {
+        if message["method"] == "textDocument/rangeFormatting" {
+            asked.push(message["params"]["range"]["start"]["line"].clone());
+        }
+    }
+    assert_eq!(asked, vec![json!(0), json!(2)], "one request per stretch");
+    Ok(())
+}
+
+/// The next `FeatureUnsupported` on the stream, with the request it answers.
+async fn await_unsupported(
+    events: &mut EventRx,
+) -> Option<(Option<RequestId>, karet_core::ServerFeature)> {
+    while let Some((request, event)) = next_event(events).await {
+        if let Event::FeatureUnsupported { feature, .. } = event {
+            return Some((request, feature));
+        }
+    }
+    None
+}
+
+/// A server that does not offer the method is named, on the request that
+/// asked -- the user pressed a key and is owed a reason nothing changed.
+#[tokio::test]
+async fn a_format_the_server_does_not_offer_says_so() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let path = rust_file(&dir, "main.rs", "aaa\n").ok_or("write failed")?;
+    let spawns = Arc::new(AtomicUsize::new(0));
+    let (session, mut events, _snaps) =
+        manual_session(Some(test_connector(Behavior::Bare, None, spawns)));
+    let (backend, doc) = open_on_backend(session, &mut events, &path).await?;
+
+    let request = backend.next_id();
+    backend.send(
+        request,
+        format_command(doc, crate::api::FormatScope::Ranges(vec![caret(0, 0)])),
+    )?;
+    assert_eq!(
+        await_unsupported(&mut events).await,
+        Some((Some(request), karet_core::ServerFeature::RangeFormatting))
+    );
+
+    let request = backend.next_id();
+    backend.send(
+        request,
+        format_command(doc, crate::api::FormatScope::Document),
+    )?;
+    assert_eq!(
+        await_unsupported(&mut events).await,
+        Some((Some(request), karet_core::ServerFeature::Formatting))
+    );
+    Ok(())
+}
+
+/// The notification answering `request`, if one is sitting on the stream.
+fn notice_for(events: &mut EventRx, request: RequestId) -> Option<String> {
+    let mut found = None;
+    while let Some((id, event)) = events.try_recv() {
+        if let (Some(id), Event::Notification { message, .. }) = (id, event)
+            && id == request
+        {
+            found = Some(message);
+        }
+    }
+    found
+}
+
+/// With nothing to format a file -- no server, and no built-in formatter for
+/// its language -- a Format says so instead of silently doing nothing.
+#[test]
+fn a_format_with_no_formatter_says_so() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let path = rust_file(&dir, "notes.txt", "aaa\n").ok_or("write failed")?;
+    let (mut session, mut events, _snaps) = manual_session(None);
+    session.handle(
+        RequestId(1),
+        Command::OpenDocument {
+            path,
+            language: None,
+        },
+    );
+    let doc = opened_doc(&mut events).ok_or("no Opened")?;
+
+    session.handle(
+        RequestId(2),
+        format_command(doc, crate::api::FormatScope::Document),
+    );
+    assert_eq!(
+        notice_for(&mut events, RequestId(2)).as_deref(),
+        Some("format: nothing formats this file")
+    );
+    session.handle(
+        RequestId(3),
+        format_command(doc, crate::api::FormatScope::Ranges(vec![caret(0, 0)])),
+    );
+    assert_eq!(
+        notice_for(&mut events, RequestId(3)).as_deref(),
+        Some("format selection: nothing formats selections in this file")
+    );
+    Ok(())
+}
+
+/// TOML has a built-in formatter, and Format Document uses it when no server
+/// formats the file -- exactly as a save would.
+#[cfg(feature = "toml-format")]
+#[tokio::test]
+async fn format_document_falls_back_on_the_builtin_toml_formatter() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let path = rust_file(&dir, "Cargo.toml", "[package]\nname=\"x\"\n").ok_or("write failed")?;
+    let spawns = Arc::new(AtomicUsize::new(0));
+    let (session, mut events, mut snaps) = manual_session(Some(failing_connector(spawns)));
+    let (backend, doc) = open_on_backend(session, &mut events, &path).await?;
+
+    backend.send(
+        backend.next_id(),
+        format_command(doc, crate::api::FormatScope::Document),
+    )?;
+
+    assert!(await_text(&mut snaps, doc, "[package]\nname = \"x\"\n").await);
+    Ok(())
+}
+
+/// Edits computed against text the user has since changed describe text that
+/// is no longer there: they are dropped, and the request is told why. A save's
+/// late answer, by contrast, is never mistaken for a Format.
+#[test]
+fn a_format_answer_for_a_superseded_version_is_dropped() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let path = rust_file(&dir, "notes.txt", "aaa\n").ok_or("write failed")?;
+    let (mut session, mut events, _snaps) = manual_session(None);
+    session.handle(
+        RequestId(1),
+        Command::OpenDocument {
+            path,
+            language: None,
+        },
+    );
+    let doc = opened_doc(&mut events).ok_or("no Opened")?;
+    let edit = |new_text: &str| TextEdit {
+        range: Range {
+            start: karet_core::LineCol::new(0, 0),
+            end: karet_core::LineCol::new(0, 3),
+        },
+        new_text: new_text.to_owned(),
+    };
+    let stale = session
+        .document(doc)
+        .map(|d| d.version())
+        .ok_or("no document")?;
+    session.handle(
+        RequestId(2),
+        Command::ApplyChange {
+            doc,
+            change: Change::new(stale, vec![edit("bbb")]),
+            cause: EditCause::Replace,
+        },
+    );
+    let text = |session: &Session| session.document(doc).map(|d| d.buffer.text());
+
+    session.apply_lsp_update(LspUpdate::Formatting {
+        generation: 0,
+        request: RequestId(3),
+        doc,
+        version: stale,
+        formatted: true,
+        edits: vec![edit("zzz")],
+        scope: crate::lsp::FormattingScope::Document,
+    });
+    assert_eq!(text(&session).as_deref(), Some("bbb\n"));
+    assert_eq!(
+        notice_for(&mut events, RequestId(3)).as_deref(),
+        Some("format: the document changed before the formatter answered; nothing was applied")
+    );
+
+    let current = session
+        .document(doc)
+        .map(|d| d.version())
+        .ok_or("no document")?;
+    session.apply_lsp_update(LspUpdate::Formatting {
+        generation: 0,
+        request: RequestId(4),
+        doc,
+        version: current,
+        formatted: true,
+        edits: vec![edit("zzz")],
+        scope: crate::lsp::FormattingScope::Save,
+    });
+    assert_eq!(
+        text(&session).as_deref(),
+        Some("bbb\n"),
+        "an answer for a save nobody is waiting on applies nothing"
+    );
+    Ok(())
+}

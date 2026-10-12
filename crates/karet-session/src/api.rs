@@ -530,6 +530,15 @@ pub enum Command {
         /// The new name.
         new_name: String,
     },
+    /// Format a document, or ranges of it, with the formatter its language
+    /// names (`formatter`, else its primary language server; TOML's built-in
+    /// formatter when no server formats the whole document).
+    ///
+    /// The edits land as one undoable change and a new snapshot. Refusals are
+    /// answered on the request: [`Event::FeatureUnsupported`] when the server
+    /// does not offer the method, and an [`Event::Notification`] when nothing
+    /// can format the document or it changed before the answer arrived.
+    Format(FormatRequest),
     /// Apply a workspace edit -- text edits to open and unopened files, and
     /// file creates, renames, and deletes -- answered by
     /// [`Event::WorkspaceEdit`].

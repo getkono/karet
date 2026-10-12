@@ -858,51 +858,16 @@ pub(super) async fn server_task(task: ServerTask) {
                         token,
                     )
                     .await;
-                    // No capability check of its own: a server that never
-                    // advertised the method is refused by the client before any
-                    // request reaches the wire (`LspError::Unsupported`, issue
-                    // #279), which costs no round trip and lands in the same
-                    // unformatted answer below.
-                    // Every ending but a successful reply leaves the file unformatted,
-                    // and each one is reported as such so the session can fall back on
-                    // its own formatter. A connection that died, and a request that
-                    // errored, format exactly as much as a server that never offered
-                    // the method: nothing.
-                    // The wait is bounded here as well as by the save, because the
-                    // two waits cost different things: the save's deadline gives up
-                    // on the answer, while this one gives the *task* back. Every
-                    // command for this server -- diagnostics, completions, a
-                    // `didChange` flush -- queues behind this `await`.
-                    let (formatted, edits) = if dead {
-                        (false, Vec::new())
-                    } else {
-                        match tokio::time::timeout(
-                            formatting_deadline(ask.save_timeout),
-                            active.formatting(&path, ask.indentation),
-                        )
-                        .await
-                        {
-                            Ok(answer) => match tally.observe(answer) {
-                                Ok(edits) => (true, edits),
-                                Err(error) => {
-                                    tally.note::<()>(Err(error), &mut dead, &updates, &key, token);
-                                    (false, Vec::new())
-                                },
-                            },
-                            // Deliberately not charged to the connection and not a
-                            // death: a formatter slower than one save can wait for is
-                            // not a server that has stopped answering. The request is
-                            // left to expire on its own in the JSON-RPC layer.
-                            Err(_elapsed) => {
-                                tracing::warn!(
-                                    language = %key,
-                                    "formatting outlasted the save that asked for it; \
-                                     saving unformatted"
-                                );
-                                (false, Vec::new())
-                            },
-                        }
+                    let mut context = code_actions::StepContext {
+                        tally: &mut tally,
+                        dead: &mut dead,
+                        updates: &updates,
+                        key: &key,
+                        token,
+                        generation,
                     };
+                    let (formatted, edits) =
+                        format::serve(active, &path, &ask, request, &mut context).await;
                     let _ = updates.send(LspUpdate::Formatting {
                         generation,
                         request,
@@ -910,6 +875,7 @@ pub(super) async fn server_task(task: ServerTask) {
                         version,
                         formatted,
                         edits,
+                        scope: ask.scope,
                     });
                 },
             }

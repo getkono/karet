@@ -13,8 +13,11 @@ use super::updates::utf16_caret;
 use super::updates::utf16_range_to_buffer;
 use super::*;
 use crate::api::AppliedWorkspaceEdit;
+use crate::api::FormatRequest;
+use crate::api::FormatScope;
 use crate::api::LocationKind;
 use crate::api::RenameTarget;
+use crate::lsp::FormattingScope;
 use crate::lsp::RenameAnswer;
 
 /// The event answering a navigation request: [`Event::Definitions`] for Go to
@@ -482,9 +485,206 @@ fn identifier_at(buffer: &TextBuffer, position: LineCol) -> Option<RenameTarget>
     })
 }
 
+/// The refusal when nothing can format a document asked to be formatted.
+pub(super) const NO_FORMATTER: &str = "format: nothing formats this file";
+
+/// The refusal when nothing can format a selection asked to be formatted: the
+/// built-in formatter only ever rewrites a whole document.
+pub(super) const NO_RANGE_FORMATTER: &str =
+    "format selection: nothing formats selections in this file";
+
+/// The notice when the document moved on before its formatter answered.
+pub(super) const FORMAT_STALE: &str =
+    "format: the document changed before the formatter answered; nothing was applied";
+
+/// The notice when a formatter's edits cannot be applied together.
+pub(super) const FORMAT_OVERLAP: &str =
+    "format: the formatter's edits overlap; nothing was applied";
+
+impl Session {
+    /// Serve [`Command::Format`]: hand the document, or its selected ranges, to
+    /// the formatter its language names -- the same choice a save makes --
+    /// and fall back on the built-in formatter for a whole document when no
+    /// server runs for it.
+    pub(super) fn format(&mut self, id: RequestId, request: FormatRequest) {
+        let doc_id = request.doc;
+        let Some(doc) = Self::doc_or_report(&self.store, &self.events, id, doc_id) else {
+            return;
+        };
+        let scope = match request.scope {
+            FormatScope::Document => FormattingScope::Document,
+            FormatScope::Ranges(ranges) => FormattingScope::Ranges(
+                format_ranges(&doc.buffer, ranges)
+                    .into_iter()
+                    .map(|range| Range {
+                        start: utf16_caret(doc, range.start),
+                        end: utf16_caret(doc, range.end),
+                    })
+                    .collect(),
+            ),
+        };
+        if matches!(&scope, FormattingScope::Ranges(ranges) if ranges.is_empty()) {
+            return;
+        }
+        let ask = self.formatting_ask(doc, scope.clone());
+        let version = doc.buffer.version();
+        let path = doc.path.clone();
+        if !self
+            .lsp
+            .formatting(doc.language_selector, id, doc_id, version, &path, ask)
+        {
+            self.format_without_server(id, doc_id, &scope, true);
+        }
+    }
+
+    /// Adopt a server's answer to a [`Command::Format`]: its edits, converted
+    /// to buffer columns, as one undoable change -- or nothing, when the
+    /// document moved on while the server worked, since the edits describe
+    /// text that is no longer there.
+    pub(super) fn adopt_format(
+        &mut self,
+        request: RequestId,
+        doc_id: DocumentId,
+        version: u64,
+        (formatted, mut edits): (bool, Vec<TextEdit>),
+        scope: &FormattingScope,
+    ) {
+        let Some(doc) = self.store.docs.get(&doc_id) else {
+            return; // closed since the request: stale by definition
+        };
+        if doc.buffer.version() != version {
+            self.emit(Some(request), format_notice(FORMAT_STALE));
+            return;
+        }
+        if !formatted {
+            // The server refused (and said so), failed, or was unreachable:
+            // the built-in formatter is the only one left to ask.
+            self.format_without_server(request, doc_id, scope, false);
+            return;
+        }
+        for edit in &mut edits {
+            edit.range = utf16_range_to_buffer(&doc.buffer, edit.range);
+        }
+        self.apply_requested_format(request, doc_id, edits);
+    }
+
+    /// Format with the session's own formatter where no server did: a whole
+    /// document only, and only a language it formats. With `report`, say so
+    /// when it cannot; a server's refusal has already said why.
+    fn format_without_server(
+        &mut self,
+        id: RequestId,
+        doc_id: DocumentId,
+        scope: &FormattingScope,
+        report: bool,
+    ) {
+        let builtin = *scope == FormattingScope::Document
+            && self
+                .store
+                .docs
+                .get(&doc_id)
+                .is_some_and(|doc| self.has_builtin_formatter(doc));
+        if builtin {
+            let edits = self.builtin_format_edits(doc_id).unwrap_or_default();
+            self.apply_requested_format(id, doc_id, edits);
+        } else if report {
+            let message = match scope {
+                FormattingScope::Ranges(_) => NO_RANGE_FORMATTER,
+                FormattingScope::Save | FormattingScope::Document => NO_FORMATTER,
+            };
+            self.emit(Some(id), format_notice(message));
+        }
+    }
+
+    /// Apply the edits a [`Command::Format`] produced, reporting edits that
+    /// cannot be applied together. Nothing to change is not a failure.
+    fn apply_requested_format(&mut self, id: RequestId, doc_id: DocumentId, edits: Vec<TextEdit>) {
+        if !edits.is_empty() && !self.apply_format_edits(doc_id, edits, false) {
+            self.emit(Some(id), format_notice(FORMAT_OVERLAP));
+        }
+    }
+}
+
+/// A warning answering a [`Command::Format`] that changed nothing.
+fn format_notice(message: &str) -> Event {
+    Event::Notification {
+        severity: Severity::Warning,
+        kind: NotificationKind::Lsp,
+        message: message.to_owned(),
+    }
+}
+
+/// The ranges a Format Selection formats, in buffer columns: each clamped to
+/// the document and put in order, an empty one (a bare caret) widened to its
+/// whole line, and those that touch or overlap merged -- one request per
+/// stretch of text, so no two answers rewrite the same characters.
+pub(super) fn format_ranges(buffer: &TextBuffer, ranges: Vec<Range>) -> Vec<Range> {
+    let mut ranges: Vec<Range> = ranges
+        .into_iter()
+        .map(|range| {
+            let (a, b) = (
+                clamp_to_document(buffer, range.start),
+                clamp_to_document(buffer, range.end),
+            );
+            let (start, end) = if a <= b { (a, b) } else { (b, a) };
+            if start == end {
+                let line = LineCol::new(start.line, 0);
+                Range {
+                    start: line,
+                    end: clamp_to_document(buffer, LineCol::new(start.line, u32::MAX)),
+                }
+            } else {
+                Range { start, end }
+            }
+        })
+        .collect();
+    ranges.sort_by_key(|range| range.start);
+    let mut merged: Vec<Range> = Vec::with_capacity(ranges.len());
+    for range in ranges {
+        match merged.last_mut() {
+            Some(last) if range.start <= last.end => last.end = last.end.max(range.end),
+            _ => merged.push(range),
+        }
+    }
+    merged
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn range(from: (u32, u32), to: (u32, u32)) -> Range {
+        Range {
+            start: LineCol::new(from.0, from.1),
+            end: LineCol::new(to.0, to.1),
+        }
+    }
+
+    /// Carets widen to their line; reversed, overlapping and touching
+    /// selections become one stretch each; a range past the end is pulled in.
+    #[test]
+    fn format_ranges_widen_carets_and_merge_what_overlaps() {
+        let buffer = TextBuffer::from_text("alpha\nbeta\ngamma\ndelta\n");
+        assert_eq!(
+            format_ranges(
+                &buffer,
+                vec![
+                    range((3, 2), (3, 2)),
+                    range((1, 3), (0, 1)),
+                    range((1, 2), (1, 4)),
+                    range((1, 4), (2, 1)),
+                    range((3, 0), (99, 99)),
+                ],
+            ),
+            vec![range((0, 1), (2, 1)), range((3, 0), (4, 0))]
+        );
+        // Two carets on one line format it once.
+        assert_eq!(
+            format_ranges(&buffer, vec![range((2, 1), (2, 1)), range((2, 4), (2, 4))]),
+            vec![range((2, 0), (2, 5))]
+        );
+        assert!(format_ranges(&buffer, Vec::new()).is_empty());
+    }
 
     #[test]
     fn clamp_to_document_brings_a_whole_line_request_inside_the_text() {
