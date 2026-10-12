@@ -6,6 +6,7 @@ use super::*;
 
 mod brackets;
 mod carets;
+mod change_lane;
 mod comment;
 mod diagnostics;
 mod display;

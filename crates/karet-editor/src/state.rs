@@ -157,6 +157,9 @@ pub struct EditorState {
     /// The gutter numbering the last render used, which sets the gutter's
     /// width for hit-testing and caret placement.
     pub(super) last_line_numbers: LineNumbers,
+    /// Whether the last render reserved the gutter's change lane, which
+    /// widens the gutter by one column.
+    pub(super) last_change_lane: bool,
     /// The keyboard reveal's vertical margin the last render was given.
     pub(super) last_scroll_off: u16,
     /// The buffer's last line at the last render, where a margin stops.
@@ -237,6 +240,7 @@ impl Default for EditorState {
             scroll_subrow: 0,
             last_content_width: 0,
             last_line_numbers: LineNumbers::Absolute,
+            last_change_lane: false,
             last_scroll_off: 0,
             last_line: u32::MAX,
             last_word_wrap: false,
@@ -1094,7 +1098,7 @@ impl EditorState {
     ) -> LineCol {
         let line_count = buffer.line_count().max(1) as u32;
         let mut rel_row = u32::from(row.saturating_sub(area.y));
-        let gutter = gutter_width(line_count, self.last_line_numbers);
+        let gutter = gutter_width(line_count, self.last_line_numbers, self.last_change_lane);
         let content_x = area.x.saturating_add(gutter);
         let rel_col = u32::from(col.saturating_sub(content_x));
         if rel_row < u32::from(self.sticky_height) {

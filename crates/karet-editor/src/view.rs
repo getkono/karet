@@ -38,6 +38,7 @@ pub struct Editor<'a> {
     semantic_blocks: Option<&'a SemanticBlocks>,
     sticky_scroll: bool,
     line_numbers: LineNumbers,
+    change_lane: bool,
     cursor_line: bool,
     rulers: &'a [u16],
     scroll_off: u16,
@@ -65,6 +66,7 @@ impl<'a> Editor<'a> {
             semantic_blocks: None,
             sticky_scroll: false,
             line_numbers: LineNumbers::Absolute,
+            change_lane: false,
             cursor_line: true,
             rulers: &[],
             scroll_off: 0,
@@ -644,13 +646,14 @@ impl StatefulWidget for Editor<'_> {
         let default_fg = theme.role(ThemeRole::Foreground);
         let digits = digit_count(line_count.max(1));
 
-        let gutter = gutter_width(line_count, self.line_numbers);
+        let gutter = gutter_width(line_count, self.line_numbers, self.change_lane);
         let content_width = area.width.saturating_sub(gutter).max(1);
 
         // Clamp scroll to the buffer and record horizontal geometry. The vertical
         // content height is resolved after semantic sticky rows are selected.
         state.last_content_width = content_width;
         state.last_line_numbers = self.line_numbers;
+        state.last_change_lane = self.change_lane;
         state.last_scroll_off = self.scroll_off;
         state.last_line = line_count.saturating_sub(1);
         state.last_word_wrap = self.word_wrap;

@@ -9,11 +9,17 @@ use super::*;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum GutterLane {
-    /// The leading marker column: breakpoints, diagnostic signs and change
-    /// markers are drawn here; a click is the breakpoint toggle.
+    /// The leading marker column: breakpoints and diagnostic signs are drawn
+    /// here (and change markers, when no [`Change`](Self::Change) lane is
+    /// reserved); a click is the breakpoint toggle.
     Marker,
     /// The line numbers. Absent when [`LineNumbers::Off`] hides them.
     LineNumber,
+    /// The change column after the line numbers, where
+    /// [`DecorationKind::ChangeMarker`](karet_core::DecorationKind::ChangeMarker)s
+    /// are drawn. Present only when [`Editor::change_lane`](crate::Editor::change_lane)
+    /// reserves it.
+    Change,
     /// The trailing column next to the text, where a fold header draws its
     /// collapse/expand chevron.
     Fold,
@@ -51,7 +57,7 @@ impl EditorState {
             return None;
         }
         let line_count = buffer.line_count().max(1) as u32;
-        let gutter = gutter_width(line_count, self.last_line_numbers);
+        let gutter = gutter_width(line_count, self.last_line_numbers, self.last_change_lane);
         let offset = col - area.x;
         if offset >= gutter.min(area.width) {
             return None;
@@ -60,6 +66,8 @@ impl EditorState {
             GutterLane::Marker
         } else if offset + 1 == gutter {
             GutterLane::Fold
+        } else if self.last_change_lane && offset + 2 == gutter {
+            GutterLane::Change
         } else {
             GutterLane::LineNumber
         };
