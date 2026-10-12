@@ -36,6 +36,7 @@ mod lifecycle;
 mod line_changes;
 mod markdown_edit;
 mod multi_caret;
+mod multi_caret_edit;
 mod multi_click;
 mod overlay_focus;
 mod pointer_routing;

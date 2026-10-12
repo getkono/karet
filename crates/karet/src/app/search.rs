@@ -256,8 +256,9 @@ impl App {
         self.run_find();
     }
 
-    /// Replace every in-file match at once by rewriting the whole buffer through a
-    /// single undoable edit (offset-safe via `karet_search::apply_replacements`).
+    /// Replace every in-file match at once, as one undoable batch with an edit per
+    /// match. Every caret and selection stays on the text it was on, moved through
+    /// the replacements.
     pub(super) fn find_replace_all(&mut self) {
         let Some(find) = self.active_find() else {
             return;
@@ -267,27 +268,45 @@ impl App {
         if query.pattern.is_empty() {
             return;
         }
-        let (text, whole) = match self.tabs.get(self.active) {
+        let edit = match self.tabs.get(self.active) {
             Some(Tab {
-                kind: TabKind::Code { text, buffer, .. },
+                kind:
+                    TabKind::Code {
+                        text,
+                        buffer,
+                        next_version,
+                        ..
+                    },
+                editor,
                 ..
-            }) => (
-                text.clone(),
-                Range {
-                    start: LineCol::new(0, 0),
-                    end: buffer.byte_to_line_col(BytePos(text.len())),
-                },
-            ),
+            }) => {
+                let plan =
+                    karet_search::plan_replacements(text, &query, &replacement).unwrap_or_default();
+                if plan.is_empty() {
+                    return;
+                }
+                let edits: Vec<TextEdit> = plan
+                    .into_iter()
+                    .map(|r| TextEdit {
+                        range: Range {
+                            start: buffer.byte_to_line_col(BytePos(r.start)),
+                            end: buffer.byte_to_line_col(BytePos(r.end)),
+                        },
+                        new_text: r.text,
+                    })
+                    .collect();
+                let mut cursors = editor.cursors().clone();
+                for selection in &mut cursors.selections {
+                    *selection = editing::map_selection(*selection, &edits);
+                }
+                editing::MultiEdit {
+                    change: Change::new(*next_version, edits),
+                    cursors,
+                }
+            },
             _ => return,
         };
-        let plan = karet_search::plan_replacements(&text, &query, &replacement).unwrap_or_default();
-        if plan.is_empty() {
-            return;
-        }
-        let updated = karet_search::apply_replacements(&text, &plan);
-        self.submit_edit(move |caret, _sel, _buf, base| {
-            Some(editing::insert(caret, Some(whole), base, &updated))
-        });
+        self.submit_multi_edit(EditCause::Replace, edit);
     }
 
     /// Show or hide the find bar's replace field (collapsing returns to the query).

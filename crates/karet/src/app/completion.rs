@@ -1,5 +1,38 @@
 use super::*;
 
+/// The last `count` characters before `caret` on its line (fewer at the start of
+/// the line).
+fn chars_before(buffer: &TextBuffer, caret: LineCol, count: u32) -> String {
+    let start = caret.col.saturating_sub(count) as usize;
+    let len = (caret.col as usize).saturating_sub(start);
+    buffer
+        .line(caret.line as usize)
+        .map(|line| line.chars().skip(start).take(len).collect())
+        .unwrap_or_default()
+}
+
+/// What an accepted completion replaces at one caret: the `typed` prefix when the
+/// text before the caret is that prefix (always so at the primary caret), else the
+/// caret's selection, else nothing (an insertion at the caret).
+fn completion_range(
+    typed: &str,
+    caret: LineCol,
+    selection: Option<Range>,
+    buffer: &TextBuffer,
+) -> Range {
+    let count = u32::try_from(typed.chars().count()).unwrap_or(u32::MAX);
+    if caret.col >= count && chars_before(buffer, caret, count) == typed {
+        return Range {
+            start: LineCol::new(caret.line, caret.col - count),
+            end: caret,
+        };
+    }
+    selection.unwrap_or(Range {
+        start: caret,
+        end: caret,
+    })
+}
+
 impl App {
     /// The active code tab's completion target: `(document, caret)`.
     pub(super) fn completion_target(&self) -> Option<(DocumentId, LineCol)> {
@@ -201,8 +234,10 @@ impl App {
 
     /// Accept the selected candidate: replace the typed prefix (anchor to
     /// caret) with the item's resolved insert text, through the ordinary
-    /// session edit path. (The item's `insert_text` already carries its
-    /// `textEdit.newText` per the LSP precedence applied in karet-lsp.)
+    /// session edit path. Every other caret takes the item too, replacing the
+    /// same prefix where it sits before that caret (VS Code's behaviour). (The
+    /// item's `insert_text` already carries its `textEdit.newText` per the LSP
+    /// precedence applied in karet-lsp.)
     pub(super) fn accept_completion(&mut self) {
         let Some(ranked) = self.completion_ranked() else {
             self.dismiss_completion();
@@ -223,9 +258,24 @@ impl App {
             return;
         };
         self.dismiss_completion();
-        self.submit_edit_with_cause(EditCause::Replace, move |caret, _sel, _buf, base| {
-            // Only carets still on the anchored span complete; others no-op.
+        // The prefix the primary caret typed since the popup opened; the item
+        // replaces it there and at every other caret it also sits before.
+        let typed = self.completion_target().and_then(|(_, caret)| {
             let range = crate::completion::accept_range(anchor, caret)?;
+            let Some(Tab {
+                kind: TabKind::Code { buffer, .. },
+                ..
+            }) = self.tabs.get(self.active)
+            else {
+                return None;
+            };
+            Some(chars_before(buffer, caret, range.end.col - range.start.col))
+        });
+        let Some(typed) = typed else {
+            return;
+        };
+        self.submit_edit_with_cause(EditCause::Replace, move |caret, sel, buf, base| {
+            let range = completion_range(&typed, caret, sel, buf);
             Some(editing::Edit {
                 change: Change::new(
                     base,
