@@ -222,8 +222,19 @@ async fn server_initiated_requests_are_answered() -> TestResult {
                 "params": {"type": 1, "message": "hi"}
             }))
             .await;
+        // Nobody took the message-request stream: answered "no action chosen".
         let answer = server.recv().await;
         assert_eq!(answer["id"], json!(102));
+        assert_eq!(answer["result"], json!(null));
+
+        server
+            .send(&json!({
+                "jsonrpc": "2.0", "id": 103, "method": "window/showDocument",
+                "params": {"uri": "file:///tmp/ws/a.rs"}
+            }))
+            .await;
+        let answer = server.recv().await;
+        assert_eq!(answer["id"], json!(103));
         assert_eq!(answer["error"]["code"], json!(-32601));
     });
 
@@ -642,12 +653,11 @@ async fn shutdown_performs_the_handshake() -> TestResult {
 /// what has to end up on PATH rather than "failed to spawn language server".
 #[tokio::test]
 async fn spawn_missing_binary_names_the_command_and_why_it_failed() -> TestResult {
-    let spec = LspSpec {
-        command: "karet-lsp-test-no-such-binary".into(),
-        args: vec!["lsp".into(), "stdio".into()],
-        languages: vec!["rust".into()],
-        initialization_options: None,
-    };
+    let spec = LspSpec::new(
+        "karet-lsp-test-no-such-binary",
+        vec!["lsp".into(), "stdio".into()],
+        vec!["rust".into()],
+    );
     let Err(LspError::Launch(failure)) = LspClient::spawn(spec, Path::new("/tmp")).await else {
         return Err("a missing binary should be a launch failure".into());
     };
@@ -899,3 +909,6 @@ mod registration;
 
 #[path = "client_capability_tests.rs"]
 mod client_capability;
+
+#[path = "protocol_tests.rs"]
+mod protocol;
