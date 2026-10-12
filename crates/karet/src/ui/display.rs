@@ -98,4 +98,45 @@ mod tests {
         assert_eq!(defaults.scroll_off, 3);
         assert!(defaults.rulers.is_empty());
     }
+
+    #[test]
+    fn a_read_only_pane_numbers_relative_as_absolute_and_keeps_off_and_rulers() {
+        use karet_core::LineCol;
+        use karet_editor::EditorState;
+        use karet_text::TextBuffer;
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+        use ratatui::widgets::StatefulWidget;
+
+        let buffer = TextBuffer::from_text("a\nb\nc\nd\n");
+        let area = Rect::new(0, 0, 10, 4);
+        let render = |numbers: schema::LineNumbers| {
+            let mut settings = Settings::default();
+            settings.editor.line_numbers = numbers;
+            settings.editor.rulers = vec![2];
+            let display = EditorDisplay::resolve(settings.editor.for_language(None));
+            let mut state = EditorState::new();
+            state.place_caret(LineCol::new(2, 0));
+            let mut target = Buffer::empty(area);
+            display
+                .apply_read_only(Editor::new(&buffer))
+                .render(area, &mut target, &mut state);
+            let gutters: Vec<String> = (0..4)
+                .map(|y| (0..3).map(|x| target[(x, y)].symbol().to_owned()).collect())
+                .collect();
+            let ruler = target[(5, 0)].bg;
+            (gutters, ruler, target[(4, 0)].bg)
+        };
+
+        let (gutters, ruler, beside) = render(schema::LineNumbers::Relative);
+        assert_eq!(
+            gutters,
+            [" 1 ", " 2 ", " 3 ", " 4 "],
+            "no caret to count from: absolute numbers, not 2 1 3 1"
+        );
+        assert_ne!(ruler, beside, "the ruler still tints column 2");
+
+        let (gutters, ..) = render(schema::LineNumbers::Off);
+        assert_eq!(gutters, ["  a", "  b", "  c", "  d"], "off stays off");
+    }
 }
