@@ -24,6 +24,7 @@ fn feature_label(feature: ServerFeature) -> &'static str {
         ServerFeature::References => "find references",
         ServerFeature::Implementation => "go to implementation",
         ServerFeature::Formatting => "formatting",
+        ServerFeature::RangeFormatting => "formatting a selection",
         ServerFeature::CodeAction => "code actions",
         _ => "this request",
     }

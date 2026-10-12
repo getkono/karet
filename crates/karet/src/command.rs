@@ -369,6 +369,10 @@ pub enum Command {
     RenameSubmit,
     /// Close the rename prompt without renaming.
     RenameCancel,
+    /// Format the whole document with its language's formatter (Shift+Alt+F).
+    FormatDocument,
+    /// Format every selection, or the caret's line (Ctrl+K Ctrl+F).
+    FormatSelection,
     /// Open the code-action menu at the caret (Ctrl+., Alt+Enter).
     CodeActions,
     /// Open the code-action menu showing only source actions.
@@ -900,6 +904,8 @@ impl Command {
             Self::RenameSymbol => "Rename Symbol",
             Self::RenameSubmit => "Rename Symbol: Confirm",
             Self::RenameCancel => "Rename Symbol: Cancel",
+            Self::FormatDocument => "Format Document",
+            Self::FormatSelection => "Format Selection",
             Self::CodeActions => "Quick Fix…",
             Self::SourceAction => "Source Action…",
             Self::OrganizeImports => "Organize Imports",

@@ -116,7 +116,10 @@ Zsh, Fish, and EDN have their own selectors.
 typically runs whatever version of that tool is on `PATH`. A project whose CI pins a
 different formatter version can therefore see a save-time reformat that its own
 format check rejects. Turn format-on-save off for that language in the project layer,
-and format with the pinned tool instead.
+and format with the pinned tool instead. *Format Document* (`Shift+Alt+F`) and
+*Format Selection* (`Ctrl+K Ctrl+F`) still ask the language's formatter on demand,
+with the same per-language `formatter` choice and the same `formatOnSaveTimeout`
+bound.
 
 karet's own repository is such a project: its merge gate runs the nightly `rustfmt`
 pinned in `rust-nightly.txt`, while rust-analyzer runs the `rustfmt` on `PATH`. Its

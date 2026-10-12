@@ -70,6 +70,8 @@ static PALETTE: &[Command] = &[
     Command::GoToImplementation,
     Command::FindReferences,
     Command::RenameSymbol,
+    Command::FormatDocument,
+    Command::FormatSelection,
     Command::CodeActions,
     Command::SourceAction,
     Command::OrganizeImports,

@@ -235,6 +235,8 @@ impl App {
             Command::RenameSymbol => self.start_rename(),
             Command::RenameSubmit => self.rename_submit(),
             Command::RenameCancel => self.rename_cancel(),
+            Command::FormatDocument => self.format_active(false),
+            Command::FormatSelection => self.format_active(true),
             Command::CodeActions => self.request_code_actions(&[], ActionsFor::Menu),
             Command::SourceAction => self.request_code_actions(&["source"], ActionsFor::Menu),
             Command::OrganizeImports => self.request_code_actions(
