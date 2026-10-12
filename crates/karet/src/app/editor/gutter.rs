@@ -27,9 +27,11 @@ impl App {
     /// a collapsed fold's `⋯`, given the editor `area` of `pane`; `true` when
     /// the press is spent, `false` when it is an ordinary click in the text.
     ///
-    /// A chevron-less fold-lane cell, a modified line-number click (Ctrl keeps
-    /// go-to-definition's "nothing to resolve", Alt its caret gestures) and any
-    /// row below the last line fall through to the text click.
+    /// The fold lane of a line that heads no fold, a modified line-number
+    /// click (Ctrl keeps go-to-definition's "nothing to resolve", Alt its
+    /// caret gestures) and any row below the last line fall through to the
+    /// text click. Every row of a fold header's line, wrap continuations
+    /// included, toggles its fold.
     pub(crate) fn gutter_click(&mut self, mouse: MouseEvent, area: Rect, pane: PaneId) -> bool {
         let Some(action) = self.gutter_action(mouse, area) else {
             return false;
