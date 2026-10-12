@@ -105,10 +105,18 @@ pub(crate) fn initialize_params(root: &Path) -> Result<lsp_types::InitializePara
                 ..lsp_types::PublishDiagnosticsClientCapabilities::default()
             }),
             // Declared at all so a server knows the client renders hints;
-            // some only compute them for a client that says so.
+            // some only compute them for a client that says so. What a hover
+            // or a Ctrl+click needs may be deferred: `LspClient::resolve_inlay_hint`
+            // fills it in on demand, handing `data` back untouched.
             inlay_hint: Some(lsp_types::InlayHintClientCapabilities {
                 dynamic_registration: Some(true),
-                resolve_support: None,
+                resolve_support: Some(lsp_types::InlayHintResolveClientCapabilities {
+                    properties: vec![
+                        "tooltip".to_owned(),
+                        "label.tooltip".to_owned(),
+                        "label.location".to_owned(),
+                    ],
+                }),
             }),
             hover: Some(lsp_types::HoverClientCapabilities {
                 dynamic_registration: Some(true),

@@ -391,9 +391,9 @@ fn maps_hover_definitions_and_inlay_hints() -> Result<(), Box<dyn std::error::Er
         "kind": 2,
         "paddingLeft": true
     }]))?;
-    let mapped = inlay_hints_from_lsp(Some(hints));
+    let mapped = crate::inlay::inlay_hints_from_lsp(Some(hints));
     assert_eq!(mapped[0].label, "value: i32");
-    assert_eq!(mapped[0].kind, InlayHintKind::Parameter);
+    assert_eq!(mapped[0].kind, karet_core::InlayHintKind::Parameter);
     assert!(mapped[0].padding_left);
     Ok(())
 }

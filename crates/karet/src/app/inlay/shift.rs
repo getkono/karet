@@ -159,13 +159,7 @@ mod tests {
     }
 
     fn hint_at(line: u32, col: u32) -> InlayHint {
-        InlayHint {
-            position: LineCol::new(line, col),
-            label: ": u32".to_owned(),
-            kind: InlayHintKind::Type,
-            padding_left: false,
-            padding_right: false,
-        }
+        InlayHint::new(LineCol::new(line, col), ": u32", InlayHintKind::Type)
     }
 
     #[test]

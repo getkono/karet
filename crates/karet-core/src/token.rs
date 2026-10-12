@@ -344,6 +344,15 @@ pub enum ThemeRole {
     GutterModified,
     /// The editor-gutter marker where lines were deleted since the last commit.
     GutterDeleted,
+    /// Inlay-hint text for an inferred type (`: i32`).
+    ///
+    /// Split from [`InlayHint`](Self::InlayHint), which colors every other
+    /// kind of hint, so a type and a parameter name read apart at a glance.
+    /// VS Code themes them as `editorInlayHint.typeForeground`.
+    InlayHintType,
+    /// Inlay-hint text for a parameter name (`count:`), VS Code's
+    /// `editorInlayHint.parameterForeground`.
+    InlayHintParameter,
 }
 
 #[cfg(test)]

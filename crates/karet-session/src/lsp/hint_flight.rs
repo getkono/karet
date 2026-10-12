@@ -685,13 +685,11 @@ mod tests {
         let mut tally = FailureTally::default();
         let mut dead = false;
         let outcomes = [
-            Ok(vec![InlayHint {
-                position: karet_core::LineCol::new(0, 0),
-                label: ": i32".to_owned(),
-                kind: karet_core::InlayHintKind::Type,
-                padding_left: false,
-                padding_right: false,
-            }]),
+            Ok(vec![InlayHint::new(
+                karet_core::LineCol::new(0, 0),
+                ": i32",
+                karet_core::InlayHintKind::Type,
+            )]),
             Err(LspError::Unsupported {
                 method: "textDocument/inlayHint",
             }),

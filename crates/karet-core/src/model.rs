@@ -8,11 +8,16 @@
 
 use std::path::PathBuf;
 
-use crate::coord::LineCol;
 use crate::coord::Range;
 use crate::edit::TextEdit;
 use crate::edit::WorkspaceEdit;
 use crate::token::ThemeRole;
+
+mod inlay;
+
+pub use inlay::InlayHint;
+pub use inlay::InlayHintKind;
+pub use inlay::InlayHintLabelPart;
 
 /// Severity of a [`Diagnostic`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -203,36 +208,6 @@ pub struct Symbol {
     pub children: Vec<Symbol>,
 }
 
-/// The kind of an [`InlayHint`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[non_exhaustive]
-pub enum InlayHintKind {
-    /// An inferred type annotation.
-    Type,
-    /// A parameter name.
-    Parameter,
-    /// Forward-compatibility fallback: an unrecognized value from a newer peer.
-    #[cfg_attr(feature = "serde", serde(other))]
-    Unknown,
-}
-
-/// An inline hint rendered between characters (inferred types, parameter names).
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct InlayHint {
-    /// Where the hint is anchored.
-    pub position: LineCol,
-    /// The hint label.
-    pub label: String,
-    /// The hint kind.
-    pub kind: InlayHintKind,
-    /// Render padding before the hint.
-    pub padding_left: bool,
-    /// Render padding after the hint.
-    pub padding_right: bool,
-}
-
 /// Which edge of the end-of-line slot a [`VirtualTextPlacement::EndOfLine`]
 /// text keeps to.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -327,27 +302,6 @@ impl VirtualText {
             text: text.into(),
             role,
         }
-    }
-}
-
-impl From<&InlayHint> for VirtualText {
-    /// The hint's label at its position, with its padding as one space either
-    /// side, in the [`ThemeRole::InlayHint`] color.
-    fn from(hint: &InlayHint) -> Self {
-        let mut text = String::with_capacity(hint.label.len().saturating_add(2));
-        if hint.padding_left {
-            text.push(' ');
-        }
-        text.push_str(&hint.label);
-        if hint.padding_right {
-            text.push(' ');
-        }
-        Self::inline(
-            hint.position.line,
-            hint.position.col,
-            text,
-            ThemeRole::InlayHint,
-        )
     }
 }
 
@@ -560,31 +514,6 @@ impl CodeAction {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn an_inlay_hint_becomes_inline_virtual_text_with_its_padding_as_spaces() {
-        let hint = InlayHint {
-            position: LineCol::new(2, 9),
-            label: "i32".to_owned(),
-            kind: InlayHintKind::Type,
-            padding_left: true,
-            padding_right: false,
-        };
-        assert_eq!(
-            VirtualText::from(&hint),
-            VirtualText {
-                line: 2,
-                placement: VirtualTextPlacement::Inline { col: 9 },
-                text: " i32".to_owned(),
-                role: ThemeRole::InlayHint,
-            }
-        );
-        let both = InlayHint {
-            padding_right: true,
-            ..hint
-        };
-        assert_eq!(VirtualText::from(&both).text, " i32 ");
-    }
 
     #[test]
     fn end_of_line_text_defaults_to_the_left_edge_of_the_slot() {

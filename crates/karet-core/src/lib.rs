@@ -93,6 +93,7 @@ pub use model::EolAlign;
 pub use model::Hover;
 pub use model::InlayHint;
 pub use model::InlayHintKind;
+pub use model::InlayHintLabelPart;
 pub use model::Location;
 pub use model::Markup;
 pub use model::MarkupKind;

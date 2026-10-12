@@ -190,13 +190,11 @@ fn the_blame_hit_region_is_the_painted_label_after_an_inlay_hint() {
     }
     app.docs.inlay_hints.insert(
         DocumentId(7),
-        vec![karet_core::InlayHint {
-            position: LineCol::new(0, 5),
-            label: ": i32".to_string(),
-            kind: karet_core::InlayHintKind::Type,
-            padding_left: false,
-            padding_right: false,
-        }],
+        vec![karet_core::InlayHint::new(
+            LineCol::new(0, 5),
+            ": i32",
+            karet_core::InlayHintKind::Type,
+        )],
     );
     app.live_blame = Some(LiveBlame {
         doc: DocumentId(7),

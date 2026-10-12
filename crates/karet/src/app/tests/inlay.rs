@@ -35,13 +35,7 @@ fn inlay_requests(backend: &RecordingBackend) -> Vec<(RequestId, u32, u32)> {
 }
 
 fn hint(line: u32, col: u32, label: &str) -> InlayHint {
-    InlayHint {
-        position: LineCol::new(line, col),
-        label: label.to_owned(),
-        kind: InlayHintKind::Type,
-        padding_left: false,
-        padding_right: false,
-    }
+    InlayHint::new(LineCol::new(line, col), label, InlayHintKind::Type)
 }
 
 /// The documents inlay hints were requested for, in order.
