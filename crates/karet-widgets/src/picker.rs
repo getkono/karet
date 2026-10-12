@@ -9,7 +9,8 @@
 //! the picker is open (an answer that arrives after it opened), keeping what was
 //! typed. A picker can also be [prefixed](Picker::with_prefix) by a sigil (`@`)
 //! that names its mode: the query starts with it, and only the text after it is
-//! matched.
+//! matched. A picker whose rows a search elsewhere already matched against the
+//! query can be made [unranked](Picker::unranked), showing them as given.
 
 use karet_fuzzy::Matcher;
 
@@ -22,6 +23,9 @@ pub struct Picker<T> {
     /// The leading sigil the query starts with, excluded from matching.
     prefix: String,
     items: Vec<(String, T)>,
+    /// Whether the query filters and ranks the rows. Off for rows someone
+    /// else already matched against the query (see [`Picker::unranked`]).
+    ranked: bool,
     /// Indices into `items` for the current query, best match first.
     filtered: Vec<usize>,
     selection: ListSelection,
@@ -39,6 +43,7 @@ impl<T> Picker<T> {
             prefix: String::new(),
             selection: ListSelection::new(items.len()),
             items,
+            ranked: true,
             filtered,
             matcher: Matcher::new(),
         }
@@ -52,6 +57,17 @@ impl<T> Picker<T> {
     pub fn with_prefix(mut self, prefix: impl Into<String>) -> Self {
         self.prefix = prefix.into();
         self.query.clone_from(&self.prefix);
+        self.refilter();
+        self
+    }
+
+    /// Show every row, in the order given, whatever the query: for rows a
+    /// search elsewhere already matched against it (a language server's
+    /// answer), which may have matched on more than the label. The query is
+    /// still typed and read as usual.
+    #[must_use]
+    pub fn unranked(mut self) -> Self {
+        self.ranked = false;
         self.refilter();
         self
     }
@@ -136,6 +152,12 @@ impl<T> Picker<T> {
     /// Re-rank the items for the current query and reset the selection to the
     /// best match.
     fn refilter(&mut self) {
+        if !self.ranked {
+            self.filtered = (0..self.items.len()).collect();
+            self.selection.set_len(self.filtered.len());
+            self.selection.move_to(0);
+            return;
+        }
         let labels: Vec<&str> = self.items.iter().map(|(label, _)| label.as_str()).collect();
         let pattern = self
             .query
@@ -244,5 +266,21 @@ mod tests {
         p.set_items(vec![("food".to_string(), 3), ("fox".to_string(), 4)]);
         assert_eq!(p.rows().len(), 2);
         assert_eq!(p.selected(), 0, "a new list re-selects the best match");
+    }
+
+    #[test]
+    fn an_unranked_picker_shows_every_row_in_order_whatever_the_query() {
+        let mut p = picker().with_prefix("#").unranked();
+        p.push_str("Runner::run");
+        assert_eq!(p.query(), "#Runner::run");
+        assert_eq!(p.rows(), vec!["app.rs", "main.rs", "Makefile"]);
+        p.select_down();
+        p.set_items(vec![("run".to_string(), 4), ("rerun".to_string(), 5)]);
+        assert_eq!(p.rows(), vec!["run", "rerun"], "the given order is kept");
+        assert_eq!(
+            p.accepted(),
+            Some(&4),
+            "a new list re-selects the first row"
+        );
     }
 }

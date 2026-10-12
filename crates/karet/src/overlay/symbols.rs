@@ -126,12 +126,17 @@ impl Overlay {
 
     /// Build Go to Symbol in Workspace over `symbols`, its query seeded with
     /// the `#` sigil. Each row's file is shown relative to `root` where it is
-    /// under it.
+    /// under it. The rows are the server's answer as it gave it: the server
+    /// already matched the query, possibly on more than the name (a container,
+    /// a qualified path, a query modifier), so the picker does not filter or
+    /// re-rank them.
     #[must_use]
     pub fn workspace_symbols(root: &Path, symbols: &[WorkspaceSymbol]) -> Self {
         let rows = workspace_symbol_rows(root, symbols);
         Self::Picker(
-            Picker::new(WORKSPACE_SYMBOLS_TITLE, rows).with_prefix(WORKSPACE_SYMBOL_PREFIX),
+            Picker::new(WORKSPACE_SYMBOLS_TITLE, rows)
+                .with_prefix(WORKSPACE_SYMBOL_PREFIX)
+                .unranked(),
         )
     }
 
@@ -169,9 +174,8 @@ impl Overlay {
     }
 }
 
-/// One row per workspace symbol, in the server's order (the picker ranks them
-/// against the query). The label is the name alone, so typing matches names;
-/// the kind, container, and file ride along as the row's hint. Accepting it
+/// One row per workspace symbol, in the server's order (the picker shows them
+/// unfiltered; the server did the matching). The label is the name; the kind, container, and file ride along as the row's hint. Accepting it
 /// opens the file at the symbol, or at its top when the server named only the
 /// file.
 fn workspace_symbol_rows(root: &Path, symbols: &[WorkspaceSymbol]) -> Vec<(String, OverlayEvent)> {
@@ -382,9 +386,11 @@ mod tests {
             ],
             "a file outside the workspace keeps its whole path"
         );
-        overlay.push_str("run");
-        assert_eq!(overlay.workspace_symbol_query(), Some("run"));
-        assert_eq!(overlay.rows(), vec!["run", "rerun"]);
+        // The server matched a qualified query on the container; the picker
+        // keeps every hit it answered with, in its order.
+        overlay.push_str("Runner::run#");
+        assert_eq!(overlay.workspace_symbol_query(), Some("Runner::run#"));
+        assert_eq!(overlay.rows(), vec!["run", "rerun", "lazy"]);
         match overlay.accept() {
             OverlayEvent::AcceptSymbol { path, position, .. } => {
                 assert_eq!(path, PathBuf::from("/w/src/run.rs"));
@@ -394,6 +400,8 @@ mod tests {
         }
         let mut overlay = Overlay::workspace_symbols(root, &workspace_hits());
         overlay.push_str("lazy");
+        overlay.select_down();
+        overlay.select_down();
         match overlay.accept() {
             OverlayEvent::AcceptSymbol { path, position, .. } => {
                 assert_eq!(path, PathBuf::from("/w/src/lazy.rs"));
@@ -410,7 +418,7 @@ mod tests {
         overlay.push_str("re");
         overlay.set_workspace_symbols(root, &workspace_hits());
         assert_eq!(overlay.query(), "#re");
-        assert_eq!(overlay.rows(), vec!["rerun"]);
+        assert_eq!(overlay.rows(), vec!["run", "rerun", "lazy"]);
         let path = PathBuf::from("/w/src/lib.rs");
         let mut editor = Overlay::document_symbols(Some(&path), &tree());
         editor.set_workspace_symbols(root, &workspace_hits());
@@ -418,7 +426,11 @@ mod tests {
         assert_eq!(editor.workspace_symbol_query(), None);
         editor.set_document_symbols(Some(&path), &[]);
         overlay.set_document_symbols(Some(&path), &tree());
-        assert_eq!(overlay.rows(), vec!["rerun"], "and the other way round");
+        assert_eq!(
+            overlay.rows(),
+            vec!["run", "rerun", "lazy"],
+            "and the other way round"
+        );
     }
 
     #[test]

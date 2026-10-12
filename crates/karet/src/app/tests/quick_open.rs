@@ -544,8 +544,8 @@ fn ctrl_t_searches_the_workspace_once_typing_pauses_and_opens_the_pick() {
     assert!(app.quick_open_loading().is_none());
     assert_eq!(
         rows(&app),
-        ["launch"],
-        "the answer is ranked against the query"
+        ["launch", "other"],
+        "the server's answer is shown as it gave it"
     );
     app.overlay_accept();
     assert!(app.overlay.is_none());
