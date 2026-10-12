@@ -1,0 +1,6 @@
+# convco configuration (read by the commit-msg hook and the CI
+# "Conventional Commits" check). Everything else keeps convco's defaults.
+#
+# A commit may name several scopes separated by commas, as the history already
+# does (e.g. `fix(core,editor): ...`), when one change spans several crates.
+scopeRegex: ^[[:alnum:]]+(?:[-_/,][[:alnum:]]+)*$
