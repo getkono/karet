@@ -10,6 +10,7 @@ mod change_lane;
 mod comment;
 mod diagnostics;
 mod display;
+mod grapheme;
 mod hit;
 mod inlay;
 mod motion;

@@ -20,6 +20,12 @@ pub struct BytePos(pub usize);
 /// `col` is counted in Unicode scalar values (`char`s) — karet's canonical
 /// internal unit. Boundaries that speak other units (LSP's UTF-16 default)
 /// translate at the edge via `karet_text::TextBuffer`.
+///
+/// A `char` is not what a user perceives as one character: a combining
+/// sequence, a ZWJ emoji or a flag spans several. Editing code that moves or
+/// deletes by "one character" steps an extended grapheme cluster, so a caret
+/// produced by the editor rests on a cluster boundary even though the column
+/// itself still counts `char`s.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LineCol {
