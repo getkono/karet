@@ -85,11 +85,7 @@ impl App {
     /// The trigger and commit characters of the server completing in `doc`,
     /// as its last answer there said; empty before any did.
     pub(crate) fn completion_characters(&self, doc: DocumentId) -> CompletionOptions {
-        self.completion_chars
-            .as_ref()
-            .filter(|(known, _)| *known == doc)
-            .map(|(_, options)| options.clone())
-            .unwrap_or_default()
+        self.completion_chars.get(&doc).cloned().unwrap_or_default()
     }
 
     /// Auto-trigger after typing `c`: identifier characters open the popup (a
@@ -339,7 +335,7 @@ impl App {
             return;
         }
         if !options.trigger_characters.is_empty() || !options.commit_characters.is_empty() {
-            self.completion_chars = Some((doc, options));
+            self.completion_chars.insert(doc, options);
         }
         let still_valid = matches!(self.completion_target(), Some((d, caret))
             if d == doc && crate::completion::caret_still_anchored(pending.anchor, caret));

@@ -155,7 +155,7 @@ impl App {
             auto_save_pending: HashMap::new(),
             pending_completion: None,
             completion: None,
-            completion_chars: None,
+            completion_chars: HashMap::new(),
             completion_follow_up: None,
             completion_matcher: karet_fuzzy::Matcher::new(),
             pending_hover: None,

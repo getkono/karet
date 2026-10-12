@@ -301,6 +301,41 @@ fn eager_additional_edits_are_not_asked_for_again() {
     assert!(app.completion_follow_up.is_none());
 }
 
+/// Each document keeps the characters its own server last answered with:
+/// another document's answer does not revert this one to the built-in ones.
+#[test]
+fn completion_characters_are_kept_per_document() {
+    let (backend, mut app) = completion_app("a\n", LineCol::new(0, 1));
+    let here = CompletionOptions {
+        trigger_characters: vec!['<'],
+        commit_characters: vec![';'],
+    };
+    answer(&mut app, &backend, Vec::new(), false, here.clone());
+    let elsewhere = CompletionOptions {
+        trigger_characters: vec!['#'],
+        commit_characters: Vec::new(),
+    };
+    let id = RequestId(u64::MAX);
+    app.pending_completion = Some(crate::completion::PendingCompletion {
+        id,
+        doc: DocumentId(10),
+        anchor: LineCol::new(0, 0),
+        position: LineCol::new(0, 0),
+    });
+    app.on_backend_event(
+        Some(id),
+        SessionEvent::Completions {
+            doc: DocumentId(10),
+            version: 0,
+            items: Vec::new(),
+            incomplete: false,
+            options: elsewhere.clone(),
+        },
+    );
+    assert_eq!(app.completion_characters(DocumentId(9)), here);
+    assert_eq!(app.completion_characters(DocumentId(10)), elsewhere);
+}
+
 /// A server's commit character accepts the selection and is then typed; a
 /// character it did not name is just typed.
 #[test]
