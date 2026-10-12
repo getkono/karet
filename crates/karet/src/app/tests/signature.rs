@@ -6,6 +6,8 @@
 use karet_core::CompletionItem;
 use karet_core::CompletionKind;
 use karet_core::CompletionOptions;
+use karet_core::Markup;
+use karet_core::MarkupKind;
 use karet_core::ParamInfo;
 use karet_core::Signature;
 use karet_core::SignatureHelp;
@@ -260,6 +262,89 @@ fn arrows_cycle_overloads_and_the_pick_survives_a_refresh() {
     let (_backend, mut single) = open_popup("add(\n\n", LineCol::new(0, 4));
     key(&mut single, KeyCode::Down, KeyModifiers::NONE);
     assert_eq!(single.tabs[single.active].editor.cursor().line, 1);
+}
+
+/// With the hover popup over it the signature popup is hidden, so the
+/// arrows are not spent cycling an overload nobody sees: they move the caret.
+#[test]
+fn an_open_hover_leaves_the_arrows_to_the_caret() {
+    let (backend, mut app) = completion_app("f(\n\n", LineCol::new(0, 2));
+    app.dispatch(Command::SignatureHelp);
+    let overloads = SignatureHelp {
+        signatures: vec![signature("f(a)", &["a"]), signature("f(a, b)", &["a", "b"])],
+        active_signature: 0,
+        active_parameter: 0,
+    };
+    answer(&mut app, &backend, Some(overloads));
+    app.hover_ui = Some(crate::hover::HoverUi {
+        markup: Markup {
+            kind: MarkupKind::Markdown,
+            value: "docs".to_owned(),
+        },
+        doc: DocumentId(9),
+        at: LineCol::new(0, 2),
+        scroll: 0,
+        rect: Rect::default(),
+    });
+    key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+    assert_eq!(app.tabs[app.active].editor.cursor().line, 1);
+    let chosen = app.signature.ui.as_ref().and_then(|ui| ui.chosen);
+    assert_eq!(chosen, None, "no overload was cycled under the hover");
+}
+
+/// Switching to another document's tab closes the popup and forgets the
+/// request in flight: its answer belongs to the document left behind.
+#[test]
+fn switching_tab_closes_the_popup() {
+    let (backend, mut app) = completion_app("add(1)\n", LineCol::new(0, 4));
+    app.push_tab(text_tab("other.rs", "add(2)\n"));
+    let other = app.active;
+    if let TabKind::Code { doc, .. } = &mut app.tabs[other].kind {
+        *doc = Some(DocumentId(10));
+    }
+    app.tabs[other].editor.set_carets(&[LineCol::new(0, 4)]);
+    app.set_active(0);
+    app.dispatch(Command::SignatureHelp);
+    answer(&mut app, &backend, Some(add_help(0)));
+    assert!(app.signature.ui.is_some(), "the answer opens the popup");
+    key(&mut app, KeyCode::Char('2'), KeyModifiers::NONE);
+    assert!(app.signature.pending.is_some(), "a refresh is in flight");
+
+    app.dispatch(Command::NextTab);
+    app.reconcile_completion();
+    assert_eq!(app.active, other);
+    assert!(app.signature.ui.is_none());
+    assert!(app.signature.pending.is_none());
+}
+
+/// Moving the keyboard off the editor closes the popup.
+#[test]
+fn the_editor_losing_the_keyboard_closes_the_popup() {
+    let (_backend, mut app) = open_popup("add(1)\n", LineCol::new(0, 4));
+    app.focus = Focus::Sidebar;
+    app.reconcile_completion();
+    assert!(app.signature.ui.is_none());
+}
+
+/// Closing a document's tab drops the trigger characters its server named.
+#[test]
+fn closing_the_tab_forgets_its_trigger_characters() {
+    let (backend, mut app) = completion_app("f\n", LineCol::new(0, 1));
+    app.open_docs.insert(DocumentId(9));
+    key(&mut app, KeyCode::Char('('), KeyModifiers::NONE);
+    let options = SignatureHelpOptions {
+        trigger_characters: vec!['<'],
+        retrigger_characters: vec![','],
+    };
+    answer_with(&mut app, &backend, None, options);
+    assert!(app.signature.chars.contains_key(&DocumentId(9)));
+
+    // The typed `(` dirtied it; close without the unsaved-changes prompt.
+    let idx = app.active;
+    app.tabs[idx].dirty = false;
+    app.dispatch(Command::CloseTab);
+    assert!(matches!(app.tabs[app.active].kind, TabKind::Welcome));
+    assert!(!app.signature.chars.contains_key(&DocumentId(9)));
 }
 
 #[test]

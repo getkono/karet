@@ -256,9 +256,15 @@ impl App {
 
     /// Handle a key while the popup is open; returns whether it was consumed.
     /// Esc closes it, and with overloads to pick from Up/Down cycle them.
-    /// Only while the completion popup is closed: its keys come first.
+    /// Only while the completion popup is closed: its keys come first. Nor
+    /// while the hover popup is open: the signature popup is hidden under it,
+    /// so the arrows move the caret instead of cycling an unseen overload.
     pub(super) fn signature_key(&mut self, key: KeyEvent) -> bool {
-        if self.completion.is_some() || !self.editor_owns_keyboard() || !key.modifiers.is_empty() {
+        if self.completion.is_some()
+            || self.hover_ui.is_some()
+            || !self.editor_owns_keyboard()
+            || !key.modifiers.is_empty()
+        {
             return false;
         }
         let Some(ui) = self.signature.ui.as_mut() else {
