@@ -63,6 +63,8 @@ pub enum Command {
     OpenQuickOpen,
     /// Open quick-open in its `@` mode: jump to a symbol of the active document.
     GoToSymbolInEditor,
+    /// Open quick-open in its `:` mode: jump to a line of the active document.
+    GoToLine,
     /// Pick a recently opened workspace and reopen karet on it.
     OpenRecentWorkspace,
     /// Open the command palette overlay.
@@ -732,6 +734,7 @@ impl Command {
             Self::ProblemsFilterCancel => "Problems: Clear Filter",
             Self::OpenQuickOpen => "Go to File…",
             Self::GoToSymbolInEditor => "Go to Symbol in Editor…",
+            Self::GoToLine => "Go to Line/Column…",
             Self::OpenRecentWorkspace => "File: Open Recent…",
             Self::OpenCommandPalette => "Show All Commands",
             Self::OpenFind => "Find in File…",

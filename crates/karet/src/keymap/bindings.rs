@@ -32,6 +32,9 @@ pub(super) static BINDINGS: &[Binding] = &[
     // Ctrl+Shift+O is Go to Symbol in Editor (VS Code parity); the outline
     // panel it used to toggle moved to the `Ctrl+K` chord family below.
     b(Global, true,  true,  false, Char('o'), Command::GoToSymbolInEditor),
+    // Ctrl+G is Go to Line (VS Code parity). The find bar and the commit
+    // message field keep their own Ctrl+G: their layers outrank Global.
+    b(Global, true,  false, false, Char('g'), Command::GoToLine),
     b(Global, true,  false, false, Char('w'), Command::CloseTab),
     b(Global, true,  false, false, Char('1'), Command::SelectPanel(SidebarPanel::Explorer)),
     b(Global, true,  false, false, Char('2'), Command::SelectPanel(SidebarPanel::Search)),
