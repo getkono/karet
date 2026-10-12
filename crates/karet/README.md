@@ -120,10 +120,18 @@ rows are also clickable.
 symbol under it is defined, opening the defining file when it is elsewhere; holding
 `Ctrl` underlines the symbol under the pointer when a running language server can
 resolve it. When a symbol has several definitions, a filterable picker lists them by
-path and line. `Ctrl+Alt+←` (**Go Back**) returns to the position the jump started
-from. Both commands are in the palette as *Go to Definition* and *Go Back*. Some
-emulators consume `Ctrl+Click` for their own link handling, which is why `F12` also
-exists.
+path and line, each with a preview of its source line. `Ctrl+Alt+←` (**Go Back**)
+returns to the position the jump started from. Both commands are in the palette as
+*Go to Definition* and *Go Back*. Some emulators consume `Ctrl+Click` for their own
+link handling, which is why `F12` also exists.
+
+**Editor — references and related navigation.** `Shift+F12` (*Find All References*)
+lists every use of the symbol at the caret, its declaration included, in the same
+picker — always, even for a single use. `Ctrl+F12` (*Go to Implementation*) jumps to
+the implementations of a trait, interface or abstract member, and *Go to Declaration*
+and *Go to Type Definition* are in the palette. Each jumps straight to a lone answer
+(references excepted) and offers the picker for several; a server that does not
+offer one says so.
 
 **Editor — rename symbol.** `F2` (palette: *Rename Symbol*) opens an inline prompt
 under the symbol at the caret, its current name selected so typing replaces it; the

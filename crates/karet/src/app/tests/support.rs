@@ -213,6 +213,7 @@ pub(crate) fn content_frame(app: &App, rect: Rect) -> PaneFrame {
         lsp_badge_hit: None,
         content_rect: rect,
         editor_rect: rect,
+        markdown_preview_rect: Rect::default(),
         commit_file_hits: Vec::new(),
         commit_dir_hits: Vec::new(),
         commit_rail_rect: Rect::default(),

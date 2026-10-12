@@ -5,6 +5,14 @@ pub(super) fn in_any(selections: &[Range], l: u32, col: u32) -> bool {
     selections.iter().any(|r| col_in_range(l, col, *r))
 }
 
+/// Whether the line break ending line `l` (of `line_len` chars) is inside any of
+/// `selections`: the break occupies the slot one past the last character, so a
+/// selection covers it exactly when it covers that column. An empty line inside
+/// a selection is the case with `line_len == 0`.
+pub(super) fn newline_in_any(selections: &[Range], l: u32, line_len: u32) -> bool {
+    in_any(selections, l, line_len)
+}
+
 /// Whether `c` is part of a word, on the shared [`karet_core::word_class`] model.
 pub(super) fn is_word_char(c: char) -> bool {
     karet_core::is_word_char(c)

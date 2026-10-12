@@ -64,9 +64,56 @@ pub struct CompletionState {
     /// grabbed like every other one. The popup lays itself out inside its own
     /// `render`, so this is the only way its caller learns where the bar ended up.
     track: Option<ScrollTrack>,
+    /// Where the last render painted the popup, scrollbar included, so the caller
+    /// can tell a pointer over the popup from one over the text beneath it.
+    area: Rect,
+    /// The rows the last render painted candidates into: [`area`](Self::area)
+    /// less the scrollbar column.
+    rows: Rect,
 }
 
 impl CompletionState {
+    /// Where the last render painted the popup; empty once [`hide`](Self::hide)d.
+    #[must_use]
+    pub const fn area(&self) -> Rect {
+        self.area
+    }
+
+    /// Forget where the popup was painted, for a frame that does not draw it.
+    ///
+    /// The render records its area and its scrollbar, but only a frame that
+    /// renders can update them. Without this a popup that stopped showing (the
+    /// caret scrolled out of view) would keep claiming the pointer at its last
+    /// spot.
+    pub fn hide(&mut self) {
+        self.area = Rect::default();
+        self.rows = Rect::default();
+        self.track = None;
+    }
+
+    /// The candidate (an index into [`CompletionPopup::ranked`]) painted at the
+    /// screen cell `(x, y)` by the last render, if a row is there. The scrollbar
+    /// column is not a row.
+    #[must_use]
+    pub fn row_at(&self, x: u16, y: u16) -> Option<usize> {
+        let rows = self.rows;
+        let inside = x >= rows.x && x < rows.right() && y >= rows.y && y < rows.bottom();
+        inside.then(|| self.scroll + usize::from(y - rows.y))
+    }
+
+    /// Scroll the window by `delta` rows over a `len`-row list, keeping it full
+    /// and bringing the selection along when it would leave the window — a wheel
+    /// notch over the popup.
+    pub fn scroll_by(&mut self, delta: isize, len: usize) {
+        let visible = usize::from(self.rows.height);
+        if visible == 0 {
+            return;
+        }
+        let max = len.saturating_sub(visible);
+        let position = self.scroll.saturating_add_signed(delta).min(max);
+        self.scroll_to(position, visible);
+    }
+
     /// Move the selection down, wrapping past the end of a `len`-row list.
     pub fn select_next(&mut self, len: usize) {
         if len == 0 {
@@ -257,6 +304,7 @@ impl StatefulWidget for CompletionPopup<'_> {
         if ranked.is_empty() {
             return;
         }
+        state.area = area;
         let (area, tracks) = reserve_tracks(
             area,
             ScrollAxes {
@@ -264,6 +312,7 @@ impl StatefulWidget for CompletionPopup<'_> {
                 horizontal: false,
             },
         );
+        state.rows = area;
         // Clamp the selection, then scroll the window to keep it visible.
         state.selected = state.selected.min(ranked.len() - 1);
         let visible = usize::from(area.height);
@@ -533,6 +582,59 @@ mod tests {
         state.select_prev(items.len()); // wraps to the last item
         let buf = render(&items, "", area, &mut state);
         assert!(row_text(&buf, 9).contains("item_24"));
+    }
+
+    #[test]
+    fn rows_resolve_to_the_candidates_painted_there() {
+        let items: Vec<CompletionItem> = (0..25)
+            .map(|i| item(&format!("item_{i:02}"), CompletionKind::Text, None))
+            .collect();
+        let mut state = CompletionState::default();
+        for _ in 0..12 {
+            state.select_next(items.len());
+        }
+        let area = Rect::new(4, 2, 12, MAX_VISIBLE_ROWS);
+        let buf = render(&items, "", area, &mut state);
+        assert_eq!(state.area(), area);
+        // The window starts at item_03, so the top row is ranked index 3.
+        assert!(row_text(&buf, 2).contains("item_03"));
+        assert_eq!(state.row_at(4, 2), Some(3));
+        assert_eq!(state.row_at(14, 11), Some(12));
+        // The scrollbar column, and anything outside the popup, is no row.
+        assert_eq!(state.row_at(15, 5), None, "the scrollbar column");
+        assert_eq!(state.row_at(3, 2), None);
+        assert_eq!(state.row_at(4, 12), None);
+        state.hide();
+        assert_eq!(state.area(), Rect::default());
+        assert_eq!(state.row_at(4, 2), None);
+        assert_eq!(state.track(), None);
+    }
+
+    #[test]
+    fn a_wheel_scroll_moves_the_window_and_drags_the_selection_along() {
+        let items: Vec<CompletionItem> = (0..25)
+            .map(|i| item(&format!("item_{i:02}"), CompletionKind::Text, None))
+            .collect();
+        let mut state = CompletionState::default();
+        let area = Rect::new(0, 0, 12, MAX_VISIBLE_ROWS);
+        render(&items, "", area, &mut state);
+        state.scroll_by(3, items.len());
+        let buf = render(&items, "", area, &mut state);
+        assert!(row_text(&buf, 0).contains("item_03"), "scrolled three rows");
+        assert_eq!(state.selected, 3, "the selection stays in the window");
+        // Clamped at the end, so the window stays full.
+        state.scroll_by(100, items.len());
+        let buf = render(&items, "", area, &mut state);
+        assert!(row_text(&buf, 9).contains("item_24"));
+        assert_eq!(state.row_at(0, 0), Some(15));
+        // And at the top.
+        state.scroll_by(-100, items.len());
+        let buf = render(&items, "", area, &mut state);
+        assert!(row_text(&buf, 0).contains("item_00"));
+        // A popup that was never painted has no window to scroll.
+        let mut unpainted = CompletionState::default();
+        unpainted.scroll_by(3, items.len());
+        assert_eq!(unpainted, CompletionState::default());
     }
 
     #[test]

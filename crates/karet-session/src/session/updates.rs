@@ -175,6 +175,7 @@ impl Session {
                 request,
                 doc,
                 version,
+                kind,
                 mut locations,
                 ..
             } => {
@@ -188,12 +189,11 @@ impl Session {
                 // request came from, and the server answers in UTF-16 columns for
                 // every one of them — so each location is converted against its own
                 // file, not just the requesting document's buffer.
-                for location in &mut locations {
-                    if let Some(buffer) = self.buffer_for_path(&location.path) {
-                        location.range = utf16_range_to_buffer(&buffer, location.range);
-                    }
-                }
-                self.emit(Some(request), Event::Definitions { locations });
+                self.locations_to_buffer_columns(&mut locations);
+                self.emit(
+                    Some(request),
+                    lsp_requests::locations_event(kind, locations),
+                );
             },
             LspUpdate::WorkspaceSymbols {
                 request, symbols, ..

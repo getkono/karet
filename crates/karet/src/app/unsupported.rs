@@ -17,6 +17,8 @@ fn feature_label(feature: ServerFeature) -> &'static str {
     match feature {
         ServerFeature::Hover => "hover",
         ServerFeature::Definition => "go to definition",
+        ServerFeature::Declaration => "go to declaration",
+        ServerFeature::TypeDefinition => "go to type definition",
         ServerFeature::Rename => "rename",
         ServerFeature::WorkspaceSymbol => "workspace symbol search",
         ServerFeature::References => "find references",

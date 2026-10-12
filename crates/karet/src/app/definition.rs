@@ -1,13 +1,49 @@
-//! Go to Definition: request, correlate, and land the caret.
+//! Go to Definition and its siblings: request, correlate, and land the caret.
 //!
 //! The backend seam already existed — `Command::Definition` in, `Event::Definitions`
 //! out — and this module is the client half. Ctrl+click and F12 funnel through the
 //! same [`App::request_definition`], so a mouse jump and a keyboard jump behave
 //! identically and there is one place where staleness is decided.
+//!
+//! Go to Declaration, Type Definition and Implementation, and Find All References
+//! (`Command::FindLocations` in, `Event::Locations` out) are the same request with
+//! a [`LocationKind`], and share every rule here: one pending request, dropped when
+//! the user has moved to another view, a jump for one answer and the location
+//! picker for several.
+
+use std::collections::HashMap;
 
 use karet_core::Location;
 
 use super::*;
+
+/// How long a picker row's source-line preview may run before it is cut.
+const PREVIEW_CHARS: usize = 80;
+
+/// The noun a navigation request is named by in its notices: `None` is Go to
+/// Definition.
+fn navigation_noun(kind: Option<LocationKind>) -> &'static str {
+    match kind {
+        None => "definition",
+        Some(LocationKind::Declaration) => "declaration",
+        Some(LocationKind::TypeDefinition) => "type definition",
+        Some(LocationKind::Implementation) => "implementation",
+        Some(LocationKind::References) => "references",
+        Some(_) => "location",
+    }
+}
+
+/// The title of the picker offered for several answers.
+fn navigation_title(kind: Option<LocationKind>) -> &'static str {
+    match kind {
+        None => "Go to Definition",
+        Some(LocationKind::Declaration) => "Go to Declaration",
+        Some(LocationKind::TypeDefinition) => "Go to Type Definition",
+        Some(LocationKind::Implementation) => "Go to Implementation",
+        Some(LocationKind::References) => "References",
+        Some(_) => "Go to Location",
+    }
+}
 
 /// The symbol under a Ctrl-held pointer, to be underlined as navigable.
 #[derive(Clone, Copy, Debug)]
@@ -27,6 +63,8 @@ pub(crate) struct PendingDefinition {
     pub(crate) id: RequestId,
     pub(crate) doc: DocumentId,
     pub(crate) view: ViewId,
+    /// What was asked: `None` for Go to Definition itself.
+    pub(crate) kind: Option<LocationKind>,
 }
 
 impl App {
@@ -54,28 +92,64 @@ impl App {
     /// "resolving…" status: nothing on screen changes until the answer lands, and a
     /// spinner for a sub-second round trip is the flicker the UI guidelines warn off.
     pub(crate) fn request_definition(&mut self) {
+        self.request_locations(None);
+    }
+
+    /// Ask the language server where to navigate from the symbol at the caret:
+    /// its definition (`None`), or what `kind` names.
+    ///
+    /// Every kind shares the one pending slot, so the last navigation gesture
+    /// wins whichever it was.
+    pub(crate) fn request_locations(&mut self, kind: Option<LocationKind>) {
         let Some((doc, position)) = self.completion_target() else {
+            let noun = navigation_title(kind).to_lowercase();
             self.notify(
                 Report::Refusal,
                 NotificationKind::Lsp,
-                "go to definition: open a code file first",
+                format!("{noun}: open a code file first"),
             );
             return;
         };
         let Some(view) = self.tabs.get(self.active).map(|tab| tab.view) else {
             return;
         };
-        self.pending_definition = self
-            .send(SessionCommand::Definition { doc, position })
-            .map(|id| PendingDefinition { id, doc, view });
+        let command = match kind {
+            None => SessionCommand::Definition { doc, position },
+            Some(kind) => SessionCommand::FindLocations {
+                doc,
+                position,
+                kind,
+            },
+        };
+        self.pending_definition = self.send(command).map(|id| PendingDefinition {
+            id,
+            doc,
+            view,
+            kind,
+        });
     }
 
     /// Adopt a definition answer: jump to it, or say why there is nothing to jump to.
     pub(crate) fn on_definitions(&mut self, id: Option<RequestId>, locations: Vec<Location>) {
+        self.on_locations(id, None, locations);
+    }
+
+    /// Adopt a navigation answer: jump to a lone location, offer the picker for
+    /// several, or say why there is nothing to jump to.
+    ///
+    /// References always open the picker, even for one: the user asked *where
+    /// the symbol is used*, and a list of one answers that where a silent jump
+    /// (often onto the declaration under the caret) would not.
+    pub(crate) fn on_locations(
+        &mut self,
+        id: Option<RequestId>,
+        kind: Option<LocationKind>,
+        locations: Vec<Location>,
+    ) {
         let Some(pending) = self.pending_definition else {
             return; // unsolicited
         };
-        if id != Some(pending.id) {
+        if id != Some(pending.id) || kind != pending.kind {
             return; // a superseded request answering late; the live one still stands
         }
         self.pending_definition = None;
@@ -89,17 +163,23 @@ impl App {
         if !same_view || !same_doc {
             return;
         }
+        let references = kind == Some(LocationKind::References);
         match locations.split_first() {
             None => {
-                let reason = self.no_definition_reason().to_string();
+                let reason = self.no_definition_reason(kind);
                 self.notify(Report::Refusal, NotificationKind::Lsp, reason);
             },
             // One answer never costs a keystroke to accept.
-            Some((only, [])) => {
+            Some((only, [])) if !references => {
                 let (path, position) = (only.path.clone(), only.range.start);
                 self.jump_to_location(&path, position);
             },
-            Some(_) => self.overlay = Some(Overlay::definitions(&self.root.clone(), locations)),
+            Some(_) => {
+                let previews = self.location_previews(&locations);
+                let entries = locations.into_iter().zip(previews).collect();
+                let title = navigation_title(kind);
+                self.overlay = Some(Overlay::locations(title, &self.root.clone(), entries));
+            },
         }
     }
 
@@ -107,20 +187,53 @@ impl App {
     ///
     /// A server that is still starting answers instantly with nothing, which would
     /// otherwise read as "this symbol has no definition".
-    fn no_definition_reason(&self) -> &'static str {
+    fn no_definition_reason(&self, kind: Option<LocationKind>) -> String {
         match self.active_language_server_badge().map(|badge| badge.state) {
             None
             | Some(
                 LanguageServerBadge::Off
                 | LanguageServerBadge::NotInstalled
                 | LanguageServerBadge::NeedsSetup,
-            ) => "no language server for this file",
-            Some(LanguageServerBadge::Failed) => "the language server for this file is not running",
-            Some(LanguageServerBadge::Starting | LanguageServerBadge::Retrying) => {
-                "language server is still starting"
+            ) => "no language server for this file".to_string(),
+            Some(LanguageServerBadge::Failed) => {
+                "the language server for this file is not running".to_string()
             },
-            _ => "no definition found",
+            Some(LanguageServerBadge::Starting | LanguageServerBadge::Retrying) => {
+                "language server is still starting".to_string()
+            },
+            _ => format!("no {} found", navigation_noun(kind)),
         }
+    }
+
+    /// The trimmed source line each location points at, for its picker row.
+    ///
+    /// An open tab's buffer is read first, so unsaved edits are what the row
+    /// shows; any other file is read from disk once, however many locations it
+    /// holds. A line that cannot be read previews as nothing rather than
+    /// failing the picker: the location is still worth offering.
+    fn location_previews(&self, locations: &[Location]) -> Vec<String> {
+        let mut files: HashMap<&Path, Option<Vec<String>>> = HashMap::new();
+        locations
+            .iter()
+            .map(|location| {
+                let line = location.range.start.line as usize;
+                let open = self.tabs.iter().find_map(|tab| match &tab.kind {
+                    TabKind::Code { path, buffer, .. } if *path == location.path => {
+                        Some(buffer.line(line))
+                    },
+                    _ => None,
+                });
+                let text = open.unwrap_or_else(|| {
+                    let lines = files.entry(location.path.as_path()).or_insert_with(|| {
+                        let text = std::fs::read_to_string(&location.path).ok()?;
+                        Some(text.lines().map(str::to_string).collect())
+                    });
+                    lines.as_ref().and_then(|lines| lines.get(line).cloned())
+                });
+                let text = text.unwrap_or_default();
+                text.trim().chars().take(PREVIEW_CHARS).collect()
+            })
+            .collect()
     }
 }
 

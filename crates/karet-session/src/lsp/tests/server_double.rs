@@ -117,6 +117,7 @@ fn advertised_capabilities(behavior: Behavior) -> Value {
         "hoverProvider": true,
         "completionProvider": {"resolveProvider": true},
         "definitionProvider": true,
+        "referencesProvider": true,
         "documentSymbolProvider": true,
         "workspaceSymbolProvider": true,
         "renameProvider": true,
@@ -271,6 +272,23 @@ pub(super) fn test_connector(
                                     "kind": 1,
                                     "paddingLeft": false,
                                     "paddingRight": false
+                                }]}),
+                            )
+                            .await;
+                        },
+                        // One reference in the asking file at UTF-16
+                        // character 4 of line 0: buffer column 3 behind a
+                        // leading emoji.
+                        Some("textDocument/references") => {
+                            let uri = msg["params"]["textDocument"]["uri"].clone();
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": [{
+                                    "uri": uri,
+                                    "range": {
+                                        "start": {"line": 0, "character": 4},
+                                        "end": {"line": 0, "character": 5}
+                                    }
                                 }]}),
                             )
                             .await;

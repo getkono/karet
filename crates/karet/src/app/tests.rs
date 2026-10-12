@@ -35,6 +35,7 @@ mod line_changes;
 mod markdown_edit;
 mod multi_caret;
 mod overlay_focus;
+mod pointer_routing;
 mod preview;
 #[cfg(feature = "images")]
 mod preview_images;

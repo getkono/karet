@@ -1,6 +1,8 @@
 //! Mouse handling for the window chrome — tab strips, breadcrumbs, toasts,
-//! the status bar, blame, markdown links, and context menus — split from the
-//! core mouse module to respect the per-file code-line ceiling.
+//! the status bar, blame, markdown links, and context menus — and for routing
+//! the pointer to what is under it: background panes, and the completion,
+//! hover and diagnostic popups. Split from the core mouse module to respect the
+//! per-file code-line ceiling.
 
 use super::*;
 
@@ -61,7 +63,7 @@ impl App {
                     && let Some((i, _)) = hit
                 {
                     self.select_tab(i);
-                    self.open_pane_context_menu(mouse.column, mouse.row);
+                    self.open_pane_context_menu(mouse.column, mouse.row, false);
                 }
             },
             MouseEventKind::Moved => {
@@ -231,6 +233,17 @@ impl App {
         else {
             return false;
         };
+        // Every pane's links are live. The link resolves against the file it is
+        // in, so the click focuses that pane first, as any click on its text does.
+        if let Some(pane) = self
+            .pane_frames
+            .iter()
+            .find(|frame| rect_contains(frame.content_rect, point))
+            .map(|frame| frame.pane)
+        {
+            self.focus_pane_switch(pane);
+            self.focus = Focus::Editor;
+        }
         let Some(source) = self
             .tabs
             .get(self.active)
@@ -286,6 +299,265 @@ impl App {
                 format!("linked file does not exist: {}", path.display()),
             );
         }
+    }
+
+    /// Run `f` with `pane` standing in as the focused pane, then hand focus back.
+    ///
+    /// Every scroll path writes "the active tab", and only the focused pane's tabs
+    /// are live in `tabs`/`active`. A wheel notch or a scrollbar gesture over a
+    /// background pane borrows the focus for exactly that one write, so it lands
+    /// on the pane under the pointer without moving the user's focus there. The
+    /// swap is done by hand rather than through `focus_pane_switch`, which would
+    /// record each borrowed tab as an activation in the view history.
+    pub(in crate::app) fn with_pane(&mut self, pane: PaneId, f: impl FnOnce(&mut Self)) {
+        let home = self.layout.focus();
+        if pane == home {
+            f(self);
+            return;
+        }
+        let Some(visiting) = self.stored.remove(&pane) else {
+            return;
+        };
+        let home_tabs = std::mem::replace(&mut self.tabs, visiting.tabs);
+        let home_active = std::mem::replace(&mut self.active, visiting.active);
+        self.layout.set_focus(pane);
+        f(self);
+        self.layout.set_focus(home);
+        let tabs = std::mem::replace(&mut self.tabs, home_tabs);
+        let active = std::mem::replace(&mut self.active, home_active);
+        self.stored.insert(pane, StoredPane { tabs, active });
+    }
+
+    /// Scroll the pane under the pointer, whichever pane has focus, and leave the
+    /// focus where it is. Returns `true` when the event was a wheel notch over a
+    /// pane's content.
+    ///
+    /// Within the pane the notch goes to the part under the pointer: the Markdown
+    /// preview beside the source, the commit view's file rail, or the document.
+    /// Horizontal notches, and Shift with a vertical one, scroll columns over the
+    /// document itself.
+    pub(in crate::app) fn pane_wheel(&mut self, mouse: MouseEvent) -> bool {
+        let point = (mouse.column, mouse.row);
+        let (delta, horizontal) = match mouse.kind {
+            MouseEventKind::ScrollDown => (3, false),
+            MouseEventKind::ScrollUp => (-3, false),
+            MouseEventKind::ScrollRight => (3, true),
+            MouseEventKind::ScrollLeft => (-3, true),
+            _ => return false,
+        };
+        let Some((pane, in_editor, in_rail, in_preview)) = self
+            .pane_frames
+            .iter()
+            .find(|frame| rect_contains(frame.content_rect, point))
+            .map(|frame| {
+                (
+                    frame.pane,
+                    rect_contains(frame.editor_rect, point),
+                    rect_contains(frame.commit_rail_rect, point),
+                    rect_contains(frame.markdown_preview_rect, point),
+                )
+            })
+        else {
+            return false;
+        };
+        let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
+        self.with_pane(pane, |app| {
+            // The Seam view answers the wheel itself, from the hit map it recorded in
+            // whichever pane painted it; the document scroll below has nothing to move.
+            if app.seam_mouse(mouse) {
+                return;
+            }
+            if horizontal {
+                if in_editor {
+                    app.scroll_columns(delta);
+                }
+            } else if in_preview {
+                app.scroll_markdown_preview(delta);
+            } else if in_rail {
+                app.commit_rail_scroll(delta);
+            } else if shift && in_editor {
+                app.scroll_columns(delta);
+            } else {
+                app.scroll_lines(delta);
+            }
+        });
+        true
+    }
+
+    /// Route a wheel notch or a press on a background pane's scrollbar. Returns
+    /// `true` when it was one.
+    ///
+    /// The wheel scrolls that pane in place, as it does over its text. A press
+    /// focuses the pane first, as a press on its text does, so a thumb drag it
+    /// arms goes on writing to the pane it grabbed.
+    pub(in crate::app) fn background_scrollbar_mouse(&mut self, mouse: MouseEvent) -> bool {
+        let point = (mouse.column, mouse.row);
+        // Only the bars that scroll a pane's own tab; anything floating over a pane
+        // (the outline overlay) is not the pane's to lend.
+        let tab_scoped = self
+            .scroll_hits
+            .at(mouse.column, mouse.row)
+            .is_some_and(|hit| {
+                matches!(
+                    hit.surface,
+                    ScrollSurface::TabRows
+                        | ScrollSurface::TabColumns
+                        | ScrollSurface::EditorPreview
+                        | ScrollSurface::CommitFileRail
+                )
+            });
+        if !tab_scoped {
+            return false;
+        }
+        let focused = self.focus_pane();
+        let Some(pane) = self
+            .pane_frames
+            .iter()
+            .find(|frame| frame.pane != focused && rect_contains(frame.content_rect, point))
+            .map(|frame| frame.pane)
+        else {
+            return false;
+        };
+        match mouse.kind {
+            MouseEventKind::Down(_) => {
+                self.focus_pane_switch(pane);
+                self.focus = Focus::Editor;
+                self.scrollbar_mouse(mouse)
+            },
+            MouseEventKind::ScrollDown
+            | MouseEventKind::ScrollUp
+            | MouseEventKind::ScrollLeft
+            | MouseEventKind::ScrollRight => {
+                let mut taken = false;
+                self.with_pane(pane, |app| taken = app.scrollbar_mouse(mouse));
+                taken
+            },
+            _ => false,
+        }
+    }
+
+    /// The completion popup owns the pointer over it: a click on a row accepts
+    /// that candidate, and the wheel scrolls the list rather than the text under
+    /// it. Returns `true` when the event landed on the popup. Its scrollbar is
+    /// routed before this, with every other bar.
+    pub(in crate::app) fn handle_completion_mouse(&mut self, mouse: MouseEvent) -> bool {
+        let Some(list) = self.completion.as_ref().map(|ui| ui.list) else {
+            return false;
+        };
+        if !rect_contains(list.area(), (mouse.column, mouse.row)) {
+            return false;
+        }
+        let delta = match mouse.kind {
+            MouseEventKind::ScrollDown => 3,
+            MouseEventKind::ScrollUp => -3,
+            MouseEventKind::Down(MouseButton::Left) => {
+                let len = self.completion_ranked().map_or(0, |ranked| ranked.len());
+                if let Some(row) = list
+                    .row_at(mouse.column, mouse.row)
+                    .filter(|row| *row < len)
+                {
+                    if let Some(ui) = self.completion.as_mut() {
+                        ui.list.selected = row;
+                    }
+                    self.accept_completion();
+                }
+                return true;
+            },
+            MouseEventKind::Down(_) => return true,
+            _ => return false,
+        };
+        let len = self.completion_ranked().map_or(0, |ranked| ranked.len());
+        if let Some(ui) = self.completion.as_mut() {
+            ui.list.scroll_by(delta, len);
+        }
+        true
+    }
+
+    /// The hover popup owns the pointer over it: the wheel scrolls content taller
+    /// than the room it was given, and a press inside it is kept. Returns `true`
+    /// when the event landed on it. A press anywhere else has already dismissed
+    /// it (see [`dismiss_hover_on_press_outside`](Self::dismiss_hover_on_press_outside)).
+    pub(in crate::app) fn handle_hover_mouse(&mut self, mouse: MouseEvent) -> bool {
+        let Some(ui) = self.hover_ui.as_mut() else {
+            return false;
+        };
+        if !rect_contains(ui.rect, (mouse.column, mouse.row)) {
+            return false;
+        }
+        match mouse.kind {
+            MouseEventKind::ScrollDown => ui.scroll = ui.scroll.saturating_add(3),
+            MouseEventKind::ScrollUp => ui.scroll = ui.scroll.saturating_sub(3),
+            MouseEventKind::Down(_) => {},
+            _ => return false,
+        }
+        true
+    }
+
+    /// Close the hover popup when a press lands anywhere outside it. The press
+    /// then goes on to do what it would have done with no popup open.
+    pub(in crate::app) fn dismiss_hover_on_press_outside(&mut self, mouse: MouseEvent) {
+        if matches!(mouse.kind, MouseEventKind::Down(_))
+            && self
+                .hover_ui
+                .as_ref()
+                .is_some_and(|ui| !rect_contains(ui.rect, (mouse.column, mouse.row)))
+        {
+            self.hover_ui = None;
+        }
+    }
+
+    /// The diagnostic detail view is modal for the pointer as it is for keys: the
+    /// wheel scrolls it wherever the pointer is, a press outside it dismisses it,
+    /// and nothing reaches the editor behind it. Returns `true` while it is open.
+    pub(in crate::app) fn handle_diagnostic_view_mouse(&mut self, mouse: MouseEvent) -> bool {
+        let Some(view) = self.diagnostic_view.as_mut() else {
+            return false;
+        };
+        match mouse.kind {
+            MouseEventKind::ScrollDown => view.scroll = view.scroll.saturating_add(3),
+            MouseEventKind::ScrollUp => view.scroll = view.scroll.saturating_sub(3),
+            MouseEventKind::Down(_) if !rect_contains(view.rect, (mouse.column, mouse.row)) => {
+                self.diagnostic_view = None;
+            },
+            _ => {},
+        }
+        true
+    }
+
+    /// Before a right click opens the menu: move the caret to the click when it is
+    /// outside every selection, so the menu's actions (Cut, Copy, Paste, a
+    /// permalink) apply where the user pointed. A click inside a selection keeps
+    /// it, as that is what the menu then acts on. `area` is the editor viewport of
+    /// the pane the click landed in, already focused.
+    pub(in crate::app) fn right_click_caret(&mut self, area: Rect, column: u16, row: u16) {
+        if !rect_contains(area, (column, row)) {
+            return;
+        }
+        let Some(Tab {
+            kind:
+                TabKind::Code {
+                    buffer,
+                    folds,
+                    folded,
+                    ..
+                },
+            editor,
+            ..
+        }) = self.tabs.get_mut(self.active)
+        else {
+            return;
+        };
+        let fold_lines = resolve_folds(folds, folded);
+        let under = editor.char_pos_at(area, buffer, &fold_lines, column, row);
+        if editor
+            .selection_ranges()
+            .iter()
+            .any(|range| range.start <= under && under < range.end)
+        {
+            return;
+        }
+        let pos = editor.pos_at(area, buffer, &fold_lines, column, row);
+        editor.set_caret(buffer, pos);
     }
 
     /// Handle mouse interaction with an open context menu.

@@ -41,6 +41,7 @@ mod debug;
 mod event;
 mod github;
 mod language_servers;
+mod navigation;
 mod refactor;
 mod seam;
 mod search;
@@ -51,6 +52,7 @@ pub use debug::*;
 pub use event::Event;
 pub use github::*;
 pub use language_servers::*;
+pub use navigation::*;
 pub use refactor::*;
 pub use seam::*;
 pub use search::*;
@@ -388,6 +390,17 @@ pub enum Command {
         doc: DocumentId,
         /// The position to resolve.
         position: LineCol,
+    },
+    /// Navigate from the symbol at a position: its declaration, its type's
+    /// definition, its implementations, or its references (answered by
+    /// [`Event::Locations`]).
+    FindLocations {
+        /// The target document.
+        doc: DocumentId,
+        /// The position to resolve.
+        position: LineCol,
+        /// What to find.
+        kind: LocationKind,
     },
     /// Request the document's symbols.
     DocumentSymbols {

@@ -558,7 +558,12 @@ impl App {
     /// Open the pane context menu at `(x, y)` for the focused pane's active tab.
     /// Only file-backed tabs get one; a pathless tab (Welcome, commit graph, …)
     /// opens nothing.
-    pub(super) fn open_pane_context_menu(&mut self, x: u16, y: u16) {
+    ///
+    /// `over_text` is whether the right click landed on the document's text. Only
+    /// then does a text document's menu lead with Cut, Copy and Paste: they act on
+    /// the selection, or on the caret that click has just placed. A right click on
+    /// the tab strip names the file, not the text, so it offers the file rows alone.
+    pub(super) fn open_pane_context_menu(&mut self, x: u16, y: u16, over_text: bool) {
         let Some(path) = self
             .tabs
             .get(self.active)
@@ -567,7 +572,21 @@ impl App {
         else {
             return;
         };
-        let entries = self.pane_context_entries(&path);
+        let text = over_text
+            && matches!(
+                self.tabs.get(self.active).map(|tab| &tab.kind),
+                Some(TabKind::Code { .. })
+            );
+        let mut entries = if text {
+            vec![
+                ContextMenuEntry::enabled(Command::Cut),
+                ContextMenuEntry::enabled(Command::Copy),
+                ContextMenuEntry::enabled(Command::Paste),
+            ]
+        } else {
+            Vec::new()
+        };
+        entries.extend(self.pane_context_entries(&path));
         self.context_menu = Some(ContextMenu::new(x, y, entries));
     }
 

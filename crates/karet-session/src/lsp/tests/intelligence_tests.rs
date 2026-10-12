@@ -6,6 +6,7 @@
 //! These prove which *events* a client sees, and in what order.
 
 use super::*;
+use crate::api::LocationKind;
 
 /// Open `path` and wait for the session to confirm it.
 async fn open(
@@ -269,6 +270,108 @@ async fn a_request_asked_for_by_hand_says_the_server_does_not_support_it() -> Te
         )),
         "the refusal was not surfaced ahead of its empty answer"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn find_references_answers_with_its_kind_in_buffer_columns() -> TestResult {
+    // The whole seam for the new navigation command: it reaches the wire as
+    // `textDocument/references` asking for the declaration too, and its answer
+    // comes back as `Locations` naming what was asked -- in buffer columns,
+    // since the server counted the leading emoji as two.
+    let dir = tempfile::tempdir()?;
+    let path = rust_file(&dir, "main.rs", "\u{1F600}ab = ab;\n").ok_or("write failed")?;
+    let (observed_tx, mut observed_rx) = mpsc::unbounded_channel();
+    let spawns = Arc::new(AtomicUsize::new(0));
+    let (session, mut events) =
+        session_with_connector(test_connector(Behavior::Normal, Some(observed_tx), spawns));
+    let backend = local_session(session, None);
+    let (doc, _) = open(&backend, &mut events, path.clone()).await?;
+
+    let request = backend.next_id();
+    backend.send(
+        request,
+        Command::FindLocations {
+            doc,
+            position: LineCol::new(0, 1),
+            kind: LocationKind::References,
+        },
+    )?;
+    let (kind, locations) = loop {
+        let (id, event) = next_event(&mut events).await.ok_or("no Locations answer")?;
+        match event {
+            Event::FeatureUnsupported { .. } => {
+                return Err("a server that offers references was reported as not".into());
+            },
+            Event::Locations { kind, locations } => {
+                assert_eq!(id, Some(request));
+                break (kind, locations);
+            },
+            _ => {},
+        }
+    };
+    assert_eq!(kind, LocationKind::References);
+    assert_eq!(locations.len(), 1);
+    assert_eq!(locations[0].range.start, LineCol::new(0, 3));
+
+    let wire = loop {
+        let msg = tokio::time::timeout(Duration::from_secs(5), observed_rx.recv())
+            .await?
+            .ok_or("server stream ended")?;
+        if msg["method"] == "textDocument/references" {
+            break msg;
+        }
+    };
+    assert_eq!(wire["params"]["context"]["includeDeclaration"], true);
+    // The caret's buffer column 1 is UTF-16 character 2 on the wire.
+    assert_eq!(
+        wire["params"]["position"],
+        json!({"line": 0, "character": 2})
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_unoffered_navigation_says_which_and_answers_empty_with_its_kind() -> TestResult {
+    // The double offers no declarations: the notice names that capability,
+    // not Go to Definition's, and the empty answer still carries its kind so
+    // the client can tell it apart from a definition.
+    let dir = tempfile::tempdir()?;
+    let path = rust_file(&dir, "main.rs", "fn main() {}\n").ok_or("write failed")?;
+    let spawns = Arc::new(AtomicUsize::new(0));
+    let (session, mut events) =
+        session_with_connector(test_connector(Behavior::Normal, None, spawns));
+    let backend = local_session(session, None);
+    let (doc, _) = open(&backend, &mut events, path).await?;
+
+    let request = backend.next_id();
+    backend.send(
+        request,
+        Command::FindLocations {
+            doc,
+            position: LineCol::new(0, 3),
+            kind: LocationKind::Declaration,
+        },
+    )?;
+    let mut notice = None;
+    loop {
+        let (id, event) = next_event(&mut events).await.ok_or("no Locations answer")?;
+        match event {
+            Event::FeatureUnsupported { feature, .. } => {
+                assert_eq!(id, Some(request));
+                notice = Some(feature);
+            },
+            Event::Locations { kind, locations } => {
+                assert_eq!(id, Some(request));
+                assert_eq!(kind, LocationKind::Declaration);
+                assert!(locations.is_empty());
+                break;
+            },
+            Event::Definitions { .. } => return Err("answered as a definition".into()),
+            _ => {},
+        }
+    }
+    assert_eq!(notice, Some(karet_core::ServerFeature::Declaration));
     Ok(())
 }
 

@@ -226,8 +226,13 @@ fn several_locations_open_a_picker_with_workspace_relative_rows() {
         panic!("several locations should offer a choice");
     };
     // Paths are shown relative to the workspace and lines 1-based, as everywhere
-    // else in the UI; the duplicate is dropped and server order is preserved.
-    assert_eq!(overlay.rows(), vec!["other.rs:1", "other.rs:2"]);
+    // else in the UI, each with its trimmed source line; the duplicate is
+    // dropped and server order is preserved.
+    assert_eq!(overlay.title(), "Go to Definition");
+    assert_eq!(
+        overlay.rows(),
+        vec!["other.rs:1  pub fn target() {}", "other.rs:2  second line"]
+    );
 
     app.overlay_accept();
     assert_eq!(app.tabs[app.active].path(), Some(other.as_path()));
@@ -680,4 +685,185 @@ fn a_key_press_clears_the_hover_underline() {
     // is one of the ways a stale underline is dropped.
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
     assert!(app.definition_underline_decoration().is_none());
+}
+
+/// The navigation requests a backend received, as `(id, kind, position)`.
+fn location_requests(backend: &RecordingBackend) -> Vec<(RequestId, LocationKind, LineCol)> {
+    backend
+        .sent
+        .lock()
+        .map(|sent| {
+            sent.iter()
+                .filter_map(|(id, command)| match command {
+                    SessionCommand::FindLocations { position, kind, .. } => {
+                        Some((*id, *kind, *position))
+                    },
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[test]
+fn each_navigation_command_asks_for_its_own_kind_at_the_caret() {
+    for (command, kind) in [
+        (Command::GoToDeclaration, LocationKind::Declaration),
+        (Command::GoToTypeDefinition, LocationKind::TypeDefinition),
+        (Command::GoToImplementation, LocationKind::Implementation),
+        (Command::FindReferences, LocationKind::References),
+    ] {
+        let (backend, mut app) = completion_app("target();\n", LineCol::new(0, 2));
+        app.dispatch(command);
+        let requests = location_requests(&backend);
+        assert_eq!(requests.len(), 1, "{command:?}");
+        assert_eq!((requests[0].1, requests[0].2), (kind, LineCol::new(0, 2)));
+        // Go to Definition keeps its own request.
+        assert!(definition_requests(&backend).is_empty());
+    }
+}
+
+#[test]
+fn a_single_reference_still_opens_the_picker() {
+    let Some((backend, mut app, other)) = workspace("references-single") else {
+        return;
+    };
+    app.dispatch(Command::FindReferences);
+    let id = location_requests(&backend)[0].0;
+
+    app.on_backend_event(
+        Some(id),
+        SessionEvent::Locations {
+            kind: LocationKind::References,
+            locations: vec![Location {
+                path: other.clone(),
+                range: at(0, 7),
+            }],
+        },
+    );
+
+    // Where the symbol is used is the answer, so one use is listed rather than
+    // jumped to; the caret stays put until the user picks it.
+    let Some(overlay) = app.overlay.as_ref() else {
+        panic!("references should be listed");
+    };
+    assert_eq!(overlay.title(), "References");
+    assert_eq!(overlay.rows(), vec!["other.rs:1  pub fn target() {}"]);
+    assert_ne!(app.tabs[app.active].path(), Some(other.as_path()));
+
+    app.overlay_accept();
+    assert_eq!(app.tabs[app.active].path(), Some(other.as_path()));
+    assert_eq!(app.tabs[app.active].editor.cursor(), LineCol::new(0, 7));
+}
+
+#[test]
+fn a_single_implementation_is_jumped_to() {
+    let Some((backend, mut app, other)) = workspace("implementation-single") else {
+        return;
+    };
+    app.dispatch(Command::GoToImplementation);
+    let id = location_requests(&backend)[0].0;
+
+    app.on_backend_event(
+        Some(id),
+        SessionEvent::Locations {
+            kind: LocationKind::Implementation,
+            locations: vec![Location {
+                path: other.clone(),
+                range: at(1, 0),
+            }],
+        },
+    );
+
+    assert!(app.overlay.is_none());
+    assert_eq!(app.tabs[app.active].path(), Some(other.as_path()));
+    assert_eq!(app.tabs[app.active].editor.cursor(), LineCol::new(1, 0));
+}
+
+#[test]
+fn a_reference_preview_reads_the_open_buffer_over_the_file_on_disk() {
+    let Some((backend, mut app, other)) = workspace("references-preview") else {
+        return;
+    };
+    let root = app.root.clone();
+    // The open `main.rs` holds `target();`; what is on disk is out of date.
+    write_file(&root, "main.rs", b"stale on disk\n");
+    app.dispatch(Command::FindReferences);
+    let id = location_requests(&backend)[0].0;
+
+    app.on_backend_event(
+        Some(id),
+        SessionEvent::Locations {
+            kind: LocationKind::References,
+            locations: vec![
+                Location {
+                    path: other.clone(),
+                    range: at(0, 7),
+                },
+                Location {
+                    path: root.join("main.rs"),
+                    range: at(0, 0),
+                },
+                // Nothing to read: the row is still offered, without a preview.
+                Location {
+                    path: root.join("gone.rs"),
+                    range: at(4, 0),
+                },
+            ],
+        },
+    );
+
+    let rows = app.overlay.as_ref().map(Overlay::rows).unwrap_or_default();
+    assert_eq!(
+        rows,
+        vec![
+            "other.rs:1  pub fn target() {}",
+            "main.rs:1  target();",
+            "gone.rs:5"
+        ]
+    );
+}
+
+#[test]
+fn an_empty_references_answer_names_what_was_not_found() {
+    let Some((backend, mut app, _other)) = workspace("references-empty") else {
+        return;
+    };
+    let root = app.root.clone();
+    attach_running_server(&mut app, &root);
+    app.dispatch(Command::FindReferences);
+    let id = location_requests(&backend)[0].0;
+
+    app.on_backend_event(
+        Some(id),
+        SessionEvent::Locations {
+            kind: LocationKind::References,
+            locations: Vec::new(),
+        },
+    );
+
+    assert!(app.overlay.is_none());
+    assert_eq!(last_message(&app).as_deref(), Some("no references found"));
+}
+
+#[test]
+fn an_answer_of_another_kind_does_not_settle_the_pending_request() {
+    let Some((backend, mut app, other)) = workspace("navigation-kind-mismatch") else {
+        return;
+    };
+    app.dispatch(Command::GoToTypeDefinition);
+    let id = location_requests(&backend)[0].0;
+    let answer = |kind| SessionEvent::Locations {
+        kind,
+        locations: vec![Location {
+            path: other.clone(),
+            range: at(1, 0),
+        }],
+    };
+
+    app.on_backend_event(Some(id), answer(LocationKind::Declaration));
+    assert_ne!(app.tabs[app.active].path(), Some(other.as_path()));
+
+    app.on_backend_event(Some(id), answer(LocationKind::TypeDefinition));
+    assert_eq!(app.tabs[app.active].path(), Some(other.as_path()));
 }
