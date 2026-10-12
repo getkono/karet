@@ -1,19 +1,25 @@
-//! Go to Symbol in Editor: quick-open's `@` mode.
+//! Go to Symbol in Editor and in Workspace: quick-open's `@` and `#` modes.
 //!
 //! Quick-open is one surface with modes, chosen by the query's leading sigil:
-//! plain text finds files, `:` goes to a line (see the `goto_line` module), and
-//! `@` lists the active document's symbols. The
+//! plain text finds files, `:` goes to a line (see the `goto_line` module),
+//! `@` lists the active document's symbols, and `#` searches the workspace's.
+//! The document's
 //! symbol rows come from the session's [`Event::Symbols`] answer — the
 //! language server's when one serves the document, the tree-sitter outline
 //! otherwise — and may arrive after the picker opened, so the picker fills in
 //! through [`Overlay::set_document_symbols`] without losing what was typed.
+//! The workspace's come from [`Event::WorkspaceSymbols`], one answer per
+//! settled query, and fill in the same way through
+//! [`Overlay::set_workspace_symbols`].
 //!
 //! [`Event::Symbols`]: karet_session::Event::Symbols
+//! [`Event::WorkspaceSymbols`]: karet_session::Event::WorkspaceSymbols
 
 use std::path::Path;
 
 use karet_core::Symbol;
 use karet_core::SymbolKind;
+use karet_core::WorkspaceSymbol;
 
 use super::Overlay;
 use super::OverlayEvent;
@@ -29,6 +35,12 @@ pub const DOCUMENT_SYMBOL_PREFIX: &str = "@";
 /// The document-symbol picker's title, which is also how it is told apart.
 const DOCUMENT_SYMBOLS_TITLE: &str = "Go to Symbol in Editor";
 
+/// The sigil that turns quick-open into Go to Symbol in Workspace.
+pub const WORKSPACE_SYMBOL_PREFIX: &str = "#";
+
+/// The workspace-symbol picker's title, which is also how it is told apart.
+const WORKSPACE_SYMBOLS_TITLE: &str = "Go to Symbol in Workspace";
+
 /// Which list quick-open shows, chosen by the query's leading sigil.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum QuickOpenMode {
@@ -41,6 +53,9 @@ pub enum QuickOpenMode {
     Line,
     /// The active document's symbols (`@`).
     DocumentSymbols,
+    /// Symbols anywhere in the workspace, searched by the language server
+    /// (`#`).
+    WorkspaceSymbols,
 }
 
 impl QuickOpenMode {
@@ -49,6 +64,8 @@ impl QuickOpenMode {
     pub fn of_query(query: &str) -> Self {
         if query.starts_with(DOCUMENT_SYMBOL_PREFIX) {
             Self::DocumentSymbols
+        } else if query.starts_with(WORKSPACE_SYMBOL_PREFIX) {
+            Self::WorkspaceSymbols
         } else if query.starts_with(GO_TO_LINE_PREFIX) {
             Self::Line
         } else if crate::cli::split_goto_suffix(query).1.is_some() {
@@ -85,6 +102,9 @@ impl Overlay {
             Self::Picker(picker) if picker.title() == DOCUMENT_SYMBOLS_TITLE => {
                 Some(QuickOpenMode::DocumentSymbols)
             },
+            Self::Picker(picker) if picker.title() == WORKSPACE_SYMBOLS_TITLE => {
+                Some(QuickOpenMode::WorkspaceSymbols)
+            },
             Self::Picker(picker) if picker.title() == FILE_AT_LINE_TITLE => {
                 Some(QuickOpenMode::FileAtLine)
             },
@@ -104,14 +124,77 @@ impl Overlay {
         }
     }
 
+    /// Build Go to Symbol in Workspace over `symbols`, its query seeded with
+    /// the `#` sigil. Each row's file is shown relative to `root` where it is
+    /// under it.
+    #[must_use]
+    pub fn workspace_symbols(root: &Path, symbols: &[WorkspaceSymbol]) -> Self {
+        let rows = workspace_symbol_rows(root, symbols);
+        Self::Picker(
+            Picker::new(WORKSPACE_SYMBOLS_TITLE, rows).with_prefix(WORKSPACE_SYMBOL_PREFIX),
+        )
+    }
+
+    /// Replace a workspace-symbol picker's rows with a fresh answer, keeping
+    /// the query. Any other overlay is left alone.
+    pub fn set_workspace_symbols(&mut self, root: &Path, symbols: &[WorkspaceSymbol]) {
+        if self.quick_open_mode() != Some(QuickOpenMode::WorkspaceSymbols) {
+            return;
+        }
+        if let Self::Picker(picker) = self {
+            picker.set_items(workspace_symbol_rows(root, symbols));
+        }
+    }
+
+    /// The text after a workspace-symbol picker's `#` sigil — what the
+    /// language server is asked for — or `None` for any other overlay.
+    #[must_use]
+    pub fn workspace_symbol_query(&self) -> Option<&str> {
+        if self.quick_open_mode() != Some(QuickOpenMode::WorkspaceSymbols) {
+            return None;
+        }
+        let query = self.query();
+        Some(query.strip_prefix(WORKSPACE_SYMBOL_PREFIX).unwrap_or(query))
+    }
+
     /// What a quick-open's delayed loading note says is still being gathered.
     #[must_use]
     pub fn loading_note(&self) -> &'static str {
         match self.quick_open_mode() {
-            Some(QuickOpenMode::DocumentSymbols) => "loading symbols…",
+            Some(QuickOpenMode::DocumentSymbols | QuickOpenMode::WorkspaceSymbols) => {
+                "loading symbols…"
+            },
             _ => "indexing files…",
         }
     }
+}
+
+/// One row per workspace symbol, in the server's order (the picker ranks them
+/// against the query). The label is the name alone, so typing matches names;
+/// the kind, container, and file ride along as the row's hint. Accepting it
+/// opens the file at the symbol, or at its top when the server named only the
+/// file.
+fn workspace_symbol_rows(root: &Path, symbols: &[WorkspaceSymbol]) -> Vec<(String, OverlayEvent)> {
+    symbols
+        .iter()
+        .map(|symbol| {
+            let (_, kind) = kind_info(symbol.kind);
+            let mut detail = kind.to_string();
+            if let Some(container) = symbol.container_name.as_deref().filter(|c| !c.is_empty()) {
+                detail.push_str(" · ");
+                detail.push_str(container);
+            }
+            let shown = symbol.path.strip_prefix(root).unwrap_or(&symbol.path);
+            detail.push_str(" · ");
+            detail.push_str(&shown.display().to_string());
+            let accept = OverlayEvent::AcceptSymbol {
+                path: symbol.path.clone(),
+                position: symbol.range.map(|range| range.start).unwrap_or_default(),
+                detail,
+            };
+            (symbol.name.clone(), accept)
+        })
+        .collect()
 }
 
 /// One row per symbol, nested ones included, grouped by kind (in the LSP's
@@ -246,8 +329,96 @@ mod tests {
         assert_eq!(QuickOpenMode::of_query("a:12"), QuickOpenMode::FileAtLine);
         assert_eq!(QuickOpenMode::of_query("a:"), QuickOpenMode::Files);
         assert_eq!(QuickOpenMode::of_query("a:b"), QuickOpenMode::Files);
+        assert_eq!(
+            QuickOpenMode::of_query("#"),
+            QuickOpenMode::WorkspaceSymbols
+        );
+        assert_eq!(
+            QuickOpenMode::of_query("#run"),
+            QuickOpenMode::WorkspaceSymbols
+        );
+        assert_eq!(QuickOpenMode::of_query("a#b"), QuickOpenMode::Files);
         assert!(QuickOpenMode::FileAtLine.lists_files());
         assert!(!QuickOpenMode::Line.lists_files());
+        assert!(!QuickOpenMode::WorkspaceSymbols.lists_files());
+    }
+
+    fn workspace_symbol(name: &str, path: &str, at: Option<LineCol>) -> WorkspaceSymbol {
+        WorkspaceSymbol {
+            name: name.to_string(),
+            kind: SymbolKind::Function,
+            container_name: (name == "run").then(|| "Runner".to_string()),
+            path: PathBuf::from(path),
+            range: at.map(|start| Range { start, end: start }),
+        }
+    }
+
+    fn workspace_hits() -> Vec<WorkspaceSymbol> {
+        vec![
+            workspace_symbol("run", "/w/src/run.rs", Some(LineCol::new(7, 3))),
+            workspace_symbol("rerun", "/elsewhere/lib.rs", Some(LineCol::new(1, 0))),
+            workspace_symbol("lazy", "/w/src/lazy.rs", None),
+        ]
+    }
+
+    #[test]
+    fn workspace_rows_name_their_file_and_accept_opens_it_at_the_symbol() {
+        let root = Path::new("/w");
+        let mut overlay = Overlay::workspace_symbols(root, &workspace_hits());
+        assert_eq!(
+            overlay.quick_open_mode(),
+            Some(QuickOpenMode::WorkspaceSymbols)
+        );
+        assert_eq!(overlay.query(), "#");
+        assert_eq!(overlay.workspace_symbol_query(), Some(""));
+        assert_eq!(overlay.loading_note(), "loading symbols…");
+        assert_eq!(overlay.rows(), vec!["run", "rerun", "lazy"]);
+        assert_eq!(
+            overlay.row_hints(),
+            vec![
+                Some("function · Runner · src/run.rs".to_string()),
+                Some("function · /elsewhere/lib.rs".to_string()),
+                Some("function · src/lazy.rs".to_string()),
+            ],
+            "a file outside the workspace keeps its whole path"
+        );
+        overlay.push_str("run");
+        assert_eq!(overlay.workspace_symbol_query(), Some("run"));
+        assert_eq!(overlay.rows(), vec!["run", "rerun"]);
+        match overlay.accept() {
+            OverlayEvent::AcceptSymbol { path, position, .. } => {
+                assert_eq!(path, PathBuf::from("/w/src/run.rs"));
+                assert_eq!(position, LineCol::new(7, 3));
+            },
+            _ => unreachable!("a workspace symbol row jumps to its file"),
+        }
+        let mut overlay = Overlay::workspace_symbols(root, &workspace_hits());
+        overlay.push_str("lazy");
+        match overlay.accept() {
+            OverlayEvent::AcceptSymbol { path, position, .. } => {
+                assert_eq!(path, PathBuf::from("/w/src/lazy.rs"));
+                assert_eq!(position, LineCol::new(0, 0), "no range: the file's top");
+            },
+            _ => unreachable!("a file-only symbol still opens its file"),
+        }
+    }
+
+    #[test]
+    fn workspace_symbols_arriving_later_fill_only_their_own_picker() {
+        let root = Path::new("/w");
+        let mut overlay = Overlay::workspace_symbols(root, &[]);
+        overlay.push_str("re");
+        overlay.set_workspace_symbols(root, &workspace_hits());
+        assert_eq!(overlay.query(), "#re");
+        assert_eq!(overlay.rows(), vec!["rerun"]);
+        let path = PathBuf::from("/w/src/lib.rs");
+        let mut editor = Overlay::document_symbols(Some(&path), &tree());
+        editor.set_workspace_symbols(root, &workspace_hits());
+        assert_eq!(editor.rows().len(), 4, "the editor's symbols are kept");
+        assert_eq!(editor.workspace_symbol_query(), None);
+        editor.set_document_symbols(Some(&path), &[]);
+        overlay.set_document_symbols(Some(&path), &tree());
+        assert_eq!(overlay.rows(), vec!["rerun"], "and the other way round");
     }
 
     #[test]

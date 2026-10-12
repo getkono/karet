@@ -252,6 +252,8 @@ async fn event_loop(
         app.request_inlay_hints();
         // The lightbulb follows the painted caret the same way.
         app.probe_code_actions(Instant::now());
+        // A workspace-symbol query goes out once typing has paused.
+        app.probe_workspace_symbols(Instant::now());
 
         // Wake for notification expiry or a save-spinner frame; park on the event
         // sources when nothing time-based is pending (no idle repaints).

@@ -423,6 +423,8 @@ pub struct App {
     pub(crate) overlay: Option<Overlay>,
     /// The workspace's file list behind quick-open, walked off the UI thread.
     pub(crate) file_index: workspace::FileIndex,
+    /// Quick-open's `#` mode: the workspace-symbol query and its request.
+    pub(crate) workspace_symbols: quick_open::WorkspaceSymbolSearch,
     /// Recently opened workspaces and files (persisted only by the live editor).
     pub(crate) recent: workspace::RecentStore,
     /// The workspace to reopen karet on once this window has quit (Open Recent).
