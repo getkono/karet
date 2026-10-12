@@ -67,25 +67,7 @@ impl Session {
     /// Selection waits on that answer before it moves.
     pub(crate) fn apply_lsp_update(&mut self, update: LspUpdate) {
         if !self.lsp.accepts(&update) {
-            match update {
-                LspUpdate::Formatting {
-                    request,
-                    doc,
-                    version,
-                    ..
-                } => {
-                    let _ = self.finish_format_on_save(request, doc, version, Vec::new());
-                },
-                // `Command::SelectionRanges` is always answered: a client
-                // waits on it before Expand Selection moves, so a retired
-                // generation's ranges are dropped but the request still gets
-                // its empty chains.
-                LspUpdate::SelectionRanges { mut answer, .. } => {
-                    answer.chains.iter_mut().for_each(Vec::clear);
-                    self.adopt_selection_ranges(answer);
-                },
-                _ => {},
-            }
+            self.settle_retired_answer(update);
             return;
         }
         match update {

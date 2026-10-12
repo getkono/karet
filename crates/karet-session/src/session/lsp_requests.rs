@@ -19,6 +19,7 @@ use crate::api::FormatScope;
 use crate::api::LocationKind;
 use crate::api::RenameTarget;
 use crate::lsp::FormattingScope;
+use crate::lsp::LspUpdate;
 use crate::lsp::RenameAnswer;
 use crate::lsp::SelectionRangesAnswer;
 
@@ -307,6 +308,29 @@ impl Session {
                 chains,
             };
             self.emit(Some(id), answer);
+        }
+    }
+
+    /// Settle an answer the generation fence turned away: a save's formatting
+    /// still completes the save, unformatted, and selection ranges still
+    /// answer the request with empty chains, because `Command::SelectionRanges`
+    /// is always answered and Expand Selection waits on it. Every other
+    /// fenced answer is advisory and simply dropped.
+    pub(super) fn settle_retired_answer(&mut self, update: LspUpdate) {
+        match update {
+            LspUpdate::Formatting {
+                request,
+                doc,
+                version,
+                ..
+            } => {
+                let _ = self.finish_format_on_save(request, doc, version, Vec::new());
+            },
+            LspUpdate::SelectionRanges { mut answer, .. } => {
+                answer.chains.iter_mut().for_each(Vec::clear);
+                self.adopt_selection_ranges(answer);
+            },
+            _ => {},
         }
     }
 
