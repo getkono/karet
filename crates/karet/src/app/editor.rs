@@ -669,16 +669,15 @@ impl App {
         if self.backend.is_none() {
             return;
         }
-        let idx = self.active;
-        // Build one edit per selection against the same base version, then flatten to a
-        // single non-overlapping batch (the buffer applies it bottom-up). Each caret is
-        // repositioned by the edits that fall strictly before its selection. With a
-        // single cursor this collapses to exactly the former single-edit behavior.
-        let (doc, base, edits, carets) = match self.tabs.get(idx) {
+        // Build one edit per selection against the same base version, then compose
+        // them into one non-overlapping batch: overlapping edits merge, and a
+        // selection whose edit is a no-op stays put. With a single cursor this is
+        // exactly the single edit.
+        let edit = match self.tabs.get(self.active) {
             Some(Tab {
                 kind:
                     TabKind::Code {
-                        doc: Some(doc),
+                        doc: Some(_),
                         buffer,
                         next_version,
                         ..
@@ -687,53 +686,24 @@ impl App {
                 ..
             }) => {
                 let base = *next_version;
-                let mut per: Vec<(LineCol, Vec<TextEdit>, LineCol)> = Vec::new();
-                for sel in &editor.cursors().selections {
-                    let range = sel.range();
-                    let selection = (!range.is_empty()).then_some(range);
-                    if let Some(e) = build(sel.head, selection, buffer, base) {
-                        per.push((range.start, e.change.edits, e.caret));
-                    }
-                }
-                if per.is_empty() {
-                    return;
-                }
-                per.sort_by_key(|(start, ..)| *start);
-                // Track which per-entry (cursor) each flattened edit belongs to, so
-                // "earlier" below can mean "from a cursor before this one" rather
-                // than a byte-position comparison — a backward-deleting edit (e.g.
-                // backspace) starts *before* its own original caret, so comparing
-                // positions would wrongly count an edit as "earlier than itself"
-                // and double-shift that same cursor's landing caret by one extra
-                // position on every backspace.
-                let mut flat: Vec<TextEdit> = Vec::new();
-                let mut owner: Vec<usize> = Vec::new();
-                for (i, (_, es, _)) in per.iter().enumerate() {
-                    for e in es {
-                        flat.push(e.clone());
-                        owner.push(i);
-                    }
-                }
-                let carets: Vec<LineCol> = per
+                let cursors = editor.cursors();
+                let items: Vec<_> = cursors
+                    .selections
                     .iter()
-                    .enumerate()
-                    .map(|(i, (_, _, local))| {
-                        let earlier: Vec<TextEdit> = flat
-                            .iter()
-                            .zip(&owner)
-                            .filter(|&(_, &o)| o < i)
-                            .map(|(e, _)| e.clone())
-                            .collect();
-                        editing::reflow_caret(*local, &earlier)
+                    .map(|sel| {
+                        let range = sel.range();
+                        let selection = (!range.is_empty()).then_some(range);
+                        (*sel, build(sel.head, selection, buffer, base))
                     })
                     .collect();
-                (*doc, base, flat, carets)
+                let Some(edit) = editing::compose(base, cursors.primary, &items) else {
+                    return;
+                };
+                edit
             },
             _ => return,
         };
-        self.apply_doc_change(idx, doc, Change::new(base, edits), cause, |editor, _| {
-            editor.set_carets(&carets);
-        });
+        self.submit_multi_edit(cause, edit);
     }
 
     /// Submit a [`editing::MultiEdit`] built over the active code tab's whole cursor
@@ -758,8 +728,10 @@ impl App {
         );
     }
 
-    /// Send `change` to the session, apply it locally to tab `idx`, then let `place`
-    /// position the cursors against the edited buffer before revealing the caret.
+    /// Apply `change` locally to tab `idx` and, once the buffer accepts it, send it
+    /// to the session and let `place` position the cursors against the edited
+    /// buffer before revealing the caret. A change the buffer rejects moves
+    /// nothing and is never sent.
     fn apply_doc_change<F>(
         &mut self,
         idx: usize,
@@ -771,17 +743,6 @@ impl App {
         F: FnOnce(&mut EditorState, &TextBuffer),
     {
         let base = change.base_version;
-        if let Some(backend) = &self.backend {
-            let id = backend.next_id();
-            let _ = backend.send(
-                id,
-                SessionCommand::ApplyChange {
-                    doc,
-                    change: change.clone(),
-                    cause,
-                },
-            );
-        }
         let mut auto_save_version = None;
         if let Some(Tab {
             kind:
@@ -798,20 +759,21 @@ impl App {
             // Apply the same change locally so the displayed text advances in
             // lockstep with the caret instead of lagging behind the async
             // snapshot echo (the prior cause of "backspace skips characters"
-            // under fast/held input). `base` was just read from this same
-            // buffer above, so this should never fail; if it somehow does,
-            // leave `buffer`/`text` alone and let the next snapshot resync.
-            if let Ok(applied) = buffer.apply(
+            // under fast/held input). `base` was read from this same buffer, so
+            // the session would reject whatever this rejects: on failure leave
+            // the text, the carets and the session alone.
+            let Ok(applied) = buffer.apply(
                 &change,
                 karet_text::EditContext {
                     cause,
                     ..Default::default()
                 },
-            ) {
-                *next_version = applied.version;
-                *text = buffer.text_snapshot();
-                auto_save_version = Some(applied.version);
-            }
+            ) else {
+                return;
+            };
+            *next_version = applied.version;
+            *text = buffer.text_snapshot();
+            auto_save_version = Some(applied.version);
             place(editor, buffer);
             let head = editor.cursor();
             // `reveal`, not `scroll_to`: the merge-conflict panes copy this
@@ -819,6 +781,17 @@ impl App {
             editor.reveal(buffer, head);
         }
         if let Some(version) = auto_save_version {
+            if let Some(backend) = &self.backend {
+                let id = backend.next_id();
+                let _ = backend.send(
+                    id,
+                    SessionCommand::ApplyChange {
+                        doc,
+                        change: change.clone(),
+                        cause,
+                    },
+                );
+            }
             // The hints on screen move with the text until the server's
             // replacement for this version arrives.
             self.shift_inlay_hints(doc, base, version, &change.edits);

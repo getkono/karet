@@ -94,7 +94,9 @@ same motion.
 | Ctrl+D | With an empty caret, select the word under it. Then add the next occurrence after the most recently added one, wrapping and skipping ranges already selected. Matching is whole-word when the sequence began from an empty caret, and plain substring when it began from a selection. | #341 |
 | Esc, several carets | Keep only the first caret that was placed, with its selection; a second Esc clears that selection. | harness |
 | Merging | Carets merge when they coincide; selections merge when they overlap, and a caret on or inside a selection merges into it. Touching selections stay separate. A merge keeps each selection's direction and the primary. | harness |
-| Typing / deleting | Every caret edits. A caret whose edit is a no-op stays where it is; overlapping edits are merged rather than rejected. | #330 |
+| Typing / deleting | Every caret edits. A caret whose edit is a no-op stays where it is, and the primary stays the same caret; overlapping edits are merged into one edit over their union rather than rejected. An edit the buffer rejects moves no caret. | harness |
+| Accepting a completion | Every caret takes the item. It replaces the prefix typed at the primary caret wherever that prefix sits before a caret; at any other caret it replaces the selection, or is inserted at the caret. | harness |
+| Find: Replace / Replace All | Replace changes the current match once, whatever the number of carets. Replace All changes every match in one undoable edit and leaves every caret and selection on the text it was on. | harness |
 | Undo / Redo | Restore the full set of carets and selections from before / after the edit, only in the view that ran the command. | #331 |
 | External edit (another split, the language server, a reload) | Every view maps its carets through the change; no caret is left outside the text. | #331 |
 | Box selection: Shift+Alt+drag, Ctrl+Shift+Alt+arrows | One caret per row over a rectangle of display cells. | #343 |
