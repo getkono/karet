@@ -104,8 +104,8 @@ are in the command palette.
 | Typing / deleting | Every caret edits. A caret whose edit is a no-op stays where it is, and the primary stays the same caret; overlapping edits are merged into one edit over their union rather than rejected. An edit the buffer rejects moves no caret. | harness |
 | Accepting a completion | Every caret takes the item. It replaces the prefix typed at the primary caret wherever that prefix sits before a caret; at any other caret it replaces the selection, or is inserted at the caret. | harness |
 | Find: Replace / Replace All | Replace changes the current match once, whatever the number of carets. Replace All changes every match in one undoable edit and leaves every caret and selection on the text it was on. | harness |
-| Undo / Redo | Restore the full set of carets and selections from before / after the edit, only in the view that ran the command. | #331 |
-| External edit (another split, the language server, a reload) | Every view maps its carets through the change; no caret is left outside the text. | #331 |
+| Undo / Redo | Restore the full set of carets and selections from before / after the edit, only in the view that ran the command. | harness (which view, `tests/external_edits.rs`); the restored set in `karet-session`'s `tests/undo_save.rs` |
+| External edit (another split, the language server, a reload) | Every view maps its carets through the change; no caret is left outside the text. | harness (`tests/external_edits.rs`) |
 | Box selection: Shift+Alt+drag, Ctrl+Shift+Alt+arrows | One caret per row over a rectangle of display cells. | #343 |
 
 Deviation: VS Code numbers its original caret as the primary one. karet makes
