@@ -378,3 +378,100 @@ async fn watched_file_changes_reach_only_a_server_that_asked() -> TestResult {
     );
     Ok(())
 }
+
+/// A connector whose server asks `count` questions (`q0`, `q1`, ...) in
+/// batches of `batch`: the first once a document is opened, each next one when
+/// it receives a `window/workDoneProgress/cancel`, so no burst outruns the
+/// relay. Every message the server receives goes to `observed`.
+fn asking(count: usize, batch: usize, observed: mpsc::UnboundedSender<Value>) -> Connector {
+    Arc::new(move |spec: LspSpec, _root| {
+        let observed = observed.clone();
+        let options = karet_lsp::ConnectOptions::from(&spec);
+        Box::pin(async move {
+            let (client_end, server_end) = tokio::io::duplex(1 << 20);
+            let (server_read, mut server_write) = tokio::io::split(server_end);
+            tokio::spawn(async move {
+                let mut reader = BufReader::new(server_read);
+                let Some(init) = read_msg(&mut reader).await else {
+                    return;
+                };
+                let id = init["id"].clone();
+                write_msg(
+                    &mut server_write,
+                    &json!({"jsonrpc": "2.0", "id": id,
+                            "result": {"capabilities": {"textDocumentSync": 1}}}),
+                )
+                .await;
+                let mut asked = 0;
+                while let Some(message) = read_msg(&mut reader).await {
+                    let next = message["method"] == "textDocument/didOpen"
+                        || message["method"] == "window/workDoneProgress/cancel";
+                    let _ = observed.send(message);
+                    if next {
+                        let until = count.min(asked + batch);
+                        for index in asked..until {
+                            let question = json!({"jsonrpc": "2.0", "id": format!("q{index}"),
+                                "method": "window/showMessageRequest",
+                                "params": {"type": 3, "message": "Go?",
+                                           "actions": [{"title": "Yes"}]}});
+                            write_msg(&mut server_write, &question).await;
+                        }
+                        asked = until;
+                    }
+                }
+            });
+            let (read, write) = tokio::io::split(client_end);
+            LspClient::connect_configured(read, write, Path::new("/tmp"), options).await
+        })
+    })
+}
+
+#[tokio::test]
+async fn a_full_question_queue_answers_its_oldest_none_to_make_room() -> TestResult {
+    use super::window::QUESTION_CAPACITY;
+    const BATCH: usize = 11;
+    let (observed_tx, mut observed) = mpsc::unbounded_channel();
+    let (mut manager, mut updates) = LspManager::new(LspSettings::default(), None, None, None);
+    manager.set_connector(asking(QUESTION_CAPACITY + 1, BATCH, observed_tx));
+    let path = PathBuf::from("/tmp/questions.rs");
+    let _ = manager.document_opened(Some("rust"), Some("rust"), &path, 1, String::new);
+
+    let mut state = WindowState::default();
+    let mut ids = Vec::new();
+    while ids.len() <= QUESTION_CAPACITY {
+        let update = tokio::time::timeout(Duration::from_secs(10), updates.recv())
+            .await?
+            .ok_or("updates closed")?;
+        let LspUpdate::Window {
+            key,
+            update: WindowUpdate::Request(question),
+            ..
+        } = update
+        else {
+            continue;
+        };
+        ids.push(state.ask(question));
+        if ids.len() % BATCH == 0 {
+            // Any notice the server receives releases its next batch.
+            manager.cancel_work(&key.provider, &key.root, &crate::api::WorkToken::Number(0));
+        }
+    }
+
+    let evicted = reply_to(&mut observed, "q0")
+        .await
+        .ok_or("the oldest question was not answered")?;
+    assert_eq!(evicted["result"], Value::Null, "answered no action");
+    assert!(
+        !state.answer(ids[0], Some(0)),
+        "the evicted question is gone"
+    );
+    assert!(
+        state.answer(ids[1], Some(0)),
+        "the next oldest is still held"
+    );
+    let kept = reply_to(&mut observed, "q1")
+        .await
+        .ok_or("the held question was not answered")?;
+    assert_eq!(kept["result"], json!({"title": "Yes"}));
+    Ok(())
+}

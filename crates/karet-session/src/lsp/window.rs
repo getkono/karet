@@ -53,7 +53,7 @@ const LOG_CAPACITY: usize = 2000;
 /// Questions held at once. A client answers each one (backing out of the
 /// prompt answers "none"), so this only bounds a client that never does; the
 /// oldest is then answered "none" to make room.
-const QUESTION_CAPACITY: usize = 32;
+pub(super) const QUESTION_CAPACITY: usize = 32;
 
 /// One thing a server said, on its way to the actor.
 pub(crate) enum WindowUpdate {
