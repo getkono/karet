@@ -2,6 +2,7 @@
 //! setup. The shell composes the engine/widget crates — it owns the open tabs and
 //! the sidebar, and applies [`Command`]s resolved from key events.
 
+mod autopair;
 mod backend_events;
 mod capture;
 mod change_view;
@@ -621,6 +622,8 @@ pub struct App {
     pub(crate) lsp_runtime: language_servers::LanguageServerRuntimeModel,
     /// Dirty document versions waiting for the configured automatic-save trigger.
     auto_save_pending: HashMap<DocumentId, PendingAutoSave>,
+    /// The closers auto-inserted by the last keystrokes, open to type-over.
+    auto_closers: Option<autopair::AutoClosers>,
     /// The in-flight completion request, if any (see [`crate::completion`]).
     pub(crate) pending_completion: Option<crate::completion::PendingCompletion>,
     /// The open completion popup, if any.

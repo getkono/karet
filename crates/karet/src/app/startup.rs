@@ -153,6 +153,7 @@ impl App {
             docs: DocState::default(),
             lsp_runtime: language_servers::LanguageServerRuntimeModel::default(),
             auto_save_pending: HashMap::new(),
+            auto_closers: None,
             pending_completion: None,
             completion: None,
             completion_chars: HashMap::new(),

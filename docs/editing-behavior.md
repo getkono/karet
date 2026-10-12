@@ -139,6 +139,22 @@ Explorer); a legacy terminal cannot tell it from Ctrl+E, and View: Toggle
 Focus in the command palette and the status bar's focus segment are always
 available.
 
+## Brackets and quotes
+
+The pairs are the language's (`()`, `[]`, `{}` and `"` everywhere; `'` and
+`` ` `` where they are always quotes, so never `'` in Rust), and whether each
+kind closes is `editor.autoClosingBrackets` / `editor.autoClosingQuotes`
+(`"languageDefined"` by default).
+
+| Input | Behaviour | Status |
+|---|---|---|
+| An opening bracket or quote, a caret | Insert the pair and leave the caret between its halves, at every caret, as one undoable edit, when the caret is before whitespace, the end of the line or closing punctuation (`;:.,=}])>`). A quote also stays single inside a string or comment and straight after a letter, digit or `_`. | harness |
+| A closer the editor inserted | Step over it rather than insert another, at every caret, while the carets are where the last keystroke left them and nothing else has edited the document (typing inside the pair keeps it). A closer that was already there is typed normally. | harness |
+| Backspace between an empty pair | Delete both halves. | harness |
+| An opening bracket or quote, a selection | Surround the selection with the pair, keeping the same text selected. | harness |
+| Enter between a bracket pair | Open a line between the halves indented one unit deeper than the opener's line, with the closer on its own line below at the opener's indentation. | harness |
+| A closing bracket on a line holding only whitespace | Replace the line's indentation with the indentation of the line holding its unclosed opener. | harness |
+
 ## Clipboard
 
 | Input | Behaviour | Status |

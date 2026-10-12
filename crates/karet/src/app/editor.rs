@@ -924,6 +924,7 @@ impl App {
             editor.reveal(buffer, head);
         }
         if let Some((version, view, before, after)) = landed {
+            self.carry_auto_closers(view, (base, version), (&before, &after), &change.edits);
             if let Some(backend) = &self.backend {
                 // The selection set on either side of the edit, each reported
                 // at the version it describes: the one before is what undoing

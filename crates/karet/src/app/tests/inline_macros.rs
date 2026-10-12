@@ -69,7 +69,9 @@ fn markdown_code_selection_falls_back_to_plain_typing() {
     let TabKind::Code { text, .. } = &app.tabs[active].kind else {
         return;
     };
-    assert_eq!(text, "`[`");
+    // No link macro inside code: ordinary typing wraps the selection in the
+    // bracket pair instead of replacing it.
+    assert_eq!(text, "`[code]`");
 }
 
 #[test]
