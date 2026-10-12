@@ -25,6 +25,7 @@ pub(crate) mod harness;
 mod hover;
 mod inlay;
 mod inline_macros;
+mod keystroke_copies;
 mod language_server_badge;
 mod language_server_progress;
 mod language_server_staleness;

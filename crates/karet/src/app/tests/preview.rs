@@ -616,7 +616,7 @@ fn editing_the_source_re_renders_the_preview_on_the_next_draw() {
 
     if let TabKind::Code { buffer, text, .. } = &mut app.tabs[app.active].kind {
         *buffer = edited.content_snapshot();
-        *text = edited.text();
+        *text = edited.text_snapshot();
     }
 
     let after = screen(&mut app, 100, 12).join("\n");

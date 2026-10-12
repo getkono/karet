@@ -291,7 +291,7 @@ fn code_tab_with_text(path: &Path, text: &str) -> Tab {
             doc: None,
             next_version: 0,
             buffer: TextBuffer::from_text(text),
-            text: text.to_string(),
+            text: text.into(),
             highlights: Highlights::default(),
             semantic_blocks: karet_syntax::SemanticBlocks::default(),
             folds: FoldRegions::default(),
