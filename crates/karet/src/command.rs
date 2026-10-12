@@ -271,6 +271,11 @@ pub enum Command {
     NotebookInterrupt,
     /// Restart the notebook kernel (outputs are marked stale).
     NotebookRestartKernel,
+    /// Toggle a line comment on every selected line, in the language at the caret
+    /// (Ctrl+/).
+    ToggleLineComment,
+    /// Toggle a block comment around each selection or caret line (Shift+Alt+A).
+    ToggleBlockComment,
     /// Toggle bold (`**`) around the selection or word (Markdown; Ctrl+B).
     ToggleBold,
     /// Toggle italic (`*`) around the selection or word (Markdown; Ctrl+I).
@@ -792,6 +797,8 @@ impl Command {
             Self::NotebookRunAll => "Notebook: Run All Cells",
             Self::NotebookInterrupt => "Notebook: Interrupt Kernel",
             Self::NotebookRestartKernel => "Notebook: Restart Kernel",
+            Self::ToggleLineComment => "Toggle Line Comment",
+            Self::ToggleBlockComment => "Toggle Block Comment",
             Self::ToggleBold => "Markdown: Toggle Bold",
             Self::ToggleItalic => "Markdown: Toggle Italic",
             Self::ToggleStrikethrough => "Markdown: Toggle Strikethrough",

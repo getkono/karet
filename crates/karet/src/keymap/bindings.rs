@@ -240,6 +240,11 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(Editor, true,  true,  false, Char('z'), Command::Redo),
     b(Editor, true,  false, false, Char('x'), Command::Cut),
     b(Editor, true,  false, false, Char('v'), Command::Paste),
+    // Comment toggles (VS Code parity). A legacy terminal sends Ctrl+/ as 0x1F,
+    // which crossterm reports as Ctrl+7; the kitty protocol reports Ctrl+/ itself.
+    b(Editor, true,  false, false, Char('/'), Command::ToggleLineComment),
+    b(Editor, true,  false, false, Char('7'), Command::ToggleLineComment),
+    b(Editor, false, true,  true,  Char('a'), Command::ToggleBlockComment),
 
     // Live blame: toggle inline attribution, or open the attributed commit.
     b(Editor, true,  true,  false, Char('b'), Command::ToggleInlineBlame),

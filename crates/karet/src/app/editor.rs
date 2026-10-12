@@ -732,7 +732,46 @@ impl App {
             },
             _ => return,
         };
-        let change = Change::new(base, edits);
+        self.apply_doc_change(idx, doc, Change::new(base, edits), cause, |editor, _| {
+            editor.set_carets(&carets);
+        });
+    }
+
+    /// Submit a [`editing::MultiEdit`] built over the active code tab's whole cursor
+    /// set (e.g. a comment toggle), adopting the cursor set it leaves behind.
+    pub(super) fn submit_multi_edit(&mut self, cause: EditCause, edit: editing::MultiEdit) {
+        let doc = match self.tabs.get(self.active) {
+            Some(Tab {
+                kind: TabKind::Code { doc: Some(doc), .. },
+                ..
+            }) if self.backend.is_some() => *doc,
+            _ => return,
+        };
+        let cursors = edit.cursors;
+        self.apply_doc_change(
+            self.active,
+            doc,
+            edit.change,
+            cause,
+            move |editor, buffer| {
+                editor.set_cursor_state(buffer, cursors);
+            },
+        );
+    }
+
+    /// Send `change` to the session, apply it locally to tab `idx`, then let `place`
+    /// position the cursors against the edited buffer before revealing the caret.
+    fn apply_doc_change<F>(
+        &mut self,
+        idx: usize,
+        doc: DocumentId,
+        change: Change,
+        cause: EditCause,
+        place: F,
+    ) where
+        F: FnOnce(&mut EditorState, &TextBuffer),
+    {
+        let base = change.base_version;
         if let Some(backend) = &self.backend {
             let id = backend.next_id();
             let _ = backend.send(
@@ -774,7 +813,7 @@ impl App {
                 *text = buffer.text();
                 auto_save_version = Some(applied.version);
             }
-            editor.set_carets(&carets);
+            place(editor, buffer);
             let head = editor.cursor();
             // `reveal`, not `scroll_to`: the merge-conflict panes copy this
             // editor's `scroll_col` before it next renders.

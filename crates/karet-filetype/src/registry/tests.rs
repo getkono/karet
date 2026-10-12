@@ -190,6 +190,31 @@ fn type_without_specific_glyph_uses_category() {
 }
 
 #[test]
+fn every_programming_and_shell_type_declares_comment_tokens() {
+    for ft in all_file_types() {
+        if matches!(ft.category(), Category::Code | Category::Shell) {
+            assert!(
+                !ft.comment_tokens().is_empty(),
+                "{} has no comment tokens",
+                ft.name()
+            );
+        }
+    }
+}
+
+#[test]
+fn comment_tokens_follow_the_file_type_not_the_shared_grammar() {
+    let tokens = |p: &str| file_type_for_path(Path::new(p)).comment_tokens();
+    // `.json` and `.jsonc` share the JSON grammar but only JSONC has comments.
+    assert!(tokens("a.json").is_empty());
+    assert_eq!(tokens("a.jsonc").line(), Some("//"));
+    // A grammar-less overflow entry is keyed by its display name.
+    assert_eq!(tokens("run.ksh").line(), Some("#"));
+    assert_eq!(tokens("index.html").block(), Some(("<!--", "-->")));
+    assert!(tokens("notes.txt").is_empty());
+}
+
+#[test]
 fn icon_for_path_matches_resolution() {
     assert_eq!(
         icon_for_path(Path::new("a.rs"), IconStyle::NerdFont),

@@ -12,6 +12,13 @@ use karet_core::Range;
 use karet_core::TextEdit;
 use karet_text::TextBuffer;
 
+mod comment;
+
+pub use comment::LineComment;
+pub use comment::MultiEdit;
+pub use comment::toggle_block_comment;
+pub use comment::toggle_line_comment;
+
 /// An edit plus the caret position it should leave behind.
 pub struct Edit {
     /// The change to submit.
