@@ -136,6 +136,8 @@ impl App {
             Command::AddCursorAbove => self.add_cursor_vertical(true),
             Command::AddCursorBelow => self.add_cursor_vertical(false),
             Command::AddCursorNextOccurrence => self.add_cursor_next_occurrence(),
+            Command::GoToBracket => self.bracket_command(false),
+            Command::SelectToBracket => self.bracket_command(true),
             Command::CollapseCarets => self.collapse_carets_or_unfocus(),
             Command::ScrollUp => self.scroll_lines(-1),
             Command::ScrollDown => self.scroll_lines(1),
@@ -492,6 +494,26 @@ impl App {
             Command::SearchToggleRegex => self.search_toggle_regex(),
             Command::SearchToggleCase => self.search_toggle_case(),
             Command::SearchToggleWord => self.search_toggle_word(),
+        }
+    }
+
+    /// Go to Bracket (`select == false`) or Select to Bracket in the active code
+    /// tab, reading strings and comments from its syntax highlights.
+    fn bracket_command(&mut self, select: bool) {
+        let Some(Tab {
+            kind: TabKind::Code {
+                buffer, highlights, ..
+            },
+            editor,
+            ..
+        }) = self.tabs.get_mut(self.active)
+        else {
+            return;
+        };
+        if select {
+            editor.select_to_bracket(buffer, Some(highlights));
+        } else {
+            editor.go_to_bracket(buffer, Some(highlights));
         }
     }
 }

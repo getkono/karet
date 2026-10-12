@@ -120,6 +120,8 @@ impl Command {
             Self::LanguageServerUndecline => "offer again",
             Self::ToggleFold => "fold",
             Self::AddCursorNextOccurrence => "add cursor",
+            Self::GoToBracket => "bracket",
+            Self::SelectToBracket => "select bracket",
             // Diff.
             Self::ToggleDiffLayout => "layout",
             Self::NextChangedFile => "next change",

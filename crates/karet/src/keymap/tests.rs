@@ -365,6 +365,34 @@ fn multi_cursor_chords_bind_in_editor() {
 }
 
 #[test]
+fn bracket_chords_bind_in_editor_under_both_shift_encodings() {
+    let ctrl_shift = KeyModifiers::CONTROL | KeyModifiers::SHIFT;
+    for ch in ['|', '\\'] {
+        assert_eq!(
+            res(Focus::Editor, false, key(KeyCode::Char(ch), ctrl_shift)),
+            Some(Command::GoToBracket)
+        );
+        assert_eq!(
+            res(
+                Focus::Editor,
+                false,
+                key(KeyCode::Char(ch), ctrl_shift | KeyModifiers::ALT)
+            ),
+            Some(Command::SelectToBracket)
+        );
+    }
+    // Ctrl+\ alone still splits the pane.
+    assert_eq!(
+        res(
+            Focus::Editor,
+            false,
+            key(KeyCode::Char('\\'), KeyModifiers::CONTROL)
+        ),
+        Some(Command::SplitRight)
+    );
+}
+
+#[test]
 fn panel_selection_and_quit() {
     assert_eq!(
         res(

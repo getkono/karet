@@ -10,6 +10,7 @@
 //! and [`EditorState`] are defined; the painting/input logic is filled in
 //! separately.
 
+mod bracket;
 mod conflict;
 pub mod editing;
 mod hint;
@@ -21,6 +22,11 @@ mod visual;
 #[cfg(test)]
 mod tests;
 
+pub use bracket::BracketPair;
+pub use bracket::bracket_decorations;
+pub use bracket::bracket_pair_at;
+pub use bracket::enclosing_pair;
+pub use bracket::matching_pair;
 pub use conflict::conflict_decorations;
 use karet_core::CursorState;
 use karet_core::Decoration;

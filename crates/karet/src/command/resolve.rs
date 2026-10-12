@@ -138,6 +138,8 @@ static PALETTE: &[Command] = &[
     Command::AddCursorAbove,
     Command::AddCursorBelow,
     Command::AddCursorNextOccurrence,
+    Command::GoToBracket,
+    Command::SelectToBracket,
     Command::ScmStageAll,
     Command::ScmUnstageAll,
     Command::ScmCommit,
