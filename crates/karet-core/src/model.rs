@@ -9,12 +9,16 @@
 use std::path::PathBuf;
 
 use crate::coord::Range;
-use crate::edit::TextEdit;
 use crate::edit::WorkspaceEdit;
 use crate::token::ThemeRole;
 
+mod completion;
 mod inlay;
 
+pub use completion::CompletionItem;
+pub use completion::CompletionKind;
+pub use completion::CompletionList;
+pub use completion::CompletionTrigger;
 pub use inlay::InlayHint;
 pub use inlay::InlayHintKind;
 pub use inlay::InlayHintLabelPart;
@@ -320,66 +324,6 @@ pub struct Location {
     pub range: Range,
 }
 
-/// The kind of a [`CompletionItem`] (drives its icon).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[non_exhaustive]
-pub enum CompletionKind {
-    /// Plain text.
-    Text,
-    /// A method.
-    Method,
-    /// A function.
-    Function,
-    /// A field.
-    Field,
-    /// A variable.
-    Variable,
-    /// A class.
-    Class,
-    /// An interface.
-    Interface,
-    /// A module.
-    Module,
-    /// A property.
-    Property,
-    /// A keyword.
-    Keyword,
-    /// A snippet.
-    Snippet,
-    /// A constant.
-    Constant,
-    /// A struct.
-    Struct,
-    /// An enum.
-    Enum,
-    /// Forward-compatibility fallback: an unrecognized value from a newer peer.
-    #[cfg_attr(feature = "serde", serde(other))]
-    Unknown,
-}
-
-/// A completion candidate.
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct CompletionItem {
-    /// The label shown in the list.
-    pub label: String,
-    /// The completion kind.
-    pub kind: CompletionKind,
-    /// Optional detail (e.g. a type or signature).
-    pub detail: Option<String>,
-    /// Optional documentation.
-    pub documentation: Option<Markup>,
-    /// The text inserted when no `edit` is supplied.
-    pub insert_text: String,
-    /// A precise edit to apply instead of `insert_text`.
-    pub edit: Option<TextEdit>,
-    /// A sort key overriding `label`.
-    pub sort_text: Option<String>,
-    /// Whether the item is deprecated.
-    pub deprecated: bool,
-}
-
 /// The flavor of a [`Markup`] payload.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -673,16 +617,7 @@ mod tests {
             container_name: None,
             children: Vec::new(),
         })?;
-        rt(&CompletionItem {
-            label: "push".into(),
-            kind: CompletionKind::Method,
-            detail: None,
-            documentation: None,
-            insert_text: "push".into(),
-            edit: None,
-            sort_text: None,
-            deprecated: false,
-        })?;
+        rt(&CompletionItem::new("push", CompletionKind::Method))?;
         rt(&Hover {
             contents: Markup {
                 kind: MarkupKind::Markdown,

@@ -801,14 +801,24 @@ impl App {
     where
         F: Fn(LineCol, Option<Range>, &TextBuffer, u64) -> Option<editing::Edit>,
     {
-        if self.backend.is_none() {
-            return;
+        if let Some(edit) = self.compose_edit(build) {
+            self.submit_multi_edit(cause, edit);
         }
+    }
+
+    /// The batch [`Self::submit_edit_with_cause`] would submit for `build`,
+    /// for a caller that adds to it before submitting it itself. `None` with
+    /// no session, no code tab, or no selection building a text change.
+    pub(super) fn compose_edit<F>(&self, build: F) -> Option<editing::MultiEdit>
+    where
+        F: Fn(LineCol, Option<Range>, &TextBuffer, u64) -> Option<editing::Edit>,
+    {
+        self.backend.as_ref()?;
         // Build one edit per selection against the same base version, then compose
         // them into one non-overlapping batch: overlapping edits merge, and a
         // selection whose edit is a no-op stays put. With a single cursor this is
         // exactly the single edit.
-        let edit = match self.tabs.get(self.active) {
+        match self.tabs.get(self.active) {
             Some(Tab {
                 kind:
                     TabKind::Code {
@@ -831,14 +841,10 @@ impl App {
                         (*sel, build(sel.head, selection, buffer, base))
                     })
                     .collect();
-                let Some(edit) = editing::compose(base, cursors.primary, &items) else {
-                    return;
-                };
-                edit
+                editing::compose(base, cursors.primary, &items)
             },
-            _ => return,
-        };
-        self.submit_multi_edit(cause, edit);
+            _ => None,
+        }
     }
 
     /// Submit a [`editing::MultiEdit`] built over the active code tab's whole cursor

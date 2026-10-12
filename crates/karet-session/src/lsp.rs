@@ -277,6 +277,7 @@ impl LspManager {
                 .get(key)
                 .is_some_and(|slot| slot.token == *token),
             LspUpdate::Completions { generation, .. }
+            | LspUpdate::CompletionResolved { generation, .. }
             | LspUpdate::InlayHints { generation, .. }
             | LspUpdate::InlayHintsFailed { generation, .. }
             | LspUpdate::InlayHintResolved { generation, .. }

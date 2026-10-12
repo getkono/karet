@@ -359,12 +359,15 @@ async fn a_formatter_that_never_answers_does_not_wedge_its_server() -> TestResul
         DocumentId(1),
         1,
         &path,
-        karet_core::LineCol::new(0, 0),
+        (
+            karet_core::LineCol::new(0, 0),
+            karet_core::CompletionTrigger::Invoked
+        ),
     ));
     loop {
         match updates.recv().await {
-            Some(LspUpdate::Completions { items, .. }) => {
-                assert_eq!(items.len(), 1, "the server is still answering");
+            Some(LspUpdate::Completions { list, .. }) => {
+                assert_eq!(list.items.len(), 1, "the server is still answering");
                 break;
             },
             Some(_other) => continue,

@@ -85,6 +85,8 @@ pub use model::CodeAction;
 pub use model::CommandId;
 pub use model::CompletionItem;
 pub use model::CompletionKind;
+pub use model::CompletionList;
+pub use model::CompletionTrigger;
 pub use model::Decoration;
 pub use model::DecorationKind;
 pub use model::Diagnostic;

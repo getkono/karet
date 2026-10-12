@@ -115,7 +115,11 @@ fn advertised_capabilities(behavior: Behavior) -> Value {
     let mut capabilities = json!({
         "textDocumentSync": 1,
         "hoverProvider": true,
-        "completionProvider": {"resolveProvider": true},
+        "completionProvider": {
+            "resolveProvider": true,
+            "triggerCharacters": ["."],
+            "allCommitCharacters": [";"]
+        },
         "definitionProvider": true,
         "referencesProvider": true,
         "documentSymbolProvider": true,
@@ -249,8 +253,27 @@ pub(super) fn test_connector(
                                             "end": {"line": line, "character": 4}
                                         },
                                         "newText": "emoji_aware"
-                                    }
+                                    },
+                                    "data": {"item": 1}
                                 }]}),
+                            )
+                            .await;
+                        },
+                        // The item back with its deferred documentation and an
+                        // import at UTF-16 character 2 of line 0: buffer column
+                        // 1 behind a leading emoji.
+                        Some("completionItem/resolve") => {
+                            let mut item = msg["params"].clone();
+                            item["documentation"] =
+                                json!({"kind": "markdown", "value": "resolved by the double"});
+                            item["additionalTextEdits"] = json!([{
+                                "range": {"start": {"line": 0, "character": 2},
+                                          "end": {"line": 0, "character": 2}},
+                                "newText": "use x;"
+                            }]);
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": item}),
                             )
                             .await;
                         },

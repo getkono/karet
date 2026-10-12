@@ -75,34 +75,8 @@ impl Session {
             return;
         }
         match update {
-            LspUpdate::Completions {
-                request,
-                doc,
-                version,
-                mut items,
-                ..
-            } => {
-                let Some(d) = self.store.docs.get(&doc) else {
-                    return; // closed since the request: stale by definition
-                };
-                for item in &mut items {
-                    if let Some(edit) = item.edit.as_mut() {
-                        let start = edit.range.start;
-                        let end = edit.range.end;
-                        edit.range = Range {
-                            start: d.buffer.utf16_to_line_col(start.line, start.col),
-                            end: d.buffer.utf16_to_line_col(end.line, end.col),
-                        };
-                    }
-                }
-                self.emit(
-                    Some(request),
-                    Event::Completions {
-                        doc,
-                        version,
-                        items,
-                    },
-                );
+            update @ (LspUpdate::Completions { .. } | LspUpdate::CompletionResolved { .. }) => {
+                self.deliver_completion(update);
             },
             LspUpdate::InlayHints {
                 request,

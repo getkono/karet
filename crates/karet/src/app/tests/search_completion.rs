@@ -467,26 +467,33 @@ async fn scm_stages_a_multi_file_selection() {
 
 fn completion_item_labeled(label: &str, insert: &str) -> karet_core::CompletionItem {
     karet_core::CompletionItem {
-        label: label.to_owned(),
-        kind: karet_core::CompletionKind::Function,
-        detail: None,
-        documentation: None,
         insert_text: insert.to_owned(),
-        edit: None,
-        sort_text: None,
-        deprecated: false,
+        ..karet_core::CompletionItem::new(label, karet_core::CompletionKind::Function)
     }
 }
 
+/// Open the popup over `items` as if asked for at the caret.
 fn open_popup(app: &mut App, items: Vec<karet_core::CompletionItem>, anchor: LineCol) {
-    app.completion = Some(crate::completion::CompletionUi {
-        items,
-        list: karet_widgets::CompletionState::default(),
-        doc: DocumentId(9),
+    let requested_at = app.completion_target().map_or(anchor, |(_, caret)| caret);
+    app.completion = Some(crate::completion::CompletionUi::new(
+        DocumentId(9),
         anchor,
-        last_filter: String::new(),
-        mode: crate::completion::CompletionMode::Filtered,
-    });
+        requested_at,
+        items,
+        crate::completion::CompletionMode::Filtered,
+    ));
+}
+
+/// The answer to a completion request: `items`, complete, from a server that
+/// named no characters.
+fn completions(items: Vec<karet_core::CompletionItem>) -> SessionEvent {
+    SessionEvent::Completions {
+        doc: DocumentId(9),
+        version: 0,
+        items,
+        incomplete: false,
+        options: karet_core::CompletionOptions::default(),
+    }
 }
 
 #[test]
@@ -614,11 +621,7 @@ fn stale_completions_are_ignored_and_fresh_ones_open_the_popup() {
     // An answer to a different (superseded) request id is dropped.
     app.on_backend_event(
         Some(RequestId(id.0 + 100)),
-        SessionEvent::Completions {
-            doc: DocumentId(9),
-            version: 0,
-            items: vec![completion_item_labeled("stale", "stale")],
-        },
+        completions(vec![completion_item_labeled("stale", "stale")]),
     );
     assert!(
         app.completion.is_none(),
@@ -632,11 +635,7 @@ fn stale_completions_are_ignored_and_fresh_ones_open_the_popup() {
     // The matching answer opens the popup.
     app.on_backend_event(
         Some(id),
-        SessionEvent::Completions {
-            doc: DocumentId(9),
-            version: 0,
-            items: vec![completion_item_labeled("foobar", "foobar")],
-        },
+        completions(vec![completion_item_labeled("foobar", "foobar")]),
     );
     let ui = app.completion.as_ref().expect("popup open");
     assert_eq!(ui.items.len(), 1);
@@ -653,11 +652,7 @@ fn a_moved_caret_drops_late_completions() {
     app.tabs[idx].editor.set_carets(&[LineCol::new(1, 0)]);
     app.on_backend_event(
         Some(id),
-        SessionEvent::Completions {
-            doc: DocumentId(9),
-            version: 0,
-            items: vec![completion_item_labeled("foobar", "foobar")],
-        },
+        completions(vec![completion_item_labeled("foobar", "foobar")]),
     );
     assert!(
         app.completion.is_none(),

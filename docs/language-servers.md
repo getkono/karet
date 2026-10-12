@@ -308,6 +308,17 @@ What the client declares at the handshake is kept to what it honours:
   pointer on a hint, or Ctrl+clicking one of its label parts, sends
   `inlayHint/resolve` with the hint exactly as the server sent it, and the
   tooltip shows, or the click goes where the part leads, once it is filled in.
+- `textDocument.completion`: a trigger context on every request (invoked, a
+  trigger character, or narrowing an incomplete list), insert/replace edits,
+  commit characters, markdown documentation, and `resolveSupport` for
+  `documentation`, `detail` and `additionalTextEdits`. The selected item is
+  resolved with `completionItem/resolve`, and its documentation shows beside
+  the popup; an item accepted before its resolve answered gets the deferred
+  additional edits as a follow-up edit, unless the document changed in
+  between. The server's trigger characters re-request completions (`.` and
+  `::` stand in until it has answered once); its commit characters accept the
+  selection before they are typed; typing over an incomplete list asks again.
+  Snippets are still not declared: snippet text degrades to plain text.
 - `dynamicRegistration` for the gated requests whose registration carries
   nothing karet reads beyond "on": hover, definition, implementation, type
   hierarchy, document and workspace symbols, rename, formatting, range

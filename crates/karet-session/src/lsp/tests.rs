@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use karet_core::Change;
 use karet_core::CompletionItem;
+use karet_core::CompletionTrigger;
 use karet_core::NotificationKind;
 use karet_core::Range;
 use karet_core::Symbol;
@@ -40,7 +41,8 @@ fn reconfigure_retires_updates_from_old_server_tasks() {
         request: RequestId(1),
         doc: DocumentId(1),
         version: 1,
-        items: Vec::new(),
+        list: karet_core::CompletionList::default(),
+        options: karet_core::CompletionOptions::default(),
     };
     assert!(manager.accepts(&old));
 
@@ -261,6 +263,7 @@ async fn await_completions(
             doc,
             version,
             items,
+            ..
         } = event
         {
             return Some((rid, doc, version, items));
@@ -331,6 +334,7 @@ async fn unsupported_language_answers_empty_immediately() -> TestResult {
         Command::Completion {
             doc,
             position: LineCol::new(0, 0),
+            trigger: CompletionTrigger::Invoked,
         },
     )?;
     let (rid, cdoc, cversion, items) = await_completions(&mut events).await.ok_or("no answer")?;
@@ -366,6 +370,7 @@ async fn disabled_setting_spawns_nothing() -> TestResult {
         Command::Completion {
             doc,
             position: LineCol::new(0, 0),
+            trigger: CompletionTrigger::Invoked,
         },
     )?;
     let (rid, _, _, items) = await_completions(&mut events).await.ok_or("no answer")?;
@@ -401,6 +406,7 @@ async fn missing_binary_warns_once_and_answers_empty() -> TestResult {
         Command::Completion {
             doc,
             position: LineCol::new(0, 0),
+            trigger: CompletionTrigger::Invoked,
         },
     )?;
 
@@ -454,6 +460,7 @@ async fn server_death_is_reported_and_completions_stay_answered() -> TestResult 
         Command::Completion {
             doc,
             position: LineCol::new(0, 0),
+            trigger: CompletionTrigger::Invoked,
         },
     )?;
 
@@ -512,6 +519,7 @@ async fn crashed_server_restarts_and_replays_open_documents() -> TestResult {
         Command::Completion {
             doc,
             position: LineCol::new(0, 3),
+            trigger: CompletionTrigger::Invoked,
         },
     )?;
     let _ = await_completions(&mut events)
@@ -524,6 +532,7 @@ async fn crashed_server_restarts_and_replays_open_documents() -> TestResult {
         Command::Completion {
             doc,
             position: LineCol::new(0, 3),
+            trigger: CompletionTrigger::Invoked,
         },
     )?;
     let (_, _, _, items) = await_completions(&mut events)
@@ -550,6 +559,7 @@ async fn crashed_server_restarts_and_replays_open_documents() -> TestResult {
 }
 
 mod code_action_tests;
+mod completion_tests;
 mod disabled_tests;
 mod failure_policy_tests;
 mod format_tests;

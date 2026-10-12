@@ -122,17 +122,95 @@ fn bare_item(label: &str) -> lsp_types::CompletionItem {
 
 #[test]
 fn empty_and_list_and_array_responses_flatten() {
-    assert!(completions_from_lsp(None).is_empty());
+    assert_eq!(completions_from_lsp(None, true), CompletionList::default());
     let array = lsp_types::CompletionResponse::Array(vec![bare_item("a")]);
-    assert_eq!(completions_from_lsp(Some(array)).len(), 1);
-    // `isIncomplete` is flattened away by design.
+    let mapped = completions_from_lsp(Some(array), false);
+    assert_eq!(mapped.items.len(), 1);
+    assert!(!mapped.incomplete);
     let list = lsp_types::CompletionResponse::List(lsp_types::CompletionList {
         is_incomplete: true,
         items: vec![bare_item("b"), bare_item("c")],
     });
-    let mapped = completions_from_lsp(Some(list));
-    assert_eq!(mapped.len(), 2);
-    assert_eq!(mapped[0].label, "b");
+    let mapped = completions_from_lsp(Some(list), false);
+    assert!(mapped.incomplete, "isIncomplete is kept");
+    assert_eq!(mapped.items.len(), 2);
+    assert_eq!(mapped.items[0].label, "b");
+    assert!(mapped.items.iter().all(|item| item.payload.is_none()));
+}
+
+/// Falsified by keeping a payload a server that cannot resolve would never
+/// read, or by a payload that is not the item exactly as the server sent it
+/// (`data` included), which is what `completionItem/resolve` must hand back.
+#[test]
+fn a_resolvable_list_keeps_each_items_wire_form() -> Result<(), serde_json::Error> {
+    let item: lsp_types::CompletionItem =
+        serde_json::from_value(serde_json::json!({"label": "push", "data": {"id": 7}}))?;
+    let mapped = completions_from_lsp(
+        Some(lsp_types::CompletionResponse::Array(vec![item.clone()])),
+        true,
+    );
+    let payload = mapped.items[0].payload.as_deref().unwrap_or_default();
+    let back: lsp_types::CompletionItem = serde_json::from_str(payload)?;
+    assert_eq!(back, item);
+    Ok(())
+}
+
+/// Falsified by dropping the replace range of an insert/replace edit, or
+/// putting it where the insert range belongs.
+#[test]
+fn an_insert_replace_edit_keeps_both_ranges() {
+    let mut item = bare_item("push");
+    item.text_edit = Some(lsp_types::CompletionTextEdit::InsertAndReplace(
+        lsp_types::InsertReplaceEdit {
+            new_text: "push".into(),
+            insert: lsp_range(0, 2, 0, 4),
+            replace: lsp_range(0, 2, 0, 7),
+        },
+    ));
+    let mapped = completion_item_from_lsp(item);
+    assert_eq!(
+        mapped.edit.map(|edit| edit.range),
+        Some(Range {
+            start: LineCol::new(0, 2),
+            end: LineCol::new(0, 4),
+        })
+    );
+    assert_eq!(
+        mapped.replace_range,
+        Some(Range {
+            start: LineCol::new(0, 2),
+            end: LineCol::new(0, 7),
+        })
+    );
+}
+
+/// Falsified by dropping `additionalTextEdits`, `filterText` or
+/// `commitCharacters`, or by keeping a commit "character" longer than one.
+#[test]
+fn additional_edits_filter_text_and_commit_characters_carry_over() {
+    let mut item = bare_item("HashMap");
+    item.filter_text = Some("hashmap".into());
+    item.commit_characters = Some(vec![".".into(), "::".into(), "(".into()]);
+    item.additional_text_edits = Some(vec![lsp_types::TextEdit {
+        range: lsp_range(0, 0, 0, 0),
+        new_text: "use std::collections::HashMap;\n".into(),
+    }]);
+    let mapped = completion_item_from_lsp(item);
+    assert_eq!(mapped.filter_text.as_deref(), Some("hashmap"));
+    assert_eq!(mapped.commit_characters, Some(vec!['.', '(']));
+    assert_eq!(
+        mapped.additional_edits,
+        vec![TextEdit {
+            range: Range::default(),
+            new_text: "use std::collections::HashMap;\n".into(),
+        }]
+    );
+    let bare = completion_item_from_lsp(bare_item("x"));
+    assert_eq!(
+        bare.commit_characters, None,
+        "none given defers to the list"
+    );
+    assert!(bare.additional_edits.is_empty());
 }
 
 #[test]

@@ -163,30 +163,6 @@ impl Session {
         }));
     }
 
-    /// Serve [`Command::Completion`]: convert the caret to the server's UTF-16
-    /// encoding and forward to the document's language server. Languages with no
-    /// server answer immediately with an empty set, so the client never waits.
-    pub(super) fn completion(&mut self, id: RequestId, doc_id: DocumentId, position: LineCol) {
-        let Some(doc) = Self::doc_or_report(&self.store, &self.events, id, doc_id) else {
-            return;
-        };
-        let version = doc.buffer.version();
-        let utf16 = utf16_caret(doc, position);
-        let forwarded =
-            self.lsp
-                .completion(doc.language_selector, id, doc_id, version, &doc.path, utf16);
-        if !forwarded {
-            self.emit(
-                Some(id),
-                Event::Completions {
-                    doc: doc_id,
-                    version,
-                    items: Vec::new(),
-                },
-            );
-        }
-    }
-
     /// Serve [`Command::InlayHints`]: convert the range to the server's UTF-16
     /// encoding and forward it. A language with no server, or a server that
     /// does not offer hints, answers immediately with an empty set so the

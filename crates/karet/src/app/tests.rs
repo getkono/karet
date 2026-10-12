@@ -15,6 +15,7 @@ mod commit_file_tree;
 mod commit_graph;
 mod commit_navigation;
 mod commit_view;
+mod completion_lsp;
 mod confirm;
 mod debugging;
 mod definition;

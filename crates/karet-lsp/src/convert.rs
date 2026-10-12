@@ -11,6 +11,7 @@ use karet_core::CodeAction;
 use karet_core::CommandId;
 use karet_core::CompletionItem;
 use karet_core::CompletionKind;
+use karet_core::CompletionList;
 use karet_core::DeleteOptions;
 use karet_core::Diagnostic;
 use karet_core::DiagnosticTag;
@@ -119,21 +120,36 @@ pub(crate) fn diagnostic_from_lsp(d: lsp_types::Diagnostic) -> Diagnostic {
     }
 }
 
-/// Flatten a completion response to a plain item list.
+/// Map a completion response to a neutral list, keeping `isIncomplete` (a bare
+/// array is complete).
 ///
-/// `CompletionList.isIncomplete` is deliberately dropped: the pinned
-/// `completion()` contract returns `Vec<CompletionItem>`, and the consumer's
-/// strategy is to re-request on trigger characters rather than track
-/// incompleteness (see the method docs on `LspClient::completion`).
+/// With `resolvable` -- the server resolves items -- every item keeps its
+/// wire form as the payload a `completionItem/resolve` hands back; otherwise
+/// none does, so a list nobody can resolve is not serialized twice.
 pub(crate) fn completions_from_lsp(
     response: Option<lsp_types::CompletionResponse>,
-) -> Vec<CompletionItem> {
-    let items = match response {
-        None => return Vec::new(),
-        Some(lsp_types::CompletionResponse::Array(items)) => items,
-        Some(lsp_types::CompletionResponse::List(list)) => list.items,
+    resolvable: bool,
+) -> CompletionList {
+    let (items, incomplete) = match response {
+        None => return CompletionList::default(),
+        Some(lsp_types::CompletionResponse::Array(items)) => (items, false),
+        Some(lsp_types::CompletionResponse::List(list)) => (list.items, list.is_incomplete),
     };
-    items.into_iter().map(completion_item_from_lsp).collect()
+    CompletionList {
+        items: items
+            .into_iter()
+            .map(|item| {
+                let payload = resolvable
+                    .then(|| serde_json::to_string(&item).ok())
+                    .flatten();
+                CompletionItem {
+                    payload,
+                    ..completion_item_from_lsp(item)
+                }
+            })
+            .collect(),
+        incomplete,
+    }
 }
 
 /// Map either LSP document-symbol response shape into the neutral nested model.
@@ -649,12 +665,16 @@ fn symbol_kind_from_lsp(kind: lsp_types::SymbolKind) -> SymbolKind {
 ///   `insertText`, else the label. Snippet-format text is degraded to plain
 ///   text (see [`crate::snippet`]).
 /// - **`textEdit`** maps to a neutral [`TextEdit`] (UTF-16 range passthrough);
-///   an insert/replace edit uses its *insert* range — the conservative choice
-///   that replaces only the typed prefix.
-/// - **`filterText`** has no slot on the neutral model and is dropped; karet
-///   filters on the label.
+///   an insert/replace edit puts its *insert* range there and keeps its
+///   *replace* range beside it, so the consumer chooses.
+/// - **`additionalTextEdits`**, **`filterText`** and **`commitCharacters`**
+///   carry over; a commit "character" that is not exactly one character is
+///   dropped.
 /// - **Deprecation** is the union of the legacy `deprecated` flag and the
 ///   `Deprecated` tag.
+///
+/// The payload is left empty: [`completions_from_lsp`] fills it when the
+/// server resolves items.
 pub(crate) fn completion_item_from_lsp(item: lsp_types::CompletionItem) -> CompletionItem {
     let is_snippet = item.insert_text_format == Some(lsp_types::InsertTextFormat::SNIPPET);
     let degrade = |text: String| {
@@ -664,16 +684,23 @@ pub(crate) fn completion_item_from_lsp(item: lsp_types::CompletionItem) -> Compl
             text
         }
     };
-    let edit = item.text_edit.map(|te| match te {
-        lsp_types::CompletionTextEdit::Edit(e) => TextEdit {
-            range: range_from_lsp(e.range),
-            new_text: degrade(e.new_text),
-        },
-        lsp_types::CompletionTextEdit::InsertAndReplace(e) => TextEdit {
-            range: range_from_lsp(e.insert),
-            new_text: degrade(e.new_text),
-        },
-    });
+    let (edit, replace_range) = match item.text_edit {
+        None => (None, None),
+        Some(lsp_types::CompletionTextEdit::Edit(e)) => (
+            Some(TextEdit {
+                range: range_from_lsp(e.range),
+                new_text: degrade(e.new_text),
+            }),
+            None,
+        ),
+        Some(lsp_types::CompletionTextEdit::InsertAndReplace(e)) => (
+            Some(TextEdit {
+                range: range_from_lsp(e.insert),
+                new_text: degrade(e.new_text),
+            }),
+            Some(range_from_lsp(e.replace)),
+        ),
+    };
     let insert_text = match (&edit, item.insert_text) {
         (Some(e), _) => e.new_text.clone(),
         (None, Some(text)) => degrade(text),
@@ -693,6 +720,23 @@ pub(crate) fn completion_item_from_lsp(item: lsp_types::CompletionItem) -> Compl
         edit,
         sort_text: item.sort_text,
         deprecated,
+        filter_text: item.filter_text,
+        replace_range,
+        additional_edits: item
+            .additional_text_edits
+            .unwrap_or_default()
+            .into_iter()
+            .map(text_edit_from_lsp)
+            .collect(),
+        commit_characters: item.commit_characters.map(|all| {
+            all.iter()
+                .filter_map(|text| {
+                    let mut it = text.chars();
+                    it.next().filter(|_| it.next().is_none())
+                })
+                .collect()
+        }),
+        payload: None,
     }
 }
 

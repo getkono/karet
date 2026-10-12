@@ -361,6 +361,7 @@ impl App {
         for doc in stale {
             self.open_docs.remove(&doc);
             self.auto_save_pending.remove(&doc);
+            self.completion_chars.remove(&doc);
             if let Some(backend) = &self.backend {
                 let id = backend.next_id();
                 let _ = backend.send(id, SessionCommand::CloseDocument { doc });

@@ -115,8 +115,27 @@ pub enum Event {
         doc: DocumentId,
         /// The document version the request was made against.
         version: u64,
-        /// The completion items, with edit ranges in buffer (UTF-32) columns.
+        /// The completion items, with every range -- edit, replace range,
+        /// additional edits -- in buffer (UTF-32) columns.
         items: Vec<CompletionItem>,
+        /// Whether the server left candidates out: narrowing the typed prefix
+        /// should re-issue [`Command::Completion`] with
+        /// [`CompletionTrigger::Incomplete`] rather than only filter `items`.
+        incomplete: bool,
+        /// The answering server's trigger and commit characters; empty when
+        /// no server answered.
+        options: CompletionOptions,
+    },
+    /// The answer to a [`Command::ResolveCompletion`]: what the server filled
+    /// in for the item, every range in buffer (UTF-32) columns, for the client
+    /// to fold into the item it holds with
+    /// [`CompletionItem::adopt_resolved`]. `None` when there was nothing to
+    /// resolve or no server resolved it: the item is as full as it gets.
+    CompletionResolved {
+        /// The document the item completes in.
+        doc: DocumentId,
+        /// What the server filled in, if anything.
+        resolved: Option<CompletionItem>,
     },
     /// Inlay hints answering a [`Command::InlayHints`].
     ///

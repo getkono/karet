@@ -107,6 +107,7 @@ async fn a_slow_hint_request_does_not_hold_up_completion() -> TestResult {
         Command::Completion {
             doc,
             position: LineCol::new(0, 3),
+            trigger: CompletionTrigger::Invoked,
         },
     )?;
     let (rid, _, _, items) = await_completions(&mut events)

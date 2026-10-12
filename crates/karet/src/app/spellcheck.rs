@@ -163,27 +163,24 @@ impl App {
             .iter()
             .enumerate()
             .map(|(index, suggestion)| karet_core::CompletionItem {
-                label: suggestion.clone(),
-                kind: karet_core::CompletionKind::Text,
                 detail: Some("Spelling".to_string()),
-                documentation: None,
-                insert_text: suggestion.clone(),
-                edit: None,
                 sort_text: Some(format!("{index:03}")),
-                deprecated: false,
+                ..karet_core::CompletionItem::new(
+                    suggestion.clone(),
+                    karet_core::CompletionKind::Text,
+                )
             })
             .collect();
         self.pending_completion = None;
-        self.completion = Some(crate::completion::CompletionUi {
+        self.completion = Some(crate::completion::CompletionUi::new(
+            warning.doc,
+            warning.range.start,
+            warning.range.end,
             items,
-            list: karet_widgets::CompletionState::default(),
-            doc: warning.doc,
-            anchor: warning.range.start,
-            last_filter: String::new(),
-            mode: crate::completion::CompletionMode::Spelling {
+            crate::completion::CompletionMode::Spelling {
                 caret: warning.range.end,
             },
-        });
+        ));
     }
 
     /// Reveal spelling completions when the debounced warning arrives under a
