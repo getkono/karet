@@ -4,6 +4,7 @@ use karet_core::TokenId;
 use super::text::*;
 use super::*;
 
+mod brackets;
 mod carets;
 mod comment;
 mod hit;
