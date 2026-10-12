@@ -186,6 +186,9 @@ impl App {
             // the same set, arriving in place of itself.
             SessionEvent::InlayHintsRefresh { .. } => self.invalidate_inlay_coverage(),
             SessionEvent::HoverResult { hover } => self.on_hover_result(id, hover),
+            SessionEvent::SelectionRanges { doc, chains, .. } => {
+                self.on_selection_ranges(id, doc, chains);
+            },
             SessionEvent::SignatureHelp { doc, help, options } => {
                 self.on_signature_help(id, doc, help, options);
             },
