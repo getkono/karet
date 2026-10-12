@@ -204,6 +204,7 @@ pub(crate) use pending::Pending;
 pub(crate) use problems::ProblemRow;
 pub(crate) use problems::ProblemsChrome;
 pub(crate) use problems::ProblemsPanel;
+pub(crate) use problems::is_problem;
 use ratatui::layout::Rect;
 pub(crate) use runtime::run;
 pub(crate) use select::SelectRegion;
