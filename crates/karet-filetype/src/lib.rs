@@ -23,6 +23,7 @@ mod classify;
 mod comment;
 mod generated;
 mod icon;
+mod pairs;
 mod registry;
 
 pub use classify::FileKind;

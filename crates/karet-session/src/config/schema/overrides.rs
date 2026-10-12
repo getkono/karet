@@ -17,6 +17,7 @@ use schemars::SchemaGenerator;
 use serde::Deserialize;
 use serde::Serialize;
 
+use super::AutoClosing;
 use super::Completion;
 use super::Editor;
 use super::LineNumbers;
@@ -120,6 +121,10 @@ pub struct EditorOverride {
     pub word_wrap: NullableOverride<bool>,
     /// Override semantic sticky-scroll rendering.
     pub sticky_scroll: Option<bool>,
+    /// Override when brackets auto-close.
+    pub auto_closing_brackets: Option<AutoClosing>,
+    /// Override when quotes auto-close.
+    pub auto_closing_quotes: Option<AutoClosing>,
     /// Override trailing-whitespace trimming.
     pub trim_trailing_whitespace: Option<bool>,
     /// Override final-newline insertion.
@@ -227,6 +232,22 @@ impl<'a> ResolvedEditor<'a> {
         self.override_
             .and_then(|o| o.line_numbers)
             .unwrap_or(self.base.line_numbers)
+    }
+
+    /// Final bracket auto-closing setting.
+    #[must_use]
+    pub fn auto_closing_brackets(self) -> AutoClosing {
+        self.override_
+            .and_then(|o| o.auto_closing_brackets)
+            .unwrap_or(self.base.auto_closing_brackets)
+    }
+
+    /// Final quote auto-closing setting.
+    #[must_use]
+    pub fn auto_closing_quotes(self) -> AutoClosing {
+        self.override_
+            .and_then(|o| o.auto_closing_quotes)
+            .unwrap_or(self.base.auto_closing_quotes)
     }
 
     /// Final current-line highlighting setting.

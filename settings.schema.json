@@ -190,6 +190,26 @@
         }
       ]
     },
+    "AutoClosing": {
+      "description": "When typing an opening bracket or quote inserts its closing partner.",
+      "oneOf": [
+        {
+          "description": "Whenever the opener is typed, wherever the caret is.",
+          "type": "string",
+          "const": "always"
+        },
+        {
+          "description": "Only where the language's pairs say so: before whitespace, the end of\nthe line or closing punctuation, and, for quotes, outside strings and\ncomments and not straight after a word.",
+          "type": "string",
+          "const": "languageDefined"
+        },
+        {
+          "description": "Never.",
+          "type": "string",
+          "const": "never"
+        }
+      ]
+    },
     "AutoSave": {
       "description": "When dirty buffers are written back to disk automatically.",
       "oneOf": [
@@ -367,6 +387,16 @@
       "description": "`editor.*` — text-editing behaviour.",
       "type": "object",
       "properties": {
+        "autoClosingBrackets": {
+          "description": "When an opening bracket inserts its closing bracket. Typing over a\ncloser it inserted steps past it, and Backspace between an empty pair\ndeletes both halves.",
+          "$ref": "#/$defs/AutoClosing",
+          "default": "languageDefined"
+        },
+        "autoClosingQuotes": {
+          "description": "When an opening quote inserts its closing quote (the language decides\nwhich quotes pair: Rust's `'` does not).",
+          "$ref": "#/$defs/AutoClosing",
+          "default": "languageDefined"
+        },
         "colorHighlight": {
           "description": "Inline swatches on color literals (hex, `rgb()`, `hsl()`).",
           "$ref": "#/$defs/ColorHighlight",
@@ -521,6 +551,30 @@
       "description": "A partial per-language patch for [`Editor`].\n\nEvery field is optional: omitted fields inherit the merged global editor value.\nArrays replace the global value when present, and nested objects merge field by\nfield through their own partial patch types.",
       "type": "object",
       "properties": {
+        "autoClosingBrackets": {
+          "description": "Override when brackets auto-close.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AutoClosing"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "autoClosingQuotes": {
+          "description": "Override when quotes auto-close.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AutoClosing"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "completion": {
           "description": "Partially override completion behavior.",
           "anyOf": [

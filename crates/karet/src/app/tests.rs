@@ -5,6 +5,7 @@
 mod aicommit;
 pub(crate) mod support;
 
+mod autopair;
 mod blame;
 mod box_select;
 mod brackets;

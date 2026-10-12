@@ -251,17 +251,22 @@ impl App {
                     // A commit character accepts the selected candidate first,
                     // then is typed after it.
                     self.commit_completion_on(c);
-                    let s = c.to_string();
-                    self.submit_edit_with_cause(EditCause::Type, move |caret, sel, _b, base| {
-                        Some(editing::insert(caret, sel, base, &s))
-                    });
+                    // Brackets and quotes pair, wrap, and type over first.
+                    if !self.type_auto_paired(c) {
+                        let s = c.to_string();
+                        self.submit_edit_with_cause(
+                            EditCause::Type,
+                            move |caret, sel, _b, base| Some(editing::insert(caret, sel, base, &s)),
+                        );
+                    }
                     self.maybe_auto_complete(c);
                 }
             },
             Command::InsertNewline => {
                 // Markdown list items continue themselves (marker, numbering,
-                // checkbox); everything else gets the ordinary auto-indent.
-                if !self.markdown_insert_newline() {
+                // checkbox); Enter between a bracket pair opens an indented
+                // line; everything else gets the ordinary auto-indent.
+                if !self.markdown_insert_newline() && !self.newline_auto_paired() {
                     self.submit_edit_with_cause(EditCause::Newline, |caret, sel, buf, base| {
                         Some(editing::newline(caret, sel, buf, base))
                     });
@@ -270,7 +275,9 @@ impl App {
             Command::Indent => self.indent_or_toggle_focus(),
             Command::Outdent => self.reindent(true),
             Command::DeleteBackward => {
-                self.submit_edit_with_cause(EditCause::Delete, editing::backspace)
+                if !self.backspace_auto_paired() {
+                    self.submit_edit_with_cause(EditCause::Delete, editing::backspace);
+                }
             },
             Command::DeleteForward => {
                 self.submit_edit_with_cause(EditCause::Delete, editing::delete_forward);
