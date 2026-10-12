@@ -204,6 +204,10 @@ pub struct EditorState {
     /// in the slice given to `Editor::virtual_text` — see
     /// [`virtual_text_rect`](Self::virtual_text_rect).
     pub(super) last_virtual_text: Vec<(usize, Rect)>,
+    /// The selection set the last whole-word `Ctrl+D` press left — see
+    /// [`add_next_occurrence`](Self::add_next_occurrence). The next press keeps
+    /// matching whole words only while the set is still exactly this one.
+    pub(super) word_occurrences: Option<Vec<Selection>>,
 }
 
 impl Default for EditorState {
@@ -230,6 +234,7 @@ impl Default for EditorState {
             upstream: None,
             pointer_upstream: Cell::new(None),
             last_virtual_text: Vec::new(),
+            word_occurrences: None,
         }
     }
 }
@@ -890,42 +895,50 @@ impl EditorState {
         self.reveal_with(buffer, p, Reveal::Minimal);
     }
 
-    /// `Ctrl+D`: if the primary is a bare caret, select the word under it; otherwise
-    /// add a caret selecting the next occurrence (wrapping) of the primary selection's
-    /// text.
+    /// `Ctrl+D`: if the primary is a bare caret, select the word touching it (nothing
+    /// happens off a word); otherwise add a selection over the next occurrence of the
+    /// primary selection's text.
+    ///
+    /// The search runs forward from the primary — the most recently added match —
+    /// wrapping at the end of the buffer and skipping occurrences already selected, so
+    /// every occurrence is reached once and a press after the last one is a no-op.
+    /// A run started from a bare caret matches whole words only; one started from a
+    /// selection matches the text anywhere, inside words included.
     pub fn add_next_occurrence(&mut self, buffer: &TextBuffer) {
         let primary = self.cursors.primary();
         if primary.is_empty() {
-            let (anchor, head) = word_bounds(buffer, primary.head);
-            if let Some(s) = self.cursors.selections.get_mut(self.cursors.primary) {
-                *s = Selection { anchor, head };
+            if let Some((anchor, head)) = word_at(buffer, primary.head) {
+                if let Some(s) = self.cursors.selections.get_mut(self.cursors.primary) {
+                    *s = Selection { anchor, head };
+                }
+                self.normalize();
+                self.word_occurrences = Some(self.cursors.selections.clone());
+                self.reveal(buffer, self.cursor());
             }
-            self.reveal(buffer, self.cursor());
             return;
         }
-        let Some(needle) = slice_text(buffer, primary.range()) else {
-            return;
+        // Whole-word only while the set is still exactly what the last whole-word
+        // press left: any other change means the user chose this selection.
+        let whole_word = self
+            .word_occurrences
+            .as_ref()
+            .is_some_and(|set| *set == self.cursors.selections);
+        let needle = range_text(buffer, primary.range());
+        let selections = &self.cursors.selections;
+        let taken = |r: Range| {
+            selections.iter().any(|s| {
+                let s = s.range();
+                s.start != s.end && s.start < r.end && r.start < s.end
+            })
         };
-        if needle.is_empty() {
-            return;
-        }
-        let from = self
-            .cursors
-            .selections
-            .iter()
-            .filter_map(|s| buffer.line_col_to_byte(s.range().end).ok())
-            .map(|b| b.0)
-            .max()
-            .unwrap_or(0);
-        if let Some(byte) = find_next(buffer, &needle, from) {
-            let start = buffer.byte_to_line_col(BytePos(byte));
-            let end = buffer.byte_to_line_col(BytePos(byte + needle.len()));
+        if let Some(found) = find_next(buffer, &needle, primary.range().end, whole_word, taken) {
             self.push(Selection {
-                anchor: start,
-                head: end,
+                anchor: found.start,
+                head: found.end,
             });
             self.reveal(buffer, self.cursor());
         }
+        self.word_occurrences = whole_word.then(|| self.cursors.selections.clone());
     }
 
     /// The buffer line under `(col, row)` when the cell lies in the gutter's

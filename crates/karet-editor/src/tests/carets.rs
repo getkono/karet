@@ -163,10 +163,113 @@ fn add_next_occurrence_selects_word_then_next_match() {
     }));
 }
 
+fn span(line: u32, start: u32, end: u32) -> Range {
+    Range {
+        start: LineCol::new(line, start),
+        end: LineCol::new(line, end),
+    }
+}
+
+#[test]
+fn add_next_occurrence_reaches_every_match_then_stops() {
+    // Started on the last of three: the search wraps to the first, then must go
+    // on to the middle one rather than finding the first again.
+    let buffer = TextBuffer::from_text("foo foo foo");
+    let mut state = EditorState::new();
+    state.last_height = 4;
+    state.place_caret(LineCol::new(0, 9));
+    state.add_next_occurrence(&buffer);
+    assert_eq!(state.selection_ranges(), vec![span(0, 8, 11)]);
+    state.add_next_occurrence(&buffer);
+    assert_eq!(state.cursor(), LineCol::new(0, 3));
+    state.add_next_occurrence(&buffer);
+    assert_eq!(state.cursor(), LineCol::new(0, 7));
+    let all = vec![span(0, 0, 3), span(0, 4, 7), span(0, 8, 11)];
+    assert_eq!(state.selection_ranges(), all);
+    // Every occurrence is selected: a further press changes nothing.
+    state.add_next_occurrence(&buffer);
+    assert_eq!(state.selection_ranges(), all);
+    assert_eq!(state.cursor(), LineCol::new(0, 7));
+}
+
+#[test]
+fn add_next_occurrence_from_a_caret_matches_whole_words_only() {
+    let buffer = TextBuffer::from_text("id width\nid_x id");
+    let mut state = EditorState::new();
+    state.last_height = 4;
+    state.place_caret(LineCol::new(0, 2)); // touching the end of `id`
+    for _ in 0..3 {
+        state.add_next_occurrence(&buffer);
+    }
+    // `wid`th and `id_x` contain `id` but are other words.
+    assert_eq!(state.selection_ranges(), vec![span(0, 0, 2), span(1, 5, 7)]);
+}
+
+#[test]
+fn add_next_occurrence_from_a_selection_matches_inside_words() {
+    let buffer = TextBuffer::from_text("id width");
+    let mut state = EditorState::new();
+    state.last_height = 4;
+    state.set_selection(&buffer, LineCol::new(0, 0), LineCol::new(0, 2));
+    state.add_next_occurrence(&buffer);
+    assert_eq!(state.selection_ranges(), vec![span(0, 0, 2), span(0, 4, 6)]);
+}
+
+#[test]
+fn add_next_occurrence_word_run_ends_when_the_user_reselects() {
+    // A whole-word run, then the user selects the same text themselves: that
+    // selection is theirs, so it matches inside words.
+    let buffer = TextBuffer::from_text("id width");
+    let mut state = EditorState::new();
+    state.last_height = 4;
+    state.place_caret(LineCol::new(0, 0));
+    state.add_next_occurrence(&buffer);
+    state.set_selection(&buffer, LineCol::new(0, 2), LineCol::new(0, 0));
+    state.add_next_occurrence(&buffer);
+    assert_eq!(state.cursor(), LineCol::new(0, 6));
+}
+
+#[test]
+fn add_next_occurrence_off_a_word_does_nothing() {
+    let buffer = TextBuffer::from_text("a  b");
+    let mut state = EditorState::new();
+    state.last_height = 4;
+    state.place_caret(LineCol::new(0, 2)); // between the two spaces
+    state.add_next_occurrence(&buffer);
+    assert_eq!(state.selection_range(), None);
+    assert_eq!(state.cursor(), LineCol::new(0, 2));
+}
+
+#[test]
+fn add_next_occurrence_matches_a_selection_spanning_lines() {
+    let buffer = TextBuffer::from_text("ab\ncd ab\ncd");
+    let mut state = EditorState::new();
+    state.last_height = 4;
+    state.set_selection(&buffer, LineCol::new(0, 0), LineCol::new(1, 2));
+    state.add_next_occurrence(&buffer);
+    assert_eq!(state.cursor(), LineCol::new(2, 2));
+    assert!(state.selection_ranges().contains(&Range {
+        start: LineCol::new(1, 3),
+        end: LineCol::new(2, 2),
+    }));
+}
+
+#[test]
+fn add_next_occurrence_handles_multibyte_text() {
+    // Columns are chars, not bytes: `é` is two bytes.
+    let buffer = TextBuffer::from_text("é ab é ab");
+    let mut state = EditorState::new();
+    state.last_height = 4;
+    state.place_caret(LineCol::new(0, 2));
+    state.add_next_occurrence(&buffer);
+    state.add_next_occurrence(&buffer);
+    assert_eq!(state.selection_ranges(), vec![span(0, 2, 4), span(0, 7, 9)]);
+}
+
 #[test]
 fn add_next_occurrence_wraps_across_rope_chunks() {
-    // A buffer spanning many rope chunks: the in-place scan must cross chunk
-    // boundaries and wrap from the end of the document back to its start.
+    // A buffer spanning many rope chunks: the scan must cross chunk boundaries
+    // and wrap from the end of the document back to its start.
     let filler = "x".repeat(40);
     let mut text = String::from("foo\n");
     for _ in 0..500 {
