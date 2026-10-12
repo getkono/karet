@@ -371,6 +371,26 @@ mod tests {
     }
 
     #[test]
+    fn a_removal_during_a_walk_owes_one_more_walk() {
+        let (dir, mut index, mut rx) = loaded(&["a.rs"]);
+        let _ = std::fs::write(dir.path().join("b.rs"), "x");
+        index.on_fs_changed(&[dir.path().join("b.rs")]);
+        assert!(index.scanning.is_some());
+        let _ = std::fs::remove_file(dir.path().join("a.rs"));
+        assert!(index.on_fs_changed(&[dir.path().join("a.rs")]));
+        assert!(displays(&index).is_empty(), "the removal applies at once");
+        assert!(
+            index.rescan,
+            "the walk in flight may have listed the file before it went"
+        );
+        assert!(land(&mut index, &mut rx));
+        assert!(index.scanning.is_some(), "the owed walk starts");
+        assert!(land(&mut index, &mut rx));
+        assert_eq!(displays(&index), ["b.rs"]);
+        assert!(index.scanning.is_none());
+    }
+
+    #[test]
     fn an_ignored_file_walks_once_until_the_ignore_file_changes() {
         let (dir, mut index, mut rx) = loaded(&["a.rs", ".gitignore"]);
         let _ = std::fs::write(dir.path().join(".gitignore"), "*.log\n");

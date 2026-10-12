@@ -143,3 +143,88 @@ fn cancelling_the_unsaved_changes_prompt_cancels_the_reopen() {
     app.dispatch(Command::CloseConfirmCancel);
     assert!(app.take_relaunch().is_none());
 }
+
+#[test]
+fn a_plain_quit_after_a_reopen_whose_save_failed_just_exits() {
+    let (_dir, mut app, _rx) = workspace_app(&[]);
+    app.backend = Some(Arc::new(RecordingBackend::new()));
+    let other = tempfile::tempdir().expect("temp dir");
+    app.push_tab(text_tab("t.rs", "x"));
+    let idx = app.active;
+    if let TabKind::Code { doc, .. } = &mut app.tabs[idx].kind {
+        *doc = Some(DocumentId(1));
+    }
+    app.tabs[idx].dirty = true;
+    app.reopen_on_workspace(other.path().to_path_buf());
+    app.dispatch(Command::CloseConfirmSave);
+    assert_eq!(app.saving_close, Some(CloseRequest::Quit));
+    let request = *app.pending_saves.keys().next().expect("a save in flight");
+    app.on_backend_event(
+        Some(request),
+        SessionEvent::ExternalConflict { doc: DocumentId(1) },
+    );
+    assert!(
+        app.saving_close.is_none(),
+        "the failed save abandons the quit"
+    );
+    assert!(!app.should_quit);
+
+    app.tabs[idx].dirty = false;
+    app.dispatch(Command::Quit);
+    assert!(app.should_quit);
+    assert!(
+        app.take_relaunch().is_none(),
+        "the abandoned reopen does not ride on a later plain quit"
+    );
+}
+
+/// The explorer row for `name`, selected.
+fn select_tree_row(app: &mut App, dir: &Path, name: &str) {
+    app.sidebar_panel = SidebarPanel::Explorer;
+    app.explorer.ensure_built(dir);
+    let row = app
+        .explorer
+        .rows()
+        .iter()
+        .position(|row| row.path == dir.join(name))
+        .expect("the file is in the tree");
+    app.explorer.select_index(row);
+}
+
+#[test]
+fn only_an_explicit_tree_open_counts_as_recently_opened() {
+    let (dir, mut app, _rx) = workspace_app(&["a.rs", "b.rs", "c.rs"]);
+    let root = dir.path().to_path_buf();
+    // Arrowing onto a file previews it without taking focus.
+    select_tree_row(&mut app, &root, "a.rs");
+    app.preview_selected_explorer_row();
+    assert!(
+        app.tabs
+            .iter()
+            .any(|tab| tab.path() == Some(&root.join("a.rs"))),
+        "the arrowed-onto file is previewed"
+    );
+    assert!(
+        app.recent.files(&root).is_empty(),
+        "passing over a file is not opening it"
+    );
+    // A click previews with focus.
+    select_tree_row(&mut app, &root, "b.rs");
+    app.explorer_preview_with_focus();
+    assert_eq!(app.recent.files(&root), [root.join("b.rs")]);
+    // Enter on a file arrowing already previewed opens it.
+    select_tree_row(&mut app, &root, "a.rs");
+    app.preview_selected_explorer_row();
+    app.sidebar_promote_or_open_permanent();
+    assert_eq!(
+        app.recent.files(&root),
+        [root.join("a.rs"), root.join("b.rs")]
+    );
+    // Enter on a file not yet open.
+    select_tree_row(&mut app, &root, "c.rs");
+    app.sidebar_promote_or_open_permanent();
+    assert_eq!(
+        app.recent.files(&root),
+        [root.join("c.rs"), root.join("a.rs"), root.join("b.rs")]
+    );
+}

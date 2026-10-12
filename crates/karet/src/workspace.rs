@@ -32,6 +32,7 @@ mod recent;
 pub(crate) use file_index::FileIndex;
 pub(crate) use file_index::Scan;
 pub(crate) use recent::RecentStore;
+pub(crate) use recent::absolute;
 
 /// How many leading bytes to sample for file-type classification.
 pub(crate) const HEAD_BYTES: usize = 8192;

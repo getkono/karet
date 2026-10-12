@@ -10,7 +10,13 @@
 //! Several karet windows share the file, so a write never saves a snapshot of
 //! this window's view: each touch is replayed on a writer thread against what is
 //! on disk at that moment, and written back atomically (temporary file, then
-//! rename). The UI thread never blocks on the disk after the first load.
+//! rename) under an exclusive lock on a sibling `recent.json.lock`, so two
+//! windows writing at the same moment cannot lose either's entry. The UI thread
+//! never blocks on the disk after the first load.
+//!
+//! Every path is stored absolute and lexically normalized: a workspace opened as
+//! `.` or `src` is remembered by where it is, not by how it was typed, so two
+//! projects never share one entry and a reopen never resolves it twice.
 
 use std::path::Path;
 use std::path::PathBuf;
@@ -25,6 +31,15 @@ const MAX_WORKSPACES: usize = 20;
 const MAX_FILES: usize = 50;
 /// The store's file name inside the state directory.
 const FILE_NAME: &str = "recent.json";
+
+/// `path` made absolute against the current directory, with `.` and `..`
+/// resolved lexically (symlinks are kept, as the window title keeps them). A
+/// current directory that cannot be read leaves a relative path as it is.
+#[must_use]
+pub(crate) fn absolute(path: &Path) -> PathBuf {
+    let path = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    crate::lexically_normalize(&path)
+}
 
 /// One remembered change, replayed in memory and against the file on disk.
 #[derive(Clone, Debug)]
@@ -42,7 +57,8 @@ struct Recent {
 }
 
 impl Recent {
-    /// Read the stored form; anything unreadable is simply not remembered.
+    /// Read the stored form; anything unreadable is simply not remembered, and
+    /// neither is a relative path, which names no place on its own.
     fn parse(text: &str) -> Self {
         let Ok(value) = serde_json::from_str::<Value>(text) else {
             return Self::default();
@@ -54,6 +70,7 @@ impl Recent {
                 .flatten()
                 .filter_map(Value::as_str)
                 .map(PathBuf::from)
+                .filter(|path| path.is_absolute())
                 .collect()
         };
         let workspaces = value
@@ -62,9 +79,9 @@ impl Recent {
             .into_iter()
             .flatten()
             .filter_map(|entry| {
-                let root = entry.get("root")?.as_str()?;
+                let root = PathBuf::from(entry.get("root")?.as_str()?);
                 let files = entry.get("files").map(paths).unwrap_or_default();
-                Some((PathBuf::from(root), files))
+                root.is_absolute().then_some((root, files))
             })
             .take(MAX_WORKSPACES)
             .collect();
@@ -153,27 +170,31 @@ impl RecentStore {
             .map(|(root, _)| root.as_path())
     }
 
-    /// The files remembered for `root`, newest first.
+    /// The files remembered for `root` (however it is written), newest first,
+    /// each absolute.
     #[must_use]
     pub(crate) fn files(&self, root: &Path) -> &[PathBuf] {
+        let root = absolute(root);
         self.recent
             .workspaces
             .iter()
-            .find(|(r, _)| r == root)
+            .find(|(r, _)| *r == root)
             .map_or(&[], |(_, files)| files.as_slice())
     }
 
     /// Remember that `root` was opened as a workspace.
     pub(crate) fn touch_workspace(&mut self, root: &Path) {
-        self.touch(Touch::Workspace(root.to_path_buf()));
+        self.touch(Touch::Workspace(absolute(root)));
     }
 
-    /// Remember that `file` was opened in the workspace `root`.
+    /// Remember that `file` was opened in the workspace `root`. A relative
+    /// `file` is taken relative to `root`; one outside `root` is not remembered.
     pub(crate) fn touch_file(&mut self, root: &Path, file: &Path) {
-        self.touch(Touch::File {
-            root: root.to_path_buf(),
-            file: file.to_path_buf(),
-        });
+        let root = absolute(root);
+        let file = absolute(&root.join(file));
+        if file.starts_with(&root) {
+            self.touch(Touch::File { root, file });
+        }
     }
 
     fn touch(&mut self, touch: Touch) {
@@ -232,15 +253,28 @@ impl Drop for Writer {
 }
 
 /// Replay `touches` against the store at `path` and write it back atomically.
+///
+/// The read, the replay and the rename happen under an exclusive lock on a
+/// sibling lock file (the store itself is replaced by the rename, so it cannot
+/// carry the lock): another window's write waits for this one and then replays
+/// against what it left, rather than both reading the same old file and the
+/// later rename discarding the earlier entry.
 fn write_through(path: &Path, touches: &[Touch]) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path.with_extension("json.lock"))?;
+    // Released when `lock` is dropped, after the rename.
+    lock.lock()?;
     let mut recent = std::fs::read_to_string(path)
         .map(|text| Recent::parse(&text))
         .unwrap_or_default();
     for touch in touches {
         recent.apply(touch);
-    }
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
     }
     let temporary = path.with_extension(format!("json.{}.tmp", std::process::id()));
     std::fs::write(&temporary, recent.render())?;
@@ -272,6 +306,56 @@ mod tests {
         assert_eq!(store.files(&p("/a")), [p("/a/x.rs"), p("/a/y.rs")]);
         assert!(store.files(&p("/b")).is_empty());
         assert!(store.files(&p("/never")).is_empty());
+    }
+
+    #[test]
+    fn relative_roots_and_files_are_stored_absolute_and_normalized() {
+        let cwd = std::env::current_dir().expect("current dir");
+        let mut store = RecentStore::in_memory();
+        store.touch_workspace(Path::new("."));
+        store.touch_file(Path::new("."), Path::new("./src/../a.rs"));
+        store.touch_file(Path::new("src"), Path::new("b.rs"));
+        store.touch_file(Path::new("src"), Path::new("../outside.rs"));
+        let workspaces: Vec<&Path> = store.workspaces().collect();
+        assert_eq!(workspaces, [cwd.join("src"), cwd.clone()]);
+        assert_eq!(store.files(Path::new(".")), [cwd.join("a.rs")]);
+        assert_eq!(store.files(&cwd), [cwd.join("a.rs")], "one entry per place");
+        assert_eq!(
+            store.files(&cwd.join("src")),
+            [cwd.join("src/b.rs")],
+            "a file outside its workspace is not remembered"
+        );
+    }
+
+    #[test]
+    fn relative_paths_on_disk_are_not_remembered() {
+        assert_eq!(
+            Recent::parse(
+                r#"{"workspaces":[{"root":".","files":[]},{"root":"/c","files":["./x","/c/y"]}]}"#
+            ),
+            Recent {
+                workspaces: vec![(p("/c"), vec![p("/c/y")])],
+            },
+        );
+    }
+
+    #[test]
+    fn concurrent_writers_never_lose_an_entry() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join(FILE_NAME);
+        let writers: Vec<_> = (0..MAX_WORKSPACES)
+            .map(|n| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    write_through(&path, &[Touch::Workspace(p(&format!("/w{n}")))])
+                })
+            })
+            .collect();
+        for writer in writers {
+            assert!(writer.join().is_ok_and(|written| written.is_ok()));
+        }
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        assert_eq!(Recent::parse(&text).workspaces.len(), MAX_WORKSPACES);
     }
 
     #[test]

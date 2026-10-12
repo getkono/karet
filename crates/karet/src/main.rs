@@ -334,7 +334,7 @@ fn canonicalize_existing_ancestor(path: &Path) -> Option<(PathBuf, Vec<&std::ffi
 }
 
 /// Resolve `.` and `..` components without touching the filesystem.
-fn lexically_normalize(path: &Path) -> PathBuf {
+pub(crate) fn lexically_normalize(path: &Path) -> PathBuf {
     use std::path::Component;
 
     let mut out = PathBuf::new();

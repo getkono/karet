@@ -35,6 +35,10 @@ impl App {
 
     /// Handle a quit request through the unified close guard.
     pub(super) fn request_quit(&mut self) {
+        // A plain quit is not an Open Recent reopen. One armed earlier may still
+        // be set when its quit was abandoned without the prompt being cancelled
+        // (a save before quitting failed, or Esc left a source control wait).
+        self.cancel_relaunch();
         self.guarded_close(CloseRequest::Quit);
     }
 

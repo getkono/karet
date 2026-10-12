@@ -18,8 +18,17 @@ impl App {
 
     /// The quick-open picker: recently opened files first, then the rest.
     fn quick_open_overlay(&self) -> Overlay {
-        let recent = self.recent.files(&self.root);
-        Overlay::quick_open(self.file_index.ranked(recent))
+        // The store keeps absolute paths; the index lists them under the root as
+        // it was given (`.` for a bare `karet`), so rank them in that form.
+        let absolute_root = workspace::absolute(&self.root);
+        let recent: Vec<PathBuf> = self
+            .recent
+            .files(&self.root)
+            .iter()
+            .filter_map(|file| file.strip_prefix(&absolute_root).ok())
+            .map(|relative| self.root.join(relative))
+            .collect();
+        Overlay::quick_open(self.file_index.ranked(&recent))
     }
 
     /// The first walk of the workspace while a quick-open waits on it: what its
@@ -64,24 +73,18 @@ impl App {
     /// Remember that `path` was opened, for quick-open's recency ranking. Only
     /// files in this workspace are ranked, so only those are remembered.
     pub(super) fn note_recent_file(&mut self, path: &Path) {
-        let path = if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            self.root.join(path)
-        };
-        if path.starts_with(&self.root) {
-            self.recent.touch_file(&self.root, &path);
-        }
+        self.recent.touch_file(&self.root, path);
     }
 
     /// Open the Open Recent picker over the other remembered workspaces that
     /// still exist.
     pub(super) fn open_recent_workspace(&mut self) {
         let home = directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf());
+        let this = workspace::absolute(&self.root);
         let items: Vec<(String, PathBuf)> = self
             .recent
             .workspaces()
-            .filter(|root| *root != self.root && root.is_dir())
+            .filter(|root| *root != this && root.is_dir())
             .map(|root| (tilde(root, home.as_deref()), root.to_path_buf()))
             .collect();
         if items.is_empty() {
@@ -107,7 +110,7 @@ impl App {
             return;
         }
         self.guarded_close(CloseRequest::Quit);
-        self.relaunch = Some(root);
+        self.relaunch = Some(workspace::absolute(&root));
     }
 
     /// The workspace to reopen on after quitting, if Open Recent asked for one.
