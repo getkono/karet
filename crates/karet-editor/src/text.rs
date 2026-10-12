@@ -1,3 +1,5 @@
+use unicode_segmentation::UnicodeSegmentation;
+
 use super::*;
 
 /// Whether the cell at line `l`, column `col` lies within any of `selections`.
@@ -19,32 +21,43 @@ pub(super) fn is_word_char(c: char) -> bool {
 }
 
 /// The `(start, end)` of the word (alphanumeric + `_`) around `pos` on its line, or a
-/// single-character span when `pos` is not on a word character. Mirrors the span a
+/// single-cluster span when `pos` is not on a word character. Mirrors the span a
 /// double-click selects; reused by the app's click handling.
 #[must_use]
 pub fn word_bounds(buffer: &TextBuffer, pos: LineCol) -> (LineCol, LineCol) {
     word_at(buffer, pos).unwrap_or_else(|| {
-        let col = pos.col.min(line_len(buffer, pos.line));
-        let end = (col + 1).min(line_len(buffer, pos.line));
-        (LineCol::new(pos.line, col), LineCol::new(pos.line, end))
+        let chars = line_chars(buffer, pos.line);
+        let col = pos.col.min(chars.len() as u32);
+        let start = cluster_bounds(&chars)
+            .into_iter()
+            .rev()
+            .find(|&bound| bound <= col)
+            .unwrap_or(0);
+        let end = next_cluster(&chars, start);
+        (LineCol::new(pos.line, start), LineCol::new(pos.line, end))
     })
 }
 
 /// The `(start, end)` of the word touching `pos` on its line — the word `pos` is
 /// inside, or ends or starts at — or `None` when no word character touches it.
+/// Walks whole grapheme clusters, so a letter's combining marks stay in its word.
 pub(super) fn word_at(buffer: &TextBuffer, pos: LineCol) -> Option<(LineCol, LineCol)> {
     let chars = line_chars(buffer, pos.line);
     let n = chars.len() as u32;
     let col = pos.col.min(n);
-    let word = |i: u32| chars.get(i as usize).copied().is_some_and(is_word_char);
-    let mut start = col;
+    let runs = clusters(&chars);
+    let word = |i: usize| runs.get(i).is_some_and(|c| is_word_char(c.2));
+    let bound = |i: usize| runs.get(i).map_or(n, |c| c.0);
+    let at = runs.partition_point(|c| c.1 <= col);
+    let mut start = at;
     while start > 0 && word(start - 1) {
         start -= 1;
     }
-    let mut end = col;
-    while end < n && word(end) {
+    let mut end = at;
+    while end < runs.len() && word(end) {
         end += 1;
     }
+    let (start, end) = (bound(start), bound(end));
     (start < end).then(|| (LineCol::new(pos.line, start), LineCol::new(pos.line, end)))
 }
 
@@ -69,34 +82,35 @@ pub fn class_run_at(buffer: &TextBuffer, pos: LineCol) -> (LineCol, LineCol) {
 #[must_use]
 pub fn identifier_at(buffer: &TextBuffer, pos: LineCol) -> Option<(LineCol, LineCol)> {
     let chars = line_chars(buffer, pos.line);
-    chars
-        .get(pos.col as usize)
-        .copied()
-        .filter(|&c| is_word_char(c))?;
+    clusters(&chars)
+        .into_iter()
+        .find(|c| c.1 > pos.col)
+        .filter(|c| c.0 <= pos.col && is_word_char(c.2))?;
     let (start, end) = class_run(&chars, pos.col);
     Some((LineCol::new(pos.line, start), LineCol::new(pos.line, end)))
 }
 
 /// The run of one [`karet_core::WordClass`] in `chars` around column `col`: the
-/// character at `col` decides, or the last one when `col` is past the end.
-/// `(0, 0)` for an empty line.
+/// grapheme cluster holding `col` decides, or the last one when `col` is past
+/// the end. `(0, 0)` for an empty line.
 fn class_run(chars: &[char], col: u32) -> (u32, u32) {
-    let n = chars.len() as u32;
-    let Some(last) = n.checked_sub(1) else {
+    let runs = clusters(chars);
+    let Some(last) = runs.len().checked_sub(1) else {
         return (0, 0);
     };
-    let col = col.min(last);
-    let class_of = |i: u32| chars.get(i as usize).copied().map(karet_core::word_class);
-    let class = class_of(col);
-    let mut start = col;
+    let at = runs.partition_point(|c| c.1 <= col).min(last);
+    let class_of = |i: usize| runs.get(i).map(|c| karet_core::word_class(c.2));
+    let class = class_of(at);
+    let mut start = at;
     while start > 0 && class_of(start - 1) == class {
         start -= 1;
     }
-    let mut end = col + 1;
-    while end < n && class_of(end) == class {
+    let mut end = at + 1;
+    while end < runs.len() && class_of(end) == class {
         end += 1;
     }
-    (start, end)
+    let col_of = |i: usize| runs.get(i).map_or(chars.len() as u32, |c| c.0);
+    (col_of(start), col_of(end))
 }
 
 /// The text within `range`, read line by line so the document is never copied
@@ -222,52 +236,48 @@ pub fn previous_word_boundary(buffer: &TextBuffer, pos: LineCol) -> LineCol {
             pos
         };
     }
-    let chars: Vec<char> = buffer
-        .line(pos.line as usize)
-        .unwrap_or_default()
-        .chars()
-        .collect();
-    let mut i = (pos.col as usize).min(chars.len());
-    while i > 0 && chars[i - 1].is_whitespace() {
+    let chars = line_chars(buffer, pos.line);
+    let runs = clusters(&chars);
+    let first = |i: usize| runs.get(i).map_or(' ', |c| c.2);
+    let mut i = runs.partition_point(|c| c.0 < pos.col);
+    while i > 0 && first(i - 1).is_whitespace() {
         i -= 1;
     }
     if i > 0 {
-        let word = is_word_char(chars[i - 1]);
-        while i > 0 && !chars[i - 1].is_whitespace() && is_word_char(chars[i - 1]) == word {
+        let word = is_word_char(first(i - 1));
+        while i > 0 && !first(i - 1).is_whitespace() && is_word_char(first(i - 1)) == word {
             i -= 1;
         }
     }
-    LineCol::new(pos.line, i as u32)
+    LineCol::new(pos.line, runs.get(i).map_or(chars.len() as u32, |c| c.0))
 }
 
 /// The end of the word after `pos`, wrapping to the next line's start at end of line.
 /// Skips leading whitespace, then a single word/punctuation run.
 #[must_use]
 pub fn next_word_boundary(buffer: &TextBuffer, pos: LineCol) -> LineCol {
-    let chars: Vec<char> = buffer
-        .line(pos.line as usize)
-        .unwrap_or_default()
-        .chars()
-        .collect();
-    let n = chars.len();
-    if pos.col as usize >= n {
+    let chars = line_chars(buffer, pos.line);
+    let n = chars.len() as u32;
+    if pos.col >= n {
         return if pos.line < last_line(buffer) {
             LineCol::new(pos.line + 1, 0)
         } else {
             pos
         };
     }
-    let mut i = pos.col as usize;
-    while i < n && chars[i].is_whitespace() {
+    let runs = clusters(&chars);
+    let first = |i: usize| runs.get(i).map_or(' ', |c| c.2);
+    let mut i = runs.partition_point(|c| c.1 <= pos.col);
+    while i < runs.len() && first(i).is_whitespace() {
         i += 1;
     }
-    if i < n {
-        let word = is_word_char(chars[i]);
-        while i < n && !chars[i].is_whitespace() && is_word_char(chars[i]) == word {
+    if i < runs.len() {
+        let word = is_word_char(first(i));
+        while i < runs.len() && !first(i).is_whitespace() && is_word_char(first(i)) == word {
             i += 1;
         }
     }
-    LineCol::new(pos.line, i as u32)
+    LineCol::new(pos.line, runs.get(i).map_or(n, |c| c.0))
 }
 
 /// Whether line `l` is hidden inside the interior of a collapsed fold in `folds`.
@@ -295,6 +305,63 @@ pub(super) fn line_chars(buffer: &TextBuffer, line: u32) -> Vec<char> {
         .line(line as usize)
         .unwrap_or_default()
         .chars()
+        .collect()
+}
+
+/// The column of every extended grapheme cluster boundary in `chars`, ascending:
+/// `0`, each later cluster's start, and `chars.len()`. These are the only columns
+/// a caret rests on, so a step or a delete never splits a user-perceived
+/// character (a combining mark, a ZWJ emoji sequence, a flag).
+pub(super) fn cluster_bounds(chars: &[char]) -> Vec<u32> {
+    let text: String = chars.iter().collect();
+    let mut bounds = Vec::with_capacity(chars.len().saturating_add(1));
+    let mut col = 0_u32;
+    bounds.push(col);
+    for cluster in text.graphemes(true) {
+        col = col.saturating_add(cluster.chars().count() as u32);
+        bounds.push(col);
+    }
+    bounds
+}
+
+/// The cluster boundary strictly before `col` in `chars` (`0` at the start).
+pub(super) fn previous_cluster(chars: &[char], col: u32) -> u32 {
+    cluster_bounds(chars)
+        .into_iter()
+        .rev()
+        .find(|&bound| bound < col)
+        .unwrap_or(0)
+}
+
+/// The cluster boundary strictly after `col` in `chars` (the line's length at
+/// its end).
+pub(super) fn next_cluster(chars: &[char], col: u32) -> u32 {
+    cluster_bounds(chars)
+        .into_iter()
+        .find(|&bound| bound > col)
+        .unwrap_or(chars.len() as u32)
+}
+
+/// The column one grapheme cluster left of `pos` on its line.
+pub(crate) fn previous_cluster_col(buffer: &TextBuffer, pos: LineCol) -> u32 {
+    previous_cluster(&line_chars(buffer, pos.line), pos.col)
+}
+
+/// The column one grapheme cluster right of `pos` on its line.
+pub(crate) fn next_cluster_col(buffer: &TextBuffer, pos: LineCol) -> u32 {
+    next_cluster(&line_chars(buffer, pos.line), pos.col)
+}
+
+/// The clusters of `chars` as `(start, end)` column spans, with the first
+/// `char` of each, which decides its word class: a base letter carries its
+/// combining marks into a word, and an emoji sequence stays one symbol.
+pub(super) fn clusters(chars: &[char]) -> Vec<(u32, u32, char)> {
+    cluster_bounds(chars)
+        .windows(2)
+        .filter_map(|pair| {
+            let (start, end) = (pair[0], pair[1]);
+            Some((start, end, *chars.get(start as usize)?))
+        })
         .collect()
 }
 

@@ -147,8 +147,9 @@ pub fn newline(caret: LineCol, selection: Option<Range>, buffer: &TextBuffer, ba
     replace(range, text, base)
 }
 
-/// Delete backward: the selection if any, else the grapheme/char before the caret,
-/// joining with the previous line at column 0. `None` at the very start of the buffer.
+/// Delete backward: the selection if any, else the grapheme cluster before the
+/// caret, joining with the previous line at column 0. `None` at the very start of
+/// the buffer.
 #[must_use]
 pub fn backspace(
     caret: LineCol,
@@ -163,7 +164,7 @@ pub fn backspace(
         });
     }
     if caret.col > 0 {
-        let start = LineCol::new(caret.line, caret.col - 1);
+        let start = LineCol::new(caret.line, crate::text::previous_cluster_col(buffer, caret));
         return Some(delete_between(start, caret, base));
     }
     if caret.line > 0 {
@@ -174,8 +175,8 @@ pub fn backspace(
     None
 }
 
-/// Delete forward: the selection if any, else the char after the caret, joining the
-/// next line at end of line. `None` at the very end of the buffer.
+/// Delete forward: the selection if any, else the grapheme cluster after the caret,
+/// joining the next line at end of line. `None` at the very end of the buffer.
 #[must_use]
 pub fn delete_forward(
     caret: LineCol,
@@ -190,7 +191,7 @@ pub fn delete_forward(
         });
     }
     if caret.col < line_chars(buffer, caret.line) {
-        let end = LineCol::new(caret.line, caret.col + 1);
+        let end = LineCol::new(caret.line, crate::text::next_cluster_col(buffer, caret));
         return Some(delete_between(caret, end, base));
     }
     if (caret.line as usize) + 1 < buffer.line_count() {
