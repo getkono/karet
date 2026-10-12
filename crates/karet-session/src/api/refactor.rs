@@ -1,5 +1,5 @@
 //! The wire model for refactorings: renaming a symbol, running a code
-//! action, and applying a workspace edit.
+//! action, applying a workspace edit, and formatting by hand.
 //!
 //! Every workspace edit -- a rename's, a code action's, a client's
 //! [`Command::ApplyWorkspaceEdit`](super::Command::ApplyWorkspaceEdit), a
@@ -28,6 +28,27 @@ pub enum CodeActionTrigger {
     /// The client is probing on its own, as the caret moves, to show that
     /// actions exist. Nothing is reported about a server that has none.
     Automatic,
+}
+
+/// A [`Command::Format`](super::Command::Format): format part or all of an
+/// open document with its language's formatter, by hand.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct FormatRequest {
+    /// The document to format.
+    pub doc: DocumentId,
+    /// How much of it.
+    pub scope: FormatScope,
+}
+
+/// How much of a document a [`FormatRequest`] formats.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum FormatScope {
+    /// The whole document (Format Document).
+    Document,
+    /// These ranges, in buffer (character) columns (Format Selection). An
+    /// empty range (a bare caret) stands for its whole line, and ranges that
+    /// touch or overlap are formatted once, as one.
+    Ranges(Vec<Range>),
 }
 
 /// The span a rename replaces, and the name to prefill the prompt with.
@@ -117,6 +138,14 @@ mod tests {
                 version: 4,
                 action: action(),
             },
+            Command::Format(FormatRequest {
+                doc: DocumentId(1),
+                scope: FormatScope::Document,
+            }),
+            Command::Format(FormatRequest {
+                doc: DocumentId(1),
+                scope: FormatScope::Ranges(vec![range]),
+            }),
         ];
         for command in commands {
             let json = serde_json::to_string(&command)?;

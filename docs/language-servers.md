@@ -266,7 +266,7 @@ provider, path, and document version, then sorted and deduplicated.
 | Code actions (`Ctrl+.` / `Alt+Enter`, the gutter lightbulb, *Organize Imports*, *Fix All*) | the language's primary server, as above. The request carries the diagnostics that server last published touching the range, exactly as it sent them (`data` included), and an optional kind filter that is also applied to the answer. The lightbulb asks with `triggerKind: Automatic` once the caret has rested for the `didChange` debounce, and never reports a server without code actions; a request made by hand does. Running an action resolves a deferred edit (`codeAction/resolve`), applies the edit through the workspace-edit path above, then runs its command (`workspace/executeCommand`, refused without being sent when the server listed its commands and this is not one); edits the server makes while running it arrive as `workspace/applyEdit`. An action listed at a document version that has moved on is refused |
 | Semantic tokens | Tree-sitter owns highlighting today; `semanticTokens` reserves one future LSP overlay owner and is never allowed to replace parsing |
 | Diagnostics | every provider in `diagnostics`, version-gated and merged |
-| Formatting | exactly one `formatter`; a user selection wins, then a repository-native provider, then the language default |
+| Formatting (format-on-save, *Format Document* `Shift+Alt+F`, *Format Selection* `Ctrl+K Ctrl+F`) | exactly one `formatter`; a user selection wins, then a repository-native provider, then the language default. *Format Selection* sends one `textDocument/rangeFormatting` per selection (a bare caret stands for its line; touching selections merge) and applies the answers together as one undoable edit. An answer for a document version that has moved on is dropped with a notice; with no server, *Format Document* falls back to the built-in formatter where the language has one |
 
 ### Capability negotiation
 
@@ -288,8 +288,8 @@ is not counted against the provider's failure budget, does not advance the
 the "has it ever answered" gate — because nothing reached the wire either way.
 
 For a request you make by hand — hover (`Ctrl+K Ctrl+I`) and go to
-definition; the backend treats rename and workspace symbol search the same
-way — a refusal says so. A notice reads "*server* does not support *feature*"
+definition, *Format Document* and *Format Selection*; the backend treats rename
+and workspace symbol search the same way — a refusal says so. A notice reads "*server* does not support *feature*"
 in place of "no definition found" or "no hover information", which would be a
 claim about your code rather than about the provider. Requests karet makes on its own — inlay hints, completion as you
 type, the outline's document symbols, format-on-save — are refused silently,

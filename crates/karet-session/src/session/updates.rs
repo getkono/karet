@@ -1,6 +1,7 @@
 use karet_core::Symbol;
 
 use super::*;
+use crate::lsp::FormattingScope;
 use crate::session::notify_text::one_line;
 
 impl Session {
@@ -205,10 +206,20 @@ impl Session {
             } => self.adopt_prepare_rename(request, doc, version, caret, answer),
             LspUpdate::ApplyEdit { request, .. } => self.adopt_server_edit(request),
             LspUpdate::CodeAction { answer, .. } => self.adopt_code_action(answer),
-            // A formatting answer exists only to finish a deferred save: the
-            // edits are applied here, never handed to the client. Edits computed
-            // against a version the buffer has moved past are dropped, but the
-            // save they were holding up still completes.
+            // A formatting answer either answers a Format command or finishes a
+            // deferred save; either way the edits are applied here, never
+            // handed to the client. For a save, edits computed against a
+            // version the buffer has moved past are dropped, but the save they
+            // were holding up still completes.
+            LspUpdate::Formatting {
+                request,
+                doc,
+                version,
+                formatted,
+                edits,
+                scope: scope @ (FormattingScope::Document | FormattingScope::Ranges(_)),
+                ..
+            } => self.adopt_format(request, doc, version, (formatted, edits), &scope),
             LspUpdate::Formatting {
                 request,
                 doc,

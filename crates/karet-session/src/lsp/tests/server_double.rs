@@ -438,6 +438,18 @@ pub(super) fn test_connector(
                             )
                             .await;
                         },
+                        // Every asked range becomes `formatted`, so a test can
+                        // see which ranges were asked for, and how many times.
+                        Some("textDocument/rangeFormatting") => {
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": [{
+                                    "range": msg["params"]["range"],
+                                    "newText": "formatted"
+                                }]}),
+                            )
+                            .await;
+                        },
                         Some(
                             "textDocument/codeAction"
                             | "codeAction/resolve"

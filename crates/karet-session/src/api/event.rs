@@ -331,8 +331,9 @@ pub enum Event {
     ///
     /// Emitted only for requests a user asks for by hand --
     /// [`Command::Hover`], [`Command::Definition`], [`Command::FindLocations`], [`Command::Rename`],
-    /// [`Command::WorkspaceSymbols`], and a [`Command::SignatureHelp`] marked
-    /// `manual`. Background requests (inlay hints, typed signature help,
+    /// [`Command::WorkspaceSymbols`], [`Command::Format`], and a
+    /// [`Command::SignatureHelp`] marked `manual`. Background requests (inlay
+    /// hints, typed signature help,
     /// completion, document symbols, format-on-save) are refused silently: a
     /// notice nobody asked for, repeated on every keystroke or save, is noise.
     FeatureUnsupported {

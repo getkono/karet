@@ -75,6 +75,10 @@ impl Session {
                     server: server.clone(),
                 }
             },
+            Command::Format(request) => {
+                self.format(id, request.clone());
+                return true;
+            },
             Command::RestartLanguageServer { server } => {
                 self.restart_lsp(server.clone());
                 return true;
