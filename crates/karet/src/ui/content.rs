@@ -212,32 +212,15 @@ pub(super) fn draw_pane_content(
                     ScrollSurface::TabRows,
                     ScrollSurface::TabColumns,
                 );
+                // The cells the widget actually painted the label in: after any
+                // trailing inlay hint or fold marker, not at the end-of-line caret.
                 if ctx.blame_clickable
-                    && let Some(Decoration {
-                        range,
-                        kind:
-                            karet_core::DecorationKind::InlineText {
-                                text,
-                                before: false,
-                            },
-                        ..
-                    }) = ctx.blame.as_ref()
+                    && let Some(blame) = ctx.blame.as_ref()
                 {
-                    let end = buffer
-                        .line(range.start.line as usize)
-                        .map_or(0, |line| line.chars().count() as u32);
-                    if let Some((x, y)) = tab.editor.screen_cell(
-                        editor_rect,
-                        buffer,
-                        &fold_lines,
-                        karet_core::LineCol::new(range.start.line, end),
-                    ) {
-                        let width = u16::try_from(Span::raw(text).width()).unwrap_or(u16::MAX);
-                        let visible = width.min(editor_rect.right().saturating_sub(x));
-                        if visible > 0 {
-                            blame_rect = Some(Rect::new(x, y, visible, 1));
-                        }
-                    }
+                    blame_rect = combined
+                        .iter()
+                        .position(|decoration| decoration == blame)
+                        .and_then(|index| tab.editor.inline_text_rect(index));
                 }
                 if let Some(preview) = tab.markdown_preview.as_mut()
                     && markdown_preview_rect.width > 0

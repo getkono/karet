@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::ops::RangeInclusive;
 
 use super::hint::HintIndex;
@@ -111,6 +112,21 @@ pub struct EditorState {
     ///
     /// [`longest_col`]: EditorState::longest_col
     pub(super) last_longest_col: u32,
+    /// The primary head, when a pointer placed it past the end of a wrapped
+    /// row: that position is also where the next row starts, and it is drawn
+    /// at the end of the row the user clicked rather than the start of the
+    /// next. Dropped by any keyboard move, and by the render once the head
+    /// has moved elsewhere.
+    pub(super) upstream: Option<LineCol>,
+    /// What the last [`pos_at`](Self::pos_at) resolved, when it resolved past
+    /// the end of a wrapped row, so the pointer move that consumes it
+    /// ([`set_caret`](Self::set_caret), [`extend_to`](Self::extend_to)) can
+    /// keep the caret on that row. A `Cell` because hit-testing is `&self`.
+    pub(super) pointer_upstream: Cell<Option<LineCol>>,
+    /// Where the last render painted each inline text decoration, keyed by
+    /// its index in the slice given to `Editor::decorations` — see
+    /// [`inline_text_rect`](Self::inline_text_rect).
+    pub(super) last_inline_text: Vec<(usize, Rect)>,
 }
 
 impl Default for EditorState {
@@ -133,6 +149,9 @@ impl Default for EditorState {
             sticky_height: 0,
             last_visible_lines: 0,
             last_longest_col: 0,
+            upstream: None,
+            pointer_upstream: Cell::new(None),
+            last_inline_text: Vec::new(),
         }
     }
 }
@@ -202,6 +221,8 @@ impl EditorState {
     /// and [`add_caret`](Self::add_caret) — keep no margin instead: they
     /// scroll only when the target is off screen.
     pub fn reveal(&mut self, buffer: &TextBuffer, pos: LineCol) {
+        // A keyboard-placed caret at a wrap point opens the next row.
+        self.upstream = None;
         self.reveal_with(buffer, pos, Reveal::Margin);
     }
 
@@ -426,6 +447,23 @@ impl EditorState {
         caret_cell(area, buffer, folds, self, position)
     }
 
+    /// The screen cells the last render painted the
+    /// [`InlineText`](karet_core::DecorationKind::InlineText) decoration at
+    /// `index` of the slice given to [`Editor::decorations`] in, clipped to
+    /// the editor area; `None` when it painted none of it (off screen, or not
+    /// inline text).
+    ///
+    /// Read back from the painted spans rather than re-derived, so a hit
+    /// region built from it covers exactly the text the user sees — after
+    /// any inlay hint or fold marker the line ends with. A decoration over
+    /// several lines reports its first painted row.
+    #[must_use]
+    pub fn inline_text_rect(&self, index: usize) -> Option<Rect> {
+        self.last_inline_text
+            .iter()
+            .find_map(|&(painted, rect)| (painted == index).then_some(rect))
+    }
+
     /// Scroll so `line` sits at the vertical center of the viewport. Handy for a
     /// read-only viewer centering a search match. The scroll is clamped to the
     /// buffer at render time.
@@ -619,6 +657,7 @@ impl EditorState {
     pub fn set_caret(&mut self, buffer: &TextBuffer, pos: LineCol) {
         let p = clamp_to_buffer(buffer, pos);
         self.cursors = CursorState::single(Selection::caret(p));
+        self.upstream = self.pointer_upstream.take().filter(|hit| *hit == p);
         self.reveal_with(buffer, p, Reveal::Minimal);
     }
 
@@ -674,6 +713,7 @@ impl EditorState {
             s.head = p;
         }
         self.cursors.normalize();
+        self.upstream = self.pointer_upstream.take().filter(|hit| *hit == p);
         self.reveal_with(buffer, self.cursor(), Reveal::Minimal);
     }
 
@@ -686,6 +726,7 @@ impl EditorState {
         let anchor = clamp_to_buffer(buffer, anchor);
         let head = clamp_to_buffer(buffer, head);
         self.cursors = CursorState::single(Selection { anchor, head });
+        self.upstream = None;
         self.reveal_with(buffer, head, Reveal::Minimal);
     }
 
@@ -734,6 +775,7 @@ impl EditorState {
             return;
         }
         self.cursors.push(Selection::caret(p));
+        self.upstream = self.pointer_upstream.take().filter(|hit| *hit == p);
         self.reveal_with(buffer, p, Reveal::Minimal);
     }
 
@@ -796,6 +838,10 @@ impl EditorState {
     /// render `area` and the `folds` in effect. Accounts for the gutter width, the
     /// scroll offsets, and any collapsed folds that hide lines between the viewport
     /// top and the click.
+    ///
+    /// A cell inside a wide character or a tab resolves to the nearer of its
+    /// two edges, and a cell below the last row resolves to the end of the
+    /// last line shown.
     #[must_use]
     pub fn pos_at(
         &self,
@@ -804,6 +850,40 @@ impl EditorState {
         folds: &[Fold],
         col: u16,
         row: u16,
+    ) -> LineCol {
+        self.pointer_upstream.set(None);
+        self.hit(area, buffer, folds, (col, row), Snap::Nearest)
+    }
+
+    /// The buffer position of the character under the screen cell
+    /// `(col, row)`: like [`pos_at`](Self::pos_at), except that a cell inside
+    /// a wide character or a tab resolves to that character's own column
+    /// rather than the nearer of its edges. This is what the pointer is
+    /// *over* — the position word selection, a word-drag anchor, and
+    /// anything that looks up the symbol under the pointer should use — where
+    /// `pos_at` is where a click puts the caret.
+    #[must_use]
+    pub fn char_pos_at(
+        &self,
+        area: Rect,
+        buffer: &TextBuffer,
+        folds: &[Fold],
+        col: u16,
+        row: u16,
+    ) -> LineCol {
+        self.hit(area, buffer, folds, (col, row), Snap::Containing)
+    }
+
+    /// The hit-test behind [`pos_at`](Self::pos_at) and
+    /// [`char_pos_at`](Self::char_pos_at). Only a [`Snap::Nearest`] hit
+    /// records the wrap-row affinity, since only a caret placement consumes it.
+    fn hit(
+        &self,
+        area: Rect,
+        buffer: &TextBuffer,
+        folds: &[Fold],
+        (col, row): (u16, u16),
+        snap: Snap,
     ) -> LineCol {
         let line_count = buffer.line_count().max(1) as u32;
         let mut rel_row = u32::from(row.saturating_sub(area.y));
@@ -817,14 +897,27 @@ impl EditorState {
                 .copied()
                 .unwrap_or(self.scroll_line)
                 .min(line_count - 1);
-            let want = self.scroll_col.saturating_add(rel_col);
-            return LineCol::new(line, want.min(line_len(buffer, line)));
+            let chars = line_chars(buffer, line);
+            // Measured exactly as `draw_sticky_row` paints it: from
+            // `scroll_col`, tabs expanded, and unhinted.
+            return LineCol::new(
+                line,
+                source_col_at_display_offset(
+                    &chars,
+                    self.scroll_col,
+                    chars.len() as u32,
+                    rel_col,
+                    self.last_tab_width,
+                    LineHints::EMPTY,
+                    snap,
+                ),
+            );
         }
         rel_row = rel_row.saturating_sub(u32::from(self.sticky_height));
         if self.last_word_wrap {
             let width = u32::from(area.width.saturating_sub(gutter).max(1));
             let layout = self.layout(width);
-            let anchor = visual_anchor_at_row(
+            let (anchor, below_end) = visual_anchor_at_row(
                 buffer,
                 folds,
                 layout,
@@ -834,27 +927,36 @@ impl EditorState {
                 },
                 rel_row,
             );
+            if below_end {
+                return LineCol::new(anchor.line, line_len(buffer, anchor.line));
+            }
             let ranges = visual_ranges(buffer, anchor.line, layout);
             let range = ranges
                 .get(anchor.subrow as usize)
                 .copied()
                 .unwrap_or_else(|| VisualRange::empty(line_len(buffer, anchor.line)));
-            let chars: Vec<char> = buffer
-                .line(anchor.line as usize)
-                .unwrap_or_default()
-                .chars()
-                .collect();
-            return LineCol::new(
+            let chars = line_chars(buffer, anchor.line);
+            let hints = layout.hints_on(anchor.line);
+            let hit = LineCol::new(
                 anchor.line,
                 source_col_at_display_offset(
                     &chars,
                     range.start,
                     range.end,
-                    rel_col,
+                    rel_col.saturating_sub(row_lead(hints, anchor.subrow == 0)),
                     self.last_tab_width,
-                    layout.hints_on(anchor.line),
+                    hints,
+                    snap,
                 ),
             );
+            // Past the end of a row the line continues below: the same column
+            // starts the next row, so remember which one was clicked.
+            let continues = (anchor.subrow as usize).saturating_add(1) < ranges.len();
+            if snap == Snap::Nearest {
+                self.pointer_upstream
+                    .set((continues && hit.col == range.end).then_some(hit));
+            }
+            return hit;
         }
         // Walk visible lines from the (clamped) viewport top to the clicked row.
         let mut line = self.scroll_line;
@@ -867,25 +969,25 @@ impl EditorState {
                 next += 1;
             }
             if next >= line_count {
-                break;
+                // Below the last row: the end of the document, as shown.
+                let line = line.min(line_count - 1);
+                return LineCol::new(line, line_len(buffer, line));
             }
             line = next;
         }
         let line = line.min(line_count - 1);
-        let chars: Vec<char> = buffer
-            .line(line as usize)
-            .unwrap_or_default()
-            .chars()
-            .collect();
+        let chars = line_chars(buffer, line);
+        let hints = self.hints_on(line);
         LineCol::new(
             line,
             source_col_at_display_offset(
                 &chars,
                 self.scroll_col,
                 chars.len() as u32,
-                rel_col,
+                rel_col.saturating_sub(row_lead(hints, true)),
                 self.last_tab_width,
-                self.hints_on(line),
+                hints,
+                snap,
             ),
         )
     }

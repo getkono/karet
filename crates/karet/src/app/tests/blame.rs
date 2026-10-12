@@ -178,3 +178,61 @@ fn blame_requires_a_double_click_and_consumes_the_first_press() {
         TabKind::CommitLoading { rev, .. } if rev == "abc123"
     ));
 }
+
+#[test]
+fn the_blame_hit_region_is_the_painted_label_after_an_inlay_hint() {
+    let mut app = app();
+    app.push_tab(text_tab("main.rs", "let a\n"));
+    app.focus = Focus::Editor;
+    if let TabKind::Code { doc, .. } = &mut app.tabs[app.active].kind {
+        *doc = Some(DocumentId(7));
+    }
+    app.docs.inlay_hints.insert(
+        DocumentId(7),
+        vec![karet_core::InlayHint {
+            position: LineCol::new(0, 5),
+            label: ": i32".to_string(),
+            kind: karet_core::InlayHintKind::Type,
+            padding_left: false,
+            padding_right: false,
+        }],
+    );
+    app.live_blame = Some(LiveBlame {
+        doc: DocumentId(7),
+        version: 0,
+        line: 0,
+        attribution: Some(BlameAttribution::Commit(karet_core::BlameCommit {
+            hash: "abc123".to_string(),
+            author: "Ada".to_string(),
+            author_time: 0,
+        })),
+    });
+    let painted = frame(&mut app, 100, 12);
+    let Some(rect) = app.blame_rect else {
+        unreachable!("the label is on screen");
+    };
+    let label: String = (rect.x..rect.right())
+        .map(|x| painted[(x, rect.y)].symbol().to_owned())
+        .collect();
+    assert!(label.starts_with("  Ada"), "the region covers {label:?}");
+    // The hint ends right before it, outside the region, which used to start
+    // at the end-of-line caret cell -- on the hint's `:`.
+    assert_eq!(painted[(rect.x.saturating_sub(1), rect.y)].symbol(), "2");
+}
+
+#[test]
+fn a_single_click_on_the_blame_label_focuses_its_pane() {
+    let mut app = app();
+    app.focus = Focus::Sidebar;
+    app.blame_rect = Some(Rect::new(20, 5, 12, 1));
+    app.pane_frames = vec![content_frame(&app, Rect::new(0, 0, 40, 10))];
+    let tabs = app.tabs.len();
+    assert!(app.handle_blame_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: 22,
+        row: 5,
+        modifiers: KeyModifiers::NONE,
+    }));
+    assert_eq!(app.focus, Focus::Editor, "the click is not swallowed");
+    assert_eq!(app.tabs.len(), tabs, "and still does not activate");
+}
