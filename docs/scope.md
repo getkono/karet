@@ -5,8 +5,26 @@ instead of being relitigated per issue. Each row is a standing decision: the
 feature is out of scope until this document says otherwise. (Pattern borrowed
 from `dependable`'s `docs/SCOPE.md`.)
 
-For what karet *is*, see the [README](../README.md) feature tour and the
+For what karet *is* trying to be, see the [design goals](goals.md); for what it
+does today, the [README](../README.md) feature tour and the
 [docs index](README.md).
+
+## In scope
+
+Recorded here because each was weighed against the non-goals below and kept:
+
+- **Integrated terminal** — a terminal pane inside karet
+  ([#387](https://github.com/getkono/karet/issues/387)).
+- **AI inline completion** — ghost-text suggestions from a language server's
+  LSP `textDocument/inlineCompletion`, rendered as virtual text
+  ([#393](https://github.com/getkono/karet/issues/393)). karet talks to the
+  server, never to a model or an agent directly.
+- **Modal editing** — an opt-in vim/helix-style layer over the default
+  VS Code keymap ([#389](https://github.com/getkono/karet/issues/389)).
+- **Task runner** — running a project's build and test tasks from the editor
+  ([#390](https://github.com/getkono/karet/issues/390)).
+
+[Agent sessions (ACP)](#agent-sessions-acp) remain out of scope.
 
 ## TUI theming
 
