@@ -154,6 +154,13 @@ pub(super) fn draw_pane_content(
                 // After the breakpoints: they share the marker lane and win it.
                 let line_changes = doc.and_then(|doc| ctx.line_changes?.get(&doc));
                 frame_decos.extend(line_changes.into_iter().flatten().cloned());
+                // Last, so a search match on a bracket keeps its own color.
+                let cursors = tab.editor.cursors();
+                frame_decos.extend(karet_editor::bracket_decorations(
+                    buffer,
+                    Some(highlights),
+                    cursors,
+                ));
                 let combined: Vec<Decoration> = decos
                     .iter()
                     .chain(search_decos.iter())

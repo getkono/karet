@@ -217,6 +217,12 @@ pub enum Command {
     AddCursorBelow,
     /// Select the word under the caret, then add a caret at the next occurrence.
     AddCursorNextOccurrence,
+    /// Move each caret to the other bracket of the pair it touches, or to the
+    /// closing bracket of the pair enclosing it (Ctrl+Shift+\).
+    GoToBracket,
+    /// Select each caret's bracket pair, brackets included; repeating widens to
+    /// the enclosing pair.
+    SelectToBracket,
     /// Collapse multiple carets to the primary; with one caret, leave the editor.
     CollapseCarets,
     /// Scroll the active tab up one line.
@@ -796,6 +802,8 @@ impl Command {
             Self::AddCursorAbove => "Add Cursor Above",
             Self::AddCursorBelow => "Add Cursor Below",
             Self::AddCursorNextOccurrence => "Add Cursor to Next Occurrence",
+            Self::GoToBracket => "Go to Bracket",
+            Self::SelectToBracket => "Select to Bracket",
             Self::CollapseCarets => "Collapse Cursors",
             Self::ScrollUp => "Scroll Up",
             Self::ScrollDown => "Scroll Down",
