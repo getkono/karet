@@ -7,6 +7,7 @@ pub(crate) mod support;
 
 mod blame;
 mod brackets;
+mod clipboard;
 mod code_actions;
 mod comment;
 mod commit_file_tree;

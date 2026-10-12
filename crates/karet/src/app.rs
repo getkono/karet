@@ -5,6 +5,7 @@
 mod backend_events;
 mod capture;
 mod change_view;
+mod clipboard;
 pub(crate) mod code_actions;
 mod commands;
 mod comment;

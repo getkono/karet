@@ -3,9 +3,19 @@ use super::*;
 impl App {
     /// Copy `text` to the clipboard, reporting the outcome either way.
     pub(super) fn copy_to_clipboard(&mut self, text: String, what: &str) {
+        let result = self.clipboard.set(&text);
+        self.report_copy(result, what);
+    }
+
+    /// Report a clipboard write of `what`.
+    pub(super) fn report_copy(
+        &mut self,
+        result: Result<(), crate::clipboard::ClipboardError>,
+        what: &str,
+    ) {
         // Tagged: copying is a reflex, and a second Ctrl+C should update the one
         // card rather than stack another beneath it.
-        match self.clipboard.set(&text) {
+        match result {
             Ok(()) => self.notify_tagged(
                 Report::Outcome,
                 NotificationKind::System,
@@ -21,8 +31,8 @@ impl App {
         }
     }
 
-    /// Copy the active code tab's selection, or its cursor line when nothing is
-    /// selected (VS Code behavior).
+    /// Copy the active code tab's selections, or every caret's line when nothing
+    /// is selected (VS Code behavior).
     pub(super) fn copy_selection(&mut self) {
         if matches!(
             self.input_context().modal,
@@ -56,28 +66,12 @@ impl App {
             self.copy_to_clipboard(text, "selection");
             return;
         }
-        let text = match self.tabs.get(self.active) {
-            Some(Tab {
-                kind: TabKind::Code { buffer, text, .. },
-                editor,
-                ..
-            }) => editor.selection_range().map_or_else(
-                || {
-                    buffer
-                        .line(editor.cursor().line as usize)
-                        .map(|l| format!("{l}\n"))
-                },
-                |range| selection_text(buffer, text, range),
-            ),
-            _ => None,
-        };
-        match text {
-            Some(text) => self.copy_to_clipboard(text, "selection"),
-            None => self.notify(
+        if !self.copy_code_selection() {
+            self.notify(
                 Report::Refusal,
                 NotificationKind::System,
                 "copy: open a text file",
-            ),
+            );
         }
     }
 

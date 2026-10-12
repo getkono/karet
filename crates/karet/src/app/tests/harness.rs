@@ -195,6 +195,7 @@ impl Rig {
         let (body, cursors) = parse_marked(marked);
         let mut app = app();
         app.backend = Some(Arc::new(RecordingBackend::new()));
+        app.clipboard = crate::clipboard::Clipboard::in_memory();
         app.sidebar_visible = false;
         app.push_tab(text_tab("t.rs", &body));
         app.focus = Focus::Editor;
