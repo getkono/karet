@@ -1,0 +1,160 @@
+//! Indentation rows of `docs/editing-behavior.md`: Tab indents and Shift+Tab
+//! outdents at every caret, keeping the selections, while an open completion
+//! popup and an inline macro take Tab first and focus cycling moves to
+//! Ctrl+Shift+E.
+
+use super::harness::*;
+use super::support::*;
+use crate::app::*;
+
+fn shift_tab() -> Step {
+    Step::Key(KeyCode::Tab, KeyModifiers::SHIFT)
+}
+
+#[test]
+fn tab_indents() {
+    check(vec![
+        case(
+            "Tab pads a bare caret to the next indent stop",
+            "ab|c",
+            vec![key(KeyCode::Tab)],
+            "ab  |c",
+        ),
+        case(
+            "Tab on an indent stop inserts a whole level",
+            "    |x",
+            vec![key(KeyCode::Tab)],
+            "        |x",
+        ),
+        case(
+            "Tab indents every line a selection touches and keeps the selection",
+            "o[ne\ntw|]o",
+            vec![key(KeyCode::Tab)],
+            "    o[ne\n    tw|]o",
+        ),
+        case(
+            "Tab keeps a backward whole-line selection whole",
+            "[|one\ntwo\n]three",
+            vec![key(KeyCode::Tab)],
+            "[|    one\n    two\n]three",
+        ),
+        case(
+            "Tab indents a single-line selection instead of replacing it",
+            "let [x|]",
+            vec![key(KeyCode::Tab)],
+            "    let [x|]",
+        ),
+        case(
+            "Tab works at every caret",
+            "|a\nb#",
+            vec![key(KeyCode::Tab)],
+            "    |a\nb   #",
+        ),
+    ]);
+}
+
+#[test]
+fn shift_tab_outdents() {
+    check(vec![
+        case(
+            "Shift+Tab removes one level and keeps the selection",
+            "        [on|]e",
+            vec![shift_tab()],
+            "    [on|]e",
+        ),
+        case(
+            "Shift+Tab snaps off-grid indentation to the previous stop",
+            "      x|",
+            vec![shift_tab()],
+            "    x|",
+        ),
+        case(
+            "Shift+Tab outdents every caret's line once",
+            "    a| b#\n  |c",
+            vec![shift_tab()],
+            "a| b#\n|c",
+        ),
+        case(
+            "a terminal's BackTab is Shift+Tab",
+            "\t[x\n\ty|]",
+            vec![key(KeyCode::BackTab)],
+            "[x\ny|]",
+        ),
+        case(
+            "Shift+Tab on an unindented line changes nothing",
+            "a|b",
+            vec![shift_tab()],
+            "a|b",
+        ),
+    ]);
+}
+
+#[test]
+fn tab_then_shift_tab_round_trips() {
+    check(vec![case(
+        "indenting and outdenting a selection restores text and selection",
+        "[fn a() {}\n    let |]x",
+        vec![key(KeyCode::Tab), shift_tab()],
+        "[fn a() {}\n    let |]x",
+    )]);
+}
+
+#[test]
+fn an_inline_macro_takes_tab_first() {
+    check(vec![case(
+        "Tab after `fn` expands the Rust function macro rather than indenting",
+        "fn|",
+        vec![key(KeyCode::Tab)],
+        "fn |() {\n    \n}",
+    )]);
+}
+
+#[test]
+fn an_open_completion_takes_tab_first() {
+    let mut rig = Rig::new("fo|");
+    rig.app.completion = Some(crate::completion::CompletionUi {
+        items: vec![karet_core::CompletionItem {
+            label: "foobar".to_owned(),
+            kind: karet_core::CompletionKind::Function,
+            detail: None,
+            documentation: None,
+            insert_text: "foobar".to_owned(),
+            edit: None,
+            sort_text: None,
+            deprecated: false,
+        }],
+        list: karet_widgets::CompletionState::default(),
+        doc: DocumentId(9),
+        anchor: LineCol::new(0, 0),
+        last_filter: String::new(),
+        mode: crate::completion::CompletionMode::Filtered,
+    });
+    rig.render();
+    rig.step(key(KeyCode::Tab));
+    assert_eq!(rig.marked(), "foobar|");
+    assert!(rig.app.completion.is_none());
+}
+
+#[test]
+fn tab_in_the_editor_keeps_focus_and_ctrl_shift_e_toggles_it() {
+    let mut rig = Rig::new("a|");
+    rig.step(key(KeyCode::Tab));
+    assert_eq!(rig.app.focus, Focus::Editor);
+    rig.app.sidebar_visible = true;
+    rig.step(Step::Key(
+        KeyCode::Char('e'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    ));
+    assert_eq!(rig.app.focus, Focus::Sidebar);
+    // From the sidebar, Tab still returns to the editor.
+    rig.step(key(KeyCode::Tab));
+    assert_eq!(rig.app.focus, Focus::Editor);
+}
+
+#[test]
+fn tab_without_editable_text_still_toggles_focus() {
+    let mut app = app();
+    app.focus = Focus::Editor;
+    app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    assert_eq!(app.focus, Focus::Sidebar);
+}

@@ -25,6 +25,7 @@ mod explorer;
 mod github;
 pub(crate) mod harness;
 mod hover;
+mod indent;
 mod inlay;
 mod inlay_pointer;
 mod inline_macros;

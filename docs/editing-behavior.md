@@ -114,6 +114,31 @@ the newest caret primary, because the viewport and every single-caret feature
 follow the primary, and the caret just added is the one the user is looking
 at. Esc still keeps the original caret, as in VS Code.
 
+## Indentation
+
+The indent unit is the document's resolved indentation: EditorConfig, then the
+language's `tabSize` / `insertSpaces` settings.
+
+| Input | Behaviour | Status |
+|---|---|---|
+| Tab, a caret | Insert indentation at every caret: with spaces, just enough to reach the next indent stop (hard tabs before the caret count to their display stop); with hard tabs, one indent unit. | harness |
+| Tab, a selection | Indent every line the selection touches by one unit, at the line start. A line with no characters stays empty, and a selection ending at column 0 does not touch that line. The selection stays on the same text, and an end at column 0 stays there, so a whole-line selection stays whole. A caret on a line a selection indents moves with that line. | harness |
+| Shift+Tab | Outdent every line any caret or selection touches by one unit: a leading hard tab is removed, and space indentation moves back to the previous indent stop. Selections stay on their text; an end inside the removed indentation lands at the line start. | harness |
+| Tab with the completion popup open | Accept the selected item (see Multiple carets). | harness |
+| Tab where an inline macro applies at every caret | Expand the macro (e.g. Rust `fn` → a function skeleton) instead of indenting. | harness |
+| Tab in an editor with no editable text (no tab, a preview, an image) | Toggle focus to the sidebar, as Tab does outside the editor. | harness |
+| Ctrl+Shift+E | Toggle focus between the editor and the sidebar, from anywhere. | harness |
+
+Deviation: VS Code replaces a selection within one line with a tab. karet
+indents the line instead, as Zed and JetBrains IDEs do, so Tab never deletes
+selected text.
+
+Deviation: VS Code's Tab never leaves the editor. karet's Tab toggles focus
+everywhere else, so the editor's focus key is Ctrl+Shift+E (VS Code's Show
+Explorer); a legacy terminal cannot tell it from Ctrl+E, and View: Toggle
+Focus in the command palette and the status bar's focus segment are always
+available.
+
 ## Clipboard
 
 | Input | Behaviour | Status |

@@ -264,6 +264,8 @@ impl App {
                     });
                 }
             },
+            Command::Indent => self.indent_or_toggle_focus(),
+            Command::Outdent => self.reindent(true),
             Command::DeleteBackward => {
                 self.submit_edit_with_cause(EditCause::Delete, editing::backspace)
             },

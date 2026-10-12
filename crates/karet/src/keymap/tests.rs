@@ -198,6 +198,47 @@ fn diff_only_bindings() {
         res(Focus::Sidebar, true, key(KeyCode::Tab, KeyModifiers::NONE)),
         Some(Command::ToggleFocus)
     );
+    // The read-only diff keeps Tab as the focus toggle; only the editor indents.
+    assert_eq!(
+        res(Focus::Editor, true, key(KeyCode::Tab, KeyModifiers::NONE)),
+        Some(Command::ToggleFocus)
+    );
+}
+
+#[test]
+fn editor_tab_indents_and_focus_moves_to_ctrl_shift_e() {
+    let tab = key(KeyCode::Tab, KeyModifiers::NONE);
+    assert_eq!(res(Focus::Editor, false, tab), Some(Command::Indent));
+    for outdent in [
+        key(KeyCode::Tab, KeyModifiers::SHIFT),
+        key(KeyCode::BackTab, KeyModifiers::NONE),
+        key(KeyCode::BackTab, KeyModifiers::SHIFT),
+    ] {
+        assert_eq!(res(Focus::Editor, false, outdent), Some(Command::Outdent));
+    }
+    // Ctrl+Tab still walks the tabs from the editor.
+    assert_eq!(
+        res(
+            Focus::Editor,
+            false,
+            key(KeyCode::Tab, KeyModifiers::CONTROL)
+        ),
+        Some(Command::NextTab)
+    );
+    let focus = key(
+        KeyCode::Char('e'),
+        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+    );
+    assert_eq!(res(Focus::Editor, false, focus), Some(Command::ToggleFocus));
+    assert_eq!(
+        res(Focus::Sidebar, false, focus),
+        Some(Command::ToggleFocus)
+    );
+    assert_eq!(res(Focus::Sidebar, false, tab), Some(Command::ToggleFocus));
+    // The editor's hints bar advertises the focus key that works there.
+    let editor = hints_for(Context::focus(FocusTarget::Editor), ChordStyle::Verbose);
+    let hint = editor.iter().find(|h| h.command == Command::ToggleFocus);
+    assert_eq!(hint.map(|h| h.chord.as_str()), Some("Ctrl+Shift+E"));
 }
 
 #[test]

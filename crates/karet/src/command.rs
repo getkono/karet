@@ -386,6 +386,12 @@ pub enum Command {
     InsertChar(char),
     /// Insert a newline with leading-whitespace auto-indent.
     InsertNewline,
+    /// Indent every selected line, or pad each bare caret to the next indent stop
+    /// (Tab). Outside an editable document it toggles focus instead.
+    Indent,
+    /// Remove one indent level from every line a selection or caret touches
+    /// (Shift+Tab).
+    Outdent,
     /// Delete the selection, or the character before the caret.
     DeleteBackward,
     /// Delete the selection, or the character after the caret.
@@ -901,6 +907,8 @@ impl Command {
             Self::JumpBack => "Go Back",
             Self::JumpForward => "Go Forward",
             Self::InsertNewline => "Insert Newline",
+            Self::Indent => "Indent Line",
+            Self::Outdent => "Outdent Line",
             Self::DeleteBackward => "Delete Backward",
             Self::DeleteForward => "Delete Forward",
             Self::DeleteWordBackward => "Delete Word Backward",

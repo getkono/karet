@@ -34,6 +34,8 @@ static PALETTE: &[Command] = &[
     Command::ToggleInlayHints,
     Command::ToggleLineComment,
     Command::ToggleBlockComment,
+    Command::Indent,
+    Command::Outdent,
     Command::ToggleBold,
     Command::ToggleItalic,
     Command::ToggleStrikethrough,

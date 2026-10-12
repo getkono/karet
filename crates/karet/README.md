@@ -81,7 +81,8 @@ opens a file at a line) · `Ctrl+G` go to line (`LINE[:COL]`) · `Ctrl+R` open a
 recent workspace · `Ctrl+Shift+P` (or `F1`) command palette · `Ctrl+F`
 find in file · `Ctrl+Shift+F` workspace search · `Ctrl+B` toggle sidebar ·
 `Ctrl+1/2/3` Explorer/Search/Source Control · `Ctrl+K 1/2` Editor/GitHub
-view · `Ctrl+C` copy · `Tab` switch focus · `Ctrl+Q` quit (`q` also quits in a
+view · `Ctrl+C` copy · `Ctrl+Shift+E` switch focus (`Tab` too, except in
+the editor, where `Tab` / `Shift+Tab` indent / outdent) · `Ctrl+Q` quit (`q` also quits in a
 viewer). The view switcher's buttons are also clickable, and each view has a
 `View: …` command-palette entry.
 
