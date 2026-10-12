@@ -111,6 +111,15 @@ impl FileType {
     pub fn comment_tokens(&self) -> CommentTokens {
         crate::comment::tokens_for(self.lsp_language_id.unwrap_or(self.name))
     }
+
+    /// The `(open, close)` bracket and quote pairs an editor auto-closes for this
+    /// file type: `()`, `[]` and `{}` everywhere, plus the quotes that are always
+    /// quotes in it (no `'` in Rust, whose lifetimes start with one, or in prose).
+    /// A pair with the same character twice is a quote.
+    #[must_use]
+    pub fn auto_pairs(&self) -> &'static [(char, char)] {
+        crate::pairs::pairs_for(self.lsp_language_id.unwrap_or(self.name))
+    }
 }
 
 /// The fallback for an unrecognized file.
