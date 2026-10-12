@@ -55,6 +55,7 @@ Keys use the VS Code / Zed camelCase style. Defaults shown.
 | `rulers` | number[] | `[]` | Columns to draw vertical rulers at. |
 | `wordWrap` | bool\|null | `null` | Override long-line handling; `null` uses the file-type default, `true` wraps, and `false` scrolls horizontally. |
 | `stickyScroll` | bool | `true` | Pin the active semantic block hierarchy above scrolled text. Multi-line signatures collapse to one row with an ellipsis. |
+| `middleClickPaste` | bool\|null | `null` | Paste the primary selection (the X11/Wayland "last selected text") at a middle click in the text, read through `wl-paste`, `xclip` or `xsel`. `null` turns it on for Linux and off elsewhere. A middle click on a tab closes it either way. Global only; not a per-language override. |
 | `trimTrailingWhitespace` | bool | `true` | Strip trailing whitespace on save. |
 | `insertFinalNewline` | bool | `true` | Ensure a trailing newline on save. |
 | `formatOnSave` | bool | `true` | Format before writing the file, using the language server's `textDocument/formatting` when the server offers it and the built-in formatter otherwise. Honours the per-language override. The write waits for the formatter for up to `formatOnSaveTimeout` (a little longer if the sweep that enforces it has just run); the tab shows a spinner once a save runs past a second. A formatter that fails, declines, or overruns that costs the formatting, never the save. The `afterDelay` autosave is excluded, so a reformat never lands mid-edit; every other save formats. |
@@ -96,7 +97,8 @@ This means language specificity wins over layer specificity: a system-level `[ru
 value still beats a project-level global value for a Rust document. Within the same
 selector, the normal layer precedence still applies. Arrays such as `rulers` and
 `semanticComments.tags` replace rather than concatenate. Explicit `null` for
-`wordWrap` or `graphicalCursor` restores that setting's automatic behavior.
+`wordWrap`, `graphicalCursor` or `middleClickPaste` restores that setting's automatic
+behavior.
 
 Configuration selectors are deliberately independent from language-server protocol
 identifiers and remain compatible with existing settings. In particular, continue to
