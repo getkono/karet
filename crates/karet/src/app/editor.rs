@@ -801,7 +801,7 @@ impl App {
         F: FnOnce(&mut EditorState, &TextBuffer),
     {
         let base = change.base_version;
-        let mut auto_save_version = None;
+        let mut landed = None;
         if let Some(Tab {
             kind:
                 TabKind::Code {
@@ -811,9 +811,11 @@ impl App {
                     ..
                 },
             editor,
+            view,
             ..
         }) = self.tabs.get_mut(idx)
         {
+            let before = editor.cursors().clone();
             // Apply the same change locally so the displayed text advances in
             // lockstep with the caret instead of lagging behind the async
             // snapshot echo (the prior cause of "backspace skips characters"
@@ -831,24 +833,27 @@ impl App {
             };
             *next_version = applied.version;
             *text = buffer.text_snapshot();
-            auto_save_version = Some(applied.version);
             place(editor, buffer);
+            landed = Some((applied.version, *view, before, editor.cursors().clone()));
             let head = editor.cursor();
             // `reveal`, not `scroll_to`: the merge-conflict panes copy this
             // editor's `scroll_col` before it next renders.
             editor.reveal(buffer, head);
         }
-        if let Some(version) = auto_save_version {
+        if let Some((version, view, before, after)) = landed {
             if let Some(backend) = &self.backend {
-                let id = backend.next_id();
-                let _ = backend.send(
-                    id,
-                    SessionCommand::ApplyChange {
-                        doc,
-                        change: change.clone(),
-                        cause,
-                    },
-                );
+                // The selection set on either side of the edit, each reported
+                // at the version it describes: the one before is what undoing
+                // the edit restores, the one after what redoing it restores.
+                let report = |cursors| SessionCommand::SetCursor { doc, view, cursors };
+                let apply = SessionCommand::ApplyChange {
+                    doc,
+                    change: change.clone(),
+                    cause,
+                };
+                for command in [report(before), apply, report(after)] {
+                    let _ = backend.send(backend.next_id(), command);
+                }
             }
             // The hints on screen move with the text until the server's
             // replacement for this version arrives.

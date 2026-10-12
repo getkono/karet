@@ -419,6 +419,10 @@ pub(crate) struct DocState {
     /// Documents that changed while their request was in flight, to re-ask for
     /// as soon as it answers.
     pub(crate) line_changes_rerun: HashSet<DocumentId>,
+    /// The view that last sent an undo or redo for each document. The
+    /// snapshot answering it restores its selection set in that view only;
+    /// every other view of the document maps its own carets through the change.
+    pub(crate) history_view: HashMap<DocumentId, ViewId>,
 }
 
 /// The Source-Control panel state: the changed files (staged first) and selection.
