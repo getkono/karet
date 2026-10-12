@@ -161,7 +161,9 @@ impl App {
     /// Carry the open closers through an edit applied to `view`, which took
     /// its document from `base` to `version` and its cursors from `before` to
     /// `after`: they move with the text when the record described the state
-    /// the edit started from, and are forgotten otherwise.
+    /// the edit started from, and are forgotten otherwise. A closer inside an
+    /// edit's range is gone from the text, so it is dropped rather than moved
+    /// to where the deletion starts, onto a character the editor never typed.
     pub(super) fn carry_auto_closers(
         &mut self,
         view: ViewId,
@@ -176,6 +178,15 @@ impl App {
             return;
         }
         if closers.version != base || closers.cursors != *before {
+            self.auto_closers = None;
+            return;
+        }
+        closers.positions.retain(|position| {
+            !edits
+                .iter()
+                .any(|e| e.range.start <= *position && *position < e.range.end)
+        });
+        if closers.positions.is_empty() {
             self.auto_closers = None;
             return;
         }

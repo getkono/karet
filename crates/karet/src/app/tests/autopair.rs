@@ -76,6 +76,18 @@ fn an_inserted_closer_is_typed_over() {
             vec![typed('('), key(KeyCode::Right), typed(')')],
             "(())|)",
         ),
+        case(
+            "not once Backspace has deleted it with its pair",
+            "a|)",
+            vec![typed('('), key(KeyCode::Backspace), typed(')')],
+            "a)|)",
+        ),
+        case(
+            "not once Delete has deleted it",
+            "a|)",
+            vec![typed('('), key(KeyCode::Delete), typed(')')],
+            "a()|)",
+        ),
     ]);
 }
 
