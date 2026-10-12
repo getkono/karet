@@ -61,11 +61,11 @@ end on the same position merge into one.
 
 | Input | Behaviour | Status |
 |---|---|---|
-| Left / Right | Move one character. With a selection, collapse to its start (Left) or end (Right) without moving further. | harness (Left, backward selection); #328 (forward selection) |
-| Up / Down | Move one line, keeping the goal column. On the first line Up goes to column 0; on the last line Down goes to the line end. With a selection, start from its start (Up) or end (Down). | #329 |
+| Left / Right | Move one character. With a selection, collapse to its start (Left) or end (Right) without moving further. | harness |
+| Up / Down | Move one line, keeping the goal column. On the first line Up goes to column 0; on the last line Down goes to the line end. With a selection, start from its start (Up) or end (Down). | harness (with a selection); #329 (goal column, first and last line) |
 | Home | Smart home: to the first non-blank character, or to column 0 if already there. | #329 |
 | End | To the line end. | harness |
-| Ctrl+Home / Ctrl+End | To the start / end of the document. With several carets, leave one caret there. | #328 |
+| Ctrl+Home / Ctrl+End | To the start / end of the document. With several carets, leave one caret there. | harness |
 | Ctrl+Left / Ctrl+Right, Alt+Left / Alt+Right | To the previous word start / next word end. | harness |
 | PageUp / PageDown | Move the caret by the focused pane's visible rows, and scroll by the same amount. | #329 |
 | Word wrap on | Up, Down, Home, End and PageUp/PageDown act on visual rows; End pressed again goes to the logical line end. | #329 |
@@ -81,7 +81,7 @@ same motion.
 |---|---|---|
 | Shift + any motion above | Extend: the head moves and the anchor stays. | harness (Shift+Left, Shift+Right, Shift+End) |
 | Ctrl+A | Select the whole document, with the head at its end. Does not scroll. | harness |
-| Esc, one caret with a selection | Clear the selection and keep the caret at its head. | #328 |
+| Esc, one caret with a selection | Clear the selection and keep the caret at its head. | harness |
 | Esc, one caret, no selection | Nothing. Focus stays in the editor. | harness |
 | Plain arrow after a selection | Clear the selection (see Motion for where the caret lands). | harness |
 
@@ -90,10 +90,10 @@ same motion.
 | Input | Behaviour | Status |
 |---|---|---|
 | Ctrl+Alt+Down / Ctrl+Alt+Up | Add a caret on the line below / above, at the goal column. The new caret is primary. | harness (add, primary); #329 (goal column) |
-| Alt+click | Add a caret at the click, which becomes primary. Alt+click on an existing caret removes it, and the primary stays the same caret. | harness (add); #328 (remove) |
+| Alt+click | Add a caret at the click, which becomes primary. Alt+click on an existing caret removes it, and the primary stays the same caret. | harness |
 | Ctrl+D | With an empty caret, select the word under it. Then add the next occurrence after the most recently added one, wrapping and skipping ranges already selected. Matching is whole-word when the sequence began from an empty caret, and plain substring when it began from a selection. | #341 |
-| Esc, several carets | Keep only the first caret that was placed, with its selection; a second Esc clears that selection. | harness (collapses to one caret); #328 (which caret is kept) |
-| Merging | Carets merge when they coincide; selections merge when they overlap. Touching selections stay separate. A merge keeps each selection's direction and the primary. | #328 |
+| Esc, several carets | Keep only the first caret that was placed, with its selection; a second Esc clears that selection. | harness |
+| Merging | Carets merge when they coincide; selections merge when they overlap, and a caret on or inside a selection merges into it. Touching selections stay separate. A merge keeps each selection's direction and the primary. | harness |
 | Typing / deleting | Every caret edits. A caret whose edit is a no-op stays where it is; overlapping edits are merged rather than rejected. | #330 |
 | Undo / Redo | Restore the full set of carets and selections from before / after the edit, only in the view that ran the command. | #331 |
 | External edit (another split, the language server, a reload) | Every view maps its carets through the change; no caret is left outside the text. | #331 |

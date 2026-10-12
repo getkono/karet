@@ -1,5 +1,7 @@
 mod render;
 
+use karet_editor::Motion;
+
 use super::*;
 use crate::app::scroll::adjust;
 
@@ -288,25 +290,15 @@ impl App {
     }
 
     /// Apply a caret `motion` to the active code tab, extending the selection when
-    /// `extend` is set and clearing it otherwise.
-    pub(super) fn caret_motion(
-        &mut self,
-        extend: bool,
-        motion: impl Fn(&mut EditorState, &TextBuffer),
-    ) {
+    /// `extend` is set and collapsing it first otherwise.
+    pub(super) fn caret_motion(&mut self, extend: bool, motion: Motion) {
         if let Some(Tab {
             kind: TabKind::Code { buffer, .. },
             editor,
             ..
         }) = self.tabs.get_mut(self.active)
         {
-            // The motion moves every caret's head; a non-extending motion then
-            // collapses each selection onto its new head, while an extending one keeps
-            // the anchors so the selection grows.
-            motion(editor, buffer);
-            if !extend {
-                editor.clear_selection();
-            }
+            editor.move_carets(buffer, motion, extend);
         }
     }
 
@@ -351,19 +343,21 @@ impl App {
         }
     }
 
-    /// Esc in the editor: collapse multiple carets to the primary; with a single
-    /// caret it is a no-op, so repeated Esc never leaves the editor view.
+    /// Esc in the editor: with several carets keep only the first-placed one, with
+    /// its selection; with one caret clear its selection. Focus never leaves the
+    /// editor, so repeated Esc is harmless.
     pub(super) fn collapse_carets_or_unfocus(&mut self) {
-        let multi = matches!(
-            self.tabs.get(self.active),
-            Some(Tab {
-                kind: TabKind::Code { .. },
-                editor,
-                ..
-            }) if editor.has_multiple_cursors()
-        );
-        if multi && let Some(Tab { editor, .. }) = self.tabs.get_mut(self.active) {
-            editor.collapse_to_primary();
+        if let Some(Tab {
+            kind: TabKind::Code { buffer, .. },
+            editor,
+            ..
+        }) = self.tabs.get_mut(self.active)
+        {
+            if editor.has_multiple_cursors() {
+                editor.collapse_to_original(buffer);
+            } else {
+                editor.clear_selection();
+            }
         }
     }
 
