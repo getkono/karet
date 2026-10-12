@@ -517,6 +517,37 @@ async fn syntax_error_lines_reach_the_snapshot_stream() {
 }
 
 #[tokio::test]
+async fn markdown_table_lines_reach_the_snapshot_stream() {
+    use crate::session::Session;
+    use crate::session::SessionConfig;
+
+    let Ok(dir) = tempfile::tempdir() else {
+        return;
+    };
+    let path = dir.path().join("notes.md");
+    if std::fs::write(&path, "# Notes\n\n| a | b |\n|---|---|\n| 1 | 2 |\n").is_err() {
+        return;
+    }
+
+    let (session, _events, mut snaps) = Session::new(SessionConfig::default());
+    let backend = local_session(session, None);
+    assert!(
+        backend
+            .send(
+                backend.next_id(),
+                Command::OpenDocument {
+                    path,
+                    language: None
+                }
+            )
+            .is_ok()
+    );
+
+    let found = await_snapshot(&mut snaps, |snap| *snap.table_lines == [2..=4]).await;
+    assert!(found, "the worker's table ranges should ride the snapshot");
+}
+
+#[tokio::test]
 async fn semantic_blocks_reach_the_snapshot_stream() {
     use crate::session::Session;
     use crate::session::SessionConfig;

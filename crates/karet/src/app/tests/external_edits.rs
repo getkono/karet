@@ -66,6 +66,7 @@ fn snapshot(rig: &Rig, edits: Vec<TextEdit>, cursor: Option<CursorState>) -> Doc
         folds: Arc::new(FoldRegions::default()),
         decorations: Arc::new(Vec::new()),
         syntax_error_lines: Arc::new(Vec::new()),
+        table_lines: Arc::default(),
         language: Some("Rust"),
         dirty: true,
         cursor,
