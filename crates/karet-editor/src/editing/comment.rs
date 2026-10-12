@@ -40,8 +40,9 @@ pub enum LineComment<'a> {
 }
 
 /// One edit confined to a single line, in the original document's char columns:
-/// remove `remove` chars at `col`, then insert `text` there.
-struct LineEdit {
+/// remove `remove` chars at `col`, then insert `text` there. Shared with the
+/// indent/dedent batch, which edits the same way.
+pub(super) struct LineEdit {
     line: u32,
     col: u32,
     remove: u32,
@@ -52,7 +53,7 @@ struct LineEdit {
 }
 
 impl LineEdit {
-    fn insert(at: LineCol, text: String, at_col: u32) -> Self {
+    pub(super) fn insert(at: LineCol, text: String, at_col: u32) -> Self {
         Self {
             line: at.line,
             col: at.col,
@@ -62,7 +63,7 @@ impl LineEdit {
         }
     }
 
-    fn delete(at: LineCol, remove: u32) -> Self {
+    pub(super) fn delete(at: LineCol, remove: u32) -> Self {
         Self {
             line: at.line,
             col: at.col,
@@ -337,7 +338,11 @@ fn comment_line(
 }
 
 /// Assemble the batch and carry every selection through it.
-fn finish(mut edits: Vec<LineEdit>, cursors: &CursorState, base: u64) -> Option<MultiEdit> {
+pub(super) fn finish(
+    mut edits: Vec<LineEdit>,
+    cursors: &CursorState,
+    base: u64,
+) -> Option<MultiEdit> {
     if edits.is_empty() {
         return None;
     }

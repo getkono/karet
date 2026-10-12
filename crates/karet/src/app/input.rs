@@ -418,6 +418,9 @@ impl App {
             | OverlayEvent::AcceptSymbol { path, position, .. } => {
                 self.jump_to_location(&path, position);
             },
+            // The key path's Indent falls back to the focus toggle (Tab); the
+            // palette row is named "Indent Line" and only ever indents.
+            OverlayEvent::AcceptCommand(Command::Indent) => self.indent_lines(),
             OverlayEvent::AcceptCommand(cmd) => self.dispatch(cmd),
             OverlayEvent::AcceptRebaseTodo { onto, steps } => {
                 self.run_vcs_action(VcsAction::RebaseInteractive { onto, steps });

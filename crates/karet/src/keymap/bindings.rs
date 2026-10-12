@@ -48,6 +48,9 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(Global, false, false, false, F(8),      Command::NextProblem),
     b(Global, false, true,  false, F(8),      Command::PrevProblem),
     b(Global, false, false, false, Tab,       Command::ToggleFocus),
+    // Zed / VS Code "focus explorer" parity, and the editor's own focus key: the
+    // editor layer claims Tab for indentation.
+    b(Global, true,  true,  false, Char('e'), Command::ToggleFocus),
 
     // The top-level view switcher. A `Ctrl+K` chord rather than `Ctrl+Shift+<digit>`:
     // terminals report a shifted digit as its shifted *character* (`!`, `@`, `#`), which
@@ -261,6 +264,12 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(Editor, true,  false, false, Char('.'), Command::CodeActions),
     b(Editor, false, false, true,  Enter,     Command::CodeActions),
     b(Editor, false, false, false, Enter,     Command::InsertNewline),
+    // Tab indents and Shift+Tab outdents (an open completion popup and an inline
+    // macro take Tab first). Focus cycling moves to Ctrl+Shift+E here; Tab still
+    // toggles focus everywhere else, and in an editor showing no editable text.
+    b(Editor, false, false, false, Tab,       Command::Indent),
+    b(Editor, false, true,  false, Tab,       Command::Outdent),
+    b(Editor, true,  true,  false, Char('e'), Command::ToggleFocus),
     b(Editor, false, false, false, Backspace, Command::DeleteBackward),
     b(Editor, false, false, false, Delete,    Command::DeleteForward),
     b(Editor, false, false, true,  Backspace, Command::DeleteWordBackward),

@@ -14,6 +14,7 @@ use karet_text::TextBuffer;
 
 mod batch;
 mod comment;
+mod indentation;
 
 pub use batch::compose;
 pub use batch::map_position;
@@ -22,6 +23,8 @@ pub use comment::LineComment;
 pub use comment::MultiEdit;
 pub use comment::toggle_block_comment;
 pub use comment::toggle_line_comment;
+pub use indentation::dedent;
+pub use indentation::indent;
 
 /// An edit plus the caret position it should leave behind.
 pub struct Edit {
@@ -236,67 +239,6 @@ fn delete_between(start: LineCol, end: LineCol, base: u64) -> Edit {
     }
 }
 
-/// Indent: insert one level at the caret with no selection, or at the start of every
-/// line the selection touches.
-#[must_use]
-pub fn indent(
-    caret: LineCol,
-    selection: Option<Range>,
-    base: u64,
-    indentation: &str,
-) -> Option<Edit> {
-    if indentation.is_empty() {
-        return None;
-    }
-    Some(match non_empty(selection) {
-        Some(range) => {
-            let last = last_selected_line(range);
-            let edits = (range.start.line..=last)
-                .map(|line| TextEdit {
-                    range: Range {
-                        start: LineCol::new(line, 0),
-                        end: LineCol::new(line, 0),
-                    },
-                    new_text: indentation.to_string(),
-                })
-                .collect();
-            let width = u32::try_from(indentation.chars().count()).unwrap_or(0);
-            Edit {
-                change: Change::new(base, edits),
-                caret: LineCol::new(caret.line, caret.col + width),
-            }
-        },
-        None => insert(caret, None, base, indentation),
-    })
-}
-
-/// Dedent the caret's line: remove up to one indent level of leading whitespace.
-// Currently unbound; see [`indent`].
-#[must_use]
-pub fn dedent(caret: LineCol, buffer: &TextBuffer, base: u64, indentation: &str) -> Option<Edit> {
-    let line = buffer.line(caret.line as usize)?;
-    let width = indentation.chars().count();
-    let remove = if !indentation.is_empty() && line.starts_with(indentation) {
-        width
-    } else if line.starts_with('\t') {
-        1
-    } else {
-        line.chars().take(width).take_while(|c| *c == ' ').count()
-    };
-    if remove == 0 {
-        return None;
-    }
-    let remove_u32 = u32::try_from(remove).unwrap_or(0);
-    let range = Range {
-        start: LineCol::new(caret.line, 0),
-        end: LineCol::new(caret.line, remove_u32),
-    };
-    Some(Edit {
-        change: one_edit(range, String::new(), base),
-        caret: LineCol::new(caret.line, caret.col.saturating_sub(remove_u32)),
-    })
-}
-
 /// The last line a selection range actually covers (a selection ending at column 0
 /// of a line does not include that line).
 fn last_selected_line(range: Range) -> u32 {
@@ -469,58 +411,6 @@ mod tests {
     fn delete_forward_at_end_is_noop() {
         let buffer = TextBuffer::from_text("ab");
         assert!(delete_forward(at(0, 2), None, &buffer, 0).is_none());
-    }
-
-    #[test]
-    fn indent_inserts_at_caret_without_selection() {
-        let Some(e) = indent(at(0, 2), None, 0, "    ") else {
-            return;
-        };
-        assert_eq!(e.change.edits.len(), 1);
-        assert_eq!(e.change.edits[0].new_text, "    ");
-        assert_eq!(e.caret, at(0, 6));
-    }
-
-    #[test]
-    fn indent_indents_each_selected_line() {
-        let Some(e) = indent(at(2, 1), sel((0, 0), (2, 3)), 0, "    ") else {
-            return;
-        };
-        assert_eq!(e.change.edits.len(), 3); // lines 0,1,2
-        assert!(e.change.edits.iter().all(|ed| ed.range.start.col == 0));
-        assert_eq!(e.caret, at(2, 5));
-    }
-
-    #[test]
-    fn dedent_removes_leading_spaces() {
-        let buffer = TextBuffer::from_text("      code"); // 6 spaces
-        let Some(e) = dedent(at(0, 8), &buffer, 0, "    ") else {
-            return;
-        };
-        // Removes one level (4 spaces).
-        assert_eq!(e.change.edits[0].range.start, at(0, 0));
-        assert_eq!(e.change.edits[0].range.end, at(0, 4));
-        assert_eq!(e.caret, at(0, 4));
-    }
-
-    #[test]
-    fn dedent_unindented_line_is_noop() {
-        let buffer = TextBuffer::from_text("code");
-        assert!(dedent(at(0, 2), &buffer, 0, "    ").is_none());
-    }
-
-    #[test]
-    fn mixed_tab_and_space_indentation_round_trips() {
-        let Some(indent) = indent(at(0, 0), None, 0, "\t  ") else {
-            return;
-        };
-        assert_eq!(indent.change.edits[0].new_text, "\t  ");
-
-        let buffer = TextBuffer::from_text("\t  code");
-        let Some(dedent) = dedent(at(0, 6), &buffer, 0, "\t  ") else {
-            return;
-        };
-        assert_eq!(dedent.change.edits[0].range.end, at(0, 3));
     }
 
     #[test]

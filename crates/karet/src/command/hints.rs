@@ -342,6 +342,8 @@ impl Command {
             | Self::CommitUnfoldFileTree
             | Self::CommitGraphCopyIssueUrls
             | Self::InsertNewline
+            | Self::Indent
+            | Self::Outdent
             | Self::DeleteBackward
             | Self::DeleteForward
             | Self::DeleteWordBackward

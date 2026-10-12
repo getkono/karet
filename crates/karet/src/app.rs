@@ -24,6 +24,7 @@ mod graphics;
 mod history;
 mod hit;
 mod hover;
+mod indent;
 mod inlay;
 mod inline_macros;
 mod input;
