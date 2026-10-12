@@ -549,6 +549,42 @@ fn a_plain_click_sends_no_definition_request() {
 }
 
 #[test]
+fn ctrl_click_off_an_identifier_requests_nothing_and_moves_nothing() {
+    let (backend, mut app) = completion_app("let x = target();\n", LineCol::new(0, 0));
+    app.pane_frames = vec![content_frame(&app, Rect::new(0, 0, 40, 5))];
+
+    // A 3-cell gutter: screen column 6 is buffer column 3, and so on.
+    for (column, row, what) in [
+        (6, 0, "whitespace"),
+        (17, 0, "punctuation right after an identifier"),
+        (30, 0, "past the end of the line"),
+        (1, 0, "the line-number gutter"),
+        (11, 3, "below the last line"),
+    ] {
+        app.handle_editor_click(click(column, row, KeyModifiers::CONTROL));
+        assert!(definition_requests(&backend).is_empty(), "{what}");
+        assert_eq!(
+            app.tabs[app.active].editor.cursor(),
+            LineCol::new(0, 0),
+            "{what}"
+        );
+    }
+}
+
+#[test]
+fn ctrl_click_on_the_last_character_of_an_identifier_requests_it() {
+    let (backend, mut app) = completion_app("let x = target();\n", LineCol::new(0, 0));
+    app.pane_frames = vec![content_frame(&app, Rect::new(0, 0, 40, 5))];
+
+    // Screen column 16 is buffer column 13, the final `t` of "target".
+    app.handle_editor_click(click(16, 0, KeyModifiers::CONTROL));
+
+    let requests = definition_requests(&backend);
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].1, LineCol::new(0, 13));
+}
+
+#[test]
 fn alt_and_shift_clicks_keep_their_own_gestures() {
     let (backend, mut app) = completion_app("let x = target();\n", LineCol::new(0, 0));
     app.pane_frames = vec![content_frame(&app, Rect::new(0, 0, 40, 5))];

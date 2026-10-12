@@ -115,6 +115,7 @@ use karet_core::Symbol;
 use karet_core::TextEdit;
 use karet_core::ThemeRole;
 use karet_editor::EditorState;
+use karet_editor::class_run_at;
 use karet_editor::editing;
 use karet_editor::line_span;
 pub(crate) use karet_editor::resolve_folds;
@@ -562,8 +563,12 @@ pub struct App {
     pub(crate) surface_selecting: Option<select::SelectSurface>,
     /// The last left-click `(time, column, row)`, for multi-click detection.
     last_click: Option<(Instant, u16, u16)>,
-    /// The current multi-click streak (1 = single, 2 = double, 3 = triple).
+    /// The current multi-click streak (1 = single, 2 = double, 3 = triple and
+    /// beyond).
     click_streak: u8,
+    /// The surface the last left click landed on and the modifiers it carried: a
+    /// click on another surface or with other modifiers starts a new streak.
+    click_origin: (editor::ClickSurface, KeyModifiers),
     /// The system clipboard (OSC 52).
     clipboard: Clipboard,
     /// The active Kitty image placement rect (set by the renderer), if any.
