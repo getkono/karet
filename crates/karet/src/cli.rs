@@ -230,40 +230,69 @@ pub struct GotoSpec {
 /// absent, so a bare path targets line 1, column 1.
 #[must_use]
 pub fn parse_goto_spec(spec: &str) -> GotoSpec {
+    let (path, at) = split_goto_suffix(spec);
+    let (line, col) = at.unwrap_or((1, 1));
+    GotoSpec {
+        path: PathBuf::from(path),
+        line,
+        col,
+    }
+}
+
+/// Split a `PATH[:LINE[:COL]]` spec into its path and, when at least `:LINE` was
+/// given, its 1-based `(line, col)` target (`col` defaulting to 1).
+///
+/// The rules are [`parse_goto_spec`]'s: groups are peeled from the right, only a
+/// run of ASCII digits that fits a `u32` is a coordinate, `0` is clamped up to 1,
+/// and a group whose removal would leave an empty path stays part of the path.
+/// Quick-open uses it to read `main.rs:42` as "this file, at line 42".
+#[must_use]
+pub fn split_goto_suffix(spec: &str) -> (&str, Option<(u32, u32)>) {
     // Peel the rightmost `:<digits>` group. `None` when there is no colon, the tail
     // is empty or non-numeric, the value overflows `u32`, or peeling would leave an
     // empty path (`:5`) — in every such case the colon belongs to the path.
     fn peel(s: &str) -> Option<(&str, u32)> {
-        let idx = s.rfind(':')?;
-        let head = &s[..idx];
-        let tail = &s[idx + 1..];
-        if head.is_empty() || tail.is_empty() || !tail.bytes().all(|b| b.is_ascii_digit()) {
+        let (head, tail) = s.rsplit_once(':')?;
+        if head.is_empty() {
             return None;
         }
-        Some((head, tail.parse::<u32>().ok()?))
+        Some((head, coordinate(tail)?))
     }
 
     // The first peel yields the rightmost number: the column when a second number
     // precedes it (`PATH:LINE:COL`), otherwise the line (`PATH:LINE`).
     match peel(spec) {
-        None => GotoSpec {
-            path: PathBuf::from(spec),
-            line: 1,
-            col: 1,
-        },
+        None => (spec, None),
         Some((rest, first)) => match peel(rest) {
-            Some((rest2, second)) => GotoSpec {
-                path: PathBuf::from(rest2),
-                line: second.max(1),
-                col: first.max(1),
-            },
-            None => GotoSpec {
-                path: PathBuf::from(rest),
-                line: first.max(1),
-                col: 1,
-            },
+            Some((path, second)) => (path, Some((second, first))),
+            None => (rest, Some((first, 1))),
         },
     }
+}
+
+/// Parse a bare `LINE[:COL]` target (the text after quick-open's `:` sigil)
+/// into a 1-based `(line, col)`, `col` defaulting to 1.
+///
+/// Each part must be a run of ASCII digits that fits a `u32`; `0` is clamped up
+/// to 1, as [`parse_goto_spec`] does. Leading and trailing whitespace is
+/// ignored; anything else (empty text, a sign, a third group, inner spaces) is
+/// `None`.
+#[must_use]
+pub fn parse_line_col(text: &str) -> Option<(u32, u32)> {
+    let text = text.trim();
+    match text.split_once(':') {
+        Some((line, col)) => Some((coordinate(line)?, coordinate(col)?)),
+        None => Some((coordinate(text)?, 1)),
+    }
+}
+
+/// One 1-based coordinate: a non-empty run of ASCII digits that fits a `u32`,
+/// with `0` clamped up to 1.
+fn coordinate(digits: &str) -> Option<u32> {
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some(digits.parse::<u32>().ok()?.max(1))
 }
 
 /// Default `--capture` grid width in columns.
@@ -720,5 +749,43 @@ mod tests {
         let spec = super::parse_goto_spec("main.rs:99999999999999999999");
         assert_eq!(spec.path, PathBuf::from("main.rs:99999999999999999999"));
         assert_eq!((spec.line, spec.col), (1, 1));
+    }
+
+    #[test]
+    fn split_goto_suffix_reports_whether_a_target_was_given() {
+        use super::split_goto_suffix;
+        assert_eq!(split_goto_suffix("main.rs"), ("main.rs", None));
+        assert_eq!(split_goto_suffix("main.rs:42"), ("main.rs", Some((42, 1))));
+        assert_eq!(
+            split_goto_suffix("src/a.rs:4:9"),
+            ("src/a.rs", Some((4, 9)))
+        );
+        // `main.rs:1` is a target even though it equals the default.
+        assert_eq!(split_goto_suffix("main.rs:1"), ("main.rs", Some((1, 1))));
+        // An unfinished suffix is not a target yet.
+        assert_eq!(split_goto_suffix("main.rs:"), ("main.rs:", None));
+        assert_eq!(split_goto_suffix(":5"), (":5", None));
+    }
+
+    #[test]
+    fn parse_line_col_reads_a_bare_target() {
+        use super::parse_line_col;
+        assert_eq!(parse_line_col("42"), Some((42, 1)));
+        assert_eq!(parse_line_col("42:7"), Some((42, 7)));
+        assert_eq!(parse_line_col(" 42 "), Some((42, 1)));
+        assert_eq!(parse_line_col("0:0"), Some((1, 1)), "zero clamps up to 1");
+        for junk in [
+            "",
+            "x",
+            "-3",
+            "+3",
+            "4:",
+            ":4",
+            "4:5:6",
+            "4 5",
+            "99999999999",
+        ] {
+            assert_eq!(parse_line_col(junk), None, "{junk:?}");
+        }
     }
 }
