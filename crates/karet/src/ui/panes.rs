@@ -454,9 +454,6 @@ pub(super) fn draw_hover(f: &mut Frame, app: &mut App, theme: &Theme) {
     // for the pointer to hit.
     ui.rect = Rect::default();
     let editor = app.editor_rect;
-    if editor.width < 8 || editor.height < 3 {
-        return;
-    }
     let caret_cell = {
         let Some(tab) = app.tabs.get(app.active) else {
             return;
@@ -477,21 +474,50 @@ pub(super) fn draw_hover(f: &mut Frame, app: &mut App, theme: &Theme) {
         return; // caret scrolled out of view
     };
     let popup = karet_widgets::hover::HoverPopup::new(&ui.markup, theme);
+    let Some((rect, content_rows)) =
+        place_hover_popup(f, editor, (caret_x, caret_y), &popup, theme)
+    else {
+        return;
+    };
+    // Content taller than the room left scrolls under the wheel; clamped here, as
+    // only the draw knows how many rows the content wrapped to.
+    ui.scroll = ui.scroll.min(content_rows.saturating_sub(rect.height));
+    ui.rect = rect;
+    f.render_widget(popup.scroll(ui.scroll), rect);
+}
+
+/// Place a hover-style popup against the cell `anchor` inside `editor`, then
+/// clear its rect and paint its background: above the anchor when the
+/// content fits there or there is more room above, below otherwise, and
+/// shifted left so it stays inside the editor. Returns the rect and the
+/// rows the content wrapped to, or `None` when the editor is too small or
+/// there is no row to draw in.
+fn place_hover_popup(
+    f: &mut Frame,
+    editor: Rect,
+    (anchor_x, anchor_y): (u16, u16),
+    popup: &karet_widgets::hover::HoverPopup<'_>,
+    theme: &Theme,
+) -> Option<(Rect, u16)> {
+    if editor.width < 8 || editor.height < 3 {
+        return None;
+    }
     let width = editor.width.saturating_sub(2).clamp(8, 72);
-    let lines = popup.lines(width);
-    let content_rows = u16::try_from(lines.len()).unwrap_or(u16::MAX).max(1);
-    let above = caret_y.saturating_sub(editor.top());
-    let below = editor.bottom().saturating_sub(caret_y.saturating_add(1));
+    let content_rows = u16::try_from(popup.lines(width).len())
+        .unwrap_or(u16::MAX)
+        .max(1);
+    let above = anchor_y.saturating_sub(editor.top());
+    let below = editor.bottom().saturating_sub(anchor_y.saturating_add(1));
     let (y, height) = if above >= content_rows || above >= below {
         let height = content_rows.min(above);
-        (caret_y.saturating_sub(height), height)
+        (anchor_y.saturating_sub(height), height)
     } else {
-        (caret_y.saturating_add(1), content_rows.min(below))
+        (anchor_y.saturating_add(1), content_rows.min(below))
     };
     if height == 0 {
-        return;
+        return None;
     }
-    let x = caret_x.clamp(
+    let x = anchor_x.clamp(
         editor.left(),
         editor.right().saturating_sub(width).max(editor.left()),
     );
@@ -503,11 +529,7 @@ pub(super) fn draw_hover(f: &mut Frame, app: &mut App, theme: &Theme) {
         ),
         rect,
     );
-    // Content taller than the room left scrolls under the wheel; clamped here, as
-    // only the draw knows how many rows the content wrapped to.
-    ui.scroll = ui.scroll.min(content_rows.saturating_sub(height));
-    ui.rect = rect;
-    f.render_widget(popup.scroll(ui.scroll), rect);
+    Some((rect, content_rows))
 }
 
 /// Draw the tooltip of the inlay hint the pointer rests on, against the
@@ -518,40 +540,13 @@ pub(super) fn draw_inlay_tooltip(f: &mut Frame, app: &App, theme: &Theme) {
     let Some(tooltip) = app.inlay_ui.tooltip.as_ref() else {
         return;
     };
-    let editor = app.editor_rect;
-    if editor.width < 8 || editor.height < 3 {
-        return;
-    }
     let anchor = tooltip.anchor;
     let popup = karet_widgets::hover::HoverPopup::new(&tooltip.markup, theme);
-    let width = editor.width.saturating_sub(2).clamp(8, 72);
-    let rows = u16::try_from(popup.lines(width).len())
-        .unwrap_or(u16::MAX)
-        .max(1);
-    let above = anchor.y.saturating_sub(editor.top());
-    let below = editor.bottom().saturating_sub(anchor.y.saturating_add(1));
-    let (y, height) = if above >= rows || above >= below {
-        let height = rows.min(above);
-        (anchor.y.saturating_sub(height), height)
-    } else {
-        (anchor.y.saturating_add(1), rows.min(below))
-    };
-    if height == 0 {
-        return;
+    if let Some((rect, _)) =
+        place_hover_popup(f, app.editor_rect, (anchor.x, anchor.y), &popup, theme)
+    {
+        f.render_widget(popup, rect);
     }
-    let x = anchor.x.clamp(
-        editor.left(),
-        editor.right().saturating_sub(width).max(editor.left()),
-    );
-    let rect = Rect::new(x, y, width, height);
-    f.render_widget(Clear, rect);
-    f.render_widget(
-        ratatui::widgets::Block::default().style(
-            ratatui::style::Style::default().bg(theme.role(ThemeRole::Background).to_ratatui()),
-        ),
-        rect,
-    );
-    f.render_widget(popup, rect);
 }
 
 pub(super) fn draw_toasts(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
