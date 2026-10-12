@@ -11,8 +11,9 @@
 
 use karet_core::CursorState;
 use karet_core::Selection;
+use karet_editor::cluster_bounds;
+use karet_editor::cluster_widths;
 use karet_session::ViewId;
-use unicode_width::UnicodeWidthChar as _;
 
 use super::super::*;
 
@@ -54,40 +55,50 @@ pub(crate) enum ColumnStep {
     Right,
 }
 
-/// The cells `ch` occupies when it starts at cell `at`.
-fn char_cells(ch: char, at: u32, tab_width: u16) -> u32 {
-    if ch == '\t' {
+/// The cells the char at `index` occupies when it starts at cell `at`, given
+/// the line's [`cluster_widths`]: a grapheme cluster's width sits on its first
+/// char, the editor's own width model, so a box and the painted text agree.
+fn char_cells(chars: &[char], widths: &[u32], index: usize, at: u32, tab_width: u16) -> u32 {
+    if chars.get(index) == Some(&'\t') {
         let width = u32::from(tab_width.max(1));
         width - at % width
     } else {
-        u32::try_from(ch.width().unwrap_or(0)).unwrap_or(u32::MAX)
+        widths.get(index).copied().unwrap_or(0)
     }
 }
 
 /// The display cell buffer column `col` of `chars` starts at. Past the end of
 /// the line each column counts one cell.
 pub(crate) fn cell_of(chars: &[char], col: u32, tab_width: u16) -> u32 {
+    let widths = cluster_widths(chars);
     let mut cell = 0_u32;
-    for ch in chars.iter().take(col as usize) {
-        cell = cell.saturating_add(char_cells(*ch, cell, tab_width));
+    for index in 0..chars.len().min(col as usize) {
+        cell = cell.saturating_add(char_cells(chars, &widths, index, cell, tab_width));
     }
     let past = col.saturating_sub(u32::try_from(chars.len()).unwrap_or(u32::MAX));
     cell.saturating_add(past)
 }
 
 /// The buffer column of `chars` nearest to display cell `cell`, clamped to the
-/// line's end. A cell inside a multi-cell character resolves to whichever of
-/// its two edges is nearer, the left one on a tie.
+/// line's end. Only grapheme cluster boundaries are candidates, so a caret
+/// never lands inside a combining sequence, a ZWJ emoji or a flag. A cell
+/// inside a multi-cell cluster resolves to whichever of its two edges is
+/// nearer, the left one on a tie.
 pub(crate) fn col_at_cell(chars: &[char], cell: u32, tab_width: u16) -> u32 {
+    let widths = cluster_widths(chars);
     let mut before = 0_u32;
-    for (col, ch) in chars.iter().enumerate() {
-        let after = before.saturating_add(char_cells(*ch, before, tab_width));
+    for pair in cluster_bounds(chars).windows(2) {
+        let &[start, end] = pair else {
+            continue;
+        };
+        let after = (start..end).fold(before, |at, index| {
+            at.saturating_add(char_cells(chars, &widths, index as usize, at, tab_width))
+        });
         if after > cell {
-            let col = u32::try_from(col).unwrap_or(u32::MAX);
             return if after - cell < cell - before {
-                col + 1
+                end
             } else {
-                col
+                start
             };
         }
         before = after;
@@ -393,6 +404,35 @@ mod tests {
         );
         assert_eq!(col_at_cell(&line, 7, 4), 3);
         assert_eq!(col_at_cell(&line, 40, 4), 4, "past the end clamps to it");
+    }
+
+    #[test]
+    fn cells_count_a_grapheme_cluster_once_and_never_resolve_inside_it() {
+        // MAN ZWJ WOMAN ZWJ GIRL: five chars, one two-cell cluster.
+        let family = chars("\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}x");
+        assert_eq!(cell_of(&family, 5, 4), 2, "the family is two cells");
+        assert_eq!(cell_of(&family, 6, 4), 3);
+        assert_eq!(col_at_cell(&family, 1, 4), 0, "a tie goes left");
+        assert_eq!(
+            col_at_cell(&family, 2, 4),
+            5,
+            "`x` starts after the cluster"
+        );
+        assert_eq!(col_at_cell(&family, 3, 4), 6, "past `x` is the line end");
+        // `e` + COMBINING ACUTE ACCENT, then a flag of two regional indicators.
+        let marks = chars("e\u{301}\u{1F1EF}\u{1F1F5}b");
+        assert_eq!(cell_of(&marks, 2, 4), 1, "the mark takes no cell");
+        assert_eq!(cell_of(&marks, 4, 4), 3, "the flag is two cells");
+        assert_eq!(col_at_cell(&marks, 1, 4), 2);
+        assert_eq!(col_at_cell(&marks, 3, 4), 4);
+        assert_eq!(col_at_cell(&marks, 2, 4), 2, "the flag's middle ties left");
+    }
+
+    #[test]
+    fn a_box_across_a_zwj_emoji_puts_no_caret_inside_it() {
+        let buffer = TextBuffer::from_text("\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}x\nabcd\n");
+        let cursors = box_cursors(&buffer, corner(0, 3), corner(1, 3), 4);
+        assert_eq!(cursors.selections, vec![sel(0, 6, 6), sel(1, 3, 3)]);
     }
 
     #[test]

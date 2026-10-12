@@ -68,7 +68,9 @@ pub(super) fn character_width(ch: char, cells: u32, display_col: u32, tab_width:
 /// takes none. A terminal lays a cluster out as one glyph, so summing its chars
 /// would over-count a ZWJ emoji sequence (`👨‍👩‍👧` is two cells, not six) or an
 /// emoji presentation sequence. A one-char cluster keeps the char's own width.
-pub(super) fn cluster_widths(chars: &[char]) -> Vec<u32> {
+/// A hard tab reports 0 here: its cells depend on where it starts.
+#[must_use]
+pub fn cluster_widths(chars: &[char]) -> Vec<u32> {
     let text: String = chars.iter().collect();
     let mut widths = Vec::with_capacity(chars.len());
     for cluster in text.graphemes(true) {

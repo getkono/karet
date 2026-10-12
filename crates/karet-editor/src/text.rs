@@ -312,7 +312,8 @@ pub(super) fn line_chars(buffer: &TextBuffer, line: u32) -> Vec<char> {
 /// `0`, each later cluster's start, and `chars.len()`. These are the only columns
 /// a caret rests on, so a step or a delete never splits a user-perceived
 /// character (a combining mark, a ZWJ emoji sequence, a flag).
-pub(super) fn cluster_bounds(chars: &[char]) -> Vec<u32> {
+#[must_use]
+pub fn cluster_bounds(chars: &[char]) -> Vec<u32> {
     let text: String = chars.iter().collect();
     let mut bounds = Vec::with_capacity(chars.len().saturating_add(1));
     let mut col = 0_u32;
