@@ -24,7 +24,7 @@ use karet_text::TextBuffer;
 /// How many lines a match scans past the line it starts on, in either
 /// direction, before giving up: it bounds the per-frame cost of the highlight
 /// when the caret sits beside a bracket that is never closed.
-const SCAN_LINES: usize = 10_000;
+pub(crate) const SCAN_LINES: usize = 10_000;
 
 /// Opening brackets, indexed by kind; [`CLOSE`] holds their partners.
 const OPEN: [char; 3] = ['(', '[', '{'];
@@ -212,8 +212,9 @@ pub fn matching_pair(
 }
 
 /// The innermost pair whose brackets enclose `pos` (the opening bracket strictly
-/// before it), or `None` when no opening bracket before `pos` is left unclosed
-/// there or the nearest one is never closed.
+/// before it), or `None` when no opening bracket before `pos` is closed after
+/// it. An opening bracket that is never closed is skipped and the scan goes on
+/// outward, so a stray `[` in `f(a[b|c)` does not hide the parens around it.
 #[must_use]
 pub fn enclosing_pair(
     buffer: &TextBuffer,
@@ -221,20 +222,19 @@ pub fn enclosing_pair(
     pos: LineCol,
 ) -> Option<BracketPair> {
     let mut depth = [0u32; 3];
-    let (open, bracket) = scan(buffer, highlights, pos, false, |at, b| {
+    scan(buffer, highlights, pos, false, |at, b| {
         let d = depth.get_mut(b.kind)?;
         if !b.open {
             *d += 1;
             return None;
         }
         if *d == 0 {
-            return Some((at, b));
+            let close = partner(buffer, highlights, at, b)?;
+            return Some(BracketPair { open: at, close });
         }
         *d -= 1;
         None
-    })?;
-    let close = partner(buffer, highlights, open, bracket)?;
-    Some(BracketPair { open, close })
+    })
 }
 
 /// The pair a bracket command acts on at `pos`: the one touching it, else the

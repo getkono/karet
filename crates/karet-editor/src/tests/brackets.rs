@@ -127,6 +127,45 @@ fn the_enclosing_pair_skips_balanced_pairs_before_the_caret() {
 }
 
 #[test]
+fn the_enclosing_pair_skips_an_unclosed_bracket_of_another_kind() {
+    // `f(a[b|c)`: the stray `[` is never closed, so the parens enclose the caret.
+    let buffer = TextBuffer::from_text("f(a[bc)\n");
+    assert_eq!(
+        enclosing_pair(&buffer, None, at(0, 5)),
+        pair(at(0, 1), at(0, 6))
+    );
+    // Several unclosed brackets are skipped on the way out.
+    let several = TextBuffer::from_text("{ a ( b [ c }\n");
+    assert_eq!(
+        enclosing_pair(&several, None, at(0, 10)),
+        pair(at(0, 0), at(0, 12))
+    );
+    // With nothing closed after the caret, there is no enclosing pair.
+    let open = TextBuffer::from_text("{ x { y }\n");
+    assert_eq!(enclosing_pair(&open, None, at(0, 3)), None);
+}
+
+#[test]
+fn a_match_scans_at_most_scan_lines_past_its_start() {
+    let limit = crate::bracket::SCAN_LINES;
+    // `(` on line 0, its `)` on line `gap`, blank lines between.
+    let text = |gap: usize| format!("({})\n", "\n".repeat(gap));
+    let at_bound = TextBuffer::from_text(&text(limit));
+    let bound = u32::try_from(limit).unwrap_or(u32::MAX);
+    assert_eq!(
+        matching_pair(&at_bound, None, at(0, 0)),
+        pair(at(0, 0), at(bound, 0))
+    );
+    assert_eq!(
+        matching_pair(&at_bound, None, at(bound, 0)),
+        pair(at(0, 0), at(bound, 0))
+    );
+    let past_bound = TextBuffer::from_text(&text(limit + 1));
+    assert_eq!(matching_pair(&past_bound, None, at(0, 0)), None);
+    assert_eq!(matching_pair(&past_bound, None, at(bound + 1, 0)), None);
+}
+
+#[test]
 fn go_to_bracket_toggles_between_the_ends_and_leaves_pairless_carets() {
     let buffer = TextBuffer::from_text("x(a, b) y\n");
     let mut state = EditorState::new();
