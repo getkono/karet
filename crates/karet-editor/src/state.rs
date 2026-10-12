@@ -149,6 +149,13 @@ pub struct EditorState {
     pub(super) scroll_subrow: u32,
     /// The content width (after the gutter) captured at the last render.
     pub(super) last_content_width: u16,
+    /// The gutter numbering the last render used, which sets the gutter's
+    /// width for hit-testing and caret placement.
+    pub(super) last_line_numbers: LineNumbers,
+    /// The keyboard reveal's vertical margin the last render was given.
+    pub(super) last_scroll_off: u16,
+    /// The buffer's last line at the last render, where a margin stops.
+    pub(super) last_line: u32,
     /// Whether the last render used soft wrapping.
     pub(super) last_word_wrap: bool,
     /// Hard-tab width captured at the last render.
@@ -220,6 +227,9 @@ impl Default for EditorState {
             last_height: 0,
             scroll_subrow: 0,
             last_content_width: 0,
+            last_line_numbers: LineNumbers::Absolute,
+            last_scroll_off: 0,
+            last_line: u32::MAX,
             last_word_wrap: false,
             last_tab_width: 4,
             last_unwrapped_lines: Vec::new(),
@@ -274,8 +284,8 @@ impl EditorState {
     /// [`scroll_col`](Self::scroll_col) stays stale until then. Prefer
     /// [`reveal`](Self::reveal), which resolves both axes now.
     pub fn scroll_to(&mut self, pos: LineCol) {
-        self.scroll_vertically_to(pos);
         self.follow_col = Some((pos, Reveal::Margin));
+        self.scroll_vertically_to(pos, self.last_line);
     }
 
     /// Scroll so that `pos` is within the viewport, resolving both axes
@@ -294,10 +304,11 @@ impl EditorState {
     ///
     /// Vertically the caret's line is brought onto a visible row, counting
     /// rows rather than buffer lines — collapsed folds take none, wrapped
-    /// lines take several, sticky headers shrink the viewport — so a line
-    /// already on screen never scrolls. The estimate made here uses the last
-    /// frame's folds and height; the render completes it against the ones it
-    /// paints.
+    /// lines take several, sticky headers shrink the viewport — keeping the
+    /// rows [`Editor::scroll_off`] asks for between it and either edge, so a
+    /// line already inside that margin never scrolls. The estimate made here
+    /// uses the last frame's folds, height and margin; the render completes
+    /// it against the ones it paints.
     ///
     /// The pointer-originated moves — [`set_caret`](Self::set_caret),
     /// [`extend_to`](Self::extend_to), [`set_selection`](Self::set_selection)
@@ -311,12 +322,12 @@ impl EditorState {
 
     /// [`reveal`](Self::reveal) keeping the horizontal margin `reveal` asks for.
     fn reveal_with(&mut self, buffer: &TextBuffer, pos: LineCol, reveal: Reveal) {
-        self.scroll_vertically_to(pos);
         // Re-resolved by the render whatever happens here: the last frame's
         // width may not be the next one's (a resize, a split, a background tab
         // brought forward), and a wrapped frame may be followed by an
-        // unwrapped one.
+        // unwrapped one. Set first, as it decides the vertical margin.
         self.follow_col = Some((pos, reveal));
+        self.scroll_vertically_to(pos, last_line(buffer));
         if self.last_word_wrap || self.last_content_width == 0 {
             return;
         }
@@ -333,13 +344,31 @@ impl EditorState {
 
     /// Bring `pos`'s line onto a visible row and have the next render follow
     /// the cursor.
-    fn scroll_vertically_to(&mut self, pos: LineCol) {
+    fn scroll_vertically_to(&mut self, pos: LineCol, last: u32) {
         self.follow_cursor = true;
         let height = u32::from(self.last_height.max(1));
-        let top = reveal_line(&self.last_folds, self.scroll_line, pos.line, height);
+        // A wrapped line takes several rows, so a margin counted in lines
+        // could scroll further than the rows the margin asks for; the render
+        // keeps it in rows instead.
+        let off = if self.last_word_wrap {
+            0
+        } else {
+            self.reveal_margin()
+        };
+        let margin = (off, last);
+        let top = reveal_line(&self.last_folds, self.scroll_line, pos.line, height, margin);
         if top != self.scroll_line {
             self.scroll_line = top;
             self.scroll_subrow = 0;
+        }
+    }
+
+    /// The vertical margin the pending reveal keeps: the editor's
+    /// `scroll_off` for a keyboard reveal, none for a pointer-originated one.
+    pub(super) fn reveal_margin(&self) -> u32 {
+        match self.follow_col {
+            Some((_, Reveal::Minimal)) => 0,
+            _ => u32::from(self.last_scroll_off),
         }
     }
 
@@ -1071,7 +1100,7 @@ impl EditorState {
     ) -> LineCol {
         let line_count = buffer.line_count().max(1) as u32;
         let mut rel_row = u32::from(row.saturating_sub(area.y));
-        let gutter = 1 + digit_count(line_count) as u16 + 1;
+        let gutter = gutter_width(line_count, self.last_line_numbers);
         let content_x = area.x.saturating_add(gutter);
         let rel_col = u32::from(col.saturating_sub(content_x));
         if rel_row < u32::from(self.sticky_height) {

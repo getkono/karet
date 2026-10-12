@@ -83,8 +83,9 @@ pub(super) fn draw_panes(
                     .for_language(crate::app::tab_language(tab))
             });
             let word_wrap = resolved.map_or(app.settings.editor.word_wrap, |r| r.word_wrap());
-            let sticky_scroll =
-                resolved.map_or(app.settings.editor.sticky_scroll, |r| r.sticky_scroll());
+            let display = EditorDisplay::resolve(
+                resolved.unwrap_or_else(|| app.settings.editor.for_language(None)),
+            );
             let tab_width = app
                 .tabs
                 .get(app.active)
@@ -109,7 +110,7 @@ pub(super) fn draw_panes(
                 editor_focused,
                 graphical_cursor,
                 word_wrap,
-                sticky_scroll,
+                display,
                 tab_width,
                 diagnostics: &app.docs.diagnostics,
                 inlay_hints: &app.docs.inlay_hints,
@@ -145,8 +146,9 @@ pub(super) fn draw_panes(
                     .for_language(crate::app::tab_language(tab))
             });
             let word_wrap = resolved.map_or(app.settings.editor.word_wrap, |r| r.word_wrap());
-            let sticky_scroll =
-                resolved.map_or(app.settings.editor.sticky_scroll, |r| r.sticky_scroll());
+            let display = EditorDisplay::resolve(
+                resolved.unwrap_or_else(|| app.settings.editor.for_language(None)),
+            );
             let tab_width = stored_tab_width.unwrap_or(4);
             let ctx = PaneCtx {
                 theme,
@@ -164,7 +166,7 @@ pub(super) fn draw_panes(
                 editor_focused: false,
                 graphical_cursor: false,
                 word_wrap,
-                sticky_scroll,
+                display,
                 tab_width,
                 diagnostics: &app.docs.diagnostics,
                 inlay_hints: &app.docs.inlay_hints,

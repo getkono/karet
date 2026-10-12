@@ -7,6 +7,7 @@ use super::*;
 mod brackets;
 mod carets;
 mod comment;
+mod display;
 mod hit;
 mod inlay;
 mod pointer;

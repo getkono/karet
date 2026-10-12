@@ -299,9 +299,11 @@ pub struct Editor {
     /// Draw the caret with terminal graphics: `null` auto-enables when supported,
     /// `true` requests it and reports incompatibility, `false` disables it.
     pub graphical_cursor: Option<bool>,
-    /// Keep at least this many lines visible above and below the caret.
+    /// Keep at least this many lines visible above and below the caret when
+    /// the keyboard moves it (capped to what the viewport can spare; a click
+    /// never scrolls).
     pub scroll_off: u16,
-    /// Columns to draw vertical rulers at (empty = none).
+    /// Columns to draw vertical rulers after (empty = none).
     pub rulers: Vec<u16>,
     /// Override file-type wrapping: `null` uses the file default, `true` wraps,
     /// and `false` uses horizontal overflow.
@@ -548,7 +550,7 @@ pub enum LineNumbers {
     /// Absolute line numbers.
     #[default]
     On,
-    /// No line-number gutter.
+    /// No numbers; a 2-cell gutter keeps the git, diagnostic and fold markers.
     Off,
     /// Numbers relative to the caret line (the caret line shows its absolute number).
     Relative,

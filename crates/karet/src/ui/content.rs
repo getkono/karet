@@ -189,7 +189,7 @@ pub(super) fn draw_pane_content(
                     .word_wrap(word_wrap)
                     .tab_width(ctx.tab_width)
                     .unwrapped_lines(table_lines);
-                let editor = editor.sticky_scroll(ctx.sticky_scroll);
+                let editor = ctx.display.apply(editor);
                 // Reserve the tracks before rendering, and keep `editor_rect` as the
                 // reserved rect: it is the single value used both to paint the widget
                 // and to map a click back to a caret, so shrinking it once keeps
@@ -770,13 +770,12 @@ fn draw_merge_conflict(
         .focused(ctx.editor_focused)
         .cell_caret(!ctx.graphical_cursor)
         .word_wrap(word_wrap)
-        .tab_width(ctx.tab_width)
-        .sticky_scroll(ctx.sticky_scroll);
+        .tab_width(ctx.tab_width);
     // The three panes are already narrow and share one horizontal offset, so this
     // view reserves vertical tracks only. The merged rect is returned shrunk: it is
     // the caller's `editor_rect`, and so also its click-to-caret mapping.
     let (merged_rect, tracks) = reserve_tracks(columns[2], ScrollAxes::VERTICAL);
-    f.render_stateful_widget(editor, merged_rect, merged_editor);
+    f.render_stateful_widget(ctx.display.apply(editor), merged_rect, merged_editor);
     hits.record(
         tracks.paint(
             f.buffer_mut(),
@@ -809,7 +808,8 @@ fn draw_conflict_side(
     if let Some(buffer) = buffer {
         let (text_rect, tracks) = reserve_tracks(area, ScrollAxes::VERTICAL);
         f.render_stateful_widget(
-            Editor::new(buffer)
+            ctx.display
+                .apply_read_only(Editor::new(buffer))
                 .theme(theme)
                 .focused(false)
                 .read_only(true)
