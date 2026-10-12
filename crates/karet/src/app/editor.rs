@@ -388,9 +388,9 @@ impl App {
     ///
     /// The click continues the streak when it comes within the multi-click
     /// interval, on the same surface, with the same modifiers, and near enough
-    /// the last one (see [`ClickSurface`]); otherwise it starts a new one. The
-    /// streak stops counting at three, so a fourth quick click keeps line
-    /// granularity rather than wrapping back to a single click.
+    /// the last one (see [`ClickSurface`]); otherwise it starts a new one. In
+    /// the editor's text the streak stops counting at three, so a fourth quick
+    /// click keeps line granularity rather than wrapping back to a single click.
     pub(super) fn click_streak_on(
         &mut self,
         col: u16,
@@ -399,20 +399,25 @@ impl App {
         modifiers: KeyModifiers,
     ) -> u8 {
         let now = Instant::now();
-        let slack = match surface {
-            ClickSurface::Editor(_) => 1,
-            ClickSurface::Other => 0,
-        };
+        let editor = matches!(surface, ClickSurface::Editor(_));
+        let slack = u16::from(editor);
         let continues = self.click_origin == (surface, modifiers)
             && self.last_click.is_some_and(|(t, c, r)| {
                 now.duration_since(t) < MULTI_CLICK_INTERVAL
                     && c.abs_diff(col) <= slack
                     && r.abs_diff(row) <= slack
             });
-        let streak = if continues {
+        let streak = if !continues {
+            1
+        } else if editor {
+            // In text the count stops at three: a fourth quick click keeps the
+            // line rather than collapsing it back to a caret.
             self.click_streak.saturating_add(1).min(3)
         } else {
-            1
+            // Elsewhere only "a second click or later" is read, and the count
+            // keeps cycling 1, 2, 3, 1, so four quick clicks on a list row act
+            // as they always have.
+            self.click_streak % 3 + 1
         };
         self.last_click = Some((now, col, row));
         self.click_origin = (surface, modifiers);

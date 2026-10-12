@@ -134,5 +134,12 @@ fn the_streak_counts_only_on_one_surface_with_the_same_modifiers() {
     assert_eq!(app.click_streak(5, 6), 1);
     assert_eq!(app.click_streak(5, 6), 2);
     assert_eq!(app.click_streak(5, 6), 3);
-    assert_eq!(app.click_streak(5, 6), 3, "the count stops at three");
+    assert_eq!(app.click_streak(5, 6), 1, "a list row keeps its cycle");
+    // In text the count stops at three.
+    for expected in [1, 2, 3, 3, 3] {
+        assert_eq!(app.click_streak_on(9, 9, editor, none), expected);
+    }
+    // A drift of one cell, across or down, continues the streak there.
+    assert_eq!(app.click_streak_on(20, 2, editor, none), 1);
+    assert_eq!(app.click_streak_on(21, 3, editor, none), 2);
 }
