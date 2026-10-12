@@ -130,7 +130,7 @@ use karet_filetype::file_type_for_path;
 use karet_fileview::image::GraphicsProtocol;
 use karet_fileview::image::{self};
 use karet_search::SearchQuery;
-use karet_search::search_in_file;
+use karet_search::search_chunks;
 use karet_session::Backend;
 use karet_session::BackendError;
 use karet_session::ChangeSummary;

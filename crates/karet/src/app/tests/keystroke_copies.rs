@@ -64,6 +64,53 @@ fn typing_and_rendering_never_copy_the_document() {
     assert_eq!(code_tab_text(&app), "abc# Notes\n\nfoo and foo\n");
 }
 
+/// Where the active tab's find (`global == false`) or global-search match
+/// highlights start, as `(line, col)`.
+fn match_starts(app: &App, global: bool) -> Vec<(u32, u32)> {
+    match &app.tabs[app.active].kind {
+        TabKind::Code {
+            decos,
+            search_decos,
+            ..
+        } => if global { search_decos } else { decos }
+            .iter()
+            .map(|d| (d.range.start.line, d.range.start.col))
+            .collect(),
+        _ => panic!("expected the active tab to be a code tab"),
+    }
+}
+
+/// An open find bar and a live global search re-run on every edit (#420); both
+/// read the rope's chunks, so neither copies the document.
+#[test]
+fn typing_with_find_and_search_active_never_copies_the_document() {
+    let mut app = markdown_app("# Notes\n\nfoo and foo\n");
+    app.dispatch(Command::OpenFind);
+    for c in "FOO".chars() {
+        app.find_input(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    app.search.query = "foo".to_owned();
+    app.search.hits = vec![karet_session::SearchHit {
+        path: PathBuf::from("notes.md"),
+        matches: Vec::new(),
+    }];
+    app.refresh_search_decorations();
+    app.focus = Focus::Editor;
+    app.tabs[app.active]
+        .editor
+        .set_carets(&[LineCol::new(0, 0)]);
+    app.dispatch(Command::InsertChar('x'));
+    app.refresh_find();
+    app.refresh_search_decorations();
+    draw(&mut app);
+    assert_eq!(match_starts(&app, false), vec![(2, 0), (2, 8)]);
+    assert_eq!(match_starts(&app, true), vec![(2, 0), (2, 8)]);
+    assert!(
+        !materialized(&app),
+        "find or search highlighting copied the whole document"
+    );
+}
+
 #[test]
 fn a_markdown_table_still_reaches_the_renderer() {
     let mut app = markdown_app("| a | b |\n|---|---|\n| 1 | 2 |\n");
