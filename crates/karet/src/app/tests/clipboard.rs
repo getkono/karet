@@ -131,6 +131,12 @@ fn paste_places_what_was_copied() {
             "xx|\nyy#",
         ),
         case(
+            "a multi-line piece still goes to the caret that copied it",
+            "[a\nb|]\n[c#]",
+            vec![ctrl('c'), key(End), ctrl('v')],
+            "a\nba\nb|\ncc#",
+        ),
+        case(
             "each caret pastes the line it copied above its own line",
             "a|\nb#",
             vec![ctrl('c'), ctrl('v')],
