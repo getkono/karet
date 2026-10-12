@@ -68,6 +68,7 @@ impl Command {
             Self::FindReferences => "references",
             Self::RenameSymbol | Self::RenameSubmit => "rename",
             Self::RenameCancel => "cancel",
+            Self::FormatDocument | Self::FormatSelection => "format",
             Self::CodeActions => "quick fix",
             Self::SourceAction => "source action",
             Self::OrganizeImports => "organize imports",

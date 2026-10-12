@@ -202,13 +202,15 @@ pub(crate) enum ServerCmd {
     CodeAction(CodeActionCmd),
 }
 
-/// What one format-on-save asks of its server beyond the document itself.
+/// What one formatting request asks of its server beyond the document itself.
 ///
-/// Carried per request rather than read from the manager's settings: both are
+/// Carried per request rather than read from the manager's settings: these are
 /// editor settings the session resolves, and the server task has neither the
 /// document nor the editor settings to resolve them from.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct FormattingAsk {
+    /// Who asked, and for how much of the document.
+    pub(crate) scope: FormattingScope,
     /// The buffer's resolved `editor.tabSize` / `editor.insertSpaces`.
     ///
     /// The setting is per *language*, resolved against the document's
@@ -216,8 +218,23 @@ pub(crate) struct FormattingAsk {
     /// default here is not a neutral choice.
     pub(crate) indentation: Indentation,
     /// `editor.formatOnSaveTimeout`: how long the save waits for this answer.
-    /// The task derives its own, slightly longer, bound from it.
+    /// The task derives its own, slightly longer, bound from it. A format the
+    /// user asked for by hand is bounded the same way.
     pub(crate) save_timeout: Duration,
+}
+
+/// What a formatting request covers, and whether a save is waiting on it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) enum FormattingScope {
+    /// The whole document, before a save writes it. Refusals stay silent: a
+    /// notice on every save would be noise.
+    #[default]
+    Save,
+    /// The whole document, asked for by hand (Format Document).
+    Document,
+    /// These ranges, in UTF-16 columns, asked for by hand (Format Selection).
+    /// One `textDocument/rangeFormatting` each, against the same text.
+    Ranges(Vec<Range>),
 }
 
 /// What a server said about renaming at a position.
@@ -450,6 +467,11 @@ pub(crate) enum LspUpdate {
         /// use its own formatter instead.
         formatted: bool,
         edits: Vec<TextEdit>,
+        /// What the request covered, as asked. Only a
+        /// [`FormattingScope::Save`] answer may finish a save, and one that
+        /// arrives after its save gave up must not be mistaken for a format
+        /// the user asked for by hand.
+        scope: FormattingScope,
     },
     /// The answer to a [`ServerCmd::CodeAction`]; ranges in UTF-16 columns.
     CodeAction {

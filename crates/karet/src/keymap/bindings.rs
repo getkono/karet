@@ -265,6 +265,10 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(Editor, false, true,  false, F(12),      Command::FindReferences),
     b(Editor, true,  false, false, F(12),      Command::GoToImplementation),
     b(Editor, false, false, false, F(2),       Command::RenameSymbol),
+    // Formatting (VS Code parity): Shift+Alt+F formats the document, `Ctrl+K
+    // Ctrl+F` the selections (a bare caret, its line).
+    b(Editor, false, true,  true,  Char('f'), Command::FormatDocument),
+    seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('f'))], Command::FormatSelection),
     // Quick fix (VS Code parity). Ctrl+. needs a terminal that disambiguates
     // modified punctuation (the kitty keyboard protocol); Alt+Enter, the
     // JetBrains chord for the same menu, reaches the app from any terminal.

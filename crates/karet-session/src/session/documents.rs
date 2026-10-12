@@ -331,32 +331,10 @@ impl Session {
         if !editor.format_on_save() {
             return false;
         }
-        // The server is told how this buffer is actually indented rather than
-        // guessing: a formatter that honours `FormattingOptions` reindents the
-        // whole file to whatever the request says, so a constant here would undo
-        // the user's indentation on every save. Read from the document's own
-        // resolved settings -- the layer `.editorconfig` lands on, and the one
-        // the editor itself types by -- because telling a formatter something
-        // the buffer does not believe is how a save comes to fight its project.
-        // `tabSize` is a width in columns either way: the indent step when that
-        // is spaces, the tab stop when it is not.
-        let indentation = karet_lsp::Indentation {
-            tab_size: u32::from(if doc.settings.insert_spaces {
-                doc.settings.indent_size
-            } else {
-                doc.settings.tab_width
-            }),
-            insert_spaces: doc.settings.insert_spaces,
-        };
         let version = doc.buffer.version();
         let selector = doc.language_selector;
         let path = doc.path.clone();
-        let ask = FormattingAsk {
-            indentation,
-            save_timeout: std::time::Duration::from_millis(
-                self.config.settings.editor.format_on_save_timeout,
-            ),
-        };
+        let ask = self.formatting_ask(doc, crate::lsp::FormattingScope::Save);
         if self
             .lsp
             .formatting(selector, id, doc_id, version, &path, ask)
@@ -380,9 +358,50 @@ impl Session {
             return true;
         }
         if let Some(edits) = self.builtin_format_edits(doc_id) {
-            self.apply_format_edits(doc_id, edits);
+            let _ = self.apply_format_edits(doc_id, edits, true);
         }
         false
+    }
+
+    /// What a formatting request for `doc` asks of its server beyond `scope`.
+    ///
+    /// The server is told how this buffer is actually indented rather than
+    /// guessing: a formatter that honours `FormattingOptions` reindents the
+    /// whole file to whatever the request says, so a constant here would undo
+    /// the user's indentation on every save. Read from the document's own
+    /// resolved settings -- the layer `.editorconfig` lands on, and the one the
+    /// editor itself types by -- because telling a formatter something the
+    /// buffer does not believe is how a save comes to fight its project.
+    /// `tabSize` is a width in columns either way: the indent step when that is
+    /// spaces, the tab stop when it is not.
+    pub(super) fn formatting_ask(
+        &self,
+        doc: &Document,
+        scope: crate::lsp::FormattingScope,
+    ) -> FormattingAsk {
+        let indentation = karet_lsp::Indentation {
+            tab_size: u32::from(if doc.settings.insert_spaces {
+                doc.settings.indent_size
+            } else {
+                doc.settings.tab_width
+            }),
+            insert_spaces: doc.settings.insert_spaces,
+        };
+        FormattingAsk {
+            scope,
+            indentation,
+            save_timeout: std::time::Duration::from_millis(
+                self.config.settings.editor.format_on_save_timeout,
+            ),
+        }
+    }
+
+    /// Whether the session formats `doc` itself when no language server does:
+    /// TOML, through the built-in formatter, unless `toml.format` is off.
+    pub(super) fn has_builtin_formatter(&self, doc: &Document) -> bool {
+        cfg!(feature = "toml-format")
+            && doc.language_selector == Some("toml")
+            && self.config.settings.toml.format
     }
 
     /// Built-in formatter edits when no language server offered formatting.
@@ -390,8 +409,7 @@ impl Session {
         #[cfg(feature = "toml-format")]
         {
             let doc = self.store.docs.get(&doc_id)?;
-            if doc.language_selector == Some("toml")
-                && self.config.settings.toml.format
+            if self.has_builtin_formatter(doc)
                 && let Some(formatted) =
                     crate::toml_format::format_toml(&doc.buffer.text(), &self.config.roots)
             {
@@ -403,22 +421,31 @@ impl Session {
         None
     }
 
-    /// Apply formatter edits in-place so the subsequent save writes formatted text.
-    fn apply_format_edits(&mut self, doc_id: DocumentId, edits: Vec<TextEdit>) {
+    /// Apply formatter edits in place as one undoable change; `false` when the
+    /// document is gone or the edits do not apply (they overlap).
+    ///
+    /// `for_save` marks the change as the save's own, so the cleanup the save
+    /// then makes joins its undo step; a format asked for by hand stands alone.
+    pub(super) fn apply_format_edits(
+        &mut self,
+        doc_id: DocumentId,
+        edits: Vec<TextEdit>,
+        for_save: bool,
+    ) -> bool {
         let tick = self.elapsed_ms();
         let (spell_without_syntax, retired) = {
             let highlight_tx = &self.highlight_tx;
             let settings = &self.config.settings;
             let lsp = &mut self.lsp;
             let Some(doc) = self.store.docs.get_mut(&doc_id) else {
-                return;
+                return false;
             };
             let change = Change::new(doc.buffer.version(), edits);
             let ctx = save_edit_context(tick, doc, &change);
             let Ok(applied) = doc.buffer.apply(&change, ctx) else {
-                return;
+                return false;
             };
-            doc.formatted_version = Some(applied.version);
+            doc.formatted_version = for_save.then_some(applied.version);
             let spell_without_syntax =
                 update_syntax(settings, highlight_tx, doc_id, doc, Some(&applied.edits));
             doc.sync_dirty_since(tick);
@@ -436,6 +463,7 @@ impl Session {
         if spell_without_syntax {
             self.schedule_spell(doc_id);
         }
+        true
     }
 
     /// Adopt an LSP formatting reply that belongs to a pending save, then write.
@@ -464,7 +492,7 @@ impl Session {
                 .is_some_and(|document| document.buffer.version() == version)
             && !edits.is_empty()
         {
-            self.apply_format_edits(doc, edits);
+            let _ = self.apply_format_edits(doc, edits, true);
         }
         self.commit_save(request, pending);
         true

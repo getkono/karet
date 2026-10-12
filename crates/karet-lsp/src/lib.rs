@@ -1067,8 +1067,7 @@ impl LspClient {
     /// says.
     ///
     /// Takes the same [`Indentation`] as [`Self::formatting`] for the same
-    /// reason — a range format reindents the lines it rewrites — even though
-    /// nothing in karet calls this yet.
+    /// reason: a range format reindents the lines it rewrites.
     ///
     /// # Errors
     /// Returns [`LspError::Unsupported`] **without issuing a request** when the

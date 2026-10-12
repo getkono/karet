@@ -119,3 +119,55 @@ fn an_empty_answer_without_a_refusal_still_reads_as_nothing_found() {
     app.on_backend_event(Some(id), SessionEvent::HoverResult { hover: None });
     assert_eq!(last_message(&app).as_deref(), Some("no hover information"));
 }
+
+/// Format Selection sends every selection as it stands -- a bare caret
+/// included, which the session widens to its line -- and a server that does
+/// not format ranges is named on that request, once.
+#[test]
+fn format_selection_on_a_server_without_it_says_so() {
+    let (backend, mut app) = completion_app("let x = 1;\nlet y = 2;\n", LineCol::new(1, 3));
+    app.dispatch(Command::FormatSelection);
+    let Some(id) = sent_id(&backend, |c| {
+        matches!(
+            c,
+            SessionCommand::Format(karet_session::FormatRequest {
+                doc: DocumentId(9),
+                scope: karet_session::FormatScope::Ranges(ranges),
+            }) if *ranges == [karet_core::Range {
+                start: LineCol::new(1, 3),
+                end: LineCol::new(1, 3),
+            }]
+        )
+    }) else {
+        unreachable!("the command issues a request for the caret");
+    };
+
+    app.on_backend_event(
+        Some(id),
+        SessionEvent::FeatureUnsupported {
+            server: LanguageServerId::RustAnalyzer,
+            feature: ServerFeature::RangeFormatting,
+        },
+    );
+
+    assert_eq!(titles(&app), vec![notice("formatting a selection")]);
+}
+
+/// Format Document asks for the whole of the active document.
+#[test]
+fn format_document_asks_for_the_whole_document() {
+    let (backend, mut app) = completion_app("let x = 1;\n", LineCol::new(0, 3));
+    app.dispatch(Command::FormatDocument);
+    assert!(
+        sent_id(&backend, |c| {
+            matches!(
+                c,
+                SessionCommand::Format(karet_session::FormatRequest {
+                    doc: DocumentId(9),
+                    scope: karet_session::FormatScope::Document,
+                })
+            )
+        })
+        .is_some()
+    );
+}

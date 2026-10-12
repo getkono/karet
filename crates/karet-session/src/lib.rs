@@ -71,6 +71,8 @@ pub use api::DocumentId;
 pub use api::DocumentLineEnding;
 pub use api::DocumentSettings;
 pub use api::Event;
+pub use api::FormatRequest;
+pub use api::FormatScope;
 pub use api::GithubAuth;
 pub use api::GithubAuthSource;
 pub use api::GithubCheckRun;

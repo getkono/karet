@@ -469,6 +469,7 @@ pub(super) fn answer_empty(
             request,
             doc,
             version,
+            ask,
             ..
         } => {
             let _ = updates.send(LspUpdate::Formatting {
@@ -482,6 +483,7 @@ pub(super) fn answer_empty(
                 // whether to reach for its own formatter, and it should.
                 formatted: false,
                 edits: Vec::new(),
+                scope: ask.scope,
             });
         },
         ServerCmd::CodeAction(cmd) => {
@@ -599,10 +601,37 @@ mod tests {
                     version: 3,
                     formatted: false,
                     ref edits,
+                    scope: crate::lsp::FormattingScope::Save,
                 }) if edits.is_empty()
             ),
             "an unreachable server must not be reported as having formatted the file"
         );
+
+        // A format asked for by hand is answered as one, so its empty answer
+        // is never mistaken for a save's.
+        answer_empty(
+            &tx,
+            ServerCmd::Formatting {
+                request: RequestId(4),
+                doc: DocumentId(2),
+                version: 3,
+                path: PathBuf::from("Cargo.toml"),
+                ask: crate::lsp::FormattingAsk {
+                    scope: crate::lsp::FormattingScope::Document,
+                    ..crate::lsp::FormattingAsk::default()
+                },
+            },
+            7,
+        );
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(LspUpdate::Formatting {
+                request: RequestId(4),
+                formatted: false,
+                scope: crate::lsp::FormattingScope::Document,
+                ..
+            })
+        ));
     }
 
     /// A rename asked of no connection still answers, both halves of it, so a

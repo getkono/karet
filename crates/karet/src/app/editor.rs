@@ -2,6 +2,8 @@ pub(super) mod column;
 mod render;
 
 use karet_editor::Motion;
+use karet_session::FormatRequest;
+use karet_session::FormatScope;
 
 use super::*;
 use crate::app::scroll::adjust;
@@ -306,6 +308,30 @@ impl App {
                 tab.editor.set_caret(buffer, pos);
             }
         }
+    }
+
+    /// Format Document (Shift+Alt+F) and Format Selection (Ctrl+K Ctrl+F): ask
+    /// the session to format the active code tab, whole or at every selection
+    /// (a bare caret formats its line), with the formatter its language names.
+    ///
+    /// The edits come back as an ordinary snapshot, so they undo as one step
+    /// and every caret follows the text it sat in. A refusal -- no formatter,
+    /// or a server without the method -- is the session's to report.
+    pub(super) fn format_active(&mut self, selection: bool) {
+        let Some(tab) = self.tabs.get(self.active) else {
+            return;
+        };
+        let TabKind::Code { doc: Some(doc), .. } = &tab.kind else {
+            return;
+        };
+        let doc = *doc;
+        let scope = if selection {
+            let selections = &tab.editor.cursors().selections;
+            FormatScope::Ranges(selections.iter().map(|s| s.range()).collect())
+        } else {
+            FormatScope::Document
+        };
+        let _ = self.send(SessionCommand::Format(FormatRequest { doc, scope }));
     }
 
     /// Apply a caret `motion` to the active code tab, extending the selection when

@@ -296,6 +296,7 @@
             version,
             formatted: true,
             edits: Vec::new(),
+            scope: crate::lsp::FormattingScope::Save,
         });
 
         assert!(saved(&mut events), "a rejected answer must not eat the save");
@@ -332,6 +333,7 @@
                 },
                 new_text: "formatted\n".to_string(),
             }],
+            scope: crate::lsp::FormattingScope::Save,
         });
 
         assert!(saved(&mut events));
@@ -371,6 +373,7 @@
                 },
                 new_text: "formatted\n".to_string(),
             }],
+            scope: crate::lsp::FormattingScope::Save,
         });
 
         assert!(saved(&mut events));
@@ -405,6 +408,7 @@
             version,
             formatted: true,
             edits: Vec::new(),
+            scope: crate::lsp::FormattingScope::Save,
         });
 
         assert!(saved(&mut events));
@@ -485,6 +489,7 @@
             version,
             formatted: true,
             edits: Vec::new(),
+            scope: crate::lsp::FormattingScope::Save,
         });
         session.expire_format_on_save(crate::config::schema::FORMAT_ON_SAVE_TIMEOUT_DEFAULT_MS);
 
@@ -590,6 +595,7 @@
             version,
             formatted: false,
             edits: Vec::new(),
+            scope: crate::lsp::FormattingScope::Save,
         });
 
         assert!(saved(&mut events));
@@ -623,6 +629,7 @@
             version,
             formatted: false,
             edits: Vec::new(),
+            scope: crate::lsp::FormattingScope::Save,
         });
 
         assert!(saved(&mut events));
@@ -872,6 +879,7 @@
                 },
                 new_text: "formatted   \nstill here".to_string(),
             }],
+            scope: crate::lsp::FormattingScope::Save,
         });
 
         assert!(saved(&mut events));
