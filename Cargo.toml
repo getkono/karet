@@ -231,6 +231,10 @@ rayon         = "1.12"
 # Search
 ignore        = "0.4.26"
 regex         = "1.12.4"
+# The parser `regex` itself compiles with (same version, already in the lock
+# file): `karet-search` reads a query's syntax tree to tell whether a match can
+# cross a line break.
+regex-syntax  = "0.8.11"
 memchr        = "2.8.2"
 # Fuzzy / misc
 nucleo      = "0.5.0"
