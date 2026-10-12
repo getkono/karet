@@ -135,6 +135,7 @@ impl App {
             surface_selecting: None,
             last_click: None,
             click_streak: 0,
+            click_origin: (editor::ClickSurface::Other, KeyModifiers::NONE),
             clipboard: Clipboard::new(),
             image_area: None,
             preview_images: crate::preview_images::PreviewImages::default(),

@@ -126,10 +126,10 @@ of a wide character or of a tab's cells resolves to after it (#337).
 | Click below the last line | Caret at the end of the document. | #337 |
 | Click at a wrap boundary | The caret stays on the visual row that was clicked. | #337 |
 | Shift+click | Extend the primary selection from its anchor to the click; drop the other carets. | harness (forward and backward) |
-| Ctrl+click (Super+click where the terminal reports it) | Go to the definition of the identifier under the pointer. On anything else (whitespace, past the line end, the gutter) nothing happens. | — (needs a language server); #338 (non-identifiers) |
+| Ctrl+click (Super+click where the terminal reports it) | Go to the definition of the identifier under the pointer. On anything else (whitespace, past the line end, the gutter) nothing happens. | — (needs a language server); non-identifiers by a recording backend in `tests/definition.rs` |
 | Click in an unfocused split | Focus that split and place its caret; the other split's carets do not move. | harness |
 | Click while the find bar is open | The editor takes keyboard focus; the find bar stays open. Esc from the text then closes it; a click in its field takes the keys back. | harness |
-| Right click | Move the caret to the click if it is outside the selection, then open the context menu (Cut, Copy, Paste, spelling suggestions). | harness (caret, menu, unfocused split; `pointer_routing.rs`); #338 (spelling suggestions) |
+| Right click | Move the caret to the click if it is outside the selection, then open the context menu (Cut, Copy, Paste, spelling suggestions). | harness (caret, menu, unfocused split; `pointer_routing.rs`); spelling suggestions in `tests/spellcheck.rs` |
 | Click on a completion row | Accept that candidate, as Enter would. | harness |
 | Click outside the hover popup | Close the popup, then do what the click would have done without it. A click inside it is kept. | harness |
 | Click while the diagnostic view is open | It is modal: a click outside it closes it and does nothing else; a click inside it is kept. | harness |
@@ -145,12 +145,12 @@ keyboard path that always works.
 
 | Input | Behaviour | Status |
 |---|---|---|
-| Double click | Select the unit under the pointer: a word, a punctuation run or a whitespace run. | harness (word); #338 (punctuation, whitespace) |
-| Triple click | Select the whole line, newline included. | #338 (newline) |
-| Fourth click and beyond | Stay at line granularity. | #338 |
-| Click counting | Clicks count as one streak when they land within one cell of the previous click, within the multi-click interval, with the same modifiers, on the same surface. A pause, a move, or a change of modifier starts a new streak. | harness (pause); #338 (rest) |
-| Modifier + repeated click | The modifier wins over the count: two quick Alt+clicks add (then remove) a caret, and two quick Shift+clicks extend twice. Neither selects a word. | #338 |
-| Double click on a misspelled word | Select the word, as anywhere else. Spelling suggestions live in the right-click menu. | #338 |
+| Double click | Select the unit under the pointer: a word, a punctuation run or a whitespace run. | harness |
+| Triple click | Select the whole line, newline included. | harness |
+| Fourth click and beyond | Stay at line granularity. | harness |
+| Click counting | Clicks count as one streak when they land within one cell of the previous click, within the multi-click interval, with the same modifiers, on the same surface. A pause, a move, or a change of modifier starts a new streak. | harness (pause, move, modifier); surface in `multi_click.rs` |
+| Modifier + repeated click | The modifier wins over the count: two quick Alt+clicks add (then remove) a caret, and two quick Shift+clicks extend twice. Neither selects a word. | harness |
+| Double click on a misspelled word | Select the word, as anywhere else. Spelling suggestions live in the right-click menu. | `tests/spellcheck.rs` |
 
 ## Drag
 

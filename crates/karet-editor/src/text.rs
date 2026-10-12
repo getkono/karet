@@ -48,6 +48,57 @@ pub(super) fn word_at(buffer: &TextBuffer, pos: LineCol) -> Option<(LineCol, Lin
     (start < end).then(|| (LineCol::new(pos.line, start), LineCol::new(pos.line, end)))
 }
 
+/// The `(start, end)` a double-click at `pos` selects: the run of characters
+/// sharing the [`karet_core::WordClass`] of the character under `pos` — a word,
+/// a punctuation run, or a whitespace run. The character under `pos` decides
+/// alone, so a double-click on the `.` of `foo.bar` selects the `.`, never the
+/// word beside it.
+///
+/// Past the end of a line the last character decides, so a double-click right
+/// of `foo bar` selects `bar`. An empty line yields the empty span at its start.
+#[must_use]
+pub fn class_run_at(buffer: &TextBuffer, pos: LineCol) -> (LineCol, LineCol) {
+    let (start, end) = class_run(&line_chars(buffer, pos.line), pos.col);
+    (LineCol::new(pos.line, start), LineCol::new(pos.line, end))
+}
+
+/// The `(start, end)` of the identifier (alphanumeric + `_`) under the character
+/// at `pos`, or `None` when that character is punctuation or whitespace, or `pos`
+/// is past the end of its line. Unlike [`word_bounds`], a word that merely ends
+/// at `pos` does not count: this answers what the pointer is *on*.
+#[must_use]
+pub fn identifier_at(buffer: &TextBuffer, pos: LineCol) -> Option<(LineCol, LineCol)> {
+    let chars = line_chars(buffer, pos.line);
+    chars
+        .get(pos.col as usize)
+        .copied()
+        .filter(|&c| is_word_char(c))?;
+    let (start, end) = class_run(&chars, pos.col);
+    Some((LineCol::new(pos.line, start), LineCol::new(pos.line, end)))
+}
+
+/// The run of one [`karet_core::WordClass`] in `chars` around column `col`: the
+/// character at `col` decides, or the last one when `col` is past the end.
+/// `(0, 0)` for an empty line.
+fn class_run(chars: &[char], col: u32) -> (u32, u32) {
+    let n = chars.len() as u32;
+    let Some(last) = n.checked_sub(1) else {
+        return (0, 0);
+    };
+    let col = col.min(last);
+    let class_of = |i: u32| chars.get(i as usize).copied().map(karet_core::word_class);
+    let class = class_of(col);
+    let mut start = col;
+    while start > 0 && class_of(start - 1) == class {
+        start -= 1;
+    }
+    let mut end = col + 1;
+    while end < n && class_of(end) == class {
+        end += 1;
+    }
+    (start, end)
+}
+
 /// The text within `range`, read line by line so the document is never copied
 /// whole. Lines are joined with `\n`, the buffer's normalized line break.
 pub(super) fn range_text(buffer: &TextBuffer, range: Range) -> String {
@@ -305,11 +356,16 @@ pub fn selection_text(buffer: &TextBuffer, source: &str, range: Range) -> Option
     source.get(start..end).map(str::to_string)
 }
 
-/// The `(anchor, head)` span covering all of `line`.
+/// The `(anchor, head)` span covering all of `line` and the line break ending
+/// it: from the line's start to the next line's start, so a triple-click
+/// selection deletes or copies the whole line. The last line has no break, so
+/// its span ends at its own end.
 #[must_use]
 pub fn line_span(buffer: &TextBuffer, line: u32) -> (LineCol, LineCol) {
-    let len = buffer
-        .line(line as usize)
-        .map_or(0, |s| s.chars().count() as u32);
-    (LineCol::new(line, 0), LineCol::new(line, len))
+    let head = if line < last_line(buffer) {
+        LineCol::new(line + 1, 0)
+    } else {
+        LineCol::new(line, line_len(buffer, line))
+    };
+    (LineCol::new(line, 0), head)
 }

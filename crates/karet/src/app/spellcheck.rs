@@ -56,62 +56,76 @@ impl App {
         spell_warning(doc, buffer, text, diagnostic)
     }
 
-    /// Open the correction menu for a spell warning under `position`.
-    pub(super) fn open_spelling_menu(&mut self, x: u16, y: u16, position: LineCol) -> bool {
-        let Some(warning) = self.spell_warning_at(position) else {
-            return false;
+    /// Lead the right-click menu just opened at `(x, y)` with the spelling rows
+    /// for the misspelled word under that point, when there is one: its
+    /// replacements, then adding it to a dictionary. `area` is the editor
+    /// viewport of the pane the click landed in.
+    ///
+    /// The rows live in the right-click menu rather than on a double click, so a
+    /// double click on a misspelled word selects it like any other word.
+    pub(super) fn add_spelling_to_menu(&mut self, area: Rect, x: u16, y: u16) {
+        if !rect_contains(area, (x, y)) {
+            return;
+        }
+        let Some(warning) = self
+            .char_under(area, (x, y))
+            .and_then(|position| self.spell_warning_at(position))
+        else {
+            return;
         };
-        if let Some(Tab {
-            kind: TabKind::Code { buffer, .. },
-            editor,
-            ..
-        }) = self.tabs.get_mut(self.active)
-        {
-            editor.set_selection(buffer, warning.range.start, warning.range.end);
+        let mut entries = spelling_entries(warning);
+        if let Some(mut menu) = self.context_menu.take() {
+            entries.append(&mut menu.entries);
         }
+        self.context_menu = Some(ContextMenu::new(x, y, entries));
+    }
+}
 
-        let mut entries: Vec<ContextMenuEntry> = warning
-            .suggestions
-            .iter()
-            .map(|suggestion| {
-                ContextMenuEntry::custom(
-                    format!("Replace with “{suggestion}”"),
-                    ContextMenuAction::ReplaceSpelling {
-                        doc: warning.doc,
-                        range: warning.range,
-                        replacement: suggestion.clone(),
-                    },
-                )
-            })
-            .collect();
-        if entries.is_empty() {
-            entries.push(ContextMenuEntry::disabled_custom(
-                "No similar words found",
-                ContextMenuAction::AddSpellingToDictionary {
-                    word: warning.word.clone(),
-                    target: DictionaryTarget::Project,
+/// The spelling rows for `warning`: one per replacement (or a disabled note
+/// that there is none), then adding the word to the project or user dictionary.
+fn spelling_entries(warning: SpellWarning) -> Vec<ContextMenuEntry> {
+    let mut entries: Vec<ContextMenuEntry> = warning
+        .suggestions
+        .iter()
+        .map(|suggestion| {
+            ContextMenuEntry::custom(
+                format!("Replace with “{suggestion}”"),
+                ContextMenuAction::ReplaceSpelling {
+                    doc: warning.doc,
+                    range: warning.range,
+                    replacement: suggestion.clone(),
                 },
-                "The dictionary has no close matches",
-            ));
-        }
-        entries.push(ContextMenuEntry::custom(
-            format!("Add “{}” to Project Dictionary", warning.word),
+            )
+        })
+        .collect();
+    if entries.is_empty() {
+        entries.push(ContextMenuEntry::disabled_custom(
+            "No similar words found",
             ContextMenuAction::AddSpellingToDictionary {
                 word: warning.word.clone(),
                 target: DictionaryTarget::Project,
             },
+            "The dictionary has no close matches",
         ));
-        entries.push(ContextMenuEntry::custom(
-            format!("Add “{}” to User Dictionary", warning.word),
-            ContextMenuAction::AddSpellingToDictionary {
-                word: warning.word,
-                target: DictionaryTarget::User,
-            },
-        ));
-        self.context_menu = Some(ContextMenu::new(x, y, entries));
-        true
     }
+    entries.push(ContextMenuEntry::custom(
+        format!("Add “{}” to Project Dictionary", warning.word),
+        ContextMenuAction::AddSpellingToDictionary {
+            word: warning.word.clone(),
+            target: DictionaryTarget::Project,
+        },
+    ));
+    entries.push(ContextMenuEntry::custom(
+        format!("Add “{}” to User Dictionary", warning.word),
+        ContextMenuAction::AddSpellingToDictionary {
+            word: warning.word,
+            target: DictionaryTarget::User,
+        },
+    ));
+    entries
+}
 
+impl App {
     /// Apply a selected spelling correction through the ordinary atomic edit path.
     pub(super) fn replace_spelling(&mut self, doc: DocumentId, range: Range, replacement: String) {
         if self.active_code_doc() != Some(doc) {
