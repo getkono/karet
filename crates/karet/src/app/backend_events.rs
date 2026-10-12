@@ -167,6 +167,9 @@ impl App {
             SessionEvent::InlayHintsFailed { doc, version } => {
                 self.on_inlay_hints_failed(id, doc, version);
             },
+            SessionEvent::InlayHintResolved { doc, hint } => {
+                self.on_inlay_hint_resolved(id, doc, hint);
+            },
             // The server said its hints went stale somewhere the buffer
             // version cannot see -- an edit in another file. Every document
             // is re-asked rather than only the ones it serves: only visible

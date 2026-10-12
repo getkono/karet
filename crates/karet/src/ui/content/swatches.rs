@@ -132,20 +132,32 @@ pub(super) fn frame_decorations(
 }
 
 /// The virtual text content assembles fresh each draw, in one slice: the
-/// document's inlay hints, the manifest's dependency hints (version-guarded),
-/// and the inline blame last. Returns the slice and the blame's index in it,
-/// which is how the painted blame is found again for its click target.
+/// document's inlay hints (one text per label part, so a part can be hovered
+/// and followed on its own), the manifest's dependency hints
+/// (version-guarded), and the inline blame last.
+///
+/// Returns the slice; which `(hint, part)` each of its first texts is, in
+/// order, one per inlay-hint label part; and the blame's index in the slice.
+/// The last two are how what was painted is found again for its pointer
+/// targets.
 pub(super) fn frame_virtual_text(
     ctx: &PaneCtx,
     doc: Option<DocumentId>,
     buffer: &TextBuffer,
-) -> (Vec<VirtualText>, Option<usize>) {
-    let mut out: Vec<VirtualText> = doc
+) -> (Vec<VirtualText>, Vec<(usize, usize)>, Option<usize>) {
+    let mut out: Vec<VirtualText> = Vec::new();
+    let mut inlay_parts = Vec::new();
+    for (index, hint) in doc
         .and_then(|doc| ctx.inlay_hints.get(&doc))
         .into_iter()
         .flatten()
-        .map(VirtualText::from)
-        .collect();
+        .enumerate()
+    {
+        for (part, text) in hint.virtual_texts().into_iter().enumerate() {
+            out.push(text);
+            inlay_parts.push((index, part));
+        }
+    }
     if let Some((checked, hints)) = doc.and_then(|doc| ctx.manifest_hints.get(&doc))
         && *checked == buffer.version()
     {
@@ -155,7 +167,31 @@ pub(super) fn frame_virtual_text(
         out.push(blame);
         out.len() - 1
     });
-    (out, blame)
+    (out, inlay_parts, blame)
+}
+
+/// Where the editor painted each inlay-hint label part of `doc`, given which
+/// `(hint, part)` each of the first virtual texts was.
+pub(super) fn inlay_hits(
+    inlay_parts: &[(usize, usize)],
+    doc: Option<DocumentId>,
+    editor: &karet_editor::EditorState,
+) -> Vec<crate::app::InlayHintHit> {
+    let Some(doc) = doc else {
+        return Vec::new();
+    };
+    inlay_parts
+        .iter()
+        .enumerate()
+        .filter_map(|(index, &(hint, part))| {
+            Some(crate::app::InlayHintHit {
+                rect: editor.virtual_text_rect(index)?,
+                doc,
+                hint,
+                part,
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]

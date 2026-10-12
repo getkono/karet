@@ -113,6 +113,7 @@ impl App {
 
     fn handle_mouse_event(&mut self, mouse: MouseEvent) {
         self.update_definition_hover(&mouse);
+        self.update_inlay_hover(&mouse);
         self.update_pointer_shape_hint(&mouse);
         // Ahead of every surface that could swallow it: a release that an overlay
         // or a toast took would otherwise leave the drag running behind it.
@@ -302,6 +303,9 @@ impl App {
         // view owns its whole surface, and a press that fell through to `handle_editor_click`
         // would arm a text drag in a view that has no text to drag.
         if self.view == View::Editor && self.seam_mouse(mouse) {
+            return;
+        }
+        if self.handle_inlay_hint_mouse(&mouse) {
             return;
         }
         if self.handle_blame_mouse(mouse) {

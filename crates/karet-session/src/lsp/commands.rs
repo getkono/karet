@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
 
+use karet_core::InlayHint;
 use karet_core::LineCol;
 use karet_core::Location;
 use karet_core::ServerFeature;
@@ -23,10 +24,12 @@ use karet_lsp::LspError;
 use tokio::sync::mpsc;
 
 use super::code_actions::UNAVAILABLE;
+use super::health::FailureTally;
 use super::message::LspUpdate;
 use super::message::RenameAnswer;
 use super::message::ServerCmd;
 use super::slot::SlotKey;
+use super::slot::SlotToken;
 use crate::RequestId;
 use crate::api::LocationKind;
 
@@ -53,6 +56,54 @@ pub(super) fn report_unsupported<T>(
             server: key.provider.clone(),
             feature,
         });
+    }
+}
+
+/// Send the pending `didChange`, if any -- what a command that must see the
+/// latest text does before it is served.
+pub(super) async fn flush_pending(
+    client: &LspClient,
+    pending: &mut Option<(PathBuf, i32, String)>,
+    dead: &mut bool,
+    tally: &mut FailureTally,
+    updates: &mpsc::UnboundedSender<LspUpdate>,
+    key: &SlotKey,
+    token: SlotToken,
+) {
+    if *dead {
+        *pending = None;
+        return;
+    }
+    if let Some((path, version, text)) = pending.take() {
+        let result = client.did_change(&path, version, &text).await;
+        tally.note(result, dead, updates, key, token);
+    }
+}
+
+/// Resolve `hint` on `client`, or hand it back unchanged when the connection
+/// is dead or the request fails -- which counts against the connection's
+/// health like any other failure. No flush first: what is resolved is the hint
+/// as the server sent it, whatever the text has done since.
+pub(super) async fn resolve_hint(
+    client: &LspClient,
+    hint: InlayHint,
+    (dead, tally, updates, key, token): (
+        &mut bool,
+        &mut FailureTally,
+        &mpsc::UnboundedSender<LspUpdate>,
+        &SlotKey,
+        SlotToken,
+    ),
+) -> InlayHint {
+    if *dead {
+        return hint;
+    }
+    match tally.observe(client.resolve_inlay_hint(&hint).await) {
+        Ok(resolved) => resolved,
+        Err(error) => {
+            tally.note::<()>(Err(error), dead, updates, key, token);
+            hint
+        },
     }
 }
 
@@ -148,6 +199,14 @@ pub(super) fn answer_empty(
                 doc,
                 version,
                 hints: Vec::new(),
+            });
+        },
+        ServerCmd::ResolveInlayHint { request, doc, hint } => {
+            let _ = updates.send(LspUpdate::InlayHintResolved {
+                generation,
+                request,
+                doc,
+                hint,
             });
         },
         ServerCmd::DocumentSymbols {
@@ -310,6 +369,7 @@ pub(super) fn remember_document(documents: &mut HashMap<PathBuf, OpenDocument>, 
         },
         ServerCmd::Completion { .. }
         | ServerCmd::InlayHints { .. }
+        | ServerCmd::ResolveInlayHint { .. }
         | ServerCmd::DocumentSymbols { .. }
         | ServerCmd::Hover { .. }
         | ServerCmd::Definition { .. }
@@ -485,6 +545,39 @@ mod tests {
                 doc: DocumentId(5),
                 version: 6,
             })
+        ));
+    }
+
+    /// A resolve no server can serve is answered with the hint as it was, so
+    /// the editor stops waiting on it and spends its payload.
+    #[test]
+    fn an_unserved_resolve_hands_the_hint_back_unchanged() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let hint = karet_core::InlayHint {
+            payload: Some("{}".to_owned()),
+            ..karet_core::InlayHint::new(
+                LineCol::new(1, 2),
+                ": i32",
+                karet_core::InlayHintKind::Type,
+            )
+        };
+        answer_reconnecting(
+            &tx,
+            ServerCmd::ResolveInlayHint {
+                request: RequestId(3),
+                doc: DocumentId(5),
+                hint: hint.clone(),
+            },
+            7,
+        );
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(LspUpdate::InlayHintResolved {
+                generation: 7,
+                request: RequestId(3),
+                doc: DocumentId(5),
+                hint: ref answered,
+            }) if *answered == hint
         ));
     }
 

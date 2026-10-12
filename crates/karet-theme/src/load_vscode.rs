@@ -71,6 +71,16 @@ const ROLE_KEYS: &[(&str, ThemeRole)] = &[
     ("editorOverviewRuler.border", ThemeRole::ScrollbarTrack),
 ];
 
+/// VS Code's per-kind inlay-hint color keys, each inheriting
+/// `editorInlayHint.foreground` when the theme leaves it unset.
+const INLAY_KIND_KEYS: &[(&str, ThemeRole)] = &[
+    ("editorInlayHint.typeForeground", ThemeRole::InlayHintType),
+    (
+        "editorInlayHint.parameterForeground",
+        ThemeRole::InlayHintParameter,
+    ),
+];
+
 /// Load a VS Code JSON theme, falling back to the built-in dark theme for any key
 /// the file doesn't specify.
 pub(crate) fn load(json: &str) -> Result<Theme, ThemeError> {
@@ -79,6 +89,18 @@ pub(crate) fn load(json: &str) -> Result<Theme, ThemeError> {
 
     for (key, role) in ROLE_KEYS {
         if let Some(color) = root.colors.get(*key).and_then(|h| Rgba::from_hex(h)) {
+            theme.roles[*role as usize] = color;
+        }
+    }
+    // VS Code falls back from a per-kind hint color to the general one, so a
+    // theme that sets only `editorInlayHint.foreground` colors every kind.
+    let general = root
+        .colors
+        .get("editorInlayHint.foreground")
+        .and_then(|h| Rgba::from_hex(h));
+    for (key, role) in INLAY_KIND_KEYS {
+        let specific = root.colors.get(*key).and_then(|h| Rgba::from_hex(h));
+        if let Some(color) = specific.or(general) {
             theme.roles[*role as usize] = color;
         }
     }
@@ -249,6 +271,46 @@ mod tests {
         assert_eq!(
             t.role(ThemeRole::GutterDeleted),
             Rgba::rgb(0x77, 0x88, 0x99)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn inlay_hint_kind_keys_overlay_their_roles() -> Result<(), ThemeError> {
+        let json = r##"{
+            "colors": {
+                "editorInlayHint.foreground": "#101010",
+                "editorInlayHint.typeForeground": "#202020",
+                "editorInlayHint.parameterForeground": "#303030"
+            }
+        }"##;
+        let t = Theme::load_vscode(json)?;
+        assert_eq!(t.role(ThemeRole::InlayHint), Rgba::rgb(0x10, 0x10, 0x10));
+        assert_eq!(
+            t.role(ThemeRole::InlayHintType),
+            Rgba::rgb(0x20, 0x20, 0x20)
+        );
+        assert_eq!(
+            t.role(ThemeRole::InlayHintParameter),
+            Rgba::rgb(0x30, 0x30, 0x30)
+        );
+        Ok(())
+    }
+
+    /// A theme that colors only the general hint key colors every kind, as
+    /// VS Code does; one that sets none keeps the built-in per-kind colors.
+    #[test]
+    fn per_kind_inlay_hint_roles_inherit_the_general_key() -> Result<(), ThemeError> {
+        let general =
+            Theme::load_vscode(r##"{"colors":{"editorInlayHint.foreground":"#abcdef"}}"##)?;
+        let hint = Rgba::rgb(0xab, 0xcd, 0xef);
+        assert_eq!(general.role(ThemeRole::InlayHintType), hint);
+        assert_eq!(general.role(ThemeRole::InlayHintParameter), hint);
+        let none = Theme::load_vscode(r##"{"colors":{}}"##)?;
+        let dark = Theme::dark();
+        assert_eq!(
+            none.role(ThemeRole::InlayHintType),
+            dark.role(ThemeRole::InlayHintType)
         );
         Ok(())
     }

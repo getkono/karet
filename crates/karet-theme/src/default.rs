@@ -104,6 +104,10 @@ pub(crate) fn dark() -> Theme {
     // for gitignored explorer rows.
     role(ThemeRole::Muted, rgb(0x56, 0x5f, 0x89));
     role(ThemeRole::InlayHint, rgb(0x4d, 0x55, 0x7a));
+    // Per-kind hints stay in the same dim band as the general one, tinted
+    // apart by hue: a muted blue for types, a muted violet for parameter names.
+    role(ThemeRole::InlayHintType, rgb(0x4a, 0x6a, 0x8c));
+    role(ThemeRole::InlayHintParameter, rgb(0x6e, 0x5c, 0x92));
     // Explorer file-icon tints, keyed to the coarse file Category.
     role(ThemeRole::FileIconText, rgb(0x7a, 0xa2, 0xf7));
     role(ThemeRole::FileIconMedia, rgb(0x9e, 0xce, 0x6a));

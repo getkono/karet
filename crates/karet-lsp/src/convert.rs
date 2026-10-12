@@ -18,8 +18,6 @@ use karet_core::DocumentChange;
 use karet_core::DocumentEdit;
 use karet_core::FileOptions;
 use karet_core::Hover;
-use karet_core::InlayHint;
-use karet_core::InlayHintKind;
 use karet_core::LineCol;
 use karet_core::Location;
 use karet_core::Markup;
@@ -297,29 +295,6 @@ pub(crate) fn locations_from_lsp(
                 path: uri_to_path(&location.uri)?,
                 range: range_from_lsp(location.range),
             })
-        })
-        .collect()
-}
-
-/// Map inlay hints into renderable labels and positions.
-pub(crate) fn inlay_hints_from_lsp(hints: Option<Vec<lsp_types::InlayHint>>) -> Vec<InlayHint> {
-    hints
-        .unwrap_or_default()
-        .into_iter()
-        .map(|hint| InlayHint {
-            position: position_from_lsp(hint.position),
-            label: match hint.label {
-                lsp_types::InlayHintLabel::String(label) => label,
-                lsp_types::InlayHintLabel::LabelParts(parts) => {
-                    parts.into_iter().map(|part| part.value).collect()
-                },
-            },
-            kind: match hint.kind {
-                Some(lsp_types::InlayHintKind::PARAMETER) => InlayHintKind::Parameter,
-                _ => InlayHintKind::Type,
-            },
-            padding_left: hint.padding_left.unwrap_or(false),
-            padding_right: hint.padding_right.unwrap_or(false),
         })
         .collect()
 }

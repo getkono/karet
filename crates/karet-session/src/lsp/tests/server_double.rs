@@ -125,7 +125,7 @@ fn advertised_capabilities(behavior: Behavior) -> Value {
         "codeActionProvider": {"resolveProvider": true},
         "executeCommandProvider": {"commands": ["double.fix"]},
         "signatureHelpProvider": {},
-        "inlayHintProvider": true,
+        "inlayHintProvider": {"resolveProvider": true},
         "implementationProvider": true,
         "typeHierarchyProvider": true,
     });
@@ -228,6 +228,7 @@ pub(super) fn test_connector(
                     return;
                 }
                 let mut last_code_action_uri = Value::Null;
+                let mut last_hint_uri = Value::Null;
                 while let Some(msg) = read_msg(&mut reader).await {
                     if let Some(tx) = &observed {
                         let _ = tx.send(msg.clone());
@@ -263,16 +264,51 @@ pub(super) fn test_connector(
                         Some("textDocument/inlayHint") => {
                             // One hint at UTF-16 character 4 on line 0, which
                             // is buffer column 3 once the emoji is accounted
-                            // for.
+                            // for. Its label comes in two located parts:
+                            // ": " leads into `elsewhere.rs` beside the
+                            // asking file (never opened by the double's
+                            // tests), "i32" into the asking file itself, both
+                            // at UTF-16 character 4.
+                            last_hint_uri = msg["params"]["textDocument"]["uri"].clone();
+                            let asking = last_hint_uri.as_str().unwrap_or_default();
+                            let elsewhere = asking
+                                .rsplit_once('/')
+                                .map(|(dir, _)| format!("{dir}/elsewhere.rs"))
+                                .unwrap_or_default();
+                            let at_4 = json!({
+                                "start": {"line": 0, "character": 4},
+                                "end": {"line": 0, "character": 5}});
                             write_msg(
                                 &mut server_write,
                                 &json!({"jsonrpc": "2.0", "id": msg["id"], "result": [{
                                     "position": {"line": 0, "character": 4},
-                                    "label": ": i32",
+                                    "label": [
+                                        {"value": ": ", "location":
+                                            {"uri": elsewhere, "range": at_4}},
+                                        {"value": "i32", "location":
+                                            {"uri": asking, "range": at_4}}],
                                     "kind": 1,
                                     "paddingLeft": false,
-                                    "paddingRight": false
+                                    "paddingRight": false,
+                                    "data": {"hint": 1}
                                 }]}),
+                            )
+                            .await;
+                        },
+                        // The hint back with its deferred tooltip, and its
+                        // label split so its type leads into the file last
+                        // asked about, at UTF-16 character 4 -- buffer column
+                        // 3 behind a leading emoji.
+                        Some("inlayHint/resolve") => {
+                            let mut hint = msg["params"].clone();
+                            hint["tooltip"] = json!("resolved by the double");
+                            hint["label"] = json!([{"value": ": "}, {"value": "i32",
+                                "location": {"uri": last_hint_uri, "range": {
+                                    "start": {"line": 0, "character": 4},
+                                    "end": {"line": 0, "character": 5}}}}]);
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": hint}),
                             )
                             .await;
                         },

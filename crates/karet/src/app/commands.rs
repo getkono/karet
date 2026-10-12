@@ -158,6 +158,7 @@ impl App {
             Command::OpenDiffFile => self.open_diff_file(),
             Command::TriggerCompletion => self.trigger_completion(true),
             Command::Hover => self.request_hover(),
+            Command::ToggleInlayHints => self.toggle_inlay_hints(),
             Command::ShowDiagnostic => self.show_diagnostic(),
             Command::DebugStart => self.debug_start_or_continue(),
             Command::DebugStop => self.debug_send(SessionCommand::DebugStop),

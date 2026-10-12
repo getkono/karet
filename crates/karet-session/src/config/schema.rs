@@ -437,6 +437,8 @@ pub use aicommit::AiCommit;
 pub use aicommit::AiCommitAgent;
 pub use aicommit::AiCommitEffort;
 pub use aicommit::DEFAULT_TIMEOUT_MS as AI_COMMIT_DEFAULT_TIMEOUT_MS;
+pub use inlay_hints::InlayHints;
+pub use inlay_hints::InlayHintsEnabled;
 pub use lsp::Lsp;
 pub use lsp::LspLanguage;
 pub use lsp::LspServer;
@@ -449,6 +451,7 @@ pub use overrides::ResolvedEditor;
 pub use overrides::ResolvedSemanticComments;
 
 mod aicommit;
+mod inlay_hints;
 mod lsp;
 mod overrides;
 
@@ -472,24 +475,6 @@ impl Default for Completion {
             enabled: true,
             auto_trigger: true,
         }
-    }
-}
-
-/// `editor.inlayHints.*` — the inferred types and parameter names a language
-/// server supplies, drawn between characters.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
-pub struct InlayHints {
-    /// Draw inlay hints for languages whose server supplies them.
-    pub enabled: bool,
-}
-
-impl Default for InlayHints {
-    /// On by default: the annotation is the point of running a server that
-    /// infers types, and a server that offers none costs nothing.
-    fn default() -> Self {
-        Self { enabled: true }
     }
 }
 

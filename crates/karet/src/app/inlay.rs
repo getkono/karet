@@ -13,6 +13,7 @@
 //! [`LSP_CHANGE_DEBOUNCE`], so typing costs the server one request per pause
 //! rather than one per keystroke.
 
+mod pointer;
 mod shift;
 
 use karet_core::InlayHint;
@@ -23,6 +24,8 @@ use karet_session::LSP_CHANGE_DEBOUNCE;
 use karet_session::api::Command as SessionCommand;
 use karet_session::api::DocumentId;
 use karet_session::api::RequestId;
+pub(crate) use pointer::InlayHintHit;
+pub(crate) use pointer::InlayUi;
 pub(crate) use shift::diff_edit;
 pub(crate) use shift::map_position;
 
@@ -106,7 +109,7 @@ impl App {
         // deadline left in the past would make `inlay_next_wake` ask for an
         // immediate wake on every frame.
         self.docs.inlay_quiet_until.retain(|_, until| *until > now);
-        if !self.settings.editor.inlay_hints.enabled {
+        if !self.inlay_hints_visible() {
             return;
         }
         for (doc, wanted) in self.visible_hint_ranges() {

@@ -15,7 +15,7 @@ mod load_vscode;
 /// Number of [`StandardToken`](karet_core::StandardToken) classes (token id space).
 pub(crate) const TOKEN_COUNT: usize = 32;
 /// Number of [`ThemeRole`] variants.
-pub(crate) const ROLE_COUNT: usize = 35;
+pub(crate) const ROLE_COUNT: usize = 37;
 
 /// Errors produced while loading a theme.
 #[derive(Debug, thiserror::Error)]
@@ -364,6 +364,25 @@ mod tests {
             theme.role(ThemeRole::IndentGuide)
         );
         assert_ne!(theme.role(ThemeRole::ScrollbarTrack), theme.fallback_fg);
+    }
+
+    #[test]
+    fn each_inlay_hint_kind_has_its_own_dim_readable_color() {
+        // A type and a parameter name must read apart, and neither may fall
+        // back to the foreground (which would make a hint look like code).
+        let theme = Theme::dark();
+        assert!((ThemeRole::InlayHintParameter as usize) < ROLE_COUNT);
+        let bg = theme.role(ThemeRole::Background);
+        let other = theme.role(ThemeRole::InlayHint);
+        let ty = theme.role(ThemeRole::InlayHintType);
+        let param = theme.role(ThemeRole::InlayHintParameter);
+        assert_ne!(ty, param);
+        assert_ne!(ty, other);
+        assert_ne!(param, other);
+        for hint in [other, ty, param] {
+            assert_ne!(hint, theme.role(ThemeRole::Foreground));
+            assert!(contrast_ratio(hint, bg) > 2.0);
+        }
     }
 
     #[test]

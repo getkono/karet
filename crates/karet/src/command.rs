@@ -264,6 +264,9 @@ pub enum Command {
     TriggerCompletion,
     /// Show hover documentation and diagnostics for the caret (Ctrl+K Ctrl+I).
     Hover,
+    /// Show or hide inlay hints (Ctrl+K Ctrl+T); under an `…UnlessPressed`
+    /// setting, only until the next key.
+    ToggleInlayHints,
     /// Open the diagnostics under the caret in a scrollable detail view
     /// (Ctrl+K Ctrl+M) — the surface for long, formatted errors.
     ShowDiagnostic,
@@ -838,6 +841,7 @@ impl Command {
             Self::InsertChar(_) => "Insert Character",
             Self::TriggerCompletion => "Trigger Suggest",
             Self::Hover => "Show Hover",
+            Self::ToggleInlayHints => "Toggle Inlay Hints",
             Self::ShowDiagnostic => "Show Diagnostic Detail",
             Self::DebugStart => "Debug: Start / Continue",
             Self::DebugStop => "Debug: Stop",

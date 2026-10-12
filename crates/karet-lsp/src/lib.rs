@@ -75,6 +75,7 @@ mod conn;
 mod convert;
 mod gate;
 mod handshake;
+mod inlay;
 mod launch;
 mod navigation;
 mod selector;
@@ -91,7 +92,6 @@ use karet_core::Capabilities;
 use karet_core::CompletionItem;
 use karet_core::Diagnostic;
 use karet_core::Hover;
-use karet_core::InlayHint;
 use karet_core::LineCol;
 use karet_core::Location;
 use karet_core::PrepareRename;
@@ -958,24 +958,6 @@ impl LspClient {
         let response: Option<lsp_types::GotoDefinitionResponse> =
             self.conn.request("textDocument/definition", params).await?;
         Ok(convert::locations_from_lsp(response))
-    }
-
-    /// Request inlay hints within `range`.
-    ///
-    /// # Errors
-    /// Returns [`LspError::Unsupported`] **without issuing a request** when the
-    /// server did not advertise the capability, else [`LspError::Server`] or
-    /// [`LspError::Timeout`].
-    pub async fn inlay_hints(&self, doc: &Path, range: Range) -> Result<Vec<InlayHint>, LspError> {
-        self.require_for(ServerFeature::InlayHint, "textDocument/inlayHint", doc)?;
-        let params = lsp_types::InlayHintParams {
-            text_document: lsp_types::TextDocumentIdentifier::new(uri::path_to_uri(doc)?),
-            range: convert::range_to_lsp(range),
-            work_done_progress_params: lsp_types::WorkDoneProgressParams::default(),
-        };
-        let response: Option<Vec<lsp_types::InlayHint>> =
-            self.conn.request("textDocument/inlayHint", params).await?;
-        Ok(convert::inlay_hints_from_lsp(response))
     }
 
     /// Rename the symbol at `pos` to `new_name`, returning the edits to apply,
