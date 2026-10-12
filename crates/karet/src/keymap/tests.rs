@@ -113,6 +113,31 @@ fn ctrl_p_variants() {
 }
 
 #[test]
+fn ctrl_shift_o_goes_to_a_symbol_and_ctrl_k_o_toggles_the_outline() {
+    assert_eq!(
+        res(
+            Focus::Editor,
+            false,
+            key(
+                KeyCode::Char('O'),
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT
+            )
+        ),
+        Some(Command::GoToSymbolInEditor)
+    );
+    let ctrl_k = KeyChord::from_event(key(KeyCode::Char('k'), KeyModifiers::CONTROL));
+    let o = KeyChord::from_event(key(KeyCode::Char('o'), KeyModifiers::NONE));
+    assert_eq!(
+        resolve(Context::focus(FocusTarget::Editor), &[ctrl_k, o]),
+        Resolved::Command(Command::ToggleOutline)
+    );
+    assert_eq!(
+        hint_for(Command::ToggleOutline, ChordStyle::Verbose).as_deref(),
+        Some("Ctrl+K O")
+    );
+}
+
+#[test]
 fn focus_routes_navigation() {
     // A bare 'j' is text in the editor (unbound → typed) but moves the
     // selection in the sidebar.

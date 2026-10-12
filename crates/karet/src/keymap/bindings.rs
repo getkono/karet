@@ -29,7 +29,9 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(Global, true,  false, false, Char('f'), Command::OpenFind),
     b(Global, true,  true,  false, Char('f'), Command::OpenGlobalSearch),
     b(Global, true,  false, false, Char('b'), Command::ToggleSidebar),
-    b(Global, true,  true,  false, Char('o'), Command::ToggleOutline),
+    // Ctrl+Shift+O is Go to Symbol in Editor (VS Code parity); the outline
+    // panel it used to toggle moved to the `Ctrl+K` chord family below.
+    b(Global, true,  true,  false, Char('o'), Command::GoToSymbolInEditor),
     b(Global, true,  false, false, Char('w'), Command::CloseTab),
     b(Global, true,  false, false, Char('1'), Command::SelectPanel(SidebarPanel::Explorer)),
     b(Global, true,  false, false, Char('2'), Command::SelectPanel(SidebarPanel::Search)),
@@ -51,6 +53,7 @@ pub(super) static BINDINGS: &[Binding] = &[
     seq(Global, chord(true, false, false, Char('k')), &[chord(false, false, false, Char('1'))], Command::SelectView(View::Editor)),
     seq(Global, chord(true, false, false, Char('k')), &[chord(false, false, false, Char('2'))], Command::SelectView(View::GitHub)),
     // #211: seq(Global, chord(true, false, false, Char('k')), &[chord(false, false, false, Char('3'))], Command::SelectView(View::Agents)),
+    seq(Global, chord(true, false, false, Char('k')), &[chord(false, false, false, Char('o'))], Command::ToggleOutline),
 
     // Tab navigation & reordering (global).
     b(Global, true,  false, false, Tab,       Command::NextTab),

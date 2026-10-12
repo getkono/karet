@@ -319,6 +319,7 @@ impl App {
                 if let Some(overlay) = self.overlay.as_mut() {
                     overlay.push_str(text);
                 }
+                self.sync_quick_open_mode();
             },
             Modal::Find => {
                 let Some(find) = self.active_find_mut() else {
@@ -409,7 +410,8 @@ impl App {
             OverlayEvent::AcceptFile(path) => self.open_path(&path),
             OverlayEvent::AcceptWorkspace(root) => self.reopen_on_workspace(root),
             OverlayEvent::AcceptSeamRoot(root) => self.open_seam_view_at(root),
-            OverlayEvent::AcceptLocation { path, position } => {
+            OverlayEvent::AcceptLocation { path, position }
+            | OverlayEvent::AcceptSymbol { path, position, .. } => {
                 self.jump_to_location(&path, position);
             },
             OverlayEvent::AcceptCommand(cmd) => self.dispatch(cmd),
@@ -543,6 +545,8 @@ impl App {
             },
             _ => {},
         }
+        // A sigil typed or deleted switches quick-open's list (`@` symbols).
+        self.sync_quick_open_mode();
     }
 }
 

@@ -82,9 +82,15 @@ impl App {
     /// Request a fresh symbol tree for the active code document when its version
     /// is not already cached or in flight. Markdown headings are extracted locally.
     pub(crate) fn request_active_outline(&mut self) {
-        if !self.outline.visible {
-            return;
+        if self.outline.visible {
+            self.request_active_symbols();
         }
+    }
+
+    /// Request the active code document's symbols unless a set for its current
+    /// version is cached or already in flight. Shared by the outline panel and
+    /// Go to Symbol in Editor, which both read the cached tree.
+    pub(super) fn request_active_symbols(&mut self) {
         let Some((doc, version)) = self.tabs.get(self.active).and_then(|tab| match &tab.kind {
             TabKind::Code {
                 language,

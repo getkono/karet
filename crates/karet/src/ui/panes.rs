@@ -657,12 +657,12 @@ pub(super) fn draw_find_bar(
     rects
 }
 
-/// Draw a centered modal overlay (quick-open / command palette). `indexing`
+/// Draw a centered modal overlay (quick-open / command palette). `loading`
 /// adds a muted note to the title that its list is still being gathered.
 pub(super) fn draw_overlay(
     f: &mut Frame,
     overlay: &Overlay,
-    indexing: bool,
+    loading: bool,
     theme: &Theme,
     area: Rect,
 ) {
@@ -675,9 +675,9 @@ pub(super) fn draw_overlay(
         .bg(theme.role(ThemeRole::Background).to_ratatui())
         .fg(theme.role(ThemeRole::Foreground).to_ratatui());
     let mut title = vec![Span::raw(overlay.title().to_string())];
-    if indexing {
+    if loading {
         title.push(Span::styled(
-            " · indexing files…",
+            format!(" · {}", overlay.loading_note()),
             theme.style(ThemeRole::LineNumber),
         ));
     }
