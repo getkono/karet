@@ -314,6 +314,13 @@ pub struct Editor {
     /// it on for Linux, where the primary selection is a platform convention,
     /// and off elsewhere.
     pub middle_click_paste: Option<bool>,
+    /// When an opening bracket inserts its closing bracket. Typing over a
+    /// closer it inserted steps past it, and Backspace between an empty pair
+    /// deletes both halves.
+    pub auto_closing_brackets: AutoClosing,
+    /// When an opening quote inserts its closing quote (the language decides
+    /// which quotes pair: Rust's `'` does not).
+    pub auto_closing_quotes: AutoClosing,
     /// Strip trailing whitespace from each line on save.
     pub trim_trailing_whitespace: bool,
     /// Ensure the file ends with a single trailing newline on save.
@@ -395,6 +402,8 @@ impl Default for Editor {
             word_wrap: None,
             sticky_scroll: true,
             middle_click_paste: None,
+            auto_closing_brackets: AutoClosing::LanguageDefined,
+            auto_closing_quotes: AutoClosing::LanguageDefined,
             trim_trailing_whitespace: true,
             insert_final_newline: true,
             format_on_save: true,
@@ -554,6 +563,22 @@ pub enum LineNumbers {
     Off,
     /// Numbers relative to the caret line (the caret line shows its absolute number).
     Relative,
+}
+
+/// When typing an opening bracket or quote inserts its closing partner.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub enum AutoClosing {
+    /// Whenever the opener is typed, wherever the caret is.
+    Always,
+    /// Only where the language's pairs say so: before whitespace, the end of
+    /// the line or closing punctuation, and, for quotes, outside strings and
+    /// comments and not straight after a word.
+    #[default]
+    LanguageDefined,
+    /// Never.
+    Never,
 }
 
 /// `files.*` — file handling.
@@ -993,7 +1018,9 @@ mod tests {
                 "graphicalCursor": true,
                 "semanticComments": { "enabled": true, "tags": ["TODO"] },
                 "completion": { "enabled": true, "autoTrigger": true },
+                "autoClosingQuotes": "always",
                 "[Rust]": {
+                    "autoClosingBrackets": "never",
                     "tabSize": 2,
                     "insertSpaces": false,
                     "lineNumbers": "relative",
@@ -1030,8 +1057,11 @@ mod tests {
         assert_eq!(rust.semantic_comments().tags(), ["NOTE"]);
         assert!(!rust.completion().enabled());
         assert!(!rust.completion().auto_trigger());
+        assert_eq!(rust.auto_closing_brackets(), AutoClosing::Never);
+        assert_eq!(rust.auto_closing_quotes(), AutoClosing::Always);
 
         let python = parsed.for_language(Some("python"));
+        assert_eq!(python.auto_closing_brackets(), AutoClosing::LanguageDefined);
         assert_eq!(python.tab_size(), 8);
         assert_eq!(python.graphical_cursor(), Some(true));
         assert_eq!(python.word_wrap(), Some(true));
