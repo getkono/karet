@@ -22,6 +22,9 @@ use super::reflow_caret;
 struct Group {
     edit: TextEdit,
     owners: Vec<usize>,
+    /// Whether two different edits were joined into `edit`. Owners of a group
+    /// that only collected identical copies of one edit keep their own carets.
+    merged: bool,
 }
 
 /// Compose one [`Edit`] per selection into a single non-overlapping batch over
@@ -67,7 +70,7 @@ pub fn compose(
                 (Some(edit), Some(first)) => {
                     let merged = groups
                         .iter()
-                        .position(|g| g.owners.len() > 1 && g.owners.contains(&owner));
+                        .position(|g| g.merged && g.owners.contains(&owner));
                     let (local, k) = match merged {
                         Some(m) => {
                             let group = &groups[m].edit;
@@ -93,13 +96,20 @@ pub fn compose(
 }
 
 /// Merge sorted edits whose ranges overlap into one edit each, remembering every
-/// selection that contributed. Edits that only touch stay apart, as the buffer
-/// accepts them.
+/// selection that contributed. An edit identical to the one before it (several
+/// carets rewriting the same line, say) applies once rather than twice. Edits
+/// that only touch stay apart, as the buffer accepts them.
 fn merge(sorted: Vec<(TextEdit, usize)>) -> Vec<Group> {
     let mut groups: Vec<Group> = Vec::with_capacity(sorted.len());
     for (edit, owner) in sorted {
         match groups.last_mut() {
+            Some(last) if !last.merged && !edit.range.is_empty() && edit == last.edit => {
+                if !last.owners.contains(&owner) {
+                    last.owners.push(owner);
+                }
+            },
             Some(last) if edit.range.start < last.edit.range.end => {
+                last.merged = true;
                 last.edit.range.end = last.edit.range.end.max(edit.range.end);
                 last.edit.new_text.push_str(&edit.new_text);
                 if !last.owners.contains(&owner) {
@@ -109,6 +119,7 @@ fn merge(sorted: Vec<(TextEdit, usize)>) -> Vec<Group> {
             _ => groups.push(Group {
                 edit,
                 owners: vec![owner],
+                merged: false,
             }),
         }
     }
@@ -301,6 +312,51 @@ mod tests {
         );
         // `1..6` became `XY` (net -3), so the third caret lands at 9 + 1 - 3.
         assert_eq!(heads(&out), vec![at(0, 3), at(0, 3), at(0, 7)]);
+    }
+
+    #[test]
+    fn identical_edits_from_several_carets_apply_once() {
+        // Two carets on one line each rewrite the whole line the same way (as a
+        // checkbox toggle does); the text lands once and each caret stays put.
+        let rewrite = |caret: LineCol| Edit {
+            change: Change::new(
+                0,
+                vec![TextEdit {
+                    range: Range {
+                        start: at(0, 0),
+                        end: at(0, 5),
+                    },
+                    new_text: "- [x]".to_string(),
+                }],
+            ),
+            caret,
+        };
+        let items = vec![
+            (caret(at(0, 1)), Some(rewrite(at(0, 1)))),
+            (caret(at(0, 4)), Some(rewrite(at(0, 4)))),
+        ];
+        let out = composed(0, 1, &items);
+        assert_eq!(out.change.edits.len(), 1);
+        assert_eq!(out.change.edits[0].new_text, "- [x]");
+        assert_eq!(heads(&out), vec![at(0, 1), at(0, 4)]);
+        assert_eq!(out.cursors.primary, 1);
+    }
+
+    #[test]
+    fn an_edit_without_text_changes_places_its_caret_through_the_batch() {
+        // The second caret's edit changes no text but moves its caret to (0,6);
+        // the first caret's insertion before it shifts that caret right.
+        let moved = Edit {
+            change: Change::new(0, Vec::new()),
+            caret: at(0, 6),
+        };
+        let items = vec![
+            (caret(at(0, 0)), Some(insert(at(0, 0), "ab"))),
+            (caret(at(0, 3)), Some(moved)),
+        ];
+        let out = composed(0, 0, &items);
+        assert_eq!(out.change.edits.len(), 1);
+        assert_eq!(heads(&out), vec![at(0, 2), at(0, 8)]);
     }
 
     #[test]
