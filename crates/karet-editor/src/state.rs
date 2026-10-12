@@ -7,6 +7,11 @@ use super::text::*;
 use super::visual::*;
 use super::*;
 
+mod gutter;
+
+pub use gutter::GutterHit;
+pub use gutter::GutterLane;
+
 /// A fold region resolved for rendering: an inclusive line range plus whether it is
 /// currently collapsed. When collapsed, the interior lines `start + 1 ..= end` are
 /// hidden and the `start` line shows a fold marker and a `⋯` affordance.
@@ -211,6 +216,10 @@ pub struct EditorState {
     /// in the slice given to `Editor::virtual_text` — see
     /// [`virtual_text_rect`](Self::virtual_text_rect).
     pub(super) last_virtual_text: Vec<(usize, Rect)>,
+    /// Where the last render painted each collapsed fold header's ` ⋯`,
+    /// with that header's line — see
+    /// [`fold_ellipsis_at`](Self::fold_ellipsis_at).
+    pub(super) last_fold_ellipses: Vec<(Rect, u32)>,
     /// The selection set the last whole-word `Ctrl+D` press left — see
     /// [`add_next_occurrence`](Self::add_next_occurrence). The next press keeps
     /// matching whole words only while the set is still exactly this one.
@@ -244,6 +253,7 @@ impl Default for EditorState {
             upstream: None,
             pointer_upstream: Cell::new(None),
             last_virtual_text: Vec::new(),
+            last_fold_ellipses: Vec::new(),
             word_occurrences: None,
         }
     }
@@ -1031,22 +1041,6 @@ impl EditorState {
         self.word_occurrences = whole_word.then(|| self.cursors.selections.clone());
     }
 
-    /// The buffer line under `(col, row)` when the cell lies in the gutter's
-    /// leading marker column (the breakpoint lane, left of the line numbers);
-    /// `None` anywhere else. Row math matches [`pos_at`](Self::pos_at), so
-    /// folds, word wrap, and sticky lines resolve identically.
-    #[must_use]
-    pub fn gutter_marker_line_at(
-        &self,
-        area: Rect,
-        buffer: &TextBuffer,
-        folds: &[Fold],
-        col: u16,
-        row: u16,
-    ) -> Option<u32> {
-        (col == area.x).then(|| self.pos_at(area, buffer, folds, col, row).line)
-    }
-
     /// The buffer position under the screen cell `(col, row)`, given the editor's
     /// render `area` and the `folds` in effect. Accounts for the gutter width, the
     /// scroll offsets, and any collapsed folds that hide lines between the viewport
@@ -1171,24 +1165,11 @@ impl EditorState {
             }
             return hit;
         }
-        // Walk visible lines from the (clamped) viewport top to the clicked row.
-        let mut line = self.scroll_line;
-        while line < line_count && hidden_in(folds, line) {
-            line += 1;
-        }
-        for _ in 0..rel_row {
-            let mut next = line + 1;
-            while next < line_count && hidden_in(folds, next) {
-                next += 1;
-            }
-            if next >= line_count {
-                // Below the last row: the end of the document, as shown.
-                let line = line.min(line_count - 1);
-                return LineCol::new(line, line_len(buffer, line));
-            }
-            line = next;
-        }
-        let line = line.min(line_count - 1);
+        let line = match self.unwrapped_row_line(line_count, folds, rel_row) {
+            Ok(line) => line,
+            // Below the last row: the end of the document, as shown.
+            Err(line) => return LineCol::new(line, line_len(buffer, line)),
+        };
         let chars = line_chars(buffer, line);
         let hints = self.hints_on(line);
         LineCol::new(
@@ -1203,5 +1184,31 @@ impl EditorState {
                 snap,
             ),
         )
+    }
+
+    /// The buffer line an unwrapped view shows `rel_row` rows below its
+    /// (clamped) viewport top, walking past collapsed folds; `Err` with the
+    /// last line shown when the row lies below the document's last row.
+    fn unwrapped_row_line(
+        &self,
+        line_count: u32,
+        folds: &[Fold],
+        rel_row: u32,
+    ) -> Result<u32, u32> {
+        let mut line = self.scroll_line;
+        while line < line_count && hidden_in(folds, line) {
+            line += 1;
+        }
+        for _ in 0..rel_row {
+            let mut next = line + 1;
+            while next < line_count && hidden_in(folds, next) {
+                next += 1;
+            }
+            if next >= line_count {
+                return Err(line.min(line_count - 1));
+            }
+            line = next;
+        }
+        Ok(line.min(line_count - 1))
     }
 }

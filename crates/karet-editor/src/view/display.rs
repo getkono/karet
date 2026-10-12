@@ -69,7 +69,8 @@ pub enum LineNumbers {
 }
 
 /// The gutter's width in cells for a buffer of `line_count` lines: the marker
-/// column, the right-aligned numbers when they are shown, and one spacer.
+/// column, the right-aligned numbers when they are shown, and the fold column
+/// (see [`GutterLane`](crate::GutterLane)).
 pub(crate) fn gutter_width(line_count: u32, numbers: LineNumbers) -> u16 {
     let digits = match numbers {
         LineNumbers::Off => 0,
@@ -80,19 +81,41 @@ pub(crate) fn gutter_width(line_count: u32, numbers: LineNumbers) -> u16 {
     digits.saturating_add(2)
 }
 
-/// The number column of a row, its trailing spacer included: `line` is the
-/// row's buffer line, or `None` on a soft-wrap continuation row, which shows
-/// no number; `caret` is the primary caret's line.
+/// The number column of a row: `line` is the row's buffer line, or `None` on
+/// a soft-wrap continuation row, which shows no number; `caret` is the
+/// primary caret's line.
 fn number_label(numbers: LineNumbers, line: Option<u32>, caret: u32, digits: usize) -> String {
     match (numbers, line) {
-        (LineNumbers::Off, _) => " ".to_owned(),
-        (_, None) => " ".repeat(digits + 1),
+        (LineNumbers::Off, _) => String::new(),
+        (_, None) => " ".repeat(digits),
         (LineNumbers::Relative, Some(l)) if l != caret => {
-            format!("{:>digits$} ", l.abs_diff(caret))
+            format!("{:>digits$}", l.abs_diff(caret))
         },
         (LineNumbers::Absolute | LineNumbers::Relative, Some(l)) => {
-            format!("{:>digits$} ", l + 1)
+            format!("{:>digits$}", l + 1)
         },
+    }
+}
+
+/// Record where a collapsed fold header's ` ⋯` lands on row `y` of `area`:
+/// right after the cells `spans` already fill, clipped to the area, so a
+/// click on it resolves against what this frame painted.
+pub(super) fn record_fold_ellipsis(
+    out: &mut Vec<(Rect, u32)>,
+    area: Rect,
+    y: u16,
+    spans: &[Span<'_>],
+    line: u32,
+) {
+    let used = spans
+        .iter()
+        .fold(0_usize, |used, span| used.saturating_add(span.width()));
+    let Ok(used) = u16::try_from(used) else {
+        return;
+    };
+    let width = area.width.saturating_sub(used).min(2);
+    if width > 0 {
+        out.push((Rect::new(area.x.saturating_add(used), y, width, 1), line));
     }
 }
 
@@ -110,13 +133,15 @@ impl Editor<'_> {
         None
     }
 
-    /// A row's two gutter spans: the marker column, then the number column.
+    /// A row's three gutter spans, one per [`GutterLane`](crate::GutterLane):
+    /// the marker column, the number column, then the fold column.
     ///
     /// `line` is the row's buffer line, or `None` on a soft-wrap continuation
-    /// row, which shows neither. A fold header shows a collapse/expand chevron
-    /// in the marker column; other lines show their decoration marker
-    /// (git/diagnostic/breakpoint). `caret` is the primary caret's line, which
-    /// relative numbers count from.
+    /// row, which shows none of them. The marker column shows the line's
+    /// decoration marker (breakpoint/diagnostic/git); a fold header shows its
+    /// collapse/expand chevron in the fold column, so neither hides the
+    /// other. `caret` is the primary caret's line, which relative numbers
+    /// count from.
     pub(super) fn gutter_spans(
         &self,
         line: Option<u32>,
@@ -125,19 +150,13 @@ impl Editor<'_> {
         theme: &Theme,
         (default_fg, number_fg): (Rgba, Rgba),
     ) -> Vec<Span<'static>> {
-        let (marker, marker_fg) = match line.map(|l| (l, self.fold_at(l))) {
-            Some((_, Some(fold))) => (
-                if fold.collapsed {
-                    '\u{25b8}'
-                } else {
-                    '\u{25be}'
-                },
-                theme.role(ThemeRole::LineNumberActive),
-            ),
-            Some((l, None)) => self
-                .gutter_marker(l, theme, default_fg)
-                .unwrap_or((' ', default_fg)),
-            None => (' ', default_fg),
+        let (marker, marker_fg) = line
+            .and_then(|l| self.gutter_marker(l, theme, default_fg))
+            .unwrap_or((' ', default_fg));
+        let chevron = match line.and_then(|l| self.fold_at(l)) {
+            Some(fold) if fold.collapsed => '\u{25b8}',
+            Some(_) => '\u{25be}',
+            None => ' ',
         };
         vec![
             Span::styled(
@@ -147,6 +166,10 @@ impl Editor<'_> {
             Span::styled(
                 number_label(self.line_numbers, line, caret, digits),
                 Style::default().fg(number_fg.to_ratatui()),
+            ),
+            Span::styled(
+                chevron.to_string(),
+                Style::default().fg(theme.role(ThemeRole::LineNumberActive).to_ratatui()),
             ),
         ]
     }

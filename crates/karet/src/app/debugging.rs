@@ -73,7 +73,22 @@ impl App {
 
     /// Toggle `line` of `path` and push the file's full set to the backend
     /// (`setBreakpoints` is full-replace per file).
+    ///
+    /// Only a file a debugger can stop in takes one: source code or a shell
+    /// script. Anywhere else (Markdown, plain text, data) it is refused.
     pub(super) fn debug_toggle_breakpoint_at(&mut self, path: PathBuf, line: u32) {
+        use karet_filetype::Category;
+        if !matches!(
+            karet_filetype::category_for_path(&path),
+            Category::Code | Category::Shell
+        ) {
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "breakpoints need a source file",
+            );
+            return;
+        }
         let file = self.breakpoints.entry(path.clone()).or_default();
         if file.remove(&line).is_none() {
             file.insert(line, false);
