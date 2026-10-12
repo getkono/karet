@@ -49,6 +49,18 @@ pub(super) fn doc_diagnostics<'a>(ctx: &PaneCtx<'a>, doc: Option<DocumentId>) ->
         .map_or(&[][..], Vec::as_slice)
 }
 
+/// The `diagnostics` that earn a gutter sign and a caret-line message: the
+/// problems, as the Problems panel counts them. Misspellings keep their
+/// underline but would otherwise take the marker lane from change markers and
+/// the end-of-line slot from blame on every line of prose.
+pub(super) fn problems(diagnostics: &[Diagnostic]) -> Vec<Diagnostic> {
+    diagnostics
+        .iter()
+        .filter(|diagnostic| crate::app::is_problem(diagnostic))
+        .cloned()
+        .collect()
+}
+
 /// The end-of-line messages of `diagnostics` on the `caret_lines`, every
 /// severity included.
 pub(super) fn diagnostic_text(diagnostics: &[Diagnostic], caret_lines: &[u32]) -> Vec<VirtualText> {
@@ -265,6 +277,25 @@ mod diagnostic_text_tests {
         assert_eq!(
             texts,
             [(3, "  an error".to_owned()), (3, "  a hint".to_owned())]
+        );
+    }
+
+    #[test]
+    fn misspellings_get_no_sign_and_no_caret_line_message() {
+        let mut misspelled = diagnostic(2, Severity::Warning, "Unknown word");
+        misspelled.source = Some("karet-spell".to_owned());
+        let all = [misspelled, diagnostic(2, Severity::Hint, "a hint")];
+        let kept = problems(&all);
+        let messages: Vec<String> = diagnostic_text(&kept, &[2])
+            .into_iter()
+            .map(|text| text.text)
+            .collect();
+        assert_eq!(messages, ["  a hint".to_owned()]);
+        let signs = karet_editor::diagnostic_signs(&kept);
+        assert_eq!(signs.len(), 1);
+        assert_eq!(
+            signs.first().and_then(|sign| sign.role),
+            Some(ThemeRole::DiagnosticHint)
         );
     }
 

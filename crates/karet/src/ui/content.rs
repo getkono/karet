@@ -144,7 +144,8 @@ pub(super) fn draw_pane_content(
                 let diagnostics = swatches::doc_diagnostics(ctx, *doc);
                 // A diagnostic's severity sign is ahead of the change markers
                 // too, since errors sit mostly on edited lines.
-                frame_decos.extend(karet_editor::diagnostic_signs(diagnostics));
+                let problems = swatches::problems(diagnostics);
+                frame_decos.extend(karet_editor::diagnostic_signs(&problems));
                 // After the breakpoints: they share the marker lane and win it.
                 let line_changes = doc.and_then(|doc| ctx.line_changes?.get(&doc));
                 frame_decos.extend(line_changes.into_iter().flatten().cloned());
@@ -164,7 +165,7 @@ pub(super) fn draw_pane_content(
                     .cloned()
                     .collect();
                 let (virtual_text, inlay_parts, blame_index) =
-                    swatches::frame_virtual_text(ctx, *doc, buffer, (diagnostics, cursors));
+                    swatches::frame_virtual_text(ctx, *doc, buffer, (&problems, cursors));
                 let editor = Editor::new(buffer)
                     .highlights(highlights)
                     .semantic_blocks(semantic_blocks)
