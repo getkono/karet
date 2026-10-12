@@ -308,6 +308,10 @@ pub struct Editor {
     pub word_wrap: Option<bool>,
     /// Keep the active semantic block hierarchy pinned above scrolled text.
     pub sticky_scroll: bool,
+    /// Paste the primary selection at a middle click in the text: `null` turns
+    /// it on for Linux, where the primary selection is a platform convention,
+    /// and off elsewhere.
+    pub middle_click_paste: Option<bool>,
     /// Strip trailing whitespace from each line on save.
     pub trim_trailing_whitespace: bool,
     /// Ensure the file ends with a single trailing newline on save.
@@ -388,6 +392,7 @@ impl Default for Editor {
             rulers: Vec::new(),
             word_wrap: None,
             sticky_scroll: true,
+            middle_click_paste: None,
             trim_trailing_whitespace: true,
             insert_final_newline: true,
             format_on_save: true,
@@ -416,6 +421,14 @@ impl Editor {
             .and_then(LanguageSelector::from_language)
             .and_then(|selector| self.language_overrides.get(&selector));
         ResolvedEditor::new(self, override_)
+    }
+
+    /// Whether a middle click in the text pastes the primary selection:
+    /// [`middle_click_paste`](Self::middle_click_paste) when set, otherwise on
+    /// for Linux only.
+    #[must_use]
+    pub fn middle_click_paste(&self) -> bool {
+        self.middle_click_paste.unwrap_or(cfg!(target_os = "linux"))
     }
 }
 
@@ -953,6 +966,22 @@ mod tests {
         assert_eq!(automatic.word_wrap, None);
         assert_eq!(wrapped.word_wrap, Some(true));
         assert_eq!(overflow.word_wrap, Some(false));
+    }
+
+    #[test]
+    fn middle_click_paste_defaults_to_the_platform_and_obeys_an_explicit_value() {
+        let parse = |json: &str| {
+            serde_json::from_str::<Editor>(json)
+                .unwrap_or_default()
+                .middle_click_paste()
+        };
+        assert_eq!(parse("{}"), cfg!(target_os = "linux"));
+        assert_eq!(
+            parse(r#"{ "middleClickPaste": null }"#),
+            cfg!(target_os = "linux")
+        );
+        assert!(parse(r#"{ "middleClickPaste": true }"#));
+        assert!(!parse(r#"{ "middleClickPaste": false }"#));
     }
 
     #[test]
