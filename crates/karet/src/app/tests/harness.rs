@@ -178,6 +178,8 @@ pub(crate) fn check(cases: Vec<Case>) {
 pub(crate) struct Rig {
     /// The app under test.
     pub(crate) app: App,
+    /// The backend the app sends to, which answers nothing on its own.
+    backend: Arc<RecordingBackend>,
     width: u16,
     height: u16,
     /// Scripted time since the last press, advanced only by [`Step::Wait`].
@@ -192,17 +194,20 @@ impl Rig {
 
     /// A rig over `marked` in a `width` x `height` terminal: the sidebar hidden,
     /// the editor focused, edits applied locally through a recording backend,
-    /// and one frame already drawn.
+    /// and one frame already drawn. No language server serves the document,
+    /// so Expand Selection grows along tree-sitter.
     pub(crate) fn sized(marked: &str, width: u16, height: u16) -> Self {
         let (body, cursors) = parse_marked(marked);
         let mut app = app();
-        app.backend = Some(Arc::new(RecordingBackend::new()));
+        let backend = Arc::new(RecordingBackend::new());
+        app.backend = Some(backend.clone());
         app.clipboard = crate::clipboard::Clipboard::in_memory();
         app.sidebar_visible = false;
         app.push_tab(text_tab("t.rs", &body));
         app.focus = Focus::Editor;
         let mut rig = Self {
             app,
+            backend,
             width,
             height,
             since_click: Duration::ZERO,
@@ -276,7 +281,33 @@ impl Rig {
             Step::Wait(gap) => self.since_click += gap,
             Step::Tick => self.app.tick_drag_autoscroll(Instant::now()),
         }
+        self.answer_selection_ranges();
         self.render();
+    }
+
+    /// Answer a waiting Expand Selection as a session with no language server
+    /// for the document does: an empty chain per caret.
+    fn answer_selection_ranges(&mut self) {
+        if self.app.pending_expand.is_none() {
+            return;
+        }
+        let last = self.backend.sent.lock().ok().and_then(|sent| {
+            sent.iter().rev().find_map(|(id, command)| match command {
+                SessionCommand::SelectionRanges { doc, positions } => {
+                    Some((*id, *doc, positions.len()))
+                },
+                _ => None,
+            })
+        });
+        if let Some((id, doc, carets)) = last {
+            let chains = vec![Vec::new(); carets];
+            let answer = SessionEvent::SelectionRanges {
+                doc,
+                version: 0,
+                chains,
+            };
+            self.app.on_backend_event(Some(id), answer);
+        }
     }
 
     /// Press and release `button` at `at`, the pointer held still between.

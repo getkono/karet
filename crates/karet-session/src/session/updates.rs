@@ -62,17 +62,12 @@ impl Session {
     /// saves when it retires a generation, so this is the narrower race where
     /// the answer and the retirement cross; committing twice is impossible
     /// because [`Self::finish_format_on_save`] consumes the pending entry.
+    /// Selection ranges are the other exception: their ranges are dropped, but
+    /// the request is still answered with empty chains, because Expand
+    /// Selection waits on that answer before it moves.
     pub(crate) fn apply_lsp_update(&mut self, update: LspUpdate) {
         if !self.lsp.accepts(&update) {
-            if let LspUpdate::Formatting {
-                request,
-                doc,
-                version,
-                ..
-            } = update
-            {
-                let _ = self.finish_format_on_save(request, doc, version, Vec::new());
-            }
+            self.settle_retired_answer(update);
             return;
         }
         match update {
@@ -209,6 +204,7 @@ impl Session {
             } => self.adopt_prepare_rename(request, doc, version, caret, answer),
             LspUpdate::ApplyEdit { request, .. } => self.adopt_server_edit(request),
             LspUpdate::CodeAction { answer, .. } => self.adopt_code_action(answer),
+            LspUpdate::SelectionRanges { answer, .. } => self.adopt_selection_ranges(answer),
             // A formatting answer either answers a Format command or finishes a
             // deferred save; either way the edits are applied here, never
             // handed to the client. For a save, edits computed against a

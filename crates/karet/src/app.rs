@@ -642,6 +642,9 @@ pub struct App {
     pub(crate) completion_matcher: karet_fuzzy::Matcher,
     /// The in-flight hover request, if any (see [`crate::hover`]).
     pub(crate) pending_hover: Option<crate::hover::PendingHover>,
+    /// The Expand Selection waiting on the server's selection ranges, if any
+    /// (see [`syntax_select`]).
+    pub(crate) pending_expand: Option<syntax_select::PendingExpand>,
     /// The open hover popup, if any.
     pub(crate) hover_ui: Option<crate::hover::HoverUi>,
     /// Signature help: the request in flight, the open popup, and each

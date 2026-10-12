@@ -57,6 +57,7 @@ pub(crate) use message::FormattingAsk;
 pub(crate) use message::FormattingScope;
 pub(crate) use message::LspUpdate;
 pub(crate) use message::RenameAnswer;
+pub(crate) use message::SelectionRangesAnswer;
 use message::ServerCmd;
 pub(crate) use provider::absolute_path;
 pub(crate) use provider::builtin_server;
@@ -286,6 +287,7 @@ impl LspManager {
             | LspUpdate::Symbols { generation, .. }
             | LspUpdate::Hover { generation, .. }
             | LspUpdate::SignatureHelp { generation, .. }
+            | LspUpdate::SelectionRanges { generation, .. }
             | LspUpdate::Unsupported { generation, .. }
             | LspUpdate::Definitions { generation, .. }
             | LspUpdate::WorkspaceSymbols { generation, .. }

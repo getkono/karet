@@ -135,11 +135,38 @@ fn advertised_capabilities(behavior: Behavior) -> Value {
         "inlayHintProvider": {"resolveProvider": true},
         "implementationProvider": true,
         "typeHierarchyProvider": true,
+        "selectionRangeProvider": true,
     });
     if matches!(behavior, Behavior::Formats | Behavior::FormatsNever) {
         capabilities["documentFormattingProvider"] = json!(true);
     }
     capabilities
+}
+
+/// The double's answer to `textDocument/selectionRange`: for each position,
+/// the one UTF-16 code unit after it, inside the first six code units of
+/// line 0. Echoing the position proves the request crossed in UTF-16 columns.
+fn selection_range_reply(positions: &Value) -> Value {
+    let chains: Vec<Value> = positions
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|at| {
+            let (line, character) = (at["line"].as_u64(), at["character"].as_u64());
+            let (line, character) = (line.unwrap_or(0), character.unwrap_or(0));
+            json!({
+                "range": {
+                    "start": {"line": line, "character": character},
+                    "end": {"line": line, "character": character + 1}
+                },
+                "parent": {"range": {
+                    "start": {"line": 0, "character": 0},
+                    "end": {"line": 0, "character": 6}
+                }}
+            })
+        })
+        .collect();
+    Value::Array(chains)
 }
 
 /// The double's answer to the three code-action methods.
@@ -371,6 +398,14 @@ pub(super) fn test_connector(
                                     "activeSignature": 0,
                                     "activeParameter": 1
                                 }}),
+                            )
+                            .await;
+                        },
+                        Some("textDocument/selectionRange") => {
+                            let result = selection_range_reply(&msg["params"]["positions"]);
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": result}),
                             )
                             .await;
                         },

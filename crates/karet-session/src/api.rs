@@ -432,6 +432,20 @@ pub enum Command {
         /// signature help: a notice on every typed `(` would be noise.
         manual: bool,
     },
+    /// Request the language server's selection ranges -- the chain of
+    /// ever-larger syntactic ranges Expand Selection grows through -- around
+    /// each of `positions`. Answered by [`Event::SelectionRanges`], always:
+    /// with an empty chain per position when no server serves the document,
+    /// it does not offer selection ranges, or the request failed, so the
+    /// client falls back to its own syntax tree. A refusal is never reported
+    /// as [`Event::FeatureUnsupported`], because that fallback stands in for
+    /// the server without the user noticing.
+    SelectionRanges {
+        /// The target document.
+        doc: DocumentId,
+        /// One position per caret, in buffer columns.
+        positions: Vec<LineCol>,
+    },
     /// Resolve the definition of the symbol at a position.
     Definition {
         /// The target document.

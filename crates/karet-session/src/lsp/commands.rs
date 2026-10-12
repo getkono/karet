@@ -32,6 +32,7 @@ use super::code_actions::UNAVAILABLE;
 use super::health::FailureTally;
 use super::message::LspUpdate;
 use super::message::RenameAnswer;
+use super::message::SelectionRangesAnswer;
 use super::message::ServerCmd;
 use super::slot::SlotKey;
 use super::slot::SlotToken;
@@ -168,15 +169,17 @@ pub(super) async fn resolve_item(
     }
 }
 
-/// Serve a request about the caret that the user reads in a popup -- a
-/// [`ServerCmd::Hover`] or a [`ServerCmd::SignatureHelp`] -- and answer it:
-/// with nothing when the connection is dead or the request fails, which
-/// counts against the connection's health like any other failure. Flushes
-/// first, so the server answers about the latest text.
+/// Serve a request about the carets -- a [`ServerCmd::Hover`] or a
+/// [`ServerCmd::SignatureHelp`], read in a popup, or the
+/// [`ServerCmd::SelectionRanges`] Expand Selection grows through -- and
+/// answer it: with nothing when the connection is dead or the request fails,
+/// which counts against the connection's health like any other failure.
+/// Flushes first, so the server answers about the latest text.
 ///
 /// A refusal is reported for a hover, which is always asked by hand, and for
 /// signature help only when it was: typing `(` in a file whose server has no
-/// signature help must not raise a notice every time.
+/// signature help must not raise a notice every time. Selection ranges are
+/// refused silently: the client grows along its own syntax tree instead.
 pub(super) async fn caret_query(
     client: &LspClient,
     cmd: ServerCmd,
@@ -235,6 +238,24 @@ pub(super) async fn caret_query(
                 help,
                 options: client.capabilities().signature_help,
             });
+        },
+        ServerCmd::SelectionRanges {
+            request,
+            doc,
+            version,
+            path,
+            positions,
+        } => {
+            let result = client.selection_ranges(&path, &positions).await;
+            let chains = settle(result.map(Some), None, generation, health)
+                .unwrap_or_else(|| vec![Vec::new(); positions.len()]);
+            let answer = SelectionRangesAnswer {
+                request,
+                doc,
+                version,
+                chains,
+            };
+            let _ = updates.send(LspUpdate::SelectionRanges { generation, answer });
         },
         cmd => answer_empty(updates, cmd, generation),
     }
@@ -412,6 +433,21 @@ pub(super) fn answer_empty(
                 options: SignatureHelpOptions::default(),
             });
         },
+        ServerCmd::SelectionRanges {
+            request,
+            doc,
+            version,
+            positions,
+            ..
+        } => {
+            let answer = SelectionRangesAnswer {
+                request,
+                doc,
+                version,
+                chains: vec![Vec::new(); positions.len()],
+            };
+            let _ = updates.send(LspUpdate::SelectionRanges { generation, answer });
+        },
         ServerCmd::Definition {
             request,
             doc,
@@ -551,6 +587,7 @@ pub(super) fn remember_document(documents: &mut HashMap<PathBuf, OpenDocument>, 
         | ServerCmd::DocumentSymbols { .. }
         | ServerCmd::Hover { .. }
         | ServerCmd::SignatureHelp { .. }
+        | ServerCmd::SelectionRanges { .. }
         | ServerCmd::Definition { .. }
         | ServerCmd::WorkspaceSymbols { .. }
         | ServerCmd::Rename { .. }
@@ -809,6 +846,35 @@ mod tests {
                 formatted: false,
                 ..
             })
+        ));
+    }
+
+    /// With no connection, every caret still gets its (empty) chain, so the
+    /// client can line the answer up with its carets and fall back on each.
+    #[test]
+    fn an_unanswerable_selection_range_request_answers_an_empty_chain_per_caret() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let positions = vec![LineCol::new(0, 1), LineCol::new(2, 3)];
+        answer_empty(
+            &tx,
+            ServerCmd::SelectionRanges {
+                request: RequestId(1),
+                doc: DocumentId(2),
+                version: 3,
+                path: PathBuf::from("main.rs"),
+                positions,
+            },
+            7,
+        );
+        let expected = SelectionRangesAnswer {
+            request: RequestId(1),
+            doc: DocumentId(2),
+            version: 3,
+            chains: vec![Vec::new(), Vec::new()],
+        };
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(LspUpdate::SelectionRanges { generation: 7, answer }) if answer == expected
         ));
     }
 }
