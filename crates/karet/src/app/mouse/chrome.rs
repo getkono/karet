@@ -63,7 +63,7 @@ impl App {
                     && let Some((i, _)) = hit
                 {
                     self.select_tab(i);
-                    self.open_pane_context_menu(mouse.column, mouse.row);
+                    self.open_pane_context_menu(mouse.column, mouse.row, false);
                 }
             },
             MouseEventKind::Moved => {

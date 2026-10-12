@@ -361,7 +361,7 @@ impl App {
                     self.focus_pane_switch(pane);
                     self.focus = Focus::Editor;
                     self.right_click_caret(area, mouse.column, mouse.row);
-                    self.open_pane_context_menu(mouse.column, mouse.row);
+                    self.open_pane_context_menu(mouse.column, mouse.row, true);
                 }
             },
             MouseEventKind::Down(MouseButton::Left) => {
