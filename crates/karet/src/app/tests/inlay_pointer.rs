@@ -292,6 +292,64 @@ fn ctrl_click_on_a_deferred_part_resolves_then_follows() {
     let _ = std::fs::remove_dir_all(vec.parent().unwrap_or(&vec));
 }
 
+/// A Ctrl+click whose answer is still in flight is followed even when the
+/// pointer moves on to another deferred hint, whose hover asks too.
+///
+/// Falsified by: the hover's resolve replacing the pending follow, so the
+/// click's answer no longer matches and is dropped.
+#[test]
+fn a_pending_follow_survives_hovering_another_deferred_hint() {
+    let first = InlayHint {
+        payload: Some("{\"data\":3}".to_owned()),
+        ..split_hint()
+    };
+    let second = InlayHint {
+        payload: Some("{\"data\":4}".to_owned()),
+        ..InlayHint {
+            position: LineCol::new(1, 5),
+            ..split_hint()
+        }
+    };
+    let vec = target("inlay-follow-then-hover");
+    let (backend, mut app) = completion_app("let v\nlet w\nlet x\n", LineCol::new(2, 0));
+    app.docs
+        .inlay_hints
+        .insert(DOC, vec![first.clone(), second]);
+    frame(&mut app, 100, 12);
+    let ty = part_hit(&app, 1).expect("painted");
+    let other = app
+        .inlay_ui
+        .hits
+        .iter()
+        .copied()
+        .find(|hit| hit.hint == 1 && hit.part == 1)
+        .expect("painted");
+
+    ctrl_click(&mut app, ty);
+    let (follow_id, _) = resolve_requests(&backend)
+        .last()
+        .cloned()
+        .expect("a resolve request");
+    rest_on(&mut app, other);
+    assert_eq!(
+        resolve_requests(&backend).len(),
+        2,
+        "the hover asks about its own hint"
+    );
+
+    let mut resolved = first;
+    resolved.parts[1].location = Some(at(&vec, 2, 3));
+    app.on_backend_event(
+        Some(follow_id),
+        SessionEvent::InlayHintResolved {
+            doc: DOC,
+            hint: resolved,
+        },
+    );
+    assert_eq!(landed(&app), (Some(vec.clone()), LineCol::new(2, 3)));
+    let _ = std::fs::remove_dir_all(vec.parent().unwrap_or(&vec));
+}
+
 /// A plain click, or a Ctrl+click on a part that leads nowhere, is the
 /// editor's: the hint does not swallow it.
 #[test]

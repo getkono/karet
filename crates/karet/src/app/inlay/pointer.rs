@@ -70,8 +70,13 @@ pub(crate) struct InlayUi {
     pub(crate) hovered: Option<InlayHintHit>,
     /// The tooltip on screen, if any.
     pub(crate) tooltip: Option<InlayTooltip>,
-    /// The resolve in flight, if any.
+    /// The hover's resolve in flight, if any. A hover over another hint
+    /// replaces it: only the hint under the pointer needs its tooltip.
     pub(crate) resolving: Option<PendingResolve>,
+    /// The Ctrl+click's resolve in flight, if any. Moving the pointer leaves
+    /// it alone, so the click is still followed when its answer arrives;
+    /// only a newer Ctrl+click replaces it.
+    pub(crate) following: Option<PendingResolve>,
 }
 
 impl App {
@@ -118,6 +123,7 @@ impl App {
             self.inlay_ui.tooltip = None;
             self.inlay_ui.hovered = None;
             self.inlay_ui.resolving = None;
+            self.inlay_ui.following = None;
         }
     }
 
@@ -210,24 +216,39 @@ impl App {
         let Some(payload) = hint.payload.clone() else {
             return; // nothing deferred: what is held is all there is
         };
-        if let Some(pending) = self.inlay_ui.resolving.as_mut()
-            && pending.doc == hit.doc
-            && pending.payload == payload
-        {
-            // Already asked; a Ctrl+click while it is in flight still counts.
+        let same = |pending: &PendingResolve| pending.doc == hit.doc && pending.payload == payload;
+        if let Some(pending) = self.inlay_ui.following.as_mut().filter(|p| same(p)) {
+            // Already asked to follow; a newer Ctrl+click names the part.
             pending.follow = follow.or(pending.follow);
+            return;
+        }
+        if self.inlay_ui.resolving.as_ref().is_some_and(same) {
+            // Already asked by the hover; a Ctrl+click while it is in flight
+            // takes that answer over, so moving on cannot drop it.
+            if follow.is_some() {
+                self.inlay_ui.following = self
+                    .inlay_ui
+                    .resolving
+                    .take()
+                    .map(|pending| PendingResolve { follow, ..pending });
+            }
             return;
         }
         let command = SessionCommand::ResolveInlayHint {
             doc: hit.doc,
             hint: hint.clone(),
         };
-        self.inlay_ui.resolving = self.send(command).map(|id| PendingResolve {
+        let pending = self.send(command).map(|id| PendingResolve {
             id,
             doc: hit.doc,
             payload,
             follow,
         });
+        if follow.is_some() {
+            self.inlay_ui.following = pending;
+        } else {
+            self.inlay_ui.resolving = pending;
+        }
     }
 
     /// Adopt a resolved hint into the held set, then do what it was asked for:
@@ -239,8 +260,13 @@ impl App {
         doc: DocumentId,
         resolved: karet_core::InlayHint,
     ) {
-        let Some(pending) = self.inlay_ui.resolving.take_if(|p| Some(p.id) == id) else {
-            return; // superseded: a newer hover asked about another hint
+        let Some(pending) = self
+            .inlay_ui
+            .following
+            .take_if(|p| Some(p.id) == id)
+            .or_else(|| self.inlay_ui.resolving.take_if(|p| Some(p.id) == id))
+        else {
+            return; // superseded: a newer hover or Ctrl+click asked about another hint
         };
         // Found by payload, not index: a new set may have been adopted since.
         let held = self.docs.inlay_hints.get_mut(&doc).and_then(|hints| {
