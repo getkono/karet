@@ -153,6 +153,18 @@ pub(crate) enum ServerCmd {
         position: LineCol,
         manual: bool,
     },
+    /// Request the selection ranges around each of `positions`, for a
+    /// [`crate::api::Command::SelectionRanges`].
+    SelectionRanges {
+        /// The originating request, the document asked about and its version
+        /// at request time, all echoed on the answer.
+        request: RequestId,
+        doc: DocumentId,
+        version: u64,
+        path: PathBuf,
+        /// One per caret, already converted to UTF-16 columns.
+        positions: Vec<LineCol>,
+    },
     /// Request definition locations, or with a `kind` the locations a
     /// [`crate::api::Command::FindLocations`] asks for.
     Definition {
@@ -253,6 +265,21 @@ pub(crate) enum RenameAnswer {
     /// The server renames but does not prepare: the client picks the
     /// identifier at the position.
     Identifier,
+}
+
+/// A server's selection ranges, as a [`ServerCmd::SelectionRanges`] asked
+/// for them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SelectionRangesAnswer {
+    /// The originating request.
+    pub(crate) request: RequestId,
+    /// The document asked about.
+    pub(crate) doc: DocumentId,
+    /// The document's version at request time.
+    pub(crate) version: u64,
+    /// One chain per position asked, innermost first, in UTF-16 columns; an
+    /// empty chain where the server had none or could not be asked.
+    pub(crate) chains: Vec<Vec<Range>>,
 }
 
 /// A result flowing from a server task back to the session actor.
@@ -402,6 +429,11 @@ pub(crate) enum LspUpdate {
         doc: DocumentId,
         help: Option<SignatureHelp>,
         options: SignatureHelpOptions,
+    },
+    /// The answer to a [`ServerCmd::SelectionRanges`].
+    SelectionRanges {
+        generation: u64,
+        answer: SelectionRangesAnswer,
     },
     /// Definition (or, with a `kind`, other navigation) response in UTF-16
     /// coordinates.

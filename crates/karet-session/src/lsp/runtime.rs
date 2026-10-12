@@ -588,7 +588,9 @@ pub(super) async fn server_task(task: ServerTask) {
                         symbols,
                     });
                 },
-                cmd @ (ServerCmd::Hover { .. } | ServerCmd::SignatureHelp { .. }) => {
+                cmd @ (ServerCmd::Hover { .. }
+                | ServerCmd::SignatureHelp { .. }
+                | ServerCmd::SelectionRanges { .. }) => {
                     let health = (&mut dead, &mut tally, &updates, &key, token);
                     caret_query(active, cmd, (generation, &mut pending), health).await;
                 },

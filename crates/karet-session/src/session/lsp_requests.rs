@@ -20,6 +20,7 @@ use crate::api::LocationKind;
 use crate::api::RenameTarget;
 use crate::lsp::FormattingScope;
 use crate::lsp::RenameAnswer;
+use crate::lsp::SelectionRangesAnswer;
 
 /// The event answering a navigation request: [`Event::Definitions`] for Go to
 /// Definition (`kind` `None`), else [`Event::Locations`] naming what was asked.
@@ -279,6 +280,60 @@ impl Session {
             } => self.signature_help(id, doc, position, manual),
             _ => {},
         }
+    }
+
+    /// Forward a [`Command::SelectionRanges`], or answer it with an empty
+    /// chain per position when no server serves the document.
+    pub(super) fn selection_ranges(
+        &mut self,
+        id: RequestId,
+        doc_id: DocumentId,
+        positions: &[LineCol],
+    ) {
+        let Some(doc) = Self::doc_or_report(&self.store, &self.events, id, doc_id) else {
+            return;
+        };
+        let version = doc.buffer.version();
+        let utf16 = positions.iter().map(|&at| utf16_caret(doc, at)).collect();
+        let request = (id, doc_id, version);
+        if !self
+            .lsp
+            .selection_ranges(doc.language_selector, request, &doc.path, utf16)
+        {
+            let chains = vec![Vec::new(); positions.len()];
+            let answer = Event::SelectionRanges {
+                doc: doc_id,
+                version,
+                chains,
+            };
+            self.emit(Some(id), answer);
+        }
+    }
+
+    /// Turn a server's selection ranges into [`Event::SelectionRanges`], in
+    /// buffer columns. A document that has changed since the request gets
+    /// empty chains: the ranges describe text that is no longer there.
+    pub(super) fn adopt_selection_ranges(&mut self, answer: SelectionRangesAnswer) {
+        let SelectionRangesAnswer {
+            request,
+            doc,
+            version,
+            mut chains,
+        } = answer;
+        match self.store.docs.get(&doc) {
+            Some(document) if document.buffer.version() == version => {
+                for range in chains.iter_mut().flatten() {
+                    *range = utf16_range_to_buffer(&document.buffer, *range);
+                }
+            },
+            _ => chains.iter_mut().for_each(Vec::clear),
+        }
+        let event = Event::SelectionRanges {
+            doc,
+            version,
+            chains,
+        };
+        self.emit(Some(request), event);
     }
 
     /// Forward a [`Command::SignatureHelp`], or answer it empty when no

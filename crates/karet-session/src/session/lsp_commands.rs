@@ -79,6 +79,10 @@ impl Session {
                 self.format(id, request.clone());
                 return true;
             },
+            Command::SelectionRanges { doc, positions } => {
+                self.selection_ranges(id, *doc, positions);
+                return true;
+            },
             Command::RestartLanguageServer { server } => {
                 self.restart_lsp(server.clone());
                 return true;

@@ -209,6 +209,7 @@ impl Session {
             } => self.adopt_prepare_rename(request, doc, version, caret, answer),
             LspUpdate::ApplyEdit { request, .. } => self.adopt_server_edit(request),
             LspUpdate::CodeAction { answer, .. } => self.adopt_code_action(answer),
+            LspUpdate::SelectionRanges { answer, .. } => self.adopt_selection_ranges(answer),
             // A formatting answer either answers a Format command or finishes a
             // deferred save; either way the edits are applied here, never
             // handed to the client. For a save, edits computed against a

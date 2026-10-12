@@ -576,5 +576,6 @@ mod restart_tests;
 mod retirement_tests;
 mod roundtrip_tests;
 mod routing_tests;
+mod selection_range_tests;
 mod server_double;
 mod window_tests;

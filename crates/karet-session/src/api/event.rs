@@ -362,6 +362,19 @@ pub enum Event {
         /// no server answered.
         options: SignatureHelpOptions,
     },
+    /// Selection ranges answering a [`Command::SelectionRanges`].
+    SelectionRanges {
+        /// The document the request was made in.
+        doc: DocumentId,
+        /// The document version the request was made against. When the
+        /// document has changed since, every chain is empty: the server's
+        /// ranges describe text that is no longer there.
+        version: u64,
+        /// One chain per requested position, in the order asked, each
+        /// innermost first, in buffer columns. A chain is empty where the
+        /// server had none, and every chain is empty when no server answered.
+        chains: Vec<Vec<Range>>,
+    },
     /// Definition locations answering a [`Command::Definition`].
     Definitions {
         /// The resolved locations.
