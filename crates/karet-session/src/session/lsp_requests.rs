@@ -75,6 +75,40 @@ impl Session {
             })
     }
 
+    /// Convert every location from the server's UTF-16 columns to buffer columns,
+    /// each against its own file.
+    ///
+    /// An open file's live buffer is borrowed, not cloned, and a file that is not
+    /// open is read from disk at most once per answer, so a references list with
+    /// many hits in one file costs one read rather than one per hit. A file that
+    /// cannot be read keeps the server's columns, as [`Self::buffer_for_path`]
+    /// explains.
+    pub(super) fn locations_to_buffer_columns(&self, locations: &mut [Location]) {
+        let mut read: HashMap<PathBuf, Option<TextBuffer>> = HashMap::new();
+        for location in locations {
+            let open = self
+                .store
+                .by_path
+                .get(&location.path)
+                .and_then(|doc| self.store.docs.get(doc))
+                .map(|document| &document.buffer);
+            let buffer = match open {
+                Some(buffer) => Some(buffer),
+                None => read
+                    .entry(location.path.clone())
+                    .or_insert_with(|| {
+                        std::fs::read_to_string(&location.path)
+                            .ok()
+                            .map(|text| TextBuffer::from_text(&text))
+                    })
+                    .as_ref(),
+            };
+            if let Some(buffer) = buffer {
+                location.range = utf16_range_to_buffer(buffer, location.range);
+            }
+        }
+    }
+
     /// Serve [`Command::Completion`]: convert the caret to the server's UTF-16
     /// encoding and forward to the document's language server. Languages with no
     /// server answer immediately with an empty set, so the client never waits.
