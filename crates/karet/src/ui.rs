@@ -416,6 +416,8 @@ struct PaneCtx<'a> {
     blame: Option<Decoration>,
     /// The Ctrl-hovered symbol to underline as navigable (focused pane only).
     definition_underline: Option<Decoration>,
+    /// The code-action lightbulb on the caret line (focused pane only).
+    code_action_bulb: Option<Decoration>,
     /// Whether the blame decoration represents an attributed commit.
     blame_clickable: bool,
     /// Mouse position over a link in this pane, used for hover emphasis.

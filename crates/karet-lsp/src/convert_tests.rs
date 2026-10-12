@@ -459,8 +459,10 @@ fn maps_workspace_edits_signatures_and_actions() -> Result<(), Box<dyn std::erro
         {"title": "Unavailable", "disabled": {"reason": "nope"}}
     ]))?;
     let mapped = code_actions_from_lsp(Some(actions));
-    assert_eq!(mapped.len(), 1);
+    assert_eq!(mapped.len(), 2);
     assert_eq!(mapped[0].command, Some(CommandId("fix.run".into())));
+    // A disabled action is listed with its reason rather than hidden.
+    assert_eq!(mapped[1].disabled.as_deref(), Some("nope"));
     Ok(())
 }
 
@@ -573,6 +575,15 @@ fn a_non_file_uri_refuses_the_whole_edit() -> Result<(), Box<dyn std::error::Err
     let mapped = code_actions_from_lsp(Some(actions));
     assert_eq!(mapped.len(), 1);
     assert_eq!(mapped[0].edit, None);
+    // ...and says why it cannot run, instead of offering to do nothing.
+    assert!(
+        mapped[0]
+            .disabled
+            .as_deref()
+            .is_some_and(|reason| reason.contains("untitled:Untitled-1")),
+        "{:?}",
+        mapped[0].disabled
+    );
     Ok(())
 }
 
@@ -646,5 +657,53 @@ fn maps_workspace_symbols_and_formatting_edits() -> Result<(), Box<dyn std::erro
     let mapped = text_edits_from_lsp(Some(edits));
     assert_eq!(mapped[0].new_text, "  ");
     assert_eq!(mapped[0].range.end, LineCol::new(0, 2));
+    Ok(())
+}
+
+/// Kind and preference survive the mapping, and the payload carries the wire
+/// form back: the command with its arguments, and the literal with its
+/// `data`, which is what a later resolve or execute needs.
+#[test]
+fn code_actions_keep_their_kind_and_wire_form() -> Result<(), Box<dyn std::error::Error>> {
+    let actions: lsp_types::CodeActionResponse = serde_json::from_value(serde_json::json!([
+        {"title": "Import Foo", "kind": "quickfix", "isPreferred": true,
+         "data": {"id": 7},
+         "command": {"title": "after", "command": "fix.after", "arguments": [1, "two"]}},
+        {"title": "Run tests", "command": "test.run", "arguments": [{"path": "a.rs"}]}
+    ]))?;
+    let mapped = code_actions_from_lsp(Some(actions));
+    let [literal, bare] = mapped.as_slice() else {
+        return Err("expected two actions".into());
+    };
+    assert_eq!(literal.kind.as_deref(), Some("quickfix"));
+    assert!(literal.preferred);
+    assert_eq!(literal.disabled, None);
+    assert_eq!(literal.command, Some(CommandId("fix.after".into())));
+    let resolvable = code_action_literal(literal).ok_or("a literal resolves")?;
+    assert_eq!(resolvable.data, Some(serde_json::json!({"id": 7})));
+    let after = code_action_command(literal).ok_or("the literal runs a command")?;
+    assert_eq!(after.command, "fix.after");
+    assert_eq!(
+        after.arguments,
+        Some(vec![serde_json::json!(1), serde_json::json!("two")])
+    );
+
+    assert_eq!(bare.kind, None);
+    assert!(!bare.preferred);
+    assert!(
+        code_action_literal(bare).is_none(),
+        "a bare command has nothing to resolve"
+    );
+    let run = code_action_command(bare).ok_or("the command runs")?;
+    assert_eq!(run.command, "test.run");
+    assert_eq!(
+        run.arguments,
+        Some(vec![serde_json::json!({"path": "a.rs"})])
+    );
+
+    // An action without a payload (built by hand, not by a server) has neither.
+    let plain = CodeAction::default();
+    assert!(code_action_literal(&plain).is_none());
+    assert!(code_action_command(&plain).is_none());
     Ok(())
 }

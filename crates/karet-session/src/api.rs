@@ -9,6 +9,7 @@ use std::path::PathBuf;
 
 use karet_core::BlameAttribution;
 use karet_core::Change;
+use karet_core::CodeAction;
 use karet_core::CompletionItem;
 use karet_core::CursorState;
 use karet_core::Diagnostic;
@@ -472,6 +473,36 @@ pub enum Command {
         edit: WorkspaceEdit,
         /// A label for the edit, echoed in the answer.
         label: Option<String>,
+    },
+    /// Ask the document's language server which code actions it offers over
+    /// `range` -- the diagnostics there go along as context. Answered by
+    /// [`Event::CodeActions`].
+    CodeActions {
+        /// The target document.
+        doc: DocumentId,
+        /// The span asked about, in buffer columns; empty at the caret.
+        range: Range,
+        /// Only these kinds and the kinds nested under them (`source`
+        /// admits `source.organizeImports`); empty asks for every kind.
+        kinds: Vec<String>,
+        /// Whether the user asked, or the client is probing on its own.
+        trigger: CodeActionTrigger,
+    },
+    /// Run one action from an [`Event::CodeActions`] answer: fill in its edit
+    /// when the server deferred it, apply the edit through the one
+    /// workspace-edit path, then run its command.
+    ///
+    /// Answered by [`Event::WorkspaceEdit`], labelled with the action's title,
+    /// once all of that is done or a step failed (the document moved on from
+    /// `version`, the action is disabled, or the server refused). Edits the
+    /// server makes while running the command arrive before it, unrequested.
+    ApplyCodeAction {
+        /// The document the actions were listed for.
+        doc: DocumentId,
+        /// The document version they were listed at.
+        version: u64,
+        /// The action, as the answer listed it.
+        action: CodeAction,
     },
     /// Compile the LaTeX root containing an editable TeX document and produce a PDF.
     BuildLatex {

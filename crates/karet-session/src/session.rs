@@ -12,6 +12,7 @@
 //! it already has ride each edit via `Highlights::translate`, so the view stays stable
 //! in the frames before the worker answers.
 
+mod code_actions;
 mod debug;
 mod docfile;
 // The document-file helpers stay reachable unqualified from the sibling
@@ -646,6 +647,17 @@ impl Session {
                 position,
                 new_name,
             } => self.rename(id, doc, position, new_name),
+            Command::CodeActions {
+                doc,
+                range,
+                kinds,
+                trigger,
+            } => self.code_actions(id, doc, range, kinds, trigger),
+            Command::ApplyCodeAction {
+                doc,
+                version,
+                action,
+            } => self.apply_code_action(id, doc, version, action),
             Command::ApplyWorkspaceEdit { edit, label } => {
                 let applied = self.apply_workspace_edit(edit, Columns::Buffer, label);
                 self.emit(Some(id), Event::WorkspaceEdit { applied });

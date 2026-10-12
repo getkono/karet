@@ -9,7 +9,11 @@
 //! `workspace/applyEdit` to the editor), and the bridge that turns
 //! [`karet_jsonrpc::RpcError`] into [`LspError`].
 
+use std::collections::HashMap;
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::RwLock;
 use std::time::Duration;
 
@@ -86,7 +90,18 @@ pub(crate) struct LspHandler {
     ///
     /// [`LspClient`]: crate::LspClient
     gate: Arc<RwLock<Gate>>,
+    /// The diagnostics the server last published per file, exactly as it sent
+    /// them, for the code-action context.
+    ///
+    /// Kept in wire form because a server reads its own fields back from the
+    /// context -- `data`, which the neutral model does not carry, holds the
+    /// fix for some (ruff) -- and in the server's coordinates, which is what
+    /// it expects to be handed.
+    published: Arc<Mutex<PublishedSets>>,
 }
+
+/// The diagnostics a server last published, per file, in wire form.
+type PublishedSets = HashMap<PathBuf, Vec<lsp_types::Diagnostic>>;
 
 impl Default for LspHandler {
     fn default() -> Self {
@@ -96,6 +111,7 @@ impl Default for LspHandler {
             diagnostics,
             refreshes,
             gate: Arc::default(),
+            published: Arc::default(),
         }
     }
 }
@@ -185,7 +201,9 @@ impl karet_jsonrpc::Handler for LspHandler {
 
     fn on_notification(&self, method: &str, params: Value) {
         match method {
-            "textDocument/publishDiagnostics" => route_diagnostics(params, &self.diagnostics),
+            "textDocument/publishDiagnostics" => {
+                route_diagnostics(params, &self.diagnostics, &self.published);
+            },
             // Log/progress/telemetry notifications are safe to ignore headlessly.
             _ => {
                 tracing::debug!(method, "raw-only server notification");
@@ -294,6 +312,29 @@ impl Connection {
         self.0.handler().diagnostics.subscribe()
     }
 
+    /// The diagnostics the server last published for `path` that touch
+    /// `range`, exactly as it sent them. Touching includes sharing an
+    /// endpoint, so a caret resting at either end of a diagnostic counts.
+    pub(crate) fn published_diagnostics(
+        &self,
+        path: &Path,
+        range: lsp_types::Range,
+    ) -> Vec<lsp_types::Diagnostic> {
+        let Ok(sets) = self.0.handler().published.lock() else {
+            return Vec::new();
+        };
+        let key = |position: lsp_types::Position| (position.line, position.character);
+        sets.get(path)
+            .into_iter()
+            .flatten()
+            .filter(|diagnostic| {
+                key(diagnostic.range.start) <= key(range.end)
+                    && key(range.start) <= key(diagnostic.range.end)
+            })
+            .cloned()
+            .collect()
+    }
+
     /// Subscribe to the server's refresh requests.
     pub(crate) fn refreshes(&self) -> broadcast::Receiver<ServerRefresh> {
         self.0.handler().refreshes.subscribe()
@@ -341,8 +382,13 @@ fn answer_server_request(
     }
 }
 
-/// Decode and broadcast one `textDocument/publishDiagnostics` notification.
-fn route_diagnostics(params: Value, diagnostics: &broadcast::Sender<PublishedDiagnostics>) {
+/// Decode and broadcast one `textDocument/publishDiagnostics` notification,
+/// remembering its wire form in `published`.
+fn route_diagnostics(
+    params: Value,
+    diagnostics: &broadcast::Sender<PublishedDiagnostics>,
+    published: &Mutex<PublishedSets>,
+) {
     let parsed: lsp_types::PublishDiagnosticsParams = match serde_json::from_value(params) {
         Ok(p) => p,
         Err(e) => {
@@ -354,6 +400,13 @@ fn route_diagnostics(params: Value, diagnostics: &broadcast::Sender<PublishedDia
         tracing::debug!(uri = %parsed.uri.as_str(), "ignoring diagnostics for a non-file URI");
         return;
     };
+    if let Ok(mut sets) = published.lock() {
+        if parsed.diagnostics.is_empty() {
+            sets.remove(&path);
+        } else {
+            sets.insert(path.clone(), parsed.diagnostics.clone());
+        }
+    }
     let mapped = parsed
         .diagnostics
         .into_iter()

@@ -1,7 +1,7 @@
-//! The wire model for refactorings: renaming a symbol and applying a
-//! workspace edit.
+//! The wire model for refactorings: renaming a symbol, running a code
+//! action, and applying a workspace edit.
 //!
-//! Every workspace edit -- a rename's, a client's
+//! Every workspace edit -- a rename's, a code action's, a client's
 //! [`Command::ApplyWorkspaceEdit`](super::Command::ApplyWorkspaceEdit), a
 //! language server's `workspace/applyEdit` -- goes through one apply path in
 //! the backend, and every one reports through the same
@@ -14,6 +14,21 @@ use karet_core::ApplyWorkspaceEditResult;
 use karet_core::Range;
 
 use super::DocumentId;
+
+/// Why a client asks for code actions
+/// ([`Command::CodeActions`](super::Command::CodeActions)), which a language
+/// server may use to decide how much work to do.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum CodeActionTrigger {
+    /// The user asked (a quick-fix key, a palette command). A server that
+    /// does not offer code actions is reported, as for any request made by
+    /// hand.
+    #[default]
+    Invoked,
+    /// The client is probing on its own, as the caret moves, to show that
+    /// actions exist. Nothing is reported about a server that has none.
+    Automatic,
+}
 
 /// The span a rename replaces, and the name to prefill the prompt with.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -61,6 +76,20 @@ mod tests {
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+    /// A code action with every field filled, its payload included: the
+    /// producer's opaque encoding has to come back byte for byte.
+    fn action() -> karet_core::CodeAction {
+        karet_core::CodeAction {
+            title: "Import Foo".into(),
+            kind: Some("quickfix".into()),
+            preferred: true,
+            disabled: Some("not here".into()),
+            edit: Some(WorkspaceEdit::default()),
+            command: Some(karet_core::CommandId("fix".into())),
+            payload: Some(r#"{"title":"Import Foo","data":{"id":1}}"#.into()),
+        }
+    }
+
     /// The refactoring vocabulary crosses the seam intact.
     #[test]
     fn refactor_commands_and_events_round_trip() -> TestResult {
@@ -77,6 +106,17 @@ mod tests {
                 edit: WorkspaceEdit::default(),
                 label: Some("fix".into()),
             },
+            Command::CodeActions {
+                doc: DocumentId(1),
+                range,
+                kinds: vec!["source.organizeImports".into()],
+                trigger: CodeActionTrigger::Automatic,
+            },
+            Command::ApplyCodeAction {
+                doc: DocumentId(1),
+                version: 4,
+                action: action(),
+            },
         ];
         for command in commands {
             let json = serde_json::to_string(&command)?;
@@ -92,6 +132,12 @@ mod tests {
                     placeholder: "abc".into(),
                 }),
                 reason: None,
+            },
+            Event::CodeActions {
+                doc: DocumentId(1),
+                version: 4,
+                actions: vec![action()],
+                reason: Some("none here".into()),
             },
             Event::WorkspaceEdit {
                 applied: AppliedWorkspaceEdit {

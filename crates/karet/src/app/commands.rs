@@ -1,5 +1,6 @@
 use karet_editor::Motion;
 
+use super::code_actions::ActionsFor;
 use super::*;
 
 impl App {
@@ -217,6 +218,15 @@ impl App {
             Command::RenameSymbol => self.start_rename(),
             Command::RenameSubmit => self.rename_submit(),
             Command::RenameCancel => self.rename_cancel(),
+            Command::CodeActions => self.request_code_actions(&[], ActionsFor::Menu),
+            Command::SourceAction => self.request_code_actions(&["source"], ActionsFor::Menu),
+            Command::OrganizeImports => self.request_code_actions(
+                &["source.organizeImports"],
+                ActionsFor::First("organize imports"),
+            ),
+            Command::FixAll => {
+                self.request_code_actions(&["source.fixAll"], ActionsFor::First("fix all"));
+            },
             Command::JumpBack => self.jump_back(),
             Command::JumpForward => self.jump_forward(),
             Command::InsertChar(c) => {

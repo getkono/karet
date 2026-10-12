@@ -532,32 +532,75 @@ fn utf16_slice(value: &str, start: u32, end: u32) -> String {
         .collect()
 }
 
-/// Map code actions and commands, dropping disabled actions.
+/// Map code actions and commands, keeping each one's wire form as its
+/// payload so it can be resolved or run later. A disabled action is kept,
+/// with its reason, so the user can see it exists.
 pub(crate) fn code_actions_from_lsp(
     response: Option<lsp_types::CodeActionResponse>,
 ) -> Vec<CodeAction> {
     response
         .unwrap_or_default()
         .into_iter()
-        .filter_map(|item| match item {
-            lsp_types::CodeActionOrCommand::Command(command) => Some(CodeAction {
-                title: command.title,
-                edit: None,
-                command: Some(CommandId(command.command)),
-            }),
-            lsp_types::CodeActionOrCommand::CodeAction(action) => {
-                action.disabled.is_none().then(|| CodeAction {
-                    title: action.title,
-                    // An edit naming a non-file URI cannot be applied as the
-                    // server meant it, so the action offers no edit.
-                    edit: action
-                        .edit
-                        .and_then(|edit| workspace_edit_from_lsp(edit).ok()),
-                    command: action.command.map(|command| CommandId(command.command)),
-                })
-            },
-        })
+        .map(code_action_or_command_from_lsp)
         .collect()
+}
+
+/// Map one item of a code-action answer.
+pub(crate) fn code_action_or_command_from_lsp(item: lsp_types::CodeActionOrCommand) -> CodeAction {
+    let payload = serde_json::to_string(&item).ok();
+    let mut action = match item {
+        lsp_types::CodeActionOrCommand::Command(command) => CodeAction {
+            title: command.title,
+            command: Some(CommandId(command.command)),
+            ..CodeAction::default()
+        },
+        lsp_types::CodeActionOrCommand::CodeAction(action) => code_action_from_lsp(action),
+    };
+    action.payload = payload;
+    action
+}
+
+/// Map a code-action literal (a `codeAction/resolve` answer is one too).
+pub(crate) fn code_action_from_lsp(action: lsp_types::CodeAction) -> CodeAction {
+    let mut disabled = action.disabled.map(|disabled| disabled.reason);
+    // An edit naming a non-file URI cannot be applied as the server meant it,
+    // so the action offers no edit, and says why it cannot run.
+    let edit = match action.edit.map(workspace_edit_from_lsp) {
+        Some(Ok(edit)) => Some(edit),
+        Some(Err(error)) => {
+            disabled.get_or_insert_with(|| error.to_string());
+            None
+        },
+        None => None,
+    };
+    CodeAction {
+        title: action.title,
+        kind: action.kind.map(|kind| kind.as_str().to_owned()),
+        preferred: action.is_preferred.unwrap_or(false),
+        disabled,
+        edit,
+        command: action.command.map(|command| CommandId(command.command)),
+        payload: None,
+    }
+}
+
+/// The command a code action runs, in wire form, read back from its payload:
+/// the item itself when the server answered with a bare command, else the
+/// action's own `command`.
+pub(crate) fn code_action_command(action: &CodeAction) -> Option<lsp_types::Command> {
+    match serde_json::from_str(action.payload.as_deref()?).ok()? {
+        lsp_types::CodeActionOrCommand::Command(command) => Some(command),
+        lsp_types::CodeActionOrCommand::CodeAction(action) => action.command,
+    }
+}
+
+/// The code-action literal a payload holds, for `codeAction/resolve`; `None`
+/// for a bare command, which has nothing to resolve.
+pub(crate) fn code_action_literal(action: &CodeAction) -> Option<lsp_types::CodeAction> {
+    match serde_json::from_str(action.payload.as_deref()?).ok()? {
+        lsp_types::CodeActionOrCommand::CodeAction(literal) => Some(literal),
+        lsp_types::CodeActionOrCommand::Command(_) => None,
+    }
 }
 
 /// Map formatting edits.

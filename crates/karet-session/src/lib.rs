@@ -58,6 +58,7 @@ pub use api::AiCommitAgentStatus;
 pub use api::AiCommitAvailability;
 pub use api::AppliedWorkspaceEdit;
 pub use api::ChangeSummary;
+pub use api::CodeActionTrigger;
 pub use api::Command;
 pub use api::DebugBreakpoint;
 pub use api::DebugFrame;
