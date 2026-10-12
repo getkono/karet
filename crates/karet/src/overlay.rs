@@ -343,7 +343,9 @@ impl Overlay {
         Self::Picker(Picker::new(QUICK_OPEN_TITLE, items))
     }
 
-    /// Whether this is the quick-open (go to file) picker.
+    /// Whether this is the quick-open (go to file) picker. Only tests ask: the
+    /// app tells quick-open's modes apart through `quick_open_mode`.
+    #[cfg(test)]
     #[must_use]
     pub fn is_quick_open(&self) -> bool {
         matches!(self, Self::Picker(picker) if picker.title() == QUICK_OPEN_TITLE)
