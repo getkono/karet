@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
 
+use karet_core::InlayHint;
 use karet_core::LineCol;
 use karet_core::Location;
 use karet_core::ServerFeature;
@@ -76,6 +77,33 @@ pub(super) async fn flush_pending(
     if let Some((path, version, text)) = pending.take() {
         let result = client.did_change(&path, version, &text).await;
         tally.note(result, dead, updates, key, token);
+    }
+}
+
+/// Resolve `hint` on `client`, or hand it back unchanged when the connection
+/// is dead or the request fails -- which counts against the connection's
+/// health like any other failure. No flush first: what is resolved is the hint
+/// as the server sent it, whatever the text has done since.
+pub(super) async fn resolve_hint(
+    client: &LspClient,
+    hint: InlayHint,
+    (dead, tally, updates, key, token): (
+        &mut bool,
+        &mut FailureTally,
+        &mpsc::UnboundedSender<LspUpdate>,
+        &SlotKey,
+        SlotToken,
+    ),
+) -> InlayHint {
+    if *dead {
+        return hint;
+    }
+    match tally.observe(client.resolve_inlay_hint(&hint).await) {
+        Ok(resolved) => resolved,
+        Err(error) => {
+            tally.note::<()>(Err(error), dead, updates, key, token);
+            hint
+        },
     }
 }
 

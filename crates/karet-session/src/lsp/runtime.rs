@@ -7,6 +7,7 @@ use super::commands::answer_reconnecting;
 use super::commands::flush_pending;
 use super::commands::remember_document;
 use super::commands::report_unsupported;
+use super::commands::resolve_hint;
 use super::forward::forward_diagnostics;
 use super::health::FailureTally;
 use super::health::{self};
@@ -537,19 +538,8 @@ pub(super) async fn server_task(task: ServerTask) {
                     );
                 },
                 ServerCmd::ResolveInlayHint { request, doc, hint } => {
-                    // No flush: what is resolved is the hint as the server sent
-                    // it, whatever the text has done since.
-                    let hint = if dead {
-                        hint
-                    } else {
-                        match tally.observe(active.resolve_inlay_hint(&hint).await) {
-                            Ok(resolved) => resolved,
-                            Err(e) => {
-                                tally.note::<()>(Err(e), &mut dead, &updates, &key, token);
-                                hint
-                            },
-                        }
-                    };
+                    let health = (&mut dead, &mut tally, &updates, &key, token);
+                    let hint = resolve_hint(active, hint, health).await;
                     let _ = updates.send(LspUpdate::InlayHintResolved {
                         generation,
                         request,
