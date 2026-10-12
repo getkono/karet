@@ -184,8 +184,9 @@ of a wide character or of a tab's cells resolves to after it (#337).
 | Click on a completion row | Accept that candidate, as Enter would. | harness |
 | Click outside the hover popup | Close the popup, then do what the click would have done without it. A click inside it is kept. | harness |
 | Click while the diagnostic view is open | It is modal: a click outside it closes it and does nothing else; a click inside it is kept. | harness |
-| Line-number gutter | A click selects the whole line, newline included; a drag selects whole lines; Shift+click extends by lines. | #335 |
-| Breakpoint lane, fold chevron | Toggle a breakpoint / toggle the fold; these never move the caret. | #335 |
+| Line-number gutter | A click selects the whole line, newline included, and never scrolls; a drag selects whole lines; Shift+click extends by lines from the selection's anchored line. Ctrl and Alt keep their text meanings. | harness (`tests/gutter.rs`) |
+| Breakpoint lane, fold chevron, `⋯` | The leading marker lane toggles a breakpoint, in a source file only (elsewhere it is refused); the chevron in the lane beside the text, and a collapsed fold's `⋯`, toggle the fold. None of them moves the caret, except that collapsing a fold over the caret moves it onto the header. | harness (`tests/gutter.rs`) |
+| Gutter below the last line | A click below the last line is a click below the text in every lane: no breakpoint, no line selection. | harness (`tests/gutter.rs`) |
 
 Deviation, go to definition: a terminal mouse event cannot report Cmd/Super
 under SGR mouse reporting, and macOS terminals turn Ctrl+click into a right

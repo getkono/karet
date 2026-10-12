@@ -7,6 +7,7 @@ use super::*;
 /// One of the gutter's columns, left to right (see
 /// [`EditorState::gutter_hit_at`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum GutterLane {
     /// The leading marker column: breakpoints, diagnostic signs and change
     /// markers are drawn here; a click is the breakpoint toggle.

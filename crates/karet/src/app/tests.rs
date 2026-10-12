@@ -28,6 +28,7 @@ mod editor_mouse;
 mod explorer;
 mod external_edits;
 mod github;
+mod gutter;
 pub(crate) mod harness;
 mod hover;
 mod indent;

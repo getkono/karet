@@ -1,4 +1,5 @@
 pub(super) mod column;
+mod gutter;
 mod render;
 
 use karet_editor::Motion;
@@ -272,17 +273,11 @@ impl App {
     /// cursor line, else the innermost fold containing it. Collapsing a region the
     /// cursor sits inside relocates the caret to the (visible) header line.
     pub(super) fn toggle_fold(&mut self) {
-        let Some(tab) = self.tabs.get_mut(self.active) else {
+        let Some(tab) = self.tabs.get(self.active) else {
             return;
         };
         let line = tab.editor.cursor().line;
-        let TabKind::Code {
-            buffer,
-            folds,
-            folded,
-            ..
-        } = &mut tab.kind
-        else {
+        let TabKind::Code { folds, .. } = &tab.kind else {
             return;
         };
         let target = folds
@@ -296,17 +291,9 @@ impl App {
                     .filter(|r| r.start <= line && line <= r.end)
                     .min_by_key(|r| r.end - r.start)
             })
-            .copied();
-        let Some(region) = target else {
-            return;
-        };
-        // `remove` returns whether it was collapsed: toggle by remove-or-insert.
-        if !folded.remove(&region.start) {
-            folded.insert(region.start);
-            if line > region.start {
-                let pos = LineCol::new(region.start, tab.editor.cursor().col);
-                tab.editor.set_caret(buffer, pos);
-            }
+            .map(|region| region.start);
+        if let Some(start) = target {
+            self.toggle_fold_at(start);
         }
     }
 
@@ -540,33 +527,9 @@ impl App {
             self.editor_drag = None;
             return;
         }
-        // The gutter's leading marker column is the breakpoint lane: a click
-        // there toggles instead of moving the caret (the line numbers keep
-        // their caret-placement behavior).
-        let marker_hit = self.tabs.get(self.active).and_then(|tab| {
-            let TabKind::Code {
-                path,
-                buffer,
-                folds,
-                folded,
-                ..
-            } = &tab.kind
-            else {
-                return None;
-            };
-            let fold_lines = resolve_folds(folds, folded);
-            let line = tab.editor.gutter_marker_line_at(
-                area,
-                buffer,
-                &fold_lines,
-                mouse.column,
-                mouse.row,
-            )?;
-            Some((path.clone(), line))
-        });
-        if let Some((path, line)) = marker_hit {
-            self.debug_toggle_breakpoint_at(path, line);
-            self.editor_drag = None;
+        // The gutter's lanes, and a collapsed fold's `⋯`, are controls rather
+        // than text: each does its own thing (`gutter.rs`).
+        if self.gutter_click(mouse, area, pane) {
             return;
         }
         let code_pos = self.tabs.get(self.active).and_then(|tab| {
