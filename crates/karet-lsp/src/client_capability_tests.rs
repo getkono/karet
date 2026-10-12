@@ -52,6 +52,7 @@ async fn dynamic_registration_is_declared_only_where_it_is_honoured() -> TestRes
         "rename",
         "formatting",
         "rangeFormatting",
+        "selectionRange",
         "inlayHint",
     ] {
         assert_eq!(
