@@ -891,7 +891,7 @@ fn update_syntax(
         doc: doc_id,
         version: doc.buffer.version(),
         lang,
-        text: doc.buffer.text(),
+        text: doc.buffer.text_snapshot(),
         semantic: {
             let semantic = settings
                 .editor
