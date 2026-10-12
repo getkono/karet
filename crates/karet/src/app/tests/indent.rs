@@ -112,23 +112,16 @@ fn an_inline_macro_takes_tab_first() {
 #[test]
 fn an_open_completion_takes_tab_first() {
     let mut rig = Rig::new("fo|");
-    rig.app.completion = Some(crate::completion::CompletionUi {
-        items: vec![karet_core::CompletionItem {
-            label: "foobar".to_owned(),
-            kind: karet_core::CompletionKind::Function,
-            detail: None,
-            documentation: None,
-            insert_text: "foobar".to_owned(),
-            edit: None,
-            sort_text: None,
-            deprecated: false,
-        }],
-        list: karet_widgets::CompletionState::default(),
-        doc: DocumentId(9),
-        anchor: LineCol::new(0, 0),
-        last_filter: String::new(),
-        mode: crate::completion::CompletionMode::Filtered,
-    });
+    rig.app.completion = Some(crate::completion::CompletionUi::new(
+        DocumentId(9),
+        LineCol::new(0, 0),
+        LineCol::new(0, 0),
+        vec![karet_core::CompletionItem::new(
+            "foobar",
+            karet_core::CompletionKind::Function,
+        )],
+        crate::completion::CompletionMode::Filtered,
+    ));
     rig.render();
     rig.step(key(KeyCode::Tab));
     assert_eq!(rig.marked(), "foobar|");
