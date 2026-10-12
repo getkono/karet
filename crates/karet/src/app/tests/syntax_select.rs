@@ -320,3 +320,40 @@ fn shrink_walks_back_what_the_servers_ranges_grew() {
     ));
     assert_eq!(selections(&app), vec![span(0, 14, 14), span(1, 14, 14)]);
 }
+
+/// A backend whose connection has closed: every send fails.
+struct ClosedBackend;
+
+impl karet_session::Backend for ClosedBackend {
+    fn send(&self, _: RequestId, _: SessionCommand) -> Result<(), karet_session::BackendError> {
+        Err(karet_session::BackendError::Closed)
+    }
+
+    fn next_id(&self) -> RequestId {
+        RequestId(1)
+    }
+
+    fn take_events(&self) -> Option<karet_session::EventRx> {
+        None
+    }
+}
+
+#[test]
+fn a_session_document_with_no_backend_grows_along_tree_sitter_at_once() {
+    let (_, mut app) = served_app();
+    app.backend = None;
+    press_expand(&mut app);
+    assert_eq!(selections(&app), tree_sitter_after(1));
+    assert!(app.pending_expand.is_none(), "nothing is left waiting");
+}
+
+#[test]
+fn a_request_the_backend_refuses_grows_along_tree_sitter_at_once() {
+    let (_, mut app) = served_app();
+    app.backend = Some(Arc::new(ClosedBackend));
+    press_expand(&mut app);
+    assert_eq!(selections(&app), tree_sitter_after(1));
+    assert!(app.pending_expand.is_none(), "nothing is left waiting");
+    press_expand(&mut app);
+    assert_eq!(selections(&app), tree_sitter_after(2), "every press grows");
+}
