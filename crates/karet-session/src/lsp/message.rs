@@ -24,6 +24,7 @@ use karet_core::SignatureHelpOptions;
 use karet_core::Symbol;
 use karet_core::TextEdit;
 use karet_core::WorkspaceEdit;
+use karet_core::WorkspaceSymbol;
 use karet_lsp::Indentation;
 
 use super::code_actions::CodeActionAnswer;
@@ -413,10 +414,11 @@ pub(crate) enum LspUpdate {
         kind: Option<LocationKind>,
         locations: Vec<Location>,
     },
+    /// Workspace symbols, each with its file, in the server's UTF-16 columns.
     WorkspaceSymbols {
         generation: u64,
         request: RequestId,
-        symbols: Vec<Symbol>,
+        symbols: Vec<WorkspaceSymbol>,
     },
     /// A rename's edit, in UTF-16 columns, for the session to apply, or the
     /// reason the request produced none (a server's error reply, an edit the

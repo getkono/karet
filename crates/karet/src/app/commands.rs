@@ -51,6 +51,7 @@ impl App {
             Command::ProblemsFilterCancel => self.problems_end_filter(true),
             Command::OpenQuickOpen => self.open_quick_open(),
             Command::GoToSymbolInEditor => self.open_document_symbols(),
+            Command::GoToSymbolInWorkspace => self.open_workspace_symbols(),
             Command::GoToLine => self.open_go_to_line(),
             Command::OpenRecentWorkspace => self.open_recent_workspace(),
             Command::OpenCommandPalette => self.overlay = Some(Overlay::command_palette()),

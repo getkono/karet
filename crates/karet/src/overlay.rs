@@ -1,5 +1,5 @@
-//! Centered modal overlays: quick-open (go to file, `:` go to line, and `@` go
-//! to symbol in editor), the command palette, the
+//! Centered modal overlays: quick-open (go to file, `:` go to line, `@` go to
+//! symbol in editor, and `#` go to symbol in workspace), the command palette, the
 //! diff-target picker, and the branch/stash forms and prompts.
 //!
 //! Every list-style overlay is one shared fuzzy [`Picker`] (from
@@ -71,7 +71,8 @@ pub enum OverlayEvent {
         /// Where in it the caret should land.
         position: LineCol,
     },
-    /// Jump to a symbol picked by name (Go to Symbol in Editor).
+    /// Jump to a symbol picked by name (Go to Symbol in Editor or in
+    /// Workspace).
     AcceptSymbol {
         /// The file the symbol is in.
         path: PathBuf,
@@ -270,6 +271,7 @@ pub use goto_line::LineTarget;
 pub use karet_widgets::picker::Picker;
 pub use symbols::DOCUMENT_SYMBOL_PREFIX;
 pub use symbols::QuickOpenMode;
+pub use symbols::WORKSPACE_SYMBOL_PREFIX;
 
 /// A modal overlay.
 pub enum Overlay {

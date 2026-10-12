@@ -18,8 +18,9 @@
 //! # Vocabulary map
 //! - Blame: [`BlameAttribution`], [`BlameCommit`].
 //! - Text coordinates: [`BytePos`], [`LineCol`], [`Span`], [`Range`], [`LineIndex`].
-//! - Neutral models: [`Diagnostic`], [`Decoration`], [`Symbol`], [`CompletionItem`],
-//!   [`Hover`], [`InlayHint`], [`VirtualText`], [`SignatureHelp`], [`CodeAction`], ….
+//! - Neutral models: [`Diagnostic`], [`Decoration`], [`Symbol`], [`WorkspaceSymbol`],
+//!   [`CompletionItem`], [`Hover`], [`InlayHint`], [`VirtualText`], [`SignatureHelp`],
+//!   [`CodeAction`], ….
 //! - Graph: [`GraphView`] and its nodes/edges, for visualizations.
 //! - Edits & cursors: [`TextEdit`], [`Change`], [`AppliedEdit`], [`EditCause`],
 //!   [`Selection`], [`CursorState`].
@@ -109,6 +110,7 @@ pub use model::Symbol;
 pub use model::SymbolKind;
 pub use model::VirtualText;
 pub use model::VirtualTextPlacement;
+pub use model::WorkspaceSymbol;
 pub use notify::Notification;
 pub use notify::NotificationId;
 pub use notify::NotificationKind;

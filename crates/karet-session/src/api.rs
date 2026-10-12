@@ -27,6 +27,7 @@ use karet_core::SignatureHelp;
 use karet_core::SignatureHelpOptions;
 use karet_core::Symbol;
 use karet_core::WorkspaceEdit;
+use karet_core::WorkspaceSymbol;
 use karet_text::EditCause;
 use karet_vcs::Branch;
 use karet_vcs::BranchTarget;

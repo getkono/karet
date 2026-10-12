@@ -15,6 +15,7 @@ impl App {
         changes.extend(working);
         Self {
             file_index: workspace::FileIndex::new(root.clone()),
+            workspace_symbols: quick_open::WorkspaceSymbolSearch::default(),
             recent: workspace::RecentStore::in_memory(),
             relaunch: None,
             root,

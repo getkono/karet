@@ -32,6 +32,8 @@ impl App {
         let inlay = self.inlay_next_wake(now);
         // Likewise the lightbulb probe, once the caret has settled.
         let code_actions = self.code_action_next_wake(now);
+        // Likewise a workspace-symbol query, once typing pauses.
+        let workspace_symbols = self.workspace_symbol_next_wake(now);
         // Generation runs for seconds with no output to stream, so its spinner is
         // the only progress there is — it has to keep animating without input.
         let ai_commit = self.ai_commit_next_wake(now);
@@ -56,6 +58,7 @@ impl App {
             nested_repositories,
             inlay,
             code_actions,
+            workspace_symbols,
             ai_commit,
             operation,
             reveal,
@@ -154,6 +157,7 @@ impl App {
             } => self.finish_latex_build(id, doc, pdf, diagnostics, error),
             SessionEvent::Closed { doc } => self.on_document_closed(doc),
             SessionEvent::Symbols { doc, symbols } => self.on_symbols(doc, symbols),
+            SessionEvent::WorkspaceSymbols { symbols } => self.on_workspace_symbols(id, &symbols),
             SessionEvent::Completions {
                 doc,
                 version,
@@ -598,9 +602,8 @@ impl App {
                 // results reflect the edited files.
                 self.run_global_search();
             },
-            // Events answering commands this client never sends (hover, workspace
-            // symbols, rename) fall through here until the corresponding UI
-            // exists.
+            // Events answering commands this client never sends fall through
+            // here until the corresponding UI exists.
             _ => {},
         }
         // A "save & close" runs the parked request once every issued save succeeds.

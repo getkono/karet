@@ -327,6 +327,86 @@
             assert_eq!(first.as_ref().map(|l| l.path.clone()), Some(missing));
             assert_eq!(first.map(|l| l.range.start), Some(LineCol::new(3, 6)));
         }
+
+        fn workspace_symbol(
+            name: &str,
+            path: &std::path::Path,
+            range: Option<Range>,
+        ) -> karet_core::WorkspaceSymbol {
+            karet_core::WorkspaceSymbol {
+                name: name.to_string(),
+                kind: karet_core::SymbolKind::Function,
+                container_name: None,
+                path: path.to_path_buf(),
+                range,
+            }
+        }
+
+        #[test]
+        fn workspace_symbols_keep_their_files_and_open_ones_are_converted() {
+            let Ok(dir) = tempfile::tempdir() else { return };
+            let here = dir.path().join("here.rs");
+            let elsewhere = dir.path().join("elsewhere.rs");
+            if std::fs::write(&here, NON_BMP).is_err()
+                || std::fs::write(&elsewhere, NON_BMP).is_err()
+            {
+                return;
+            }
+            let Some((mut session, _doc, mut events)) = session_with(&here) else {
+                return;
+            };
+            session.apply_lsp_update(LspUpdate::WorkspaceSymbols {
+                generation: 0,
+                request: crate::api::RequestId(5),
+                symbols: vec![
+                    workspace_symbol("open", &here, Some(range(0, 6))),
+                    workspace_symbol("closed", &elsewhere, Some(range(0, 6))),
+                    workspace_symbol("lazy", &elsewhere, None),
+                ],
+            });
+            let mut answer = None;
+            while let Some((id, event)) = events.try_recv() {
+                if let Event::WorkspaceSymbols { symbols } = event {
+                    answer = Some((id, symbols));
+                }
+            }
+            let Some((id, symbols)) = answer else {
+                unreachable!("the answer is emitted")
+            };
+            assert_eq!(id, Some(crate::api::RequestId(5)));
+            let found: Vec<_> = symbols
+                .iter()
+                .map(|s| (s.name.as_str(), s.path.clone(), s.range.map(|r| r.start)))
+                .collect();
+            assert_eq!(
+                found,
+                vec![
+                    // UTF-16 column 6 is buffer column 5 in the open file...
+                    ("open", here, Some(LineCol::new(0, 5))),
+                    // ...while a file that is not open is not read to convert.
+                    ("closed", elsewhere.clone(), Some(LineCol::new(0, 6))),
+                    ("lazy", elsewhere, None),
+                ]
+            );
+        }
+
+        #[test]
+        fn a_workspace_symbol_search_with_no_server_is_answered_empty() {
+            let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
+            session.handle(
+                crate::api::RequestId(7),
+                Command::WorkspaceSymbols {
+                    query: "run".to_string(),
+                },
+            );
+            let mut answer = None;
+            while let Some((id, event)) = events.try_recv() {
+                if let Event::WorkspaceSymbols { symbols } = event {
+                    answer = Some((id, symbols.len()));
+                }
+            }
+            assert_eq!(answer, Some((Some(crate::api::RequestId(7)), 0)));
+        }
     }
 
     // Asking to install a language server spends the user's bandwidth, so the

@@ -1,3 +1,5 @@
+use karet_session::LSP_CHANGE_DEBOUNCE;
+
 use super::support::*;
 use crate::app::*;
 use crate::overlay::QuickOpenMode;
@@ -461,4 +463,154 @@ fn a_key_that_edits_nothing_keeps_the_highlighted_file_at_line() {
             "{code:?} edits no text, so the list is not rebuilt"
         );
     }
+}
+
+/// The workspace-symbol queries the backend was sent, in order, with their ids.
+fn workspace_queries(backend: &RecordingBackend) -> Vec<(RequestId, String)> {
+    backend.sent.lock().map_or_else(
+        |_| Vec::new(),
+        |sent| {
+            sent.iter()
+                .filter_map(|(id, command)| match command {
+                    SessionCommand::WorkspaceSymbols { query } => Some((*id, query.clone())),
+                    _ => None,
+                })
+                .collect()
+        },
+    )
+}
+
+/// Run the frame-end probe once typing has paused.
+fn settle(app: &mut App) {
+    app.probe_workspace_symbols(Instant::now() + LSP_CHANGE_DEBOUNCE + Duration::from_millis(1));
+}
+
+fn workspace_symbol(name: &str, path: &Path, line: u32) -> karet_core::WorkspaceSymbol {
+    let at = LineCol::new(line, 3);
+    karet_core::WorkspaceSymbol {
+        name: name.to_string(),
+        kind: karet_core::SymbolKind::Function,
+        container_name: None,
+        path: path.to_path_buf(),
+        range: Some(Range { start: at, end: at }),
+    }
+}
+
+#[test]
+fn ctrl_t_searches_the_workspace_once_typing_pauses_and_opens_the_pick() {
+    let (dir, mut app, backend) = symbol_app();
+    let lib = dir.path().join("lib.rs");
+    let _ = std::fs::write(&lib, "\n\n\nfn launch() {}\n");
+    app.dispatch(Command::GoToSymbolInWorkspace);
+    assert_eq!(mode(&app), Some(QuickOpenMode::WorkspaceSymbols));
+    assert_eq!(app.overlay.as_ref().map(Overlay::query), Some("#"));
+    settle(&mut app);
+    assert!(
+        workspace_queries(&backend).is_empty(),
+        "an empty query asks nothing"
+    );
+    assert!(app.quick_open_loading().is_none());
+
+    type_keys(&mut app, "lau");
+    let now = Instant::now();
+    let wake = app.workspace_symbol_next_wake(now).expect("a query is due");
+    assert!(!wake.is_zero() && wake <= LSP_CHANGE_DEBOUNCE);
+    app.probe_workspace_symbols(now);
+    assert!(
+        workspace_queries(&backend).is_empty(),
+        "nothing is sent per keystroke"
+    );
+    let loading = app.quick_open_loading().expect("waiting on the server");
+    assert!(app.pendings().contains(&loading));
+    settle(&mut app);
+    let sent = workspace_queries(&backend);
+    assert_eq!(
+        sent.iter().map(|(_, q)| q.as_str()).collect::<Vec<_>>(),
+        ["lau"]
+    );
+    assert_eq!(app.workspace_symbol_next_wake(Instant::now()), None);
+    settle(&mut app);
+    assert_eq!(workspace_queries(&backend).len(), 1, "sent once");
+
+    app.on_backend_event(
+        Some(sent[0].0),
+        SessionEvent::WorkspaceSymbols {
+            symbols: vec![
+                workspace_symbol("launch", &lib, 3),
+                workspace_symbol("other", &lib, 0),
+            ],
+        },
+    );
+    assert!(app.quick_open_loading().is_none());
+    assert_eq!(
+        rows(&app),
+        ["launch", "other"],
+        "the server's answer is shown as it gave it"
+    );
+    app.overlay_accept();
+    assert!(app.overlay.is_none());
+    let tab = &app.tabs[app.active];
+    assert_eq!(tab.path(), Some(lib.as_path()));
+    assert_eq!(tab.editor.cursor(), LineCol::new(3, 3));
+}
+
+#[test]
+fn an_answer_to_a_query_typed_over_is_dropped() {
+    let (dir, mut app, backend) = symbol_app();
+    let lib = dir.path().join("lib.rs");
+    app.dispatch(Command::OpenQuickOpen);
+    type_keys(&mut app, "#r");
+    assert_eq!(mode(&app), Some(QuickOpenMode::WorkspaceSymbols));
+    settle(&mut app);
+    type_keys(&mut app, "u");
+    settle(&mut app);
+    let sent = workspace_queries(&backend);
+    assert_eq!(
+        sent.iter().map(|(_, q)| q.as_str()).collect::<Vec<_>>(),
+        ["r", "ru"]
+    );
+
+    let stale = SessionEvent::WorkspaceSymbols {
+        symbols: vec![workspace_symbol("rust", &lib, 0)],
+    };
+    app.on_backend_event(Some(sent[0].0), stale);
+    assert!(rows(&app).is_empty(), "the answer to `r` is superseded");
+    assert!(app.quick_open_loading().is_some(), "`ru` is still awaited");
+    app.on_backend_event(
+        Some(sent[1].0),
+        SessionEvent::WorkspaceSymbols {
+            symbols: vec![workspace_symbol("run", &lib, 0)],
+        },
+    );
+    assert_eq!(rows(&app), ["run"]);
+
+    // Deleting the sigil leaves the mode, and forgets the search.
+    backspace(&mut app, 3);
+    assert_eq!(mode(&app), Some(QuickOpenMode::Files));
+    assert_eq!(app.workspace_symbol_next_wake(Instant::now()), None);
+}
+
+#[test]
+fn an_answer_after_the_picker_closed_is_dropped() {
+    let (dir, mut app, backend) = symbol_app();
+    app.dispatch(Command::GoToSymbolInWorkspace);
+    type_keys(&mut app, "run");
+    settle(&mut app);
+    let sent = workspace_queries(&backend);
+    app.overlay = None;
+    settle(&mut app);
+    // A file picker opened since is not filled with symbols either.
+    app.dispatch(Command::OpenQuickOpen);
+    app.on_backend_event(
+        sent.first().map(|(id, _)| *id),
+        SessionEvent::WorkspaceSymbols {
+            symbols: vec![workspace_symbol("run", &dir.path().join("lib.rs"), 0)],
+        },
+    );
+    assert_eq!(mode(&app), Some(QuickOpenMode::Files));
+    assert!(!rows(&app).contains(&"run".to_string()));
+    // Reopening starts a fresh search.
+    app.dispatch(Command::GoToSymbolInWorkspace);
+    assert!(rows(&app).is_empty());
+    assert!(app.quick_open_loading().is_none());
 }

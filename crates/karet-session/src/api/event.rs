@@ -377,8 +377,12 @@ pub enum Event {
     },
     /// Workspace symbols answering a [`Command::WorkspaceSymbols`] query.
     WorkspaceSymbols {
-        /// Matching symbols from the active repository servers.
-        symbols: Vec<Symbol>,
+        /// Matching symbols from the active repository servers, each with the
+        /// file it is in. A range into a file open in this session is in
+        /// buffer columns; one into a file that is not open keeps the server's
+        /// columns, which differ only where an astral-plane character precedes
+        /// it on its line (the line is always right).
+        symbols: Vec<WorkspaceSymbol>,
     },
     /// A workspace edit was applied, or refused.
     ///

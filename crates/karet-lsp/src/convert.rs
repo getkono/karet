@@ -34,6 +34,7 @@ use karet_core::Symbol;
 use karet_core::SymbolKind;
 use karet_core::TextEdit;
 use karet_core::WorkspaceEdit;
+use karet_core::WorkspaceSymbol;
 
 use crate::LspError;
 use crate::snippet::strip_snippet;
@@ -224,41 +225,44 @@ fn markup_kind_from_lsp(kind: lsp_types::MarkupKind) -> MarkupKind {
     }
 }
 
-/// Map workspace symbols into the same neutral symbol shape used by outlines.
+/// Map workspace symbols into the neutral workspace-symbol model, each with the
+/// file it lives in. A symbol in a non-`file:` URI is dropped (nothing can open
+/// it); the unresolved URI-only form keeps its file with no range.
 pub(crate) fn workspace_symbols_from_lsp(
     response: Option<lsp_types::WorkspaceSymbolResponse>,
-) -> Vec<Symbol> {
+) -> Vec<WorkspaceSymbol> {
     match response {
         None => Vec::new(),
         #[allow(deprecated)] // LSP retains the flat response for compatibility.
         Some(lsp_types::WorkspaceSymbolResponse::Flat(symbols)) => symbols
             .into_iter()
-            .map(|symbol| Symbol {
-                name: symbol.name,
-                kind: symbol_kind_from_lsp(symbol.kind),
-                detail: None,
-                range: range_from_lsp(symbol.location.range),
-                selection_range: range_from_lsp(symbol.location.range),
-                container_name: symbol.container_name,
-                children: Vec::new(),
+            .filter_map(|symbol| {
+                Some(WorkspaceSymbol {
+                    name: symbol.name,
+                    kind: symbol_kind_from_lsp(symbol.kind),
+                    container_name: symbol.container_name,
+                    path: uri_to_path(&symbol.location.uri)?,
+                    range: Some(range_from_lsp(symbol.location.range)),
+                })
             })
             .collect(),
         Some(lsp_types::WorkspaceSymbolResponse::Nested(symbols)) => symbols
             .into_iter()
             .filter_map(|symbol| {
-                let lsp_types::OneOf::Left(location) = symbol.location else {
-                    // The unresolved URI-only form has no range that the neutral
-                    // model can navigate to.
-                    return None;
+                let (uri, range) = match symbol.location {
+                    lsp_types::OneOf::Left(location) => {
+                        (location.uri, Some(range_from_lsp(location.range)))
+                    },
+                    // The URI-only form names the file but not where in it the
+                    // symbol is; `workspaceSymbol/resolve` would complete it.
+                    lsp_types::OneOf::Right(location) => (location.uri, None),
                 };
-                Some(Symbol {
+                Some(WorkspaceSymbol {
                     name: symbol.name,
                     kind: symbol_kind_from_lsp(symbol.kind),
-                    detail: None,
-                    range: range_from_lsp(location.range),
-                    selection_range: range_from_lsp(location.range),
                     container_name: symbol.container_name,
-                    children: Vec::new(),
+                    path: uri_to_path(&uri)?,
+                    range,
                 })
             })
             .collect(),

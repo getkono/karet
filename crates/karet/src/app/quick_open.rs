@@ -1,17 +1,44 @@
-//! Quick-open (go to file, `:` go to line, and `@` go to symbol in editor) and
-//! Open Recent (workspaces).
+//! Quick-open (go to file, `:` go to line, `@` go to symbol in editor, and `#`
+//! go to symbol in workspace) and Open Recent (workspaces).
 //!
 //! The picker opens at once over the [`FileIndex`](workspace::FileIndex), which
 //! walks the workspace off the UI thread and follows filesystem changes; a walk
 //! still in flight fills an open picker in when it lands. Recently opened files
 //! rank first, and the workspaces karet was opened on are offered by Open Recent,
 //! both kept in the user state directory by [`RecentStore`](workspace::RecentStore).
+//!
+//! The `#` mode asks the language server, so its query is sent only once
+//! typing pauses for [`LSP_CHANGE_DEBOUNCE`] (the event loop wakes for it), and
+//! only the answer to the latest query is adopted: one to a query typed over
+//! since is dropped.
+
+use karet_core::WorkspaceSymbol;
+use karet_session::LSP_CHANGE_DEBOUNCE;
 
 use super::*;
 use crate::overlay::DOCUMENT_SYMBOL_PREFIX;
 use crate::overlay::GO_TO_LINE_PREFIX;
 use crate::overlay::LineTarget;
 use crate::overlay::QuickOpenMode;
+use crate::overlay::WORKSPACE_SYMBOL_PREFIX;
+
+/// Go to Symbol in Workspace's conversation with the backend: the query the
+/// open picker wants answered, when it goes out, and which answer to adopt.
+#[derive(Debug, Default)]
+pub(crate) struct WorkspaceSymbolSearch {
+    /// The query (the text after `#`) the picker last asked for; `None` while
+    /// no workspace-symbol picker is open.
+    query: Option<String>,
+    /// When that query is due to be sent; `None` once it has been, or when it
+    /// is empty (nothing is asked for).
+    due: Option<Instant>,
+    /// The request whose answer is current. An answer to any other is to a
+    /// superseded query, and is dropped.
+    sent: Option<RequestId>,
+    /// Since when rows for the current query have been awaited, for the
+    /// delayed loading note.
+    loading: Option<Pending>,
+}
 
 impl App {
     /// Open the quick-open (go-to-file) overlay at once, over whatever the file
@@ -49,6 +76,7 @@ impl App {
         match self.overlay.as_ref()?.quick_open_mode()? {
             QuickOpenMode::Files | QuickOpenMode::FileAtLine => self.file_index.loading(),
             QuickOpenMode::DocumentSymbols => self.active_outline_loading(),
+            QuickOpenMode::WorkspaceSymbols => self.workspace_symbols.loading,
             // Computed from the open buffer: nothing to wait for.
             QuickOpenMode::Line => None,
         }
@@ -109,9 +137,9 @@ impl App {
     }
 
     /// Follow an edit of an open quick-open's query into the mode its sigil now
-    /// asks for: typing `@` lists the active document's symbols, `:` goes to a
-    /// line, a trailing `:LINE` opens the chosen file there, and deleting them
-    /// goes back to files. What was typed is kept.
+    /// asks for: typing `@` lists the active document's symbols, `#` searches
+    /// the workspace's, `:` goes to a line, a trailing `:LINE` opens the chosen
+    /// file there, and deleting them goes back to files. What was typed is kept.
     fn sync_quick_open_mode(&mut self) {
         let Some(overlay) = self.overlay.as_ref() else {
             return;
@@ -126,6 +154,7 @@ impl App {
         // them (and an edit that leaves one rebuilds the list it returns to).
         let computed = |mode| matches!(mode, QuickOpenMode::Line | QuickOpenMode::FileAtLine);
         if wanted == mode && !computed(mode) {
+            self.follow_workspace_symbol_query(Instant::now());
             return;
         }
         let next = match wanted {
@@ -139,10 +168,118 @@ impl App {
                 symbols.push_str(query.strip_prefix(DOCUMENT_SYMBOL_PREFIX).unwrap_or(&query));
                 symbols
             },
+            QuickOpenMode::WorkspaceSymbols => {
+                let mut symbols = Overlay::workspace_symbols(&self.root, &[]);
+                symbols.push_str(
+                    query
+                        .strip_prefix(WORKSPACE_SYMBOL_PREFIX)
+                        .unwrap_or(&query),
+                );
+                symbols
+            },
         };
         self.overlay = Some(next);
         if wanted == QuickOpenMode::DocumentSymbols {
             self.request_active_symbols();
+        }
+        self.follow_workspace_symbol_query(Instant::now());
+    }
+
+    /// Open quick-open already in its `#` mode: Go to Symbol in Workspace,
+    /// which lists nothing until a query is typed.
+    pub(super) fn open_workspace_symbols(&mut self) {
+        self.overlay = Some(Overlay::workspace_symbols(&self.root, &[]));
+        self.follow_workspace_symbol_query(Instant::now());
+    }
+
+    /// Follow the open workspace-symbol picker's query: a changed one is due
+    /// to be sent once typing pauses, and the answer to any query before it is
+    /// no longer wanted. An empty query asks nothing and lists nothing. With
+    /// no such picker open the search is forgotten.
+    fn follow_workspace_symbol_query(&mut self, now: Instant) {
+        let query = self
+            .overlay
+            .as_ref()
+            .and_then(Overlay::workspace_symbol_query)
+            .map(str::to_string);
+        let search = &mut self.workspace_symbols;
+        let Some(query) = query else {
+            *search = WorkspaceSymbolSearch::default();
+            return;
+        };
+        if search.query.as_ref() == Some(&query) {
+            return;
+        }
+        search.sent = None;
+        if query.trim().is_empty() {
+            search.due = None;
+            search.loading = None;
+            if let Some(overlay) = self.overlay.as_mut() {
+                overlay.set_workspace_symbols(&self.root, &[]);
+            }
+        } else {
+            // The rows already shown stay, filtered by the picker, until the
+            // answer to the new query replaces them.
+            search.due = Some(now + LSP_CHANGE_DEBOUNCE);
+            search.loading.get_or_insert_with(Pending::start);
+        }
+        self.workspace_symbols.query = Some(query);
+    }
+
+    /// Send the workspace-symbol query once it is due. Called after every
+    /// frame, as the lightbulb probe is; a picker closed in the meantime
+    /// forgets the search instead.
+    pub(crate) fn probe_workspace_symbols(&mut self, now: Instant) {
+        let open = self
+            .overlay
+            .as_ref()
+            .is_some_and(|overlay| overlay.workspace_symbol_query().is_some());
+        if !open {
+            if self.workspace_symbols.query.is_some() {
+                self.workspace_symbols = WorkspaceSymbolSearch::default();
+            }
+            return;
+        }
+        let search = &mut self.workspace_symbols;
+        if search.due.is_none_or(|due| now < due) {
+            return;
+        }
+        search.due = None;
+        let query = search.query.clone().unwrap_or_default();
+        let sent = self.send(SessionCommand::WorkspaceSymbols { query });
+        let search = &mut self.workspace_symbols;
+        search.sent = sent;
+        if sent.is_none() {
+            // No backend to answer: there is nothing to wait for.
+            search.loading = None;
+        }
+    }
+
+    /// How long until the workspace-symbol query is due, so the loop wakes to
+    /// send it without another keystroke.
+    pub(crate) fn workspace_symbol_next_wake(&self, now: Instant) -> Option<Duration> {
+        self.workspace_symbols
+            .due
+            .map(|due| due.saturating_duration_since(now))
+    }
+
+    /// Fill the open Go to Symbol in Workspace with the answer to its current
+    /// query. An answer to a query typed over since, or arriving after the
+    /// picker closed, is dropped.
+    pub(super) fn on_workspace_symbols(
+        &mut self,
+        id: Option<RequestId>,
+        symbols: &[WorkspaceSymbol],
+    ) {
+        let search = &mut self.workspace_symbols;
+        if id.is_none() || id != search.sent {
+            return;
+        }
+        search.sent = None;
+        search.loading = None;
+        let root = workspace::absolute(&self.root);
+        if let Some(overlay) = self.overlay.as_mut() {
+            overlay.set_workspace_symbols(&root, symbols);
         }
     }
 
