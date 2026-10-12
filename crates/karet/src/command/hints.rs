@@ -125,6 +125,8 @@ impl Command {
             Self::AddCursorNextOccurrence => "add cursor",
             Self::GoToBracket => "bracket",
             Self::SelectToBracket => "select bracket",
+            Self::ExpandSelection => "expand",
+            Self::ShrinkSelection => "shrink",
             // Diff.
             Self::ToggleDiffLayout => "layout",
             Self::NextChangedFile => "next change",

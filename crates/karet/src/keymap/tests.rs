@@ -307,13 +307,14 @@ fn word_motion_and_select_all_bind_in_editor() {
         res(Focus::Editor, false, key(KeyCode::Left, KeyModifiers::ALT)),
         Some(Command::CaretWordLeft)
     );
+    // Expand Selection, not word selection (app::tests::syntax_select).
     assert_eq!(
         res(
             Focus::Editor,
             false,
             key(KeyCode::Right, KeyModifiers::ALT | KeyModifiers::SHIFT)
         ),
-        Some(Command::SelectWordRight)
+        Some(Command::ExpandSelection)
     );
     assert_eq!(
         res(

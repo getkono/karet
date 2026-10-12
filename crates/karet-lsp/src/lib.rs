@@ -81,6 +81,7 @@ mod handshake;
 mod inlay;
 mod launch;
 mod navigation;
+mod selection;
 mod selector;
 mod snippet;
 mod uri;

@@ -160,6 +160,10 @@ pub(crate) fn initialize_params(root: &Path) -> Result<lsp_types::InitializePara
             }),
             formatting: Some(dynamic),
             range_formatting: Some(dynamic),
+            // `LspClient::selection_ranges`, for Expand Selection.
+            selection_range: Some(lsp_types::SelectionRangeClientCapabilities {
+                dynamic_registration: Some(true),
+            }),
             code_action: Some(code_action_capabilities()),
             ..lsp_types::TextDocumentClientCapabilities::default()
         }),

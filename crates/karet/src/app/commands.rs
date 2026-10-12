@@ -144,6 +144,8 @@ impl App {
             Command::AddCursorNextOccurrence => self.add_cursor_next_occurrence(),
             Command::GoToBracket => self.bracket_command(false),
             Command::SelectToBracket => self.bracket_command(true),
+            Command::ExpandSelection => self.expand_selection(),
+            Command::ShrinkSelection => self.shrink_selection(),
             Command::CollapseCarets => self.collapse_carets_or_unfocus(),
             Command::ScrollUp => self.scroll_lines(-1),
             Command::ScrollDown => self.scroll_lines(1),

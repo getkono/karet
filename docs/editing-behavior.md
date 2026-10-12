@@ -80,7 +80,9 @@ same motion.
 
 | Input | Behaviour | Status |
 |---|---|---|
-| Shift + any motion above | Extend: the head moves and the anchor stays. | harness (Shift+Left, Shift+Right, Shift+End) |
+| Shift + any motion above | Extend: the head moves and the anchor stays. Shift+Alt+Left / Right are Shrink / Expand Selection instead (below); word selection is Ctrl+Shift+Left / Right. | harness (Shift+Left, Shift+Right, Shift+End) |
+| Shift+Alt+Right | Expand Selection: every selection grows to the smallest syntax node that strictly contains it, injected languages included (a Markdown code fence grows through the fence's language first). A caret touching a word takes the word first, so a word in a string grows to the word, the string's contents, the string, the argument list, the call. Each grown selection runs forward from the node's start. Selections that grow into each other merge. A selection with no larger node stays. | harness |
+| Shift+Alt+Left | Shrink Selection: restore the exact set of carets and selections the last Expand Selection grew from, directions and primary included, step by step back to where expanding began. Any other change of selection, or an edit made elsewhere, ends that history, and Shrink then does nothing. | harness |
 | Ctrl+A | Select the whole document, with the head at its end. Does not scroll. | harness |
 | Ctrl+Shift+Alt+\ | Select to Bracket: select the pair Go to Bracket would use, brackets included, with the head after the closing bracket. Pressed on a selection that is exactly a pair, widen to the pair around it. | harness |
 | Esc, one caret with a selection | Clear the selection and keep the caret at its head. | harness |
@@ -91,6 +93,12 @@ Deviation: VS Code binds no key to Select to Bracket. karet binds
 Ctrl+Shift+Alt+\, Go to Bracket's chord with Alt, so the command has a key at
 all. A legacy terminal sends neither chord apart from Ctrl+\; both commands
 are in the command palette.
+
+Deviation: VS Code asks the language server for Expand Selection's ranges
+(`textDocument/selectionRange`) when there is one. karet grows along the
+tree-sitter syntax tree only, until #451 prefers the server's ranges. macOS
+terminals deliver Option+Shift+arrow as Shift+Alt+arrow, so there it is Expand /
+Shrink Selection too, not word selection.
 
 ## Multiple carets
 

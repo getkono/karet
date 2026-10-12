@@ -14,6 +14,7 @@ mod inlay;
 mod pointer;
 mod reveal;
 mod selection;
+mod syntax_select;
 mod virtual_text;
 
 #[test]

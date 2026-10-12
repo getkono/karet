@@ -685,3 +685,165 @@ fn javascript_graphql_markers_inject() -> Result<(), TsError> {
     assert_eq!(graphql_regions("javascript", src)?.len(), 1);
     Ok(())
 }
+
+/// The text of each span [`SyntaxTree::enclosing_spans`] returns for the first
+/// occurrence of `needle` in `src`, parsed as the grammar named `lang`.
+#[cfg(any(
+    feature = "lang-rust",
+    feature = "lang-typescript",
+    feature = "lang-python"
+))]
+fn enclosing_texts(lang: &str, src: &str, needle: &str) -> Result<Vec<String>, TsError> {
+    let lang = language_id_from_injection_name(lang).ok_or(TsError::UnknownLanguage)?;
+    let start = src.find(needle).ok_or(TsError::ParseFailed)?;
+    let tree = SyntaxTree::parse(&mut ParserPool::new(), lang, src)?;
+    let span = Span {
+        start: BytePos(start),
+        end: BytePos(start + needle.len()),
+    };
+    Ok(tree
+        .enclosing_spans(span)
+        .iter()
+        .map(|s| src[s.start.0..s.end.0].to_owned())
+        .collect())
+}
+
+#[cfg(feature = "lang-rust")]
+#[test]
+fn rust_enclosing_spans_grow_from_string_contents_outward() -> Result<(), TsError> {
+    let src = "fn f() { g(\"hello world\", 2); }\n";
+    let texts = enclosing_texts("rust", src, "hello")?;
+    assert_eq!(
+        texts.get(..4),
+        Some(
+            &[
+                "hello world".to_owned(),
+                "\"hello world\"".to_owned(),
+                "(\"hello world\", 2)".to_owned(),
+                "g(\"hello world\", 2)".to_owned(),
+            ][..]
+        ),
+        "{texts:?}"
+    );
+    // Innermost first and strictly growing, ending at the whole file.
+    assert!(
+        texts.windows(2).all(|w| w[0].len() < w[1].len()),
+        "{texts:?}"
+    );
+    assert_eq!(texts.last().map(String::as_str), Some(src));
+    Ok(())
+}
+
+#[cfg(feature = "lang-rust")]
+#[test]
+fn a_span_equal_to_a_node_starts_the_chain_at_that_node() -> Result<(), TsError> {
+    let src = "fn f() { g(\"hello world\", 2); }\n";
+    let texts = enclosing_texts("rust", src, "(\"hello world\", 2)")?;
+    assert_eq!(
+        texts.first().map(String::as_str),
+        Some("(\"hello world\", 2)")
+    );
+    assert_eq!(
+        texts.get(1).map(String::as_str),
+        Some("g(\"hello world\", 2)")
+    );
+    Ok(())
+}
+
+#[cfg(feature = "lang-rust")]
+#[test]
+fn a_caret_between_tokens_resolves_to_the_following_token() -> Result<(), TsError> {
+    let src = "fn f() { g(x); }\n";
+    let lang = language_id_from_injection_name("rust").ok_or(TsError::UnknownLanguage)?;
+    let tree = SyntaxTree::parse(&mut ParserPool::new(), lang, src)?;
+    let at = src.find("(x)").ok_or(TsError::ParseFailed)?;
+    let caret = Span {
+        start: BytePos(at),
+        end: BytePos(at),
+    };
+    let spans = tree.enclosing_spans(caret);
+    let texts: Vec<&str> = spans.iter().map(|s| &src[s.start.0..s.end.0]).collect();
+    assert_eq!(texts.get(..2), Some(&["(", "(x)"][..]), "{texts:?}");
+    Ok(())
+}
+
+#[cfg(feature = "lang-rust")]
+#[test]
+fn a_span_past_the_tree_has_no_enclosing_nodes() -> Result<(), TsError> {
+    let lang = language_id_from_injection_name("rust").ok_or(TsError::UnknownLanguage)?;
+    let tree = SyntaxTree::parse(&mut ParserPool::new(), lang, "fn f() {}")?;
+    let past = Span {
+        start: BytePos(4),
+        end: BytePos(40),
+    };
+    assert_eq!(tree.enclosing_spans(past), Vec::<Span>::new());
+    Ok(())
+}
+
+#[cfg(feature = "lang-typescript")]
+#[test]
+fn typescript_enclosing_spans_grow_through_the_call() -> Result<(), TsError> {
+    let src = "const x = f(a, \"b c\");\n";
+    let texts = enclosing_texts("typescript", src, "b")?;
+    assert_eq!(
+        texts.get(..4),
+        Some(
+            &[
+                "b c".to_owned(),
+                "\"b c\"".to_owned(),
+                "(a, \"b c\")".to_owned(),
+                "f(a, \"b c\")".to_owned(),
+            ][..]
+        ),
+        "{texts:?}"
+    );
+    Ok(())
+}
+
+#[cfg(feature = "lang-python")]
+#[test]
+fn python_enclosing_spans_grow_through_the_call() -> Result<(), TsError> {
+    let src = "print(\"hi there\", end=\"\")\n";
+    let texts = enclosing_texts("python", src, "hi")?;
+    assert_eq!(
+        texts.get(..4),
+        Some(
+            &[
+                "hi there".to_owned(),
+                "\"hi there\"".to_owned(),
+                "(\"hi there\", end=\"\")".to_owned(),
+                "print(\"hi there\", end=\"\")".to_owned(),
+            ][..]
+        ),
+        "{texts:?}"
+    );
+    Ok(())
+}
+
+#[cfg(all(feature = "lang-markdown", feature = "lang-rust"))]
+#[test]
+fn layered_enclosing_spans_climb_from_the_injected_language_to_its_host() -> Result<(), TsError> {
+    let md = language_id_from_injection_name("markdown").ok_or(TsError::UnknownLanguage)?;
+    let src = "# Title\n\n```rust\nfn f() { g(1); }\n```\n";
+    let tree = LayeredParser::new().parse(md, src)?;
+    let at = src.find("g(1)").ok_or(TsError::ParseFailed)?;
+    let span = Span {
+        start: BytePos(at),
+        end: BytePos(at + 1),
+    };
+    let spans = tree.enclosing_spans(span);
+    let texts: Vec<&str> = spans.iter().map(|s| &src[s.start.0..s.end.0]).collect();
+    assert_eq!(texts.get(..2), Some(&["g", "g(1)"][..]), "{texts:?}");
+    // The host's fenced code block is among the steps, and the document is last.
+    assert!(
+        texts.contains(&"```rust\nfn f() { g(1); }\n```\n"),
+        "{texts:?}"
+    );
+    assert_eq!(texts.last().copied(), Some(src));
+    assert!(
+        spans
+            .windows(2)
+            .all(|w| { w[0].end.0 - w[0].start.0 < w[1].end.0 - w[1].start.0 })
+    );
+    Ok(())
+}

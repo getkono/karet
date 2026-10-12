@@ -224,10 +224,12 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(Editor, false, true,  false, End,       Command::SelectLineEnd),
     b(Editor, true,  true,  false, Home,      Command::SelectDocStart),
     b(Editor, true,  true,  false, End,       Command::SelectDocEnd),
-    b(Editor, false, true,  true,  Left,      Command::SelectWordLeft),
-    b(Editor, false, true,  true,  Right,     Command::SelectWordRight),
+    // Shift+Alt+Left/Right are Shrink/Expand Selection (VS Code on Linux and
+    // Windows), so word selection keeps only its Ctrl chord.
     b(Editor, true,  true,  false, Left,      Command::SelectWordLeft),
     b(Editor, true,  true,  false, Right,     Command::SelectWordRight),
+    b(Editor, false, true,  true,  Right,     Command::ExpandSelection),
+    b(Editor, false, true,  true,  Left,      Command::ShrinkSelection),
     b(Editor, false, true,  false, PageDown,  Command::SelectPageDown),
     b(Editor, false, true,  false, PageUp,    Command::SelectPageUp),
     b(Editor, true,  false, false, Char('a'), Command::EditorSelectAll),
