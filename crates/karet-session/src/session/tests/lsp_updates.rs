@@ -103,6 +103,46 @@
         }
 
         #[test]
+        fn signature_help_with_no_server_is_answered_empty() {
+            let Ok(dir) = tempfile::tempdir() else { return };
+            let path = dir.path().join("notes.txt");
+            if std::fs::write(&path, "plain(text\n").is_err() {
+                return;
+            }
+            let Some((mut session, doc, mut events)) = session_with(&path) else {
+                return;
+            };
+            session.handle(
+                crate::api::RequestId(9),
+                Command::SignatureHelp {
+                    doc,
+                    position: LineCol::new(0, 6),
+                    manual: true,
+                },
+            );
+            let mut answer = None;
+            while let Some((id, event)) = events.try_recv() {
+                if let Event::SignatureHelp {
+                    doc: asked,
+                    help,
+                    options,
+                } = event
+                {
+                    answer = Some((id, asked, help, options));
+                }
+            }
+            assert_eq!(
+                answer,
+                Some((
+                    Some(crate::api::RequestId(9)),
+                    doc,
+                    None,
+                    karet_core::SignatureHelpOptions::default()
+                ))
+            );
+        }
+
+        #[test]
         fn a_navigation_answer_is_converted_and_keeps_its_kind() {
             let Ok(dir) = tempfile::tempdir() else { return };
             let path = dir.path().join("here.rs");
