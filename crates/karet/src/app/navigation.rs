@@ -151,7 +151,19 @@ impl NavHistory {
     ///
     /// Only `from` moves, so a document shown in two panes, which hears about one
     /// edit along two paths, is shifted once.
-    pub(crate) fn shift(&mut self, path: &Path, from: u64, to: u64, edits: &[TextEdit]) {
+    ///
+    /// `focused` says whether this is the focused pane's history. Only there did
+    /// the edit carry the caret, so only there is the next observed move the
+    /// edit's own: another split showing the file keeps its caret, and its next
+    /// move (a far click that focuses it) is a navigation like any other.
+    pub(crate) fn shift(
+        &mut self,
+        path: &Path,
+        from: u64,
+        to: u64,
+        edits: &[TextEdit],
+        focused: bool,
+    ) {
         let moves = |point: &mut NavPoint| {
             let hit = point.path == path && point.version == Some(from);
             if hit {
@@ -166,7 +178,7 @@ impl NavHistory {
             .for_each(|point| {
                 moves(point);
             });
-        if self.current.as_mut().is_some_and(moves) {
+        if self.current.as_mut().is_some_and(moves) && focused {
             self.edited = true;
         }
     }
@@ -314,8 +326,9 @@ impl App {
         let Some(path) = self.doc_path(doc) else {
             return;
         };
-        for history in self.nav_history.values_mut() {
-            history.shift(&path, from, to, edits);
+        let focused = self.focus_pane();
+        for (pane, history) in &mut self.nav_history {
+            history.shift(&path, from, to, edits, *pane == focused);
         }
     }
 
@@ -426,11 +439,29 @@ mod tests {
         }];
         // The edit is shifted in before the move is observed, syncing `current`
         // to the new version while leaving it at the replacement's start.
-        history.shift(Path::new("a"), 1, 2, &paste);
+        history.shift(Path::new("a"), 1, 2, &paste, true);
         history.observe(at("a", 24, 2));
         assert_eq!(history.depth(), (0, 0));
         // The edit is spent: a real move after it is still a step.
         history.observe(at("a", 24 + NAV_LINE_THRESHOLD, 2));
+        assert_eq!(history.depth(), (1, 0));
+    }
+
+    #[test]
+    fn an_edit_from_another_split_leaves_the_next_far_move_a_step() {
+        let mut history = NavHistory::default();
+        history.observe(at("a", 0, 1));
+        let inserted = [TextEdit {
+            range: karet_core::Range {
+                start: LineCol::new(5, 0),
+                end: LineCol::new(5, 0),
+            },
+            new_text: "x\n".to_owned(),
+        }];
+        // The edit was typed in the other split: this pane's place moves with
+        // the text, but its caret was not the one the edit carried.
+        history.shift(Path::new("a"), 1, 2, &inserted, false);
+        history.observe(at("a", 2 * NAV_LINE_THRESHOLD, 2));
         assert_eq!(history.depth(), (1, 0));
     }
 
@@ -525,10 +556,10 @@ mod tests {
         }];
         // Another file, and an edit against a version the entry is not in, are
         // both left alone.
-        history.shift(Path::new("c"), 1, 2, &inserted);
-        history.shift(Path::new("a"), 7, 8, &inserted);
+        history.shift(Path::new("c"), 1, 2, &inserted, true);
+        history.shift(Path::new("a"), 7, 8, &inserted, true);
         assert!(history.holds(Path::new("a"), 1));
-        history.shift(Path::new("a"), 1, 2, &inserted);
+        history.shift(Path::new("a"), 1, 2, &inserted, true);
         assert!(history.holds(Path::new("a"), 2));
         assert!(!history.holds(Path::new("a"), 1));
         let back = history.back(always);

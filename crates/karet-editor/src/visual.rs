@@ -96,6 +96,17 @@ pub(super) fn display_col(
     col
 }
 
+/// How a cell inside a multi-cell character resolves to a buffer column.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Snap {
+    /// The nearer of the character's two boundaries: where a click puts the
+    /// caret.
+    Nearest,
+    /// The character's own column: which character the pointer is over, for
+    /// word selection and anything else that asks what is under the pointer.
+    Containing,
+}
+
 /// The buffer column `offset` screen cells into the row starting at `start`.
 ///
 /// `offset` is measured from the row's own first cell — the same origin
@@ -104,10 +115,13 @@ pub(super) fn display_col(
 /// which is also where the hint anchored at `start` paints: that hint belongs
 /// to the row that starts at its column.
 ///
-/// A cell inside a hint resolves to the hint's own anchor column, where the
-/// caret is drawn immediately left of the annotation. Clicking an annotation
-/// therefore puts the caret against the text the hint describes rather than
-/// past the character that follows it.
+/// A cell inside a character resolves as `snap` says: [`Snap::Nearest`] to
+/// the nearer of its two boundaries, so the right half of a wide character,
+/// or the trailing cells of a tab, put the caret after it; [`Snap::Containing`]
+/// to the character's own column. A cell inside a hint resolves to the hint's
+/// own anchor column, where the caret is drawn immediately left of the
+/// annotation. Clicking an annotation therefore puts the caret against the
+/// text the hint describes rather than past the character that follows it.
 pub(super) fn source_col_at_display_offset(
     chars: &[char],
     start: u32,
@@ -115,6 +129,7 @@ pub(super) fn source_col_at_display_offset(
     offset: u32,
     tab_width: u16,
     hints: LineHints<'_>,
+    snap: Snap,
 ) -> u32 {
     let mut source = start.min(chars.len() as u32);
     let end = end.min(chars.len() as u32);
@@ -132,6 +147,12 @@ pub(super) fn source_col_at_display_offset(
         }
         let width = character_width(*ch, after_hint, tab_width);
         if target < after_hint.saturating_add(width) {
+            // Round to the nearer boundary: the right half of a wide
+            // character, or a tab's trailing cells, put the caret after it.
+            if snap == Snap::Nearest && target.saturating_sub(after_hint).saturating_mul(2) >= width
+            {
+                source = source.saturating_add(1);
+            }
             break;
         }
         absolute = after_hint.saturating_add(width);
@@ -167,7 +188,7 @@ pub(super) fn visual_ranges(
     let mut start = 0_u32;
     while start < len {
         let mut hard_end = start;
-        let mut used = 0_u32;
+        let mut used = row_lead(hints, start == 0);
         // `display_col(start)` stops short of the hint at `start`: this row
         // paints it, so its cells are counted below.
         let mut absolute = display_col(&chars, start, layout.tab_width, hints);
@@ -294,28 +315,43 @@ pub(super) fn next_line_anchor(
     }
 }
 
+/// The visual row `row` rows below `start`, and whether `row` lies past the
+/// document's last row — in which case the anchor is that last row.
 pub(super) fn visual_anchor_at_row(
     buffer: &TextBuffer,
     folds: &[Fold],
     layout: Layout<'_>,
     start: VisualAnchor,
     row: u32,
-) -> VisualAnchor {
+) -> (VisualAnchor, bool) {
     let mut anchor = normalize_visual_anchor(buffer, folds, layout, start);
     for _ in 0..row {
         let next = next_visual_anchor(buffer, folds, layout, anchor);
         if next == anchor {
-            break;
+            return (anchor, true);
         }
         anchor = next;
     }
-    anchor
+    (anchor, false)
 }
 
+/// Whether a caret at `col` is drawn on the visual row `range`.
+///
+/// A row owns the columns it starts through the one before its end. Its end
+/// column is also where the next row starts, so the row draws it only when
+/// it is the line's last row, or when the caret is `upstream`: placed by a
+/// click past the end of this row rather than at the start of the next.
+pub(super) fn row_holds(range: VisualRange, last: bool, col: u32, upstream: bool) -> bool {
+    range.start <= col && (col < range.end || (col == range.end && (last || upstream)))
+}
+
+/// The visual row a caret at `pos` is drawn on; `upstream` as in
+/// [`row_holds`].
 pub(super) fn visual_anchor_for_position(
     buffer: &TextBuffer,
     layout: Layout<'_>,
     pos: LineCol,
+    upstream: bool,
 ) -> VisualAnchor {
     let line = pos.line.min(last_line(buffer));
     let ranges = visual_ranges(buffer, line, layout);
@@ -324,9 +360,7 @@ pub(super) fn visual_anchor_for_position(
         .iter()
         .enumerate()
         .find_map(|(index, range)| {
-            (range.start <= pos.col
-                && (pos.col < range.end || (index == last && pos.col == range.end)))
-                .then_some(index as u32)
+            row_holds(*range, index == last, pos.col, upstream).then_some(index as u32)
         })
         .unwrap_or(last as u32);
     VisualAnchor { line, subrow }
@@ -339,9 +373,10 @@ pub(super) fn reveal_visual_anchor(
     height: u16,
     current: VisualAnchor,
     cursor: LineCol,
+    upstream: bool,
 ) -> VisualAnchor {
     let current = normalize_visual_anchor(buffer, folds, layout, current);
-    let target = visual_anchor_for_position(buffer, layout, cursor);
+    let target = visual_anchor_for_position(buffer, layout, cursor, upstream);
     let mut probe = current;
     for _ in 0..height.max(1) {
         if probe == target {
@@ -365,6 +400,15 @@ pub(super) fn reveal_visual_anchor(
         revealed = previous;
     }
     revealed
+}
+
+/// The cells a row paints ahead of its first caret slot: the line's `before`
+/// inline text, which goes on its `first_row` (an unwrapped line's only row).
+///
+/// One function for every side of the mapping — wrapping, the caret, a
+/// click — so none of them can disagree with the painter about it.
+pub(super) fn row_lead(hints: LineHints<'_>, first_row: bool) -> u32 {
+    if first_row { hints.prefix() } else { 0 }
 }
 
 /// The screen offset of `col` within the row that begins at `row_start`.
@@ -422,9 +466,11 @@ pub(super) fn horizontal_extent(
     // The caret slot at end-of-line takes a cell even when no hint follows it.
     let needed = end.saturating_add(trailing.max(1));
     let width = width.max(1);
-    let first = cols.partition_point(|&origin| needed.saturating_sub(origin) > width) as u32;
+    // `before` inline text holds the row's first cells whatever the scroll.
+    let room = width.saturating_sub(hints.prefix()).max(1);
+    let first = cols.partition_point(|&origin| needed.saturating_sub(origin) > room) as u32;
     if first == 0 {
-        needed.saturating_sub(1)
+        needed.saturating_add(hints.prefix()).saturating_sub(1)
     } else {
         first.saturating_add(width).saturating_sub(1)
     }
@@ -483,7 +529,8 @@ pub(super) fn reveal_column(
     let caret = cols.get(col).copied().unwrap_or(0);
     // Candidate origins are the columns up to the caret's own.
     let origins = cols.get(..=col).unwrap_or_default();
-    let width = width.max(1);
+    // `before` inline text holds the row's first cells whatever the scroll.
+    let width = width.saturating_sub(hints.prefix()).max(1);
     let margin = reveal.margin(width);
     let offset_at = |origin: usize| {
         origins
@@ -553,22 +600,17 @@ pub(super) fn caret_cell(
                 .copied()
                 .unwrap_or_else(|| VisualRange::empty(0));
             let last = index + 1 == ranges.len();
-            if anchor.line == at.line
-                && (range.start <= at.col)
-                && (at.col < range.end || (last && at.col == range.end))
+            if anchor.line == at.line && row_holds(range, last, at.col, state.upstream == Some(at))
             {
                 let chars: Vec<char> = buffer
                     .line(at.line as usize)
                     .unwrap_or_default()
                     .chars()
                     .collect();
-                let rel = offset_within_row(
-                    &chars,
-                    range.start,
-                    at.col,
-                    state.last_tab_width,
-                    layout.hints_on(at.line),
-                );
+                let hints = layout.hints_on(at.line);
+                let rel =
+                    offset_within_row(&chars, range.start, at.col, state.last_tab_width, hints)
+                        .saturating_add(row_lead(hints, index == 0));
                 let x = content_x.saturating_add(
                     u16::try_from(rel.min(u32::from(content_width.saturating_sub(1))))
                         .unwrap_or(u16::MAX),
@@ -612,13 +654,15 @@ pub(super) fn caret_cell(
     if at.col < state.scroll_col {
         return None;
     }
+    let hints = state.hints_on(at.line);
     let rel = offset_within_row(
         &chars,
         state.scroll_col,
         at.col,
         state.last_tab_width,
-        state.hints_on(at.line),
-    );
+        hints,
+    )
+    .saturating_add(row_lead(hints, true));
     if rel >= u32::from(content_width) {
         return None;
     }

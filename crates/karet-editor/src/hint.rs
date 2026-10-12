@@ -19,6 +19,8 @@
 //! click on a hint cell resolves to `c`, so it puts the caret where that same
 //! hint begins.
 
+use karet_core::Decoration;
+use karet_core::DecorationKind;
 use karet_core::InlayHint;
 
 /// One indexed hint.
@@ -39,16 +41,31 @@ pub(super) struct Span {
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct LineHints<'a> {
     spans: &'a [Span],
+    /// Cells of `before` inline text painted ahead of the line's first row.
+    prefix: u32,
 }
 
 impl LineHints<'_> {
     /// No hints at all — the shape every mapping had before this existed, and
     /// the one it must stay byte-identical for.
-    pub(super) const EMPTY: LineHints<'static> = LineHints { spans: &[] };
+    pub(super) const EMPTY: LineHints<'static> = LineHints {
+        spans: &[],
+        prefix: 0,
+    };
 
     /// Whether this line has no hints, so callers can take the original path.
+    ///
+    /// About the column-anchored hints only: the [`prefix`](Self::prefix)
+    /// shifts a whole row, never one column against another.
     pub(super) fn is_empty(self) -> bool {
         self.spans.is_empty()
+    }
+
+    /// The cells of `before` inline text the painter puts ahead of this
+    /// line's first row (every row of an unwrapped line, which has only the
+    /// one), before its first buffer column's caret slot.
+    pub(super) const fn prefix(self) -> u32 {
+        self.prefix
     }
 
     /// Total width of the hints at exactly `col`.
@@ -76,6 +93,8 @@ impl LineHints<'_> {
 #[derive(Clone, Debug, Default)]
 pub(super) struct HintIndex {
     spans: Vec<Span>,
+    /// `(first line, last line, cells)` of each `before` inline text.
+    prefixes: Vec<(u32, u32, u32)>,
 }
 
 impl HintIndex {
@@ -103,17 +122,50 @@ impl HintIndex {
         // hints at one column keep the order the server sent them, which is the
         // order they are painted in.
         spans.sort_by_key(|span| (span.line, span.col));
-        Self { spans }
+        Self {
+            spans,
+            prefixes: Vec::new(),
+        }
+    }
+
+    /// Also index the `before` [`InlineText`](DecorationKind::InlineText)
+    /// among `decorations`: the painter puts it ahead of the first row of
+    /// every line its range spans, so it shifts that row like a hint would.
+    pub(super) fn with_prefixes(mut self, decorations: &[Decoration]) -> Self {
+        self.prefixes = decorations
+            .iter()
+            .filter_map(|decoration| match &decoration.kind {
+                DecorationKind::InlineText { text, before: true } => Some((
+                    decoration.range.start.line,
+                    decoration.range.end.line,
+                    inline_text_width(text),
+                )),
+                _ => None,
+            })
+            .filter(|&(.., width)| width > 0)
+            .collect();
+        self
     }
 
     /// The hints on `line`.
     pub(super) fn line(&self, line: u32) -> LineHints<'_> {
         let start = self.spans.partition_point(|span| span.line < line);
         let end = self.spans.partition_point(|span| span.line <= line);
+        let prefix = self
+            .prefixes
+            .iter()
+            .filter(|&&(first, last, _)| first <= line && line <= last)
+            .fold(0_u32, |total, &(.., width)| total.saturating_add(width));
         LineHints {
             spans: self.spans.get(start..end).unwrap_or_default(),
+            prefix,
         }
     }
+}
+
+/// The screen cells inline decoration text consumes when painted.
+pub(super) fn inline_text_width(text: &str) -> u32 {
+    u32::try_from(unicode_width::UnicodeWidthStr::width(text)).unwrap_or(u32::MAX)
 }
 
 /// The screen cells one hint consumes: its label plus its padding.
