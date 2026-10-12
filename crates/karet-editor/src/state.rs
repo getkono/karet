@@ -827,6 +827,25 @@ impl EditorState {
         self.reveal(buffer, self.cursor());
     }
 
+    /// Carry every anchor and head through a change made elsewhere (another
+    /// view, a formatter, a reload): `map` takes a position in the text before
+    /// the change to one in `buffer`, the text after it, and each result is
+    /// then clamped to `buffer`. Carets that land together merge, keeping the
+    /// primary.
+    ///
+    /// The viewport does not move: the change was not this view's doing, so
+    /// it must not scroll the text out from under the reader.
+    pub fn map_cursors(&mut self, buffer: &TextBuffer, map: impl Fn(LineCol) -> LineCol) {
+        for selection in &mut self.cursors.selections {
+            selection.anchor = clamp_to_buffer(buffer, map(selection.anchor));
+            selection.head = clamp_to_buffer(buffer, map(selection.head));
+        }
+        // A pointer hint or an occurrence run names positions in the old text.
+        self.upstream = None;
+        self.word_occurrences = None;
+        self.normalize();
+    }
+
     /// Extend the primary selection so its moving end is `pos` (clamped), keeping the
     /// primary anchor fixed and leaving any secondary carets in place.
     ///

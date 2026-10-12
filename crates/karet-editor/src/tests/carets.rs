@@ -107,6 +107,48 @@ fn set_cursor_state_preserves_selections_and_clamps_endpoints() {
 }
 
 #[test]
+fn map_cursors_maps_clamps_and_merges_without_scrolling() {
+    // The text after the change: line 1 lost its tail, and line 3 is gone.
+    let buffer = TextBuffer::from_text("abc\nx\nyz");
+    let mut state = EditorState::new();
+    state.last_height = 2;
+    state.scroll_line = 1;
+    state.cursors = CursorState {
+        selections: vec![
+            Selection {
+                anchor: LineCol::new(0, 1),
+                head: LineCol::new(1, 9),
+            },
+            Selection::caret(LineCol::new(3, 4)),
+            Selection::caret(LineCol::new(5, 9)),
+        ],
+        primary: 2,
+    };
+    // Identity: every endpoint is only clamped.
+    state.map_cursors(&buffer, |pos| pos);
+    assert_eq!(
+        state.cursors().selections,
+        vec![
+            Selection {
+                anchor: LineCol::new(0, 1),
+                head: LineCol::new(1, 1),
+            },
+            Selection::caret(LineCol::new(2, 2)),
+        ],
+        "the selection is clamped, the two carets past the end merge"
+    );
+    assert_eq!(state.cursor(), LineCol::new(2, 2), "the primary survives");
+    assert_eq!(state.scroll_line, 1, "the viewport did not move");
+
+    // A real map: everything shifts one column right.
+    state.map_cursors(&buffer, |pos| LineCol::new(pos.line, pos.col + 1));
+    assert_eq!(
+        state.cursors().selections.first().map(|s| s.anchor),
+        Some(LineCol::new(0, 2))
+    );
+}
+
+#[test]
 fn add_caret_below_clamps_to_short_line() {
     let buffer = TextBuffer::from_text("longline\nab");
     let mut state = EditorState::new();
