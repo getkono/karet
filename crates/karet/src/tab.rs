@@ -23,6 +23,8 @@ use karet_markdown::WrappedDocument;
 use karet_pdf::Document as PdfDocument;
 use karet_search::SearchQuery;
 use karet_session::DocumentId;
+use karet_session::LanguageServerId;
+use karet_session::LanguageServerLogEntry;
 use karet_session::LoadedConfig;
 use karet_session::ViewId;
 use karet_syntax::FoldRegions;
@@ -308,6 +310,18 @@ pub enum TabKind {
         /// Two-axis scroll state.
         pager: PagerState,
     },
+    /// One language server's log (`window/logMessage` and shown messages),
+    /// reserved the moment it is asked for and filled when the session answers.
+    ServerLog {
+        /// The provider whose log this is.
+        server: LanguageServerId,
+        /// Its entries, oldest first, as of the last answer.
+        entries: Vec<LanguageServerLogEntry>,
+        /// The in-flight read, while one is outstanding.
+        loading_since: Option<Pending>,
+        /// Two-axis scroll state.
+        pager: PagerState,
+    },
     /// A read-only code-visualization graph (dependency or usage), rendered as an
     /// indented tree.
     Graph {
@@ -561,6 +575,20 @@ impl Tab {
         )
     }
 
+    /// A language server's log, reserved while its entries are read.
+    #[must_use]
+    pub fn server_log(server: LanguageServerId) -> Self {
+        Self::new(
+            format!("{} Log", server.display_name()),
+            TabKind::ServerLog {
+                server,
+                entries: Vec::new(),
+                loading_since: Some(Pending::start()),
+                pager: PagerState::default(),
+            },
+        )
+    }
+
     /// A single-file diff tab. With `file` present the diff shows immediately;
     /// without it the tab is reserved in its loading state (the caller has asked
     /// the backend to prepare the diff).
@@ -702,7 +730,7 @@ impl Tab {
             | TabKind::Commit { .. }
             | TabKind::Compare { .. }
             | TabKind::CommitGraph { .. } => None,
-            TabKind::StashPreview { .. } => None,
+            TabKind::StashPreview { .. } | TabKind::ServerLog { .. } => None,
         }
     }
 
@@ -727,6 +755,7 @@ impl Tab {
             TabKind::LatexPreview { .. } => "latex preview",
             TabKind::Diff { file, .. } => file.as_deref().map_or("diff", FileView::language),
             TabKind::StashPreview { .. } => "stash",
+            TabKind::ServerLog { .. } => "log",
             TabKind::Seam(_) => "seams",
             TabKind::Graph { .. } => "graph",
             TabKind::LoadedConfig { .. } => "settings",
@@ -770,6 +799,7 @@ fn tab_kind_path(kind: &TabKind) -> Option<&Path> {
         TabKind::Welcome
         | TabKind::LanguageServers(_)
         | TabKind::StashPreview { .. }
+        | TabKind::ServerLog { .. }
         | TabKind::Seam(_)
         | TabKind::Graph { .. }
         | TabKind::LoadedConfig { .. }

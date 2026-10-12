@@ -503,7 +503,7 @@ The eight states separate by *cause*, because what the user should do differs:
 
 | Badge | Condition | Whose move |
 |---|---|---|
-| `off` | a provider covers the language but your settings suppress it -- `lsp.enabled`, or an `enabled: false` / empty-command entry the language actually selects | yours, if you want it |
+| `off` | a provider covers the language but your settings suppress it -- `lsp.enabled`, or an `enabled: false` entry the language actually selects | yours, if you want it |
 | `idle` | resolvable and healthy; nothing has needed it yet | nobody's |
 | `ready` | connected and synchronized | nobody's |
 | `starting` | connecting | nobody's |
@@ -686,6 +686,61 @@ reports `cleanup pending`, and the registry retries reclamation in the backgroun
   }
 }
 ```
+
+### Server settings and initialization options
+
+A server entry also carries what the server itself reads, as free-form JSON:
+
+```jsonc
+{
+  "lsp": {
+    "servers": {
+      // No `command`: karet's own launch stands; only the settings are added.
+      "rust-analyzer": {
+        "settings": { "rust-analyzer": { "cargo": { "features": "all" } } },
+        "initializationOptions": { "lens": { "enable": false } }
+      }
+    }
+  }
+}
+```
+
+- `settings` is keyed by section, the way VS Code writes it. A server's
+  `workspace/configuration` request for a section is answered with the value at
+  that dotted path (a literal dotted key such as `"python.analysis"` is tried
+  first); an item naming no section gets the whole object, and a missing section
+  is `null`, which a server reads as its default. The whole object is also pushed
+  once with `workspace/didChangeConfiguration` right after `initialized`, for the
+  servers that read the push instead of pulling.
+- `initializationOptions` is sent verbatim with `initialize`, replacing any karet
+  would have sent (Astro's TypeScript SDK path, for instance).
+- An entry with no `command` keeps karet's own launch: keyed by a provider id it
+  configures that provider wherever it runs; keyed by a language it configures
+  that language's primary server. Only `enabled: false` switches a server off.
+- A live settings reload that changes only `settings` restarts nothing: each
+  running server whose settings changed gets `workspace/didChangeConfiguration`,
+  and its next reconnect starts with the new ones. Any other `lsp.*` change,
+  `initializationOptions` included, retires and restarts the servers as before.
+
+Through the shared broker, the first window to start a server performs its
+handshake, so its `initializationOptions` are the ones that server keeps.
+
+### What a server says to you
+
+- **Progress** (`$/progress` work-done reports) shows in the status bar beside the
+  language-server badge, which reads `LSP busy` while the file's server is
+  working. Clicking a cancellable report cancels it
+  (`window/workDoneProgress/cancel`).
+- **`window/showMessage`** becomes a notification, prefixed with the server's name.
+- **`window/showMessageRequest`** opens a choice prompt with the server's actions;
+  backing out answers "no action".
+- **`window/logMessage`** (and every shown message) is kept per server, the newest
+  2000 entries; **Language Servers: Show Log** in the command palette opens the
+  log of the active file's server.
+- **Watched files.** A server's dynamic registration of
+  `workspace/didChangeWatchedFiles` is honoured: karet's file watcher reports every
+  change in the workspace, and each server is sent only the changes its own
+  registered globs and kinds asked for.
 
 Custom executables receive the same broker, supervisor, restart, queue, root, and
 document-version protections as built-ins. karet cannot authenticate or update an

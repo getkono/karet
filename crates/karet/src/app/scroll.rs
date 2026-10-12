@@ -53,6 +53,7 @@ impl App {
             },
             TabKind::Diff { pager, .. }
             | TabKind::StashPreview { pager, .. }
+            | TabKind::ServerLog { pager, .. }
             | TabKind::Graph { pager, .. }
             | TabKind::LoadedConfig { pager, .. }
             | TabKind::CommitLoading { pager, .. } => adjust(&mut pager.column, delta),
@@ -230,6 +231,7 @@ impl App {
             TabKind::MarkdownPreview { scroll, .. } => *scroll = clamp_u16(position),
             TabKind::Diff { pager, .. }
             | TabKind::StashPreview { pager, .. }
+            | TabKind::ServerLog { pager, .. }
             | TabKind::Graph { pager, .. }
             | TabKind::LoadedConfig { pager, .. }
             | TabKind::CommitLoading { pager, .. } => pager.scroll = clamp_u16(position),
@@ -298,6 +300,7 @@ impl App {
             TabKind::Code { .. } => tab.editor.scroll_to_column(clamp_u32(position)),
             TabKind::Diff { pager, .. }
             | TabKind::StashPreview { pager, .. }
+            | TabKind::ServerLog { pager, .. }
             | TabKind::Graph { pager, .. }
             | TabKind::LoadedConfig { pager, .. }
             | TabKind::CommitLoading { pager, .. } => pager.column = clamp_u16(position),

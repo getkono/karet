@@ -25,6 +25,7 @@ use tokio::sync::mpsc;
 
 use crate::conn::LspHandler;
 use crate::convert;
+use crate::window;
 
 /// The method this module exists for.
 const APPLY_EDIT: &str = "workspace/applyEdit";
@@ -68,36 +69,61 @@ impl Drop for ApplyEditRequest {
     }
 }
 
-/// The receiving half handed to the consumer, and whether it has been.
-pub(crate) struct ApplyEdits {
-    rx: std::sync::Mutex<Option<mpsc::Receiver<ApplyEditRequest>>>,
+/// A receiving half handed to the consumer once, and whether it has been.
+pub(crate) struct Held<T> {
+    rx: std::sync::Mutex<Option<mpsc::Receiver<T>>>,
     taken: Arc<AtomicBool>,
 }
 
-impl ApplyEdits {
+impl<T> Held<T> {
+    /// Hold `rx` until the consumer takes it.
+    pub(crate) fn new(rx: mpsc::Receiver<T>) -> Self {
+        Self {
+            rx: std::sync::Mutex::new(Some(rx)),
+            taken: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
     /// Take the request stream: once, because each request has one answerer.
-    pub(crate) fn take(&self) -> Option<mpsc::Receiver<ApplyEditRequest>> {
+    pub(crate) fn take(&self) -> Option<mpsc::Receiver<T>> {
         let taken = self.rx.lock().ok()?.take();
         if taken.is_some() {
             self.taken.store(true, Ordering::SeqCst);
         }
         taken
     }
+
+    /// Whether the stream has been taken, as the pump reads it.
+    fn flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.taken)
+    }
+}
+
+/// The `workspace/applyEdit` stream, before and after the consumer takes it.
+pub(crate) type ApplyEdits = Held<ApplyEditRequest>;
+
+/// The streams the pump routes into, each taken once by the consumer.
+pub(crate) struct Waiting {
+    /// `workspace/applyEdit`.
+    pub(crate) edits: ApplyEdits,
+    /// `window/showMessageRequest`.
+    pub(crate) messages: window::MessageRequests,
 }
 
 /// Start the pump over `requests`, answering what `handler` answers and
-/// routing `workspace/applyEdit` to the stream returned alongside.
-pub(crate) fn start(mut requests: mpsc::Receiver<PeerRequest>, handler: LspHandler) -> ApplyEdits {
+/// routing the requests that wait on the consumer to the streams returned.
+pub(crate) fn start(mut requests: mpsc::Receiver<PeerRequest>, handler: LspHandler) -> Waiting {
     let (tx, rx) = mpsc::channel(APPLY_EDIT_CAPACITY);
-    let taken = Arc::new(AtomicBool::new(false));
-    let edits = ApplyEdits {
-        rx: std::sync::Mutex::new(Some(rx)),
-        taken: Arc::clone(&taken),
-    };
+    let edits = Held::new(rx);
+    let taken = edits.flag();
+    let (message_tx, messages) = window::message_requests();
+    let messages_taken = messages.flag();
     tokio::spawn(async move {
         while let Some(request) = requests.recv().await {
             if request.method == APPLY_EDIT {
                 route_apply_edit(request, &tx, &taken);
+            } else if request.method == window::SHOW_MESSAGE_REQUEST {
+                window::route_message_request(request, &message_tx, &messages_taken);
             } else {
                 let outcome =
                     karet_jsonrpc::Handler::answer(&handler, &request.method, &request.params);
@@ -105,7 +131,7 @@ pub(crate) fn start(mut requests: mpsc::Receiver<PeerRequest>, handler: LspHandl
             }
         }
     });
-    edits
+    Waiting { edits, messages }
 }
 
 /// Decode one `workspace/applyEdit` and hand it to the consumer, or answer it

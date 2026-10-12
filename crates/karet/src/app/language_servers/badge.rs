@@ -29,6 +29,9 @@ pub(crate) enum LanguageServerBadge {
     Idle,
     /// Connected and synchronized.
     Ready,
+    /// Ready, and reporting work in flight (indexing, building). Never worse
+    /// than ready -- the server is answering -- so it sits just above it.
+    Busy,
     /// Connecting.
     Starting,
     /// Dropped, and karet is reconnecting on its own.
@@ -45,7 +48,7 @@ pub(crate) enum LanguageServerBadge {
 impl LanguageServerBadge {
     /// Whether this condition needs nothing from anyone.
     pub(crate) fn is_healthy(self) -> bool {
-        matches!(self, Self::Idle | Self::Ready)
+        matches!(self, Self::Idle | Self::Ready | Self::Busy)
     }
 }
 
@@ -243,6 +246,7 @@ mod tests {
             LanguageServerBadge::Idle,
             LanguageServerBadge::NeedsSetup,
             LanguageServerBadge::Starting,
+            LanguageServerBadge::Busy,
         ];
         states.sort_unstable();
         assert_eq!(
@@ -251,6 +255,7 @@ mod tests {
                 LanguageServerBadge::Off,
                 LanguageServerBadge::Idle,
                 LanguageServerBadge::Ready,
+                LanguageServerBadge::Busy,
                 LanguageServerBadge::Starting,
                 LanguageServerBadge::Retrying,
                 LanguageServerBadge::NeedsSetup,

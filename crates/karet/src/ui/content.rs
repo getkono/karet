@@ -3,6 +3,7 @@ use super::*;
 mod diff;
 mod scans;
 pub(in crate::ui) mod select;
+mod server_log;
 mod swatches;
 
 /// Draw one pane's active tab into `area`. Returns the rect to reserve for a Kitty
@@ -154,6 +155,13 @@ pub(super) fn draw_pane_content(
                 // After the breakpoints: they share the marker lane and win it.
                 let line_changes = doc.and_then(|doc| ctx.line_changes?.get(&doc));
                 frame_decos.extend(line_changes.into_iter().flatten().cloned());
+                // Last, so a search match on a bracket keeps its own color.
+                let cursors = tab.editor.cursors();
+                frame_decos.extend(karet_editor::bracket_decorations(
+                    buffer,
+                    Some(highlights),
+                    cursors,
+                ));
                 let combined: Vec<Decoration> = decos
                     .iter()
                     .chain(search_decos.iter())
@@ -323,6 +331,39 @@ pub(super) fn draw_pane_content(
                 ScrollSurface::TabRows,
                 ScrollSurface::TabColumns,
             );
+        },
+        TabKind::ServerLog {
+            entries,
+            loading_since,
+            pager,
+            ..
+        } => {
+            if entries.is_empty() {
+                // Blank until the reveal delay, so a fast read never flashes.
+                let placeholder = match loading_since {
+                    Some(since) if since.visible() => "Loading log…",
+                    Some(_) => "",
+                    None => "Nothing logged yet.",
+                };
+                f.render_widget(
+                    Paragraph::new(placeholder).style(theme.style(ThemeRole::Muted)),
+                    area,
+                );
+            } else {
+                let lines = server_log::lines(theme, entries);
+                hits.record_both(
+                    draw_scrollable_lines(
+                        f,
+                        theme,
+                        area,
+                        lines,
+                        &mut pager.scroll,
+                        &mut pager.column,
+                    ),
+                    ScrollSurface::TabRows,
+                    ScrollSurface::TabColumns,
+                );
+            }
         },
         TabKind::Graph { title, view, pager } => draw_graph(
             f,

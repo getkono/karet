@@ -424,6 +424,10 @@ pub use aicommit::AiCommit;
 pub use aicommit::AiCommitAgent;
 pub use aicommit::AiCommitEffort;
 pub use aicommit::DEFAULT_TIMEOUT_MS as AI_COMMIT_DEFAULT_TIMEOUT_MS;
+pub use lsp::Lsp;
+pub use lsp::LspLanguage;
+pub use lsp::LspServer;
+pub use lsp::ManagedDownloads;
 pub use overrides::EditorOverride;
 pub use overrides::LanguageSelector;
 pub use overrides::NullableOverride;
@@ -432,6 +436,7 @@ pub use overrides::ResolvedEditor;
 pub use overrides::ResolvedSemanticComments;
 
 mod aicommit;
+mod lsp;
 mod overrides;
 
 /// `editor.completion.*` — LSP-powered code completion.
@@ -858,90 +863,6 @@ impl Default for Latex {
     }
 }
 
-/// `lsp.*` — language-server integration.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
-pub struct Lsp {
-    /// Run language servers for open documents (powers completions).
-    pub enabled: bool,
-    /// Whether Karet may install a missing managed fallback.
-    pub managed_downloads: ManagedDownloads,
-    /// Per-language server launch configurations, keyed by the lowercase
-    /// language name (e.g. `"rust"`, `"typescript"`, `"python"`). Entries are
-    /// merged *over* the built-in defaults (rust → `rust-analyzer`,
-    /// typescript/javascript → `typescript-language-server --stdio`,
-    /// python → `pyright-langserver --stdio`), so setting a language here
-    /// overrides its default and unlisted languages keep theirs.
-    pub servers: BTreeMap<String, LspServer>,
-    /// Per-language provider order and exclusive capability owners.
-    pub languages: BTreeMap<String, LspLanguage>,
-}
-
-impl Default for Lsp {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            managed_downloads: ManagedDownloads::Prompt,
-            servers: BTreeMap::new(),
-            languages: BTreeMap::new(),
-        }
-    }
-}
-
-/// Managed language-server download policy.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(rename_all = "camelCase")]
-pub enum ManagedDownloads {
-    /// Show exact release metadata and require confirmation.
-    #[default]
-    Prompt,
-    /// Install an approved managed fallback automatically.
-    Auto,
-    /// Never discover or download managed language servers.
-    Off,
-}
-
-/// How to launch one language server (see [`Lsp::servers`]).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
-pub struct LspServer {
-    /// Whether this provider participates in resolution.
-    pub enabled: bool,
-    /// The server executable, looked up on `PATH` (or an absolute path).
-    pub command: String,
-    /// Command-line arguments.
-    #[serde(default)]
-    pub args: Vec<String>,
-}
-
-impl Default for LspServer {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            command: String::new(),
-            args: Vec::new(),
-        }
-    }
-}
-
-/// Provider selection and exclusive capability owners for one language.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
-pub struct LspLanguage {
-    /// Ordered provider IDs. The first capable provider owns intelligence.
-    pub servers: Vec<String>,
-    /// Explicit formatting owner, when repository defaults should be overridden.
-    pub formatter: Option<String>,
-    /// Explicit semantic-token owner.
-    pub semantic_tokens: Option<String>,
-    /// Additional providers whose diagnostics should be merged.
-    pub diagnostics: Vec<String>,
-}
-
 /// `git.*` — source-control integration.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -1112,29 +1033,6 @@ mod tests {
         assert!(serde_json::from_str::<Editor>(r#"{ "[rust][toml]": { "tabSize": 2 } }"#).is_err());
         assert!(serde_json::from_str::<Editor>(r#"{ "[rust]": { "wat": 1 } }"#).is_err());
     }
-
-    #[test]
-    fn lsp_server_overrides_deserialize_camel_case() {
-        let parsed: Lsp = serde_json::from_str(
-            r#"{ "enabled": false,
-                 "servers": { "rust": { "command": "ra-custom", "args": ["--log"] } } }"#,
-        )
-        .unwrap_or_default();
-        assert!(!parsed.enabled);
-        let rust = parsed.servers.get("rust");
-        assert_eq!(rust.map(|s| s.command.as_str()), Some("ra-custom"));
-        assert_eq!(rust.map(|s| s.args.clone()), Some(vec!["--log".to_owned()]));
-        // `args` is optional.
-        let parsed: LspServer =
-            serde_json::from_str(r#"{ "command": "pylsp" }"#).unwrap_or(LspServer {
-                command: String::new(),
-                args: vec!["sentinel".into()],
-                ..LspServer::default()
-            });
-        assert_eq!(parsed.command, "pylsp");
-        assert!(parsed.args.is_empty());
-    }
-
     #[test]
     fn semantic_comments_default_on_with_the_conventional_tags() {
         let s = SemanticComments::default();

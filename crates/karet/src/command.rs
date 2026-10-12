@@ -217,6 +217,12 @@ pub enum Command {
     AddCursorBelow,
     /// Select the word under the caret, then add a caret at the next occurrence.
     AddCursorNextOccurrence,
+    /// Move each caret to the other bracket of the pair it touches, or to the
+    /// closing bracket of the pair enclosing it (Ctrl+Shift+\).
+    GoToBracket,
+    /// Select each caret's bracket pair, brackets included; repeating widens to
+    /// the enclosing pair.
+    SelectToBracket,
     /// Collapse multiple carets to the primary; with one caret, leave the editor.
     CollapseCarets,
     /// Scroll the active tab up one line.
@@ -449,6 +455,11 @@ pub enum Command {
     ManageLanguageServers,
     /// Explicitly check installed managed language servers for updates.
     CheckLanguageServerUpdates,
+    /// Open the log of the active file's language server.
+    ShowLanguageServerLog,
+    /// Cancel the work the status bar shows the active file's language server
+    /// doing, when the server allows it.
+    CancelLanguageServerWork,
     /// Move to the previous row in the language-server manager.
     LanguageServerUp,
     /// Move to the next row in the language-server manager.
@@ -796,6 +807,8 @@ impl Command {
             Self::AddCursorAbove => "Add Cursor Above",
             Self::AddCursorBelow => "Add Cursor Below",
             Self::AddCursorNextOccurrence => "Add Cursor to Next Occurrence",
+            Self::GoToBracket => "Go to Bracket",
+            Self::SelectToBracket => "Select to Bracket",
             Self::CollapseCarets => "Collapse Cursors",
             Self::ScrollUp => "Scroll Up",
             Self::ScrollDown => "Scroll Down",
@@ -910,6 +923,8 @@ impl Command {
             Self::ShowLoadedConfig => "Settings: Show Loaded Configuration",
             Self::ManageLanguageServers => "Language Servers: Manage",
             Self::CheckLanguageServerUpdates => "Language Servers: Check for Updates…",
+            Self::ShowLanguageServerLog => "Language Servers: Show Log",
+            Self::CancelLanguageServerWork => "Language Servers: Cancel Running Work",
             Self::LanguageServerUp => "Language Servers: Select Previous",
             Self::LanguageServerDown => "Language Servers: Select Next",
             Self::LanguageServerRefresh => "Language Servers: Refresh",

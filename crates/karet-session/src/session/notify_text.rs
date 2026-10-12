@@ -31,6 +31,31 @@ pub(super) fn one_line(text: &str) -> String {
     }
 }
 
+/// Make untrusted text safe to paint while keeping its lines: what
+/// [`one_line`] does to a character, without joining lines or capping length.
+///
+/// For a language server's log, which is read as a whole and whose stack
+/// traces are useless flattened; a tab becomes spaces like every other
+/// control character, since a terminal cell has no width for it.
+pub(super) fn printable(text: &str) -> String {
+    text.lines()
+        .map(|line| {
+            line.chars()
+                .map(|character| {
+                    if character.is_control() || is_invisible_or_reordering(character) {
+                        ' '
+                    } else {
+                        character
+                    }
+                })
+                .collect::<String>()
+                .trim_end()
+                .to_owned()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Whether `character` is invisible or can reorder the text around it.
 ///
 /// [`char::is_control`] covers only the `Cc` category, which leaves the
@@ -69,6 +94,16 @@ mod tests {
     #[test]
     fn a_control_character_cannot_reach_the_terminal() {
         assert!(!one_line("a\u{7}b\rc").contains(|c: char| c.is_control()));
+    }
+
+    #[test]
+    fn printable_text_keeps_its_lines_and_loses_its_escapes() {
+        let long = "y".repeat(400);
+        assert_eq!(
+            printable(&format!("panicked at\r\n\tsrc/a.rs\u{1b}[2J\n{long}")),
+            format!("panicked at\n src/a.rs [2J\n{long}")
+        );
+        assert_eq!(printable("safe\u{202e}txet"), "safe txet");
     }
 
     /// The characters that reorder or hide text are not control characters, so

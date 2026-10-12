@@ -901,7 +901,7 @@
           "default": "prompt"
         },
         "servers": {
-          "description": "Per-language server launch configurations, keyed by the lowercase\nlanguage name (e.g. `\"rust\"`, `\"typescript\"`, `\"python\"`). Entries are\nmerged *over* the built-in defaults (rust → `rust-analyzer`,\ntypescript/javascript → `typescript-language-server --stdio`,\npython → `pyright-langserver --stdio`), so setting a language here\noverrides its default and unlisted languages keep theirs.",
+          "description": "Per-language server launch configurations, keyed by the lowercase\nlanguage name (e.g. `\"rust\"`, `\"typescript\"`, `\"python\"`). Entries are\nmerged *over* the built-in defaults (rust → `rust-analyzer`,\ntypescript/javascript → `typescript-language-server --stdio`,\npython → `pyright-langserver --stdio`), so setting a language here\noverrides its default and unlisted languages keep theirs.\n\nAn entry with no `command` keeps karet's own launch and only adds its\n`settings` and `initializationOptions` -- keyed by a language, to the\nlanguage's server; keyed by a provider id (`\"rust-analyzer\"`,\n`\"pyright\"`), to that provider wherever it runs.",
           "type": "object",
           "additionalProperties": {
             "$ref": "#/$defs/LspServer"
@@ -963,7 +963,7 @@
           }
         },
         "command": {
-          "description": "The server executable, looked up on `PATH` (or an absolute path).",
+          "description": "The server executable, looked up on `PATH` (or an absolute path).\nEmpty keeps karet's own launch.",
           "type": "string",
           "default": ""
         },
@@ -971,6 +971,14 @@
           "description": "Whether this provider participates in resolution.",
           "type": "boolean",
           "default": true
+        },
+        "initializationOptions": {
+          "description": "Sent verbatim as `initializationOptions` with `initialize`. Read only\nat the handshake, so a reload that changes it restarts the server.",
+          "default": null
+        },
+        "settings": {
+          "description": "The server's settings, keyed by section the way VS Code writes them\n(`{ \"rust-analyzer\": { \"cargo\": { \"features\": \"all\" } } }`). Answered to\nthe server's `workspace/configuration` requests and pushed with\n`workspace/didChangeConfiguration` at startup and on every reload that\nchanges them -- without restarting the server.",
+          "default": null
         }
       },
       "additionalProperties": false

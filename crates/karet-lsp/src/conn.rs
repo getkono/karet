@@ -3,11 +3,12 @@
 //! The correlation actor — id allocation, the pending map, timeouts, the bounded
 //! outbound queue, the close protocol, failing everything in flight on EOF —
 //! lives in [`karet_jsonrpc`]. What stays here is the LSP-specific leaves: the
-//! diagnostics fan-out, the raw-notification broadcast payload, the few
-//! server→client requests a headless client must not leave hanging (answered
-//! through the [`apply_edit`](crate::apply_edit) pump, which also routes
-//! `workspace/applyEdit` to the editor), and the bridge that turns
-//! [`karet_jsonrpc::RpcError`] into [`LspError`].
+//! diagnostics, progress and message fan-outs, the raw-notification broadcast
+//! payload, the few server→client requests a headless client must not leave
+//! hanging (answered through the [`apply_edit`](crate::apply_edit) pump, which
+//! also routes `workspace/applyEdit` and `window/showMessageRequest` to the
+//! editor), `workspace/configuration` answered from the consumer's settings,
+//! and the bridge that turns [`karet_jsonrpc::RpcError`] into [`LspError`].
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -17,6 +18,7 @@ use std::sync::Mutex;
 use std::sync::RwLock;
 use std::time::Duration;
 
+use karet_core::ServerFeature;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -27,12 +29,17 @@ use tokio::sync::broadcast;
 use crate::LspError;
 use crate::PublishedDiagnostics;
 use crate::RawNotification;
+use crate::ServerMessage;
 use crate::ServerRefresh;
+use crate::WorkProgress;
 use crate::capability;
+use crate::config;
 use crate::convert;
 use crate::gate::Gate;
 use crate::selector::Selector;
 use crate::uri;
+use crate::watch::Watcher;
+use crate::window;
 
 /// The (shorter) deadline for the `shutdown` handshake and process exit.
 pub(crate) const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -98,6 +105,13 @@ pub(crate) struct LspHandler {
     /// fix for some (ruff) -- and in the server's coordinates, which is what
     /// it expects to be handed.
     published: Arc<Mutex<PublishedSets>>,
+    /// `$/progress` work-done reports, fanned out to every subscriber; the
+    /// first also gets those sent before it subscribed.
+    progress: window::Backlogged<WorkProgress>,
+    /// `window/showMessage` and `window/logMessage`, fanned out the same way.
+    messages: window::Backlogged<ServerMessage>,
+    /// What `workspace/configuration` is answered from.
+    settings: config::Settings,
 }
 
 /// The diagnostics a server last published, per file, in wire form.
@@ -107,11 +121,16 @@ impl Default for LspHandler {
     fn default() -> Self {
         let (diagnostics, _) = broadcast::channel(DIAGNOSTICS_CHANNEL_CAPACITY);
         let (refreshes, _) = broadcast::channel(REFRESH_CHANNEL_CAPACITY);
+        let progress = window::Backlogged::new(window::PROGRESS_CHANNEL_CAPACITY);
+        let messages = window::Backlogged::new(window::MESSAGE_CHANNEL_CAPACITY);
         Self {
             diagnostics,
             refreshes,
             gate: Arc::default(),
             published: Arc::default(),
+            progress,
+            messages,
+            settings: Arc::new(RwLock::new(Value::Null)),
         }
     }
 }
@@ -142,6 +161,10 @@ impl LspHandler {
                 "server registered a capability"
             );
             if let Ok(mut gate) = self.gate.write() {
+                if feature == ServerFeature::DidChangeWatchedFiles {
+                    let watchers = Watcher::from_register_options(item.get("registerOptions"));
+                    gate.watch(id.to_owned(), watchers);
+                }
                 gate.register(id.to_owned(), feature, selector);
             }
         }
@@ -204,7 +227,14 @@ impl karet_jsonrpc::Handler for LspHandler {
             "textDocument/publishDiagnostics" => {
                 route_diagnostics(params, &self.diagnostics, &self.published);
             },
-            // Log/progress/telemetry notifications are safe to ignore headlessly.
+            "$/progress" => window::route_progress(&params, &self.progress),
+            "window/showMessage" | "window/logMessage" => {
+                if let Some(message) = ServerMessage::from_notification(method, &params) {
+                    self.messages.send(message);
+                }
+            },
+            // Telemetry and server-specific notifications reach a consumer
+            // only through the raw stream.
             _ => {
                 tracing::debug!(method, "raw-only server notification");
             },
@@ -230,16 +260,17 @@ impl karet_jsonrpc::Handler for LspHandler {
                 let _ = self.refreshes.send(ServerRefresh::InlayHints);
                 Ok(Value::Null)
             },
+            "workspace/configuration" => Ok(config::answer(&self.settings, params)),
             _ => answer_server_request(method, params),
         }
     }
 }
 
-/// A live JSON-RPC connection to one language server, and the stream of the
-/// server's edit requests that wait on the editor.
+/// A live JSON-RPC connection to one language server, and the streams of the
+/// server's requests that wait on the editor.
 pub(crate) struct Connection(
     karet_jsonrpc::Connection<LspHandler>,
-    crate::apply_edit::ApplyEdits,
+    crate::apply_edit::Waiting,
 );
 
 impl Connection {
@@ -263,19 +294,41 @@ impl Connection {
         // server request goes through the pump, which answers what the handler
         // answers and holds only `workspace/applyEdit` for the editor.
         let requests = connection.inbound_requests();
-        let edits = match requests {
+        let waiting = match requests {
             Some(requests) => crate::apply_edit::start(requests, handler),
             // Unreachable on a fresh connection; the handler keeps answering.
             None => crate::apply_edit::start(tokio::sync::mpsc::channel(1).1, handler),
         };
-        Self(connection, edits)
+        Self(connection, waiting)
     }
 
     /// Take the stream of the server's `workspace/applyEdit` requests, once.
     pub(crate) fn apply_edit_requests(
         &self,
     ) -> Option<tokio::sync::mpsc::Receiver<crate::ApplyEditRequest>> {
-        self.1.take()
+        self.1.edits.take()
+    }
+
+    /// Take the stream of the server's `window/showMessageRequest`s, once.
+    pub(crate) fn message_requests(
+        &self,
+    ) -> Option<tokio::sync::mpsc::Receiver<crate::MessageRequest>> {
+        self.1.messages.take()
+    }
+
+    /// Subscribe to the server's work-done progress.
+    pub(crate) fn work_progress(&self) -> broadcast::Receiver<WorkProgress> {
+        self.0.handler().progress.subscribe()
+    }
+
+    /// Subscribe to the server's show/log messages.
+    pub(crate) fn messages(&self) -> broadcast::Receiver<ServerMessage> {
+        self.0.handler().messages.subscribe()
+    }
+
+    /// Replace what `workspace/configuration` is answered from.
+    pub(crate) fn set_settings(&self, settings: Value) {
+        config::replace(&self.0.handler().settings, settings);
     }
 
     /// Issue `method` and await its typed result, bounded by the default
@@ -359,21 +412,12 @@ impl Connection {
 /// Answer the server→client requests a headless client must not leave hanging.
 fn answer_server_request(
     method: &str,
-    params: &Value,
+    _params: &Value,
 ) -> Result<Value, karet_jsonrpc::ResponseError> {
     match method {
-        // No configuration to offer: answer `null` per requested item.
-        "workspace/configuration" => {
-            let items = params
-                .get("items")
-                .and_then(Value::as_array)
-                .map_or(0, Vec::len);
-            Ok(Value::Array(vec![Value::Null; items]))
-        },
-        // Acknowledge without acting; dynamic registration and progress tokens
-        // carry no state a headless completion client needs.
-        // Dynamic registration is handled by `LspHandler::answer` before it
-        // reaches here, because it mutates the capability set.
+        // Acknowledged without keeping anything: the token's `$/progress`
+        // reports carry everything a subscriber needs, and a report for a
+        // token nobody created is relayed all the same.
         "window/workDoneProgress/create" => Ok(Value::Null),
         _ => Err(karet_jsonrpc::ResponseError::new(
             karet_jsonrpc::METHOD_NOT_FOUND,

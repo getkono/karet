@@ -226,6 +226,14 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(Editor, true,  false, true,  Up,        Command::AddCursorAbove),
     b(Editor, true,  false, true,  Down,      Command::AddCursorBelow),
     b(Editor, true,  false, false, Char('d'), Command::AddCursorNextOccurrence),
+    // Bracket pairs: Ctrl+Shift+\ jumps to the matching bracket (VS Code parity),
+    // and Alt added selects the pair. A terminal reporting alternate keys (kitty)
+    // sends Shift+\ as `|`; one that does not sends `\` with Shift. A legacy
+    // terminal cannot tell either from Ctrl+\, so both are also in the palette.
+    b(Editor, true,  true,  false, Char('|'), Command::GoToBracket),
+    b(Editor, true,  true,  false, Char('\\'), Command::GoToBracket),
+    b(Editor, true,  true,  true,  Char('|'), Command::SelectToBracket),
+    b(Editor, true,  true,  true,  Char('\\'), Command::SelectToBracket),
     // Editing.
     // Ctrl+Space asks the language server for completions (bypasses the
     // syntax-error auto-trigger gate).

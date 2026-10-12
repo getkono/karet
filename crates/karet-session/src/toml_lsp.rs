@@ -27,13 +27,13 @@ use futures::SinkExt;
 use futures::StreamExt;
 use futures::channel::mpsc;
 use futures::sink::SinkMapErr;
+use karet_lsp::ConnectOptions;
 use karet_lsp::LaunchFailure;
 use karet_lsp::LspClient;
 use karet_lsp::LspError;
 use karet_lsp::LspSpec;
 use karet_lsp::codec;
 use lsp_async_stub::rpc::Message;
-use serde_json::Value;
 use taplo_common::environment::native::NativeEnvironment;
 use tokio::io::AsyncBufRead;
 use tokio::io::AsyncWrite;
@@ -78,10 +78,7 @@ pub(crate) fn is_builtin(spec: &LspSpec) -> bool {
 /// A [`LaunchCause::Host`](karet_lsp::LaunchCause::Host) launch failure when
 /// the server's thread cannot be started, else whatever the handshake fails
 /// with.
-pub(crate) async fn connect(
-    root: &Path,
-    initialization_options: Option<Value>,
-) -> Result<LspClient, LspError> {
+pub(crate) async fn connect(root: &Path, options: ConnectOptions) -> Result<LspClient, LspError> {
     let (client, server) = tokio::io::duplex(PIPE_CAPACITY);
     std::thread::Builder::new()
         .name("karet-taplo-lsp".into())
@@ -94,7 +91,7 @@ pub(crate) async fn connect(
             )))
         })?;
     let (read, write) = tokio::io::split(client);
-    LspClient::connect_with(read, write, root, initialization_options).await
+    LspClient::connect_configured(read, write, root, options).await
 }
 
 thread_local! {
@@ -247,6 +244,7 @@ async fn write_message<W: AsyncWrite + Unpin>(out: &mut W, message: &Message) ->
 mod tests {
     use std::time::Duration;
 
+    use serde_json::Value;
     use serde_json::json;
     use tokio::io::AsyncWriteExt;
     use tokio::io::ReadHalf;
