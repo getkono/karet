@@ -588,12 +588,42 @@ mod tests {
             .map_err(|error| VcsError::Git(error.to_string()))
     }
 
-    /// Note the group's leader while it runs, then cancel. The pid is what lets a
-    /// test ask whether the whole group actually went away.
-    fn observe_group(token: &CommitCancel) -> std::thread::JoinHandle<u32> {
+    /// How long a test waits for its hook to announce itself, or for a killed
+    /// group to disappear. Generous on purpose: under a loaded parallel build
+    /// `git` can take seconds to reach its hook, and these bounds only cap a
+    /// failure — a passing run never waits them out.
+    const OBSERVE_DEADLINE: Duration = Duration::from_secs(60);
+
+    /// A sink that signals `cue` the first time a line containing `marker`
+    /// arrives. Hooks print the marker once they have started everything the
+    /// test cares about, so the line is the observable event a cancellation
+    /// waits for, rather than a guess at how long startup takes.
+    fn cue_on(marker: &'static str, cue: mpsc::Sender<()>) -> impl FnMut(CommitOutputLine) {
+        move |line| {
+            if line.text.contains(marker) {
+                let _ = cue.send(());
+            }
+        }
+    }
+
+    /// What [`observe_group`] saw: the group's leader, and when it cancelled.
+    type Observed = (u32, Instant);
+
+    /// Once the hook's cue arrives, note the group's leader and cancel. The pid
+    /// is what lets a test ask whether the whole group actually went away, and
+    /// the instant lets it time the cancellation alone, not `git`'s startup.
+    ///
+    /// The cue is delivered from the drain loop, which only runs after the
+    /// group was adopted into the token, so the child slot is populated by
+    /// then. A cue that never arrives still cancels, at the deadline, and
+    /// reports leader `0`.
+    fn observe_group(
+        token: &CommitCancel,
+    ) -> (mpsc::Sender<()>, std::thread::JoinHandle<Observed>) {
         let token = token.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(700));
+        let (cue, heard) = mpsc::channel();
+        let observer = std::thread::spawn(move || {
+            let _ = heard.recv_timeout(OBSERVE_DEADLINE);
             let leader = token
                 .0
                 .child
@@ -601,32 +631,35 @@ mod tests {
                 .ok()
                 .and_then(|slot| slot.as_ref().map(GroupChild::id))
                 .unwrap_or_default();
+            let cancelled_at = Instant::now();
             token.cancel();
-            leader
-        })
+            (leader, cancelled_at)
+        });
+        (cue, observer)
     }
 
-    /// Cancel `token` once the hook has had time to start.
-    fn cancel_shortly(token: &CommitCancel) -> std::thread::JoinHandle<()> {
-        let token = token.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(700));
-            token.cancel();
-        })
-    }
-
-    /// Processes still sharing the group led by `leader`.
+    /// Processes still sharing the group led by `leader`, polled until none
+    /// remain or [`OBSERVE_DEADLINE`] passes. A killed process lingers in `ps`
+    /// until it is reaped (orphaned hook children by init), so one snapshot
+    /// taken right after cancellation can count the dying.
     fn group_members(leader: u32) -> usize {
-        let Ok(output) = std::process::Command::new("ps")
-            .args(["-eo", "pid=,pgid="])
-            .output()
-        else {
-            return 0;
-        };
-        String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .filter(|row| row.split_whitespace().nth(1) == Some(&leader.to_string()))
-            .count()
+        let deadline = Instant::now() + OBSERVE_DEADLINE;
+        loop {
+            let Ok(output) = std::process::Command::new("ps")
+                .args(["-eo", "pid=,pgid="])
+                .output()
+            else {
+                return 0;
+            };
+            let members = String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .filter(|row| row.split_whitespace().nth(1) == Some(&leader.to_string()))
+                .count();
+            if members == 0 || Instant::now() >= deadline {
+                return members;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
 
     #[test]
@@ -640,8 +673,9 @@ mod tests {
         let repository = Repository::discover(&fixture.0)?;
         let head_before = repository.head_id();
         let token = CommitCancel::new();
-        let canceller = cancel_shortly(&token);
-        let outcome = repository.commit_with_output("second", &token, &mut |_| {})?;
+        let (cue, canceller) = observe_group(&token);
+        let outcome =
+            repository.commit_with_output("second", &token, &mut cue_on("working", cue))?;
         let _ = canceller.join();
 
         assert_eq!(outcome, CommitOutcome::Cancelled, "no commit was created");
@@ -688,16 +722,19 @@ mod tests {
 
         let repository = Repository::discover(&fixture.0)?;
         let token = CommitCancel::new();
-        let leader = observe_group(&token);
-        let started = std::time::Instant::now();
-        let outcome = repository.commit_with_output("second", &token, &mut |_| {})?;
-        let leader = leader.join().unwrap_or_default();
+        let (cue, observer) = observe_group(&token);
+        let outcome =
+            repository.commit_with_output("second", &token, &mut cue_on("stubborn", cue))?;
+        let ended = Instant::now();
+        let (leader, cancelled_at) = observer.join().unwrap_or((0, ended));
 
         assert_eq!(outcome, CommitOutcome::Cancelled);
+        // Timed from the cancellation, not the spawn: how long a loaded machine
+        // takes to reach the hook says nothing about the escalation.
+        let took = ended.saturating_duration_since(cancelled_at);
         assert!(
-            started.elapsed() < std::time::Duration::from_secs(25),
-            "the escalation ended it rather than waiting out the hook: {:?}",
-            started.elapsed()
+            took < Duration::from_secs(25),
+            "the escalation ended it rather than waiting out the hook: {took:?}",
         );
         assert!(leader > 0, "the group leader was observed while it ran");
         assert_eq!(
@@ -716,14 +753,17 @@ mod tests {
         commit(&fixture, "one", "first")?;
         // `post-commit` runs *after* the commit exists, so cancelling here
         // cannot undo it. Reporting `Cancelled` would be a lie.
-        named_hook(&fixture.0, "post-commit", "sleep 30")?;
+        // The cue proves the cancellation lands after the commit exists, however
+        // slowly `git` got there.
+        named_hook(&fixture.0, "post-commit", "echo committed\nsleep 30")?;
         stage(&fixture.0, "two")?;
 
         let repository = Repository::discover(&fixture.0)?;
         let head_before = repository.head_id();
         let token = CommitCancel::new();
-        let canceller = cancel_shortly(&token);
-        let outcome = repository.commit_with_output("second", &token, &mut |_| {})?;
+        let (cue, canceller) = observe_group(&token);
+        let outcome =
+            repository.commit_with_output("second", &token, &mut cue_on("committed", cue))?;
         let _ = canceller.join();
 
         let CommitOutcome::Created(oid) = outcome else {
@@ -746,9 +786,10 @@ mod tests {
 
         let repository = Repository::discover(&fixture.0)?;
         let token = CommitCancel::new();
-        let leader = observe_group(&token);
-        let outcome = repository.commit_with_output("second", &token, &mut |_| {})?;
-        let leader = leader.join().unwrap_or_default();
+        let (cue, observer) = observe_group(&token);
+        let outcome =
+            repository.commit_with_output("second", &token, &mut cue_on("spawned", cue))?;
+        let (leader, _) = observer.join().unwrap_or((0, Instant::now()));
 
         assert_eq!(outcome, CommitOutcome::Cancelled);
         assert!(leader > 0, "the group leader was observed while it ran");
