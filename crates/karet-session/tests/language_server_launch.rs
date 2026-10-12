@@ -32,6 +32,12 @@ const TESTBED: &str = env!("CARGO_BIN_EXE_karet-testbed");
 /// Generous: these spawn real processes, and a slow machine must not flake.
 const DEADLINE: Duration = Duration::from_secs(20);
 
+/// For a wait that spans a whole cold start -- supervisor spawn, the server's
+/// own startup and the LSP handshake -- under the load of a parallel workspace
+/// build, where [`DEADLINE`] proved too tight. It only bounds a failure: a
+/// passing run returns at the first `Running`.
+const STARTUP_DEADLINE: Duration = Duration::from_secs(90);
+
 /// The double's argv. The report path travels in argv rather than the
 /// environment because these tests run in parallel threads of one process, and
 /// a shared env var would let one test's report path overwrite another's.
@@ -607,20 +613,26 @@ async fn a_diagnostics_companion_attaches_even_with_no_primary_provider() -> Res
         },
     );
 
-    let deadline = tokio::time::Instant::now() + DEADLINE;
-    let mut ruff_running = false;
-    while !ruff_running && tokio::time::Instant::now() < deadline {
+    let deadline = tokio::time::Instant::now() + STARTUP_DEADLINE;
+    let mut ruff_states = Vec::new();
+    while ruff_states.last() != Some(&LanguageServerRuntimeState::Running)
+        && tokio::time::Instant::now() < deadline
+    {
         let remaining = deadline - tokio::time::Instant::now();
         let Ok(Some((_, event))) = tokio::time::timeout(remaining, events.recv()).await else {
             break;
         };
-        if let Event::LanguageServerRuntimeChanged { server, state, .. } = event {
-            ruff_running = server.key() == "ruff" && state == LanguageServerRuntimeState::Running;
+        if let Event::LanguageServerRuntimeChanged { server, state, .. } = event
+            && server.key() == "ruff"
+        {
+            ruff_states.push(state);
         }
     }
-    assert!(
-        ruff_running,
-        "Ruff must still provide diagnostics when Python's primary provider is missing"
+    assert_eq!(
+        ruff_states.last(),
+        Some(&LanguageServerRuntimeState::Running),
+        "Ruff must still provide diagnostics when Python's primary provider is missing; \
+         its states before the stream ended or {STARTUP_DEADLINE:?} passed: {ruff_states:?}"
     );
     Ok(())
 }
