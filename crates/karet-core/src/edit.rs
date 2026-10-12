@@ -336,45 +336,86 @@ impl CursorState {
         self.primary = 0;
     }
 
-    /// Merge coincident carets and overlapping/touching selections into their
-    /// forward-oriented union, preserving document order and which selection is
-    /// primary. A single selection is left untouched (its orientation is preserved),
-    /// so the common single-cursor path is a no-op. `selections` stays non-empty.
+    /// Sort the selections into document order and merge the ones that collide,
+    /// keeping the primary on the selection it was on.
+    ///
+    /// Two selections collide when they overlap, when they are coincident carets,
+    /// or when a caret sits on or inside a selection. Two non-empty selections that
+    /// only touch (one ends where the other starts) stay separate. A merged
+    /// selection spans the union and keeps the direction of its members: the
+    /// primary's when the primary is a non-empty member, else the first non-empty
+    /// member's (a caret has no direction).
+    /// `selections` stays non-empty when it was.
     pub fn normalize(&mut self) {
-        if self.selections.len() <= 1 {
-            return;
+        let _ = self.normalize_tracking(0);
+    }
+
+    /// [`normalize`](Self::normalize), returning the index that the selection at
+    /// `index` ended up in, so a caller can follow one selection (for example the
+    /// first-placed caret) through sorting and merging. An out-of-range `index`
+    /// follows the last selection.
+    pub fn normalize_tracking(&mut self, index: usize) -> usize {
+        let len = self.selections.len();
+        if len == 0 {
+            return 0;
         }
-        let primary_head = self.primary().head;
-        let mut order = self.selections.clone();
-        order.sort_by_key(|s| {
-            let r = s.range();
+        let index = index.min(len - 1);
+        let primary = self.primary.min(len - 1);
+        let mut order: Vec<usize> = (0..len).collect();
+        order.sort_by_key(|&i| {
+            let r = self.selections[i].range();
             (r.start, r.end)
         });
-        let mut merged: Vec<Selection> = Vec::with_capacity(order.len());
-        for s in order {
+        // Each merged selection, the members it absorbed, and where each original
+        // index went.
+        let mut merged: Vec<(Selection, Vec<usize>)> = Vec::with_capacity(len);
+        let mut slot = vec![0; len];
+        for i in order {
+            let s = self.selections[i];
             match merged.last_mut() {
-                // Sorted, so `prev.start <= s.start`; they touch/overlap when
-                // `s.start <= prev.end`. Fuse into the forward-oriented union.
-                Some(prev) if s.range().start <= prev.range().end => {
+                Some((prev, members)) if collides(*prev, s) => {
+                    members.push(i);
                     let lo = prev.range().start.min(s.range().start);
                     let hi = prev.range().end.max(s.range().end);
-                    *prev = Selection {
-                        anchor: lo,
-                        head: hi,
+                    // A caret has no direction, so only a non-empty member leads.
+                    let directed = |m: &usize| !self.selections[*m].is_empty();
+                    let leader = members
+                        .iter()
+                        .filter(|m| directed(m))
+                        .find(|&&m| m == primary)
+                        .or_else(|| members.iter().find(|m| directed(m)))
+                        .map_or(s, |&m| self.selections[m]);
+                    let backward = leader.head < leader.anchor;
+                    *prev = if backward {
+                        Selection {
+                            anchor: hi,
+                            head: lo,
+                        }
+                    } else {
+                        Selection {
+                            anchor: lo,
+                            head: hi,
+                        }
                     };
                 },
-                _ => merged.push(s),
+                _ => merged.push((s, vec![i])),
             }
+            slot[i] = merged.len() - 1;
         }
-        // The primary is the merged group that spans the old primary caret.
-        self.primary = merged
-            .iter()
-            .position(|m| {
-                let r = m.range();
-                r.start <= primary_head && primary_head <= r.end
-            })
-            .unwrap_or(0);
-        self.selections = merged;
+        self.primary = slot[primary];
+        self.selections = merged.into_iter().map(|(s, _)| s).collect();
+        slot[index]
+    }
+}
+
+/// Whether `next`, which starts at or after `prev` in document order, must merge
+/// with it: they overlap, or one of them is a caret on or inside the other.
+fn collides(prev: Selection, next: Selection) -> bool {
+    let (p, n) = (prev.range(), next.range());
+    if prev.is_empty() || next.is_empty() {
+        n.start <= p.end
+    } else {
+        n.start < p.end
     }
 }
 
@@ -451,6 +492,95 @@ mod tests {
         // The primary caret (0,7) still lives in the merged group.
         let p = cs.primary().range();
         assert!(p.start <= LineCol::new(0, 7) && LineCol::new(0, 7) <= p.end);
+    }
+
+    fn sel(anchor: u32, head: u32) -> Selection {
+        Selection {
+            anchor: LineCol::new(0, anchor),
+            head: LineCol::new(0, head),
+        }
+    }
+
+    #[test]
+    fn normalize_keeps_touching_selections_apart() {
+        // Adjacent `aa` matches in `aaaa`, and two backward selections that meet.
+        for selections in [vec![sel(0, 2), sel(2, 4)], vec![sel(4, 0), sel(8, 4)]] {
+            let mut cs = CursorState {
+                selections: selections.clone(),
+                primary: 1,
+            };
+            cs.normalize();
+            assert_eq!(cs.selections, selections);
+            assert_eq!(cs.primary, 1);
+        }
+    }
+
+    #[test]
+    fn normalize_merges_a_caret_on_a_selection_edge() {
+        let mut cs = CursorState {
+            selections: vec![sel(0, 0), sel(1, 0)],
+            primary: 0,
+        };
+        cs.normalize();
+        assert_eq!(cs.selections, vec![sel(1, 0)]);
+        assert_eq!(cs.primary, 0);
+    }
+
+    #[test]
+    fn normalize_keeps_the_direction_of_merged_selections() {
+        // Two backward selections that overlap stay backward, head at the start.
+        let mut cs = CursorState {
+            selections: vec![sel(4, 0), sel(8, 3)],
+            primary: 1,
+        };
+        cs.normalize();
+        assert_eq!(cs.selections, vec![sel(8, 0)]);
+
+        // Mixed directions: the primary's wins, whichever end it sits at.
+        let mut cs = CursorState {
+            selections: vec![sel(0, 4), sel(8, 3)],
+            primary: 1,
+        };
+        cs.normalize();
+        assert_eq!(cs.selections, vec![sel(8, 0)]);
+        let mut cs = CursorState {
+            selections: vec![sel(0, 4), sel(8, 3)],
+            primary: 0,
+        };
+        cs.normalize();
+        assert_eq!(cs.selections, vec![sel(0, 8)]);
+
+        // Without the primary in the group, the first non-empty member leads.
+        let mut cs = CursorState {
+            selections: vec![sel(5, 2), sel(3, 7), sel(9, 9)],
+            primary: 2,
+        };
+        cs.normalize();
+        assert_eq!(cs.selections, vec![sel(7, 2), sel(9, 9)]);
+        assert_eq!(cs.primary, 1);
+    }
+
+    #[test]
+    fn normalize_sorts_and_tracks_the_primary_and_a_followed_index() {
+        // Out of document order: the primary and the followed index move with
+        // their selections, not with their positions in the vector.
+        let mut cs = CursorState {
+            selections: vec![sel(6, 6), sel(1, 1), sel(3, 3)],
+            primary: 2,
+        };
+        assert_eq!(cs.normalize_tracking(0), 2);
+        assert_eq!(cs.selections, vec![sel(1, 1), sel(3, 3), sel(6, 6)]);
+        assert_eq!(cs.primary, 1);
+
+        // A followed caret that merges lands on the merged selection.
+        let mut cs = CursorState {
+            selections: vec![sel(2, 2), sel(0, 0), sel(2, 2)],
+            primary: 1,
+        };
+        assert_eq!(cs.normalize_tracking(2), 1);
+        assert_eq!(cs.selections, vec![sel(0, 0), sel(2, 2)]);
+        assert_eq!(cs.primary, 0);
+        assert_eq!(CursorState::default().normalize_tracking(3), 0);
     }
 
     #[test]
