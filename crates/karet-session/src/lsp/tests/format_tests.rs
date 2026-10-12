@@ -899,5 +899,22 @@ fn a_format_answer_for_a_superseded_version_is_dropped() -> TestResult {
         Some("bbb\n"),
         "an answer for a save nobody is waiting on applies nothing"
     );
+
+    // Answers that rewrite the same characters twice cannot land together:
+    // nothing is applied, and the request is told so.
+    session.apply_lsp_update(LspUpdate::Formatting {
+        generation: 0,
+        request: RequestId(5),
+        doc,
+        version: current,
+        formatted: true,
+        edits: vec![edit("x"), edit("y")],
+        scope: crate::lsp::FormattingScope::Ranges(Vec::new()),
+    });
+    assert_eq!(text(&session).as_deref(), Some("bbb\n"));
+    assert_eq!(
+        notice_for(&mut events, RequestId(5)).as_deref(),
+        Some("format: the formatter's edits overlap; nothing was applied")
+    );
     Ok(())
 }
