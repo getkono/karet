@@ -132,6 +132,45 @@ fn a_wrapped_line_paints_its_break_on_the_last_row_only() {
 }
 
 #[test]
+fn a_wrapped_row_that_exactly_fills_the_width_paints_its_break_on_the_last_cell() {
+    // Five content cells: `abcde` fills the only row exactly, so the break
+    // cell would land one column past the area.
+    let buffer = TextBuffer::from_text("abcde\nx\n");
+    let (buf, _) = render_selected(
+        &buffer,
+        LineCol::new(0, 5),
+        LineCol::new(1, 0),
+        Rect::new(0, 0, 8, 10),
+        true,
+    );
+    assert_eq!(
+        buf[(GUTTER + 4, 0)].symbol(),
+        "e",
+        "the text keeps its cell"
+    );
+    assert!(selected(&buf, GUTTER + 4, 0), "the break on the last cell");
+    assert!(!selected(&buf, GUTTER + 3, 0), "only the break is selected");
+    assert!(!selected(&buf, GUTTER, 1), "nothing on the end line");
+}
+
+#[test]
+fn a_wrapped_row_one_short_of_the_width_keeps_the_break_past_the_text() {
+    let buffer = TextBuffer::from_text("abcd\nx\n");
+    let (buf, _) = render_selected(
+        &buffer,
+        LineCol::new(0, 4),
+        LineCol::new(1, 0),
+        Rect::new(0, 0, 8, 10),
+        true,
+    );
+    assert!(
+        !selected(&buf, GUTTER + 3, 0),
+        "`d` is outside the selection"
+    );
+    assert!(selected(&buf, GUTTER + 4, 0), "the break after `d`");
+}
+
+#[test]
 fn a_break_scrolled_off_to_the_left_is_not_painted_at_the_margin() {
     let buffer = TextBuffer::from_text("ab\nabcdefghij\n");
     let (buf, state) = render_selected(

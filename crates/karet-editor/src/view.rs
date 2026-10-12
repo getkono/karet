@@ -286,6 +286,8 @@ impl Editor<'_> {
 
     /// Append the syntax-colored content spans for line `l`, honoring horizontal
     /// scroll, active selections, and text-background decorations.
+    ///
+    /// Returns whether the row ends with the selected line-break cell.
     #[allow(clippy::too_many_arguments)]
     // The already-resolved render palette and geometry for one row, plus the
     // row's inline text and the record of where it went. Bundling them would
@@ -300,12 +302,12 @@ impl Editor<'_> {
         range: VisualRange,
         selections: &[Range],
         hints: LineHints<'_>,
-    ) {
+    ) -> bool {
         let Some(content) = self.buffer.line(l as usize) else {
-            return;
+            return false;
         };
         let Some(line_span) = self.buffer.line_to_byte_range(l as usize) else {
-            return;
+            return false;
         };
         let line_start = line_span.start.0;
         let hl: &[HighlightSpan] = self.highlights.map_or(&[], |h| h.spans_in(line_span));
@@ -417,15 +419,16 @@ impl Editor<'_> {
         // line or a line end inside a selection shows what a delete removes.
         // Only the row holding the line end paints it, after any trailing hint,
         // so no hit-tested cell moves.
-        if range.start <= line_len
+        let selected_break = range.start <= line_len
             && range.end >= line_len
-            && newline_in_any(selections, l, line_len)
-        {
+            && newline_in_any(selections, l, line_len);
+        if selected_break {
             let style = Style::default()
                 .fg(default_fg.to_ratatui())
                 .bg(theme.role(ThemeRole::Selection).to_ratatui());
             spans.push(Span::styled(" ", style));
         }
+        selected_break
     }
 
     /// Flush the pending run and emit the inline text anchored at `col`,
@@ -895,7 +898,7 @@ impl StatefulWidget for Editor<'_> {
                 .copied()
                 .unwrap_or_else(|| VisualRange::empty(0));
             let mut painted = Vec::new();
-            self.push_content_spans(
+            let selected_break = self.push_content_spans(
                 &mut spans,
                 &mut painted,
                 l,
@@ -905,6 +908,16 @@ impl StatefulWidget for Editor<'_> {
                 &selections,
                 layout.hints_on(l),
             );
+            // A wrapped last row that exactly fills the content width pushes
+            // the break cell one column past the area, where `set_line` clips
+            // it. Paint the selection on the last content cell instead: the
+            // end-of-line caret clamps to that same cell (`caret_cell`).
+            let clipped_break = self.word_wrap
+                && selected_break
+                && spans
+                    .iter()
+                    .fold(0_usize, |used, span| used.saturating_add(span.width()))
+                    > usize::from(area.width);
             // A collapsed header hints at the hidden lines it conceals.
             if fold.is_some_and(|f| f.collapsed) && range_index + 1 == ranges.len() {
                 spans.push(Span::styled(
@@ -921,6 +934,17 @@ impl StatefulWidget for Editor<'_> {
             }
             record_virtual_text(&mut state.last_virtual_text, area, y, &spans, &painted);
             buf.set_line(area.x, y, &Line::from(spans), area.width);
+            if clipped_break && area.width > 0 {
+                buf.set_style(
+                    Rect {
+                        x: area.right().saturating_sub(1),
+                        y,
+                        width: 1,
+                        height: 1,
+                    },
+                    Style::default().bg(theme.role(ThemeRole::Selection).to_ratatui()),
+                );
+            }
 
             let next = if self.word_wrap {
                 next_visual_anchor(self.buffer, self.folds, layout, anchor)
