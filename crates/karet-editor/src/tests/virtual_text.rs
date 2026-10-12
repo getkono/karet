@@ -68,7 +68,7 @@ fn each_text_reports_the_cells_it_was_painted_in() {
 
     // `let x`, the trailing inline text, ` ⋯`, and only then the slot: not at
     // the end-of-line caret cell, where the inline text begins.
-    assert_eq!(row(&target, 0), "▸1 let x: i32 ⋯  Ada          ");
+    assert_eq!(row(&target, 0), " 1▸let x: i32 ⋯  Ada          ");
     let Some(slot) = state.virtual_text_rect(0) else {
         unreachable!("the end-of-line text is on screen");
     };

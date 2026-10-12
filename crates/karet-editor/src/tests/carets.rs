@@ -566,3 +566,205 @@ fn gutter_marker_line_hits_only_the_marker_column() {
         Some(1)
     );
 }
+
+/// The lane under each column of a `line_count`-line gutter at row 0.
+fn lanes(state: &EditorState, buffer: &TextBuffer, area: Rect) -> Vec<Option<GutterLane>> {
+    (area.x..area.x + 5)
+        .map(|col| {
+            state
+                .gutter_hit_at(area, buffer, &[], col, area.y)
+                .map(|hit| hit.lane)
+        })
+        .collect()
+}
+
+#[test]
+fn the_gutter_splits_into_marker_number_and_fold_lanes() {
+    use GutterLane::*;
+    // Ten lines: a two-digit gutter of 4 cells, offset into the area.
+    let buffer = TextBuffer::from_text(&"x\n".repeat(9));
+    let mut state = EditorState::new();
+    let area = Rect::new(3, 2, 20, 4);
+    assert_eq!(
+        lanes(&state, &buffer, area),
+        [
+            Some(Marker),
+            Some(LineNumber),
+            Some(LineNumber),
+            Some(Fold),
+            None
+        ]
+    );
+    // Numbers off: the marker and fold lanes meet.
+    state.last_line_numbers = LineNumbers::Off;
+    assert_eq!(
+        lanes(&state, &buffer, area),
+        [Some(Marker), Some(Fold), None, None, None]
+    );
+    // Left of, above and below the area is nothing.
+    assert_eq!(state.gutter_hit_at(area, &buffer, &[], 2, 2), None);
+    assert_eq!(state.gutter_hit_at(area, &buffer, &[], 3, 1), None);
+    assert_eq!(state.gutter_hit_at(area, &buffer, &[], 3, 6), None);
+}
+
+#[test]
+fn a_gutter_row_below_the_last_line_shows_no_line() {
+    let buffer = TextBuffer::from_text("a\nb");
+    let state = EditorState::new();
+    let area = Rect::new(0, 0, 20, 5);
+    let hit = |row| {
+        state
+            .gutter_hit_at(area, &buffer, &[], 0, row)
+            .map(|hit| hit.line)
+    };
+    assert_eq!(
+        (hit(0), hit(1), hit(2), hit(4)),
+        (Some(0), Some(1), None, None)
+    );
+    // The text beside it still clamps a click to the end of the document.
+    assert_eq!(state.pos_at(area, &buffer, &[], 5, 3), LineCol::new(1, 1));
+}
+
+#[test]
+fn gutter_rows_follow_folds_sticky_headers_and_wrapping() {
+    let buffer = TextBuffer::from_text("a\nb\nc\nd\ne");
+    let folds = [Fold {
+        start: 1,
+        end: 3,
+        collapsed: true,
+    }];
+    let mut state = EditorState::new();
+    let area = Rect::new(0, 0, 20, 5);
+    let line = |state: &EditorState, row| {
+        state
+            .gutter_hit_at(area, &buffer, &folds, 2, row)
+            .map(|hit| hit.line)
+    };
+    // The collapsed interior takes no rows, and the last line ends them.
+    assert_eq!(
+        (0..4).map(|row| line(&state, row)).collect::<Vec<_>>(),
+        [Some(0), Some(1), Some(4), None]
+    );
+    // A sticky header row shows its own line.
+    state.sticky_rows = vec![1];
+    state.sticky_height = 1;
+    state.scroll_line = 4;
+    assert_eq!((line(&state, 0), line(&state, 1)), (Some(1), Some(4)));
+    // A soft-wrap continuation row belongs to the line it continues.
+    let buffer = TextBuffer::from_text("abcdefghij\nk");
+    let mut state = EditorState::new();
+    state.last_word_wrap = true;
+    let area = Rect::new(0, 0, 7, 6);
+    let line = |row| {
+        state
+            .gutter_hit_at(area, &buffer, &[], 0, row)
+            .map(|hit| hit.line)
+    };
+    assert_eq!(
+        (0..4).map(line).collect::<Vec<_>>(),
+        [Some(0), Some(0), Some(0), Some(1)]
+    );
+    assert_eq!(line(4), None);
+}
+
+#[test]
+fn a_fold_header_draws_its_chevron_in_the_fold_lane_beside_its_marker() {
+    let buffer = TextBuffer::from_text("fn a() {\n}\nfn b() {\n}");
+    let folds = [
+        Fold {
+            start: 0,
+            end: 1,
+            collapsed: false,
+        },
+        Fold {
+            start: 2,
+            end: 3,
+            collapsed: true,
+        },
+    ];
+    let marker = Decoration {
+        range: Range {
+            start: LineCol::new(0, 0),
+            end: LineCol::new(0, 0),
+        },
+        kind: DecorationKind::GutterMarker { glyph: '●' },
+        role: None,
+    };
+    let area = Rect::new(0, 0, 20, 3);
+    let mut target = Buffer::empty(area);
+    let mut state = EditorState::new();
+    Editor::new(&buffer)
+        .folds(&folds)
+        .decorations(std::slice::from_ref(&marker))
+        .render(area, &mut target, &mut state);
+    let row = |y| -> String {
+        (0..area.width)
+            .map(|x| target[(x, y)].symbol().chars().next().unwrap_or(' '))
+            .collect()
+    };
+    assert_eq!(row(0), "●1▾fn a() {         ");
+    assert_eq!(row(1), " 2 }                ");
+    assert_eq!(row(2), " 3▸fn b() { ⋯       ");
+}
+
+#[test]
+fn the_fold_ellipsis_resolves_to_its_header_where_it_was_painted() {
+    let buffer = TextBuffer::from_text("a\nfn b() {\n}\nc");
+    let folds = [Fold {
+        start: 1,
+        end: 2,
+        collapsed: true,
+    }];
+    let area = Rect::new(2, 1, 20, 4);
+    let mut target = Buffer::empty(area);
+    let mut state = EditorState::new();
+    Editor::new(&buffer)
+        .folds(&folds)
+        .render(area, &mut target, &mut state);
+    // Row 2 is `fn b() {` after a 3-cell gutter: ` ⋯` sits at 8 cells in.
+    let x = area.x + 3 + 8;
+    assert_eq!(target[(x + 1, 2)].symbol(), "\u{22ef}");
+    assert_eq!(state.fold_ellipsis_at(x, 2), Some(1));
+    assert_eq!(state.fold_ellipsis_at(x + 1, 2), Some(1));
+    assert_eq!(state.fold_ellipsis_at(x - 1, 2), None);
+    assert_eq!(state.fold_ellipsis_at(x + 2, 2), None);
+    assert_eq!(state.fold_ellipsis_at(x, 1), None);
+    // Expanded, the next frame paints none.
+    let open = [Fold {
+        collapsed: false,
+        ..folds[0]
+    }];
+    Editor::new(&buffer)
+        .folds(&open)
+        .render(area, &mut target, &mut state);
+    assert_eq!(state.fold_ellipsis_at(x + 1, 2), None);
+}
+
+#[test]
+fn select_lines_selects_whole_lines_either_way_without_scrolling() {
+    let buffer = TextBuffer::from_text("a\nbb\nccc");
+    let mut state = EditorState::new();
+    state.last_height = 1;
+    state.scroll_col = 2;
+    let selection = |state: &EditorState| state.selection_range();
+    state.select_lines(&buffer, 0, 0);
+    assert_eq!(
+        selection(&state),
+        Some(Range {
+            start: LineCol::new(0, 0),
+            end: LineCol::new(1, 0),
+        })
+    );
+    assert_eq!(state.cursor(), LineCol::new(1, 0));
+    // The line break ends on a row off screen, and still nothing scrolls.
+    assert_eq!((state.scroll_line, state.scroll_col), (0, 2));
+    // Upward: anchored after the first line's break, caret at the last one's start.
+    state.select_lines(&buffer, 1, 0);
+    assert_eq!(state.cursors().primary().anchor, LineCol::new(2, 0));
+    assert_eq!(state.cursor(), LineCol::new(0, 0));
+    // The last line has no break: the selection ends at its end; past it clamps.
+    state.select_lines(&buffer, 1, 9);
+    assert_eq!(state.cursors().primary().anchor, LineCol::new(1, 0));
+    assert_eq!(state.cursor(), LineCol::new(2, 3));
+    assert!(!state.has_multiple_cursors());
+}

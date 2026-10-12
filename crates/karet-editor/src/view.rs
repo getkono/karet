@@ -625,6 +625,7 @@ impl StatefulWidget for Editor<'_> {
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut EditorState) {
         state.last_virtual_text.clear();
+        state.last_fold_ellipses.clear();
         if area.width == 0 || area.height == 0 {
             return;
         }
@@ -888,6 +889,7 @@ impl StatefulWidget for Editor<'_> {
                     > usize::from(area.width);
             // A collapsed header hints at the hidden lines it conceals.
             if fold.is_some_and(|f| f.collapsed) && range_index + 1 == ranges.len() {
+                display::record_fold_ellipsis(&mut state.last_fold_ellipses, area, y, &spans, l);
                 spans.push(Span::styled(
                     " \u{22ef}", // ⋯
                     Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui()),
