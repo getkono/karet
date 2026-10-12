@@ -103,6 +103,7 @@ use karet_core::SignatureHelp;
 use karet_core::Symbol;
 use karet_core::TextEdit;
 use karet_core::WorkspaceEdit;
+use karet_core::WorkspaceSymbol;
 use serde_json::Value;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::AsyncRead;
@@ -820,13 +821,14 @@ impl LspClient {
         Ok(convert::document_symbols_from_lsp(response))
     }
 
-    /// Search workspace symbols matching `query`.
+    /// Search workspace symbols matching `query`, each with the file it is in.
+    /// Ranges are in the server's UTF-16 columns, as everywhere in this crate.
     ///
     /// # Errors
     /// Returns [`LspError::Unsupported`] **without issuing a request** when the
     /// server did not advertise the capability, else [`LspError::Server`] or
     /// [`LspError::Timeout`].
-    pub async fn workspace_symbols(&self, query: &str) -> Result<Vec<Symbol>, LspError> {
+    pub async fn workspace_symbols(&self, query: &str) -> Result<Vec<WorkspaceSymbol>, LspError> {
         self.require(ServerFeature::WorkspaceSymbol, "workspace/symbol")?;
         let params = lsp_types::WorkspaceSymbolParams {
             query: query.to_owned(),

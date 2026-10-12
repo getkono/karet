@@ -713,6 +713,46 @@ fn apply_results_map_to_the_wire_reply() {
 }
 
 #[test]
+fn nested_workspace_symbols_keep_their_file_even_without_a_range()
+-> Result<(), Box<dyn std::error::Error>> {
+    let symbols: lsp_types::WorkspaceSymbolResponse = serde_json::from_value(serde_json::json!([
+        {
+            "name": "run",
+            "kind": 12,
+            "containerName": "Runner",
+            "location": {
+                "uri": "file:///w/src/run.rs",
+                "range": {"start": {"line": 7, "character": 3},
+                          "end": {"line": 7, "character": 6}}
+            }
+        },
+        {"name": "Lazy", "kind": 5, "location": {"uri": "file:///w/src/lazy.rs"}},
+        {"name": "Remote", "kind": 5, "location": {"uri": "untitled:Untitled-1"}}
+    ]))?;
+    assert!(matches!(
+        symbols,
+        lsp_types::WorkspaceSymbolResponse::Nested(_)
+    ));
+    let mapped = workspace_symbols_from_lsp(Some(symbols));
+    assert_eq!(mapped.len(), 2, "a symbol outside any file is dropped");
+    assert_eq!(mapped[0].path, PathBuf::from("/w/src/run.rs"));
+    assert_eq!(mapped[0].container_name.as_deref(), Some("Runner"));
+    assert_eq!(mapped[0].kind, SymbolKind::Function);
+    assert_eq!(
+        mapped[0].range.map(|range| range.start),
+        Some(LineCol::new(7, 3))
+    );
+    assert_eq!(mapped[1].name, "Lazy");
+    assert_eq!(mapped[1].path, PathBuf::from("/w/src/lazy.rs"));
+    assert_eq!(
+        mapped[1].range, None,
+        "the URI-only form names just the file"
+    );
+    assert!(workspace_symbols_from_lsp(None).is_empty());
+    Ok(())
+}
+
+#[test]
 fn maps_workspace_symbols_and_formatting_edits() -> Result<(), Box<dyn std::error::Error>> {
     let symbols: lsp_types::WorkspaceSymbolResponse = serde_json::from_value(serde_json::json!([{
         "name": "Runner",
@@ -726,6 +766,14 @@ fn maps_workspace_symbols_and_formatting_edits() -> Result<(), Box<dyn std::erro
     let mapped = workspace_symbols_from_lsp(Some(symbols));
     assert_eq!(mapped[0].name, "Runner");
     assert_eq!(mapped[0].kind, SymbolKind::Struct);
+    assert_eq!(mapped[0].path, PathBuf::from("/tmp/a.rs"));
+    assert_eq!(
+        mapped[0].range,
+        Some(Range {
+            start: LineCol::new(4, 2),
+            end: LineCol::new(4, 8),
+        })
+    );
 
     let edits: Vec<lsp_types::TextEdit> = serde_json::from_value(serde_json::json!([{
         "range": {"start": {"line": 0, "character": 0},

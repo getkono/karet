@@ -212,6 +212,24 @@ pub struct Symbol {
     pub children: Vec<Symbol>,
 }
 
+/// One hit of a workspace-wide symbol search: a symbol and the file it lives
+/// in, so a picker can open it without the document being open.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct WorkspaceSymbol {
+    /// The symbol's name.
+    pub name: String,
+    /// Its kind.
+    pub kind: SymbolKind,
+    /// The containing symbol's name, if known.
+    pub container_name: Option<String>,
+    /// The file the symbol is in.
+    pub path: PathBuf,
+    /// Where in `path` the symbol is, or `None` when the producer named only
+    /// the file (LSP's URI-only form, which a later resolve would complete).
+    pub range: Option<Range>,
+}
+
 /// Which edge of the end-of-line slot a [`VirtualTextPlacement::EndOfLine`]
 /// text keeps to.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]

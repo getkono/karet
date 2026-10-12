@@ -7,6 +7,7 @@
 
 use karet_core::InlayHint;
 use karet_core::Location;
+use karet_core::WorkspaceSymbol;
 use karet_text::TextBuffer;
 
 use super::updates::utf16_caret;
@@ -109,6 +110,32 @@ impl Session {
             };
             if let Some(buffer) = buffer {
                 location.range = utf16_range_to_buffer(buffer, location.range);
+            }
+        }
+    }
+
+    /// Move workspace symbols from the server's UTF-16 columns to buffer
+    /// columns, each against its own file when that file is open here.
+    ///
+    /// A symbol in a file that is not open keeps the server's columns. A
+    /// workspace search answers every typing pause with hits across any number
+    /// of files, so reading each from disk here would put that much blocking
+    /// I/O on the session for rows nobody may pick -- the trade inlay-hint
+    /// part locations make (see [`Self::hints_to_buffer_columns`]). The line is
+    /// right either way; the column differs only where an astral-plane
+    /// character precedes the symbol on its line.
+    pub(super) fn workspace_symbols_to_buffer_columns(&self, symbols: &mut [WorkspaceSymbol]) {
+        for symbol in symbols {
+            let Some(range) = symbol.range.as_mut() else {
+                continue;
+            };
+            let open = self
+                .store
+                .by_path
+                .get(&symbol.path)
+                .and_then(|doc| self.store.docs.get(doc));
+            if let Some(document) = open {
+                *range = utf16_range_to_buffer(&document.buffer, *range);
             }
         }
     }

@@ -184,8 +184,11 @@ impl Session {
                 );
             },
             LspUpdate::WorkspaceSymbols {
-                request, symbols, ..
+                request,
+                mut symbols,
+                ..
             } => {
+                self.workspace_symbols_to_buffer_columns(&mut symbols);
                 self.emit(Some(request), Event::WorkspaceSymbols { symbols });
             },
             LspUpdate::WorkspaceEdit {
