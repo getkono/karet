@@ -163,6 +163,29 @@ fn add_next_occurrence_selects_word_then_next_match() {
     }));
 }
 
+#[test]
+fn add_next_occurrence_wraps_across_rope_chunks() {
+    // A buffer spanning many rope chunks: the in-place scan must cross chunk
+    // boundaries and wrap from the end of the document back to its start.
+    let filler = "x".repeat(40);
+    let mut text = String::from("foo\n");
+    for _ in 0..500 {
+        text.push_str(&filler);
+        text.push('\n');
+    }
+    text.push_str("bar foo\n");
+    let buffer = TextBuffer::from_text(&text);
+    let mut state = EditorState::new();
+    state.last_height = 4;
+    state.set_selection(&buffer, at(501, 4), at(501, 7));
+    state.add_next_occurrence(&buffer);
+    assert!(state.has_multiple_cursors());
+    assert!(state.selection_ranges().contains(&Range {
+        start: at(0, 0),
+        end: at(0, 3),
+    }));
+}
+
 fn at(line: u32, col: u32) -> LineCol {
     LineCol::new(line, col)
 }

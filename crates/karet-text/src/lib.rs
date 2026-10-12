@@ -23,6 +23,7 @@ mod apply;
 mod history;
 mod lines;
 mod load;
+mod read;
 mod save;
 
 pub use apply::Applied;
@@ -34,6 +35,7 @@ pub use lines::lines;
 pub use load::Encoding;
 pub use load::Eol;
 pub use load::LoadError;
+pub use read::TextSnapshot;
 pub use save::SavedState;
 pub use save::conflicts_with_disk;
 
@@ -201,7 +203,9 @@ impl TextBuffer {
     }
 
     /// The full text as an owned `String` (LF-normalized; allocates the whole
-    /// buffer — prefer line/slice accessors on hot paths).
+    /// buffer — on hot paths prefer [`slice`](Self::slice), [`find`](Self::find),
+    /// the line accessors, or a lazily materialized
+    /// [`text_snapshot`](Self::text_snapshot)).
     #[must_use]
     pub fn text(&self) -> String {
         self.rope.to_string()

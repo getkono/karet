@@ -29,6 +29,7 @@ use karet_syntax::FoldRegions;
 use karet_syntax::Highlights;
 use karet_syntax::SemanticBlocks;
 use karet_text::TextBuffer;
+use karet_text::TextSnapshot;
 pub(crate) use language_servers::LanguageServerAction;
 pub(crate) use language_servers::LanguageServerActionHit;
 pub(crate) use language_servers::LanguageServerPending;
@@ -182,8 +183,12 @@ pub enum TabKind {
         next_version: u64,
         /// The latest snapshot's buffer (a cheap rope-sharing clone).
         buffer: TextBuffer,
-        /// The source text (kept in sync with `buffer` for in-file search).
-        text: String,
+        /// The source text as one contiguous string, for the readers that need
+        /// one (in-file search, Markdown table and merge-conflict scans). Kept in
+        /// sync with `buffer` as a lazily materialized snapshot: refreshing it on
+        /// an edit shares the rope, and the copy is made at most once per version,
+        /// only if one of those readers asks for it.
+        text: TextSnapshot,
         /// Syntax highlight spans (empty when no grammar / disabled).
         highlights: Highlights,
         /// Semantic block scopes from the latest syntax snapshot.
@@ -797,7 +802,7 @@ mod tests {
                 doc: None,
                 next_version: 0,
                 buffer: TextBuffer::from_text("fn main() {}"),
-                text: "fn main() {}".to_string(),
+                text: "fn main() {}".into(),
                 highlights: Highlights::default(),
                 semantic_blocks: SemanticBlocks::default(),
                 folds: FoldRegions::default(),
@@ -822,7 +827,7 @@ mod tests {
                 doc: None,
                 next_version: 0,
                 buffer,
-                text: "a\nb\n".to_string(),
+                text: "a\nb\n".into(),
                 highlights: Highlights::default(),
                 semantic_blocks: SemanticBlocks::default(),
                 folds: FoldRegions::default(),

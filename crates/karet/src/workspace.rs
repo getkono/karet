@@ -21,6 +21,7 @@ use karet_syntax::FoldRegions;
 use karet_syntax::Highlights;
 use karet_syntax::SemanticBlocks;
 use karet_text::TextBuffer;
+use karet_text::TextSnapshot;
 use karet_treesitter::language_name_from_path;
 
 use crate::tab::Tab;
@@ -134,7 +135,7 @@ fn open_text(path: &Path, bytes: &[u8]) -> Tab {
             },
         );
     };
-    let text = buffer.text();
+    let text = buffer.text_snapshot();
     let language = language_name_from_path(path).unwrap_or("plaintext");
     Tab::new(
         title(path),
@@ -168,7 +169,7 @@ fn open_pending_code(path: &Path, language: &'static str) -> Tab {
             doc: None,
             next_version: 0,
             buffer: TextBuffer::new(),
-            text: String::new(),
+            text: TextSnapshot::default(),
             highlights: Highlights::default(),
             semantic_blocks: SemanticBlocks::default(),
             folds: FoldRegions::default(),

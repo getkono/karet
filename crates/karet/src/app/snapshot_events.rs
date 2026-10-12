@@ -29,6 +29,11 @@ impl App {
             .filter(|&version| held == Some(version) || self.navigation_holds(doc, version))
             .collect();
         let mut carried: Option<(u64, Option<karet_core::TextEdit>)> = None;
+        // One lazy snapshot of the new text, shared by every split on this
+        // document: taking it copies nothing, and whichever reader first needs
+        // the contiguous text (find, a Markdown scan, the edit recovery above)
+        // builds it once for all of them.
+        let snap_text = snap.buffer.text_snapshot();
         for tab in self.all_tabs_mut() {
             let matches = matches!(&tab.kind, TabKind::Code { doc: Some(d), .. } if *d == doc);
             if !matches {
@@ -53,15 +58,14 @@ impl App {
                 if snap.version >= buffer.version() {
                     let old_version = buffer.version();
                     advanced |= snap.version > old_version;
-                    let new_text = snap.buffer.text();
                     if carried.is_none()
                         && snap.version > old_version
                         && wanted_versions.contains(&old_version)
                     {
-                        carried = Some((old_version, super::inlay::diff_edit(text, &new_text)));
+                        carried = Some((old_version, super::inlay::diff_edit(text, &snap_text)));
                     }
                     *buffer = snap.buffer.clone();
-                    *text = new_text;
+                    *text = snap_text.clone();
                 }
                 *highlights = (*snap.highlights).clone();
                 *semantic_blocks = (*snap.semantic_blocks).clone();
