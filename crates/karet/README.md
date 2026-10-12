@@ -133,6 +133,18 @@ renames across the workspace and `Esc` cancels. Files the rename touches that ar
 not open are opened in background tabs: every change is unsaved and undoable per
 file, and the notice says how many files changed.
 
+**Editor — code actions.** `Ctrl+.` (or `Alt+Enter`, which reaches the app from any
+terminal; palette: *Quick Fix…*) opens a menu under the caret of the language
+server's code actions for the selection or the caret — the diagnostics there go
+along as context — grouped into quick fixes, refactorings, source actions, and the
+rest, the server's preferred fix first. An action the server offers but cannot run
+here is dimmed, and clicking it says why. Accepting one fills in its edit if the
+server deferred it, applies the edit like a rename's (unsaved and undoable per
+file), then runs its command. When the caret has rested on a line that has actions,
+a lightbulb shows in that line's gutter. The palette's *Source Action…* lists only
+source actions, and *Organize Imports* and *Fix All* run the server's (preferred)
+action of that kind directly.
+
 **Editor — multi-cursor.** `Ctrl+Alt+↑`/`Ctrl+Alt+↓` add a caret above / below the
 primary; `Ctrl+D` selects the word under the caret, then adds a caret at the next
 occurrence (wrapping); `Alt+Click` adds or removes a caret and `Alt+Drag` extends the

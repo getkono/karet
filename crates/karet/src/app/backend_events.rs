@@ -30,6 +30,8 @@ impl App {
         // An edited document's hint request goes out once typing pauses, and
         // has to without another keystroke to wake the loop.
         let inlay = self.inlay_next_wake(now);
+        // Likewise the lightbulb probe, once the caret has settled.
+        let code_actions = self.code_action_next_wake(now);
         // Generation runs for seconds with no output to stream, so its spinner is
         // the only progress there is — it has to keep animating without input.
         let ai_commit = self.ai_commit_next_wake(now);
@@ -53,6 +55,7 @@ impl App {
             loading,
             nested_repositories,
             inlay,
+            code_actions,
             ai_commit,
             operation,
             reveal,
@@ -241,6 +244,12 @@ impl App {
                 ..
             } => self.on_rename_prepared(id, doc, target, reason),
             SessionEvent::WorkspaceEdit { applied } => self.on_workspace_edit(id, applied),
+            SessionEvent::CodeActions {
+                doc,
+                version,
+                actions,
+                reason,
+            } => self.on_code_actions(id, doc, version, actions, reason),
             SessionEvent::LanguageServerInstallRequired {
                 server,
                 language,

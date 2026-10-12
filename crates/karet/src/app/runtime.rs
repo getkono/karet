@@ -250,6 +250,8 @@ async fn event_loop(
         // does: the range worth annotating is only known once a frame has said
         // how much of the document is on screen.
         app.request_inlay_hints();
+        // The lightbulb follows the painted caret the same way.
+        app.probe_code_actions(Instant::now());
 
         // Wake for notification expiry or a save-spinner frame; park on the event
         // sources when nothing time-based is pending (no idle repaints).

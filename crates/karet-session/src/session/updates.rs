@@ -216,6 +216,7 @@ impl Session {
                 ..
             } => self.adopt_prepare_rename(request, doc, version, caret, answer),
             LspUpdate::ApplyEdit { request, .. } => self.adopt_server_edit(request),
+            LspUpdate::CodeAction { answer, .. } => self.adopt_code_action(answer),
             // A formatting answer exists only to finish a deferred save: the
             // edits are applied here, never handed to the client. Edits computed
             // against a version the buffer has moved past are dropped, but the

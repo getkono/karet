@@ -119,9 +119,10 @@ impl App {
         }
         self.request_active_outline();
         // If the find bar is open, an edit (e.g. a replace) just changed the buffer,
-        // so recompute the match highlights against the fresh text.
+        // so recompute the match highlights against the fresh text. Only the
+        // highlights: a snapshot is not a motion, so the caret stays where it is.
         if self.find_open {
-            self.run_find();
+            self.refresh_find();
         }
         // Likewise for global search matches: a newly-opened or just-edited tab
         // should show its highlights immediately, not only after the next

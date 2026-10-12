@@ -30,8 +30,9 @@ use super::RESTART_LIMIT;
 use super::RESTART_MAX_DELAY;
 use super::RESTART_MIN_DELAY;
 use super::RESTART_WINDOW;
+use super::hint_flight::Answer;
+use super::hint_flight::Flights;
 use super::hint_flight::HintAnswer;
-use super::hint_flight::HintFlight;
 use super::message::LspUpdate;
 use super::message::ServerCmd;
 use super::slot::SlotKey;
@@ -84,10 +85,12 @@ pub(super) enum Wake {
     Lost,
     /// A launched inlay-hint request finished.
     Hint(HintAnswer),
+    /// A launched lightbulb probe finished.
+    Probe(Answer<Vec<karet_core::CodeAction>>),
 }
 
 /// Wait for whichever comes first: a command, the pending edit's flush deadline, a
-/// launched hint request finishing, or the connection's death.
+/// launched hint request or lightbulb probe finishing, or the connection's death.
 ///
 /// The select is `biased` so liveness is polled first. With a dead connection
 /// and queued commands, taking a command would only drive it into a peer that is
@@ -97,12 +100,14 @@ pub(super) async fn next_wake(
     rx: &mut mpsc::Receiver<ServerCmd>,
     client: Option<&LspClient>,
     flush_at: Option<Instant>,
-    hints: &mut HintFlight,
+    flights: &mut Flights,
 ) -> Wake {
     let Some(client) = client else {
         return Wake::Command(rx.recv().await);
     };
+    let Flights { hints, probes } = flights;
     let busy = hints.is_busy();
+    let probing = probes.is_busy();
     if let Some(flush_at) = flush_at {
         // A deadline rather than a timeout on the next command: the debounce
         // measures quiet since the last *edit*, and a command that does not
@@ -113,6 +118,7 @@ pub(super) async fn next_wake(
             () = client.closed() => Wake::Lost,
             () = tokio::time::sleep_until(flush_at) => Wake::Quiet,
             Some(answer) = hints.next(), if busy => Wake::Hint(answer),
+            Some(answer) = probes.next(), if probing => Wake::Probe(answer),
             cmd = rx.recv() => Wake::Command(cmd),
         }
     } else {
@@ -120,6 +126,7 @@ pub(super) async fn next_wake(
             biased;
             () = client.closed() => Wake::Lost,
             Some(answer) = hints.next(), if busy => Wake::Hint(answer),
+            Some(answer) = probes.next(), if probing => Wake::Probe(answer),
             cmd = rx.recv() => Wake::Command(cmd),
         }
     }

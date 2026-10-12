@@ -1,6 +1,7 @@
 use super::*;
 
 pub(super) mod chrome;
+mod focus;
 
 impl App {
     /// Resize the sidebar so its right edge sits at column `col`. Dragging narrower
@@ -262,6 +263,7 @@ impl App {
             self.pane_divider_hover = Some(divider);
             return;
         }
+        let pressed_in_console = self.settle_overlays_on_press(mouse);
         // Ahead of every region test: a track sits inside the rect of whatever it
         // scrolls, and those rects were narrowed to exclude it precisely so the bar
         // could claim the column.
@@ -271,6 +273,11 @@ impl App {
         // The popups float over the editor, so they claim the pointer over them
         // before anything beneath them can.
         if self.handle_completion_mouse(mouse) || self.handle_hover_mouse(mouse) {
+            return;
+        }
+        // The console floats over whatever it overlaps, so a press on it is the
+        // console's and must not reach the editor underneath.
+        if pressed_in_console {
             return;
         }
         if self.handle_tabstrip_mouse(mouse) {
@@ -692,34 +699,6 @@ impl App {
                 }
             },
         }
-    }
-
-    /// Place the caret in the find bar's field under `(column, row)` and arm a
-    /// selection drag; whether the click landed on one.
-    fn handle_find_bar_click(&mut self, mouse: MouseEvent) -> bool {
-        let point = (mouse.column, mouse.row);
-        let target = if rect_contains(self.find_rects.query, point) {
-            TextFieldTarget::FindQuery
-        } else if self
-            .find_rects
-            .replace
-            .is_some_and(|r| rect_contains(r, point))
-        {
-            TextFieldTarget::FindReplace
-        } else {
-            return false;
-        };
-        let field = match target {
-            TextFieldTarget::FindReplace => SearchField::Replace,
-            _ => SearchField::Find,
-        };
-        if let Some(find) = self.active_find_mut() {
-            find.field = field;
-        }
-        let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
-        self.place_text_field_cursor(target, mouse.column, mouse.row, shift);
-        self.text_field_drag = Some(target);
-        true
     }
 
     fn place_text_field_cursor(

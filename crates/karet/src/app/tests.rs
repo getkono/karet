@@ -6,6 +6,7 @@ mod aicommit;
 pub(crate) mod support;
 
 mod blame;
+mod code_actions;
 mod comment;
 mod commit_file_tree;
 mod commit_graph;
@@ -31,6 +32,7 @@ mod language_servers;
 mod lifecycle;
 mod line_changes;
 mod markdown_edit;
+mod overlay_focus;
 mod pointer_routing;
 mod preview;
 #[cfg(feature = "images")]

@@ -272,6 +272,9 @@ impl App {
         applied: AppliedWorkspaceEdit,
     ) {
         self.adopt_workspace_edit_tabs(&applied);
+        if self.settle_code_action(id, &applied) {
+            return;
+        }
         let ours = match (&self.pending_rename, id) {
             (Some(pending), Some(id)) if pending.id == id => self.pending_rename.take(),
             _ => None,
