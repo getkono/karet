@@ -74,7 +74,9 @@ impl<T> Picker<T> {
 
     /// Replace the rows, keeping the query: for rows that arrive after the
     /// picker opened. The new rows are ranked against the query, and the
-    /// selection moves to the best match, as any change of the visible list does.
+    /// selection moves to the best match, as any change of the visible list does;
+    /// an [unranked](Self::unranked) picker instead shows them as given and
+    /// selects the first row.
     pub fn set_items(&mut self, items: Vec<(String, T)>) {
         self.items = items;
         self.refilter();
@@ -149,8 +151,8 @@ impl<T> Picker<T> {
         self.refilter();
     }
 
-    /// Re-rank the items for the current query and reset the selection to the
-    /// best match.
+    /// Re-rank the items for the current query (or, unranked, list them as
+    /// given) and reset the selection to the first visible row.
     fn refilter(&mut self) {
         if !self.ranked {
             self.filtered = (0..self.items.len()).collect();
