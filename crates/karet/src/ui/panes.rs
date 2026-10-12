@@ -544,7 +544,9 @@ pub(super) fn draw_find_bar(
     let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
 
     // Find row.
-    let editing_find = find.field == SearchField::Find;
+    // A field draws its caret only while the bar owns the keyboard; once the
+    // editor has it back, a second caret here would say keys land in the bar.
+    let editing_find = find.focused && find.field == SearchField::Find;
     let count = if find.query.is_empty() {
         String::new()
     } else if find.count == 0 {
@@ -611,7 +613,7 @@ pub(super) fn draw_find_bar(
     if find.replace_visible && rows[1].height >= 1 {
         const REPLACE_LABEL: &str = " Repl: ";
         let hint = "   (Enter replace \u{b7} Alt+Enter all \u{b7} Tab find)";
-        let editing_replace = find.field == SearchField::Replace;
+        let editing_replace = find.focused && find.field == SearchField::Replace;
         let hint_width = u16::try_from(crate::ui::line_width(&Line::raw(hint))).unwrap_or(u16::MAX);
         let replace_cols = Layout::horizontal([
             Constraint::Length(u16::try_from(REPLACE_LABEL.len()).unwrap_or(u16::MAX)),

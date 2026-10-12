@@ -11,12 +11,14 @@ impl App {
             ..
         }) = self.tabs.get_mut(self.active)
         {
-            find.get_or_insert_with(FindState::default);
+            find.get_or_insert_with(FindState::default).focused = true;
             self.find_open = true;
             self.focus = Focus::Editor;
             // Rebuild decorations against the current buffer — cheap no-op for a
-            // blank query, necessary to refresh a restored non-empty one.
-            self.run_find();
+            // blank query, necessary to refresh a restored non-empty one. Opening
+            // (or re-focusing) the bar is not a motion: the caret stays put, and
+            // the next Enter moves from it.
+            self.refresh_find();
         } else {
             self.notify(
                 Report::Refusal,
@@ -91,13 +93,30 @@ impl App {
         }
     }
 
-    /// Re-run the in-file search and rebuild the active tab's match decorations.
+    /// Re-run the in-file search after the query or its options changed, and move
+    /// to the first match at or after the caret (wrapping to the first): the
+    /// user is searching, so the caret follows what they typed.
     pub(super) fn run_find(&mut self) {
-        let q = match self.active_find() {
-            Some(find) => find.query_spec(),
-            None => return,
+        self.seek_find(true);
+    }
+
+    /// Rebuild the match highlights against the current text without moving the
+    /// caret; the counter points at the match at or after the caret. What a
+    /// snapshot (an auto-save, a reload, an edit) and opening the bar do: neither
+    /// is a motion, so neither may move the caret, collapse a multi-caret, or
+    /// drop a selection.
+    pub(super) fn refresh_find(&mut self) {
+        self.seek_find(false);
+    }
+
+    /// Rebuild the active tab's match decorations and point the bar's counter at
+    /// the match at or after the caret. With `jump`, also move the caret there.
+    fn seek_find(&mut self, jump: bool) {
+        let Some(q) = self.active_find().map(FindState::query_spec) else {
+            return;
         };
         let mut count = 0;
+        let mut current = 0;
         if let Some(Tab {
             kind:
                 TabKind::Code {
@@ -126,40 +145,59 @@ impl App {
                     })
                     .collect();
                 count = decos.len();
-                if let Some(first) = decos.first() {
-                    let pos = first.range.start;
+                // Resolved from the caret in both cases, never carried over by
+                // index: an edit that adds or removes a match earlier in the
+                // file shifts every index after it, while the caret moves with
+                // the text it sits in. The counter, the next Replace and the
+                // caret therefore always agree on which match is current.
+                let caret = editor.cursors().primary().range().start;
+                current = match_at_or_after(decos, caret);
+                if jump && let Some(deco) = decos.get(current) {
+                    let pos = deco.range.start;
                     editor.goto(buffer, pos);
                 }
             }
         }
         if let Some(find) = self.active_find_mut() {
             find.count = count;
-            find.current = 0;
+            find.current = current;
         }
     }
 
-    /// Move to the next/previous match (wrapping) and scroll it into view.
+    /// Move to the next (`delta > 0`) or previous match from the caret, wrapping,
+    /// and scroll it into view. Measured from the caret rather than from the
+    /// counter, so stepping continues from wherever the user — or a Replace —
+    /// left it.
     pub(super) fn find_step(&mut self, delta: i32) {
-        let (count, current) = match self.active_find() {
-            Some(find) => (find.count, find.current),
-            None => return,
-        };
-        if count == 0 {
+        if self.active_find().is_none_or(|find| find.count == 0) {
             return;
         }
-        let next = (current as i64 + i64::from(delta)).rem_euclid(count as i64) as usize;
-        if let Some(find) = self.active_find_mut() {
-            find.current = next;
-        }
-        if let Some(Tab {
+        let Some(Tab {
             kind: TabKind::Code { buffer, decos, .. },
             editor,
             ..
         }) = self.tabs.get_mut(self.active)
-            && let Some(deco) = decos.get(next)
-        {
-            let pos = deco.range.start;
-            editor.goto(buffer, pos);
+        else {
+            return;
+        };
+        let caret = editor.cursor();
+        let next = if delta >= 0 {
+            decos
+                .iter()
+                .position(|deco| deco.range.start > caret)
+                .unwrap_or(0)
+        } else {
+            decos
+                .iter()
+                .rposition(|deco| deco.range.start < caret)
+                .unwrap_or(decos.len().saturating_sub(1))
+        };
+        let Some(pos) = decos.get(next).map(|deco| deco.range.start) else {
+            return;
+        };
+        editor.goto(buffer, pos);
+        if let Some(find) = self.active_find_mut() {
+            find.current = next;
         }
     }
 
@@ -173,9 +211,15 @@ impl App {
         }
     }
 
-    /// Replace the current in-file match with the replacement text. The edit is
-    /// applied through the document (undoable); find re-runs when the snapshot lands.
+    /// Replace the current in-file match with the replacement text, then move to
+    /// the next match (VS Code behaviour). The edit is applied through the document
+    /// (undoable) and locally at once, so the matches are rebuilt against the new
+    /// text here rather than waiting for the snapshot.
     pub(super) fn find_replace_current(&mut self) {
+        // Measured against the text as it is now, and resolved from the caret:
+        // an edit since the last search would otherwise leave the counter on a
+        // stale range, or on an index that now names a different match.
+        self.refresh_find();
         let Some(find) = self.active_find() else {
             return;
         };
@@ -194,9 +238,22 @@ impl App {
         let Some(range) = range else {
             return;
         };
+        // One caret, at the match: the edit is built once per caret, and every
+        // other caret would replace the same range again.
+        if let Some(Tab {
+            kind: TabKind::Code { buffer, .. },
+            editor,
+            ..
+        }) = self.tabs.get_mut(self.active)
+        {
+            editor.goto(buffer, range.start);
+        }
         self.submit_edit(move |caret, _sel, _buf, base| {
             Some(editing::insert(caret, Some(range), base, &replacement))
         });
+        // The caret sits after the replacement, so this lands on the match after
+        // it — never on replacement text that happens to match the query too.
+        self.run_find();
     }
 
     /// Replace every in-file match at once by rewriting the whole buffer through a
@@ -694,4 +751,13 @@ impl App {
         self.search.folds_touched = true;
         self.search.set_all_collapsed(any_open);
     }
+}
+
+/// The match the caret is in or the first one after it, wrapping to the first
+/// when every match lies behind it.
+fn match_at_or_after(decos: &[Decoration], caret: LineCol) -> usize {
+    decos
+        .iter()
+        .position(|deco| deco.range.start >= caret || deco.range.end > caret)
+        .unwrap_or(0)
 }

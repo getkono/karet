@@ -161,8 +161,11 @@ impl App {
     /// Handle a key while the popup is open; returns whether it was consumed.
     /// Up/Down navigate, Enter/Tab accept, Esc dismisses; everything else
     /// falls through to normal editing (which refilters).
+    ///
+    /// Only while the owning editor has the keyboard: with the Explorer focused,
+    /// Enter belongs to the Explorer, never to a popup over a document.
     pub(super) fn completion_key(&mut self, key: KeyEvent) -> bool {
-        if self.completion.is_none() || !key.modifiers.is_empty() {
+        if self.completion.is_none() || !key.modifiers.is_empty() || !self.editor_owns_keyboard() {
             return false;
         }
         let len = self.completion_ranked().map_or(0, |ranked| ranked.len());
@@ -243,8 +246,13 @@ impl App {
     }
 
     /// Drop the popup / pending request when the caret left the anchored span,
-    /// the document changed, or the active tab is no longer a code tab.
+    /// the document changed, the active tab is no longer a code tab, or the
+    /// editor gave up the keyboard (VS Code closes its suggest widget on blur).
     pub(crate) fn reconcile_completion(&mut self) {
+        if !self.editor_owns_keyboard() {
+            self.dismiss_completion();
+            return;
+        }
         let target = self.completion_target();
         let anchored =
             |doc: DocumentId, anchor: LineCol, mode: crate::completion::CompletionMode| {

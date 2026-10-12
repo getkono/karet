@@ -81,6 +81,10 @@ pub(crate) struct FindState {
     pub(crate) case_sensitive: bool,
     /// Match whole words only.
     pub(crate) whole_word: bool,
+    /// Whether the bar owns the keyboard. A click in the editor hands the keys
+    /// back to the text while the bar stays open (VS Code behaviour); opening
+    /// find again or clicking a field takes them back.
+    pub(crate) focused: bool,
 }
 
 impl FindState {
