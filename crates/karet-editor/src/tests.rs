@@ -10,6 +10,7 @@ mod hit;
 mod inlay;
 mod pointer;
 mod reveal;
+mod selection;
 mod virtual_text;
 
 #[test]

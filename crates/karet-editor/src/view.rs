@@ -413,6 +413,19 @@ impl Editor<'_> {
         if let Some(prev) = run_style {
             spans.push(Span::styled(run, prev));
         }
+        // A selected line break paints one cell past the line end, so a blank
+        // line or a line end inside a selection shows what a delete removes.
+        // Only the row holding the line end paints it, after any trailing hint,
+        // so no hit-tested cell moves.
+        if range.start <= line_len
+            && range.end >= line_len
+            && newline_in_any(selections, l, line_len)
+        {
+            let style = Style::default()
+                .fg(default_fg.to_ratatui())
+                .bg(theme.role(ThemeRole::Selection).to_ratatui());
+            spans.push(Span::styled(" ", style));
+        }
     }
 
     /// Flush the pending run and emit the inline text anchored at `col`,
