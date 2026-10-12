@@ -891,7 +891,7 @@
           "const": "on"
         },
         {
-          "description": "No line-number gutter.",
+          "description": "No numbers; a 2-cell gutter keeps the git, diagnostic and fold markers.",
           "type": "string",
           "const": "off"
         },

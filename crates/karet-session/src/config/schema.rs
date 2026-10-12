@@ -550,7 +550,7 @@ pub enum LineNumbers {
     /// Absolute line numbers.
     #[default]
     On,
-    /// No line-number gutter.
+    /// No numbers; a 2-cell gutter keeps the git, diagnostic and fold markers.
     Off,
     /// Numbers relative to the caret line (the caret line shows its absolute number).
     Relative,

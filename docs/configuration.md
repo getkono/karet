@@ -48,7 +48,7 @@ Keys use the VS Code / Zed camelCase style. Defaults shown.
 |---|---|---|---|
 | `tabSize` | number | `4` | Columns per indent level. |
 | `insertSpaces` | bool | `true` | Insert spaces instead of a hard tab. |
-| `lineNumbers` | `"on"`\|`"off"`\|`"relative"` | `"on"` | Line-number gutter mode; `"relative"` counts buffer lines from the caret, whose line shows its own number. |
+| `lineNumbers` | `"on"`\|`"off"`\|`"relative"` | `"on"` | Line-number gutter mode; `"relative"` counts buffer lines from the caret, whose line shows its own number; `"off"` drops the numbers but keeps a 2-cell gutter for the git, diagnostic and fold markers. |
 | `cursorLine` | bool | `true` | Highlight the caret's line (its number stays emphasized either way). |
 | `graphicalCursor` | bool\|null | `null` | Draw a graphical caret when supported; `true` reports a visible error if incompatible. |
 | `scrollOff` | number | `3` | Lines kept visible above/below the caret when the keyboard moves it; capped to what the viewport can spare, and a click never scrolls. |
