@@ -1,7 +1,11 @@
 use karet_core::Location;
 use karet_core::Range;
 
+use super::harness::At;
+use super::harness::Rig;
+use super::harness::Step;
 use super::support::*;
+use crate::app::navigation::NAV_LINE_THRESHOLD;
 use crate::app::*;
 
 /// The definition requests a backend received, as `(id, position)`.
@@ -425,6 +429,64 @@ fn closing_a_split_pane_drops_its_history() {
 
     assert_eq!(app.layout.pane_count(), 1);
     assert!(!app.nav_history.contains_key(&split));
+}
+
+#[test]
+fn an_edit_in_one_split_leaves_a_far_click_in_the_other_a_step_back() {
+    let body: String = (0..30).map(|i| format!("line {i}\n")).collect();
+    let root = test_dir("nav-split-edit-click");
+    write_file(&root, "t.rs", body.as_bytes());
+    let mut rig = Rig::sized(&format!("|{body}"), 80, 40);
+    let active = rig.app.active;
+    if let TabKind::Code { path, .. } = &mut rig.app.tabs[active].kind {
+        *path = root.join("t.rs");
+    }
+    rig.app.observe_navigation();
+    rig.step(Step::Cmd(Command::SplitRight));
+    rig.app.observe_navigation();
+    // Back to the first split, without moving its caret, and edit there.
+    rig.step(Step::Click(At::Pane(0, 0, 0), KeyModifiers::NONE));
+    rig.app.observe_navigation();
+    rig.step(Step::Cmd(Command::InsertNewline));
+    rig.app.observe_navigation();
+    // The session's echo brings the second split's copy of the text up to date.
+    let buffer = match &rig.app.tabs[rig.app.active].kind {
+        TabKind::Code { buffer, .. } => buffer.clone(),
+        _ => karet_text::TextBuffer::from_text(""),
+    };
+    let snap = DocSnapshot {
+        version: buffer.version(),
+        buffer,
+        highlights: Arc::new(karet_syntax::Highlights::default()),
+        semantic_blocks: Arc::new(karet_syntax::SemanticBlocks::default()),
+        folds: Arc::new(FoldRegions::default()),
+        decorations: Arc::new(Vec::new()),
+        syntax_error_lines: Arc::new(Vec::new()),
+        language: Some("Rust"),
+        dirty: true,
+        cursor: None,
+    };
+    rig.app.on_snapshot(DocumentId(9), &snap);
+
+    // One click both focuses the second split and moves its caret far.
+    rig.step(Step::Click(
+        At::Pane(1, 2 * NAV_LINE_THRESHOLD, 0),
+        KeyModifiers::NONE,
+    ));
+    rig.app.observe_navigation();
+    assert_eq!(rig.focused_index(), Some(1));
+    assert_eq!(
+        rig.tab().editor.cursor().line,
+        2 * NAV_LINE_THRESHOLD,
+        "the click placed the caret"
+    );
+
+    rig.step(Step::Cmd(Command::JumpBack));
+    assert_eq!(rig.focused_index(), Some(1));
+    assert!(
+        rig.tab().editor.cursor().line < NAV_LINE_THRESHOLD,
+        "Go Back returns to where the second split was before the click"
+    );
 }
 
 #[test]
