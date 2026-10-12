@@ -11,16 +11,31 @@ impl App {
     /// welcome screen, an image, a preview) keeps Tab's focus toggle, so focus is
     /// never stranded where Tab does nothing.
     pub(super) fn indent_or_toggle_focus(&mut self) {
-        if !matches!(
-            self.tabs.get(self.active).map(|tab| &tab.kind),
-            Some(TabKind::Code { doc: Some(_), .. })
-        ) {
+        if !self.active_tab_is_editable_code() {
             self.toggle_focus();
             return;
         }
         if !self.try_inline_macro(karet_syntax::InlineMacroTrigger::Tab) {
             self.reindent(false);
         }
+    }
+
+    /// The palette's "Indent Line": indent the active code tab, and do nothing
+    /// when no editable code document is in front. Unlike the Tab key it never
+    /// toggles focus and never expands an inline macro — the command names an
+    /// indent, so that is all it does.
+    pub(super) fn indent_lines(&mut self) {
+        if self.active_tab_is_editable_code() {
+            self.reindent(false);
+        }
+    }
+
+    /// Whether the active tab is a code tab whose document has opened.
+    fn active_tab_is_editable_code(&self) -> bool {
+        matches!(
+            self.tabs.get(self.active).map(|tab| &tab.kind),
+            Some(TabKind::Code { doc: Some(_), .. })
+        )
     }
 
     /// Indent (or with `outdent`, dedent) every selection and caret of the active

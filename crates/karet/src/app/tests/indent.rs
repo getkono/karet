@@ -158,3 +158,20 @@ fn tab_without_editable_text_still_toggles_focus() {
     app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
     assert_eq!(app.focus, Focus::Sidebar);
 }
+
+#[test]
+fn the_palettes_indent_line_without_editable_text_does_nothing() {
+    let mut app = app();
+    app.focus = Focus::Editor;
+    app.handle_overlay_event(crate::overlay::OverlayEvent::AcceptCommand(Command::Indent));
+    assert_eq!(app.focus, Focus::Editor);
+}
+
+#[test]
+fn the_palettes_indent_line_indents_the_active_code_tab() {
+    let mut rig = Rig::new("ab|c");
+    rig.app
+        .handle_overlay_event(crate::overlay::OverlayEvent::AcceptCommand(Command::Indent));
+    assert_eq!(rig.app.focus, Focus::Editor);
+    assert_eq!(rig.marked(), "ab  |c");
+}
