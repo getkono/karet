@@ -22,6 +22,7 @@ use karet_syntax::OutlineExtractor;
 use karet_syntax::SemanticBlocker;
 use karet_syntax::SemanticBlocks;
 use karet_syntax::SemanticCommentConfig;
+use karet_text::TextSnapshot;
 use karet_treesitter::Edit;
 use karet_treesitter::LanguageId;
 use karet_treesitter::LayeredParser;
@@ -39,13 +40,17 @@ pub(crate) enum HighlightJob {
 }
 
 /// A request to highlight `text` as `lang`.
+///
+/// `text` is a [`TextSnapshot`]: building the request shares the rope, and the
+/// one contiguous copy the parser needs is made here on the worker thread, only
+/// for the request that survives [`merge`] — not on the session actor per edit.
 pub(crate) struct HighlightRequest {
     pub doc: DocumentId,
     /// The buffer version `text` corresponds to. The session discards a result whose
     /// version it has already moved past.
     pub version: u64,
     pub lang: LanguageId,
-    pub text: String,
+    pub text: TextSnapshot,
     /// Language-resolved semantic-comment settings for this document version.
     pub semantic: Option<SemanticCommentConfig>,
     /// `Some(edits)` advances the retained tree incrementally; `None` forces a full
@@ -177,6 +182,7 @@ fn compute(
     trees: &mut HashMap<DocumentId, LayeredTree>,
     request: HighlightRequest,
 ) -> Option<HighlightResult> {
+    let text = request.text.as_str();
     let reusable = request.edits.is_some()
         && trees
             .get(&request.doc)
@@ -186,7 +192,7 @@ fn compute(
         let edits = request.edits.as_deref().unwrap_or(&[]);
         let failed = trees
             .get_mut(&request.doc)
-            .is_some_and(|tree| parser.reparse(tree, edits, &request.text).is_err());
+            .is_some_and(|tree| parser.reparse(tree, edits, text).is_err());
         if failed {
             // Fall back to a cold parse rather than keep a tree of unknown validity.
             trees.remove(&request.doc);
@@ -196,21 +202,21 @@ fn compute(
     }
 
     if let Entry::Vacant(slot) = trees.entry(request.doc) {
-        slot.insert(parser.parse(request.lang, &request.text).ok()?);
+        slot.insert(parser.parse(request.lang, text).ok()?);
     }
     let tree = trees.get(&request.doc)?;
 
-    let mut highlights = highlighter.highlight(tree, &request.text);
+    let mut highlights = highlighter.highlight(tree, text);
     if let Some(config) = request.semantic.as_ref() {
-        highlights = karet_syntax::mark_semantic_comments(&request.text, &highlights, config);
+        highlights = karet_syntax::mark_semantic_comments(text, &highlights, config);
     }
     Some(HighlightResult {
         doc: request.doc,
         version: request.version,
         highlights: Arc::new(highlights),
         folds: Arc::new(karet_syntax::fold(tree.root())),
-        semantic_blocks: Arc::new(blocker.analyze(tree.root(), &request.text)),
-        symbols: Arc::new(outline.analyze_layers(tree, &request.text)),
+        semantic_blocks: Arc::new(blocker.analyze(tree.root(), text)),
+        symbols: Arc::new(outline.analyze_layers(tree, text)),
         error_lines: Arc::new(tree.error_lines()),
     })
 }
@@ -236,7 +242,7 @@ mod tests {
             doc: DocumentId(1),
             version,
             lang: LanguageId(1),
-            text: text.to_owned(),
+            text: text.into(),
             semantic: None,
             edits,
         }
@@ -249,7 +255,7 @@ mod tests {
             request(2, "ab", Some(vec![edit(1, 1, 2)])),
         );
         assert_eq!(merged.version, 2);
-        assert_eq!(merged.text, "ab");
+        assert_eq!(merged.text.as_str(), "ab");
         let edits = merged.edits.unwrap_or_default();
         assert_eq!(edits.len(), 2, "both edits must reach the retained tree");
         assert_eq!(edits[0].new_end_byte, 1);
@@ -297,7 +303,12 @@ mod tests {
             HighlightJob::Update(request(2, "ab", Some(vec![edit(1, 1, 2)]))),
         );
         assert_eq!(pending.len(), 1, "a burst collapses to one request");
-        let request = pending.remove(&DocumentId(1)).map(|r| (r.version, r.text));
+        let request = pending.remove(&DocumentId(1));
+        assert!(
+            request.as_ref().is_some_and(|r| !r.text.is_materialized()),
+            "queueing and merging must not copy the document; only compute does"
+        );
+        let request = request.map(|r| (r.version, r.text.as_str().to_owned()));
         assert_eq!(request, Some((2, "ab".to_owned())));
     }
 
@@ -315,7 +326,7 @@ mod tests {
             doc: DocumentId(1),
             version: 1,
             lang: rust,
-            text: text.to_owned(),
+            text: text.into(),
             semantic,
             edits: None,
         };

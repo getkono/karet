@@ -213,6 +213,7 @@ pub(crate) fn content_frame(app: &App, rect: Rect) -> PaneFrame {
         lsp_badge_hit: None,
         content_rect: rect,
         editor_rect: rect,
+        markdown_preview_rect: Rect::default(),
         commit_file_hits: Vec::new(),
         commit_dir_hits: Vec::new(),
         commit_rail_rect: Rect::default(),
@@ -232,7 +233,7 @@ pub(crate) fn text_tab(name: &str, text: &str) -> Tab {
             doc: None,
             next_version: 0,
             buffer: TextBuffer::from_text(text),
-            text: text.to_string(),
+            text: text.into(),
             highlights: Highlights::default(),
             semantic_blocks: karet_syntax::SemanticBlocks::default(),
             folds: FoldRegions::default(),
@@ -255,7 +256,7 @@ pub(crate) fn code_tab(name: &str) -> Tab {
             doc: None,
             next_version: 0,
             buffer: TextBuffer::from_text("x\n"),
-            text: "x\n".to_string(),
+            text: "x\n".into(),
             highlights: Highlights::default(),
             semantic_blocks: karet_syntax::SemanticBlocks::default(),
             folds: FoldRegions::default(),
@@ -317,7 +318,7 @@ pub(crate) fn init_test_repo() -> Option<TempRepo> {
 
 pub(crate) fn code_tab_text(app: &App) -> String {
     match &app.tabs[app.active].kind {
-        TabKind::Code { text, .. } => text.clone(),
+        TabKind::Code { text, .. } => text.as_str().to_owned(),
         _ => panic!("expected the active tab to be a code tab"),
     }
 }

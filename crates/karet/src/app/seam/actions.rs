@@ -265,7 +265,7 @@ impl App {
                 path,
                 text,
                 ..
-            } if *id == doc => Some((path.clone(), text.clone())),
+            } if *id == doc => Some((path.clone(), text.as_str().to_owned())),
             _ => None,
         }) else {
             return;

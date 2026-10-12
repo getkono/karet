@@ -22,10 +22,10 @@ async fn pane_context_menu_lists_file_actions_and_disables_links_outside_a_repo(
     app.push_tab(code_tab(dir.join("a.rs").to_string_lossy().as_ref()));
 
     // The first open fires the facts request; the answer feeds the reopen.
-    app.open_pane_context_menu(3, 3);
+    app.open_pane_context_menu(3, 3, true);
     pump(&mut app, &mut events).await;
     app.context_menu = None;
-    app.open_pane_context_menu(3, 3);
+    app.open_pane_context_menu(3, 3, true);
 
     let Some(menu) = app.context_menu.as_ref() else {
         panic!("a file-backed tab opens a pane menu");
@@ -38,6 +38,9 @@ async fn pane_context_menu_lists_file_actions_and_disables_links_outside_a_repo(
     assert_eq!(
         commands,
         vec![
+            Command::Cut,
+            Command::Copy,
+            Command::Paste,
             Command::CopyPath,
             Command::CopyRelativePath,
             Command::RevealActiveInExplorer,
@@ -49,8 +52,8 @@ async fn pane_context_menu_lists_file_actions_and_disables_links_outside_a_repo(
             Command::CopyGithubHeadLink,
         ]
     );
-    assert!(menu.entries[..3].iter().all(|e| e.enabled));
-    for entry in &menu.entries[3..] {
+    assert!(menu.entries[..6].iter().all(|e| e.enabled));
+    for entry in &menu.entries[6..] {
         assert!(
             !entry.enabled,
             "{:?} is disabled outside a repo",
@@ -67,7 +70,7 @@ fn pane_context_menu_does_not_open_for_a_pathless_tab() {
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
     assert!(matches!(app.tabs[app.active].kind, TabKind::Welcome));
 
-    app.open_pane_context_menu(3, 3);
+    app.open_pane_context_menu(3, 3, true);
 
     assert!(app.context_menu.is_none(), "a pathless tab opens no menu");
     let _ = std::fs::remove_dir_all(&dir);
@@ -94,14 +97,24 @@ fn right_click_opens_the_pane_menu_from_the_tab_strip_and_the_content_area() {
         modifiers: KeyModifiers::NONE,
     };
 
-    // Over the tab in the strip: selects it and opens the menu.
+    let first = |app: &App| {
+        app.context_menu
+            .as_ref()
+            .and_then(|menu| menu.entries.first())
+            .and_then(ContextMenuEntry::command)
+    };
+
+    // Over the tab in the strip: selects it and opens the menu. It names the file,
+    // not the text, so the clipboard verbs that act on the selection stay out.
     app.handle_mouse(right(4, 0));
     assert!(app.context_menu.is_some(), "tab-strip right-click opens");
+    assert_eq!(first(&app), Some(Command::CopyPath));
     app.context_menu = None;
 
-    // In the content area: opens for the pane's active tab.
+    // In the content area: opens for the pane's active tab, text verbs first.
     app.handle_mouse(right(5, 5));
     assert!(app.context_menu.is_some(), "content right-click opens");
+    assert_eq!(first(&app), Some(Command::Cut));
     app.context_menu = None;
 
     // On the strip's empty tail (past the tab): consumed, no menu.
@@ -291,7 +304,7 @@ fn code_tab_with_text(path: &Path, text: &str) -> Tab {
             doc: None,
             next_version: 0,
             buffer: TextBuffer::from_text(text),
-            text: text.to_string(),
+            text: text.into(),
             highlights: Highlights::default(),
             semantic_blocks: karet_syntax::SemanticBlocks::default(),
             folds: FoldRegions::default(),

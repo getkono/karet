@@ -65,6 +65,8 @@ impl App {
                     markup,
                     doc: pending.doc,
                     at: pending.at,
+                    scroll: 0,
+                    rect: Rect::default(),
                 });
             },
             // Already explained: the server does not offer hover at all.

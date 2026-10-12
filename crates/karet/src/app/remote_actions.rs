@@ -266,7 +266,7 @@ impl App {
         let tab = self.tabs.get(self.active)?;
         let path = tab.path()?.to_path_buf();
         let live = match &tab.kind {
-            TabKind::Code { text, .. } => Some(text.clone()),
+            TabKind::Code { text, .. } => Some(text.as_str().to_owned()),
             _ => None,
         };
         Some((path, live))

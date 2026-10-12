@@ -16,6 +16,7 @@ use karet_core::MarkupKind;
 use karet_core::Severity;
 use karet_session::DocumentId;
 use karet_session::RequestId;
+use ratatui::layout::Rect;
 
 /// An in-flight hover request awaiting its `Event::HoverResult`.
 #[derive(Clone, Copy, Debug)]
@@ -42,6 +43,12 @@ pub(crate) struct HoverUi {
     /// The caret position the popup is anchored to; it dismisses when the
     /// caret leaves.
     pub at: LineCol,
+    /// The first content row shown: the wheel scrolls a popup taller than the
+    /// room the editor leaves it. Clamped on every draw.
+    pub scroll: u16,
+    /// Where the last frame painted the popup (empty when it was not painted),
+    /// so the pointer over it scrolls it rather than the text beneath.
+    pub rect: Rect,
 }
 
 /// The open scrollable diagnostic detail view (Ctrl+K Ctrl+M): the modal
@@ -55,6 +62,9 @@ pub(crate) struct DiagnosticView {
     pub wrapped: Option<(u16, karet_markdown::WrappedDocument)>,
     /// The scroll offset, clamped by the view widget on every draw.
     pub scroll: u16,
+    /// Where the last frame painted the view, so a click inside it is kept and
+    /// a click outside it dismisses it.
+    pub rect: Rect,
 }
 
 /// The diagnostics whose range covers `at` (end-exclusive columns, matching

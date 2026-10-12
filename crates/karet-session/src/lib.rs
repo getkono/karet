@@ -96,6 +96,7 @@ pub use api::LanguageServerPlanId;
 pub use api::LanguageServerRuntimeState;
 pub use api::LanguageServerSource;
 pub use api::LanguageServerStatus;
+pub use api::LocationKind;
 pub use api::ManifestHint;
 pub use api::ManifestHintState;
 pub use api::PreparedChange;

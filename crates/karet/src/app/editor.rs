@@ -809,7 +809,7 @@ impl App {
                 },
             ) {
                 *next_version = applied.version;
-                *text = buffer.text();
+                *text = buffer.text_snapshot();
                 auto_save_version = Some(applied.version);
             }
             place(editor, buffer);

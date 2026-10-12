@@ -1,6 +1,7 @@
 use super::*;
 
 mod diff;
+mod scans;
 pub(in crate::ui) mod select;
 mod swatches;
 
@@ -45,6 +46,7 @@ pub(super) fn draw_pane_content(
             path,
             doc,
             buffer,
+            text,
             highlights,
             semantic_blocks,
             folds,
@@ -62,7 +64,7 @@ pub(super) fn draw_pane_content(
                     .is_none_or(|(cached, _)| *cached != version)
                 {
                     tab.conflict_decorations =
-                        Some((version, karet_editor::conflict_decorations(&buffer.text())));
+                        Some((version, scans::conflict_decorations(buffer, text)));
                 }
                 let conflict_decorations = tab
                     .conflict_decorations
@@ -118,7 +120,7 @@ pub(super) fn draw_pane_content(
                     .is_none_or(|(cached, _)| *cached != version)
                 {
                     tab.conflict_decorations =
-                        Some((version, karet_editor::conflict_decorations(&buffer.text())));
+                        Some((version, scans::conflict_decorations(buffer, text)));
                 }
                 let conflict_decorations = tab
                     .conflict_decorations
@@ -131,7 +133,7 @@ pub(super) fn draw_pane_content(
                         .is_none_or(|(cached, _)| *cached != version)
                     {
                         tab.markdown_table_lines =
-                            Some((version, karet_markdown::table_line_ranges(&buffer.text())));
+                            Some((version, scans::table_line_ranges(buffer, text)));
                     }
                     tab.markdown_table_lines
                         .as_ref()

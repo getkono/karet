@@ -554,13 +554,11 @@ pub(super) async fn server_task(task: ServerTask) {
                     let symbols = if dead {
                         Vec::new()
                     } else {
-                        match tally.observe(active.document_symbols(&path).await) {
-                            Ok(symbols) => symbols,
-                            Err(error) => {
-                                tally.note::<()>(Err(error), &mut dead, &updates, &key, token);
-                                Vec::new()
-                            },
-                        }
+                        let result = active.document_symbols(&path).await;
+                        tally.observe(result).unwrap_or_else(|error| {
+                            tally.note::<()>(Err(error), &mut dead, &updates, &key, token);
+                            Vec::new()
+                        })
                     };
                     let _ = updates.send(LspUpdate::Symbols {
                         generation,
@@ -618,6 +616,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     version,
                     path,
                     position,
+                    kind,
                 } => {
                     flush_pending(
                         active,
@@ -632,14 +631,14 @@ pub(super) async fn server_task(task: ServerTask) {
                     let locations = if dead {
                         Vec::new()
                     } else {
-                        let result = active.definition(&path, position).await;
+                        let result = commands::locations(active, kind, &path, position).await;
                         report_unsupported(
                             &result,
                             &updates,
                             generation,
                             request,
                             &key,
-                            ServerFeature::Definition,
+                            commands::location_feature(kind),
                         );
                         tally.observe(result).unwrap_or_else(|error| {
                             tally.note::<()>(Err(error), &mut dead, &updates, &key, token);
@@ -651,6 +650,7 @@ pub(super) async fn server_task(task: ServerTask) {
                         request,
                         doc,
                         version,
+                        kind,
                         locations,
                     });
                 },

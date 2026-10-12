@@ -264,7 +264,7 @@ pub enum Event {
     /// can say "this server does not support X" instead of "nothing found".
     ///
     /// Emitted only for requests a user asks for by hand --
-    /// [`Command::Hover`], [`Command::Definition`], [`Command::Rename`],
+    /// [`Command::Hover`], [`Command::Definition`], [`Command::FindLocations`], [`Command::Rename`],
     /// [`Command::WorkspaceSymbols`]. Background requests (inlay hints,
     /// completion, document symbols, format-on-save) are refused silently: a
     /// notice nobody asked for, repeated on every keystroke or save, is noise.
@@ -282,6 +282,14 @@ pub enum Event {
     /// Definition locations answering a [`Command::Definition`].
     Definitions {
         /// The resolved locations.
+        locations: Vec<Location>,
+    },
+    /// Locations answering a [`Command::FindLocations`], in server order and
+    /// in buffer columns.
+    Locations {
+        /// What was asked for.
+        kind: LocationKind,
+        /// The resolved locations; empty when there are none, or no server to ask.
         locations: Vec<Location>,
     },
     /// Workspace symbols answering a [`Command::WorkspaceSymbols`] query.

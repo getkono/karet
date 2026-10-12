@@ -334,6 +334,14 @@ pub enum Command {
     CommitGraphCopyIssueUrls,
     /// Jump to the definition of the symbol at the caret (F12).
     GoToDefinition,
+    /// Jump to the declaration of the symbol at the caret.
+    GoToDeclaration,
+    /// Jump to the definition of the type of the symbol at the caret.
+    GoToTypeDefinition,
+    /// Jump to the implementations of the symbol at the caret (Ctrl+F12).
+    GoToImplementation,
+    /// List every reference to the symbol at the caret (Shift+F12).
+    FindReferences,
     /// Rename the symbol at the caret across the workspace (F2).
     RenameSymbol,
     /// Apply the name typed into the rename prompt.
@@ -844,6 +852,10 @@ impl Command {
             Self::CommitUnfoldFileTree => "Commit: Unfold All Directories",
             Self::CommitGraphCopyIssueUrls => "Commit Graph: Copy Issue URLs",
             Self::GoToDefinition => "Go to Definition",
+            Self::GoToDeclaration => "Go to Declaration",
+            Self::GoToTypeDefinition => "Go to Type Definition",
+            Self::GoToImplementation => "Go to Implementation",
+            Self::FindReferences => "Find All References",
             Self::RenameSymbol => "Rename Symbol",
             Self::RenameSubmit => "Rename Symbol: Confirm",
             Self::RenameCancel => "Rename Symbol: Cancel",

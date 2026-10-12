@@ -379,32 +379,40 @@ impl Overlay {
         Self::Picker(Picker::new("Open Seam View at", items))
     }
 
-    /// Build the picker offered when a symbol has several definitions.
+    /// Build the picker offered when navigation (definitions, references, …)
+    /// finds several locations, each paired with a preview of its source line.
     ///
     /// Rows are workspace-relative and 1-based, matching every other place the app
-    /// names a position. Server order is preserved — it is best-first — but exact
-    /// duplicates are dropped, since servers do sometimes report a target twice.
+    /// names a position, followed by the preview so same-file rows can be told
+    /// apart (and filtered) by what they say. Server order is preserved — it is
+    /// best-first — but exact duplicates are dropped, since servers do sometimes
+    /// report a target twice.
     #[must_use]
-    pub fn definitions(root: &Path, locations: Vec<karet_core::Location>) -> Self {
-        let mut seen = Vec::new();
+    pub fn locations(
+        title: &str,
+        root: &Path,
+        entries: Vec<(karet_core::Location, String)>,
+    ) -> Self {
+        let mut seen = std::collections::HashSet::new();
         let mut items = Vec::new();
-        for location in locations {
+        for (location, preview) in entries {
             let position = location.range.start;
-            let key = (location.path.clone(), position);
-            if seen.contains(&key) {
+            if !seen.insert((location.path.clone(), position)) {
                 continue;
             }
-            seen.push(key);
             let relative = location.path.strip_prefix(root).unwrap_or(&location.path);
-            items.push((
-                format!("{}:{}", relative.display(), position.line.saturating_add(1)),
-                OverlayEvent::AcceptLocation {
-                    path: location.path,
-                    position,
-                },
-            ));
+            let line = position.line.saturating_add(1);
+            let mut label = format!("{}:{line}", relative.display());
+            if !preview.is_empty() {
+                label = format!("{label}  {preview}");
+            }
+            let accept = OverlayEvent::AcceptLocation {
+                path: location.path,
+                position,
+            };
+            items.push((label, accept));
         }
-        Self::Picker(Picker::new("Go to Definition", items))
+        Self::Picker(Picker::new(title, items))
     }
 
     /// Build the command palette.
