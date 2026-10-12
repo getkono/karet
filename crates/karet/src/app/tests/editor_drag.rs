@@ -109,8 +109,10 @@ fn a_double_click_near_the_right_edge_selects_the_word_under_the_pointer() {
     let marked = format!("|{line}");
     let mut rig = Rig::sized(&marked, 40, 8);
     let width = u32::from(rig.tab().editor.content_width());
+    // A word's cell, on the word nearest the edge that ends before it, so
+    // selecting the word needs no reveal either.
     let mut col = width.saturating_sub(2);
-    if col % 4 == 3 {
+    while col % 4 == 3 || col / 4 * 4 + 3 >= width {
         col -= 1;
     }
     let (x, y) = rig.cell(text(0, col));

@@ -581,7 +581,7 @@ pub(super) fn caret_cell(
     at: LineCol,
 ) -> Option<(u16, u16)> {
     let line_count = buffer.line_count() as u32;
-    let gutter = gutter_width(line_count, state.last_line_numbers);
+    let gutter = gutter_width(line_count, state.last_line_numbers, state.last_change_lane);
     let content_x = area.x.saturating_add(gutter);
     let content_y = area.y.saturating_add(state.sticky_height);
     let content_height = area.height.saturating_sub(state.sticky_height);

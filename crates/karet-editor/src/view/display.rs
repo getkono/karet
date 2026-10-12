@@ -13,6 +13,20 @@ impl<'a> Editor<'a> {
         self
     }
 
+    /// Reserve the gutter's change lane (off by default): a column between
+    /// the line numbers and the fold chevron where each
+    /// [`DecorationKind::ChangeMarker`] is drawn, so a change marker and a
+    /// breakpoint or diagnostic sign on the same line are both visible.
+    ///
+    /// Without it a change marker falls back to the leading marker column,
+    /// behind every [`DecorationKind::GutterMarker`] on its line. Hit-testing
+    /// follows the gutter this sets ([`GutterLane::Change`](crate::GutterLane::Change)).
+    #[must_use]
+    pub fn change_lane(mut self, reserve: bool) -> Self {
+        self.change_lane = reserve;
+        self
+    }
+
     /// Highlight the background of every caret's line (on by default). The
     /// caret lines' numbers stay emphasized either way.
     #[must_use]
@@ -69,16 +83,17 @@ pub enum LineNumbers {
 }
 
 /// The gutter's width in cells for a buffer of `line_count` lines: the marker
-/// column, the right-aligned numbers when they are shown, and the fold column
-/// (see [`GutterLane`](crate::GutterLane)).
-pub(crate) fn gutter_width(line_count: u32, numbers: LineNumbers) -> u16 {
+/// column, the right-aligned numbers when they are shown, the change column
+/// when `change_lane` reserves it, and the fold column (see
+/// [`GutterLane`](crate::GutterLane)).
+pub(crate) fn gutter_width(line_count: u32, numbers: LineNumbers, change_lane: bool) -> u16 {
     let digits = match numbers {
         LineNumbers::Off => 0,
         LineNumbers::Absolute | LineNumbers::Relative => {
             u16::try_from(digit_count(line_count.max(1))).unwrap_or(u16::MAX)
         },
     };
-    digits.saturating_add(2)
+    digits.saturating_add(2 + u16::from(change_lane))
 }
 
 /// The number column of a row: `line` is the row's buffer line, or `None` on
@@ -120,28 +135,57 @@ pub(super) fn record_fold_ellipsis(
 }
 
 impl Editor<'_> {
-    /// The gutter marker glyph + color for line `l`, if a decoration places one.
-    fn gutter_marker(&self, l: u32, theme: &Theme, default_fg: Rgba) -> Option<(char, Rgba)> {
-        for d in self.decorations {
-            if let DecorationKind::GutterMarker { glyph } = &d.kind
-                && line_in_range(l, d.range)
-            {
-                let color = d.role.map_or(default_fg, |r| theme.role(r));
-                return Some((*glyph, color));
-            }
-        }
-        None
+    /// The glyph + color of the first decoration on line `l` that `pick`
+    /// accepts, in decoration order.
+    fn gutter_glyph(
+        &self,
+        l: u32,
+        theme: &Theme,
+        default_fg: Rgba,
+        pick: fn(&DecorationKind) -> Option<char>,
+    ) -> Option<(char, Rgba)> {
+        self.decorations
+            .iter()
+            .filter(|d| line_in_range(l, d.range))
+            .find_map(|d| {
+                let glyph = pick(&d.kind)?;
+                Some((glyph, d.role.map_or(default_fg, |r| theme.role(r))))
+            })
     }
 
-    /// A row's three gutter spans, one per [`GutterLane`](crate::GutterLane):
-    /// the marker column, the number column, then the fold column.
+    /// The marker column's glyph + color for line `l`: its first
+    /// [`DecorationKind::GutterMarker`], or, when no change lane is reserved,
+    /// its first [`DecorationKind::ChangeMarker`] instead.
+    fn gutter_marker(&self, l: u32, theme: &Theme, default_fg: Rgba) -> Option<(char, Rgba)> {
+        self.gutter_glyph(l, theme, default_fg, |kind| match kind {
+            DecorationKind::GutterMarker { glyph } => Some(*glyph),
+            _ => None,
+        })
+        .or_else(|| {
+            (!self.change_lane)
+                .then(|| self.change_marker(l, theme, default_fg))
+                .flatten()
+        })
+    }
+
+    /// The glyph + color of line `l`'s first [`DecorationKind::ChangeMarker`].
+    fn change_marker(&self, l: u32, theme: &Theme, default_fg: Rgba) -> Option<(char, Rgba)> {
+        self.gutter_glyph(l, theme, default_fg, |kind| match kind {
+            DecorationKind::ChangeMarker { glyph } => Some(*glyph),
+            _ => None,
+        })
+    }
+
+    /// A row's gutter spans, one per [`GutterLane`](crate::GutterLane): the
+    /// marker column, the number column, the change column when
+    /// [`change_lane`](Editor::change_lane) reserves it, then the fold column.
     ///
     /// `line` is the row's buffer line, or `None` on a soft-wrap continuation
     /// row, which shows none of them. The marker column shows the line's
-    /// decoration marker (breakpoint/diagnostic/git); a fold header shows its
-    /// collapse/expand chevron in the fold column, so neither hides the
-    /// other. `caret` is the primary caret's line, which relative numbers
-    /// count from.
+    /// decoration marker (breakpoint/diagnostic sign); the change column its
+    /// change marker; a fold header shows its collapse/expand chevron in the
+    /// fold column, so none hides another. `caret` is the primary caret's
+    /// line, which relative numbers count from.
     pub(super) fn gutter_spans(
         &self,
         line: Option<u32>,
@@ -158,7 +202,7 @@ impl Editor<'_> {
             Some(_) => '\u{25be}',
             None => ' ',
         };
-        vec![
+        let mut spans = vec![
             Span::styled(
                 marker.to_string(),
                 Style::default().fg(marker_fg.to_ratatui()),
@@ -167,11 +211,21 @@ impl Editor<'_> {
                 number_label(self.line_numbers, line, caret, digits),
                 Style::default().fg(number_fg.to_ratatui()),
             ),
-            Span::styled(
-                chevron.to_string(),
-                Style::default().fg(theme.role(ThemeRole::LineNumberActive).to_ratatui()),
-            ),
-        ]
+        ];
+        if self.change_lane {
+            let (change, change_fg) = line
+                .and_then(|l| self.change_marker(l, theme, default_fg))
+                .unwrap_or((' ', default_fg));
+            spans.push(Span::styled(
+                change.to_string(),
+                Style::default().fg(change_fg.to_ratatui()),
+            ));
+        }
+        spans.push(Span::styled(
+            chevron.to_string(),
+            Style::default().fg(theme.role(ThemeRole::LineNumberActive).to_ratatui()),
+        ));
+        spans
     }
 
     /// Tint each ruler column of the content area `content` in `color`.

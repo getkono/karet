@@ -1,10 +1,11 @@
 //! Clicks in the editor gutter, whose lanes are controls rather than text.
 //!
-//! The marker lane toggles a breakpoint, the fold lane's chevron and a
-//! collapsed fold's `⋯` toggle the fold, and the line numbers select whole
-//! lines: a click selects one, a drag extends by lines, Shift+click extends
-//! from the selection's anchored line. A row below the last line shows no
-//! line, so a click there is an ordinary click below the text.
+//! The marker lane toggles a breakpoint, the change lane's marker opens the
+//! file's changes against `HEAD`, the fold lane's chevron and a collapsed
+//! fold's `⋯` toggle the fold, and the line numbers select whole lines: a
+//! click selects one, a drag extends by lines, Shift+click extends from the
+//! selection's anchored line. A row below the last line shows no line, so a
+//! click there is an ordinary click below the text.
 
 use karet_core::Selection;
 use karet_editor::GutterLane;
@@ -20,6 +21,9 @@ enum GutterAction {
     Fold(u32),
     /// Select whole lines from the first line to the second.
     Lines(u32, u32),
+    /// Open the file's changes against `HEAD`, the comparison its change
+    /// markers draw.
+    Changes,
 }
 
 impl App {
@@ -27,7 +31,8 @@ impl App {
     /// a collapsed fold's `⋯`, given the editor `area` of `pane`; `true` when
     /// the press is spent, `false` when it is an ordinary click in the text.
     ///
-    /// The fold lane of a line that heads no fold, a modified line-number
+    /// The fold lane of a line that heads no fold, the change lane of a line
+    /// with no change marker, a modified line-number
     /// click (Ctrl keeps go-to-definition's "nothing to resolve", Alt its
     /// caret gestures) and any row below the last line fall through to the
     /// text click. Every row of a fold header's line, wrap continuations
@@ -39,6 +44,7 @@ impl App {
         self.editor_drag = None;
         match action {
             GutterAction::Breakpoint(path, line) => self.debug_toggle_breakpoint_at(path, line),
+            GutterAction::Changes => self.open_changes_with("HEAD", "HEAD"),
             GutterAction::Fold(line) => {
                 // A fold toggle is not a first click: a quick press on what
                 // the fold just revealed starts its own streak.
@@ -81,6 +87,7 @@ impl App {
             buffer,
             folds,
             folded,
+            doc,
             ..
         } = &tab.kind
         else {
@@ -99,6 +106,9 @@ impl App {
                 .iter()
                 .any(|fold| fold.start == hit.line)
                 .then_some(GutterAction::Fold(hit.line)),
+            GutterLane::Change => self
+                .change_marked(*doc, hit.line)
+                .then_some(GutterAction::Changes),
             GutterLane::LineNumber => {
                 let modifiers = mouse.modifiers;
                 if modifiers
@@ -116,6 +126,18 @@ impl App {
             // A lane the widget adds later does nothing here until it is wired.
             _ => None,
         }
+    }
+
+    /// Whether document `doc` holds a change marker on `line`. Markers are
+    /// only held while `git.decorations` is on.
+    fn change_marked(&self, doc: Option<DocumentId>, line: u32) -> bool {
+        doc.and_then(|doc| self.docs.line_changes.get(&doc))
+            .is_some_and(|markers| {
+                markers.iter().any(|marker| {
+                    matches!(marker.kind, DecorationKind::ChangeMarker { .. })
+                        && (marker.range.start.line..=marker.range.end.line).contains(&line)
+                })
+            })
     }
 
     /// Collapse or expand the fold whose header is line `start` of the active
