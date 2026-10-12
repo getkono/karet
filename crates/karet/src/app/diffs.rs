@@ -15,9 +15,28 @@ pub(super) fn binary_prepared_change(path: &Path) -> PreparedChange {
     }
 }
 
-/// The display row, in `layout`, of the hunk a change marker on 0-based buffer
-/// line `line` stands for: the first hunk whose new side reaches that line,
-/// covering it or (a pure deletion) sitting just below it. A line past every
+/// The 0-based `\n`-delimited line of `text` that holds the start of editor row
+/// `row`, the line numbering a diff of `text` itself uses.
+///
+/// The editor also breaks rows on a lone `\r`, VT, FF, NEL, LS and PS
+/// ([`karet_text::lines`]), which the diff does not, so past such a break an
+/// editor row and a diff line part ways. A row past the last line (the empty
+/// row after a final break) maps to the line after every `\n`.
+pub(super) fn diff_line_of_row(text: &str, row: u32) -> u32 {
+    let start = usize::try_from(row)
+        .ok()
+        .and_then(|row| karet_text::lines(text).nth(row))
+        .map_or(text.len(), |line| {
+            line.as_ptr().addr().saturating_sub(text.as_ptr().addr())
+        });
+    let newlines = text.get(..start).unwrap_or(text).matches('\n').count();
+    u32::try_from(newlines).unwrap_or(u32::MAX)
+}
+
+/// The display row, in `layout`, of the hunk a change marker on 0-based diff
+/// line `line` (see [`diff_line_of_row`]) stands for: the first hunk whose new
+/// side reaches that line, covering it or (a pure deletion) sitting just below
+/// it. A line past every
 /// hunk lands on the last one; a binary or hunkless diff has no row.
 fn landing_row(prepared: &karet_diff::PreparedDiff, layout: ViewMode, line: u32) -> Option<usize> {
     let line = line.saturating_add(1);

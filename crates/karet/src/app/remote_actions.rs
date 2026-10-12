@@ -289,7 +289,7 @@ impl App {
     }
 
     /// [`Self::open_changes_with`], landing the filled tab on the hunk that
-    /// covers 0-based buffer line `landing` (or the deletion just below it)
+    /// covers 0-based editor row `landing` (or the deletion just below it)
     /// when one is given, as a change-marker click does.
     pub(super) fn open_changes_landing(&mut self, rev: &str, label: &str, landing: Option<u32>) {
         let Some((path, live)) = self.active_file_and_text() else {
@@ -300,6 +300,12 @@ impl App {
             );
             return;
         };
+        // The backend diffs the raw live text, so the clicked editor row is
+        // carried as the diff line it starts on.
+        let landing = landing.map(|row| {
+            live.as_deref()
+                .map_or(row, |text| super::diffs::diff_line_of_row(text, row))
+        });
         let abs = std::path::absolute(&path).unwrap_or_else(|_| path.clone());
         let name = abs
             .file_name()
