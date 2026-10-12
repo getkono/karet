@@ -93,6 +93,7 @@ impl App {
             self.docs.outline_versions.insert(doc, version);
         }
         self.sync_outline_selection();
+        self.refresh_document_symbols(doc);
     }
 
     /// Clear the dirty markers for a successfully saved document.

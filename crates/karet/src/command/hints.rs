@@ -75,6 +75,7 @@ impl Command {
             Self::JumpBack => "back",
             Self::JumpForward => "forward",
             Self::OpenQuickOpen => "open",
+            Self::GoToSymbolInEditor => "symbols",
             Self::OpenRecentWorkspace => "recent",
             Self::OpenCommandPalette => "commands",
             Self::OpenFind => "find",

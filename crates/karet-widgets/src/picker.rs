@@ -4,6 +4,12 @@
 //! fuzzy matching with smart case, via `karet-fuzzy`), best match first, with
 //! the selection on the shared [`ListSelection`] model. What accepting an item
 //! *does* is the consumer's choice of `T`.
+//!
+//! Rows need not be known up front: [`Picker::set_items`] replaces them while
+//! the picker is open (an answer that arrives after it opened), keeping what was
+//! typed. A picker can also be [prefixed](Picker::with_prefix) by a sigil (`@`)
+//! that names its mode: the query starts with it, and only the text after it is
+//! matched.
 
 use karet_fuzzy::Matcher;
 
@@ -13,6 +19,8 @@ use crate::select::ListSelection;
 pub struct Picker<T> {
     title: String,
     query: String,
+    /// The leading sigil the query starts with, excluded from matching.
+    prefix: String,
     items: Vec<(String, T)>,
     /// Indices into `items` for the current query, best match first.
     filtered: Vec<usize>,
@@ -28,11 +36,32 @@ impl<T> Picker<T> {
         Self {
             title: title.into(),
             query: String::new(),
+            prefix: String::new(),
             selection: ListSelection::new(items.len()),
             items,
             filtered,
             matcher: Matcher::new(),
         }
+    }
+
+    /// Make `prefix` the sigil this picker's query starts with: the query is
+    /// seeded with it, and matching ignores it, so the sigil alone lists every
+    /// row. Backspacing over it leaves an empty query; what that means (say,
+    /// leaving the mode the sigil names) is the consumer's call.
+    #[must_use]
+    pub fn with_prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.prefix = prefix.into();
+        self.query.clone_from(&self.prefix);
+        self.refilter();
+        self
+    }
+
+    /// Replace the rows, keeping the query: for rows that arrive after the
+    /// picker opened. The new rows are ranked against the query, and the
+    /// selection moves to the best match, as any change of the visible list does.
+    pub fn set_items(&mut self, items: Vec<(String, T)>) {
+        self.items = items;
+        self.refilter();
     }
 
     /// The picker title.
@@ -108,7 +137,11 @@ impl<T> Picker<T> {
     /// best match.
     fn refilter(&mut self) {
         let labels: Vec<&str> = self.items.iter().map(|(label, _)| label.as_str()).collect();
-        self.filtered = self.matcher.rank_indices(&self.query, &labels);
+        let pattern = self
+            .query
+            .strip_prefix(self.prefix.as_str())
+            .unwrap_or(&self.query);
+        self.filtered = self.matcher.rank_indices(pattern, &labels);
         self.selection.set_len(self.filtered.len());
         self.selection.move_to(0);
     }
@@ -181,5 +214,35 @@ mod tests {
         assert_eq!(p.selected(), 2, "clamped to the last row");
         p.select_up();
         assert_eq!(p.selected(), 1);
+    }
+
+    #[test]
+    fn a_prefix_seeds_the_query_and_is_not_matched() {
+        let mut p = picker().with_prefix("@");
+        assert_eq!(p.query(), "@");
+        assert_eq!(p.rows().len(), 3, "the sigil alone lists every row");
+        p.push_str("main");
+        assert_eq!(p.query(), "@main");
+        assert_eq!(p.rows(), vec!["main.rs"]);
+        for _ in 0..5 {
+            p.pop_char();
+        }
+        assert_eq!(p.query(), "", "the sigil can be backspaced away");
+        assert_eq!(p.rows().len(), 3);
+    }
+
+    #[test]
+    fn set_items_keeps_the_query_and_reranks_the_new_rows() {
+        let mut p: Picker<u32> = Picker::new("Test", Vec::new()).with_prefix("@");
+        p.push_str("fo");
+        assert!(p.accepted().is_none(), "nothing has arrived yet");
+        p.set_items(vec![("bar".to_string(), 1), ("foo".to_string(), 2)]);
+        assert_eq!(p.query(), "@fo");
+        assert_eq!(p.rows(), vec!["foo"]);
+        assert_eq!(p.accepted(), Some(&2));
+        p.select_down();
+        p.set_items(vec![("food".to_string(), 3), ("fox".to_string(), 4)]);
+        assert_eq!(p.rows().len(), 2);
+        assert_eq!(p.selected(), 0, "a new list re-selects the best match");
     }
 }

@@ -1,4 +1,5 @@
-//! Quick-open (go to file) and Open Recent (workspaces).
+//! Quick-open (go to file, and `@` go to symbol in editor) and Open Recent
+//! (workspaces).
 //!
 //! The picker opens at once over the [`FileIndex`](workspace::FileIndex), which
 //! walks the workspace off the UI thread and follows filesystem changes; a walk
@@ -7,6 +8,8 @@
 //! both kept in the user state directory by [`RecentStore`](workspace::RecentStore).
 
 use super::*;
+use crate::overlay::DOCUMENT_SYMBOL_PREFIX;
+use crate::overlay::QuickOpenMode;
 
 impl App {
     /// Open the quick-open (go-to-file) overlay at once, over whatever the file
@@ -31,13 +34,82 @@ impl App {
         Overlay::quick_open(self.file_index.ranked(&recent))
     }
 
-    /// The first walk of the workspace while a quick-open waits on it: what its
-    /// delayed "indexing" placeholder anchors on.
+    /// What an open quick-open is still waiting on — the first walk of the
+    /// workspace, or the active document's symbols — which its delayed loading
+    /// note anchors on.
     pub(crate) fn quick_open_loading(&self) -> Option<Pending> {
-        self.overlay
-            .as_ref()
-            .filter(|overlay| overlay.is_quick_open())
-            .and_then(|_| self.file_index.loading())
+        match self.overlay.as_ref()?.quick_open_mode()? {
+            QuickOpenMode::Files => self.file_index.loading(),
+            QuickOpenMode::DocumentSymbols => self.active_outline_loading(),
+        }
+    }
+
+    /// Open quick-open already in its `@` mode: Go to Symbol in Editor over the
+    /// active document's symbols, asking for them when none are current.
+    pub(super) fn open_document_symbols(&mut self) {
+        self.overlay = Some(self.document_symbols_overlay());
+        self.request_active_symbols();
+    }
+
+    /// Go to Symbol in Editor over the active document's cached symbols (the
+    /// last answer, even if the buffer has moved on since; a fresh one replaces
+    /// it when it lands).
+    fn document_symbols_overlay(&self) -> Overlay {
+        let tab = self.tabs.get(self.active);
+        let doc = tab.and_then(Self::tab_doc);
+        let path = tab.filter(|_| doc.is_some()).and_then(Tab::path);
+        let symbols = doc
+            .and_then(|doc| self.docs.symbols.get(&doc))
+            .map_or(&[][..], Vec::as_slice);
+        Overlay::document_symbols(path, symbols)
+    }
+
+    /// Follow an edit of an open quick-open's query into the mode its sigil now
+    /// asks for: typing `@` lists the active document's symbols, and deleting
+    /// it goes back to files. What was typed is kept.
+    pub(super) fn sync_quick_open_mode(&mut self) {
+        let Some(overlay) = self.overlay.as_ref() else {
+            return;
+        };
+        let Some(mode) = overlay.quick_open_mode() else {
+            return;
+        };
+        let query = overlay.query().to_string();
+        let wanted = QuickOpenMode::of_query(&query);
+        if wanted == mode {
+            return;
+        }
+        let next = match wanted {
+            QuickOpenMode::Files => {
+                self.file_index.ensure_started();
+                let mut files = self.quick_open_overlay();
+                files.push_str(&query);
+                files
+            },
+            QuickOpenMode::DocumentSymbols => {
+                let mut symbols = self.document_symbols_overlay();
+                symbols.push_str(query.strip_prefix(DOCUMENT_SYMBOL_PREFIX).unwrap_or(&query));
+                symbols
+            },
+        };
+        self.overlay = Some(next);
+        if wanted == QuickOpenMode::DocumentSymbols {
+            self.request_active_symbols();
+        }
+    }
+
+    /// Fill an open Go to Symbol in Editor with `doc`'s fresh symbols, when
+    /// `doc` is the document it lists.
+    pub(super) fn refresh_document_symbols(&mut self, doc: DocumentId) {
+        let tab = self.tabs.get(self.active);
+        if tab.and_then(Self::tab_doc) != Some(doc) {
+            return;
+        }
+        let path = tab.and_then(Tab::path).map(Path::to_path_buf);
+        let symbols = self.docs.symbols.get(&doc).map_or(&[][..], Vec::as_slice);
+        if let Some(overlay) = self.overlay.as_mut() {
+            overlay.set_document_symbols(path.as_deref(), symbols);
+        }
     }
 
     /// Adopt a finished workspace walk, refreshing an open quick-open.

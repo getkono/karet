@@ -1,5 +1,6 @@
 use super::support::*;
 use crate::app::*;
+use crate::overlay::QuickOpenMode;
 
 /// A workspace holding `files`, with an app rooted on it and the receiver its
 /// file walks arrive on.
@@ -227,4 +228,112 @@ fn only_an_explicit_tree_open_counts_as_recently_opened() {
         app.recent.files(&root),
         [root.join("c.rs"), root.join("a.rs"), root.join("b.rs")]
     );
+}
+
+/// An app over one registered code tab (`DocumentId(17)`, `main.rs` in its
+/// workspace) whose backend records what it is asked.
+fn symbol_app() -> (tempfile::TempDir, App, Arc<RecordingBackend>) {
+    let (dir, mut app, _rx) = workspace_app(&[]);
+    let text = "fn run() {}\n\nfn stop() {}\n";
+    let path = dir.path().join("main.rs");
+    let _ = std::fs::write(&path, text);
+    let backend = Arc::new(RecordingBackend::new());
+    app.backend = Some(backend.clone());
+    app.push_tab(text_tab("main.rs", text));
+    if let TabKind::Code { doc, path: at, .. } = &mut app.tabs[app.active].kind {
+        *doc = Some(DocumentId(17));
+        *at = path;
+    }
+    (dir, app, backend)
+}
+
+fn function(name: &str, line: u32) -> karet_core::Symbol {
+    let at = LineCol::new(line, 3);
+    karet_core::Symbol {
+        name: name.to_string(),
+        kind: karet_core::SymbolKind::Function,
+        detail: None,
+        range: Range {
+            start: LineCol::new(line, 0),
+            end: LineCol::new(line, 12),
+        },
+        selection_range: Range { start: at, end: at },
+        container_name: None,
+        children: Vec::new(),
+    }
+}
+
+fn symbol_requests(backend: &RecordingBackend) -> usize {
+    backend.sent.lock().map_or(0, |sent| {
+        sent.iter()
+            .filter(|(_, command)| {
+                matches!(command, SessionCommand::DocumentSymbols { doc } if *doc == DocumentId(17))
+            })
+            .count()
+    })
+}
+
+#[test]
+fn go_to_symbol_opens_at_once_and_fills_in_when_the_symbols_land() {
+    let (_dir, mut app, backend) = symbol_app();
+    app.dispatch(Command::GoToSymbolInEditor);
+    let overlay = app.overlay.as_ref().expect("the picker opens at once");
+    assert_eq!(
+        overlay.quick_open_mode(),
+        Some(QuickOpenMode::DocumentSymbols)
+    );
+    assert_eq!(overlay.query(), "@");
+    assert!(rows(&app).is_empty());
+    assert_eq!(symbol_requests(&backend), 1, "the symbols are asked for");
+    let loading = app.quick_open_loading().expect("waiting on the symbols");
+    assert!(
+        app.pendings().contains(&loading),
+        "the note schedules its own reveal"
+    );
+
+    if let Some(overlay) = app.overlay.as_mut() {
+        overlay.push_str("sto");
+    }
+    app.on_backend_event(
+        None,
+        SessionEvent::Symbols {
+            doc: DocumentId(17),
+            symbols: vec![function("run", 0), function("stop", 2)],
+        },
+    );
+    assert!(app.quick_open_loading().is_none());
+    assert_eq!(rows(&app), ["stop"], "the typed query survives");
+    app.overlay_accept();
+    assert!(app.overlay.is_none());
+    assert_eq!(app.tabs[app.active].editor.cursor(), LineCol::new(2, 3));
+
+    // A second open is served from the cache: nothing more is asked.
+    app.dispatch(Command::GoToSymbolInEditor);
+    assert_eq!(rows(&app), ["run", "stop"]);
+    assert_eq!(symbol_requests(&backend), 1);
+    assert!(app.quick_open_loading().is_none());
+}
+
+#[test]
+fn typing_the_sigil_in_quick_open_switches_to_symbols_and_back() {
+    let (_dir, mut app, backend) = symbol_app();
+    app.dispatch(Command::OpenQuickOpen);
+    let key = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+    app.overlay_input(key('@'));
+    let mode = |app: &App| app.overlay.as_ref().and_then(Overlay::quick_open_mode);
+    assert_eq!(mode(&app), Some(QuickOpenMode::DocumentSymbols));
+    assert_eq!(symbol_requests(&backend), 1);
+    app.overlay_input(key('r'));
+    assert_eq!(app.overlay.as_ref().map(Overlay::query), Some("@r"));
+    app.overlay_input(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+    app.overlay_input(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+    assert_eq!(
+        mode(&app),
+        Some(QuickOpenMode::Files),
+        "deleting the sigil lists files"
+    );
+    // Pasting a sigilled query goes straight to symbols, keeping the rest.
+    app.modal_paste(Modal::Overlay, "@ru");
+    assert_eq!(mode(&app), Some(QuickOpenMode::DocumentSymbols));
+    assert_eq!(app.overlay.as_ref().map(Overlay::query), Some("@ru"));
 }

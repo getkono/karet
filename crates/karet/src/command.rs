@@ -61,6 +61,8 @@ pub enum Command {
     ProblemsFilterCancel,
     /// Open the quick-open (go-to-file) overlay.
     OpenQuickOpen,
+    /// Open quick-open in its `@` mode: jump to a symbol of the active document.
+    GoToSymbolInEditor,
     /// Pick a recently opened workspace and reopen karet on it.
     OpenRecentWorkspace,
     /// Open the command palette overlay.
@@ -718,6 +720,7 @@ impl Command {
             Self::ProblemsFilterAccept => "Problems: Apply Filter",
             Self::ProblemsFilterCancel => "Problems: Clear Filter",
             Self::OpenQuickOpen => "Go to File…",
+            Self::GoToSymbolInEditor => "Go to Symbol in Editor…",
             Self::OpenRecentWorkspace => "File: Open Recent…",
             Self::OpenCommandPalette => "Show All Commands",
             Self::OpenFind => "Find in File…",

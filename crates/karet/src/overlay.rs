@@ -1,4 +1,5 @@
-//! Centered modal overlays: quick-open (go to file), the command palette, the
+//! Centered modal overlays: quick-open (go to file, and `@` go to symbol in
+//! editor), the command palette, the
 //! diff-target picker, and the branch/stash forms and prompts.
 //!
 //! Every list-style overlay is one shared fuzzy [`Picker`] (from
@@ -69,6 +70,15 @@ pub enum OverlayEvent {
         path: PathBuf,
         /// Where in it the caret should land.
         position: LineCol,
+    },
+    /// Jump to a symbol picked by name (Go to Symbol in Editor).
+    AcceptSymbol {
+        /// The file the symbol is in.
+        path: PathBuf,
+        /// Its name's start, where the caret lands.
+        position: LineCol,
+        /// Its kind and container, shown beside the name but not matched.
+        detail: String,
     },
 }
 
@@ -251,9 +261,12 @@ pub struct DiffTarget {
 }
 
 mod aicommit;
+mod symbols;
 
 pub(crate) use aicommit::AiCommitForm;
 pub use karet_widgets::picker::Picker;
+pub use symbols::DOCUMENT_SYMBOL_PREFIX;
+pub use symbols::QuickOpenMode;
 
 /// A modal overlay.
 pub enum Overlay {
@@ -632,6 +645,7 @@ impl Overlay {
                     OverlayEvent::AcceptCommand(command) => {
                         keymap::hint_for(*command, keymap::ChordStyle::Verbose)
                     },
+                    OverlayEvent::AcceptSymbol { detail, .. } => Some(detail.clone()),
                     _ => None,
                 })
                 .collect(),
