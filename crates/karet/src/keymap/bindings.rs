@@ -205,8 +205,8 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(Editor, false, true,  false, Up,        Command::SelectUp),
     b(Editor, false, true,  false, Left,      Command::SelectLeft),
     b(Editor, false, true,  false, Right,     Command::SelectRight),
-    b(Editor, false, false, false, PageDown,  Command::PageDown),
-    b(Editor, false, false, false, PageUp,    Command::PageUp),
+    b(Editor, false, false, false, PageDown,  Command::CaretPageDown),
+    b(Editor, false, false, false, PageUp,    Command::CaretPageUp),
     // Platform-native edge motion: Home/End and Ctrl+Home/End serve Windows/Linux;
     // Command+arrows serves macOS (and remains harmless when another platform's
     // terminal reports Super). Alt/Option is the portable word modifier; the prior

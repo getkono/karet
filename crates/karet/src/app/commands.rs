@@ -122,6 +122,8 @@ impl App {
             Command::CaretLineEnd => self.caret_motion(false, Motion::LineEnd),
             Command::CaretDocStart => self.caret_motion(false, Motion::DocStart),
             Command::CaretDocEnd => self.caret_motion(false, Motion::DocEnd),
+            Command::CaretPageUp => self.caret_motion(false, Motion::PageUp),
+            Command::CaretPageDown => self.caret_motion(false, Motion::PageDown),
             Command::SelectWordLeft => self.caret_motion(true, Motion::WordLeft),
             Command::SelectWordRight => self.caret_motion(true, Motion::WordRight),
             Command::SelectLineStart => self.caret_motion(true, Motion::LineStart),

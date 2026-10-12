@@ -74,4 +74,5 @@ mod tab_focus;
 mod tabs_search;
 mod todos;
 mod unsupported;
+mod vertical_motion;
 mod view;

@@ -278,6 +278,8 @@ impl Command {
             | Self::CaretLineEnd
             | Self::CaretDocStart
             | Self::CaretDocEnd
+            | Self::CaretPageUp
+            | Self::CaretPageDown
             | Self::SelectWordLeft
             | Self::SelectWordRight
             | Self::SelectLineStart

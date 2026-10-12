@@ -119,8 +119,8 @@ impl App {
     }
 
     /// Collapse or expand the fold whose header is line `start` of the active
-    /// code tab. Collapsing it over the primary caret moves that caret onto
-    /// the header, which stays visible, so the caret is never hidden.
+    /// code tab. Collapsing it moves every caret it would hide onto the
+    /// header, which stays visible, so no caret is ever hidden.
     pub(crate) fn toggle_fold_at(&mut self, start: u32) {
         let Some(tab) = self.tabs.get_mut(self.active) else {
             return;
@@ -142,10 +142,14 @@ impl App {
             return;
         }
         folded.insert(start);
-        let caret = tab.editor.cursor();
-        if start < caret.line && caret.line <= region.end {
-            tab.editor.set_caret(buffer, LineCol::new(start, caret.col));
-        }
+        tab.editor.lift_carets_onto_header(
+            buffer,
+            karet_editor::Fold {
+                start,
+                end: region.end,
+                collapsed: true,
+            },
+        );
     }
 }
 
