@@ -144,13 +144,11 @@ fn a_triple_click_drag_extends_by_whole_lines() {
     steps.extend(drag(text(0, 2), text(1, 3)));
     rig.run(&steps);
 
-    let sel = rig.tab().editor.selection_range();
     assert_eq!(
-        sel.map(|range| (range.start.line, range.end.line)),
-        Some((0, 1)),
-        "a line drag covers both lines end to end"
+        rig.marked(),
+        "[alpha\nbravo\n|]charlie\n",
+        "a line drag covers both lines, each with its line break"
     );
-    assert_eq!(sel.map(|range| range.start.col), Some(0));
 }
 
 #[test]
