@@ -81,6 +81,7 @@ fn snapshot_of(app: &App) -> DocSnapshot {
         folds: Arc::new(FoldRegions::default()),
         decorations: Arc::new(Vec::new()),
         syntax_error_lines: Arc::new(Vec::new()),
+        table_lines: Arc::default(),
         language: Some("Rust"),
         dirty: false,
         cursor: None,

@@ -11,6 +11,7 @@
 //! future remote split (a remote client reconstructs its own replica from the
 //! `Change`-bearing events instead).
 
+use std::ops::RangeInclusive;
 use std::sync::Arc;
 
 use karet_core::CursorState;
@@ -44,6 +45,14 @@ pub struct DocSnapshot {
     /// worker round-trip. Drives the completion auto-trigger's
     /// "no outright errors on the caret's line" gate.
     pub syntax_error_lines: Arc<Vec<(u32, u32)>>,
+    /// Inclusive 0-based line ranges occupied by GFM tables, read from the
+    /// highlight worker's parse (tree-sitter-md `pipe_table` nodes, so a table
+    /// shape inside a fenced code block is not one). Empty for a language with
+    /// no tables. Like [`syntax_error_lines`](Self::syntax_error_lines), this
+    /// lags edits by one background worker round-trip: it describes the last
+    /// version the worker parsed, which is [`version`](Self::version) once
+    /// highlighting has caught up.
+    pub table_lines: Arc<Vec<RangeInclusive<u32>>>,
     /// The display language name, if detected.
     pub language: Option<&'static str>,
     /// Whether the buffer has unsaved changes.

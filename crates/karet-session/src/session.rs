@@ -233,6 +233,9 @@ struct Document {
     /// Syntax-error line ranges from the worker's last parse (see
     /// [`DocSnapshot::syntax_error_lines`]).
     error_lines: Arc<Vec<(u32, u32)>>,
+    /// GFM table line ranges from the worker's last parse (see
+    /// [`DocSnapshot::table_lines`]).
+    table_lines: Arc<Vec<std::ops::RangeInclusive<u32>>>,
     /// Last spell-check diagnostics emitted for this exact document state.
     spell_diagnostics: Vec<karet_core::Diagnostic>,
     /// Last markdown-lint diagnostics (empty for non-Markdown documents or
