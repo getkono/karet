@@ -307,13 +307,22 @@ fn word_motion_and_select_all_bind_in_editor() {
         res(Focus::Editor, false, key(KeyCode::Left, KeyModifiers::ALT)),
         Some(Command::CaretWordLeft)
     );
+    // Shift+Alt+Right/Left are Expand/Shrink Selection, not word selection.
     assert_eq!(
         res(
             Focus::Editor,
             false,
             key(KeyCode::Right, KeyModifiers::ALT | KeyModifiers::SHIFT)
         ),
-        Some(Command::SelectWordRight)
+        Some(Command::ExpandSelection)
+    );
+    assert_eq!(
+        res(
+            Focus::Editor,
+            false,
+            key(KeyCode::Left, KeyModifiers::ALT | KeyModifiers::SHIFT)
+        ),
+        Some(Command::ShrinkSelection)
     );
     assert_eq!(
         res(

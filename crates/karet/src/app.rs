@@ -55,6 +55,7 @@ mod spellcheck;
 mod spelling;
 mod startup;
 mod state;
+mod syntax_select;
 mod tabs;
 mod todos;
 mod unsupported;

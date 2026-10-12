@@ -233,6 +233,11 @@ pub enum Command {
     /// Select each caret's bracket pair, brackets included; repeating widens to
     /// the enclosing pair.
     SelectToBracket,
+    /// Grow every selection to the next enclosing syntax node (Shift+Alt+Right).
+    ExpandSelection,
+    /// Undo the last Expand Selection, restoring the exact selections it grew
+    /// from (Shift+Alt+Left).
+    ShrinkSelection,
     /// Collapse multiple carets to the primary; with one caret, leave the editor.
     CollapseCarets,
     /// Scroll the active tab up one line.
@@ -840,6 +845,8 @@ impl Command {
             Self::ColumnSelectRight => "Column Select Right",
             Self::GoToBracket => "Go to Bracket",
             Self::SelectToBracket => "Select to Bracket",
+            Self::ExpandSelection => "Expand Selection",
+            Self::ShrinkSelection => "Shrink Selection",
             Self::CollapseCarets => "Collapse Cursors",
             Self::ScrollUp => "Scroll Up",
             Self::ScrollDown => "Scroll Down",
