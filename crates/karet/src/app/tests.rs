@@ -36,6 +36,7 @@ mod preview;
 mod preview_images;
 mod problems;
 mod remote;
+mod rename;
 mod review;
 mod save;
 mod save_cursor;

@@ -62,6 +62,8 @@ impl Command {
             Self::ProblemsFilterCancel => "clear",
             Self::SpellingScan => "scan",
             Self::GoToDefinition => "definition",
+            Self::RenameSymbol | Self::RenameSubmit => "rename",
+            Self::RenameCancel => "cancel",
             Self::JumpBack => "back",
             Self::JumpForward => "forward",
             Self::OpenQuickOpen => "open",

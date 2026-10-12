@@ -112,11 +112,135 @@ impl Change {
 }
 
 /// Edits spanning multiple files (e.g. an LSP rename or workspace fix).
+///
+/// Two halves, mirroring the LSP shape. [`changes`](Self::changes) is a set of
+/// per-file text edits with no order between files;
+/// [`document_changes`](Self::document_changes) is an ordered sequence that can
+/// also create, rename, and delete files, and pins each text edit to the
+/// document version it was computed against. A consumer applies `changes`
+/// first and then `document_changes` in order; a producer normally fills only
+/// one of them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct WorkspaceEdit {
     /// Per-file edit batches.
     pub changes: Vec<(PathBuf, Vec<TextEdit>)>,
+    /// Ordered text edits and file operations, applied after
+    /// [`changes`](Self::changes).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub document_changes: Vec<DocumentChange>,
+}
+
+impl WorkspaceEdit {
+    /// Whether applying this edit would change nothing at all.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.changes.iter().all(|(_, edits)| edits.is_empty()) && self.document_changes.is_empty()
+    }
+}
+
+/// One step of [`WorkspaceEdit::document_changes`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
+pub enum DocumentChange {
+    /// Apply text edits to one file.
+    Edit(DocumentEdit),
+    /// Create an empty file.
+    Create {
+        /// The file to create.
+        path: PathBuf,
+        /// What to do when it already exists.
+        options: FileOptions,
+    },
+    /// Move a file or directory.
+    Rename {
+        /// The current path.
+        from: PathBuf,
+        /// The new path.
+        to: PathBuf,
+        /// What to do when `to` already exists.
+        options: FileOptions,
+    },
+    /// Delete a file or directory.
+    Delete {
+        /// The path to delete.
+        path: PathBuf,
+        /// How to treat a directory, and a path that does not exist.
+        options: DeleteOptions,
+    },
+}
+
+/// Text edits to one file, pinned to the version they were computed against.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct DocumentEdit {
+    /// The file to edit.
+    pub path: PathBuf,
+    /// The document version the edits are relative to, in the producer's
+    /// numbering (an LSP server's `TextDocumentEdit` version). `None` when the
+    /// producer did not say, which a consumer treats as "the current text".
+    pub version: Option<i32>,
+    /// The edits, as one atomic, non-overlapping batch.
+    pub edits: Vec<TextEdit>,
+}
+
+/// How a create or rename treats a destination that already exists.
+///
+/// When both are set, `overwrite` wins, as LSP specifies.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct FileOptions {
+    /// Replace the existing file.
+    pub overwrite: bool,
+    /// Leave the existing file alone and skip this step.
+    pub ignore_if_exists: bool,
+}
+
+/// How a delete treats a directory, and a path that is already gone.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct DeleteOptions {
+    /// Delete a directory together with everything in it.
+    pub recursive: bool,
+    /// Skip this step when the path does not exist.
+    pub ignore_if_not_exists: bool,
+}
+
+/// The outcome of applying a [`WorkspaceEdit`] (LSP's
+/// `ApplyWorkspaceEditResult`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ApplyWorkspaceEditResult {
+    /// Whether the edit was applied.
+    pub applied: bool,
+    /// Why it was not, when it was not.
+    pub failure_reason: Option<String>,
+    /// The index into [`WorkspaceEdit::document_changes`] of the step that
+    /// failed, when the failure belongs to one step there.
+    pub failed_change: Option<usize>,
+}
+
+impl ApplyWorkspaceEditResult {
+    /// A fully applied edit.
+    #[must_use]
+    pub fn applied() -> Self {
+        Self {
+            applied: true,
+            failure_reason: None,
+            failed_change: None,
+        }
+    }
+
+    /// A refused or failed edit, with the reason and the failing step, if any.
+    #[must_use]
+    pub fn failed(reason: impl Into<String>, failed_change: Option<usize>) -> Self {
+        Self {
+            applied: false,
+            failure_reason: Some(reason.into()),
+            failed_change,
+        }
+    }
 }
 
 /// A single selection: a `head` (the moving caret) anchored at `anchor`.
@@ -327,6 +451,42 @@ mod tests {
         // The primary caret (0,7) still lives in the merged group.
         let p = cs.primary().range();
         assert!(p.start <= LineCol::new(0, 7) && LineCol::new(0, 7) <= p.end);
+    }
+
+    #[test]
+    fn workspace_edit_is_empty_only_without_edits_or_steps() {
+        assert!(WorkspaceEdit::default().is_empty());
+        // A file named with no edits changes nothing.
+        let named = WorkspaceEdit {
+            changes: vec![(PathBuf::from("/a.rs"), Vec::new())],
+            ..WorkspaceEdit::default()
+        };
+        assert!(named.is_empty());
+        // A file operation changes the workspace even with no text edit.
+        let create = WorkspaceEdit {
+            document_changes: vec![DocumentChange::Create {
+                path: PathBuf::from("/b.rs"),
+                options: FileOptions::default(),
+            }],
+            ..WorkspaceEdit::default()
+        };
+        assert!(!create.is_empty());
+    }
+
+    #[test]
+    fn apply_result_constructors() {
+        assert_eq!(
+            ApplyWorkspaceEditResult::applied(),
+            ApplyWorkspaceEditResult {
+                applied: true,
+                failure_reason: None,
+                failed_change: None,
+            }
+        );
+        let failed = ApplyWorkspaceEditResult::failed("stale", Some(2));
+        assert!(!failed.applied);
+        assert_eq!(failed.failure_reason.as_deref(), Some("stale"));
+        assert_eq!(failed.failed_change, Some(2));
     }
 
     #[test]

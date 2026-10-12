@@ -8,7 +8,11 @@
 use karet_text::TextBuffer;
 
 use super::updates::utf16_caret;
+use super::updates::utf16_range_to_buffer;
 use super::*;
+use crate::api::AppliedWorkspaceEdit;
+use crate::api::RenameTarget;
+use crate::lsp::RenameAnswer;
 
 /// Clamp `at` to a position `buffer` actually has.
 fn clamp_to_document(buffer: &TextBuffer, at: LineCol) -> LineCol {
@@ -37,6 +41,27 @@ impl Session {
             events.send((Some(id), unknown_document(doc_id))).ok();
         }
         doc
+    }
+
+    /// The text of `path` for column conversion: the live buffer when the file is
+    /// open, else its contents from disk.
+    ///
+    /// A server answers in UTF-16 columns for whatever file it names, which is often
+    /// not one the client has open — so converting those columns needs the target's
+    /// text, not the requesting document's. `None` when the file cannot be read; the
+    /// caller then leaves the range as the server sent it, since an approximate
+    /// column beats a dropped result.
+    pub(super) fn buffer_for_path(&self, path: &Path) -> Option<TextBuffer> {
+        self.store
+            .by_path
+            .get(path)
+            .and_then(|doc| self.store.docs.get(doc))
+            .map(|document| document.buffer.clone())
+            .or_else(|| {
+                std::fs::read_to_string(path)
+                    .ok()
+                    .map(|text| TextBuffer::from_text(&text))
+            })
     }
 
     /// Serve [`Command::Completion`]: convert the caret to the server's UTF-16
@@ -171,18 +196,189 @@ impl Session {
             return;
         };
         let utf16 = utf16_caret(doc, position);
-        if !self
-            .lsp
-            .rename(doc.language_selector, id, &doc.path, utf16, new_name)
-        {
+        let version = doc.buffer.version();
+        if !self.lsp.rename(
+            doc.language_selector,
+            id,
+            doc_id,
+            version,
+            &doc.path,
+            utf16,
+            new_name,
+        ) {
             self.emit(
                 Some(id),
                 Event::WorkspaceEdit {
-                    edit: karet_core::WorkspaceEdit::default(),
+                    applied: refused(NO_SERVER),
                 },
             );
         }
     }
+
+    /// Serve [`Command::PrepareRename`]: ask the document's server what can be
+    /// renamed at `position`, answering at once when no server runs for it.
+    pub(super) fn prepare_rename(&mut self, id: RequestId, doc_id: DocumentId, position: LineCol) {
+        let Some(doc) = Self::doc_or_report(&self.store, &self.events, id, doc_id) else {
+            return;
+        };
+        let version = doc.buffer.version();
+        let utf16 = utf16_caret(doc, position);
+        let forwarded = self.lsp.prepare_rename(
+            doc.language_selector,
+            id,
+            doc_id,
+            version,
+            &doc.path,
+            utf16,
+            position,
+        );
+        if !forwarded {
+            self.adopt_prepare_rename(id, doc_id, version, position, RenameAnswer::NoServer);
+        }
+    }
+
+    /// Turn a server's prepare-rename answer into [`Event::RenamePrepared`].
+    ///
+    /// `position` is the caret the request was made at, in buffer columns,
+    /// for picking the identifier when the server leaves that to the client.
+    /// The server's own range arrives in UTF-16 columns.
+    pub(super) fn adopt_prepare_rename(
+        &mut self,
+        request: RequestId,
+        doc_id: DocumentId,
+        version: u64,
+        position: LineCol,
+        answer: RenameAnswer,
+    ) {
+        let Some(doc) = self.store.docs.get(&doc_id) else {
+            return; // closed since the request: nothing left to rename in
+        };
+        let buffer = &doc.buffer;
+        let (target, reason) = match answer {
+            RenameAnswer::NoServer => (None, Some(NO_SERVER.to_owned())),
+            RenameAnswer::Unsupported => (
+                None,
+                Some("the language server does not support rename".to_owned()),
+            ),
+            RenameAnswer::Refused(reason) => (
+                None,
+                Some(reason.unwrap_or_else(|| "nothing to rename here".to_owned())),
+            ),
+            RenameAnswer::Span(karet_core::PrepareRename::Range { range, placeholder }) => {
+                let range = utf16_range_to_buffer(buffer, range);
+                let placeholder = placeholder.unwrap_or_else(|| text_in(buffer, range));
+                (Some(RenameTarget { range, placeholder }), None)
+            },
+            RenameAnswer::Span(_) | RenameAnswer::Identifier => {
+                match identifier_at(buffer, position) {
+                    Some(target) => (Some(target), None),
+                    None => (None, Some("no symbol at the cursor".to_owned())),
+                }
+            },
+        };
+        self.emit(
+            Some(request),
+            Event::RenamePrepared {
+                doc: doc_id,
+                version,
+                target,
+                reason,
+            },
+        );
+    }
+
+    /// Apply a rename's edit, unless the document moved on since the request
+    /// or the request produced none, whose reason is then the answer.
+    pub(super) fn adopt_rename_edit(
+        &mut self,
+        request: RequestId,
+        doc_id: DocumentId,
+        version: u64,
+        edit: Result<karet_core::WorkspaceEdit, String>,
+    ) {
+        let current = self.store.docs.get(&doc_id).map(|doc| doc.buffer.version());
+        let applied = match edit {
+            // The server computed the edit against text that is gone: applying
+            // it would put the new name wherever the old offsets now land.
+            _ if current != Some(version) => {
+                refused("the document changed while renaming; try again")
+            },
+            Err(reason) => refused(&reason),
+            Ok(edit) if edit.is_empty() => refused("the language server found nothing to rename"),
+            Ok(edit) => self.apply_workspace_edit(edit, Columns::Utf16, None),
+        };
+        self.emit(Some(request), Event::WorkspaceEdit { applied });
+    }
+
+    /// Apply a language server's `workspace/applyEdit` and answer it. The
+    /// client hears about it like any other edit, without a request id.
+    pub(super) fn adopt_server_edit(&mut self, request: karet_lsp::ApplyEditRequest) {
+        let edit = request.edit.clone();
+        let applied = self.apply_workspace_edit(edit, Columns::Utf16, request.label.clone());
+        request.respond(applied.result.clone());
+        self.emit(None, Event::WorkspaceEdit { applied });
+    }
+}
+
+/// The refusal when no language server serves the document.
+const NO_SERVER: &str = "no language server is running for this file";
+
+/// An edit refused before anything was applied.
+fn refused(reason: &str) -> AppliedWorkspaceEdit {
+    AppliedWorkspaceEdit {
+        result: karet_core::ApplyWorkspaceEditResult::failed(reason, None),
+        ..AppliedWorkspaceEdit::default()
+    }
+}
+
+/// The text `range` covers in `buffer`.
+fn text_in(buffer: &TextBuffer, range: Range) -> String {
+    let (Ok(start), Ok(end)) = (
+        buffer.line_col_to_byte(range.start),
+        buffer.line_col_to_byte(range.end),
+    ) else {
+        return String::new();
+    };
+    buffer
+        .text()
+        .get(start.0..end.0)
+        .unwrap_or_default()
+        .to_owned()
+}
+
+/// The identifier touching `position`, by the editor's own word rules: the one
+/// the caret is in, or the one it sits just after.
+fn identifier_at(buffer: &TextBuffer, position: LineCol) -> Option<RenameTarget> {
+    let line: Vec<char> = buffer.line(position.line as usize)?.chars().collect();
+    let at = (position.col as usize).min(line.len());
+    let is_word = |index: usize| {
+        line.get(index)
+            .copied()
+            .is_some_and(karet_core::is_word_char)
+    };
+    let anchor = if is_word(at) {
+        at
+    } else if at > 0 && is_word(at - 1) {
+        at - 1
+    } else {
+        return None;
+    };
+    let start = (0..=anchor)
+        .rev()
+        .take_while(|&index| is_word(index))
+        .last()?;
+    let end = (anchor..line.len())
+        .take_while(|&index| is_word(index))
+        .last()?
+        + 1;
+    let column = |index: usize| u32::try_from(index).unwrap_or(u32::MAX);
+    Some(RenameTarget {
+        range: Range {
+            start: LineCol::new(position.line, column(start)),
+            end: LineCol::new(position.line, column(end)),
+        },
+        placeholder: line.get(start..end)?.iter().collect(),
+    })
 }
 
 #[cfg(test)]

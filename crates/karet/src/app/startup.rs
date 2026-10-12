@@ -119,6 +119,8 @@ impl App {
             blame_rect: None,
             markdown_link_hits: Vec::new(),
             pending_definition: None,
+            rename: None,
+            pending_rename: None,
             nav_history: HashMap::new(),
             definition_hover: None,
             markdown_link_hover: None,

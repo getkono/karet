@@ -1,6 +1,6 @@
 use super::*;
 
-mod chrome;
+pub(super) mod chrome;
 
 impl App {
     /// Resize the sidebar so its right edge sits at column `col`. Dragging narrower
@@ -105,6 +105,7 @@ impl App {
         // Mouse clicks, drag-selection, tab switches, and pane focus changes can all
         // move the active caret without passing through the keyboard input hook.
         self.reconcile_completion();
+        self.reconcile_rename();
         self.request_live_blame();
     }
 
@@ -128,6 +129,11 @@ impl App {
         }
         if self.overlay.is_some() {
             return;
+        }
+        // A click anywhere settles the rename prompt as Esc would, then does
+        // what it would have done without it.
+        if matches!(mouse.kind, MouseEventKind::Down(_)) {
+            self.rename = None;
         }
         if self.handle_context_menu_mouse(mouse) {
             return;
@@ -809,11 +815,4 @@ impl App {
             },
         }
     }
-}
-
-pub(super) fn notification_clipboard_text(notification: &Notification) -> String {
-    notification.body.as_ref().map_or_else(
-        || notification.title.clone(),
-        |body| format!("{}\n{body}", notification.title),
-    )
 }

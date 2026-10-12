@@ -332,6 +332,12 @@ pub enum Command {
     CommitGraphCopyIssueUrls,
     /// Jump to the definition of the symbol at the caret (F12).
     GoToDefinition,
+    /// Rename the symbol at the caret across the workspace (F2).
+    RenameSymbol,
+    /// Apply the name typed into the rename prompt.
+    RenameSubmit,
+    /// Close the rename prompt without renaming.
+    RenameCancel,
     /// Return to the place the focused pane most recently left: a jump's origin
     /// or the start of a large caret move (Ctrl+Alt+Left, Alt+Left).
     JumpBack,
@@ -827,6 +833,9 @@ impl Command {
             Self::CommitUnfoldFileTree => "Commit: Unfold All Directories",
             Self::CommitGraphCopyIssueUrls => "Commit Graph: Copy Issue URLs",
             Self::GoToDefinition => "Go to Definition",
+            Self::RenameSymbol => "Rename Symbol",
+            Self::RenameSubmit => "Rename Symbol: Confirm",
+            Self::RenameCancel => "Rename Symbol: Cancel",
             Self::JumpBack => "Go Back",
             Self::JumpForward => "Go Forward",
             Self::InsertNewline => "Insert Newline",

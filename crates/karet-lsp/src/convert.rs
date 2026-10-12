@@ -6,12 +6,17 @@
 //! (karet-session) owns the text and performs the UTF-16 ↔ UTF-32 translation via
 //! `karet_text::TextBuffer`.
 
+use karet_core::ApplyWorkspaceEditResult;
 use karet_core::CodeAction;
 use karet_core::CommandId;
 use karet_core::CompletionItem;
 use karet_core::CompletionKind;
+use karet_core::DeleteOptions;
 use karet_core::Diagnostic;
 use karet_core::DiagnosticTag;
+use karet_core::DocumentChange;
+use karet_core::DocumentEdit;
+use karet_core::FileOptions;
 use karet_core::Hover;
 use karet_core::InlayHint;
 use karet_core::InlayHintKind;
@@ -20,6 +25,7 @@ use karet_core::Location;
 use karet_core::Markup;
 use karet_core::MarkupKind;
 use karet_core::ParamInfo;
+use karet_core::PrepareRename;
 use karet_core::Range;
 use karet_core::RelatedInfo;
 use karet_core::Severity;
@@ -30,6 +36,7 @@ use karet_core::SymbolKind;
 use karet_core::TextEdit;
 use karet_core::WorkspaceEdit;
 
+use crate::LspError;
 use crate::snippet::strip_snippet;
 use crate::uri::uri_to_path;
 
@@ -317,32 +324,65 @@ pub(crate) fn inlay_hints_from_lsp(hints: Option<Vec<lsp_types::InlayHint>>) -> 
         .collect()
 }
 
-/// Map a workspace edit while deliberately ignoring resource operations that
-/// the neutral text-edit model cannot represent.
-pub(crate) fn workspace_edit_from_lsp(edit: lsp_types::WorkspaceEdit) -> WorkspaceEdit {
-    let mut changes = Vec::new();
-    if let Some(uri_changes) = edit.changes {
-        changes.extend(uri_changes.into_iter().filter_map(|(uri, edits)| {
-            Some((
-                uri_to_path(&uri)?,
+/// Map a workspace edit, resource operations included.
+///
+/// LSP says a client that understands `documentChanges` uses them and ignores
+/// `changes`, so when both are present only `documentChanges` is kept. Their
+/// order is preserved: a server may create a file and then edit it.
+///
+/// # Errors
+/// [`LspError::Protocol`] when a step names a URI that is not `file://`.
+/// Dropping that step would apply the rest of an edit the server meant as a
+/// whole -- the steps after it can depend on it -- and report success.
+pub(crate) fn workspace_edit_from_lsp(
+    edit: lsp_types::WorkspaceEdit,
+) -> Result<WorkspaceEdit, LspError> {
+    if let Some(document_changes) = edit.document_changes {
+        let operations = match document_changes {
+            lsp_types::DocumentChanges::Edits(edits) => edits
+                .into_iter()
+                .map(lsp_types::DocumentChangeOperation::Edit)
+                .collect(),
+            lsp_types::DocumentChanges::Operations(operations) => operations,
+        };
+        let document_changes = operations
+            .into_iter()
+            .map(document_change_from_lsp)
+            .collect::<Result<_, _>>()?;
+        return Ok(WorkspaceEdit {
+            changes: Vec::new(),
+            document_changes,
+        });
+    }
+    let mut changes = edit
+        .changes
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(uri, edits)| {
+            Ok((
+                file_path(&uri)?,
                 edits.into_iter().map(text_edit_from_lsp).collect(),
             ))
-        }));
-    }
-    if let Some(document_changes) = edit.document_changes {
-        let edits = match document_changes {
-            lsp_types::DocumentChanges::Edits(edits) => edits,
-            lsp_types::DocumentChanges::Operations(operations) => operations
-                .into_iter()
-                .filter_map(|operation| match operation {
-                    lsp_types::DocumentChangeOperation::Edit(edit) => Some(edit),
-                    lsp_types::DocumentChangeOperation::Op(_) => None,
-                })
-                .collect(),
-        };
-        changes.extend(edits.into_iter().filter_map(|edit| {
-            let path = uri_to_path(&edit.text_document.uri)?;
-            let edits = edit
+        })
+        .collect::<Result<Vec<_>, LspError>>()?;
+    changes.sort_by(|(left, _), (right, _)| left.cmp(right));
+    Ok(WorkspaceEdit {
+        changes,
+        document_changes: Vec::new(),
+    })
+}
+
+/// Map one ordered `documentChanges` step.
+fn document_change_from_lsp(
+    operation: lsp_types::DocumentChangeOperation,
+) -> Result<DocumentChange, LspError> {
+    use lsp_types::DocumentChangeOperation as Step;
+    use lsp_types::ResourceOp;
+    Ok(match operation {
+        Step::Edit(edit) => DocumentChange::Edit(DocumentEdit {
+            path: file_path(&edit.text_document.uri)?,
+            version: edit.text_document.version,
+            edits: edit
                 .edits
                 .into_iter()
                 .map(|edit| match edit {
@@ -350,12 +390,91 @@ pub(crate) fn workspace_edit_from_lsp(edit: lsp_types::WorkspaceEdit) -> Workspa
                     lsp_types::OneOf::Right(edit) => edit.text_edit,
                 })
                 .map(text_edit_from_lsp)
-                .collect();
-            Some((path, edits))
-        }));
+                .collect(),
+        }),
+        Step::Op(ResourceOp::Create(create)) => {
+            let (overwrite, ignore_if_exists) = create.options.map_or((None, None), |options| {
+                (options.overwrite, options.ignore_if_exists)
+            });
+            DocumentChange::Create {
+                path: file_path(&create.uri)?,
+                options: FileOptions {
+                    overwrite: overwrite.unwrap_or(false),
+                    ignore_if_exists: ignore_if_exists.unwrap_or(false),
+                },
+            }
+        },
+        Step::Op(ResourceOp::Rename(rename)) => {
+            let (overwrite, ignore_if_exists) = rename.options.map_or((None, None), |options| {
+                (options.overwrite, options.ignore_if_exists)
+            });
+            DocumentChange::Rename {
+                from: file_path(&rename.old_uri)?,
+                to: file_path(&rename.new_uri)?,
+                options: FileOptions {
+                    overwrite: overwrite.unwrap_or(false),
+                    ignore_if_exists: ignore_if_exists.unwrap_or(false),
+                },
+            }
+        },
+        Step::Op(ResourceOp::Delete(delete)) => {
+            let (recursive, ignore_if_not_exists) =
+                delete.options.map_or((None, None), |options| {
+                    (options.recursive, options.ignore_if_not_exists)
+                });
+            DocumentChange::Delete {
+                path: file_path(&delete.uri)?,
+                options: DeleteOptions {
+                    recursive: recursive.unwrap_or(false),
+                    ignore_if_not_exists: ignore_if_not_exists.unwrap_or(false),
+                },
+            }
+        },
+    })
+}
+
+/// The path a workspace-edit URI names, or why it names none.
+fn file_path(uri: &lsp_types::Uri) -> Result<std::path::PathBuf, LspError> {
+    uri_to_path(uri).ok_or_else(|| {
+        LspError::Protocol(format!(
+            "workspace edit names {}, which is not a file",
+            uri.as_str()
+        ))
+    })
+}
+
+/// Map a `textDocument/prepareRename` answer; `None` means "not renameable".
+pub(crate) fn prepare_rename_from_lsp(
+    response: Option<lsp_types::PrepareRenameResponse>,
+) -> Option<PrepareRename> {
+    use lsp_types::PrepareRenameResponse as Answer;
+    match response? {
+        Answer::Range(range) => Some(PrepareRename::Range {
+            range: range_from_lsp(range),
+            placeholder: None,
+        }),
+        Answer::RangeWithPlaceholder { range, placeholder } => Some(PrepareRename::Range {
+            range: range_from_lsp(range),
+            placeholder: Some(placeholder),
+        }),
+        // `false` is not in the spec; a server sending it is saying no.
+        Answer::DefaultBehavior { default_behavior } => {
+            default_behavior.then_some(PrepareRename::DefaultBehavior)
+        },
     }
-    changes.sort_by(|(left, _), (right, _)| left.cmp(right));
-    WorkspaceEdit { changes }
+}
+
+/// Map a karet apply outcome to the `workspace/applyEdit` reply.
+pub(crate) fn apply_result_to_lsp(
+    result: ApplyWorkspaceEditResult,
+) -> lsp_types::ApplyWorkspaceEditResponse {
+    lsp_types::ApplyWorkspaceEditResponse {
+        applied: result.applied,
+        failure_reason: result.failure_reason,
+        failed_change: result
+            .failed_change
+            .map(|index| u32::try_from(index).unwrap_or(u32::MAX)),
+    }
 }
 
 /// Map signature help, clamping server-provided active indices.
@@ -429,7 +548,11 @@ pub(crate) fn code_actions_from_lsp(
             lsp_types::CodeActionOrCommand::CodeAction(action) => {
                 action.disabled.is_none().then(|| CodeAction {
                     title: action.title,
-                    edit: action.edit.map(workspace_edit_from_lsp),
+                    // An edit naming a non-file URI cannot be applied as the
+                    // server meant it, so the action offers no edit.
+                    edit: action
+                        .edit
+                        .and_then(|edit| workspace_edit_from_lsp(edit).ok()),
                     command: action.command.map(|command| CommandId(command.command)),
                 })
             },
