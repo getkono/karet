@@ -198,6 +198,33 @@ impl LspManager {
         .is_ok()
     }
 
+    /// Hand one code-action step to the server serving `path`, the document
+    /// of `language` the actions are for.
+    ///
+    /// Gives the step back when no server took it, so the caller answers it.
+    /// A `List` step's own path is made absolute here like every request's.
+    pub(crate) fn code_action(
+        &self,
+        language: Option<&str>,
+        path: &Path,
+        mut cmd: CodeActionCmd,
+    ) -> Option<CodeActionCmd> {
+        let path = absolute_path(path);
+        if let CodeActionCmd::List { path: target, .. } = &mut cmd {
+            *target = path.clone();
+        }
+        let Some(tx) = self.existing_server(language, &path) else {
+            return Some(cmd);
+        };
+        match tx.try_send(ServerCmd::CodeAction(cmd)) {
+            Ok(()) => None,
+            Err(error) => match error.into_inner() {
+                ServerCmd::CodeAction(cmd) => Some(cmd),
+                _ => None,
+            },
+        }
+    }
+
     /// Forward a `textDocument/formatting` request, indented and bounded as
     /// `ask` says.
     ///

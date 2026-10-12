@@ -229,6 +229,11 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(Editor, true,  false, false, Char(' '), Command::TriggerCompletion),
     b(Editor, false, false, false, F(12),      Command::GoToDefinition),
     b(Editor, false, false, false, F(2),       Command::RenameSymbol),
+    // Quick fix (VS Code parity). Ctrl+. needs a terminal that disambiguates
+    // modified punctuation (the kitty keyboard protocol); Alt+Enter, the
+    // JetBrains chord for the same menu, reaches the app from any terminal.
+    b(Editor, true,  false, false, Char('.'), Command::CodeActions),
+    b(Editor, false, false, true,  Enter,     Command::CodeActions),
     b(Editor, false, false, false, Enter,     Command::InsertNewline),
     b(Editor, false, false, false, Backspace, Command::DeleteBackward),
     b(Editor, false, false, false, Delete,    Command::DeleteForward),

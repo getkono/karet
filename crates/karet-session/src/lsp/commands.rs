@@ -18,6 +18,7 @@ use karet_core::WorkspaceEdit;
 use karet_lsp::LspError;
 use tokio::sync::mpsc;
 
+use super::code_actions::UNAVAILABLE;
 use super::message::LspUpdate;
 use super::message::RenameAnswer;
 use super::message::ServerCmd;
@@ -216,6 +217,12 @@ pub(super) fn answer_empty(
                 edits: Vec::new(),
             });
         },
+        ServerCmd::CodeAction(cmd) => {
+            let _ = updates.send(LspUpdate::CodeAction {
+                generation,
+                answer: cmd.unanswered(UNAVAILABLE),
+            });
+        },
         ServerCmd::DidOpen { .. }
         | ServerCmd::DidChange { .. }
         | ServerCmd::DidClose { .. }
@@ -273,6 +280,7 @@ pub(super) fn remember_document(documents: &mut HashMap<PathBuf, OpenDocument>, 
         | ServerCmd::WorkspaceSymbols { .. }
         | ServerCmd::Rename { .. }
         | ServerCmd::PrepareRename { .. }
+        | ServerCmd::CodeAction(_)
         | ServerCmd::Formatting { .. } => {},
     }
 }
@@ -370,6 +378,37 @@ mod tests {
                 edit: Ok(ref edit),
                 ..
             }) if edit.is_empty()
+        ));
+    }
+
+    /// A code-action step asked of no connection answers with the reason,
+    /// through the same path as every other request.
+    #[test]
+    fn an_unanswerable_code_action_step_still_answers() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        answer_empty(
+            &tx,
+            ServerCmd::CodeAction(super::super::CodeActionCmd::List {
+                request: RequestId(1),
+                doc: DocumentId(2),
+                version: 3,
+                path: PathBuf::from("main.rs"),
+                range: karet_core::Range::default(),
+                kinds: Vec::new(),
+                trigger: crate::api::CodeActionTrigger::Automatic,
+            }),
+            7,
+        );
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(LspUpdate::CodeAction {
+                generation: 7,
+                answer: super::super::CodeActionAnswer::Listed {
+                    request: RequestId(1),
+                    actions: Err(ref reason),
+                    ..
+                },
+            }) if reason == UNAVAILABLE
         ));
     }
 

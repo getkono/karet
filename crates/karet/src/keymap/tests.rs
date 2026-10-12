@@ -43,6 +43,25 @@ fn comment_toggles_bind_in_the_editor_under_both_terminal_encodings() {
     );
 }
 
+#[test]
+fn quick_fix_binds_in_the_editor_with_a_legacy_terminal_fallback() {
+    let editor = |code, mods| res(Focus::Editor, false, key(code, mods));
+    // Ctrl+. reaches the app only through the kitty keyboard protocol.
+    assert_eq!(
+        editor(KeyCode::Char('.'), KeyModifiers::CONTROL),
+        Some(Command::CodeActions)
+    );
+    assert_eq!(
+        editor(KeyCode::Enter, KeyModifiers::ALT),
+        Some(Command::CodeActions)
+    );
+    // A plain Enter still breaks the line.
+    assert_eq!(
+        editor(KeyCode::Enter, KeyModifiers::NONE),
+        Some(Command::InsertNewline)
+    );
+}
+
 /// Resolve a single key press in a focus context to its command. `is_diff` maps
 /// to the diff editor tab; every other editor tab is treated as plain here.
 fn res_in(focus: Focus, panel: SidebarPanel, is_diff: bool, key: KeyEvent) -> Option<Command> {

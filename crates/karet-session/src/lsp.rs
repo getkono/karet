@@ -14,6 +14,7 @@
 //! after repeated failures instead of creating a respawn storm.
 
 mod catalog;
+mod code_actions;
 mod commands;
 mod connector;
 mod forward;
@@ -41,6 +42,8 @@ use std::time::Duration;
 
 pub(crate) use catalog::managed_arguments;
 pub(crate) use catalog::serves_language;
+pub(crate) use code_actions::CodeActionAnswer;
+pub(crate) use code_actions::CodeActionCmd;
 pub(crate) use connector::Connector;
 use connector::spawn_connector;
 use karet_core::LineCol;
@@ -258,6 +261,7 @@ impl LspManager {
             | LspUpdate::WorkspaceSymbols { generation, .. }
             | LspUpdate::WorkspaceEdit { generation, .. }
             | LspUpdate::PrepareRename { generation, .. }
+            | LspUpdate::CodeAction { generation, .. }
             | LspUpdate::Formatting { generation, .. }
             | LspUpdate::SyncFailed { generation, .. }
             | LspUpdate::PreflightFailed { generation, .. }

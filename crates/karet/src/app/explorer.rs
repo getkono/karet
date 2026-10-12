@@ -655,6 +655,12 @@ impl App {
                 DictionaryTarget::Project => self.add_spelling_to_project_dictionary(word),
                 DictionaryTarget::User => self.add_spelling_to_user_dictionary(word),
             },
+            ContextMenuAction::CodeAction {
+                doc,
+                version,
+                action,
+            } => self.run_code_action(doc, version, *action),
+            ContextMenuAction::Heading => {},
         }
     }
 

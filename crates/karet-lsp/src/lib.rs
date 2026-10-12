@@ -36,7 +36,8 @@
 //!   is degraded to plain text at the completion mapping.
 //!
 //! Transport, lifecycle, document sync, diagnostics, completion, navigation,
-//! symbols, inlay hints, rename, signature help, code actions, and document/range
+//! symbols, inlay hints, rename, signature help, code actions (with
+//! `codeAction/resolve` and `workspace/executeCommand`), and document/range
 //! formatting are implemented as typed, non-panicking operations.
 
 /// `Content-Length` message framing (the LSP base protocol).
@@ -45,6 +46,7 @@
 /// the implementation now lives; the `karet_lsp::codec` path is kept because it
 /// is this crate's published surface.
 pub use apply_edit::ApplyEditRequest;
+pub use code_action::CodeActionTrigger;
 pub use karet_jsonrpc::framing::content_length as codec;
 pub use launch::ExitReport;
 pub use launch::LaunchCause;
@@ -52,6 +54,7 @@ pub use launch::LaunchFailure;
 
 mod apply_edit;
 mod capability;
+mod code_action;
 mod conn;
 mod convert;
 mod gate;
@@ -65,7 +68,6 @@ use std::path::PathBuf;
 use std::process::Stdio;
 
 use karet_core::Capabilities;
-use karet_core::CodeAction;
 use karet_core::CompletionItem;
 use karet_core::Diagnostic;
 use karet_core::Hover;
@@ -993,30 +995,6 @@ impl LspClient {
         Ok(convert::signature_help_from_lsp(response))
     }
 
-    /// Request code actions available for `range` in `doc`.
-    ///
-    /// # Errors
-    /// Returns [`LspError::Unsupported`] **without issuing a request** when the
-    /// server did not advertise the capability, else [`LspError::Server`] or
-    /// [`LspError::Timeout`].
-    pub async fn code_action(&self, doc: &Path, range: Range) -> Result<Vec<CodeAction>, LspError> {
-        self.require_for(ServerFeature::CodeAction, "textDocument/codeAction", doc)?;
-        let params = lsp_types::CodeActionParams {
-            text_document: lsp_types::TextDocumentIdentifier::new(uri::path_to_uri(doc)?),
-            range: convert::range_to_lsp(range),
-            context: lsp_types::CodeActionContext {
-                diagnostics: Vec::new(),
-                only: None,
-                trigger_kind: Some(lsp_types::CodeActionTriggerKind::INVOKED),
-            },
-            work_done_progress_params: lsp_types::WorkDoneProgressParams::default(),
-            partial_result_params: lsp_types::PartialResultParams::default(),
-        };
-        let response: Option<lsp_types::CodeActionResponse> =
-            self.conn.request("textDocument/codeAction", params).await?;
-        Ok(convert::code_actions_from_lsp(response))
-    }
-
     /// Request whole-document formatting edits for `doc`, indented as
     /// `indentation` says.
     ///
@@ -1207,6 +1185,37 @@ fn formatting_options(indentation: Indentation) -> lsp_types::FormattingOptions 
     }
 }
 
+/// What this client does with code actions: literals of every kind it groups
+/// by, preferred and disabled flags, and edits deferred to
+/// `codeAction/resolve` (whose `data` it hands back untouched).
+fn code_action_capabilities() -> lsp_types::CodeActionClientCapabilities {
+    let kinds = [
+        "",
+        "quickfix",
+        "refactor",
+        "refactor.extract",
+        "refactor.inline",
+        "refactor.rewrite",
+        "source",
+        "source.organizeImports",
+        "source.fixAll",
+    ];
+    lsp_types::CodeActionClientCapabilities {
+        code_action_literal_support: Some(lsp_types::CodeActionLiteralSupport {
+            code_action_kind: lsp_types::CodeActionKindLiteralSupport {
+                value_set: kinds.into_iter().map(str::to_owned).collect(),
+            },
+        }),
+        is_preferred_support: Some(true),
+        disabled_support: Some(true),
+        data_support: Some(true),
+        resolve_support: Some(lsp_types::CodeActionCapabilityResolveSupport {
+            properties: vec!["edit".to_owned()],
+        }),
+        ..lsp_types::CodeActionClientCapabilities::default()
+    }
+}
+
 /// Build the `initialize` params advertising what this client actually does.
 fn initialize_params(root: &Path) -> Result<lsp_types::InitializeParams, LspError> {
     let root_uri = uri::path_to_uri(root)?;
@@ -1275,6 +1284,7 @@ fn initialize_params(root: &Path) -> Result<lsp_types::InitializeParams, LspErro
             }),
             formatting: Some(dynamic),
             range_formatting: Some(dynamic),
+            code_action: Some(code_action_capabilities()),
             ..lsp_types::TextDocumentClientCapabilities::default()
         }),
         workspace: Some(lsp_types::WorkspaceClientCapabilities {
@@ -1288,6 +1298,9 @@ fn initialize_params(root: &Path) -> Result<lsp_types::InitializeParams, LspErro
             }),
             // Relayed through `LspClient::apply_edit_requests`.
             apply_edit: Some(true),
+            // `LspClient::execute_command`; declared without dynamic
+            // registration, which would carry a command list the gate drops.
+            execute_command: Some(lsp_types::DynamicRegistrationClientCapabilities::default()),
             // What `karet_core::WorkspaceEdit` carries. Failure handling is
             // what karet-session's apply path does: an edit of text alone is
             // checked whole before anything changes, while one with file

@@ -62,6 +62,9 @@ impl App {
             {
                 self.pending_rename = None;
             }
+            // Likewise a quick-fix request: its empty answer must not add
+            // "none available" to a notice that already says why.
+            self.refuse_code_actions(id);
         }
         self.notify(
             Report::Refusal,

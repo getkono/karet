@@ -340,6 +340,14 @@ pub enum Command {
     RenameSubmit,
     /// Close the rename prompt without renaming.
     RenameCancel,
+    /// Open the code-action menu at the caret (Ctrl+., Alt+Enter).
+    CodeActions,
+    /// Open the code-action menu showing only source actions.
+    SourceAction,
+    /// Apply the language server's organize-imports action.
+    OrganizeImports,
+    /// Apply the language server's fix-all action.
+    FixAll,
     /// Return to the place the focused pane most recently left: a jump's origin
     /// or the start of a large caret move (Ctrl+Alt+Left, Alt+Left).
     JumpBack,
@@ -839,6 +847,10 @@ impl Command {
             Self::RenameSymbol => "Rename Symbol",
             Self::RenameSubmit => "Rename Symbol: Confirm",
             Self::RenameCancel => "Rename Symbol: Cancel",
+            Self::CodeActions => "Quick Fix…",
+            Self::SourceAction => "Source Action…",
+            Self::OrganizeImports => "Organize Imports",
+            Self::FixAll => "Fix All",
             Self::JumpBack => "Go Back",
             Self::JumpForward => "Go Forward",
             Self::InsertNewline => "Insert Newline",

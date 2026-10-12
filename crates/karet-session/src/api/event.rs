@@ -311,6 +311,20 @@ pub enum Event {
         /// language server (or the lack of one) gave a reason.
         reason: Option<String>,
     },
+    /// Answers [`Command::CodeActions`].
+    CodeActions {
+        /// The document asked about.
+        doc: DocumentId,
+        /// The document version the actions were computed against; run one
+        /// with [`Command::ApplyCodeAction`] at this version.
+        version: u64,
+        /// The actions, in the server's order; edits in buffer columns.
+        /// Disabled ones are included with their reason.
+        actions: Vec<CodeAction>,
+        /// Why there are none, when the server could not be asked or refused
+        /// (no server, one that does not offer code actions, an error).
+        reason: Option<String>,
+    },
     /// One streamed batch of a workspace search, answering [`Command::Search`].
     ///
     /// Batches arrive as the walk proceeds so a client fills its list

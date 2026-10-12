@@ -29,6 +29,13 @@
 //! one-per-document rule, an editor re-asking on every scroll or keystroke
 //! stacked up a full inference pass per ask on a server that was already the
 //! slowest thing in the loop.
+//!
+//! The bookkeeping is generic over the request ([`Background`]), because inlay
+//! hints are not the only background work an editor asks for unprompted: the
+//! lightbulb probe (`code_actions::Probes`) is sent every time the caret
+//! settles, and is kept off the serial path, and capped at one per document,
+//! for the same reasons. Each kind has its own flight, so a running hint request
+//! never holds back a probe for the same document, nor the reverse.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -43,6 +50,7 @@ use karet_lsp::LspError;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 
+use super::code_actions::ProbeFlight;
 use super::health::FailureTally;
 use super::message::LspUpdate;
 use super::slot::SlotKey;
@@ -50,9 +58,10 @@ use super::slot::SlotToken;
 use crate::api::DocumentId;
 use crate::api::RequestId;
 
-/// Who a hint request answers: echoed on the reply whatever becomes of it.
+/// Who a background request answers: echoed on the reply whatever becomes of
+/// it.
 #[derive(Clone, Copy, Debug)]
-pub(super) struct HintTag {
+pub(super) struct FlightTag {
     /// The originating request.
     pub(super) request: RequestId,
     /// The target document.
@@ -61,37 +70,132 @@ pub(super) struct HintTag {
     pub(super) version: u64,
 }
 
-/// A hint request waiting for the server to have its text.
-pub(super) struct HintAsk {
+/// A kind of background request a server task keeps off its serial path.
+pub(super) trait Background {
+    /// What the request carries besides its tag and path, ranges already in
+    /// UTF-16 columns.
+    type Params: Send + 'static;
+    /// What the server answers.
+    type Output: Send + 'static;
+    /// The request, as a log or an error names it.
+    const WHAT: &'static str;
+
+    /// Issue the request for `path`.
+    fn request(
+        client: Arc<LspClient>,
+        path: PathBuf,
+        params: Self::Params,
+    ) -> impl Future<Output = Result<Self::Output, LspError>> + Send + 'static;
+
+    /// Report the request `tag` echoes as unanswered.
+    fn unanswered(updates: &mpsc::UnboundedSender<LspUpdate>, tag: FlightTag, generation: u64);
+}
+
+/// Inlay-hint requests, as a [`Background`] kind.
+pub(super) enum Hints {}
+
+impl Background for Hints {
+    type Output = Vec<InlayHint>;
+    type Params = Range;
+
+    const WHAT: &'static str = "inlay-hint request";
+
+    async fn request(
+        client: Arc<LspClient>,
+        path: PathBuf,
+        range: Range,
+    ) -> Result<Vec<InlayHint>, LspError> {
+        client.inlay_hints(&path, range).await
+    }
+
+    fn unanswered(updates: &mpsc::UnboundedSender<LspUpdate>, tag: FlightTag, generation: u64) {
+        answer_failed(updates, tag, generation);
+    }
+}
+
+/// A background request waiting for the server to have its text.
+pub(super) struct Ask<P> {
     /// What the answer echoes.
-    pub(super) tag: HintTag,
+    pub(super) tag: FlightTag,
     /// The document path.
     pub(super) path: PathBuf,
-    /// The range, already in UTF-16 columns.
-    pub(super) range: Range,
+    /// The rest of the request.
+    pub(super) params: P,
 }
 
 /// A launched request's outcome.
-pub(super) struct HintAnswer {
+pub(super) struct Answer<O> {
     /// What the answer echoes.
-    pub(super) tag: HintTag,
+    pub(super) tag: FlightTag,
     /// The server's answer, or why there is none.
-    pub(super) result: Result<Vec<InlayHint>, LspError>,
+    pub(super) result: Result<O, LspError>,
 }
 
-/// The hint requests one server task has accepted and not yet answered.
+/// An inlay-hint request waiting for its text.
+pub(super) type HintAsk = Ask<Range>;
+/// A launched inlay-hint request's outcome.
+pub(super) type HintAnswer = Answer<Vec<InlayHint>>;
+/// The inlay-hint requests of one server task.
+pub(super) type HintFlight = Flight<Hints>;
+
+/// Every background request one server task has accepted and not yet
+/// answered: its inlay-hint requests and its lightbulb probes, each kind
+/// capped at one running per document on its own.
 #[derive(Default)]
-pub(super) struct HintFlight {
+pub(super) struct Flights {
+    /// The inlay-hint requests.
+    pub(super) hints: HintFlight,
+    /// The lightbulb probes.
+    pub(super) probes: ProbeFlight,
+}
+
+impl Flights {
+    /// [`Flight::launch_ready`] for every kind.
+    pub(super) fn launch_ready(&mut self, client: &Arc<LspClient>, pending: Option<&Path>) {
+        self.hints.launch_ready(client, pending);
+        self.probes.launch_ready(client, pending);
+    }
+
+    /// [`Flight::abandon`] for every kind.
+    pub(super) fn abandon(&mut self, updates: &mpsc::UnboundedSender<LspUpdate>, generation: u64) {
+        self.hints.abandon(updates, generation);
+        self.probes.abandon(updates, generation);
+    }
+
+    /// [`Flight::shutdown`] for every kind.
+    pub(super) async fn shutdown(
+        &mut self,
+        updates: &mpsc::UnboundedSender<LspUpdate>,
+        generation: u64,
+    ) {
+        self.hints.shutdown(updates, generation).await;
+        self.probes.shutdown(updates, generation).await;
+    }
+}
+
+/// The background requests of one kind that one server task has accepted and
+/// not yet answered.
+pub(super) struct Flight<K: Background> {
     /// Asked against text the server has not been sent yet.
-    deferred: Vec<HintAsk>,
+    deferred: Vec<Ask<K::Params>>,
     /// Issued, and awaiting the server.
-    tasks: JoinSet<HintAnswer>,
+    tasks: JoinSet<Answer<K::Output>>,
     /// What each running task answers, so one that fails to finish is still
     /// answered.
-    running: HashMap<tokio::task::Id, HintTag>,
+    running: HashMap<tokio::task::Id, FlightTag>,
 }
 
-impl HintFlight {
+impl<K: Background> Default for Flight<K> {
+    fn default() -> Self {
+        Self {
+            deferred: Vec::new(),
+            tasks: JoinSet::new(),
+            running: HashMap::new(),
+        }
+    }
+}
+
+impl<K: Background> Flight<K> {
     /// Accept a request, superseding any older one for the same document that
     /// has not been launched yet.
     ///
@@ -100,7 +204,7 @@ impl HintFlight {
     /// so the report is discarded there.
     pub(super) fn ask(
         &mut self,
-        ask: HintAsk,
+        ask: Ask<K::Params>,
         updates: &mpsc::UnboundedSender<LspUpdate>,
         generation: u64,
     ) {
@@ -109,7 +213,7 @@ impl HintFlight {
             .partition(|older| older.tag.doc == ask.tag.doc);
         self.deferred = kept;
         for older in superseded {
-            answer_failed(updates, older.tag, generation);
+            K::unanswered(updates, older.tag, generation);
         }
         self.deferred.push(ask);
     }
@@ -119,8 +223,7 @@ impl HintFlight {
     /// and those for a document whose previous request is still running.
     pub(super) fn launch_ready(&mut self, client: &Arc<LspClient>, pending: Option<&Path>) {
         self.launch_ready_with(pending, |ask| {
-            let client = Arc::clone(client);
-            async move { client.inlay_hints(&ask.path, ask.range).await }
+            K::request(Arc::clone(client), ask.path, ask.params)
         });
     }
 
@@ -129,8 +232,8 @@ impl HintFlight {
     /// Separate so the bookkeeping can be tested without a server.
     fn launch_ready_with<F, Fut>(&mut self, pending: Option<&Path>, mut start: F)
     where
-        F: FnMut(HintAsk) -> Fut,
-        Fut: Future<Output = Result<Vec<InlayHint>, LspError>> + Send + 'static,
+        F: FnMut(Ask<K::Params>) -> Fut,
+        Fut: Future<Output = Result<K::Output, LspError>> + Send + 'static,
     {
         let running = &self.running;
         let (waiting, ready): (Vec<_>, Vec<_>) = std::mem::take(&mut self.deferred)
@@ -144,7 +247,7 @@ impl HintFlight {
             let tag = ask.tag;
             let request = start(ask);
             let handle = self.tasks.spawn(async move {
-                HintAnswer {
+                Answer {
                     tag,
                     result: request.await,
                 }
@@ -162,7 +265,7 @@ impl HintFlight {
     ///
     /// A task that ended without answering -- it panicked -- still yields an
     /// answer, an error, so its asker is not left waiting on it.
-    pub(super) async fn next(&mut self) -> Option<HintAnswer> {
+    pub(super) async fn next(&mut self) -> Option<Answer<K::Output>> {
         match self.tasks.join_next_with_id().await? {
             Ok((id, answer)) => {
                 self.running.remove(&id);
@@ -170,10 +273,11 @@ impl HintFlight {
             },
             Err(error) => {
                 let tag = self.running.remove(&error.id())?;
-                Some(HintAnswer {
+                Some(Answer {
                     tag,
                     result: Err(LspError::Protocol(format!(
-                        "inlay-hint request ended without an answer: {error}"
+                        "{} ended without an answer: {error}",
+                        K::WHAT
                     ))),
                 })
             },
@@ -214,7 +318,7 @@ impl HintFlight {
             .map(|ask| ask.tag)
             .chain(self.running.drain().map(|(_, tag)| tag));
         for tag in tags {
-            answer_failed(updates, tag, generation);
+            K::unanswered(updates, tag, generation);
         }
     }
 }
@@ -285,7 +389,7 @@ pub(super) fn deliver(
         answer_failed(updates, answer.tag, generation);
         return;
     };
-    let HintTag {
+    let FlightTag {
         request,
         doc,
         version,
@@ -305,13 +409,13 @@ pub(super) fn deliver(
 /// Routine while typing, so not worth a warning. The code survives only in the
 /// message `karet-lsp` formats for a peer error (`"... failed with code N: ..."`),
 /// which is what this reads.
-fn is_cancellation(error: &LspError) -> bool {
+pub(super) fn is_cancellation(error: &LspError) -> bool {
     matches!(error, LspError::Server(message)
         if message.contains("code -32801") || message.contains("code -32800"))
 }
 
 /// Report the request `tag` echoes as unanswered.
-fn answer_failed(updates: &mpsc::UnboundedSender<LspUpdate>, tag: HintTag, generation: u64) {
+fn answer_failed(updates: &mpsc::UnboundedSender<LspUpdate>, tag: FlightTag, generation: u64) {
     let _ = updates.send(LspUpdate::InlayHintsFailed {
         generation,
         request: tag.request,
@@ -334,13 +438,13 @@ mod tests {
 
     fn ask(request: u64, doc: u64) -> HintAsk {
         HintAsk {
-            tag: HintTag {
+            tag: FlightTag {
                 request: RequestId(request),
                 doc: DocumentId(doc),
                 version: 1,
             },
             path: PathBuf::from(format!("/w/{doc}.rs")),
-            range: Range::default(),
+            params: Range::default(),
         }
     }
 
@@ -358,7 +462,7 @@ mod tests {
             .collect()
     }
 
-    fn requests<'a>(tags: impl Iterator<Item = &'a HintTag>) -> Vec<u64> {
+    fn requests<'a>(tags: impl Iterator<Item = &'a FlightTag>) -> Vec<u64> {
         let mut out: Vec<u64> = tags.map(|tag| tag.request.0).collect();
         out.sort_unstable();
         out

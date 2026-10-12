@@ -121,7 +121,8 @@ fn advertised_capabilities(behavior: Behavior) -> Value {
         "workspaceSymbolProvider": true,
         "renameProvider": true,
         "documentRangeFormattingProvider": true,
-        "codeActionProvider": true,
+        "codeActionProvider": {"resolveProvider": true},
+        "executeCommandProvider": {"commands": ["double.fix"]},
         "signatureHelpProvider": {},
         "inlayHintProvider": true,
         "implementationProvider": true,
@@ -131,6 +132,38 @@ fn advertised_capabilities(behavior: Behavior) -> Value {
         capabilities["documentFormattingProvider"] = json!(true);
     }
     capabilities
+}
+
+/// The double's answer to the three code-action methods.
+///
+/// Listing offers two actions for the asked document: one with its edit
+/// inline (UTF-16 characters 2..4 of line 0) and one, preferred, whose edit is
+/// deferred to `codeAction/resolve` and which then runs `double.fix 7`.
+/// Resolving fills in an edit inserting `fixed ` at the start of the listed
+/// document; running the command answers `null`.
+fn code_action_reply(msg: &Value, last_uri: &mut Value) -> Value {
+    let span = |from: u32, to: u32| json!({"start": {"line": 0, "character": from}, "end": {"line": 0, "character": to}});
+    match msg["method"].as_str() {
+        Some("textDocument/codeAction") => {
+            let uri = msg["params"]["textDocument"]["uri"].clone();
+            *last_uri = uri.clone();
+            json!([
+                {"title": "Replace here", "kind": "refactor.rewrite",
+                 "edit": {"changes": {uri.as_str().unwrap_or_default():
+                     [{"range": span(2, 4), "newText": "X"}]}}},
+                {"title": "Fix it", "kind": "quickfix", "isPreferred": true,
+                 "data": {"n": 1},
+                 "command": {"title": "fix", "command": "double.fix", "arguments": [7]}}
+            ])
+        },
+        Some("codeAction/resolve") => {
+            let mut resolved = msg["params"].clone();
+            resolved["edit"] = json!({"changes": {last_uri.as_str().unwrap_or_default():
+                [{"range": span(0, 0), "newText": "fixed "}]}});
+            resolved
+        },
+        _ => Value::Null,
+    }
 }
 
 /// A connector that runs a scripted in-memory server per "spawn".
@@ -193,6 +226,7 @@ pub(super) fn test_connector(
                     }
                     return;
                 }
+                let mut last_code_action_uri = Value::Null;
                 while let Some(msg) = read_msg(&mut reader).await {
                     if let Some(tx) = &observed {
                         let _ = tx.send(msg.clone());
@@ -302,6 +336,18 @@ pub(super) fn test_connector(
                                     },
                                     "newText": "formatted\n"
                                 }]}),
+                            )
+                            .await;
+                        },
+                        Some(
+                            "textDocument/codeAction"
+                            | "codeAction/resolve"
+                            | "workspace/executeCommand",
+                        ) => {
+                            let result = code_action_reply(&msg, &mut last_code_action_uri);
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": result}),
                             )
                             .await;
                         },
