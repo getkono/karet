@@ -319,6 +319,194 @@ fn the_change_lane_beside_an_unmarked_line_opens_nothing() {
     );
 }
 
+/// The live buffer of the landing cases: 24 lines, `line 0` to `line 23`.
+fn landing_buffer() -> String {
+    (0..24).map(|n| format!("line {n}\n")).collect()
+}
+
+/// `HEAD`'s side of the landing cases against `buffer`: lines 1 and 12
+/// differ and a line below line 19 was deleted since, three hunks far enough
+/// apart that context never merges them.
+fn landing_head(buffer: &str) -> String {
+    buffer
+        .replacen("line 1\n", "old 1\n", 1)
+        .replacen("line 12\n", "old 12\n", 1)
+        .replacen("line 19\n", "line 19\ndropped\n", 1)
+}
+
+/// The answer to the last `DiffWithRev` sent: `HEAD` diffed against the live
+/// `buffer` with `context` lines around each change.
+fn landing_answer(
+    backend: &RecordingBackend,
+    buffer: &str,
+    context: usize,
+) -> (Option<RequestId>, PreparedChange) {
+    let id = backend.sent.lock().ok().and_then(|sent| {
+        sent.iter().rev().find_map(|(id, command)| {
+            matches!(command, SessionCommand::DiffWithRev { .. }).then_some(*id)
+        })
+    });
+    let diff = karet_diff::diff_text(
+        &landing_head(buffer),
+        buffer,
+        &karet_diff::DiffOptions {
+            context_lines: context,
+            ..Default::default()
+        },
+    );
+    let change = PreparedChange {
+        path: PathBuf::from("t.rs"),
+        old_path: None,
+        status: karet_vcs::StatusKind::Modified,
+        language: "plaintext".to_string(),
+        diff: karet_diff::PreparedDiff::new(diff, Vec::new(), Vec::new()),
+    };
+    (id, change)
+}
+
+/// Open the landing file's changes in `layout` by `open` (a gesture or a
+/// command) and answer them with a `context`-line diff; the filled diff
+/// tab's scroll, and the row each hunk of that diff opens on.
+fn landed_scroll(
+    layout: ViewMode,
+    context: usize,
+    open: impl FnOnce(&mut Rig),
+) -> (Option<u16>, Vec<Option<usize>>) {
+    landed_scroll_in(
+        &landing_buffer(),
+        vec![added(1, 1), added(12, 12), added(19, 19)],
+        layout,
+        context,
+        open,
+    )
+}
+
+/// [`landed_scroll`] over `buffer`, its change lane carrying `markers`.
+fn landed_scroll_in(
+    buffer: &str,
+    markers: Vec<Decoration>,
+    layout: ViewMode,
+    context: usize,
+    open: impl FnOnce(&mut Rig),
+) -> (Option<u16>, Vec<Option<usize>>) {
+    let mut rig = Rig::sized(&format!("|{buffer}"), 60, 32);
+    let backend = Arc::new(RecordingBackend::new());
+    rig.app.backend = Some(backend.clone());
+    rig.app.diff_layout = layout;
+    rig.app.docs.line_changes.insert(DocumentId(9), markers);
+    rig.render();
+    open(&mut rig);
+    let (id, change) = landing_answer(&backend, buffer, context);
+    let rows = (0..change.diff.diff.hunks.len())
+        .map(|index| match layout {
+            ViewMode::Unified => karet_diff::unified_hunk_row(&change.diff, index),
+            ViewMode::SideBySide => karet_diff::side_by_side_hunk_row(&change.diff, index),
+        })
+        .collect();
+    rig.app.apply_diff_prepared(id, Ok(Box::new(change)));
+    let scroll = match &rig.tab().kind {
+        TabKind::Diff {
+            file: Some(_),
+            pager,
+            ..
+        } => Some(pager.scroll),
+        _ => None,
+    };
+    (scroll, rows)
+}
+
+/// The scroll a change-marker click on `line` lands the diff on.
+fn clicked_scroll(
+    layout: ViewMode,
+    context: usize,
+    line: u32,
+) -> (Option<u16>, Vec<Option<usize>>) {
+    landed_scroll(layout, context, |rig| rig.run(&[click(change_lane(line))]))
+}
+
+fn as_scroll(row: Option<usize>) -> Option<u16> {
+    row.and_then(|row| u16::try_from(row).ok())
+}
+
+#[test]
+fn a_change_marker_click_lands_the_diff_on_the_clicked_hunk() {
+    for layout in [ViewMode::Unified, ViewMode::SideBySide] {
+        let (scroll, rows) = clicked_scroll(layout, 3, 12);
+        assert_eq!(rows.len(), 3, "three hunks");
+        assert_ne!(as_scroll(rows[1]), Some(0));
+        assert_eq!(
+            scroll,
+            as_scroll(rows[1]),
+            "{layout:?}: the middle hunk on top"
+        );
+        let (scroll, rows) = clicked_scroll(layout, 3, 1);
+        assert_eq!(
+            scroll,
+            as_scroll(rows[0]),
+            "{layout:?}: the first hunk on top"
+        );
+        let (scroll, rows) = clicked_scroll(layout, 3, 19);
+        assert_eq!(
+            scroll,
+            as_scroll(rows[2]),
+            "{layout:?}: the deletion's hunk on top"
+        );
+    }
+}
+
+#[test]
+fn a_deletion_marker_lands_on_the_hunk_just_below_its_line() {
+    // Without context, the deletion's hunk holds no new-side line at all: it
+    // sits in the gap below line 19, where its marker is drawn.
+    for layout in [ViewMode::Unified, ViewMode::SideBySide] {
+        let (scroll, rows) = clicked_scroll(layout, 0, 19);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(scroll, as_scroll(rows[2]), "{layout:?}");
+    }
+}
+
+#[test]
+fn a_marker_past_a_form_feed_lands_on_its_own_hunk() {
+    // The form feed starts an editor row the raw-text diff does not have, so
+    // editor row 13 (`line 12`) is diff line 12; read unmapped, it would reach
+    // past the middle hunk to the deletion's.
+    let buffer = landing_buffer().replacen("line 5\n", "line 5\u{c}page\n", 1);
+    for layout in [ViewMode::Unified, ViewMode::SideBySide] {
+        let (scroll, rows) = landed_scroll_in(
+            &buffer,
+            vec![added(1, 1), added(13, 13), added(20, 20)],
+            layout,
+            0,
+            |rig| rig.run(&[click(change_lane(13))]),
+        );
+        assert_eq!(rows.len(), 3, "three hunks");
+        assert_ne!(rows[1], rows[2]);
+        assert_eq!(scroll, as_scroll(rows[1]), "{layout:?}: the middle hunk");
+    }
+}
+
+#[test]
+fn a_diff_line_counts_only_newlines_before_its_row() {
+    use crate::app::diffs::diff_line_of_row;
+    let text = "a\u{c}b\rc\r\nd\u{2028}e\n";
+    let expected = [0, 0, 0, 1, 1, 2];
+    for (row, line) in (0..).zip(expected) {
+        assert_eq!(diff_line_of_row(text, row), line, "row {row}");
+    }
+    assert_eq!(diff_line_of_row("", 0), 0);
+    assert_eq!(diff_line_of_row("x\ny", 9), 1);
+}
+
+#[test]
+fn the_command_palette_open_changes_still_opens_at_the_top() {
+    for layout in [ViewMode::Unified, ViewMode::SideBySide] {
+        let (scroll, _) = landed_scroll(layout, 3, |rig| {
+            rig.run(&[Step::Cmd(Command::OpenChangesWithPrevious)]);
+        });
+        assert_eq!(scroll, Some(0), "{layout:?}");
+    }
+}
+
 #[test]
 fn without_git_decorations_the_gutter_has_no_change_lane() {
     let mut rig = Rig::new("|alpha\nbravo");

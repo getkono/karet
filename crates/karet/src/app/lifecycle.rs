@@ -284,7 +284,7 @@ impl App {
             &mut self.pending_prepared_diffs,
             views,
             &mut requests,
-            |v| *v,
+            |(view, _)| *view,
         );
         drain_view_requests(&mut self.pending_conversions, views, &mut requests, |v| *v);
         drain_view_requests(

@@ -15,6 +15,46 @@ pub(super) fn binary_prepared_change(path: &Path) -> PreparedChange {
     }
 }
 
+/// The 0-based `\n`-delimited line of `text` that holds the start of editor row
+/// `row`, the line numbering a diff of `text` itself uses.
+///
+/// The editor also breaks rows on a lone `\r`, VT, FF, NEL, LS and PS
+/// ([`karet_text::lines`]), which the diff does not, so past such a break an
+/// editor row and a diff line part ways. A row past the last line (the empty
+/// row after a final break) maps to the line after every `\n`.
+pub(super) fn diff_line_of_row(text: &str, row: u32) -> u32 {
+    let start = usize::try_from(row)
+        .ok()
+        .and_then(|row| karet_text::lines(text).nth(row))
+        .map_or(text.len(), |line| {
+            line.as_ptr().addr().saturating_sub(text.as_ptr().addr())
+        });
+    let newlines = text.get(..start).unwrap_or(text).matches('\n').count();
+    u32::try_from(newlines).unwrap_or(u32::MAX)
+}
+
+/// The display row, in `layout`, of the hunk a change marker on 0-based diff
+/// line `line` (see [`diff_line_of_row`]) stands for: the first hunk whose new
+/// side reaches that line, covering it or (a pure deletion) sitting just below
+/// it. A line past every
+/// hunk lands on the last one; a binary or hunkless diff has no row.
+fn landing_row(prepared: &karet_diff::PreparedDiff, layout: ViewMode, line: u32) -> Option<usize> {
+    let line = line.saturating_add(1);
+    let hunks = &prepared.diff.hunks;
+    let index = hunks
+        .iter()
+        .position(|hunk| {
+            // A hunk with no new-side lines sits on the line above its gap,
+            // which `new_start` names.
+            hunk.new_start.saturating_add(hunk.new_count.max(1)) > line
+        })
+        .or_else(|| hunks.len().checked_sub(1))?;
+    match layout {
+        ViewMode::Unified => karet_diff::unified_hunk_row(prepared, index),
+        ViewMode::SideBySide => karet_diff::side_by_side_hunk_row(prepared, index),
+    }
+}
+
 impl App {
     /// Ask the backend to prepare `summary`'s displayable diff. The answering
     /// [`SessionEvent::ChangePrepared`] fills the reserved tab (matched by path
@@ -165,13 +205,16 @@ impl App {
     /// Fill the reserved ad-hoc diff tab (revision or two-file diff) owned by the
     /// request. A failure closes the reserved tab and reports the reason as a
     /// notification instead — a diff that could not even be computed should not
-    /// linger as a dead tab. A closed tab drops the answer.
+    /// linger as a dead tab. A closed tab drops the answer. A request carrying
+    /// a landing line scrolls the filled tab so that line's hunk is at the
+    /// top of the viewport, in the tab's current layout.
     pub(super) fn apply_diff_prepared(
         &mut self,
         id: Option<RequestId>,
         result: Result<Box<PreparedChange>, String>,
     ) {
-        let Some(view) = id.and_then(|id| self.pending_prepared_diffs.remove(&id)) else {
+        let Some((view, landing)) = id.and_then(|id| self.pending_prepared_diffs.remove(&id))
+        else {
             return;
         };
         match result {
@@ -184,9 +227,16 @@ impl App {
                         file,
                         loading_since,
                         error,
+                        view: layout,
+                        pager,
                         ..
                     } = &mut tab.kind
                     {
+                        if let Some(row) =
+                            landing.and_then(|line| landing_row(&prepared.diff, *layout, line))
+                        {
+                            pager.scroll = u16::try_from(row).unwrap_or(u16::MAX);
+                        }
                         *file = Some(Box::new(FileView::new(*prepared)));
                         *loading_since = None;
                         *error = None;

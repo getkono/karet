@@ -22,8 +22,8 @@ enum GutterAction {
     /// Select whole lines from the first line to the second.
     Lines(u32, u32),
     /// Open the file's changes against `HEAD`, the comparison its change
-    /// markers draw.
-    Changes,
+    /// markers draw, landed on the hunk of this clicked line.
+    Changes(u32),
 }
 
 impl App {
@@ -44,7 +44,7 @@ impl App {
         self.editor_drag = None;
         match action {
             GutterAction::Breakpoint(path, line) => self.debug_toggle_breakpoint_at(path, line),
-            GutterAction::Changes => self.open_changes_with("HEAD", "HEAD"),
+            GutterAction::Changes(line) => self.open_changes_landing("HEAD", "HEAD", Some(line)),
             GutterAction::Fold(line) => {
                 // A fold toggle is not a first click: a quick press on what
                 // the fold just revealed starts its own streak.
@@ -108,7 +108,7 @@ impl App {
                 .then_some(GutterAction::Fold(hit.line)),
             GutterLane::Change => self
                 .change_marked(*doc, hit.line)
-                .then_some(GutterAction::Changes),
+                .then_some(GutterAction::Changes(hit.line)),
             GutterLane::LineNumber => {
                 let modifiers = mouse.modifiers;
                 if modifiers

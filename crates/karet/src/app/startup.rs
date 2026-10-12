@@ -403,7 +403,7 @@ impl App {
         for (view, path, old, new) in std::mem::take(&mut self.pending_startup_diffs) {
             match self.send(SessionCommand::PrepareDiff { path, old, new }) {
                 Some(request) => {
-                    self.pending_prepared_diffs.insert(request, view);
+                    self.pending_prepared_diffs.insert(request, (view, None));
                 },
                 None => self.fail_diff_tab(view, "diff backend is unavailable"),
             }
