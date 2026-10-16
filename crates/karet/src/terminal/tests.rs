@@ -191,3 +191,77 @@ fn typed_input_reaches_the_shell_and_resizes_reach_the_pty()
     assert_eq!(pane.selection_text(), None);
     Ok(())
 }
+
+/// Whether `path` comes to hold `expected` within a 10-second bound.
+#[cfg(unix)]
+fn file_says(path: &Path, expected: &str) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if std::fs::read_to_string(path).is_ok_and(|text| text.trim() == expected) {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn closing_a_pane_hangs_up_its_running_shell() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let marker = dir.path().join("hup");
+    let mut host = TerminalHost::default();
+    let mut rx = host.take_receiver().ok_or("no receiver")?;
+    let mut pane = host.spawn_command(
+        script(
+            dir.path(),
+            &format!(
+                "trap 'echo hung-up > {}; exit' HUP; echo ready; while :; do sleep 0.05; done",
+                marker.display()
+            ),
+        ),
+        80,
+        5,
+    )?;
+    // The trap is set once the shell has printed.
+    assert!(wait_for(&mut rx, &mut pane, |pane| screen_contains(
+        pane, "ready"
+    )));
+    drop(pane);
+    assert!(file_says(&marker, "hung-up"), "the shell saw SIGHUP");
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn closing_a_pane_hangs_up_a_job_that_ignores_sighup() -> Result<(), Box<dyn std::error::Error>> {
+    // The job keeps the terminal open and keeps printing; only the terminal
+    // itself going away (every copy of the master closed) stops its writes.
+    let dir = tempfile::tempdir()?;
+    let marker = dir.path().join("gone");
+    let mut host = TerminalHost::default();
+    let mut rx = host.take_receiver().ok_or("no receiver")?;
+    let mut pane = host.spawn_command(
+        script(
+            dir.path(),
+            &format!(
+                "(trap '' HUP; exec 2>/dev/null; while printf .; do sleep 0.05; done; \
+                 echo gone > {}) & echo ready; wait",
+                marker.display()
+            ),
+        ),
+        80,
+        5,
+    )?;
+    assert!(wait_for(&mut rx, &mut pane, |pane| screen_contains(
+        pane, "ready"
+    )));
+    drop(pane);
+    assert!(
+        file_says(&marker, "gone"),
+        "the job's terminal was hung up under it"
+    );
+    Ok(())
+}

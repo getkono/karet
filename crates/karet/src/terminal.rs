@@ -7,6 +7,13 @@
 //! UI queued (keys, pastes, mouse reports, the emulator's own replies). A third
 //! waits on the child so its exit status reaches the tab.
 //!
+//! Closing a pane ends both PTY threads, so every copy of the PTY master closes
+//! and the kernel hangs up the terminal, also for a job that ignored the SIGHUP
+//! the pane sends its shell and still holds the terminal open. On Unix the reader
+//! waits in `poll(2)` on the master and on a pipe the pane holds the other end
+//! of; dropping the pane closes that pipe, which wakes and ends the reader. The
+//! writer then ends with the grid, whose emulator holds its last queue sender.
+//!
 //! The UI learns about new output through one [`TerminalEvent`] channel shared by
 //! every pane ([`TerminalHost::take_receiver`]), and repaints from the grid under
 //! a brief lock. Output is coalesced: a pane announces new output once, and only
@@ -22,6 +29,7 @@ use std::io::Read;
 use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 
@@ -61,6 +69,10 @@ pub(crate) const WHEEL_LINES: i32 = 3;
 /// PTY for a zero-sized window (which some shells treat as an error).
 const MIN_COLUMNS: u16 = 2;
 const MIN_ROWS: u16 = 1;
+
+/// The PTY master, shared by the pane (which resizes it) and, on Unix, the
+/// reader thread (which keeps it open while it polls its descriptor).
+type SharedMaster = Arc<Mutex<Box<dyn MasterPty + Send>>>;
 
 /// Identifies one terminal for the lifetime of the app (never reused).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -129,7 +141,8 @@ impl TerminalHost {
     ///
     /// The shell is `$SHELL` (the platform's default command interpreter when it is
     /// unset), with `TERM=xterm-256color` and `COLORTERM=truecolor` so programs use
-    /// the colours and keys the emulator understands.
+    /// the colours and keys the emulator understands, and `TERM_PROGRAM=karet` so
+    /// they can tell which terminal they run in.
     pub(crate) fn spawn(
         &mut self,
         cwd: &Path,
@@ -185,6 +198,28 @@ impl TerminalHost {
             .master
             .take_writer()
             .map_err(|e| format!("cannot write the pseudo-terminal: {e:#}"))?;
+        let master: SharedMaster = Arc::new(Mutex::new(pair.master));
+        #[cfg(unix)]
+        let (output, closing) = {
+            let pipe = filedescriptor::Pipe::new()
+                .map_err(|e| format!("cannot watch the pseudo-terminal: {e:#}"))?;
+            let master_fd = master
+                .lock()
+                .ok()
+                .and_then(|master| master.as_raw_fd())
+                .ok_or("cannot watch the pseudo-terminal: it has no descriptor")?;
+            let output = PtyOutput {
+                reader,
+                hangup: Hangup {
+                    master: Arc::clone(&master),
+                    master_fd,
+                    closed: pipe.read,
+                },
+            };
+            (output, pipe.write)
+        };
+        #[cfg(not(unix))]
+        let output = PtyOutput { reader };
 
         let (write_tx, write_rx) = std::sync::mpsc::channel::<Vec<u8>>();
         let output_pending = Arc::new(AtomicBool::new(false));
@@ -201,7 +236,7 @@ impl TerminalHost {
             let events = self.tx.clone();
             let pending = Arc::clone(&output_pending);
             spawn_thread("karet-term-read", move || {
-                read_loop(reader, &term, &events, id, &pending);
+                read_loop(output, &term, &events, id, &pending);
             })?;
         }
         {
@@ -219,7 +254,9 @@ impl TerminalHost {
             id,
             term,
             writer: write_tx,
-            master: pair.master,
+            master,
+            #[cfg(unix)]
+            _closing: closing,
             killer,
             columns,
             rows,
@@ -262,9 +299,78 @@ fn write_loop(mut writer: Box<dyn Write + Send>, queue: &std::sync::mpsc::Receiv
     }
 }
 
-/// Parse PTY output into the grid until EOF, announcing new output to the UI.
+/// What the reader thread reads: the PTY output and, on Unix, what lets closing
+/// the pane end the thread.
+struct PtyOutput {
+    reader: Box<dyn Read + Send>,
+    #[cfg(unix)]
+    hangup: Hangup,
+}
+
+impl PtyOutput {
+    /// Wait until there is output (or EOF) to read; `false` once the pane is
+    /// closed. Without a way to watch for that (Windows), the read itself waits.
+    #[cfg(unix)]
+    fn wait(&self) -> bool {
+        self.hangup.wait()
+    }
+
+    #[cfg(not(unix))]
+    fn wait(&self) -> bool {
+        true
+    }
+}
+
+/// The reader's view of its pane closing.
+#[cfg(unix)]
+struct Hangup {
+    /// Keeps `master_fd` naming the PTY master for as long as this thread polls it.
+    #[expect(dead_code, reason = "held only to keep `master_fd` open")]
+    master: SharedMaster,
+    master_fd: std::os::fd::RawFd,
+    /// The read end of a pipe whose write end the pane holds: it turns readable
+    /// (at EOF) when the pane drops.
+    closed: filedescriptor::FileDescriptor,
+}
+
+#[cfg(unix)]
+impl Hangup {
+    fn wait(&self) -> bool {
+        use std::os::fd::AsRawFd;
+
+        use filedescriptor::POLLIN;
+        use filedescriptor::pollfd;
+        loop {
+            let mut fds = [
+                pollfd {
+                    fd: self.master_fd,
+                    events: POLLIN,
+                    revents: 0,
+                },
+                pollfd {
+                    fd: self.closed.as_raw_fd(),
+                    events: POLLIN,
+                    revents: 0,
+                },
+            ];
+            match filedescriptor::poll(&mut fds, None) {
+                // Closing wins over output still queued: nobody will see it.
+                Ok(_) if fds[1].revents != 0 => return false,
+                // Output, EOF or a hang-up: the read reports which.
+                Ok(_) if fds[0].revents != 0 => return true,
+                Ok(_) => {},
+                Err(filedescriptor::Error::Poll(e))
+                    if e.kind() == std::io::ErrorKind::Interrupted => {},
+                Err(_) => return false,
+            }
+        }
+    }
+}
+
+/// Parse PTY output into the grid until EOF or until the pane closes,
+/// announcing new output to the UI.
 fn read_loop(
-    mut reader: Box<dyn Read + Send>,
+    mut output: PtyOutput,
     term: &FairMutex<Term<Listener>>,
     events: &mpsc::UnboundedSender<TerminalEvent>,
     id: TerminalId,
@@ -272,8 +378,8 @@ fn read_loop(
 ) {
     let mut processor: Processor = Processor::new();
     let mut buf = vec![0_u8; 64 * 1024];
-    loop {
-        match reader.read(&mut buf) {
+    while output.wait() {
+        match output.reader.read(&mut buf) {
             Ok(0) | Err(_) => break,
             Ok(n) => {
                 processor.advance(&mut *term.lock(), &buf[..n]);
@@ -390,7 +496,10 @@ pub(crate) struct TerminalPane {
     id: TerminalId,
     term: Arc<FairMutex<Term<Listener>>>,
     writer: std::sync::mpsc::Sender<Vec<u8>>,
-    master: Box<dyn MasterPty + Send>,
+    master: SharedMaster,
+    /// The pipe end whose closing, as the pane drops, ends the reader thread.
+    #[cfg(unix)]
+    _closing: filedescriptor::FileDescriptor,
     killer: Box<dyn ChildKiller + Send + Sync>,
     columns: u16,
     rows: u16,
@@ -420,8 +529,10 @@ impl std::fmt::Debug for TerminalPane {
 
 impl Drop for TerminalPane {
     fn drop(&mut self) {
-        // Hang up on the shell (SIGHUP on Unix, terminate on Windows); closing the
-        // master as the pane drops finishes what the signal starts.
+        // Hang up on the shell (SIGHUP on Unix, terminate on Windows). On Unix the
+        // fields dropping next close the pipe that ends the reader thread, whose
+        // exit drops the grid and so ends the writer; with every copy of the
+        // master closed, the kernel hangs up whatever still holds the terminal.
         if self.exited.is_none() {
             let _ = self.killer.kill();
         }
@@ -507,7 +618,9 @@ impl TerminalPane {
         self.columns = columns;
         self.rows = rows;
         self.term().resize(GridSize::new(columns, rows));
-        let _ = self.master.resize(pty_size(columns, rows));
+        if let Ok(master) = self.master.lock() {
+            let _ = master.resize(pty_size(columns, rows));
+        }
     }
 
     /// Scroll the history view.

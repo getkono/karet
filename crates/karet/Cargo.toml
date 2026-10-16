@@ -49,7 +49,7 @@ aicommit = ["karet-session/aicommit"]
 # The integrated terminal pane: a shell on a pure-Rust PTY (`portable-pty`)
 # emulated by `alacritty_terminal`. Neither links a system C library; a lean
 # build drops both.
-terminal = ["dep:portable-pty", "dep:alacritty_terminal"]
+terminal = ["dep:portable-pty", "dep:alacritty_terminal", "dep:filedescriptor"]
 
 [dependencies]
 # Presentation/client half + the headless backend it drives through the Command/Event seam.
@@ -100,6 +100,9 @@ serde_json.workspace = true          # loaded-settings inspector formatting
 serde.workspace = true               # deserialize keymap.jsonc entries
 jsonc-parser.workspace = true        # parse keymap.jsonc (same JSONC dialect as setting.jsonc)
 karet-watch.workspace = true         # live-reload keymap.jsonc on save
+
+[target.'cfg(unix)'.dependencies]
+filedescriptor = { workspace = true, optional = true } # wake the terminal's PTY reader on close; behind `terminal`
 
 [dev-dependencies]
 tempfile.workspace = true            # temp roots for the desktop-entry executor tests

@@ -121,6 +121,9 @@ unicode-width = "0.2.2"
 # nothing serializes terminal state.
 portable-pty       = "0.9.0"
 alacritty_terminal = { version = "0.26.0", default-features = false }
+# Safe `poll(2)` and pipes for the terminal's PTY reader, so closing a pane wakes
+# and ends it; already in the tree beneath `portable-pty`.
+filedescriptor     = "0.8.3"
 unicode-segmentation = "1.13.3"       # extended grapheme clusters: caret steps, deletes, cell widths
 url = "2.5.8"
 # Mermaid diagrams (pure Rust; ASCII/Unicode rendering for the markdown preview).
