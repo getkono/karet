@@ -719,3 +719,31 @@ pub struct App {
     /// document, whose edit log already lives once in the session.
     next_view: u64,
 }
+
+impl App {
+    /// Re-read the user and project `keymap.jsonc` after one changed on disk,
+    /// make the merged result the live keymap, and say what happened: each
+    /// problem as a notification, or a transient "reloaded" when there are none.
+    pub(crate) fn reload_keymap(&mut self) {
+        let (keymap, report) = keymap::user::load(std::slice::from_ref(&self.root));
+        self.apply_keymap(keymap, &report);
+    }
+
+    /// Install `keymap` and surface `report` (see [`App::reload_keymap`]).
+    fn apply_keymap(&mut self, keymap: keymap::Keymap, report: &keymap::user::KeymapReport) {
+        keymap::install(keymap);
+        // A half-typed chord was resolved against the old table; drop it.
+        self.pending.clear();
+        let diags = report.diagnostics();
+        if diags.is_empty() {
+            self.notify(Report::Outcome, NotificationKind::System, "keymap reloaded");
+        }
+        for diag in diags {
+            self.notify(
+                Report::from_severity(diag.severity),
+                NotificationKind::System,
+                format!("config: {}", diag.message),
+            );
+        }
+    }
+}

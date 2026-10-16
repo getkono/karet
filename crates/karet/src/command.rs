@@ -13,6 +13,7 @@
 //! (the ordered list in `resolve::palette` is the single palette authority).
 
 mod hints;
+mod ids;
 mod resolve;
 
 #[cfg(test)]
@@ -20,6 +21,9 @@ mod tests;
 
 // The app is a binary crate, so this compatibility re-export is not referenced
 // internally even though it preserves the command module's existing API path.
+// Only the keymap schema generator (a test) enumerates every id.
+#[cfg(test)]
+pub(crate) use ids::COMMAND_IDS;
 #[allow(unused_imports)]
 pub use resolve::ResolveNamedError;
 pub use resolve::palette;

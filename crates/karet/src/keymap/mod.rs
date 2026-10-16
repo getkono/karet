@@ -1,4 +1,4 @@
-//! The keymap: a single [`BINDINGS`] table is the source of truth for both the
+//! The keymap: a single binding table is the source of truth for both the
 //! resolver ([`resolve`]) and the palette's shortcut hints ([`hint_for`]), so a
 //! binding and its displayed hint can never drift.
 //!
@@ -9,19 +9,26 @@
 //! [`Resolved::Pending`] while such a sequence is still being typed. Chord matching
 //! (kitty-protocol case/shift rules) lives in the [`chord`] submodule.
 //!
-//! Extending the keymap is additive (these are the seams the retired generic
-//! `input` scaffolding sketched, now grounded in the live table): multi-key
-//! sequences already resolve; user rebinding would parse a config file into the same
-//! [`Binding`] shape and layer it over the defaults; and a modal-editing mode (vi
-//! Normal/Insert) would just be another [`Layer`] in the [`active_layers`] stack —
-//! no separate engine required.
+//! The table in effect is a [`Keymap`]: the compiled-in [`BINDINGS`] with the
+//! user's and the project's `keymap.jsonc` files ([`user`]) parsed into the same
+//! [`Binding`] shape and layered over them. The merged keymap is [installed](install)
+//! at startup and again on every live reload, and every query here reads it. A
+//! modal-editing mode (vi Normal/Insert) would just be another [`Layer`] in the
+//! [`active_layers`] stack — no separate engine required.
 
 mod bindings;
 mod chord;
 mod layer;
+pub mod user;
 
 #[cfg(test)]
 mod tests;
+
+use std::borrow::Cow;
+use std::sync::Arc;
+use std::sync::LazyLock;
+use std::sync::PoisonError;
+use std::sync::RwLock;
 
 use bindings::BINDINGS;
 pub use chord::ChordStyle;
@@ -41,11 +48,30 @@ use crate::command::Command;
 
 /// One key binding: a [`KeyChord`] *sequence* — `chord` then `rest` — bound to a
 /// [`Command`] in a [`Layer`]. `rest` is empty for the common single-chord binding.
+/// It borrows for the compiled-in defaults and owns for a binding parsed from a
+/// user keymap file; `origin` says which.
+#[derive(Clone, Debug)]
 struct Binding {
     layer: Layer,
     chord: KeyChord,
-    rest: &'static [KeyChord],
+    rest: Cow<'static, [KeyChord]>,
     command: Command,
+    origin: Origin,
+}
+
+/// Where a [`Binding`] came from: the compiled-in table, or one entry of a user
+/// keymap file (so a conflict report can point at it).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Origin {
+    /// The compiled-in [`BINDINGS`] table.
+    Default,
+    /// Entry `entry` (0-based) of the keymap file in `source`.
+    File {
+        /// Which keymap file layer.
+        source: user::Source,
+        /// The entry's index in the file's `bindings` array.
+        entry: usize,
+    },
 }
 
 /// A terse constructor for a single-chord [`Binding`]. Chords are authored in
@@ -62,8 +88,9 @@ const fn b(
     Binding {
         layer,
         chord: chord(ctrl, shift, alt, code),
-        rest: &[],
+        rest: Cow::Borrowed(&[]),
         command,
+        origin: Origin::Default,
     }
 }
 
@@ -79,8 +106,9 @@ const fn seq(
     Binding {
         layer,
         chord: first,
-        rest,
+        rest: Cow::Borrowed(rest),
         command,
+        origin: Origin::Default,
     }
 }
 
@@ -126,12 +154,72 @@ use Layer::SearchList;
 use Layer::Sidebar;
 use Layer::SourceControl;
 
+/// A complete, merged binding table: the compiled-in defaults with any user and
+/// project keymap files applied over them (see [`user`]). Every query the keymap
+/// answers — resolution, hints, completions — reads one of these, so a rebinding
+/// moves the binding and its displayed hint together.
+#[derive(Clone, Debug)]
+pub struct Keymap {
+    /// Most-preferred first: within a layer the first matching binding wins, and
+    /// [`Keymap::hint_for`] shows a command's first binding.
+    bindings: Vec<Binding>,
+}
+
+impl Keymap {
+    /// The compiled-in default keymap, with no user layer applied.
+    #[must_use]
+    pub fn defaults() -> Self {
+        Self {
+            bindings: BINDINGS.to_vec(),
+        }
+    }
+}
+
+/// The keymap every free function in this module reads; `None` until a merged
+/// keymap is [installed](install), meaning the compiled-in defaults.
+static ACTIVE: RwLock<Option<Arc<Keymap>>> = RwLock::new(None);
+
+/// The compiled-in defaults, built once for the common no-user-keymap case.
+static DEFAULTS: LazyLock<Arc<Keymap>> = LazyLock::new(|| Arc::new(Keymap::defaults()));
+
+/// Make `keymap` the one the free functions ([`resolve`], [`hint_for`], …) read.
+/// Called at startup and on every live reload of a keymap file.
+pub fn install(keymap: Keymap) {
+    let mut active = ACTIVE.write().unwrap_or_else(PoisonError::into_inner);
+    *active = Some(Arc::new(keymap));
+}
+
+/// The keymap currently in effect.
+fn active() -> Arc<Keymap> {
+    let active = ACTIVE.read().unwrap_or_else(PoisonError::into_inner);
+    active.clone().unwrap_or_else(|| Arc::clone(&DEFAULTS))
+}
+
 /// Resolve a key press into a [`Command`], given the focus, the active sidebar
 /// panel, and whether the active tab is a diff. Returns `None` for keys with no
 /// binding.
 #[must_use]
 pub fn resolve(ctx: Context, pending: &[KeyChord]) -> Resolved {
-    resolve_in(active_layers(ctx), pending)
+    active().resolve(ctx, pending)
+}
+
+/// The display hint (e.g. `"Ctrl+W"`, `"Ctrl+K Ctrl+W"`) for `command`'s first
+/// binding, rendered in `style`, if the command is bound.
+#[must_use]
+pub fn hint_for(command: Command, style: ChordStyle) -> Option<String> {
+    active().hint_for(command, style)
+}
+
+/// Every advertisable binding live in `ctx` (see [`Keymap::hints_for`]).
+#[must_use]
+pub fn hints_for(ctx: Context, style: ChordStyle) -> Vec<Hint> {
+    active().hints_for(ctx, style)
+}
+
+/// The completions of an in-progress chord (see [`Keymap::completions_for`]).
+#[must_use]
+pub fn completions_for(ctx: Context, pending: &[KeyChord], style: ChordStyle) -> Vec<Hint> {
+    active().completions_for(ctx, pending, style)
 }
 
 /// The outcome of resolving a (possibly partial) chord sequence.
@@ -145,34 +233,109 @@ pub enum Resolved {
     None,
 }
 
-/// Walk `layers` most-specific-first: a complete match in any layer wins; failing
-/// that, report [`Resolved::Pending`] if `pending` is a prefix of some binding.
-fn resolve_in(layers: &[Layer], pending: &[KeyChord]) -> Resolved {
-    let mut prefix = false;
-    for &layer in layers {
-        for bind in BINDINGS.iter().filter(|bind| bind.layer == layer) {
-            match bind.match_seq(pending) {
-                SeqMatch::Full => return Resolved::Command(bind.command),
-                SeqMatch::Prefix => prefix = true,
-                SeqMatch::No => {},
+impl Keymap {
+    /// The bindings in `layer`, in preference order.
+    fn in_layer(&self, layer: Layer) -> impl Iterator<Item = &Binding> {
+        self.bindings.iter().filter(move |bind| bind.layer == layer)
+    }
+
+    /// Resolve a key press in `ctx` (see the free [`resolve`]).
+    #[must_use]
+    pub fn resolve(&self, ctx: Context, pending: &[KeyChord]) -> Resolved {
+        self.resolve_in(active_layers(ctx), pending)
+    }
+
+    /// Walk `layers` most-specific-first: a complete match in any layer wins;
+    /// failing that, report [`Resolved::Pending`] if `pending` is a prefix of some
+    /// binding.
+    fn resolve_in(&self, layers: &[Layer], pending: &[KeyChord]) -> Resolved {
+        let mut prefix = false;
+        for &layer in layers {
+            for bind in self.in_layer(layer) {
+                match bind.match_seq(pending) {
+                    SeqMatch::Full => return Resolved::Command(bind.command),
+                    SeqMatch::Prefix => prefix = true,
+                    SeqMatch::No => {},
+                }
             }
         }
+        if prefix {
+            Resolved::Pending
+        } else {
+            Resolved::None
+        }
     }
-    if prefix {
-        Resolved::Pending
-    } else {
-        Resolved::None
-    }
-}
 
-/// The display hint (e.g. `"Ctrl+W"`, `"Ctrl+K Ctrl+W"`) for `command`'s first
-/// binding, rendered in `style`, if the command is bound.
-#[must_use]
-pub fn hint_for(command: Command, style: ChordStyle) -> Option<String> {
-    BINDINGS
-        .iter()
-        .find(|bind| bind.command == command)
-        .map(|bind| bind.hint(style))
+    /// The display hint for `command`'s first binding (see the free [`hint_for`]).
+    #[must_use]
+    pub fn hint_for(&self, command: Command, style: ChordStyle) -> Option<String> {
+        self.bindings
+            .iter()
+            .find(|bind| bind.command == command)
+            .map(|bind| bind.hint(style))
+    }
+
+    /// Every advertisable binding live in `ctx`, ordered most-specific layer first
+    /// and deduped by command (the first binding wins, matching
+    /// [`Keymap::hint_for`]). Only commands with a terse verb
+    /// ([`Command::hint_verb`]) are included, so self-evident motion and
+    /// text-editing keys are omitted. This is the forward counterpart to
+    /// `hint_for` that drives the context-aware status hints bar.
+    #[must_use]
+    pub fn hints_for(&self, ctx: Context, style: ChordStyle) -> Vec<Hint> {
+        let mut hints = Vec::new();
+        let mut seen: Vec<Command> = Vec::new();
+        for &layer in active_layers(ctx) {
+            for bind in self.in_layer(layer) {
+                let Some(verb) = bind.command.hint_verb() else {
+                    continue;
+                };
+                if seen.contains(&bind.command) {
+                    continue;
+                }
+                seen.push(bind.command);
+                hints.push(Hint {
+                    chord: bind.hint(style),
+                    command: bind.command,
+                    verb,
+                });
+            }
+        }
+        hints
+    }
+
+    /// The completions of an in-progress chord: every binding live in `ctx` whose
+    /// trigger has `pending` as a strict prefix, with only the *remaining* chords
+    /// rendered (e.g. after `^K`, `^W` for "close all" and `W` for "close
+    /// others"). Deduped by command, most-specific layer first. Powers the
+    /// pending-chord hint bar.
+    #[must_use]
+    pub fn completions_for(
+        &self,
+        ctx: Context,
+        pending: &[KeyChord],
+        style: ChordStyle,
+    ) -> Vec<Hint> {
+        let mut hints = Vec::new();
+        let mut seen: Vec<Command> = Vec::new();
+        for &layer in active_layers(ctx) {
+            for bind in self.in_layer(layer) {
+                if !matches!(bind.match_seq(pending), SeqMatch::Prefix) {
+                    continue;
+                }
+                if seen.contains(&bind.command) {
+                    continue;
+                }
+                seen.push(bind.command);
+                hints.push(Hint {
+                    chord: bind.hint_from(style, pending.len()),
+                    command: bind.command,
+                    verb: bind.command.hint_verb().unwrap_or(""),
+                });
+            }
+        }
+        hints
+    }
 }
 
 /// One advertisable binding for the status hints bar: its rendered chord sequence,
@@ -185,61 +348,6 @@ pub struct Hint {
     pub command: Command,
     /// The terse verb shown after the chord (from [`Command::hint_verb`]).
     pub verb: &'static str,
-}
-
-/// Every advertisable binding live in `ctx`, ordered most-specific layer first and
-/// deduped by command (the first binding wins, matching [`hint_for`]). Only commands
-/// with a terse verb ([`Command::hint_verb`]) are included, so self-evident motion
-/// and text-editing keys are omitted. This is the forward counterpart to `hint_for`
-/// that drives the context-aware status hints bar.
-#[must_use]
-pub fn hints_for(ctx: Context, style: ChordStyle) -> Vec<Hint> {
-    let mut hints = Vec::new();
-    let mut seen: Vec<Command> = Vec::new();
-    for &layer in active_layers(ctx) {
-        for bind in BINDINGS.iter().filter(|bind| bind.layer == layer) {
-            let Some(verb) = bind.command.hint_verb() else {
-                continue;
-            };
-            if seen.contains(&bind.command) {
-                continue;
-            }
-            seen.push(bind.command);
-            hints.push(Hint {
-                chord: bind.hint(style),
-                command: bind.command,
-                verb,
-            });
-        }
-    }
-    hints
-}
-
-/// The completions of an in-progress chord: every binding live in `ctx` whose
-/// trigger has `pending` as a strict prefix, with only the *remaining* chords
-/// rendered (e.g. after `^K`, `^W` for "close all" and `W` for "close others").
-/// Deduped by command, most-specific layer first. Powers the pending-chord hint bar.
-#[must_use]
-pub fn completions_for(ctx: Context, pending: &[KeyChord], style: ChordStyle) -> Vec<Hint> {
-    let mut hints = Vec::new();
-    let mut seen: Vec<Command> = Vec::new();
-    for &layer in active_layers(ctx) {
-        for bind in BINDINGS.iter().filter(|bind| bind.layer == layer) {
-            if !matches!(bind.match_seq(pending), SeqMatch::Prefix) {
-                continue;
-            }
-            if seen.contains(&bind.command) {
-                continue;
-            }
-            seen.push(bind.command);
-            hints.push(Hint {
-                chord: bind.hint_from(style, pending.len()),
-                command: bind.command,
-                verb: bind.command.hint_verb().unwrap_or(""),
-            });
-        }
-    }
-    hints
 }
 
 /// How a pending chord sequence relates to a binding's trigger sequence.
