@@ -15,6 +15,7 @@ use karet_core::BytePos;
 use karet_core::Span;
 
 mod detect;
+mod indent;
 mod injection;
 mod registry;
 mod walk;
@@ -25,6 +26,7 @@ mod tests;
 pub use detect::language_id_from_injection_name;
 pub use detect::language_id_from_path;
 pub use detect::language_name_from_path;
+pub use indent::IndentAnchor;
 pub use injection::InjectionRegion;
 pub use walk::WalkControl;
 pub use walk::WalkNode;
@@ -91,6 +93,18 @@ pub fn semantic_query(lang: LanguageId) -> Option<&'static str> {
 #[must_use]
 pub fn outline_query(lang: LanguageId) -> Option<Cow<'static, str>> {
     registry::outline_query(lang)
+}
+
+/// The indent query for `lang`, if karet ships one for its grammar (Rust,
+/// Python, JavaScript, TypeScript/TSX, JSON, Go, C, C++, YAML and Lua).
+///
+/// `@indent` captures a node whose inner lines sit one level deeper than the line
+/// it starts on; `@outdent` captures a closing token. [`SyntaxTree::newline_indent`]
+/// reads the query; `None` means the caller keeps copying the previous line's
+/// indentation.
+#[must_use]
+pub fn indents_query(lang: LanguageId) -> Option<&'static str> {
+    indent::query_source(lang)
 }
 
 /// A pool of reusable tree-sitter parsers, keyed by [`LanguageId`].
