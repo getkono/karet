@@ -488,10 +488,18 @@ fn to_object<T: serde::Serialize>(value: &T) -> Map<String, Value> {
 /// worktree. Ascends parents looking for a `.git` entry (file or directory), mirroring
 /// git's own discovery, so this stays unit-testable without a live repository.
 pub(crate) fn project_config_path(roots: &[PathBuf]) -> Option<PathBuf> {
+    project_config_dir(roots).map(|dir| dir.join("setting.jsonc"))
+}
+
+/// The project configuration directory, `$GIT_ROOT/.karet`, for the first root
+/// that sits inside a git worktree. Other per-project config files (the app's
+/// `keymap.jsonc`) live beside `setting.jsonc` here, so they share its discovery.
+#[must_use]
+pub fn project_config_dir(roots: &[PathBuf]) -> Option<PathBuf> {
     roots
         .iter()
         .find_map(|root| git_root(root))
-        .map(|git_root| git_root.join(".karet").join("setting.jsonc"))
+        .map(|git_root| git_root.join(".karet"))
 }
 
 /// The nearest ancestor of `start` (inclusive) that contains a `.git` entry.
@@ -508,8 +516,16 @@ fn git_root(start: &Path) -> Option<PathBuf> {
 
 /// `$XDG_CONFIG_HOME/karet/setting.jsonc` (platform config dir on macOS/Windows).
 pub(crate) fn user_config_path() -> Option<PathBuf> {
+    user_config_dir().map(|dir| dir.join("setting.jsonc"))
+}
+
+/// The user configuration directory, `$XDG_CONFIG_HOME/karet` (the platform
+/// config dir on macOS/Windows), where `setting.jsonc` and the app's other user
+/// config files live.
+#[must_use]
+pub fn user_config_dir() -> Option<PathBuf> {
     directories::ProjectDirs::from("", "getkono", "karet")
-        .map(|dirs| dirs.config_dir().join("setting.jsonc"))
+        .map(|dirs| dirs.config_dir().to_path_buf())
 }
 
 /// `<system config dir>/karet/setting.jsonc`. On Unix this is the first entry of
@@ -848,9 +864,11 @@ mod tests {
         }
         // From a nested workspace root, the project layer resolves to the git root.
         assert_eq!(
-            project_config_path(&[nested]),
+            project_config_path(std::slice::from_ref(&nested)),
             Some(root.join(".karet").join("setting.jsonc"))
         );
+        // The directory other per-project config files share.
+        assert_eq!(project_config_dir(&[nested]), Some(root.join(".karet")));
     }
 
     /// Every entry in [`SECTIONS`] must actually be deserialized into

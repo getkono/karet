@@ -13,6 +13,7 @@
 //! (the ordered list in `resolve::palette` is the single palette authority).
 
 mod hints;
+mod ids;
 mod resolve;
 
 #[cfg(test)]
@@ -20,6 +21,9 @@ mod tests;
 
 // The app is a binary crate, so this compatibility re-export is not referenced
 // internally even though it preserves the command module's existing API path.
+// Only the keymap schema generator (a test) enumerates every id.
+#[cfg(test)]
+pub(crate) use ids::COMMAND_IDS;
 #[allow(unused_imports)]
 pub use resolve::ResolveNamedError;
 pub use resolve::palette;
@@ -576,6 +580,13 @@ pub enum Command {
     FindToggleCase,
     /// Toggle the find bar's whole-word option.
     FindToggleWord,
+    /// Toggle the find bar's preserve-case replace option.
+    FindTogglePreserveCase,
+    /// Toggle searching only inside the selection.
+    FindToggleInSelection,
+    /// Turn every in-file match into a selection (one caret per match); in the
+    /// replace field, replace every match instead.
+    FindSelectAllMatches,
     /// Submit the commit message.
     CommitSubmit,
     /// Blur the commit input while preserving its draft.
@@ -1016,6 +1027,9 @@ impl Command {
             Self::FindToggleRegex => "Find: Toggle Regular Expression",
             Self::FindToggleCase => "Find: Toggle Case Sensitivity",
             Self::FindToggleWord => "Find: Toggle Whole Word",
+            Self::FindTogglePreserveCase => "Find: Toggle Preserve Case",
+            Self::FindToggleInSelection => "Find: Toggle Search in Selection",
+            Self::FindSelectAllMatches => "Find: Select All Matches",
             Self::CommitSubmit => "Commit: Submit",
             Self::CommitCancel => "Commit: Keep Draft and Close",
             Self::CommitGenerate => "Commit: Generate Message (AI)",

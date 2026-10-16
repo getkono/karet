@@ -84,6 +84,13 @@ pub(crate) struct FindState {
     pub(crate) case_sensitive: bool,
     /// Match whole words only.
     pub(crate) whole_word: bool,
+    /// Rewrite each replacement to follow the case of the text it replaces
+    /// ([`karet_search::preserve_case`]).
+    pub(crate) preserve_case: bool,
+    /// Search in selection: when set, only matches wholly inside this range
+    /// count. Captured from the selection when the option is turned on, and
+    /// carried through the bar's own replacements.
+    pub(crate) scope: Option<karet_core::Range>,
     /// Whether the bar owns the keyboard. A click in the editor hands the keys
     /// back to the text while the bar stays open (VS Code behaviour); opening
     /// find again or clicking a field takes them back.
