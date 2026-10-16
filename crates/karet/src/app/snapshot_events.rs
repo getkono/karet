@@ -129,10 +129,12 @@ impl App {
         }
         if let Some((from, edit)) = carried {
             self.shift_inlay_hints(doc, from, snap.version, edit.as_slice());
+            self.shift_code_lenses(doc, from, snap.version, edit.as_slice());
             self.shift_navigation(doc, from, snap.version, edit.as_slice());
         }
         if advanced {
             self.note_inlay_edit(doc, Instant::now());
+            self.note_code_lens_edit(doc, Instant::now());
         }
         // The first snapshot of a document asks for its gutter markers; later
         // ones only when the text moved (a highlight pass republishes it as is).

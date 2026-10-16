@@ -46,7 +46,8 @@ pub(crate) fn in_literal(tree: &SyntaxTree, at: BytePos) -> bool {
 /// the node already has. A line is skipped when `literal` holds for the byte its
 /// first non-blank character sits at, so the inside of a multi-line string or
 /// comment never counts as body. With none, the anchor line's indentation plus
-/// the file's own step ([`file_unit`]), or plus `unit` when the file shows none.
+/// the file's own step ([`file_unit`], which skips the same lines), or plus
+/// `unit` when the file shows none.
 pub(crate) fn deeper(
     text: &str,
     line_start: usize,
@@ -76,19 +77,30 @@ pub(crate) fn deeper(
     if let Some(body) = body {
         return Some(body.to_owned());
     }
-    Some(format!("{base}{}", file_unit(text).unwrap_or(unit)))
+    Some(format!(
+        "{base}{}",
+        file_unit(text, &literal).unwrap_or(unit)
+    ))
 }
 
 /// The file's prevailing indentation step: the commonest way a non-blank line
 /// goes deeper than the one before it — one tab, or one to [`MAX_SPACE_STEP`]
 /// spaces (the narrower step on a tie). `None` when no line steps in.
-pub(crate) fn file_unit(text: &str) -> Option<&'static str> {
+///
+/// A line is skipped, as a blank one is, when `literal` holds for the byte its
+/// first non-blank character sits at: the ` * ` under a `/**` sits one space in
+/// from it, so a file full of doc comments would otherwise step by one.
+pub(crate) fn file_unit(text: &str, literal: impl Fn(usize) -> bool) -> Option<&'static str> {
     const SPACES: &str = "        ";
     let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
     let mut prev: Option<&str> = None;
-    for line in text.lines() {
+    let mut offset = 0;
+    for raw in text.split('\n') {
+        let start = offset;
+        offset += raw.len() + 1;
+        let line = raw.trim_end_matches('\r');
         let ws = leading(line);
-        if ws.len() == line.len() {
+        if ws.len() == line.len() || literal(start + ws.len()) {
             continue;
         }
         if let Some(step) = prev.and_then(|p| ws.strip_prefix(p))
@@ -117,16 +129,38 @@ mod tests {
 
     #[test]
     fn file_unit_is_the_commonest_inward_step() {
-        assert_eq!(file_unit("a\n\tb\n\t\tc\n"), Some("\t"));
-        assert_eq!(file_unit("a:\n  b:\n    c: 1\nd:\n  e: 2\n"), Some("  "));
-        assert_eq!(file_unit("f {\n    g {\n        h\n"), Some("    "));
+        assert_eq!(file_unit("a\n\tb\n\t\tc\n", code), Some("\t"));
+        assert_eq!(
+            file_unit("a:\n  b:\n    c: 1\nd:\n  e: 2\n", code),
+            Some("  ")
+        );
+        assert_eq!(file_unit("f {\n    g {\n        h\n", code), Some("    "));
         // Blank lines neither step nor break the chain.
-        assert_eq!(file_unit("a\n\n   \n  b\n"), Some("  "));
+        assert_eq!(file_unit("a\n\n   \n  b\n", code), Some("  "));
         // A tie goes to the narrower step; outdents and wide alignment count for nothing.
-        assert_eq!(file_unit("a\n    b\nc\n  d\n"), Some("  "));
-        assert_eq!(file_unit("call(a,\n                 b)\n"), None);
-        assert_eq!(file_unit("flat\nlines\n"), None);
-        assert_eq!(file_unit(""), None);
+        assert_eq!(file_unit("a\n    b\nc\n  d\n", code), Some("  "));
+        assert_eq!(file_unit("call(a,\n                 b)\n", code), None);
+        assert_eq!(file_unit("flat\nlines\n", code), None);
+        assert_eq!(file_unit("", code), None);
+        // CRLF line ends are not indentation.
+        assert_eq!(file_unit("a\r\n  b\r\n", code), Some("  "));
+    }
+
+    #[test]
+    fn file_unit_skips_lines_that_start_inside_a_literal() {
+        // Two doc comments, each a one-space ` * ` step, against two four-space
+        // code steps: counting the comments would make the one-space step win.
+        let text = "/**\n * a\n */\nf {\n    /**\n     * b\n     */\n    g {\n        h\n";
+        let comment = |at: usize| {
+            text.get(at..)
+                .is_some_and(|rest| rest.starts_with("/*") || rest.starts_with('*'))
+        };
+        assert_eq!(file_unit(text, code), Some(" "));
+        // A skipped line neither steps nor breaks the chain, as a blank one.
+        assert_eq!(file_unit(text, comment), Some("    "));
+        // A file whose only steps are inside comments shows no step at all.
+        let text = "/**\n * a\n */\nf\n";
+        assert_eq!(file_unit(text, |at| at < 12), None);
     }
 
     /// No byte is inside a string or comment.

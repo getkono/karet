@@ -166,6 +166,33 @@ pub enum Event {
         /// The document version the request was made against.
         version: u64,
     },
+    /// Code lenses answering a [`Command::CodeLenses`].
+    ///
+    /// `version` echoes the request's target so a client can drop a set the
+    /// buffer has already been edited past. Empty when no server serves the
+    /// document or it offers no lenses.
+    CodeLenses {
+        /// The document the lenses are for.
+        doc: DocumentId,
+        /// The document version the request was made against.
+        version: u64,
+        /// Every lens in the document, ranges in buffer (UTF-32) columns.
+        /// Those on the requested lines are resolved where the server could
+        /// resolve them; a lens with no title is not one to show.
+        lenses: Vec<CodeLens>,
+    },
+    /// A [`Command::CodeLenses`] went unanswered: the server failed or timed
+    /// out on it, a newer request replaced it, or the server went away.
+    ///
+    /// Not an empty [`Event::CodeLenses`]: nothing was learned about the
+    /// document, so a client should keep the lenses it shows and ask again
+    /// later.
+    CodeLensesFailed {
+        /// The document the request was for.
+        doc: DocumentId,
+        /// The document version the request was made against.
+        version: u64,
+    },
     /// The answer to a [`Command::ResolveInlayHint`]: the hint with whatever
     /// the server filled in, or unchanged when it filled in nothing.
     ///

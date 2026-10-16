@@ -477,6 +477,9 @@ struct PaneCtx<'a> {
     diagnostics: &'a HashMap<DocumentId, Vec<Diagnostic>>,
     /// Inlay hints keyed by backend document, in buffer columns.
     inlay_hints: &'a HashMap<DocumentId, Vec<InlayHint>>,
+    /// Code lenses keyed by backend document, in buffer columns; empty while
+    /// `editor.codeLens` is off.
+    code_lenses: &'a HashMap<DocumentId, Vec<karet_core::CodeLens>>,
     /// Cached document symbols keyed by backend document, for the breadcrumb's
     /// enclosing-symbol chain.
     symbols: &'a HashMap<DocumentId, Vec<karet_core::Symbol>>,

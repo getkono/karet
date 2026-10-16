@@ -74,6 +74,7 @@ pub use window::WorkProgressKind;
 mod apply_edit;
 mod capability;
 mod code_action;
+mod codelens;
 mod completion;
 mod config;
 mod conn;

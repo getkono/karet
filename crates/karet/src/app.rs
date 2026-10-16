@@ -8,6 +8,7 @@ mod capture;
 mod change_view;
 mod clipboard;
 pub(crate) mod code_actions;
+mod code_lens;
 mod commands;
 mod comment;
 pub(crate) mod commit_console;
@@ -80,6 +81,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 pub(crate) use capture::capture;
+pub(crate) use code_lens::code_lens_rows;
 use color_eyre::eyre::eyre;
 use confirm::ConfirmAction;
 use confirm::ConfirmChoice;
@@ -661,6 +663,9 @@ pub struct App {
     pub(crate) signature: signature::SignatureState,
     /// Inlay-hint tooltips, Ctrl+click, resolving, and the toggle key.
     pub(crate) inlay_ui: inlay::InlayUi,
+    /// Each document's code lenses, the requests for them, and a lens run
+    /// awaiting its answer (see [`code_lens`]).
+    pub(crate) code_lenses: code_lens::CodeLensState,
     /// The open scrollable diagnostic detail view, if any.
     pub(crate) diagnostic_view: Option<crate::hover::DiagnosticView>,
     /// The debug session's lifecycle, mirrored from `Event::DebugState`.

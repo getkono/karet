@@ -168,6 +168,7 @@ impl App {
             hover_ui: None,
             signature: signature::SignatureState::default(),
             inlay_ui: inlay::InlayUi::default(),
+            code_lenses: code_lens::CodeLensState::default(),
             diagnostic_view: None,
             debug_state: karet_session::DebugSessionState::Idle,
             debug_detail: String::new(),
@@ -270,6 +271,7 @@ impl App {
             self.inlay_ui.flipped = false;
         }
         self.apply_inlay_visibility();
+        self.apply_code_lens_visibility();
         if decorations_turned_on {
             self.request_all_line_changes();
         }

@@ -319,7 +319,7 @@ impl App {
         if self.view == View::Editor && self.terminal_mouse(mouse) {
             return;
         }
-        if self.handle_inlay_hint_mouse(&mouse) {
+        if self.handle_inlay_hint_mouse(&mouse) || self.handle_code_lens_mouse(&mouse) {
             return;
         }
         if self.handle_blame_mouse(mouse) {
