@@ -155,10 +155,16 @@ fn enter_indents_from_the_rust_indent_query() {
             "fn f() {\n    |",
         ),
         case(
-            "inside a block, relative to the line opening it, not the current line",
+            "inside a block, at the body indentation the block already has",
             "fn f() {\n  x();|\n}",
             vec![key(KeyCode::Enter)],
-            "fn f() {\n  x();\n    |\n}",
+            "fn f() {\n  x();\n  |\n}",
+        ),
+        case(
+            "after an opener in a tab-indented file, one tab deeper",
+            "fn g() {\n\ty();\n}\nfn f() {|",
+            vec![key(KeyCode::Enter)],
+            "fn g() {\n\ty();\n}\nfn f() {\n\t|",
         ),
         case(
             "before a closer, at the opener's level",
