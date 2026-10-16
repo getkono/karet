@@ -95,6 +95,8 @@ pub(super) enum Behavior {
     /// Advertise nothing but document sync, so every gated request is
     /// refused before it reaches the wire.
     Bare,
+    /// Serve normally, but ask for incremental document sync.
+    Incremental,
 }
 
 /// What the scripted server advertises at the handshake.
@@ -139,6 +141,9 @@ fn advertised_capabilities(behavior: Behavior) -> Value {
     });
     if matches!(behavior, Behavior::Formats | Behavior::FormatsNever) {
         capabilities["documentFormattingProvider"] = json!(true);
+    }
+    if matches!(behavior, Behavior::Incremental) {
+        capabilities["textDocumentSync"] = json!({"openClose": true, "change": 2});
     }
     capabilities
 }

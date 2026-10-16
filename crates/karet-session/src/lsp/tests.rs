@@ -565,6 +565,7 @@ mod disabled_tests;
 mod failure_policy_tests;
 mod format_tests;
 mod hint_tests;
+mod incremental_sync_tests;
 mod intelligence_tests;
 mod inventory_tests;
 mod jdtls_tests;
