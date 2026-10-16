@@ -267,6 +267,18 @@ fn multi_line_paste_reindents_from_the_indent_query() -> Result<(), crate::clipb
             "fn f() { if a {\n    b();\n}|}",
         ),
         (
+            "carets on lines of their own each re-indent",
+            "fn f() {\n|\n#\n}",
+            "a\n  b\nc",
+            "fn f() {\n    a\n      b\n    c|\n    a\n      b\n    c#\n}",
+        ),
+        (
+            "carets sharing a line's indentation each paste as they are",
+            "fn f() {\n  |  #\n}",
+            "a\n b\nc",
+            "fn f() {\n  a\n b\nc|  a\n b\nc#\n}",
+        ),
+        (
             "on the first line, with no line above to indent from, as it is",
             "|",
             deep,

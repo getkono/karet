@@ -304,8 +304,9 @@ fn paste_target(syntax: &SyntaxIndent, buffer: &TextBuffer, line: u32) -> Option
 /// A piece of several lines that starts a line of its own (a whole-line block,
 /// or a piece going in where only indentation precedes it) is re-indented: its
 /// first line takes the level `target` gives the line it starts on, and the
-/// rest keep their depth relative to it. Where `target` gives none, or the
-/// piece is one line, it goes in as it is.
+/// rest keep their depth relative to it. Where `target` gives none, the piece
+/// is one line, or another selection shares the line it goes in at, it goes in
+/// as it is.
 fn paste_edit(
     buffer: &TextBuffer,
     cursors: &CursorState,
@@ -367,10 +368,20 @@ fn paste_edit(
         .selections
         .iter()
         .zip(piece_of.into_iter().zip(indent_of))
-        .map(|(selection, (piece, from))| {
+        .enumerate()
+        .map(|(i, (selection, (piece, from)))| {
             let range = selection.range();
             if !range.is_empty() || !whole_lines {
-                let edit = own_line_paste(buffer, range, piece, from, base, target)
+                // Replacing the indentation before the caret would overlap
+                // another selection's edit on the same line.
+                let line = range.start.line;
+                let shared = cursors.selections.iter().enumerate().any(|(j, other)| {
+                    let other = other.range();
+                    j != i && other.start.line <= line && line <= other.end.line
+                });
+                let edit = (!shared)
+                    .then(|| own_line_paste(buffer, range, piece, from, base, target))
+                    .flatten()
                     .unwrap_or_else(|| editing::insert(selection.head, Some(range), base, piece));
                 return (*selection, Some(edit));
             }
