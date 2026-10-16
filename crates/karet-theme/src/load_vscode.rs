@@ -57,6 +57,11 @@ const ROLE_KEYS: &[(&str, ThemeRole)] = &[
         ThemeRole::LineNumberActive,
     ),
     ("editorBracketMatch.background", ThemeRole::MatchingBracket),
+    ("editor.findMatchBackground", ThemeRole::SearchMatchCurrent),
+    (
+        "editor.findMatchHighlightBackground",
+        ThemeRole::SearchMatch,
+    ),
     ("editorInlayHint.foreground", ThemeRole::InlayHint),
     ("diffEditor.insertedTextBackground", ThemeRole::DiffAdded),
     ("diffEditor.removedTextBackground", ThemeRole::DiffRemoved),
@@ -293,6 +298,26 @@ mod tests {
         assert_eq!(
             t.role(ThemeRole::InlayHintParameter),
             Rgba::rgb(0x30, 0x30, 0x30)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn find_match_keys_overlay_the_current_and_other_match_roles() -> Result<(), ThemeError> {
+        let json = r##"{
+            "colors": {
+                "editor.findMatchBackground": "#515c6a",
+                "editor.findMatchHighlightBackground": "#ea5c0055"
+            }
+        }"##;
+        let t = Theme::load_vscode(json)?;
+        assert_eq!(
+            t.role(ThemeRole::SearchMatchCurrent),
+            Rgba::rgb(0x51, 0x5c, 0x6a)
+        );
+        assert_eq!(
+            Some(t.role(ThemeRole::SearchMatch)),
+            Rgba::from_hex("#ea5c0055")
         );
         Ok(())
     }
