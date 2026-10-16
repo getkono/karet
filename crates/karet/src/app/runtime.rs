@@ -124,6 +124,9 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
     if crate::term_caps::probe_osc22_pointer_shape(crate::term_caps::PROBE_TIMEOUT) == Some(true) {
         app.caps.pointer_shapes = true;
     }
+    // Themes are RGB; a terminal without 24-bit colour gets every frame
+    // quantised to the 256-colour palette instead.
+    let color_depth = crate::term_caps::probe_color_depth();
 
     let result = runtime.block_on(async {
         let (events, snaps) = attach_backend(&mut app, config)?;
@@ -141,7 +144,7 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
                 "graphical cursor is not compatible with this terminal",
             );
         }
-        event_loop(&mut terminal, &mut app, events, snaps).await
+        event_loop(&mut terminal, &mut app, events, snaps, color_depth).await
     });
 
     let _ = write!(io::stdout(), "{}", image::kitty_delete_all());
@@ -221,6 +224,7 @@ async fn event_loop(
     app: &mut App,
     mut events: EventRx,
     mut snaps: SnapshotRx,
+    color_depth: crate::color_depth::ColorDepth,
 ) -> color_eyre::Result<()> {
     // A dedicated thread turns the blocking `event::read` into an async stream.
     let (input_tx, mut input_rx) = mpsc::unbounded_channel::<Event>();
@@ -250,7 +254,10 @@ async fn event_loop(
         // too; one look per frame records them for Go Back.
         app.observe_navigation();
         app.sync_preview_graphics();
-        terminal.draw(|f| ui::draw(f, app))?;
+        terminal.draw(|f| {
+            ui::draw(f, app);
+            crate::color_depth::fit_buffer(f.buffer_mut(), color_depth);
+        })?;
         app.flush_graphics();
         // The graph view only learns its viewport height by being painted; top its
         // history up once that is known, so the first screen is already backed by more

@@ -15,6 +15,7 @@ use ratatui::style::Modifier;
 
 use super::*;
 use crate::cli::CaptureSpec;
+use crate::color_depth::xterm_rgb;
 
 /// Render `app` off-screen and write the settled frame to stdout as ANSI.
 ///
@@ -31,6 +32,8 @@ pub(crate) fn capture(mut app: App, spec: CaptureSpec) -> color_eyre::Result<()>
     app.caps.graphics = GraphicsProtocol::Halfblocks;
     app.caps.kitty_graphics = false;
     app.caps.pointer_shapes = false;
+    // No colour-depth fallback either: the grid is serialised as truecolor ANSI
+    // for whatever reads it, not for the terminal that ran the capture.
 
     let runtime = tokio::runtime::Runtime::new().map_err(|e| eyre!("tokio runtime: {e}"))?;
     // A capture is a throwaway read-only session: never write crash-recovery
@@ -257,48 +260,6 @@ fn rgb_of(color: Color, fallback: karet_theme::Rgba) -> (u8, u8, u8) {
     }
 }
 
-/// The xterm 256-colour palette: 16 system colours, a 6×6×6 RGB cube, 24 greys.
-fn xterm_rgb(index: u8) -> (u8, u8, u8) {
-    /// The 16 system colours, in xterm's default palette.
-    const SYSTEM: [(u8, u8, u8); 16] = [
-        (0, 0, 0),
-        (128, 0, 0),
-        (0, 128, 0),
-        (128, 128, 0),
-        (0, 0, 128),
-        (128, 0, 128),
-        (0, 128, 128),
-        (192, 192, 192),
-        (128, 128, 128),
-        (255, 0, 0),
-        (0, 255, 0),
-        (255, 255, 0),
-        (0, 0, 255),
-        (255, 0, 255),
-        (0, 255, 255),
-        (255, 255, 255),
-    ];
-    /// The six levels each channel of the colour cube takes.
-    const LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
-
-    match index {
-        0..=15 => SYSTEM[index as usize],
-        16..=231 => {
-            let offset = index - 16;
-            (
-                LEVELS[(offset / 36) as usize],
-                LEVELS[(offset % 36 / 6) as usize],
-                LEVELS[(offset % 6) as usize],
-            )
-        },
-        // 232..=255 is a 24-step grey ramp from #080808 to #eeeeee.
-        _ => {
-            let level = 8 + (index - 232) * 10;
-            (level, level, level)
-        },
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use ratatui::layout::Rect;
@@ -441,17 +402,5 @@ mod tests {
         assert_eq!(rgb_of(Color::Indexed(1), fallback), (128, 0, 0));
         assert_eq!(rgb_of(Color::Rgb(7, 8, 9), fallback), (7, 8, 9));
         assert_eq!(rgb_of(Color::Reset, fallback), (9, 9, 9));
-    }
-
-    #[test]
-    fn the_xterm_cube_and_grey_ramp_are_correct() {
-        // Cube corners and one interior point.
-        assert_eq!(xterm_rgb(16), (0, 0, 0));
-        assert_eq!(xterm_rgb(231), (255, 255, 255));
-        assert_eq!(xterm_rgb(21), (0, 0, 255));
-        assert_eq!(xterm_rgb(46), (0, 255, 0));
-        // Grey ramp endpoints.
-        assert_eq!(xterm_rgb(232), (8, 8, 8));
-        assert_eq!(xterm_rgb(255), (238, 238, 238));
     }
 }
