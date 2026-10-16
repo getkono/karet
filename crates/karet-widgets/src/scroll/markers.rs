@@ -46,7 +46,8 @@ impl ScrollMarker {
     }
 
     /// The half-open run of cells `(first, end)` this marker covers along a track
-    /// of `track_len` cells over `extent`: at least one cell, never past the end.
+    /// of `track_len` cells over `extent`: the cells a marked unit starts in, at
+    /// least one, never past the end.
     ///
     /// `None` for an empty track, for content that fits (no bar to mark), and for
     /// a marker that starts past the end of the content.
@@ -67,8 +68,13 @@ impl ScrollMarker {
         let end = if end > content { content } else { end };
         let first = start * len / content;
         let first = if first >= len { len - 1 } else { first };
-        // Rounded up, so a range that only grazes a cell still marks it.
-        let last = (end * len).div_ceil(content);
+        // A cell is marked when a marked unit starts in it, or when the range
+        // covers the whole cell (content shorter than the track). Taking the
+        // cell a unit merely *ends* in would smear a one-line marker across two
+        // cells whenever that line straddles a cell boundary.
+        let starts = (end - 1) * len / content + 1;
+        let covered = end * len / content;
+        let last = if covered > starts { covered } else { starts };
         let last = if last > len { len } else { last };
         let last = if last <= first { first + 1 } else { last };
         Some((first as u16, last as u16))
@@ -175,7 +181,7 @@ mod tests {
         assert_eq!(
             cells(19, 21),
             Some((1, 3)),
-            "a range grazing a cell marks it"
+            "a range crossing a cell boundary marks both cells"
         );
         assert_eq!(
             cells(99, 100),
@@ -187,6 +193,17 @@ mod tests {
             cells(100, 101),
             None,
             "a marker past the content paints nowhere"
+        );
+    }
+
+    #[test]
+    fn a_line_straddling_a_cell_boundary_marks_only_the_cell_it_starts_in() {
+        // 1001 lines on 20 cells: line 900 runs from cell 17.98 to 18.002.
+        let extent = ScrollExtent::new(1001, 0, 20);
+
+        assert_eq!(
+            ScrollMarker::new(900, 901, red()).cells(extent, 20),
+            Some((17, 18))
         );
     }
 
