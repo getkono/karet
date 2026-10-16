@@ -810,3 +810,23 @@
         session.handle(RequestId(4), Command::CloseDocument { doc });
         assert!(session.document(doc).is_none());
     }
+
+    #[test]
+    fn a_plaintext_snapshot_folds_by_indentation() {
+        let Some((_dir, path)) = write_temp("notes.txt", "list\n  one\n  two\nend\n") else {
+            return;
+        };
+        let (mut session, _events, mut snaps) = Session::new(SessionConfig::default());
+        session.handle(
+            RequestId(1),
+            Command::OpenDocument {
+                path,
+                language: None,
+            },
+        );
+        let mut folds = None;
+        while let Some((_, snap)) = snaps.try_recv() {
+            folds = Some(snap.folds.regions().iter().map(|r| (r.start, r.end)).collect::<Vec<_>>());
+        }
+        assert_eq!(folds, Some(vec![(0, 2)]));
+    }

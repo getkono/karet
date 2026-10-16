@@ -321,6 +321,23 @@ pub(super) static BINDINGS: &[Binding] = &[
 
     // Code folding (VS Code parity): `Ctrl+K Ctrl+L` toggles the fold at the cursor.
     seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('l'))], Command::ToggleFold),
+    seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('0'))], Command::FoldAll),
+    seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('j'))], Command::UnfoldAll),
+    seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('1'))], Command::FoldLevel(1)),
+    seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('2'))], Command::FoldLevel(2)),
+    seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('3'))], Command::FoldLevel(3)),
+    seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('4'))], Command::FoldLevel(4)),
+    seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('5'))], Command::FoldLevel(5)),
+    seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('6'))], Command::FoldLevel(6)),
+    // A legacy terminal sends Ctrl+/ as Ctrl+7, so there `Ctrl+K Ctrl+/` folds level 7.
+    seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('7'))], Command::FoldLevel(7)),
+    // A legacy terminal sends Ctrl+[ as Esc (cancelling the chord) and Ctrl+]
+    // as Ctrl+5 (fold level 5); the palette reaches both commands there.
+    seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('['))], Command::FoldRecursively),
+    seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char(']'))], Command::UnfoldRecursively),
+    seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('/'))], Command::FoldAllComments),
+    // No VS Code default exists for imports; `G` is free in the `Ctrl+K` family.
+    seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('g'))], Command::FoldAllImports),
 
     // Hover documentation (VS Code parity: `Ctrl+K Ctrl+I`), incl. the
     // diagnostics under the caret.

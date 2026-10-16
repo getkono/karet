@@ -25,7 +25,7 @@
 //! - Edits & cursors: [`TextEdit`], [`Change`], [`AppliedEdit`], [`EditCause`],
 //!   [`Selection`], [`CursorState`].
 //! - Highlighting & folds: [`HighlightSpan`], [`Highlights`], [`FoldRegion`],
-//!   [`FoldRegions`].
+//!   [`FoldKind`], [`FoldRegions`].
 //! - Server capabilities: [`Capabilities`], [`ServerFeature`], [`PositionEncoding`].
 //! - Interop traits: [`SymbolProvider`], [`DiagnosticFormatter`].
 //! - Theme vocabulary: [`TokenId`], [`StandardToken`], [`ThemeRole`], [`Emphasis`].
@@ -78,6 +78,7 @@ pub use graph::GraphEdgeKind;
 pub use graph::GraphNode;
 pub use graph::GraphNodeKind;
 pub use graph::GraphView;
+pub use highlight::FoldKind;
 pub use highlight::FoldRegion;
 pub use highlight::FoldRegions;
 pub use highlight::HighlightSpan;
