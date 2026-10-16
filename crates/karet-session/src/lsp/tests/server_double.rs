@@ -129,7 +129,8 @@ fn advertised_capabilities(behavior: Behavior) -> Value {
         "renameProvider": true,
         "documentRangeFormattingProvider": true,
         "codeActionProvider": {"resolveProvider": true},
-        "executeCommandProvider": {"commands": ["double.fix"]},
+        "executeCommandProvider": {"commands": ["double.fix", "double.run"]},
+        "codeLensProvider": {"resolveProvider": true},
         "signatureHelpProvider": {
             "triggerCharacters": ["("],
             "retriggerCharacters": [","]
@@ -200,6 +201,32 @@ fn code_action_reply(msg: &Value, last_uri: &mut Value) -> Value {
             let mut resolved = msg["params"].clone();
             resolved["edit"] = json!({"changes": {last_uri.as_str().unwrap_or_default():
                 [{"range": span(0, 0), "newText": "fixed "}]}});
+            resolved
+        },
+        _ => Value::Null,
+    }
+}
+
+/// The double's answer to the two code-lens methods.
+///
+/// Listing offers three lenses: `Run` over UTF-16 characters 2..4 of line 0
+/// (buffer columns 1..3 past the emoji `code_lens_tests` opens with), resolved
+/// and running `double.run 1`; and two deferred ones, on lines 1 and 5.
+/// Resolving titles a lens `references <n>` from its `data`, with a command
+/// that only informs.
+fn code_lens_reply(msg: &Value) -> Value {
+    let on = |line: u32, from: u32, to: u32| json!({"start": {"line": line, "character": from}, "end": {"line": line, "character": to}});
+    match msg["method"].as_str() {
+        Some("textDocument/codeLens") => json!([
+            {"range": on(0, 2, 4),
+             "command": {"title": "Run", "command": "double.run", "arguments": [1]}},
+            {"range": on(1, 0, 2), "data": {"n": 2}},
+            {"range": on(5, 0, 2), "data": {"n": 3}}
+        ]),
+        Some("codeLens/resolve") => {
+            let mut resolved = msg["params"].clone();
+            let title = format!("references {}", msg["params"]["data"]["n"]);
+            resolved["command"] = json!({"title": title, "command": ""});
             resolved
         },
         _ => Value::Null,
@@ -496,6 +523,14 @@ pub(super) fn test_connector(
                             | "workspace/executeCommand",
                         ) => {
                             let result = code_action_reply(&msg, &mut last_code_action_uri);
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": result}),
+                            )
+                            .await;
+                        },
+                        Some("textDocument/codeLens" | "codeLens/resolve") => {
+                            let result = code_lens_reply(&msg);
                             write_msg(
                                 &mut server_write,
                                 &json!({"jsonrpc": "2.0", "id": msg["id"], "result": result}),

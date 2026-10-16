@@ -560,6 +560,7 @@ async fn crashed_server_restarts_and_replays_open_documents() -> TestResult {
 }
 
 mod code_action_tests;
+mod code_lens_tests;
 mod completion_tests;
 mod disabled_tests;
 mod failure_policy_tests;

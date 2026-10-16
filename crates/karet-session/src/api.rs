@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use karet_core::BlameAttribution;
 use karet_core::Change;
 use karet_core::CodeAction;
+use karet_core::CodeLens;
 use karet_core::CompletionItem;
 use karet_core::CompletionOptions;
 use karet_core::CompletionTrigger;
@@ -409,6 +410,30 @@ pub enum Command {
         /// The hint as an [`Event::InlayHints`] answer delivered it, payload
         /// included.
         hint: InlayHint,
+    },
+    /// Request a document's code lenses from its primary server, resolving
+    /// the ones on `lines` it deferred. Answered by [`Event::CodeLenses`], or
+    /// by [`Event::CodeLensesFailed`] when the server failed to answer.
+    ///
+    /// Lenses are listed for the whole document, which is cheap, but each
+    /// deferred lens costs a server a search to resolve ("3 references"), so
+    /// only those on `lines` -- usually the viewport -- are resolved.
+    CodeLenses {
+        /// The target document.
+        doc: DocumentId,
+        /// The first and last line (inclusive) whose lenses to resolve.
+        lines: (u32, u32),
+    },
+    /// Run the command of one lens from an [`Event::CodeLenses`] answer
+    /// (`workspace/executeCommand`). Answered by [`Event::WorkspaceEdit`],
+    /// labelled with the lens's title, once the command has run or failed;
+    /// edits the server makes while running it arrive before that,
+    /// unrequested.
+    RunCodeLens {
+        /// The document the lens was listed for.
+        doc: DocumentId,
+        /// The lens, as the answer listed it.
+        lens: CodeLens,
     },
     /// Request hover information at a position.
     Hover {

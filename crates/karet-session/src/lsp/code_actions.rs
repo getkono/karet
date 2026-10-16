@@ -217,7 +217,7 @@ impl StepContext<'_> {
     ///
     /// Only for steps the user is waiting on, which is what the hang streak
     /// measures; a lightbulb probe is reported by [`deliver`] instead.
-    fn settle<T>(&mut self, result: Result<T, LspError>) -> Result<T, String> {
+    pub(super) fn settle<T>(&mut self, result: Result<T, LspError>) -> Result<T, String> {
         match self.tally.observe(result) {
             Ok(value) => Ok(value),
             Err(LspError::Server(reason) | LspError::Protocol(reason)) => Err(reason),
