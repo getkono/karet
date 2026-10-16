@@ -4,6 +4,10 @@
 //! concrete [`Rgba`] colors, independent of any renderer. Ships a built-in dark
 //! theme ([`Theme::dark`], also [`Theme::default`]); the `vscode` feature loads VS
 //! Code JSON themes. Enable `view` to convert colors into ratatui values.
+//!
+//! A semantic [`TokenId`] (a language server's token type and modifiers, see
+//! [`TokenId::semantic`]) resolves through the theme's `semanticTokenColors`
+//! rules, falling back to the standard class closest to its type.
 
 use karet_core::ThemeRole;
 use karet_core::TokenId;
@@ -11,6 +15,7 @@ use karet_core::TokenId;
 mod default;
 #[cfg(feature = "vscode")]
 mod load_vscode;
+mod semantic;
 
 /// Number of [`StandardToken`](karet_core::StandardToken) classes (token id space).
 pub(crate) const TOKEN_COUNT: usize = 32;
@@ -128,6 +133,9 @@ pub struct Theme {
     fallback_fg: Rgba,
     roles: [Rgba; ROLE_COUNT],
     dark: bool,
+    /// `semanticTokenColors`, in the order a tie between equally specific
+    /// rules is settled by (the later wins).
+    semantic: Vec<semantic::SemanticRule>,
 }
 
 impl Default for Theme {
@@ -162,18 +170,39 @@ impl Theme {
         }
     }
 
-    /// The color for a semantic token class (the fallback foreground if unmapped).
+    /// The color for a token class (the fallback foreground if unmapped).
+    ///
+    /// A semantic token's id takes the foreground its most specific
+    /// `semanticTokenColors` rule sets, else its fallback class's color.
     #[must_use]
     pub fn color(&self, token: TokenId) -> Rgba {
+        if let Some((ty, modifiers)) = token.semantic_parts() {
+            return semantic::resolve(&self.semantic, ty, modifiers)
+                .fg
+                .unwrap_or_else(|| self.color(semantic::fallback(ty, modifiers).id()));
+        }
         self.tokens
             .get(token.0 as usize)
             .copied()
             .unwrap_or(self.fallback_fg)
     }
 
-    /// The text emphasis for a semantic token class (none if unmapped).
+    /// The text emphasis for a token class (none if unmapped).
+    ///
+    /// A semantic token's id takes each flag its most specific
+    /// `semanticTokenColors` rule sets, the rest from its fallback class.
     #[must_use]
     pub fn emphasis(&self, token: TokenId) -> Emphasis {
+        if let Some((ty, modifiers)) = token.semantic_parts() {
+            let style = semantic::resolve(&self.semantic, ty, modifiers);
+            let base = self.emphasis(semantic::fallback(ty, modifiers).id());
+            return Emphasis {
+                bold: style.bold.unwrap_or(base.bold),
+                italic: style.italic.unwrap_or(base.italic),
+                underline: style.underline.unwrap_or(base.underline),
+                strikethrough: style.strikethrough.unwrap_or(base.strikethrough),
+            };
+        }
         self.emphasis
             .get(token.0 as usize)
             .copied()
@@ -311,7 +340,9 @@ mod tests {
             t.color(StandardToken::String.id())
         );
         // Unmapped token id falls back to foreground.
-        assert_eq!(t.color(TokenId(60000)), t.role(ThemeRole::Foreground));
+        // (Below the semantic id space, which resolves differently.)
+        let unmapped = TokenId(TokenId::SEMANTIC_BASE - 1);
+        assert_eq!(t.color(unmapped), t.role(ThemeRole::Foreground));
     }
 
     #[test]
@@ -322,6 +353,36 @@ mod tests {
         assert!((StandardToken::CommentMark.id().0 as usize) < TOKEN_COUNT);
         // And the palette is not oversized relative to the enum.
         assert_eq!(StandardToken::CommentMark.id().0 as usize, TOKEN_COUNT - 1);
+    }
+
+    /// A semantic token no built-in rule styles takes its fallback class's
+    /// colour and emphasis exactly, so turning semantic tokens on does not
+    /// repaint plain code; the built-in rules restyle only what tree-sitter
+    /// cannot tell apart.
+    #[test]
+    fn semantic_tokens_resolve_through_rules_over_their_fallback() {
+        use karet_core::SemanticTokenModifiers as M;
+        use karet_core::SemanticTokenType as T;
+
+        let t = Theme::dark();
+        let variable = TokenId::semantic(T::Variable, M::DECLARATION);
+        assert_eq!(t.color(variable), t.color(TokenId::VARIABLE));
+        assert_eq!(t.emphasis(variable), Emphasis::NONE);
+        let builtin = TokenId::semantic(T::Struct, M::DEFAULT_LIBRARY);
+        assert_eq!(t.color(builtin), t.color(StandardToken::TypeBuiltin.id()));
+        let doc = TokenId::semantic(T::Comment, M::DOCUMENTATION);
+        assert_eq!(t.emphasis(doc), t.emphasis(StandardToken::CommentDoc.id()));
+
+        let mac = TokenId::semantic(T::Macro, M::NONE);
+        assert_ne!(t.color(mac), t.color(TokenId::FUNCTION));
+        let unresolved = TokenId::semantic(T::UnresolvedReference, M::NONE);
+        assert_ne!(t.color(unresolved), t.color(TokenId::VARIABLE));
+        let mutable = TokenId::semantic(T::Variable, M::MUTABLE);
+        assert_eq!(t.color(mutable), t.color(TokenId::VARIABLE));
+        assert!(t.emphasis(mutable).underline);
+        let deprecated = TokenId::semantic(T::Method, M::DEPRECATED | M::MUTABLE);
+        assert!(t.emphasis(deprecated).strikethrough);
+        assert!(t.emphasis(deprecated).underline);
     }
 
     #[test]
@@ -338,7 +399,10 @@ mod tests {
         // Code tokens stay unemphasized.
         assert_eq!(t.emphasis(StandardToken::Keyword.id()), Emphasis::default());
         // An unmapped id yields no emphasis rather than panicking.
-        assert_eq!(t.emphasis(TokenId(60000)), Emphasis::default());
+        assert_eq!(
+            t.emphasis(TokenId(TokenId::SEMANTIC_BASE - 1)),
+            Emphasis::default()
+        );
     }
 
     #[cfg(feature = "view")]
