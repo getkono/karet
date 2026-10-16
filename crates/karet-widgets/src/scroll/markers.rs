@@ -122,10 +122,11 @@ impl ScrollTracks {
         self,
         buf: &mut Buffer,
         styles: ScrollbarStyles,
-        extents: (ScrollExtent, ScrollExtent),
+        vertical: ScrollExtent,
+        horizontal: ScrollExtent,
         markers: &[ScrollMarker],
     ) -> PaintedTracks {
-        let painted = self.paint(buf, styles, extents.0, extents.1);
+        let painted = self.paint(buf, styles, vertical, horizontal);
         if let Some(track) = painted.vertical {
             track.paint_markers(buf, markers);
         }
@@ -229,7 +230,8 @@ mod tests {
         let painted = tracks.paint_marked(
             &mut buf,
             styles(),
-            (ScrollExtent::new(100, 0, 10), ScrollExtent::default()),
+            ScrollExtent::new(100, 0, 10),
+            ScrollExtent::default(),
             &[
                 ScrollMarker::new(5, 6, red()),
                 ScrollMarker::new(50, 51, Style::default().fg(Color::Yellow)),
@@ -274,7 +276,8 @@ mod tests {
         tracks.paint_marked(
             &mut buf,
             styles(),
-            (ScrollExtent::new(5, 0, 10), ScrollExtent::default()),
+            ScrollExtent::new(5, 0, 10),
+            ScrollExtent::default(),
             &[ScrollMarker::new(2, 3, red())],
         );
 

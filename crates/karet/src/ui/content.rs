@@ -1,6 +1,7 @@
 use super::*;
 
 mod diff;
+mod overview;
 mod scans;
 pub(in crate::ui) mod select;
 mod server_log;
@@ -179,6 +180,9 @@ pub(super) fn draw_pane_content(
                     .unwrapped_lines(table_lines)
                     .change_lane(ctx.line_changes.is_some());
                 let editor = ctx.display.apply(editor);
+                let changes = line_changes.map_or(&[][..], Vec::as_slice);
+                let found = decos.iter().chain(search_decos.iter());
+                let markers = overview::scroll_markers(theme, &problems, changes, found, cursors);
                 // Reserve the tracks before rendering, and keep `editor_rect` as the
                 // reserved rect: it is the single value used both to paint the widget
                 // and to map a click back to a caret, so shrinking it once keeps
@@ -197,7 +201,7 @@ pub(super) fn draw_pane_content(
                 // offsets and measures the viewport as it paints, so the bar is
                 // correct on the very first frame.
                 hits.record_both(
-                    tracks.paint(
+                    tracks.paint_marked(
                         f.buffer_mut(),
                         ScrollbarStyles::from_theme(theme),
                         ScrollExtent::new(
@@ -210,6 +214,7 @@ pub(super) fn draw_pane_content(
                             tab.editor.scroll_col as usize,
                             tab.editor.content_width().into(),
                         ),
+                        &markers,
                     ),
                     ScrollSurface::TabRows,
                     ScrollSurface::TabColumns,
