@@ -479,6 +479,7 @@ fn diagnostics_render_as_severity_colored_underlines() {
         message: "Unknown word".to_owned(),
         source: Some("karet-spell".to_owned()),
         code: None,
+        code_href: None,
         tags: Vec::new(),
         related: Vec::new(),
     };
@@ -854,6 +855,7 @@ fn a_diagnostic_outranks_an_underline_decoration_on_the_same_cell() {
         message: "boom".to_owned(),
         source: None,
         code: None,
+        code_href: None,
         tags: Vec::new(),
         related: Vec::new(),
     };

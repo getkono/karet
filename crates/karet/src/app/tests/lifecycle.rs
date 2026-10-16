@@ -479,6 +479,7 @@ fn diagnostics_and_spell_language_follow_the_document_lifecycle() {
         message: "Unknown word".to_owned(),
         source: Some("karet-spell".to_owned()),
         code: Some("en_GB".to_owned()),
+        code_href: None,
         tags: Vec::new(),
         related: Vec::new(),
     };
@@ -580,6 +581,7 @@ fn successful_latex_build_replaces_the_reserved_view_and_publishes_diagnostics()
         message: "Overfull hbox".to_owned(),
         source: Some("latex".to_owned()),
         code: None,
+        code_href: None,
         tags: Vec::new(),
         related: Vec::new(),
     };

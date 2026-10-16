@@ -44,7 +44,8 @@
 //!   documentation, detail and additional edits may be deferred to
 //!   [`LspClient::resolve_completion`].
 //!
-//! Transport, lifecycle, document sync, diagnostics, completion, navigation,
+//! Transport, lifecycle, document sync, diagnostics (pushed, and pulled through
+//! [`LspClient::pull_diagnostics`]), completion, navigation,
 //! symbols, inlay hints, rename, signature help, code actions (with
 //! `codeAction/resolve` and `workspace/executeCommand`), and document/range
 //! formatting are implemented as typed, non-panicking operations.
@@ -61,6 +62,7 @@ pub use karet_jsonrpc::framing::content_length as codec;
 pub use launch::ExitReport;
 pub use launch::LaunchCause;
 pub use launch::LaunchFailure;
+pub use pull::PulledDiagnostics;
 pub use watch::FileChange;
 pub use watch::FileChangeKind;
 pub use window::MessageLevel;
@@ -84,6 +86,7 @@ mod handshake;
 mod inlay;
 mod launch;
 mod navigation;
+mod pull;
 mod selection;
 mod selector;
 mod snippet;
@@ -1162,6 +1165,20 @@ impl LspClient {
     #[must_use]
     pub fn refreshes(&self) -> broadcast::Receiver<ServerRefresh> {
         self.conn.refreshes()
+    }
+
+    /// Subscribe to changes in what this server may be asked for which
+    /// documents.
+    ///
+    /// Every `client/registerCapability` and `client/unregisterCapability`
+    /// marks the receiver changed. A receiver starts with the current state
+    /// seen, so a consumer that subscribes and then reads
+    /// [`supports_for`](Self::supports_for) misses nothing: a registration
+    /// that arrived earlier is in the gate, and one that arrives later wakes
+    /// [`changed`](tokio::sync::watch::Receiver::changed).
+    #[must_use]
+    pub fn registrations(&self) -> tokio::sync::watch::Receiver<()> {
+        self.conn.registrations()
     }
 
     /// Subscribe to every server-initiated notification, undecoded (see

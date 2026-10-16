@@ -222,6 +222,7 @@ mod tests {
             message: message.to_owned(),
             source: Some("typescript".to_owned()),
             code: Some("2322".to_owned()),
+            code_href: None,
             tags: Vec::new(),
             related: Vec::new(),
         }

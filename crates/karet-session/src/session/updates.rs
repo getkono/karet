@@ -282,6 +282,7 @@ impl Session {
                 server,
                 path,
                 version,
+                feed,
                 mut diagnostics,
                 ..
             } => {
@@ -305,10 +306,13 @@ impl Session {
                         }
                     }
                 }
-                if document.lsp_diagnostics.get(&server) == Some(&diagnostics) {
+                // Only this feed's layer is replaced: a pulled set says nothing
+                // about what the same server publishes, and vice versa.
+                let layer = (server, feed);
+                if document.lsp_diagnostics.get(&layer) == Some(&diagnostics) {
                     return;
                 }
-                document.lsp_diagnostics.insert(server, diagnostics);
+                document.lsp_diagnostics.insert(layer, diagnostics);
                 self.publish_document_diagnostics(doc_id);
             },
             LspUpdate::DiagnosticsCleared { server, .. } => {

@@ -113,6 +113,28 @@ fn numeric_codes_become_strings() {
     assert_eq!(diagnostic_from_lsp(lsp).code.as_deref(), Some("404"));
 }
 
+#[test]
+fn a_code_description_keeps_its_link() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let href = "https://doc.rust-lang.org/error_codes/E0308.html";
+    let lsp = lsp_types::Diagnostic {
+        range: lsp_range(0, 0, 0, 1),
+        code: Some(lsp_types::NumberOrString::String("E0308".into())),
+        code_description: Some(lsp_types::CodeDescription {
+            href: lsp_types::Uri::from_str(href)?,
+        }),
+        message: "x".into(),
+        ..lsp_types::Diagnostic::default()
+    };
+    assert_eq!(diagnostic_from_lsp(lsp).code_href.as_deref(), Some(href));
+    let bare = lsp_types::Diagnostic {
+        range: lsp_range(0, 0, 0, 1),
+        message: "x".into(),
+        ..lsp_types::Diagnostic::default()
+    };
+    assert_eq!(diagnostic_from_lsp(bare).code_href, None);
+    Ok(())
+}
+
 fn bare_item(label: &str) -> lsp_types::CompletionItem {
     lsp_types::CompletionItem {
         label: label.to_owned(),

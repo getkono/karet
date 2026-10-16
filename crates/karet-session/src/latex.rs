@@ -346,6 +346,7 @@ fn parse_diagnostics(output: &CompilerOutput, source: &Path) -> Vec<Diagnostic> 
             message: message.to_owned(),
             source: Some("latex".to_owned()),
             code: None,
+            code_href: None,
             tags: Vec::new(),
             related: Vec::new(),
         });

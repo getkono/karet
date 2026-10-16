@@ -20,6 +20,7 @@
             message: format!("Unknown word “{word}”"),
             source: Some("karet-spell".to_owned()),
             code: Some("en_US".to_owned()),
+            code_href: None,
             tags: Vec::new(),
             related: Vec::new(),
         }

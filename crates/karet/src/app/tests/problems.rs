@@ -16,6 +16,7 @@ fn diagnostic(line: u32, col: u32, severity: Severity, message: &str) -> Diagnos
         message: message.to_owned(),
         source: Some("rustc".to_owned()),
         code: None,
+        code_href: None,
         tags: Vec::new(),
         related: Vec::new(),
     }

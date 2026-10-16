@@ -97,6 +97,18 @@ pub(super) enum Behavior {
     Bare,
     /// Serve normally, but ask for incremental document sync.
     Incremental,
+    /// Serve normally, and offer pull diagnostics: each pull is answered with
+    /// one diagnostic naming the version the double last saw, and a report
+    /// for the related `elsewhere.rs` beside the asking file.
+    Pulls,
+    /// Pull like [`Behavior::Pulls`], and also publish one `checked`
+    /// diagnostic, without a version, for each opened document: rust-analyzer
+    /// keeps publishing `cargo check`'s results while it answers pulls.
+    PushesAndPulls,
+    /// Advertise no pull diagnostics, but register them dynamically
+    /// (`client/registerCapability`) once a document is opened, then answer
+    /// pulls like [`Behavior::Pulls`].
+    RegistersPulls,
 }
 
 /// What the scripted server advertises at the handshake.
@@ -146,7 +158,43 @@ fn advertised_capabilities(behavior: Behavior) -> Value {
     if matches!(behavior, Behavior::Incremental) {
         capabilities["textDocumentSync"] = json!({"openClose": true, "change": 2});
     }
+    if matches!(behavior, Behavior::Pulls | Behavior::PushesAndPulls) {
+        capabilities["diagnosticProvider"] =
+            json!({"interFileDependencies": false, "workspaceDiagnostics": false});
+    }
     capabilities
+}
+
+/// The double's answer to `textDocument/diagnostic`: one error on line 0
+/// naming `version`, linked to its documentation and related to line 1 of the
+/// asking file, beside a full report for `elsewhere.rs`.
+fn pull_reply(msg: &Value, version: &Value) -> Value {
+    let asking = msg["params"]["textDocument"]["uri"]
+        .as_str()
+        .unwrap_or_default();
+    let elsewhere = asking
+        .rsplit_once('/')
+        .map(|(dir, _)| format!("{dir}/elsewhere.rs"))
+        .unwrap_or_default();
+    let line = |line: u32| json!({"start": {"line": line, "character": 0}, "end": {"line": line, "character": 2}});
+    json!({
+        "kind": "full",
+        "resultId": format!("v{version}"),
+        "items": [{
+            "range": line(0),
+            "severity": 1,
+            "code": "E1",
+            "codeDescription": {"href": "https://example.com/E1"},
+            "message": format!("pulled at version {version}"),
+            "relatedInformation": [{
+                "location": {"uri": asking, "range": line(1)},
+                "message": "declared here"
+            }]
+        }],
+        "relatedDocuments": {
+            elsewhere: {"kind": "full", "items": [{"range": line(0), "message": "related"}]}
+        }
+    })
 }
 
 /// The double's answer to `textDocument/selectionRange`: for each position,
@@ -295,9 +343,14 @@ pub(super) fn test_connector(
                 }
                 let mut last_code_action_uri = Value::Null;
                 let mut last_hint_uri = Value::Null;
+                // The version the last `didOpen` or `didChange` carried.
+                let mut last_version = Value::Null;
                 while let Some(msg) = read_msg(&mut reader).await {
                     if let Some(tx) = &observed {
                         let _ = tx.send(msg.clone());
+                    }
+                    if let Some(version) = msg["params"]["textDocument"].get("version") {
+                        last_version = version.clone();
                     }
                     match msg["method"].as_str() {
                         Some("textDocument/completion") => {
@@ -467,6 +520,14 @@ pub(super) fn test_connector(
                             )
                             .await;
                         },
+                        Some("textDocument/diagnostic") => {
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"],
+                                    "result": pull_reply(&msg, &last_version)}),
+                            )
+                            .await;
+                        },
                         Some("textDocument/didOpen") => {
                             let uri = msg["params"]["textDocument"]["uri"]
                                 .as_str()
@@ -476,6 +537,37 @@ pub(super) fn test_connector(
                                     &mut server_write,
                                     &json!({"jsonrpc": "2.0", "id": "refresh-1",
                                         "method": "workspace/inlayHint/refresh"}),
+                                )
+                                .await;
+                            }
+                            if matches!(behavior, Behavior::PushesAndPulls) {
+                                write_msg(
+                                    &mut server_write,
+                                    &json!({"jsonrpc": "2.0",
+                                    "method": "textDocument/publishDiagnostics",
+                                    "params": {"uri": uri, "diagnostics": [{
+                                        "range": {
+                                            "start": {"line": 1, "character": 0},
+                                            "end": {"line": 1, "character": 1}
+                                        },
+                                        "message": "checked"
+                                    }]}}),
+                                )
+                                .await;
+                            }
+                            if matches!(behavior, Behavior::RegistersPulls) {
+                                write_msg(
+                                    &mut server_write,
+                                    &json!({"jsonrpc": "2.0", "id": "register-pull",
+                                    "method": "client/registerCapability",
+                                    "params": {"registrations": [{
+                                        "id": "pull",
+                                        "method": "textDocument/diagnostic",
+                                        "registerOptions": {
+                                            "interFileDependencies": false,
+                                            "workspaceDiagnostics": false
+                                        }
+                                    }]}}),
                                 )
                                 .await;
                             }

@@ -573,6 +573,7 @@ mod jdtls_tests;
 mod launch_tests;
 mod liveness_tests;
 mod manual_provider_tests;
+mod pull_tests;
 mod reopen_tests;
 mod resolve_hint_tests;
 mod restart_tests;

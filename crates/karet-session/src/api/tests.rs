@@ -46,6 +46,7 @@ fn commands_and_events_round_trip_through_serde() -> Result<(), serde_json::Erro
             message: "m".into(),
             source: None,
             code: None,
+            code_href: None,
             tags: Vec::new(),
             related: Vec::new(),
         }],

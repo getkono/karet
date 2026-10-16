@@ -58,8 +58,8 @@ impl App {
         let diagnostics = self.docs.diagnostics.get(&pending.doc).unwrap_or(&empty);
         let at_caret = crate::hover::diagnostics_at(diagnostics, pending.at);
         let hint = self.manifest_hint_markdown(pending.doc, pending.at.line);
-        let pretty = self.settings.editor.pretty_errors;
-        match crate::hover::hover_markup(&at_caret, hover.as_ref(), hint.as_deref(), pretty) {
+        let render = (self.settings.editor.pretty_errors, self.root.as_path());
+        match crate::hover::hover_markup(&at_caret, hover.as_ref(), hint.as_deref(), render) {
             Some(markup) => {
                 self.hover_ui = Some(HoverUi {
                     markup,
@@ -121,9 +121,9 @@ impl App {
             );
             return;
         }
-        let pretty = self.settings.editor.pretty_errors;
+        let render = (self.settings.editor.pretty_errors, self.root.as_path());
         self.diagnostic_view = Some(crate::hover::DiagnosticView {
-            markdown: crate::hover::diagnostic_document(&at_caret, pretty),
+            markdown: crate::hover::diagnostic_document(&at_caret, render),
             ..Default::default()
         });
     }

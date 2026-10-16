@@ -85,10 +85,13 @@ impl Session {
             .store
             .docs
             .iter_mut()
-            .filter(|(_, document)| document.lsp_diagnostics.contains_key(server))
-            .map(|(doc_id, document)| {
-                document.lsp_diagnostics.remove(server);
-                *doc_id
+            .filter_map(|(doc_id, document)| {
+                // Every feed's layer for this slot goes with it.
+                let before = document.lsp_diagnostics.len();
+                document
+                    .lsp_diagnostics
+                    .retain(|(layer, _), _| layer != server);
+                (document.lsp_diagnostics.len() != before).then_some(*doc_id)
             })
             .collect::<Vec<_>>();
         for doc_id in affected {

@@ -84,6 +84,10 @@ pub struct Diagnostic {
     pub source: Option<String>,
     /// A machine-readable code, if any.
     pub code: Option<String>,
+    /// A link to documentation explaining [`code`](Self::code) (LSP
+    /// `codeDescription.href`), kept verbatim.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub code_href: Option<String>,
     /// Rendering tags.
     pub tags: Vec<DiagnosticTag>,
     /// Related locations.
@@ -584,6 +588,7 @@ mod tests {
             message: "boom".to_owned(),
             source: Some("rustc".to_owned()),
             code: None,
+            code_href: None,
             tags: vec![DiagnosticTag::Deprecated],
             related: Vec::new(),
         };
@@ -693,6 +698,7 @@ mod tests {
             message: "m".into(),
             source: None,
             code: Some("E0001".into()),
+            code_href: Some("https://example.com/E0001".into()),
             tags: vec![DiagnosticTag::Unnecessary],
             related: vec![RelatedInfo {
                 location: Location {

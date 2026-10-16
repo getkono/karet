@@ -8,6 +8,8 @@
 //! stateful lives on `App`; this module holds the state types and the pure
 //! composition logic so they are unit-testable without an `App`.
 
+use std::path::Path;
+
 use karet_core::Diagnostic;
 use karet_core::Hover;
 use karet_core::LineCol;
@@ -109,13 +111,15 @@ fn severity_label(severity: Severity) -> &'static str {
 /// With no diagnostics the server markup passes through untouched (its own
 /// kind preserved). With diagnostics, everything is composed into one
 /// markdown document: each diagnostic as a `**severity** message (source)`
-/// paragraph, then a rule, then the hover — plain-text hover fenced so its
-/// content cannot be misread as markdown.
+/// paragraph (its code linked to the code's documentation when the producer
+/// gave one) and a list of its related locations, then a rule, then the hover
+/// — plain-text hover fenced so its content cannot be misread as markdown.
+/// Related paths are shown relative to `root` where they lie under it.
 pub(crate) fn hover_markup(
     diagnostics: &[&Diagnostic],
     hover: Option<&Hover>,
     extra: Option<&str>,
-    pretty: bool,
+    (pretty, root): (bool, &Path),
 ) -> Option<Markup> {
     if diagnostics.is_empty() && extra.is_none() {
         return hover.map(|h| h.contents.clone());
@@ -132,15 +136,10 @@ pub(crate) fn hover_markup(
         value.push_str(severity_label(d.severity));
         value.push_str("** ");
         value.push_str(&display_message(d, pretty));
-        let origin = match (&d.source, &d.code) {
-            (Some(source), Some(code)) => Some(format!("{source} {code}")),
-            (Some(source), None) => Some(source.clone()),
-            (None, Some(code)) => Some(code.clone()),
-            (None, None) => None,
-        };
-        if let Some(origin) = origin {
+        if let Some(origin) = origin(d) {
             value.push_str(&format!(" _({origin})_"));
         }
+        value.push_str(&related_list(d, root));
     }
     if let Some(h) = hover {
         if !value.is_empty() {
@@ -171,10 +170,55 @@ fn display_message(d: &Diagnostic, pretty: bool) -> std::borrow::Cow<'_, str> {
     std::borrow::Cow::Borrowed(&d.message)
 }
 
+/// Where a diagnostic came from: its source and its code, the code linked to
+/// its documentation when the producer gave one (a link with no code reads
+/// `docs`). `None` when the producer said nothing about either.
+fn origin(d: &Diagnostic) -> Option<String> {
+    let code = match (&d.code, &d.code_href) {
+        (Some(code), Some(href)) => Some(format!("[{code}](<{href}>)")),
+        (None, Some(href)) => Some(format!("[docs](<{href}>)")),
+        (Some(code), None) => Some(code.clone()),
+        (None, None) => None,
+    };
+    match (&d.source, code) {
+        (Some(source), Some(code)) => Some(format!("{source} {code}")),
+        (Some(source), None) => Some(source.clone()),
+        (None, code) => code,
+    }
+}
+
+/// A diagnostic's related locations as a markdown list, each
+/// `` `path:line:col` `` (one-based) and its message, led by a blank line so
+/// it follows the diagnostic's own paragraph; empty when it has none.
+fn related_list(d: &Diagnostic, root: &Path) -> String {
+    let mut list = String::new();
+    for related in &d.related {
+        let path = related
+            .location
+            .path
+            .strip_prefix(root)
+            .unwrap_or(&related.location.path);
+        let start = related.location.range.start;
+        list.push_str(if list.is_empty() { "\n\n" } else { "\n" });
+        list.push_str(&format!(
+            "- `{}:{}:{}` {}",
+            path.display(),
+            start.line + 1,
+            start.col + 1,
+            related.message
+        ));
+    }
+    list
+}
+
 /// Compose the standalone markdown document for the diagnostic detail view:
 /// each diagnostic as a `**severity** _(origin)_` heading paragraph followed
-/// by its (optionally formatted) message.
-pub(crate) fn diagnostic_document(diagnostics: &[&Diagnostic], pretty: bool) -> String {
+/// by its (optionally formatted) message and the list of its related
+/// locations, shown as [`hover_markup`] shows them.
+pub(crate) fn diagnostic_document(
+    diagnostics: &[&Diagnostic],
+    (pretty, root): (bool, &Path),
+) -> String {
     let mut value = String::new();
     for d in diagnostics {
         if !value.is_empty() {
@@ -183,17 +227,12 @@ pub(crate) fn diagnostic_document(diagnostics: &[&Diagnostic], pretty: bool) -> 
         value.push_str("**");
         value.push_str(severity_label(d.severity));
         value.push_str("**");
-        let origin = match (&d.source, &d.code) {
-            (Some(source), Some(code)) => Some(format!("{source} {code}")),
-            (Some(source), None) => Some(source.clone()),
-            (None, Some(code)) => Some(code.clone()),
-            (None, None) => None,
-        };
-        if let Some(origin) = origin {
+        if let Some(origin) = origin(d) {
             value.push_str(&format!(" _({origin})_"));
         }
         value.push_str("\n\n");
         value.push_str(&display_message(d, pretty));
+        value.push_str(&related_list(d, root));
     }
     value
 }
@@ -214,9 +253,88 @@ mod tests {
             message: message.to_owned(),
             source: Some("test-lsp".to_owned()),
             code: None,
+            code_href: None,
             tags: Vec::new(),
             related: Vec::new(),
         }
+    }
+
+    /// Raw messages, related paths shown relative to `/w`.
+    fn plain() -> (bool, &'static Path) {
+        (false, Path::new("/w"))
+    }
+
+    /// A diagnostic with a linked code and two related locations, one inside
+    /// the root and one outside it.
+    fn linked_and_related() -> Diagnostic {
+        let mut d = diag((0, 0), (0, 4), Severity::Error, "mismatched types");
+        d.source = Some("rustc".to_owned());
+        d.code = Some("E0308".to_owned());
+        d.code_href = Some("https://doc.rust-lang.org/error_codes/E0308.html".to_owned());
+        let at = |path: &str, line: u32, col: u32| karet_core::Location {
+            path: std::path::PathBuf::from(path),
+            range: Range {
+                start: LineCol::new(line, col),
+                end: LineCol::new(line, col + 1),
+            },
+        };
+        d.related = vec![
+            karet_core::RelatedInfo {
+                location: at("/w/src/lib.rs", 9, 4),
+                message: "expected due to this".to_owned(),
+            },
+            karet_core::RelatedInfo {
+                location: at("/elsewhere/dep.rs", 0, 0),
+                message: "defined here".to_owned(),
+            },
+        ];
+        d
+    }
+
+    #[test]
+    fn a_documented_code_is_linked_in_both_surfaces() {
+        let d = linked_and_related();
+        let link = "_(rustc [E0308](<https://doc.rust-lang.org/error_codes/E0308.html>))_";
+        let markup = hover_markup(&[&d], None, None, plain()).map(|m| m.value);
+        assert!(
+            markup.as_deref().is_some_and(|value| value.contains(link)),
+            "{markup:?}"
+        );
+        let doc = diagnostic_document(&[&d], plain());
+        assert!(doc.starts_with(&format!("**error** {link}")), "{doc}");
+    }
+
+    #[test]
+    fn a_link_without_a_code_reads_docs() {
+        let mut d = diag((0, 0), (0, 4), Severity::Warning, "w");
+        d.code_href = Some("https://example.com/w".to_owned());
+        let doc = diagnostic_document(&[&d], plain());
+        assert!(
+            doc.contains("_(test-lsp [docs](<https://example.com/w>))_"),
+            "{doc}"
+        );
+    }
+
+    #[test]
+    fn related_locations_list_under_their_diagnostic_in_both_surfaces() {
+        let d = linked_and_related();
+        let list =
+            "\n\n- `src/lib.rs:10:5` expected due to this\n- `/elsewhere/dep.rs:1:1` defined here";
+        let markup = hover_markup(&[&d], None, None, plain())
+            .map(|m| m.value)
+            .unwrap_or_default();
+        assert!(markup.contains(&format!("_{list}")), "{markup}");
+        let doc = diagnostic_document(&[&d], plain());
+        assert!(doc.ends_with(&format!("mismatched types{list}")), "{doc}");
+        // The list stays with its own diagnostic, ahead of the hover's rule.
+        let h = hover(MarkupKind::Markdown, "docs");
+        let composed = hover_markup(&[&d], Some(&h), None, plain())
+            .map(|m| m.value)
+            .unwrap_or_default();
+        assert!(
+            composed.ends_with("defined here\n\n---\n\ndocs"),
+            "{composed}"
+        );
     }
 
     fn hover(kind: MarkupKind, value: &str) -> Hover {
@@ -250,7 +368,7 @@ mod tests {
     #[test]
     fn bare_hover_passes_through_with_its_own_kind() {
         let h = hover(MarkupKind::PlainText, "just text");
-        let markup = hover_markup(&[], Some(&h), None, false).unwrap_or(Markup {
+        let markup = hover_markup(&[], Some(&h), None, plain()).unwrap_or(Markup {
             kind: MarkupKind::Markdown,
             value: String::new(),
         });
@@ -260,7 +378,7 @@ mod tests {
 
     #[test]
     fn nothing_at_all_yields_none() {
-        assert!(hover_markup(&[], None, None, false).is_none());
+        assert!(hover_markup(&[], None, None, plain()).is_none());
     }
 
     #[test]
@@ -268,7 +386,7 @@ mod tests {
         let diags = [diag((0, 0), (0, 4), Severity::Error, "mismatched types")];
         let refs: Vec<&Diagnostic> = diags.iter().collect();
         let h = hover(MarkupKind::Markdown, "## fn main");
-        let markup = hover_markup(&refs, Some(&h), None, false).unwrap_or(Markup {
+        let markup = hover_markup(&refs, Some(&h), None, plain()).unwrap_or(Markup {
             kind: MarkupKind::PlainText,
             value: String::new(),
         });
@@ -283,7 +401,7 @@ mod tests {
         let diags = [diag((0, 0), (0, 4), Severity::Hint, "unused")];
         let refs: Vec<&Diagnostic> = diags.iter().collect();
         let h = hover(MarkupKind::PlainText, "*not markdown*");
-        let markup = hover_markup(&refs, Some(&h), None, false).unwrap_or(Markup {
+        let markup = hover_markup(&refs, Some(&h), None, plain()).unwrap_or(Markup {
             kind: MarkupKind::PlainText,
             value: String::new(),
         });
@@ -293,7 +411,7 @@ mod tests {
     #[test]
     fn an_extra_section_leads_and_composes_with_the_hover() {
         let h = hover(MarkupKind::Markdown, "docs");
-        let markup = hover_markup(&[], Some(&h), Some("**serde** `1.0` — up to date"), false)
+        let markup = hover_markup(&[], Some(&h), Some("**serde** `1.0` — up to date"), plain())
             .unwrap_or(Markup {
                 kind: MarkupKind::PlainText,
                 value: String::new(),
@@ -313,7 +431,7 @@ mod tests {
         );
         d.source = Some("typescript".to_owned());
         let refs = [&d];
-        let markup = hover_markup(&refs, None, None, true).unwrap_or(Markup {
+        let markup = hover_markup(&refs, None, None, (true, Path::new("/w"))).unwrap_or(Markup {
             kind: MarkupKind::PlainText,
             value: String::new(),
         });
@@ -324,7 +442,7 @@ mod tests {
             "{}",
             markup.value
         );
-        let raw = hover_markup(&refs, None, None, false).unwrap_or(Markup {
+        let raw = hover_markup(&refs, None, None, plain()).unwrap_or(Markup {
             kind: MarkupKind::PlainText,
             value: String::new(),
         });
@@ -335,7 +453,7 @@ mod tests {
     fn diagnostic_document_labels_and_separates() {
         let a = diag((0, 0), (0, 4), Severity::Error, "first");
         let b = diag((0, 0), (0, 4), Severity::Warning, "second");
-        let doc = diagnostic_document(&[&a, &b], false);
+        let doc = diagnostic_document(&[&a, &b], plain());
         assert!(doc.starts_with("**error** _(test-lsp)_\n\nfirst"), "{doc}");
         assert!(doc.contains("\n\n---\n\n**warning**"), "{doc}");
     }
@@ -344,7 +462,7 @@ mod tests {
     fn diagnostics_alone_still_open_the_popup() {
         let diags = [diag((0, 0), (0, 4), Severity::Warning, "shadowed")];
         let refs: Vec<&Diagnostic> = diags.iter().collect();
-        let markup = hover_markup(&refs, None, None, false).unwrap_or(Markup {
+        let markup = hover_markup(&refs, None, None, plain()).unwrap_or(Markup {
             kind: MarkupKind::PlainText,
             value: String::new(),
         });

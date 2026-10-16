@@ -225,6 +225,23 @@ pub(crate) enum ServerCmd {
     CodeLens(CodeLensCmd),
 }
 
+/// How a server's diagnostic set reached the client.
+///
+/// A server may do both at once: rust-analyzer, offered pull, stops publishing
+/// its own diagnostics but keeps publishing `cargo check`'s. Each feed is a
+/// complete set for what it covers, so each replaces only its own layer and
+/// the two are shown together.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum DiagnosticFeed {
+    /// `textDocument/publishDiagnostics`.
+    Pushed,
+    /// The answer to a `textDocument/diagnostic` pull.
+    Pulled,
+}
+
+/// One server diagnostic layer of a document: a slot's set from one feed.
+pub(crate) type DiagnosticLayer = (SlotKey, DiagnosticFeed);
+
 /// What one formatting request asks of its server beyond the document itself.
 ///
 /// Carried per request rather than read from the manager's settings: these are
@@ -536,6 +553,9 @@ pub(crate) enum LspUpdate {
         path: PathBuf,
         /// LSP document version, when the server supplied it.
         version: Option<i32>,
+        /// Whether the server published these or answered a pull; each feed
+        /// is its own layer.
+        feed: DiagnosticFeed,
         /// Diagnostics in UTF-16 coordinates.
         diagnostics: Vec<Diagnostic>,
     },

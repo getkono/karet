@@ -19,6 +19,7 @@ fn diagnostic(
         message: message.to_owned(),
         source: None,
         code: None,
+        code_href: None,
         tags: Vec::new(),
         related: Vec::new(),
     }

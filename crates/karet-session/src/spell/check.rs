@@ -141,6 +141,7 @@ fn push_diagnostic(
         message,
         source: Some(SPELL_SOURCE.to_owned()),
         code: Some(input.spelling_language.locale().to_owned()),
+        code_href: None,
         tags: Vec::new(),
         related: Vec::new(),
     });
