@@ -25,6 +25,7 @@ use serde_json::Value;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncWrite;
 use tokio::sync::broadcast;
+use tokio::sync::watch;
 
 use crate::LspError;
 use crate::PublishedDiagnostics;
@@ -97,6 +98,9 @@ pub(crate) struct LspHandler {
     ///
     /// [`LspClient`]: crate::LspClient
     gate: Arc<RwLock<Gate>>,
+    /// Marked changed whenever a registration turns a feature on or off, so a
+    /// consumer that skipped a document for want of a feature asks again.
+    registrations: Arc<watch::Sender<()>>,
     /// The diagnostics the server last published per file, exactly as it sent
     /// them, for the code-action context.
     ///
@@ -127,6 +131,7 @@ impl Default for LspHandler {
             diagnostics,
             refreshes,
             gate: Arc::default(),
+            registrations: Arc::new(watch::channel(()).0),
             published: Arc::default(),
             progress,
             messages,
@@ -245,10 +250,12 @@ impl karet_jsonrpc::Handler for LspHandler {
         match method {
             "client/registerCapability" => {
                 self.register(params);
+                self.registrations.send_replace(());
                 Ok(Value::Null)
             },
             "client/unregisterCapability" => {
                 self.unregister(params);
+                self.registrations.send_replace(());
                 Ok(Value::Null)
             },
             // Answered at once, before anyone has re-asked: the request only
@@ -393,6 +400,11 @@ impl Connection {
     /// the same way a pushed one does.
     pub(crate) fn remember_diagnostics(&self, path: &Path, wire: &[lsp_types::Diagnostic]) {
         remember(&self.0.handler().published, path, wire);
+    }
+
+    /// Subscribe to changes in what the server registered.
+    pub(crate) fn registrations(&self) -> watch::Receiver<()> {
+        self.0.handler().registrations.subscribe()
     }
 
     /// Subscribe to the server's refresh requests.

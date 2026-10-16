@@ -1167,6 +1167,20 @@ impl LspClient {
         self.conn.refreshes()
     }
 
+    /// Subscribe to changes in what this server may be asked for which
+    /// documents.
+    ///
+    /// Every `client/registerCapability` and `client/unregisterCapability`
+    /// marks the receiver changed. A receiver starts with the current state
+    /// seen, so a consumer that subscribes and then reads
+    /// [`supports_for`](Self::supports_for) misses nothing: a registration
+    /// that arrived earlier is in the gate, and one that arrives later wakes
+    /// [`changed`](tokio::sync::watch::Receiver::changed).
+    #[must_use]
+    pub fn registrations(&self) -> tokio::sync::watch::Receiver<()> {
+        self.conn.registrations()
+    }
+
     /// Subscribe to every server-initiated notification, undecoded (see
     /// [`RawNotification`]). Slow subscribers drop the oldest entries.
     #[must_use]

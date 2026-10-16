@@ -202,3 +202,19 @@ async fn unregistering_never_disables_an_advertised_feature() -> TestResult {
     assert!(client.supports_for(ServerFeature::Hover, doc));
     Ok(())
 }
+
+#[tokio::test]
+async fn a_registration_or_its_withdrawal_marks_the_registrations_receiver() -> TestResult {
+    let (client, mut server) = connect(json!({})).await?;
+    let mut registrations = client.registrations();
+    assert!(!registrations.has_changed()?, "nothing registered yet");
+
+    register(&mut server, "pull", "textDocument/diagnostic", json!({})).await;
+    assert!(registrations.has_changed()?);
+    registrations.borrow_and_update();
+    assert!(client.supports_for(ServerFeature::PullDiagnostics, Path::new("/w/a.rs")));
+
+    unregister(&mut server, "pull", "textDocument/diagnostic").await;
+    assert!(registrations.has_changed()?);
+    Ok(())
+}
