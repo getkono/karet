@@ -50,6 +50,47 @@ impl Session {
         }
     }
 
+    // --- persisted undo ---------------------------------------------------
+
+    /// Give a freshly loaded `buffer` for `path` the configured undo cap, and —
+    /// with `files.persistentUndo` on — the undo history a previous session
+    /// left for it. A history whose content fingerprint no longer matches the
+    /// file (it was edited elsewhere since) is deleted rather than restored.
+    pub(super) fn prepare_undo(&self, path: &Path, buffer: &mut TextBuffer) {
+        buffer.set_undo_limit(self.config.settings.files.undo_cap());
+        if !self.config.settings.files.persistent_undo {
+            return;
+        }
+        let Some(store) = self.swaps.as_ref() else {
+            return;
+        };
+        if let Some(history) = store.read_undo(path)
+            && buffer.restore_history(history).is_err()
+        {
+            store.remove_undo(path);
+        }
+    }
+
+    /// Persist `doc_id`'s undo history, if its buffer matches what is on disk.
+    /// Called after a successful save and when a clean document closes — the
+    /// two moments the history describes the file's text. With
+    /// `files.persistentUndo` off, any history kept earlier is deleted instead,
+    /// so switching it off does not leave old edits on disk.
+    pub(super) fn persist_undo(&self, doc_id: DocumentId) {
+        let (Some(store), Some(doc)) = (self.swaps.as_ref(), self.store.docs.get(&doc_id)) else {
+            return;
+        };
+        if !self.config.settings.files.persistent_undo {
+            store.remove_undo(&doc.path);
+            return;
+        }
+        if doc.must_create || doc.buffer.is_dirty() {
+            return;
+        }
+        // A failed write only costs undo across the next restart.
+        let _ = store.write_undo(&doc.path, &doc.buffer.history_snapshot());
+    }
+
     // --- visualizations ---------------------------------------------------
 
     /// Build the workspace package-dependency graph and emit it, or surface a failure

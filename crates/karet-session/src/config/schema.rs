@@ -614,6 +614,24 @@ pub struct Files {
     pub backup_interval: u64,
     /// Prompt to save unsaved changes when quitting (rather than discarding them).
     pub confirm_on_exit: bool,
+    /// The most undo steps kept per buffer; the oldest are forgotten first.
+    /// `0` keeps every step (no cap).
+    pub undo_limit: u64,
+    /// Keep undo history across restarts: it is written next to the
+    /// crash-recovery swaps when a file is saved or closed, and restored when
+    /// the file is reopened unchanged.
+    pub persistent_undo: bool,
+}
+
+impl Files {
+    /// [`Self::undo_limit`] as a buffer cap: `None` (no cap) for `0`.
+    #[must_use]
+    pub fn undo_cap(&self) -> Option<usize> {
+        match self.undo_limit {
+            0 => None,
+            limit => Some(usize::try_from(limit).unwrap_or(usize::MAX)),
+        }
+    }
 }
 
 impl Default for Files {
@@ -628,6 +646,8 @@ impl Default for Files {
             backup: true,
             backup_interval: 30_000,
             confirm_on_exit: true,
+            undo_limit: 1000,
+            persistent_undo: false,
         }
     }
 }
@@ -961,6 +981,23 @@ mod tests {
         assert!(s.editor.completion.enabled, "completion defaults on (#57)");
         assert!(s.editor.completion.auto_trigger, "auto-trigger defaults on");
         assert!(s.lsp.servers.is_empty(), "no user overrides by default");
+    }
+
+    #[test]
+    fn undo_settings_default_to_a_cap_and_no_persistence() {
+        let files = Files::default();
+        assert_eq!(files.undo_limit, 1000);
+        assert_eq!(files.undo_cap(), Some(1000));
+        assert!(!files.persistent_undo, "persistent undo is opt-in");
+    }
+
+    #[test]
+    fn a_zero_undo_limit_lifts_the_cap() {
+        let parse = |json: &str| serde_json::from_str::<Files>(json).unwrap_or_default();
+        let unbounded = parse(r#"{ "undoLimit": 0, "persistentUndo": true }"#);
+        assert_eq!(unbounded.undo_cap(), None);
+        assert!(unbounded.persistent_undo);
+        assert_eq!(parse(r#"{ "undoLimit": 5 }"#).undo_cap(), Some(5));
     }
 
     /// The bound is the JSON-RPC request timeout at the top and one millisecond

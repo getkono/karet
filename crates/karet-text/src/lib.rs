@@ -29,6 +29,7 @@ mod save;
 pub use apply::Applied;
 pub use history::EditContext;
 use history::History;
+pub use history::HistorySnapshot;
 pub use karet_core::AppliedEdit;
 pub use karet_core::EditCause;
 pub use lines::lines;
@@ -67,6 +68,10 @@ pub enum TextError {
     /// refused rather than silently overwriting someone else's change.
     #[error("file changed on disk since it was last read")]
     Conflict,
+    /// A [`HistorySnapshot`] was restored onto text other than the text it was
+    /// taken from.
+    #[error("undo history belongs to different content")]
+    HistoryMismatch,
 }
 
 /// A headless, editable text buffer backed by a rope.
@@ -243,7 +248,52 @@ impl TextBuffer {
         self.mixed_eol = content.mixed_eol;
         self.saved_state = content.saved_state;
         self.version += 1;
-        self.history = History::default();
+        self.history = self.history.cleared();
+    }
+
+    /// The most undo steps this buffer keeps, or `None` when history is
+    /// unbounded (the default).
+    #[must_use]
+    pub fn undo_limit(&self) -> Option<usize> {
+        self.history.limit()
+    }
+
+    /// Keep at most `limit` undo steps, forgetting the oldest once a new one
+    /// would exceed it; `None` lifts the cap. Lowering the cap below what the
+    /// history already holds forgets the excess at once. `Some(0)` keeps no
+    /// undo at all.
+    pub fn set_undo_limit(&mut self, limit: Option<usize>) {
+        self.history.set_limit(limit);
+    }
+
+    /// How many undo steps are available (a coalesced run of typing is one).
+    #[must_use]
+    pub fn undo_len(&self) -> usize {
+        self.history.undo_len()
+    }
+
+    /// A serializable copy of the undo/redo history, tagged with a fingerprint
+    /// of the current text so it can only be restored onto that text.
+    #[must_use]
+    pub fn history_snapshot(&self) -> HistorySnapshot {
+        self.history.snapshot(text_hash(&self.rope))
+    }
+
+    /// Replace the undo/redo history with `snapshot`, which must have been taken
+    /// from a buffer holding exactly this text. The restored head becomes the
+    /// save point and this buffer's undo cap still applies. The version is
+    /// bumped, so no later cursor report is attributed to a restored step.
+    ///
+    /// # Errors
+    /// Returns [`TextError::HistoryMismatch`] (leaving history untouched) when the
+    /// snapshot was taken from different text: its edits would not line up.
+    pub fn restore_history(&mut self, snapshot: HistorySnapshot) -> Result<(), TextError> {
+        if snapshot.content_hash() != text_hash(&self.rope) {
+            return Err(TextError::HistoryMismatch);
+        }
+        self.history = self.history.restored(snapshot, self.version);
+        self.version += 1;
+        Ok(())
     }
 
     /// Convert an absolute byte offset to a line/column position.
