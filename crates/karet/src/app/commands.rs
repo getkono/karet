@@ -151,7 +151,13 @@ impl App {
             Command::ColumnSelectDown => self.column_select_step(ColumnStep::Down),
             Command::ColumnSelectLeft => self.column_select_step(ColumnStep::Left),
             Command::ColumnSelectRight => self.column_select_step(ColumnStep::Right),
-            Command::AddCursorNextOccurrence => self.add_cursor_next_occurrence(),
+            Command::AddCursorNextOccurrence => self.caret_op(EditorState::add_next_occurrence),
+            Command::SelectAllOccurrences => self.caret_op(EditorState::select_all_occurrences),
+            Command::SkipOccurrence => self.caret_op(EditorState::skip_occurrence),
+            Command::UndoCaretOperation => self.caret_op(|editor, buffer| {
+                editor.undo_caret_operation(buffer);
+            }),
+            Command::AddCursorsToLineEnds => self.caret_op(EditorState::add_cursors_to_line_ends),
             Command::GoToBracket => self.bracket_command(false),
             Command::SelectToBracket => self.bracket_command(true),
             Command::ExpandSelection => self.expand_selection(),

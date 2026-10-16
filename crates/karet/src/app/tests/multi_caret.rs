@@ -155,3 +155,42 @@ fn esc_keeps_the_original_caret_then_clears_its_selection() {
         ),
     ]);
 }
+
+/// Ctrl+Shift+L, Ctrl+K Ctrl+D, Shift+Alt+I and Ctrl+U, through the keymap.
+#[test]
+fn occurrence_line_end_and_caret_undo_chords() {
+    use KeyCode::*;
+    let ctrl_d = Step::Key(Char('d'), CTRL);
+    check(vec![
+        case(
+            "Ctrl+Shift+L selects every whole-word occurrence",
+            "f|oo food foo",
+            vec![Step::Key(Char('L'), CTRL | SHIFT)],
+            "[foo#] food [foo|]",
+        ),
+        case(
+            "Ctrl+K Ctrl+D moves the last occurrence on",
+            "f|oo foo foo",
+            vec![ctrl_d, ctrl_d, Step::Key(Char('k'), CTRL), ctrl_d],
+            "[foo|] foo [foo#]",
+        ),
+        case(
+            "Ctrl+U undoes the last Ctrl+D",
+            "f|oo foo",
+            vec![ctrl_d, ctrl_d, Step::Key(Char('u'), CTRL)],
+            "[foo|] foo",
+        ),
+        case(
+            "Shift+Alt+I puts a caret at each selected line's end",
+            "a[b\ncd\ne|]f",
+            vec![Step::Key(Char('I'), SHIFT | ALT)],
+            "ab|\ncd|\ne#f",
+        ),
+        case(
+            "typing after Shift+Alt+I appends to every line",
+            "[ab\ncd|]",
+            vec![Step::Key(Char('I'), SHIFT | ALT), key(Char(';'))],
+            "ab;|\ncd;#",
+        ),
+    ]);
+}

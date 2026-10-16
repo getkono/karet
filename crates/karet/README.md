@@ -168,7 +168,10 @@ action of that kind directly.
 
 **Editor — multi-cursor.** `Ctrl+Alt+↑`/`Ctrl+Alt+↓` add a caret above / below the
 primary; `Ctrl+D` selects the word under the caret, then adds a caret at the next
-occurrence (wrapping); `Alt+Click` adds or removes a caret and `Alt+Drag` extends the
+occurrence (wrapping), `Ctrl+K Ctrl+D` moves that last occurrence on to the next
+one, and `Ctrl+Shift+L` selects every occurrence at once; `Shift+Alt+I` puts a caret
+at the end of every selected line; `Ctrl+U` undoes the last of these caret
+operations; `Alt+Click` adds or removes a caret and `Alt+Drag` extends the
 newly-added one; `Shift+Alt+Click`/`Shift+Alt+Drag` select a box of display
 cells, one selection per line, and `Ctrl+Shift+Alt+arrows` grow the same box from
 the keyboard; `Esc` collapses back to a single caret. Typing, deletion and
