@@ -27,6 +27,7 @@ mod editor_drag;
 mod editor_mouse;
 mod explorer;
 mod external_edits;
+mod find_bar;
 mod github;
 mod gutter;
 pub(crate) mod harness;

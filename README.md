@@ -146,7 +146,8 @@ merge-conflict decorations, across panes, splits, and tabs.
 
 **Navigation.** An explorer with the full file-management set (new, rename, delete,
 cut/copy/paste, duplicate, context menu), a symbol outline, quick open, workspace
-find-and-replace with regex, case, and whole-word matching, a Todos panel that
+find-and-replace with regex, case, and whole-word matching (in-file find adds
+search in selection, preserve-case replace, and matches to carets), a Todos panel that
 collects codetags across the tree, and a Problems panel listing the diagnostics of
 every open file, grouped by file and filtered by severity (`s`) or text (`/`); the
 status bar's `E`/`W` counts open it.

@@ -156,6 +156,87 @@ fn replace_with_several_carets_replaces_one_match() {
     );
 }
 
+/// Open the find bar through its key, as a user does, and type `query`.
+fn open_find_typing(rig: &mut Rig, query: &str) {
+    rig.step(Step::Key(KeyCode::Char('f'), KeyModifiers::CONTROL));
+    for c in query.chars() {
+        rig.step(key(KeyCode::Char(c)));
+    }
+}
+
+#[test]
+fn alt_enter_in_the_query_turns_every_match_into_a_caret() {
+    let mut rig = Rig::new("|ab x ab x ab");
+    open_find_typing(&mut rig, "ab");
+    rig.step(key(KeyCode::Down));
+    rig.step(Step::Key(KeyCode::Enter, KeyModifiers::ALT));
+    // The match the counter named stays primary.
+    assert_eq!(rig.marked(), "[ab|] x [ab#] x [ab|]");
+    // The keys now edit the text at every caret, with the bar left open.
+    assert!(rig.app.find_open);
+    assert_eq!(rig.app.active_find().map(|f| f.focused), Some(false));
+    rig.step(key(KeyCode::Char('Z')));
+    assert_eq!(rig.marked(), "Z| x Z# x Z|");
+}
+
+#[test]
+fn alt_enter_selects_only_the_matches_in_the_selection_scope() {
+    // The scope is captured before typing: the search moves the caret, and
+    // with it the selection.
+    let mut rig = Rig::new("ab [ab ab|] ab");
+    open_find_typing(&mut rig, "");
+    rig.step(Step::Key(KeyCode::Char('l'), KeyModifiers::ALT));
+    for c in "ab".chars() {
+        rig.step(key(KeyCode::Char(c)));
+    }
+    rig.step(Step::Key(KeyCode::Enter, KeyModifiers::ALT));
+    assert_eq!(rig.marked(), "ab [ab#] [ab|] ab");
+}
+
+#[test]
+fn alt_enter_with_no_match_leaves_the_carets_and_the_bar_alone() {
+    let mut rig = Rig::new("ab |cd");
+    open_find_typing(&mut rig, "zz");
+    rig.step(Step::Key(KeyCode::Enter, KeyModifiers::ALT));
+    assert_eq!(rig.marked(), "ab |cd");
+    assert_eq!(rig.app.active_find().map(|f| f.focused), Some(true));
+}
+
+#[test]
+fn alt_enter_in_the_replace_field_still_replaces_every_match() {
+    let mut rig = Rig::new("ab |ab ab");
+    find(&mut rig, "ab", "xyz");
+    if let Some(find) = rig.app.active_find_mut() {
+        find.field = crate::tab::SearchField::Replace;
+        find.focused = true;
+    }
+    rig.app.find_open = true;
+    rig.step(Step::Key(KeyCode::Enter, KeyModifiers::ALT));
+    assert_eq!(text_of(&rig), "xyz xyz xyz");
+}
+
+#[test]
+fn ctrl_alt_enter_replaces_every_match_from_the_query_field() {
+    let mut rig = Rig::new("ab |ab ab");
+    open_find_typing(&mut rig, "ab");
+    if let Some(find) = rig.app.active_find_mut() {
+        find.replace = "c".to_string();
+    }
+    rig.step(Step::Key(
+        KeyCode::Enter,
+        KeyModifiers::CONTROL | KeyModifiers::ALT,
+    ));
+    assert_eq!(text_of(&rig), "c c c");
+}
+
+/// The active tab's text.
+fn text_of(rig: &Rig) -> String {
+    match &rig.tab().kind {
+        TabKind::Code { text, .. } => text.to_string(),
+        _ => String::new(),
+    }
+}
+
 /// A change the buffer rejects leaves the text and the carets alone and never
 /// reaches the session.
 #[test]
