@@ -23,7 +23,7 @@ path = "src/main.rs"
 # `--no-default-features` build compiles without the Gamut codec tree, `hayro`,
 # or the DOCX reader.
 [features]
-default = ["images", "pdf", "docx", "notebook", "notebook-kernels", "mermaid", "aicommit"]
+default = ["images", "pdf", "docx", "notebook", "notebook-kernels", "mermaid", "aicommit", "terminal"]
 # Decode & render raster image files (pulls the Gamut codec stack via
 # karet-fileview's `images` feature, which implies its shared `raster` primitives).
 images = ["karet-fileview/images", "dep:flate2"]
@@ -46,6 +46,10 @@ mermaid = ["karet-markdown/mermaid"]
 # embedders, but the shipped editor is exactly the embedder that wants one.
 # `git.aiCommit.enabled` still gates it at runtime, without a rebuild.
 aicommit = ["karet-session/aicommit"]
+# The integrated terminal pane: a shell on a pure-Rust PTY (`portable-pty`)
+# emulated by `alacritty_terminal`. Neither links a system C library; a lean
+# build drops both.
+terminal = ["dep:portable-pty", "dep:alacritty_terminal"]
 
 [dependencies]
 # Presentation/client half + the headless backend it drives through the Command/Event seam.
@@ -75,6 +79,8 @@ karet-editor.workspace = true
 karet-fileview.workspace = true       # read-only "render any file" primitives (hex/image/placeholder)
 karet-pdf = { workspace = true, optional = true }  # rasterize PDF pages (pure-Rust hayro); behind the `pdf` feature
 flate2 = { workspace = true, optional = true }     # zlib-compress preview images sent over Kitty graphics; behind `images`
+portable-pty = { workspace = true, optional = true }       # integrated terminal PTY; behind `terminal`
+alacritty_terminal = { workspace = true, optional = true } # integrated terminal VT emulation; behind `terminal`
 # External (app-level orchestration: runtime, CLI, plus the merged clipboard/input modules).
 ratatui.workspace = true
 crossterm.workspace = true
