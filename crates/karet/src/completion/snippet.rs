@@ -74,12 +74,20 @@ impl Grow {
     /// How `range` grows while the carets are on the stop whose ranges are
     /// `active`: at both ends when it is one of them (`own`), else at each
     /// end it shares with an active range it encloses -- `${1:foo ${2:bar}}`
-    /// typed at the end of `bar` extends stop 1 too -- else at neither.
+    /// typed at the end of `bar` extends stop 1 too -- else at neither. An
+    /// empty range encloses nothing, so a `$0` coinciding with an empty stop
+    /// (`let $1`) stays put after what is typed there.
     fn of(range: Range, own: bool, active: &[Range]) -> Self {
         if own {
             return Self {
                 start: true,
                 end: true,
+            };
+        }
+        if range.is_empty() {
+            return Self {
+                start: false,
+                end: false,
             };
         }
         let enclosed = || {
@@ -455,6 +463,27 @@ mod tests {
         assert_eq!(selected(&session), vec![span(at(0, 0), at(0, 8))]);
         assert!(session.step(true));
         assert_eq!(selected(&session), vec![span(at(0, 4), at(0, 7))]);
+        Ok(())
+    }
+
+    /// Falsified by a final stop that coincides with an empty stop growing
+    /// over what is typed there, so Tab selects the typed text for overwrite.
+    #[test]
+    fn a_coincident_empty_final_stop_stays_put() -> Result<(), String> {
+        // `let $1`, whose implicit `$0` sits at the same point.
+        let mut session = SnippetSession::new(
+            ViewId(1),
+            0,
+            &[at(0, 0)],
+            "let ",
+            &[stop(1, &[(4, 4)]), stop(0, &[(4, 4)])],
+        )
+        .ok_or("a session")?;
+        assert!(session.carry((0, 1), &[edit(span(at(0, 4), at(0, 4)), "x")]));
+        assert_eq!(selected(&session), vec![span(at(0, 4), at(0, 5))]);
+        assert!(session.step(true));
+        assert!(session.finished());
+        assert_eq!(selected(&session), vec![span(at(0, 5), at(0, 5))]);
         Ok(())
     }
 
