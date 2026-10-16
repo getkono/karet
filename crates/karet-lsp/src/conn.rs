@@ -267,6 +267,11 @@ impl karet_jsonrpc::Handler for LspHandler {
                 let _ = self.refreshes.send(ServerRefresh::InlayHints);
                 Ok(Value::Null)
             },
+            // Answered at once for the same reason.
+            "workspace/semanticTokens/refresh" => {
+                let _ = self.refreshes.send(ServerRefresh::SemanticTokens);
+                Ok(Value::Null)
+            },
             "workspace/configuration" => Ok(config::answer(&self.settings, params)),
             _ => answer_server_request(method, params),
         }
