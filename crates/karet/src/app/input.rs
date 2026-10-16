@@ -173,6 +173,11 @@ impl App {
                 if self.signature_key(key) {
                     return;
                 }
+                // A snippet session under them takes Tab, Shift+Tab and Esc
+                // while the caret is in the snippet.
+                if self.snippet_key(key) {
+                    return;
+                }
                 // A find bar left open behind the editor still closes on Esc
                 // from the text, as VS Code's does.
                 if key.code == KeyCode::Esc

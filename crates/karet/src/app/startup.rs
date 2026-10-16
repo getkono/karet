@@ -163,6 +163,7 @@ impl App {
             completion: None,
             completion_chars: HashMap::new(),
             completion_follow_up: None,
+            snippet: None,
             completion_matcher: karet_fuzzy::Matcher::new(),
             pending_hover: None,
             pending_expand: None,
