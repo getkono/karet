@@ -20,6 +20,7 @@ use super::hint_flight::FlightTag;
 use super::hint_flight::Flights;
 use super::hint_flight::HintAsk;
 use super::hint_flight::{self};
+use super::pull::Pulls;
 use super::*;
 
 /// Slack over the session's own deadline before this task stops waiting.
@@ -99,6 +100,8 @@ pub(super) async fn server_task(task: ServerTask) {
     let mut client: Option<Arc<LspClient>> = None;
     // So does a lightbulb probe, kept off the serial path the same way.
     let mut flights = Flights::default();
+    // And so does a diagnostic pull (see `pull`).
+    let mut pulls = Pulls::default();
     let mut diagnostic_task: Option<tokio::task::JoinHandle<()>> = None;
     let mut documents = HashMap::<PathBuf, OpenDocument>::new();
     let mut pending: Option<PendingChange> = None;
@@ -299,6 +302,13 @@ pub(super) async fn server_task(task: ServerTask) {
             }
         }
 
+        // Whatever the server has been sent since it was last asked -- an
+        // open, a replay, a flushed edit -- is pulled before the next wait.
+        if let Some(active) = client.as_ref() {
+            let unsent = pending.as_ref().map(|change| change.path.as_path());
+            pulls.launch_ready(active, &documents, unsent, (&updates, &key, token));
+        }
+
         // Four things can wake the connected loop. The connection dying on its
         // own is the one that was missing: without that arm a server that exits
         // while the user reads rather than types stays `Running` until the next
@@ -317,6 +327,7 @@ pub(super) async fn server_task(task: ServerTask) {
             health::Wake::Lost => {
                 let _ = client.take();
                 flights.abandon(&updates, generation);
+                pulls.abandon();
                 if let Some(task) = diagnostic_task.take() {
                     task.abort();
                 }
@@ -362,6 +373,7 @@ pub(super) async fn server_task(task: ServerTask) {
                 if dead {
                     let _ = client.take();
                     flights.abandon(&updates, generation);
+                    pulls.abandon();
                     if let Some(task) = diagnostic_task.take() {
                         task.abort();
                     }
@@ -895,6 +907,7 @@ pub(super) async fn server_task(task: ServerTask) {
         if dead {
             let _ = client.take();
             flights.abandon(&updates, generation);
+            pulls.abandon();
             if let Some(task) = diagnostic_task.take() {
                 task.abort();
             }
@@ -917,6 +930,7 @@ pub(super) async fn server_task(task: ServerTask) {
     // requests are answered, not dropped: an answer to a request is not a report
     // about the slot, so it is still true after retirement (see `accepts`).
     flights.shutdown(&updates, generation).await;
+    pulls.shutdown().await;
     if let Some(client) = client.and_then(Arc::into_inner) {
         let _ = client.shutdown().await;
     }
