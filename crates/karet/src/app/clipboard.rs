@@ -510,6 +510,23 @@ mod tests {
     }
 
     #[test]
+    fn reindent_moves_every_line_by_the_first_lines_shift() {
+        // Deeper lines keep their depth past `base`; the first line's own
+        // indentation gives way to `target`.
+        assert_eq!(reindent("  a\n    b\n  c", "  ", "\t"), "\ta\n\t  b\n\tc");
+        // A shortfall below `base` comes off `target`, down to nothing.
+        assert_eq!(
+            reindent("a\n  b\nc", "    ", "      "),
+            "      a\n    b\n  c"
+        );
+        assert_eq!(reindent("a\nb", "    ", "  "), "  a\nb");
+        // Blank lines, and indentation that does not extend `base`, stay.
+        assert_eq!(reindent("a\n  \n\tb", "    ", "  "), "  a\n  \n\tb");
+        // A blank first line takes no indentation; a final newline stays.
+        assert_eq!(reindent("\n  b\n", "", "  "), "\n    b\n");
+    }
+
+    #[test]
     fn line_cut_of_an_empty_buffer_is_nothing() {
         let buffer = TextBuffer::from_text("");
         assert!(line_cut(&buffer, (0, 0), 0, 0).is_none());
