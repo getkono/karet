@@ -230,6 +230,18 @@
         }
       ]
     },
+    "BracketPairColorization": {
+      "description": "`editor.bracketPairColorization.*` — colouring brackets by nesting depth.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Colour each `()`, `[]` and `{}` pair by its nesting depth, cycling\nthrough three of the theme's colours. Off by default: the colours\ncompete with syntax highlighting for attention.",
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    },
     "ColorHighlight": {
       "description": "`editor.colorHighlight.*` — inline swatches on color literals.",
       "type": "object",
@@ -422,6 +434,13 @@
           "$ref": "#/$defs/AutoClosing",
           "default": "languageDefined"
         },
+        "bracketPairColorization": {
+          "description": "`editor.bracketPairColorization.*` — brackets coloured by nesting depth.",
+          "$ref": "#/$defs/BracketPairColorization",
+          "default": {
+            "enabled": false
+          }
+        },
         "colorHighlight": {
           "description": "Inline swatches on color literals (hex, `rgb()`, `hsl()`).",
           "$ref": "#/$defs/ColorHighlight",
@@ -462,6 +481,14 @@
             "null"
           ],
           "default": null
+        },
+        "guides": {
+          "description": "`editor.guides.*` — vertical guides at each indentation level.",
+          "$ref": "#/$defs/Guides",
+          "default": {
+            "highlightActiveIndentation": true,
+            "indentation": true
+          }
         },
         "hover": {
           "description": "The hover popup (documentation + diagnostics at the caret).",
@@ -512,6 +539,11 @@
           "description": "Re-render TypeScript diagnostics as markdown (quoted types lifted into\nhighlighted code blocks) wherever rich rendering is available.",
           "type": "boolean",
           "default": true
+        },
+        "renderWhitespace": {
+          "description": "Which whitespace characters are drawn visibly (`·` for a space, `→`\nfor a tab).",
+          "$ref": "#/$defs/RenderWhitespace",
+          "default": "none"
         },
         "rulers": {
           "description": "Columns to draw vertical rulers after (empty = none).",
@@ -885,6 +917,23 @@
             "null"
           ],
           "default": null
+        }
+      },
+      "additionalProperties": false
+    },
+    "Guides": {
+      "description": "`editor.guides.*` — vertical guides at each indentation level.",
+      "type": "object",
+      "properties": {
+        "highlightActiveIndentation": {
+          "description": "Draw the guide of the block holding the caret in a brighter colour.",
+          "type": "boolean",
+          "default": true
+        },
+        "indentation": {
+          "description": "Draw a guide at each indentation level, every `tabSize` columns of a\nline's leading whitespace.",
+          "type": "boolean",
+          "default": true
         }
       },
       "additionalProperties": false
@@ -1325,6 +1374,36 @@
         }
       },
       "additionalProperties": false
+    },
+    "RenderWhitespace": {
+      "description": "Which whitespace characters are drawn visibly (`editor.renderWhitespace`):\na space as `·`, a tab as `→`.",
+      "oneOf": [
+        {
+          "description": "None: whitespace stays blank.",
+          "type": "string",
+          "const": "none"
+        },
+        {
+          "description": "Every whitespace character except a single space between words.",
+          "type": "string",
+          "const": "boundary"
+        },
+        {
+          "description": "Only whitespace inside a selection.",
+          "type": "string",
+          "const": "selection"
+        },
+        {
+          "description": "Only whitespace at the end of a line.",
+          "type": "string",
+          "const": "trailing"
+        },
+        {
+          "description": "Every whitespace character.",
+          "type": "string",
+          "const": "all"
+        }
+      ]
     },
     "Seam": {
       "description": "`seam.*` — the Seam view.",
