@@ -359,6 +359,9 @@ pub enum ThemeRole {
     /// Split from [`SearchMatch`](Self::SearchMatch), which paints every other
     /// match, so the match a step or a replace lands on reads apart at a glance.
     SearchMatchCurrent,
+    /// Code-lens titles on their rows above the code they describe, VS Code's
+    /// `editorCodeLens.foreground`.
+    CodeLens,
 }
 
 #[cfg(test)]

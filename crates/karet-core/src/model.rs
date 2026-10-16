@@ -14,6 +14,7 @@ use crate::token::ThemeRole;
 
 mod completion;
 mod inlay;
+mod lens;
 
 pub use completion::CompletionItem;
 pub use completion::CompletionKind;
@@ -22,6 +23,10 @@ pub use completion::CompletionTrigger;
 pub use inlay::InlayHint;
 pub use inlay::InlayHintKind;
 pub use inlay::InlayHintLabelPart;
+pub use lens::CODE_LENS_SEPARATOR;
+pub use lens::CodeLens;
+pub use lens::CodeLensRow;
+pub use lens::CodeLensSpan;
 
 /// Severity of a [`Diagnostic`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -714,6 +719,12 @@ mod tests {
         rt(&VirtualText::inline(0, 4, ": i32", ThemeRole::InlayHint))?;
         rt(&VirtualLine::above(1, "Run test", ThemeRole::Muted))?;
         rt(&VirtualLine::below(1, "- old", ThemeRole::Muted))?;
+        rt(&CodeLens {
+            title: Some("Run".into()),
+            command: Some(CommandId("run".into())),
+            payload: Some("{}".into()),
+            ..CodeLens::default()
+        })?;
         rt(&Symbol {
             name: "f".into(),
             kind: SymbolKind::Function,

@@ -1,5 +1,7 @@
 use super::*;
 
+mod code_lens;
+
 impl Session {
     pub(super) fn handle_lsp_command(&mut self, id: RequestId, command: &Command) -> bool {
         let job = match command {
@@ -81,6 +83,14 @@ impl Session {
             },
             Command::SelectionRanges { doc, positions } => {
                 self.selection_ranges(id, *doc, positions);
+                return true;
+            },
+            Command::CodeLenses { doc, lines } => {
+                self.code_lenses(id, *doc, *lines);
+                return true;
+            },
+            Command::RunCodeLens { doc, lens } => {
+                self.run_code_lens(id, *doc, lens.clone());
                 return true;
             },
             Command::RestartLanguageServer { server } => {

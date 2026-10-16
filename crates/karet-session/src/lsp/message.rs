@@ -29,6 +29,8 @@ use karet_lsp::Indentation;
 
 use super::code_actions::CodeActionAnswer;
 use super::code_actions::CodeActionCmd;
+use super::code_lens::CodeLensAnswer;
+use super::code_lens::CodeLensCmd;
 use super::delta::DocumentDelta;
 use super::slot::SlotKey;
 use super::slot::SlotToken;
@@ -218,6 +220,9 @@ pub(crate) enum ServerCmd {
     /// One step of listing or running code actions; always answered with an
     /// [`LspUpdate::CodeAction`].
     CodeAction(CodeActionCmd),
+    /// One code-lens step: a listing or a run; always answered with an
+    /// [`LspUpdate::CodeLens`].
+    CodeLens(CodeLensCmd),
 }
 
 /// What one formatting request asks of its server beyond the document itself.
@@ -515,6 +520,11 @@ pub(crate) enum LspUpdate {
     CodeAction {
         generation: u64,
         answer: CodeActionAnswer,
+    },
+    /// The answer to a [`ServerCmd::CodeLens`]; ranges in UTF-16 columns.
+    CodeLens {
+        generation: u64,
+        answer: CodeLensAnswer,
     },
     /// A complete server diagnostic layer for one file.
     Diagnostics {

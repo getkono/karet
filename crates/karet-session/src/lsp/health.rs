@@ -87,6 +87,8 @@ pub(super) enum Wake {
     Hint(HintAnswer),
     /// A launched lightbulb probe finished.
     Probe(Answer<Vec<karet_core::CodeAction>>),
+    /// A launched code-lens listing finished.
+    Lens(Answer<Vec<karet_core::CodeLens>>),
 }
 
 /// Wait for whichever comes first: a command, the pending edit's flush deadline, a
@@ -105,9 +107,14 @@ pub(super) async fn next_wake(
     let Some(client) = client else {
         return Wake::Command(rx.recv().await);
     };
-    let Flights { hints, probes } = flights;
+    let Flights {
+        hints,
+        probes,
+        lenses,
+    } = flights;
     let busy = hints.is_busy();
     let probing = probes.is_busy();
+    let listing = lenses.is_busy();
     if let Some(flush_at) = flush_at {
         // A deadline rather than a timeout on the next command: the debounce
         // measures quiet since the last *edit*, and a command that does not
@@ -119,6 +126,7 @@ pub(super) async fn next_wake(
             () = tokio::time::sleep_until(flush_at) => Wake::Quiet,
             Some(answer) = hints.next(), if busy => Wake::Hint(answer),
             Some(answer) = probes.next(), if probing => Wake::Probe(answer),
+            Some(answer) = lenses.next(), if listing => Wake::Lens(answer),
             cmd = rx.recv() => Wake::Command(cmd),
         }
     } else {
@@ -127,6 +135,7 @@ pub(super) async fn next_wake(
             () = client.closed() => Wake::Lost,
             Some(answer) = hints.next(), if busy => Wake::Hint(answer),
             Some(answer) = probes.next(), if probing => Wake::Probe(answer),
+            Some(answer) = lenses.next(), if listing => Wake::Lens(answer),
             cmd = rx.recv() => Wake::Command(cmd),
         }
     }

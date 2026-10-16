@@ -30,6 +30,7 @@ impl App {
         // An edited document's hint request goes out once typing pauses, and
         // has to without another keystroke to wake the loop.
         let inlay = self.inlay_next_wake(now);
+        let code_lens = self.code_lens_next_wake(now);
         // Likewise the lightbulb probe, once the caret has settled.
         let code_actions = self.code_action_next_wake(now);
         // Likewise a workspace-symbol query, once typing pauses.
@@ -57,6 +58,7 @@ impl App {
             loading,
             nested_repositories,
             inlay,
+            code_lens,
             code_actions,
             workspace_symbols,
             ai_commit,
@@ -175,6 +177,14 @@ impl App {
             } => self.on_inlay_hints(id, doc, version, hints),
             SessionEvent::InlayHintsFailed { doc, version } => {
                 self.on_inlay_hints_failed(id, doc, version);
+            },
+            SessionEvent::CodeLenses {
+                doc,
+                version,
+                lenses,
+            } => self.on_code_lenses(id, doc, version, lenses),
+            SessionEvent::CodeLensesFailed { doc, version } => {
+                self.on_code_lenses_failed(id, doc, version);
             },
             SessionEvent::InlayHintResolved { doc, hint } => {
                 self.on_inlay_hint_resolved(id, doc, hint);
@@ -345,6 +355,7 @@ impl App {
                 // the empty set returned during startup would be cached as
                 // authoritative and never re-asked.
                 self.invalidate_inlay_coverage();
+                self.invalidate_code_lens_coverage();
             },
             SessionEvent::Saved { doc } => {
                 self.reindex_saved_seam(doc);

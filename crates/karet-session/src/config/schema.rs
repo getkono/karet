@@ -343,6 +343,8 @@ pub struct Editor {
     pub hover: HoverPopup,
     /// `editor.inlayHints.*` — inferred types and parameter names drawn inline.
     pub inlay_hints: InlayHints,
+    /// Show the language server's code lenses on rows above the code they describe.
+    pub code_lens: bool,
     /// Inline swatches on color literals (hex, `rgb()`, `hsl()`).
     pub color_highlight: ColorHighlight,
     /// `editor.inlineDiagnostics.*` — which diagnostics show their message at
@@ -416,6 +418,7 @@ impl Default for Editor {
             completion: Completion::default(),
             hover: HoverPopup::default(),
             inlay_hints: InlayHints::default(),
+            code_lens: true,
             color_highlight: ColorHighlight::default(),
             inline_diagnostics: InlineDiagnostics::default(),
             language_overrides: BTreeMap::new(),

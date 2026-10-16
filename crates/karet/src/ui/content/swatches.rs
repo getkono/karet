@@ -203,13 +203,14 @@ pub(super) fn frame_decorations(
 /// Returns the slice; which `(hint, part)` each of its first texts is, in
 /// order, one per inlay-hint label part; and the blame's index in the slice.
 /// The last two are how what was painted is found again for its pointer
-/// targets.
+/// targets. Beside them, the document's code lenses as the rows the editor
+/// draws above their lines.
 pub(super) fn frame_virtual_text(
     ctx: &PaneCtx,
     doc: Option<DocumentId>,
     buffer: &TextBuffer,
     (diagnostics, cursors): (&[Diagnostic], &karet_core::CursorState),
-) -> (Vec<VirtualText>, Vec<(usize, usize)>, Option<usize>) {
+) -> FrameVirtual {
     let mut out: Vec<VirtualText> = Vec::new();
     let mut inlay_parts = Vec::new();
     for (index, hint) in doc
@@ -237,8 +238,23 @@ pub(super) fn frame_virtual_text(
         out.push(blame);
         out.len() - 1
     });
-    (out, inlay_parts, blame)
+    // The lens rows are the frame's only virtual lines, in the order
+    // `App::handle_code_lens_mouse` rebuilds them to find a click's lens.
+    let lenses = doc.and_then(|doc| ctx.code_lenses.get(&doc));
+    let rows = lenses.map(|lenses| crate::app::code_lens_rows(lenses, buffer, ctx.tab_width));
+    let lines = rows.into_iter().flatten().map(|row| row.line).collect();
+    (out, inlay_parts, blame, lines)
 }
+
+/// What [`frame_virtual_text`] returns: the virtual text; which `(hint,
+/// part)` each of its first texts is; the blame's index in it; and the code
+/// lens rows to draw as virtual lines.
+pub(super) type FrameVirtual = (
+    Vec<VirtualText>,
+    Vec<(usize, usize)>,
+    Option<usize>,
+    Vec<karet_core::VirtualLine>,
+);
 
 /// Where the editor painted each inlay-hint label part of `doc`, given which
 /// `(hint, part)` each of the first virtual texts was.
