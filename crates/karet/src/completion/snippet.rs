@@ -9,7 +9,8 @@
 //! caret that left the snippet.
 //!
 //! The session follows every edit the app applies: the stop being edited
-//! grows with what is typed at either end of it, the others only move, and a
+//! grows with what is typed at either end of it -- and so does a stop
+//! enclosing it, at an end the two share -- the others only move, and a
 //! stop that an edit swallowed whole -- a nested placeholder typed over --
 //! is gone.
 
@@ -60,11 +61,44 @@ fn map_before(pos: LineCol, edits: &[TextEdit]) -> LineCol {
     }
 }
 
-/// `range` through `edits`: grown by text inserted at either end when it is
-/// the stop being edited (`active`), else only moved. `None` when an edit
-/// replaced a larger span holding it whole -- one merely touching its edge
-/// (a final stop right after a placeholder) keeps it.
-fn map_range(range: Range, edits: &[TextEdit], active: bool) -> Option<Range> {
+/// Which ends of a stop's range take text inserted exactly at them.
+#[derive(Clone, Copy)]
+struct Grow {
+    /// Text inserted at the range's start joins it.
+    start: bool,
+    /// Text inserted at the range's end joins it.
+    end: bool,
+}
+
+impl Grow {
+    /// How `range` grows while the carets are on the stop whose ranges are
+    /// `active`: at both ends when it is one of them (`own`), else at each
+    /// end it shares with an active range it encloses -- `${1:foo ${2:bar}}`
+    /// typed at the end of `bar` extends stop 1 too -- else at neither.
+    fn of(range: Range, own: bool, active: &[Range]) -> Self {
+        if own {
+            return Self {
+                start: true,
+                end: true,
+            };
+        }
+        let enclosed = || {
+            active
+                .iter()
+                .filter(move |a| range.start <= a.start && a.end <= range.end)
+        };
+        Self {
+            start: enclosed().any(|a| a.start == range.start),
+            end: enclosed().any(|a| a.end == range.end),
+        }
+    }
+}
+
+/// `range` through `edits`: grown by text inserted at the ends `grow` names,
+/// else only moved. `None` when an edit replaced a larger span holding it
+/// whole -- one merely touching its edge (a final stop right after a
+/// placeholder) keeps it -- unless it is the stop being edited (`own`).
+fn map_range(range: Range, edits: &[TextEdit], own: bool, grow: Grow) -> Option<Range> {
     let swallowed = edits.iter().any(|e| {
         e.range != range
             && e.range.start <= range.start
@@ -72,19 +106,18 @@ fn map_range(range: Range, edits: &[TextEdit], active: bool) -> Option<Range> {
             && e.range.start < range.end
             && range.start < e.range.end
     });
-    if swallowed && !active {
+    if swallowed && !own {
         return None;
     }
-    let (start, end) = if active {
-        (
-            map_before(range.start, edits),
-            map_position(range.end, edits),
-        )
+    let start = if grow.start {
+        map_before(range.start, edits)
     } else {
-        (
-            map_position(range.start, edits),
-            map_before(range.end, edits),
-        )
+        map_position(range.start, edits)
+    };
+    let end = if grow.end {
+        map_position(range.end, edits)
+    } else {
+        map_before(range.end, edits)
     };
     Some(Range {
         start,
@@ -195,12 +228,13 @@ impl SnippetSession {
             return false;
         }
         let current = self.current;
+        let active = self.stops.get(current).cloned().unwrap_or_default();
         let mut kept = Vec::with_capacity(self.stops.len());
         for (index, ranges) in std::mem::take(&mut self.stops).into_iter().enumerate() {
-            let active = index == current;
+            let own = index == current;
             let ranges: Vec<Range> = ranges
                 .into_iter()
-                .filter_map(|range| map_range(range, edits, active))
+                .filter_map(|range| map_range(range, edits, own, Grow::of(range, own, &active)))
                 .collect();
             if ranges.is_empty() {
                 if index < current {
@@ -372,6 +406,55 @@ mod tests {
         assert_eq!(selected(&session), vec![span(at(0, 0), at(0, 2))]);
         assert!(session.step(true));
         assert_eq!(selected(&session), vec![span(at(0, 2), at(0, 3))]);
+        Ok(())
+    }
+
+    /// Falsified by an enclosing stop left short of what is typed at the
+    /// end (or start) it shares with the nested stop being edited, or by the
+    /// nested stop growing when the enclosing one is being edited.
+    #[test]
+    fn an_enclosing_stop_grows_with_its_nested_stop() -> Result<(), String> {
+        // `${1:foo ${2:bar}}` then `$0`, with the carets on stop 2.
+        let mut session = SnippetSession::new(
+            ViewId(1),
+            0,
+            &[at(0, 0)],
+            "foo bar",
+            &[stop(1, &[(0, 7)]), stop(2, &[(4, 7)]), stop(0, &[(7, 7)])],
+        )
+        .ok_or("a session")?;
+        assert!(session.step(true));
+        assert!(session.carry((0, 1), &[edit(span(at(0, 7), at(0, 7)), "s")]));
+        assert_eq!(selected(&session), vec![span(at(0, 4), at(0, 8))]);
+        assert!(session.step(false));
+        assert_eq!(selected(&session), vec![span(at(0, 0), at(0, 8))]);
+        // `${1:${2:bar} foo}` typed at the start of `bar` grows stop 1 too.
+        let mut session = SnippetSession::new(
+            ViewId(1),
+            0,
+            &[at(0, 0)],
+            "bar foo",
+            &[stop(1, &[(0, 7)]), stop(2, &[(0, 3)]), stop(0, &[(7, 7)])],
+        )
+        .ok_or("a session")?;
+        assert!(session.step(true));
+        assert!(session.carry((0, 1), &[edit(span(at(0, 0), at(0, 0)), "x")]));
+        assert_eq!(selected(&session), vec![span(at(0, 0), at(0, 4))]);
+        assert!(session.step(false));
+        assert_eq!(selected(&session), vec![span(at(0, 0), at(0, 8))]);
+        // On stop 1, typing at its end leaves the nested stop 2 alone.
+        let mut session = SnippetSession::new(
+            ViewId(1),
+            0,
+            &[at(0, 0)],
+            "foo bar",
+            &[stop(1, &[(0, 7)]), stop(2, &[(4, 7)]), stop(0, &[(7, 7)])],
+        )
+        .ok_or("a session")?;
+        assert!(session.carry((0, 1), &[edit(span(at(0, 7), at(0, 7)), "s")]));
+        assert_eq!(selected(&session), vec![span(at(0, 0), at(0, 8))]);
+        assert!(session.step(true));
+        assert_eq!(selected(&session), vec![span(at(0, 4), at(0, 7))]);
         Ok(())
     }
 
