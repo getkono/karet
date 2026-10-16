@@ -14,6 +14,7 @@ use std::collections::BTreeSet;
 use karet_core::CursorState;
 use karet_core::Selection;
 
+use super::autopair::SyntaxIndent;
 use super::*;
 use crate::clipboard::Copied;
 
@@ -38,6 +39,78 @@ fn line_len(buffer: &TextBuffer, line: u32) -> u32 {
     buffer
         .line(line as usize)
         .map_or(0, |l| u32::try_from(l.chars().count()).unwrap_or(u32::MAX))
+}
+
+/// The leading spaces and tabs of `line`.
+fn leading(line: &str) -> &str {
+    let solid = line.find(|c| c != ' ' && c != '\t').unwrap_or(line.len());
+    &line[..solid]
+}
+
+/// The leading whitespace of `buffer`'s `line`.
+fn line_indent(buffer: &TextBuffer, line: u32) -> String {
+    buffer
+        .line(line as usize)
+        .map_or_else(String::new, |l| leading(&l).to_owned())
+}
+
+/// `block` with its first line at `target` and every later line moved by the
+/// same amount, from `base`, the level the first line had where it came from.
+///
+/// A later line indented by `base` and more keeps its depth beyond it; one
+/// shallower than `base` keeps that shortfall below `target` (down to no
+/// indentation at all). A blank line, and one whose indentation is neither a
+/// prefix nor an extension of `base` (tabs against spaces), keep theirs.
+///
+/// A blank first line says nothing about the block's level, so then `base` is
+/// the indentation of the first line that is not blank, and that line lands at
+/// `target`.
+fn reindent(block: &str, base: &str, target: &str) -> String {
+    let blank = |line: &str| line.trim_matches([' ', '\t', '\r']).is_empty();
+    let base = if block.split('\n').next().is_some_and(blank) {
+        block
+            .split('\n')
+            .find(|line| !blank(line))
+            .map_or(base, leading)
+    } else {
+        base
+    };
+    let mut out = String::with_capacity(block.len());
+    for (row, line) in block.split('\n').enumerate() {
+        if row > 0 {
+            out.push('\n');
+        }
+        let ws = leading(line);
+        let rest = &line[ws.len()..];
+        if row == 0 {
+            if !blank(line) {
+                out.push_str(target);
+            }
+            out.push_str(rest);
+        } else if rest.trim_end_matches('\r').is_empty() {
+            out.push_str(line);
+        } else if let Some(deeper) = ws.strip_prefix(base) {
+            out.push_str(target);
+            out.push_str(deeper);
+            out.push_str(rest);
+        } else if base.starts_with(ws) {
+            let short = base.len() - ws.len();
+            out.push_str(
+                target
+                    .get(..target.len().saturating_sub(short))
+                    .unwrap_or(""),
+            );
+            out.push_str(rest);
+        } else {
+            out.push_str(line);
+        }
+    }
+    out
+}
+
+/// Whether `text` spans more than one line, a final newline aside.
+fn multi_line(text: &str) -> bool {
+    text.strip_suffix('\n').unwrap_or(text).contains('\n')
 }
 
 /// One deletion of `range`, leaving its caret at `caret`.
@@ -126,6 +199,11 @@ fn take(buffer: &TextBuffer, source: &str, cursors: &CursorState, base: u64) -> 
             .map(|range| range.and_then(|range| selection_text(buffer, source, range)))
             .collect();
         let pieces = order.iter().filter_map(|&i| texts[i].clone()).collect();
+        let indents = order
+            .iter()
+            .filter(|&&i| texts[i].is_some())
+            .map(|&i| line_indent(buffer, cursors.selections[i].range().start.line))
+            .collect();
         let cuts = cursors
             .selections
             .iter()
@@ -140,15 +218,20 @@ fn take(buffer: &TextBuffer, source: &str, cursors: &CursorState, base: u64) -> 
             copied: Copied {
                 pieces,
                 whole_lines: false,
+                indents,
             },
             cuts,
         };
     }
     let lines: BTreeSet<u32> = cursors.selections.iter().map(|s| s.head.line).collect();
-    let pieces = lines
+    let pieces: Vec<String> = lines
         .iter()
         .filter_map(|&line| buffer.line(line as usize))
         .map(|line| format!("{line}\n"))
+        .collect();
+    let indents = pieces
+        .iter()
+        .map(|piece| leading(piece).to_owned())
         .collect();
     let runs = runs(&lines);
     let cuts = cursors
@@ -168,9 +251,56 @@ fn take(buffer: &TextBuffer, source: &str, cursors: &CursorState, base: u64) -> 
         copied: Copied {
             pieces,
             whole_lines: true,
+            indents,
         },
         cuts,
     }
+}
+
+/// `piece` pasted over `range` (empty for a bare caret) of `buffer` against
+/// version `base`, re-indented as a block that starts its own line: the range
+/// starts where only indentation precedes it, and that indentation is replaced
+/// by the level `target` gives the line. `from` is the level the piece's first
+/// line had where it was copied, else its own indentation. `None` when the
+/// piece is one line, something precedes it on its line, or `target` gives the
+/// line no level, so the piece goes in as it is.
+fn own_line_paste(
+    buffer: &TextBuffer,
+    range: Range,
+    piece: &str,
+    from: Option<&str>,
+    base: u64,
+    target: &dyn Fn(u32) -> Option<String>,
+) -> Option<editing::Edit> {
+    if !multi_line(piece) {
+        return None;
+    }
+    let start = range.start;
+    let line = buffer.line(start.line as usize)?;
+    if !line
+        .chars()
+        .take(start.col as usize)
+        .all(|c| c == ' ' || c == '\t')
+    {
+        return None;
+    }
+    let to = target(start.line)?;
+    let text = reindent(piece, from.unwrap_or_else(|| leading(piece)), &to);
+    let line_start = LineCol::new(start.line, 0);
+    let range = Range {
+        start: line_start,
+        end: range.end,
+    };
+    Some(editing::insert(line_start, Some(range), base, &text))
+}
+
+/// The level a block pasted to start line `line` of `buffer` takes from
+/// `syntax`: the indentation a new line opened after the line above gets.
+/// `None` on the first line, and where the language's indent query gives none.
+fn paste_target(syntax: &SyntaxIndent, buffer: &TextBuffer, line: u32) -> Option<String> {
+    let above = line.checked_sub(1)?;
+    let end = LineCol::new(above, line_len(buffer, above));
+    syntax.for_range(buffer, Range { start: end, end })
 }
 
 /// The edit pasting `text` at every caret of `cursors` against version `base`.
@@ -183,11 +313,19 @@ fn take(buffer: &TextBuffer, source: &str, cursors: &CursorState, base: u64) -> 
 /// every piece dealt to them, in document order, or `text` once when every caret
 /// took all of it. Anywhere else the
 /// piece replaces the selection or goes in at the caret.
+///
+/// A piece of several lines that starts a line of its own (a whole-line block,
+/// or a piece going in where only indentation precedes it) is re-indented: its
+/// first line takes the level `target` gives the line it starts on, and the
+/// rest keep their depth relative to it. Where `target` gives none, the piece
+/// is one line, or another selection shares the line it goes in at, it goes in
+/// as it is.
 fn paste_edit(
+    buffer: &TextBuffer,
     cursors: &CursorState,
-    base: u64,
-    text: &str,
+    (base, text): (u64, &str),
     copied: Option<&Copied>,
+    target: &dyn Fn(u32) -> Option<String>,
 ) -> Option<editing::MultiEdit> {
     let count = cursors.selections.len();
     let lines: Vec<&str> = text
@@ -196,23 +334,31 @@ fn paste_edit(
         .split('\n')
         .collect();
     // `dealt`: each caret took a piece of its own, rather than all of `text`.
-    let (pieces, whole_lines, dealt): (Vec<&str>, bool, bool) = match copied {
-        Some(copied) if count > 1 && copied.pieces.len() == count => (
-            copied.pieces.iter().map(String::as_str).collect(),
-            copied.whole_lines,
-            true,
-        ),
-        _ if count > 1 && lines.len() == count => (lines, false, true),
-        _ => (
-            vec![text; count],
-            copied.is_some_and(|c| c.whole_lines),
-            false,
-        ),
-    };
+    // `indents`: the level each piece's first line had where karet copied it.
+    let (pieces, indents, whole_lines, dealt): (Vec<&str>, Vec<Option<&str>>, bool, bool) =
+        match copied {
+            Some(copied) if count > 1 && copied.pieces.len() == count => (
+                copied.pieces.iter().map(String::as_str).collect(),
+                (0..count)
+                    .map(|rank| copied.indents.get(rank).map(String::as_str))
+                    .collect(),
+                copied.whole_lines,
+                true,
+            ),
+            _ if count > 1 && lines.len() == count => (lines, vec![None; count], false, true),
+            _ => (
+                vec![text; count],
+                vec![copied.and_then(|c| c.indents.first()).map(String::as_str); count],
+                copied.is_some_and(|c| c.whole_lines),
+                false,
+            ),
+        };
     let order = in_document_order(cursors);
     let mut piece_of = vec![""; count];
+    let mut indent_of = vec![None; count];
     for (rank, &i) in order.iter().enumerate() {
         piece_of[i] = pieces[rank];
+        indent_of[i] = indents[rank];
     }
     // The whole-line text going in above each empty caret's line: every piece
     // dealt to a caret on that line, in document order, or `text` once when
@@ -234,20 +380,23 @@ fn paste_edit(
     let items: Vec<_> = cursors
         .selections
         .iter()
-        .zip(piece_of)
-        .map(|(selection, piece)| {
+        .zip(piece_of.into_iter().zip(indent_of))
+        .enumerate()
+        .map(|(i, (selection, (piece, from)))| {
             let range = selection.range();
-            if !range.is_empty() {
-                return (
-                    *selection,
-                    Some(editing::insert(selection.head, Some(range), base, piece)),
-                );
-            }
-            if !whole_lines {
-                return (
-                    *selection,
-                    Some(editing::insert(selection.head, None, base, piece)),
-                );
+            if !range.is_empty() || !whole_lines {
+                // Replacing the indentation before the caret would overlap
+                // another selection's edit on the same line.
+                let line = range.start.line;
+                let shared = cursors.selections.iter().enumerate().any(|(j, other)| {
+                    let other = other.range();
+                    j != i && other.start.line <= line && line <= other.end.line
+                });
+                let edit = (!shared)
+                    .then(|| own_line_paste(buffer, range, piece, from, base, target))
+                    .flatten()
+                    .unwrap_or_else(|| editing::insert(selection.head, Some(range), base, piece));
+                return (*selection, Some(edit));
             }
             let head = selection.head;
             let block = above.get(&head.line).map_or(piece, String::as_str);
@@ -256,6 +405,11 @@ fn paste_edit(
                 // this caret's piece included; this one moves down with it.
                 return (*selection, None);
             }
+            let reindented = multi_line(block)
+                .then(|| target(head.line))
+                .flatten()
+                .map(|to| reindent(block, leading(block), &to));
+            let block = reindented.as_deref().unwrap_or(block);
             let mut edit = editing::insert(LineCol::new(head.line, 0), None, base, block);
             let added = u32::try_from(block.matches('\n').count()).unwrap_or(u32::MAX);
             edit.caret = LineCol::new(head.line.saturating_add(added), head.col);
@@ -333,17 +487,33 @@ impl App {
     /// its text.
     pub(super) fn paste_into_editor(&mut self, text: &str) {
         let copied = self.clipboard.copied(text).cloned();
+        // Only a paste of several lines can re-indent, so only one parses.
+        let syntax = multi_line(text).then(|| self.syntax_indent()).flatten();
         let edit = match self.tabs.get(self.active) {
             Some(Tab {
                 kind:
                     TabKind::Code {
                         doc: Some(_),
+                        buffer,
                         next_version,
                         ..
                     },
                 editor,
                 ..
-            }) => paste_edit(editor.cursors(), *next_version, text, copied.as_ref()),
+            }) => {
+                let target = |line: u32| {
+                    syntax
+                        .as_ref()
+                        .and_then(|syntax| paste_target(syntax, buffer, line))
+                };
+                paste_edit(
+                    buffer,
+                    editor.cursors(),
+                    (*next_version, text),
+                    copied.as_ref(),
+                    &target,
+                )
+            },
             _ => None,
         };
         if let Some(edit) = edit {
@@ -361,6 +531,33 @@ mod tests {
         let lines: BTreeSet<u32> = [0, 1, 3, 5, 6, 7].into_iter().collect();
         assert_eq!(runs(&lines), vec![(0, 1), (3, 3), (5, 7)]);
         assert!(runs(&BTreeSet::new()).is_empty());
+    }
+
+    #[test]
+    fn reindent_moves_every_line_by_the_first_lines_shift() {
+        // Deeper lines keep their depth past `base`; the first line's own
+        // indentation gives way to `target`.
+        assert_eq!(reindent("  a\n    b\n  c", "  ", "\t"), "\ta\n\t  b\n\tc");
+        // A shortfall below `base` comes off `target`, down to nothing.
+        assert_eq!(
+            reindent("a\n  b\nc", "    ", "      "),
+            "      a\n    b\n  c"
+        );
+        assert_eq!(reindent("a\nb", "    ", "  "), "  a\nb");
+        // Blank lines, and indentation that does not extend `base`, stay.
+        assert_eq!(reindent("a\n  \n\tb", "    ", "  "), "  a\n  \n\tb");
+        // A blank first line takes no indentation, and the first line that is
+        // not blank gives the base instead, whatever was recorded; a final
+        // newline stays.
+        assert_eq!(reindent("\n  b\n", "", "  "), "\n  b\n");
+        assert_eq!(
+            reindent("\n    fn x() {\n        y();\n    }", "", "    "),
+            "\n    fn x() {\n        y();\n    }"
+        );
+        assert_eq!(
+            reindent("  \r\n\n  a\n    b", "  ", "\t"),
+            "\r\n\n\ta\n\t  b"
+        );
     }
 
     #[test]

@@ -28,6 +28,11 @@ pub struct Copied {
     /// Whether the pieces are whole lines, copied with no selection, so a paste
     /// inserts them above the caret's line rather than at the caret.
     pub whole_lines: bool,
+    /// Per piece, the indentation of the line it starts on where it was copied,
+    /// so a paste that re-indents a block measures it from the level its first
+    /// line had even when the copy began after that indentation. A piece with no
+    /// entry is measured from its own first line.
+    pub indents: Vec<String>,
 }
 
 impl Copied {
@@ -218,11 +223,13 @@ mod tests {
         let selections = Copied {
             pieces: vec!["a".into(), "b".into()],
             whole_lines: false,
+            indents: Vec::new(),
         };
         assert_eq!(selections.text(), "a\nb");
         let lines = Copied {
             pieces: vec!["a\n".into(), "b\n".into()],
             whole_lines: true,
+            indents: Vec::new(),
         };
         assert_eq!(lines.text(), "a\nb\n");
     }
@@ -233,6 +240,7 @@ mod tests {
         let copied = Copied {
             pieces: vec!["line\n".into()],
             whole_lines: true,
+            indents: Vec::new(),
         };
         clipboard.set_copied(copied.clone())?;
         assert_eq!(clipboard.get()?, "line\n");
