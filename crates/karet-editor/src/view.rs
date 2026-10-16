@@ -24,6 +24,39 @@ pub(crate) use display::gutter_width;
 /// chars — and keeps the width it has when the full line is measured.
 const GRAPHEME_LOOKAHEAD: u32 = 32;
 
+/// The chars of unwrapped line `l` that a row starting at column `start` with
+/// `room` cells can show, plus [`GRAPHEME_LOOKAHEAD`], and their
+/// [`cluster_widths`].
+///
+/// The window starts at `start + 2 × room` chars and doubles until the chars
+/// past `start` (the lookahead aside) cover `room` cells, or the line ends. It
+/// is sized by cells rather than chars because a cluster can be many chars to
+/// one glyph: a ZWJ family emoji is five chars in two cells, so a fixed char
+/// budget would stop painting well short of the right edge. A tab counts one
+/// cell and hints none, so the estimate never overshoots what the walk paints.
+fn row_window(buffer: &TextBuffer, l: u32, start: u32, room: u32) -> (Vec<char>, Vec<u32>) {
+    let mut visible = room.saturating_mul(2).max(1);
+    loop {
+        let cap = start
+            .saturating_add(visible)
+            .saturating_add(GRAPHEME_LOOKAHEAD);
+        let chars = line_chars_prefix(buffer, l, cap);
+        let widths = cluster_widths(&chars);
+        let measured = chars.len().saturating_sub(GRAPHEME_LOOKAHEAD as usize);
+        let covered: u32 = chars
+            .iter()
+            .zip(&widths)
+            .take(measured)
+            .skip(start as usize)
+            .map(|(&ch, &w)| if ch == '\t' { 1 } else { w })
+            .fold(0, u32::saturating_add);
+        if chars.len() < cap as usize || covered >= room || cap == u32::MAX {
+            return (chars, widths);
+        }
+        visible = visible.saturating_mul(2);
+    }
+}
+
 /// The editor widget: a builder over the buffer and the (borrowed) data layers
 /// the application supplies. Render it as a ratatui [`StatefulWidget`] with an
 /// [`EditorState`].
@@ -279,20 +312,16 @@ impl Editor<'_> {
         // Only the chars up to the row's right edge are copied out and walked,
         // so a minified line costs its visible window (plus the scrolled-off
         // prefix, whose widths decide the tab stops), not its whole length. An
-        // unwrapped row has no end column, so its window is bounded by the
-        // room left on screen instead: every char a cell-taking glyph needs
-        // at least one cell, so twice the room covers a row even when half
-        // its chars are zero-width marks.
-        let window_end = if range.end == u32::MAX {
-            range.start.saturating_add(room.saturating_mul(2))
+        // unwrapped row has no end column, so its window grows until the
+        // cells it covers fill the room left on screen.
+        let (chars, widths) = if range.end == u32::MAX {
+            row_window(self.buffer, l, range.start, room)
         } else {
-            range.end
+            let chars =
+                line_chars_prefix(self.buffer, l, range.end.saturating_add(GRAPHEME_LOOKAHEAD));
+            let widths = cluster_widths(&chars);
+            (chars, widths)
         };
-        let chars = line_chars_prefix(
-            self.buffer,
-            l,
-            window_end.saturating_add(GRAPHEME_LOOKAHEAD),
-        );
         let hl: &[HighlightSpan] = self.highlights.map_or(&[], |h| h.spans_in(line_span));
 
         let mut run = String::new();
@@ -303,7 +332,6 @@ impl Editor<'_> {
         // stops once the row is full rather than at the end of the line.
         let mut row_origin = None;
         let mut boff = 0_usize;
-        let widths = cluster_widths(&chars);
         let cells = |col: u32| widths.get(col as usize).copied().unwrap_or(0);
         // The shared horizontal scroll can start this row inside a cluster.
         // Its earlier chars took the cluster's cells off screen, so the chars
@@ -337,7 +365,9 @@ impl Editor<'_> {
                 break;
             }
             let origin = *row_origin.get_or_insert(display_col);
-            if display_col.saturating_sub(origin) >= room {
+            // Stop only at a char that takes cells, so the zero-width tail of
+            // the cluster in the row's last cell stays with it.
+            if display_col.saturating_sub(origin) >= room && (cells(col) > 0 || ch == '\t') {
                 break;
             }
             // The hint anchored here renders *before* this character but after

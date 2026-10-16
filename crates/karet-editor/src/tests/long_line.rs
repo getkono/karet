@@ -102,6 +102,35 @@ fn a_far_scrolled_minified_line_paints_its_window_in_its_colours() {
     }
 }
 
+/// Renders one unwrapped line `width` cells wide, scrolled to `scroll_col`.
+fn render_line(text: &str, width: u16, scroll_col: u32) -> Buffer {
+    let buffer = TextBuffer::from_text(text);
+    let mut state = EditorState::new();
+    state.scroll_col = scroll_col;
+    let area = Rect::new(0, 0, width, 1);
+    let mut target = Buffer::empty(area);
+    Editor::new(&buffer).render(area, &mut target, &mut state);
+    target
+}
+
+#[test]
+fn a_row_of_many_char_clusters_paints_to_the_right_edge() {
+    // Seven chars to one cell: a window of twice the room in chars would
+    // cover only a third of a seventeen-cell row.
+    let stacked = "e\u{301}\u{302}\u{303}\u{304}\u{306}\u{307}";
+    let target = render_line(&stacked.repeat(400), 20, 7 * 100);
+    for x in 3..20 {
+        assert_eq!(target[(x, 0)].symbol(), stacked, "cell {x}");
+    }
+
+    // A ZWJ family is five chars in two cells.
+    let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
+    let target = render_line(&family.repeat(400), 80, 5 * 100);
+    for x in (3..79).step_by(2) {
+        assert_eq!(target[(x, 0)].symbol(), family, "cell {x}");
+    }
+}
+
 #[test]
 fn a_long_line_scrolled_to_its_end_still_closes_with_its_trailing_hint() {
     let text = alphabet(10_000);
