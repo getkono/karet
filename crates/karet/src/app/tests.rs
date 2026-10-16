@@ -65,6 +65,7 @@ mod seam;
 mod search_completion;
 mod search_panel;
 mod signature;
+mod source_links;
 mod spellcheck;
 mod spelling_panel;
 mod startup;

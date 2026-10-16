@@ -45,7 +45,8 @@ fn navigation_title(kind: Option<LocationKind>) -> &'static str {
     }
 }
 
-/// The symbol under a Ctrl-held pointer, to be underlined as navigable.
+/// The symbol or source link under a Ctrl-held pointer, to be underlined as
+/// navigable.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct DefinitionHover {
     pub(crate) view: ViewId,
@@ -253,14 +254,29 @@ impl App {
         self.definition_hover = self.hovered_definition_symbol(mouse);
     }
 
-    /// The word under the pointer, when Ctrl is held over a symbol a click could
-    /// actually resolve.
+    /// What a Ctrl/Cmd+click at the pointer would follow, to be underlined: a
+    /// link written in the source, or else a symbol a click could actually
+    /// resolve.
     fn hovered_definition_symbol(&self, mouse: &MouseEvent) -> Option<DefinitionHover> {
         if !mouse
             .modifiers
             .intersects(KeyModifiers::CONTROL | KeyModifiers::SUPER)
         {
             return None;
+        }
+        let point = (mouse.column, mouse.row);
+        let area = self.focused_editor_area(point)?;
+        let tab = self.tabs.get(self.active)?;
+        // A link needs no language server: the click opens it directly. Alt or
+        // Shift hand the click back to the editor, so they promise no link.
+        let plain = !mouse
+            .modifiers
+            .intersects(KeyModifiers::ALT | KeyModifiers::SHIFT);
+        if let Some((range, _)) = self.source_link_under(area, point).filter(|_| plain) {
+            return Some(DefinitionHover {
+                view: tab.view,
+                range,
+            });
         }
         // Promise only what a click can deliver: this is the same condition under
         // which the backend finds a server to ask, so no probe request is needed.
@@ -269,23 +285,56 @@ impl App {
         {
             return None;
         }
-        let point = (mouse.column, mouse.row);
-        let frame = self
-            .pane_frames
-            .iter()
-            .find(|frame| rect_contains(frame.content_rect, point))?;
-        if frame.pane != self.focus_pane() || !rect_contains(frame.editor_rect, point) {
-            return None;
-        }
-        let tab = self.tabs.get(self.active)?;
         if !matches!(tab.kind, TabKind::Code { doc: Some(_), .. }) {
             return None;
         }
-        let (_, range) = self.identifier_under(frame.editor_rect, point)?;
+        let (_, range) = self.identifier_under(area, point)?;
         Some(DefinitionHover {
             view: tab.view,
             range,
         })
+    }
+
+    /// The editor viewport of the focused pane, when `point` is inside it.
+    ///
+    /// Only the focused pane's tabs are live in `tabs`/`active`, so this is
+    /// where a Ctrl-hover or a source-link click can be read at all.
+    pub(crate) fn focused_editor_area(&self, point: (u16, u16)) -> Option<Rect> {
+        let frame = self
+            .pane_frames
+            .iter()
+            .find(|frame| rect_contains(frame.content_rect, point))?;
+        (frame.pane == self.focus_pane() && rect_contains(frame.editor_rect, point))
+            .then_some(frame.editor_rect)
+    }
+
+    /// The link written in the active code tab's source under the pointer at
+    /// `point`, drawn in the editor viewport `area`: its range, in characters,
+    /// and its target as written.
+    ///
+    /// A bare URL links in any file; a Markdown file adds its inline
+    /// `[text](target)` links (see [`crate::autolink::source_links`]).
+    pub(crate) fn source_link_under(
+        &self,
+        area: Rect,
+        point: (u16, u16),
+    ) -> Option<(Range, String)> {
+        let pos = self.char_under(area, point)?;
+        let TabKind::Code { buffer, path, .. } = &self.tabs.get(self.active)?.kind else {
+            return None;
+        };
+        let line = buffer.line(pos.line as usize)?;
+        let markdown = karet_filetype::file_type_for_path(path).name() == "Markdown";
+        let (byte, _) = line.char_indices().nth(pos.col as usize)?;
+        let link = crate::autolink::source_links(&line, markdown)
+            .into_iter()
+            .find(|link| link.range.contains(&byte))?;
+        let col = |byte: usize| u32::try_from(line[..byte].chars().count()).ok();
+        let range = Range {
+            start: LineCol::new(pos.line, col(link.range.start)?),
+            end: LineCol::new(pos.line, col(link.range.end)?),
+        };
+        Some((range, link.target))
     }
 
     /// The identifier the pointer at `point` is on in the active code tab, drawn
@@ -344,7 +393,8 @@ impl App {
         (on_it && (pos.col as usize) < len).then_some(pos)
     }
 
-    /// The underline decoration for the Ctrl-hovered symbol in the active tab.
+    /// The underline decoration for the Ctrl-hovered symbol or source link in
+    /// the active tab.
     pub(crate) fn definition_underline_decoration(&self) -> Option<Decoration> {
         let hover = self.definition_hover?;
         let tab = self.tabs.get(self.active)?;
