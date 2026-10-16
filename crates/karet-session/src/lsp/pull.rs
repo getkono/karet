@@ -5,7 +5,9 @@
 //! been sent, and its answer joins the stream a publication takes: an
 //! [`LspUpdate::Diagnostics`] stamped with the version that was pulled, so the
 //! session drops one that arrives after the text moved on, exactly as it drops
-//! a stale publication.
+//! a stale publication. It is marked [`DiagnosticFeed::Pulled`], so it
+//! replaces only the pulled layer: a server that also publishes (rust-analyzer
+//! keeps publishing `cargo check`'s results) keeps its pushed set beside it.
 //!
 //! Pulls run as their own tasks, off the server task's serial path, and at
 //! most one per document: a newer version aborts the pull still in flight for
@@ -21,10 +23,12 @@ use std::sync::Arc;
 use karet_core::ServerFeature;
 use karet_lsp::LspClient;
 use tokio::sync::mpsc;
+use tokio::sync::watch;
 use tokio::task::AbortHandle;
 use tokio::task::JoinSet;
 
 use super::commands::OpenDocument;
+use super::message::DiagnosticFeed;
 use super::message::LspUpdate;
 use super::slot::SlotKey;
 use super::slot::SlotToken;
@@ -39,6 +43,10 @@ pub(super) struct Pulls {
     /// Every launched pull. Each holds the client, so they are stopped before
     /// a polite shutdown needs to own it outright.
     tasks: JoinSet<()>,
+    /// The connection's registration changes, subscribed on its first launch:
+    /// a registration arriving after a document was skipped for want of one
+    /// wakes the server task to ask again.
+    registrations: Option<watch::Receiver<()>>,
 }
 
 impl Pulls {
@@ -56,6 +64,10 @@ impl Pulls {
         pending: Option<&Path>,
         (updates, key, token): (&mpsc::UnboundedSender<LspUpdate>, &SlotKey, SlotToken),
     ) {
+        // Subscribed before any gate is read below, so a registration either
+        // is already in the gate or marks this receiver.
+        self.registrations
+            .get_or_insert_with(|| client.registrations());
         while self.tasks.try_join_next().is_some() {}
         self.asked.retain(|path, _| documents.contains_key(path));
         self.in_flight.retain(|path, handle| {
@@ -94,6 +106,7 @@ impl Pulls {
         self.tasks.abort_all();
         self.asked.clear();
         self.in_flight.clear();
+        self.registrations = None;
     }
 
     /// Stop every pull and wait until each has let go of the client.
@@ -101,6 +114,19 @@ impl Pulls {
         self.tasks.shutdown().await;
         self.asked.clear();
         self.in_flight.clear();
+        self.registrations = None;
+    }
+
+    /// Resolve when the connection's registrations change; never, before the
+    /// first launch or once the connection has gone.
+    pub(super) async fn registered(&mut self) {
+        let changed = match self.registrations.as_mut() {
+            Some(registrations) => registrations.changed().await.is_ok(),
+            None => false,
+        };
+        if !changed {
+            std::future::pending::<()>().await;
+        }
     }
 }
 
@@ -127,6 +153,7 @@ async fn pull(
             server: key.clone(),
             path,
             version: Some(version),
+            feed: DiagnosticFeed::Pulled,
             diagnostics,
         });
     }
@@ -136,6 +163,7 @@ async fn pull(
             server: key.clone(),
             path: related.path,
             version: related.version,
+            feed: DiagnosticFeed::Pulled,
             diagnostics: related.diagnostics,
         });
     }

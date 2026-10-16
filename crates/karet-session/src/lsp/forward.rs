@@ -9,6 +9,7 @@
 use karet_lsp::LspClient;
 use tokio::sync::mpsc;
 
+use super::message::DiagnosticFeed;
 use super::message::LspUpdate;
 use super::slot::SlotKey;
 use super::slot::SlotToken;
@@ -117,6 +118,7 @@ pub(super) fn forward_diagnostics(
                         server: key.clone(),
                         path: publication.path,
                         version: publication.version,
+                        feed: DiagnosticFeed::Pushed,
                         diagnostics: publication.diagnostics,
                     });
                 },

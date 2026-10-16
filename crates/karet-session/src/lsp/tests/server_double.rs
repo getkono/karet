@@ -101,6 +101,14 @@ pub(super) enum Behavior {
     /// one diagnostic naming the version the double last saw, and a report
     /// for the related `elsewhere.rs` beside the asking file.
     Pulls,
+    /// Pull like [`Behavior::Pulls`], and also publish one `checked`
+    /// diagnostic, without a version, for each opened document: rust-analyzer
+    /// keeps publishing `cargo check`'s results while it answers pulls.
+    PushesAndPulls,
+    /// Advertise no pull diagnostics, but register them dynamically
+    /// (`client/registerCapability`) once a document is opened, then answer
+    /// pulls like [`Behavior::Pulls`].
+    RegistersPulls,
 }
 
 /// What the scripted server advertises at the handshake.
@@ -150,7 +158,7 @@ fn advertised_capabilities(behavior: Behavior) -> Value {
     if matches!(behavior, Behavior::Incremental) {
         capabilities["textDocumentSync"] = json!({"openClose": true, "change": 2});
     }
-    if matches!(behavior, Behavior::Pulls) {
+    if matches!(behavior, Behavior::Pulls | Behavior::PushesAndPulls) {
         capabilities["diagnosticProvider"] =
             json!({"interFileDependencies": false, "workspaceDiagnostics": false});
     }
@@ -529,6 +537,37 @@ pub(super) fn test_connector(
                                     &mut server_write,
                                     &json!({"jsonrpc": "2.0", "id": "refresh-1",
                                         "method": "workspace/inlayHint/refresh"}),
+                                )
+                                .await;
+                            }
+                            if matches!(behavior, Behavior::PushesAndPulls) {
+                                write_msg(
+                                    &mut server_write,
+                                    &json!({"jsonrpc": "2.0",
+                                    "method": "textDocument/publishDiagnostics",
+                                    "params": {"uri": uri, "diagnostics": [{
+                                        "range": {
+                                            "start": {"line": 1, "character": 0},
+                                            "end": {"line": 1, "character": 1}
+                                        },
+                                        "message": "checked"
+                                    }]}}),
+                                )
+                                .await;
+                            }
+                            if matches!(behavior, Behavior::RegistersPulls) {
+                                write_msg(
+                                    &mut server_write,
+                                    &json!({"jsonrpc": "2.0", "id": "register-pull",
+                                    "method": "client/registerCapability",
+                                    "params": {"registrations": [{
+                                        "id": "pull",
+                                        "method": "textDocument/diagnostic",
+                                        "registerOptions": {
+                                            "interFileDependencies": false,
+                                            "workspaceDiagnostics": false
+                                        }
+                                    }]}}),
                                 )
                                 .await;
                             }

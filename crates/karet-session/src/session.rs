@@ -247,7 +247,10 @@ struct Document {
     /// One layer per [`SlotKey`](crate::lsp::SlotKey) -- one provider at one
     /// repository root -- so a server that dies or is retired takes only its own
     /// markers with it, and the same provider serving another root keeps its.
-    lsp_diagnostics: HashMap<crate::lsp::SlotKey, Vec<karet_core::Diagnostic>>,
+    /// Each slot has a layer per feed ([`DiagnosticLayer`](crate::lsp::DiagnosticLayer)),
+    /// so a server that both publishes and answers pulls never has one set
+    /// erase the other.
+    lsp_diagnostics: HashMap<crate::lsp::DiagnosticLayer, Vec<karet_core::Diagnostic>>,
     decorations: Vec<Decoration>,
     /// Open reference count (a path opened in N views shares one document).
     refs: u32,

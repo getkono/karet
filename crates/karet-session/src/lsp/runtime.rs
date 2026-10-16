@@ -320,6 +320,7 @@ pub(super) async fn server_task(task: ServerTask) {
             client.as_deref(),
             pending.is_some().then_some(flush_at),
             &mut flights,
+            &mut pulls,
         )
         .await;
         let mut dead = false;
@@ -409,6 +410,8 @@ pub(super) async fn server_task(task: ServerTask) {
                 code_lens::deliver(answer, &mut tally, &mut dead, &updates, slot, generation);
                 None
             },
+            // Back to the top, where the pulls a registration enabled launch.
+            health::Wake::Registered => continue,
             health::Wake::Command(None) => break, // the session dropped the manager
             health::Wake::Command(Some(cmd)) => Some(cmd),
         };
