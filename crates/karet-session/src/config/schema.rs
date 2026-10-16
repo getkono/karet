@@ -305,6 +305,13 @@ pub struct Editor {
     pub scroll_off: u16,
     /// Columns to draw vertical rulers after (empty = none).
     pub rulers: Vec<u16>,
+    /// `editor.guides.*` — vertical guides at each indentation level.
+    pub guides: Guides,
+    /// Which whitespace characters are drawn visibly (`·` for a space, `→`
+    /// for a tab).
+    pub render_whitespace: RenderWhitespace,
+    /// `editor.bracketPairColorization.*` — brackets coloured by nesting depth.
+    pub bracket_pair_colorization: BracketPairColorization,
     /// Override file-type wrapping: `null` uses the file default, `true` wraps,
     /// and `false` uses horizontal overflow.
     pub word_wrap: Option<bool>,
@@ -404,6 +411,9 @@ impl Default for Editor {
             graphical_cursor: None,
             scroll_off: 3,
             rulers: Vec::new(),
+            guides: Guides::default(),
+            render_whitespace: RenderWhitespace::None,
+            bracket_pair_colorization: BracketPairColorization::default(),
             word_wrap: None,
             sticky_scroll: true,
             middle_click_paste: None,
@@ -455,6 +465,10 @@ pub use aicommit::AiCommit;
 pub use aicommit::AiCommitAgent;
 pub use aicommit::AiCommitEffort;
 pub use aicommit::DEFAULT_TIMEOUT_MS as AI_COMMIT_DEFAULT_TIMEOUT_MS;
+pub use display::BracketPairColorization;
+pub use display::Guides;
+pub use display::LineNumbers;
+pub use display::RenderWhitespace;
 pub use inlay_hints::InlayHints;
 pub use inlay_hints::InlayHintsEnabled;
 pub use inline_diagnostics::DiagnosticSeverity;
@@ -474,6 +488,7 @@ pub use overrides::ResolvedInlineDiagnostics;
 pub use overrides::ResolvedSemanticComments;
 
 mod aicommit;
+mod display;
 mod inlay_hints;
 mod inline_diagnostics;
 mod lsp;
@@ -562,20 +577,6 @@ impl Default for SemanticComments {
             tags: karet_syntax::SemanticCommentConfig::default().tags,
         }
     }
-}
-
-/// How the line-number gutter is numbered.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(rename_all = "camelCase")]
-pub enum LineNumbers {
-    /// Absolute line numbers.
-    #[default]
-    On,
-    /// No numbers; a 2-cell gutter keeps the git, diagnostic and fold markers.
-    Off,
-    /// Numbers relative to the caret line (the caret line shows its absolute number).
-    Relative,
 }
 
 /// When typing an opening bracket or quote inserts its closing partner.

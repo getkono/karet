@@ -21,9 +21,11 @@ use super::AutoClosing;
 use super::Completion;
 use super::DiagnosticSeverity;
 use super::Editor;
+use super::Guides;
 use super::InlineDiagnostics;
 use super::InlineDiagnosticsMode;
 use super::LineNumbers;
+use super::RenderWhitespace;
 use super::SemanticComments;
 
 /// A normalized `[language]` key used by [`Editor::language_overrides`].
@@ -297,6 +299,25 @@ impl<'a> ResolvedEditor<'a> {
         self.override_
             .and_then(|o| o.rulers.as_deref())
             .unwrap_or(&self.base.rulers)
+    }
+
+    /// The indentation-guide settings (global: no per-language override).
+    #[must_use]
+    pub fn guides(self) -> Guides {
+        self.base.guides
+    }
+
+    /// Which whitespace is drawn visibly (global: no per-language override).
+    #[must_use]
+    pub fn render_whitespace(self) -> RenderWhitespace {
+        self.base.render_whitespace
+    }
+
+    /// Whether brackets are coloured by depth (global: no per-language
+    /// override).
+    #[must_use]
+    pub fn bracket_pair_colorization(self) -> bool {
+        self.base.bracket_pair_colorization.enabled
     }
 
     /// Final wrapping override.

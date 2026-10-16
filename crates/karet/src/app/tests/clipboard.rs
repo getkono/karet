@@ -195,9 +195,198 @@ fn line_pieces_for_carets_on_one_line() -> Result<(), crate::clipboard::Clipboar
         rig.app.clipboard.set_copied(crate::clipboard::Copied {
             pieces: pieces.iter().map(|p| (*p).to_string()).collect(),
             whole_lines: true,
+            indents: Vec::new(),
         })?;
         rig.run(&[ctrl('v')]);
         assert_eq!(rig.marked(), expect, "{name}");
     }
+    Ok(())
+}
+
+/// A paste of several lines that starts a line of its own lands at the level
+/// Rust's indent query gives that line, keeping the block's inner structure;
+/// one line, or a paste after other text on the line, goes in as it is.
+#[test]
+fn multi_line_paste_reindents_from_the_indent_query() -> Result<(), crate::clipboard::ClipboardError>
+{
+    let block = "if a {\n    b();\n}";
+    let deep = "        if a {\n            b();\n        }";
+    let rows = [
+        (
+            "a block from column 0, one level into the function",
+            "fn f() {\n|\n}",
+            block,
+            "fn f() {\n    if a {\n        b();\n    }|\n}",
+        ),
+        (
+            "a deeper block comes out to the caret's level",
+            "fn f() {\n|\n}",
+            deep,
+            "fn f() {\n    if a {\n        b();\n    }|\n}",
+        ),
+        (
+            "the indentation before the caret is replaced by the level",
+            "fn f() {\n  |\n}",
+            deep,
+            "fn f() {\n    if a {\n        b();\n    }|\n}",
+        ),
+        (
+            "the file's own step decides the level",
+            "fn g() {\n\tx();\n}\nfn f() {\n|\n}",
+            block,
+            "fn g() {\n\tx();\n}\nfn f() {\n\tif a {\n\t    b();\n\t}|\n}",
+        ),
+        (
+            "a line shallower than the first keeps its shortfall",
+            "fn f() {\n|\n}",
+            "    a();\n}\nb();",
+            "fn f() {\n    a();\n}\nb();|\n}",
+        ),
+        (
+            "blank lines inside the block stay as they are",
+            "fn f() {\n|\n}",
+            "a();\n\nb();",
+            "fn f() {\n    a();\n\n    b();|\n}",
+        ),
+        (
+            "a blank first line leaves the first solid line to set the base",
+            "fn f() {\n|\n}",
+            "\n    if a {\n        b();\n    }",
+            "fn f() {\n\n    if a {\n        b();\n    }|\n}",
+        ),
+        (
+            "a selection on its own line is replaced at the level",
+            "fn f() {\n    [x|]\n}",
+            deep,
+            "fn f() {\n    if a {\n        b();\n    }|\n}",
+        ),
+        (
+            "one line goes in as it is",
+            "fn f() {\n|\n}",
+            "        x();",
+            "fn f() {\n        x();|\n}",
+        ),
+        (
+            "after other text on the line, as it is",
+            "fn f() { |}",
+            block,
+            "fn f() { if a {\n    b();\n}|}",
+        ),
+        (
+            "carets on lines of their own each re-indent",
+            "fn f() {\n|\n#\n}",
+            "a\n  b\nc",
+            "fn f() {\n    a\n      b\n    c|\n    a\n      b\n    c#\n}",
+        ),
+        (
+            "carets sharing a line's indentation each paste as they are",
+            "fn f() {\n  |  #\n}",
+            "a\n b\nc",
+            "fn f() {\n  a\n b\nc|  a\n b\nc#\n}",
+        ),
+        (
+            "on the first line, with no line above to indent from, as it is",
+            "|",
+            deep,
+            "        if a {\n            b();\n        }|",
+        ),
+        (
+            "outside any construct, as it is",
+            "fn f() {}\n|",
+            deep,
+            "fn f() {}\n        if a {\n            b();\n        }|",
+        ),
+    ];
+    for (name, start, clipboard, expect) in rows {
+        let mut rig = Rig::new(start);
+        rig.app.clipboard.set(clipboard)?;
+        rig.run(&[ctrl('v')]);
+        assert_eq!(rig.marked(), expect, "{name}");
+    }
+    Ok(())
+}
+
+/// karet's own copy remembers the level its first line had, so a selection
+/// begun after the indentation re-indents as the block it was, and a line copy
+/// of several lines goes in above the caret's line at that line's level.
+#[test]
+fn a_karet_copy_reindents_from_its_first_lines_level()
+-> Result<(), crate::clipboard::ClipboardError> {
+    let rows: [(&str, crate::clipboard::Copied, &str); 3] = [
+        (
+            "a selection taken after the indentation",
+            crate::clipboard::Copied {
+                pieces: vec!["if a {\n            b();\n        }".into()],
+                whole_lines: false,
+                indents: vec!["        ".into()],
+            },
+            "fn f() {\n    if a {\n        b();\n    }|\n}",
+        ),
+        (
+            "a line copy of several lines, above the caret's line",
+            crate::clipboard::Copied {
+                pieces: vec!["        a();\n".into(), "            b();\n".into()],
+                whole_lines: true,
+                indents: vec!["        ".into(), "            ".into()],
+            },
+            "fn f() {\n    a();\n        b();\n|\n}",
+        ),
+        (
+            "a selection begun on an unindented blank line",
+            crate::clipboard::Copied {
+                pieces: vec!["\n    fn x() {\n        y();\n    }".into()],
+                whole_lines: false,
+                indents: vec![String::new()],
+            },
+            "fn f() {\n\n    fn x() {\n        y();\n    }|\n}",
+        ),
+    ];
+    for (name, copied, expect) in rows {
+        let mut rig = Rig::new("fn f() {\n|\n}");
+        rig.app.clipboard.set_copied(copied)?;
+        rig.run(&[ctrl('v')]);
+        assert_eq!(rig.marked(), expect, "{name}");
+    }
+    Ok(())
+}
+
+/// Copying records the level each piece's first line had where it was taken.
+#[test]
+fn copy_records_each_pieces_first_line_level() {
+    let rows: [(&str, &str, &[&str]); 2] = [
+        (
+            "selections, from the line each starts on",
+            "    i[f a|] {\n\t[b#]",
+            &["    ", "\t"],
+        ),
+        ("line copies, from each line", "  a|\nb#", &["  ", ""]),
+    ];
+    for (name, start, indents) in rows {
+        let mut rig = Rig::new(start);
+        rig.run(&[ctrl('c')]);
+        let text = rig.app.clipboard.get().unwrap_or_default();
+        let recorded = rig
+            .app
+            .clipboard
+            .copied(&text)
+            .map(|c| c.indents.clone())
+            .unwrap_or_default();
+        assert_eq!(recorded, indents, "{name}");
+    }
+}
+
+/// A language with no indent query pastes every block as it is: the text a
+/// Rust file re-indents goes in verbatim once the tab is TOML.
+#[test]
+fn a_language_without_an_indent_query_pastes_verbatim()
+-> Result<(), crate::clipboard::ClipboardError> {
+    let mut rig = Rig::new("fn f() {\n|\n}");
+    let idx = rig.app.active;
+    if let TabKind::Code { path, .. } = &mut rig.app.tabs[idx].kind {
+        *path = "t.toml".into();
+    }
+    rig.app.clipboard.set("        b = 1\n          c = 2")?;
+    rig.run(&[ctrl('v')]);
+    assert_eq!(rig.marked(), "fn f() {\n        b = 1\n          c = 2|\n}");
     Ok(())
 }
