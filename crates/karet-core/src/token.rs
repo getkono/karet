@@ -353,6 +353,9 @@ pub enum ThemeRole {
     /// Inlay-hint text for a parameter name (`count:`), VS Code's
     /// `editorInlayHint.parameterForeground`.
     InlayHintParameter,
+    /// Code-lens titles on their rows above the code they describe, VS Code's
+    /// `editorCodeLens.foreground`.
+    CodeLens,
 }
 
 #[cfg(test)]

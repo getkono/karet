@@ -15,7 +15,7 @@ mod load_vscode;
 /// Number of [`StandardToken`](karet_core::StandardToken) classes (token id space).
 pub(crate) const TOKEN_COUNT: usize = 32;
 /// Number of [`ThemeRole`] variants.
-pub(crate) const ROLE_COUNT: usize = 37;
+pub(crate) const ROLE_COUNT: usize = 38;
 
 /// Errors produced while loading a theme.
 #[derive(Debug, thiserror::Error)]
@@ -383,6 +383,18 @@ mod tests {
             assert_ne!(hint, theme.role(ThemeRole::Foreground));
             assert!(contrast_ratio(hint, bg) > 2.0);
         }
+    }
+
+    #[test]
+    fn code_lenses_have_their_own_dim_readable_color() {
+        // The last-declared role: an index past ROLE_COUNT would fall back
+        // to the foreground and make a lens read as code.
+        let theme = Theme::dark();
+        assert!((ThemeRole::CodeLens as usize) < ROLE_COUNT);
+        let lens = theme.role(ThemeRole::CodeLens);
+        assert_ne!(lens, theme.role(ThemeRole::Foreground));
+        assert_ne!(lens, theme.role(ThemeRole::InlayHint));
+        assert!(contrast_ratio(lens, theme.role(ThemeRole::Background)) > 2.0);
     }
 
     #[test]
