@@ -281,6 +281,37 @@ impl Layer {
     }
 }
 
+/// Every focus target, for walking the contexts a binding can be live in.
+const TARGETS: [FocusTarget; 16] = [
+    FocusTarget::Editor,
+    FocusTarget::DiffEditor,
+    FocusTarget::Pager,
+    FocusTarget::CommitGraph,
+    FocusTarget::Seam,
+    FocusTarget::Github,
+    FocusTarget::LanguageServers,
+    FocusTarget::Oversize,
+    FocusTarget::Explorer,
+    FocusTarget::Search,
+    FocusTarget::SourceControl,
+    FocusTarget::Spelling,
+    FocusTarget::Todos,
+    FocusTarget::Debug,
+    FocusTarget::Problems,
+    FocusTarget::Outline,
+];
+
+/// Whether a key sequence bound in `layer` can ever fire: only when the layer is
+/// live in some focus context. A modal resolves one chord at a time (an unbound
+/// chord is the modal's text input), so a layer live only under a modal never
+/// sees a sequence's second chord.
+#[must_use]
+pub(super) fn takes_sequences(layer: Layer) -> bool {
+    TARGETS
+        .into_iter()
+        .any(|target| active_layers(Context::focus(target)).contains(&layer))
+}
+
 /// Every distinct layer stack [`active_layers`] can return — the contexts in which
 /// two bindings can meet, which is what a conflict check needs to walk.
 #[must_use]
@@ -299,24 +330,6 @@ pub(super) fn all_stacks() -> Vec<&'static [Layer]> {
         Modal::CommitConsole,
         Modal::ExplorerEdit,
     ];
-    let targets = [
-        FocusTarget::Editor,
-        FocusTarget::DiffEditor,
-        FocusTarget::Pager,
-        FocusTarget::CommitGraph,
-        FocusTarget::Seam,
-        FocusTarget::Github,
-        FocusTarget::LanguageServers,
-        FocusTarget::Oversize,
-        FocusTarget::Explorer,
-        FocusTarget::Search,
-        FocusTarget::SourceControl,
-        FocusTarget::Spelling,
-        FocusTarget::Todos,
-        FocusTarget::Debug,
-        FocusTarget::Problems,
-        FocusTarget::Outline,
-    ];
     let mut stacks: Vec<&'static [Layer]> = Vec::new();
     let contexts = modals
         .into_iter()
@@ -324,7 +337,7 @@ pub(super) fn all_stacks() -> Vec<&'static [Layer]> {
             modal: Some(modal),
             target: FocusTarget::Editor,
         })
-        .chain(targets.into_iter().map(Context::focus));
+        .chain(TARGETS.into_iter().map(Context::focus));
     for ctx in contexts {
         let stack = active_layers(ctx);
         if !stacks.contains(&stack) {
@@ -537,6 +550,26 @@ mod tests {
             ),
             FocusTarget::LanguageServers
         );
+    }
+
+    #[test]
+    fn only_focus_layers_take_sequences() {
+        // A focus layer (Global included) sees a sequence's later chords; a layer
+        // live only under a modal resolves one chord at a time.
+        for layer in [Layer::Global, Layer::Sidebar, Layer::Editor, Layer::Pager] {
+            assert!(takes_sequences(layer), "{layer:?}");
+        }
+        for layer in [
+            Layer::Overlay,
+            Layer::Find,
+            Layer::SearchInput,
+            Layer::SearchList,
+            Layer::ProblemsFilter,
+            Layer::Confirm,
+            Layer::ExplorerEdit,
+        ] {
+            assert!(!takes_sequences(layer), "{layer:?}");
+        }
     }
 
     #[test]

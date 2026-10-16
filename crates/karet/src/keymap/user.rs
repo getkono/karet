@@ -37,6 +37,7 @@ use serde_json::Value;
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use super::layer::all_stacks;
+use super::layer::takes_sequences;
 use super::*;
 
 /// The keymap file's name in both the user and the project config directory.
@@ -505,8 +506,18 @@ fn parse_entry(raw: RawEntry) -> Result<Op, String> {
         });
     }
     let seq = seq.ok_or_else(|| "a binding needs a `key`".to_string())?;
+    let layer = layer.unwrap_or(Layer::Global);
+    // Modal input resolves one chord at a time, so a sequence there loads but
+    // never fires; refuse it rather than keep a binding nobody can type.
+    if seq.len() > 1 && !takes_sequences(layer) {
+        return Err(format!(
+            "`{}` is a modal layer, which takes single chords only; a key sequence \
+             there can never be typed",
+            layer.id()
+        ));
+    }
     Ok(Op::Bind {
-        layer: layer.unwrap_or(Layer::Global),
+        layer,
         seq,
         command,
     })

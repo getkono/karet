@@ -189,6 +189,27 @@ fn a_sequence_binding_waits_for_its_second_chord() {
 }
 
 #[test]
+fn a_sequence_in_a_modal_layer_is_refused() {
+    // A modal resolves one chord at a time, so this could never fire; it is
+    // reported and dropped rather than loaded silently.
+    let (keymap, report) = user(
+        r#"{ "bindings": [{ "key": "ctrl+k ctrl+j", "command": "findNext", "when": "find" }] }"#,
+    );
+    assert_eq!(
+        messages(&report),
+        [
+            "binding 1: `find` is a modal layer, which takes single chords only; a key \
+             sequence there can never be typed; skipped"
+        ]
+    );
+    assert_eq!(keymap.bindings.len(), BINDINGS.len());
+    // A single chord in the same layer is fine.
+    let (_, report) =
+        user(r#"{ "bindings": [{ "key": "ctrl+alt+j", "command": "findNext", "when": "find" }] }"#);
+    assert!(report.issues.is_empty(), "{:?}", report.issues);
+}
+
+#[test]
 fn unbinding_removes_only_what_it_names() {
     // Narrowed to a key: Ctrl+Q stops quitting, nothing else changes.
     let (keymap, report) = user(r#"{ "bindings": [{ "key": "ctrl+q", "command": "-quit" }] }"#);

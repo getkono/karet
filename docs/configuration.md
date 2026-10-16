@@ -481,10 +481,16 @@ in turn:
   shifted symbol is written as the symbol itself (`?`, not `shift+/`).
 - **`command`** — a stable command id, lowerCamelCase (`openQuickOpen`,
   `selectPanel.sourceControl`, `goToTab.3`). The schema lists every id; `--command`
-  accepts the same ids.
+  accepts the id of any command the palette offers (not editing or motion ids such as
+  `caretUp`).
 - **`when`** — the layer the binding lives in (default `global`): `editor`,
   `explorer`, `sourceControl`, `find`, `overlay`, … A more specific layer shadows
-  `global` while it is active.
+  `global` while it is active. A modal layer (`overlay`, `find`, `searchInput`,
+  `searchList`, `problemsFilter`, `commitInput`, `commitConsole`, `revInput`,
+  `rename`, `contextMenu`, `confirm`, `explorerEdit`) reads one chord at a time, so it
+  takes single chords only: a sequence bound there is reported and skipped. For the
+  same reason a `global` sequence does not fire while the Search query, Search
+  results, or Problems filter has the keyboard, though it does everywhere else.
 
 A binding replaces any earlier binding of the same keys in the same layer, so the
 project file overrides the user file and both override the defaults. Saving either file
