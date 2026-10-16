@@ -11,10 +11,16 @@
 //! [`mark_semantic_comments`] is an optional post-pass that retints codetag comment
 //! blocks (`TODO: …` and friends) so they stand out from ordinary comments.
 //! [`fold`] computes fold regions; [`SemanticBlocker`] extracts sticky-scroll
-//! blocks; [`OutlineExtractor`] builds symbol outlines from declaration queries.
+//! blocks; [`OutlineExtractor`] builds symbol outlines from declaration queries;
+//! [`Indenter`] computes a new line's indentation from indent queries.
 
 use std::collections::BTreeMap;
+use std::collections::HashMap;
 
+use karet_core::BytePos;
+use karet_treesitter::LanguageId;
+use karet_treesitter::LayeredTree;
+use karet_treesitter::Query;
 use karet_treesitter::SyntaxTree;
 
 pub mod color;
@@ -94,6 +100,66 @@ pub fn fold(tree: &SyntaxTree) -> FoldRegions {
             .map(|(start, end)| FoldRegion { start, end })
             .collect(),
     )
+}
+
+/// Computes the indentation a new line takes from the grammars' indent queries
+/// (see [`karet_treesitter::indents_query`]), across every layer of a
+/// [`LayeredTree`] — a Rust block inside a markdown code fence indents as Rust.
+///
+/// Holds the compiled queries for one tree's languages; build it once per parse
+/// and ask it about as many line breaks as that parse serves.
+pub struct Indenter {
+    queries: HashMap<LanguageId, Query>,
+}
+
+impl Indenter {
+    /// Compile the indent query of every language in `tree` that has one.
+    #[must_use]
+    pub fn for_tree(tree: &LayeredTree) -> Self {
+        let mut queries = HashMap::new();
+        for layer in tree.layers() {
+            let lang = layer.language();
+            if queries.contains_key(&lang) {
+                continue;
+            }
+            let compiled = karet_treesitter::indents_query(lang)
+                .and_then(|source| Query::compile(lang, source).ok());
+            if let Some(query) = compiled {
+                queries.insert(lang, query);
+            }
+        }
+        Self { queries }
+    }
+
+    /// The leading whitespace for the line a break over `before..after` (an
+    /// empty range for a bare caret) opens, with `unit` as one indentation level.
+    ///
+    /// `text` is the source `tree` was parsed from, before the break. The
+    /// innermost layer at `before` whose language has an indent query and finds
+    /// an enclosing node decides. `None` when none does, so the caller keeps the
+    /// copy-the-current-line fallback.
+    #[must_use]
+    pub fn newline_indent(
+        &self,
+        tree: &LayeredTree,
+        text: &str,
+        (before, after): (BytePos, BytePos),
+        unit: &str,
+    ) -> Option<String> {
+        let anchor = tree.layers_at(before).into_iter().find_map(|layer| {
+            let query = self.queries.get(&layer.language())?;
+            layer.newline_indent(query, text, before, after)
+        })?;
+        let mut indent: String = text
+            .get(anchor.line_start.0..)?
+            .chars()
+            .take_while(|c| *c == ' ' || *c == '\t')
+            .collect();
+        if anchor.deeper {
+            indent.push_str(unit);
+        }
+        Some(indent)
+    }
 }
 
 #[cfg(test)]
@@ -452,6 +518,46 @@ pub fn add_one() {}
         // ...and matches a cold parse of the same text.
         let cold = LayeredHighlighter::new().highlight(&parser.parse(md, new)?, new);
         assert_eq!(after.all(), cold.all());
+        Ok(())
+    }
+
+    /// The indentation Enter at `<|>` in `marked`, parsed as `lang`, gets with
+    /// `unit` as one level.
+    fn enter(
+        lang: &str,
+        marked: &str,
+        unit: &str,
+    ) -> Result<Option<String>, Box<dyn std::error::Error>> {
+        use karet_treesitter::LayeredParser;
+        use karet_treesitter::language_id_from_injection_name;
+
+        let lang = language_id_from_injection_name(lang).ok_or("grammar not compiled in")?;
+        let at = BytePos(marked.find("<|>").ok_or("no caret")?);
+        let text = marked.replacen("<|>", "", 1);
+        let tree = LayeredParser::new().parse(lang, &text)?;
+        Ok(Indenter::for_tree(&tree).newline_indent(&tree, &text, (at, at), unit))
+    }
+
+    #[test]
+    fn indenter_adds_one_unit_to_the_enclosing_line() -> Result<(), Box<dyn std::error::Error>> {
+        assert_eq!(
+            enter("rust", "fn f() {\n\tif x {<|>\n\t}\n}", "\t")?.as_deref(),
+            Some("\t\t")
+        );
+        assert_eq!(enter("rust", "fn f() {<|>}", "  ")?.as_deref(), Some(""));
+        // No enclosing node, and no indent query at all: the caller copies.
+        assert_eq!(enter("rust", "fn f() {}<|>", "  ")?, None);
+        assert_eq!(enter("toml", "[a]\nb = 1<|>", "  ")?, None);
+        Ok(())
+    }
+
+    #[test]
+    fn indenter_follows_the_injected_language_at_the_caret()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Markdown ships no indent query; the fence's Rust does.
+        let src = "# T\n\n```rust\nfn f() {<|>\n}\n```\n";
+        assert_eq!(enter("markdown", src, "    ")?.as_deref(), Some("    "));
+        assert_eq!(enter("markdown", "# T\n\nprose<|>\n", "    ")?, None);
         Ok(())
     }
 
