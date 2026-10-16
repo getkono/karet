@@ -284,4 +284,42 @@ mod tests {
         let (gutters, ..) = render(schema::LineNumbers::Off);
         assert_eq!(gutters, ["  a", "  b", "  c", "  d"], "off stays off");
     }
+
+    #[test]
+    fn a_read_only_pane_draws_guides_whitespace_and_bracket_colours() {
+        use karet_editor::EditorState;
+        use karet_text::TextBuffer;
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+        use ratatui::widgets::StatefulWidget;
+
+        let buffer = TextBuffer::from_text("{\n    a  \n}\n");
+        let area = Rect::new(0, 0, 10, 3);
+        let render = |settings: &Settings| {
+            let display = EditorDisplay::resolve(settings.editor.for_language(None));
+            let mut target = Buffer::empty(area);
+            display.apply_read_only(Editor::new(&buffer)).render(
+                area,
+                &mut target,
+                &mut EditorState::new(),
+            );
+            let text = (2..9)
+                .map(|x| target[(x, 1)].symbol().to_owned())
+                .collect::<String>();
+            (text, target[(2, 0)].fg)
+        };
+        let mut settings = Settings::default();
+        settings.editor.line_numbers = schema::LineNumbers::Off;
+        let (text, plain_brace) = render(&settings);
+        assert_eq!(text, "│   a  ", "the default guides reach a read-only pane");
+
+        settings.editor.render_whitespace = schema::RenderWhitespace::Trailing;
+        settings.editor.bracket_pair_colorization.enabled = true;
+        let (text, brace) = render(&settings);
+        assert_eq!(text, "│   a··", "and so does visible whitespace");
+        assert_ne!(brace, plain_brace, "and the bracket colours");
+
+        settings.editor.guides.indentation = false;
+        assert_eq!(render(&settings).0, "    a··", "guides off stays off");
+    }
 }
