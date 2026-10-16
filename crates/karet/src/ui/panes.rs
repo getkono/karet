@@ -663,6 +663,8 @@ pub(super) fn draw_find_bar(
         toggle("Aa", find.case_sensitive),
         Span::styled(" ", base),
         toggle("\\b", find.whole_word),
+        Span::styled(" ", base),
+        toggle("Sel", find.scope.is_some()),
     ];
     let trailer_width =
         u16::try_from(trailer.iter().map(Span::width).sum::<usize>()).unwrap_or(u16::MAX);
@@ -698,9 +700,16 @@ pub(super) fn draw_find_bar(
     // Replace row (only when shown and there is room).
     if find.replace_visible && rows[1].height >= 1 {
         const REPLACE_LABEL: &str = " Repl: ";
-        let hint = "   (Enter replace \u{b7} Alt+Enter all \u{b7} Tab find)";
+        let hint = Line::from(vec![
+            Span::styled("   ", base),
+            toggle("AB", find.preserve_case),
+            Span::styled(
+                "   (Enter replace \u{b7} Alt+Enter all \u{b7} Tab find)",
+                base.fg(dim),
+            ),
+        ]);
         let editing_replace = find.focused && find.field == SearchField::Replace;
-        let hint_width = u16::try_from(crate::ui::line_width(&Line::raw(hint))).unwrap_or(u16::MAX);
+        let hint_width = u16::try_from(crate::ui::line_width(&hint)).unwrap_or(u16::MAX);
         let replace_cols = Layout::horizontal([
             Constraint::Length(u16::try_from(REPLACE_LABEL.len()).unwrap_or(u16::MAX)),
             Constraint::Min(0),
@@ -723,10 +732,7 @@ pub(super) fn draw_find_bar(
             .scroll((0, find.replace_edit.scroll)),
             replace_cols[1],
         );
-        f.render_widget(
-            Paragraph::new(Line::styled(hint, base.fg(dim))),
-            replace_cols[2],
-        );
+        f.render_widget(Paragraph::new(hint).style(base), replace_cols[2]);
         rects.replace = Some(replace_cols[1]);
     }
     rects

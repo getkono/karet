@@ -1,12 +1,14 @@
-//! `karet --doctor`: terminal-capability diagnostics.
+//! `karet --doctor`: terminal-capability and keymap diagnostics.
 //!
 //! Runs the same capability probes the editor performs at startup (via
 //! [`crate::term_caps`]) and prints a one-line-per-check report to stdout instead
-//! of starting the TUI. Raw mode is enabled only long enough to read the query
-//! replies; the alternate screen is never entered.
+//! of starting the TUI, followed by the state of the user and project
+//! `keymap.jsonc` files and every problem in them. Raw mode is enabled only long
+//! enough to read the query replies; the alternate screen is never entered.
 //!
 //! The module is layered so the interesting logic is pure and unit-testable:
 //! [`Probes`] is plain data, [`evaluate`] maps probes + settings to [`Finding`]s,
+//! [`keymap_findings`] maps a keymap load report to more of them,
 //! [`exit_code`] and [`render`] derive the process result and the report text,
 //! and only [`run`] touches the terminal.
 
@@ -15,6 +17,8 @@ use std::io::IsTerminal;
 use karet_fileview::image::GraphicsProtocol;
 use karet_session::Settings;
 
+use crate::keymap::user::FileStatus;
+use crate::keymap::user::KeymapReport;
 use crate::term_caps::TerminalCapabilities;
 use crate::term_caps::{self};
 
@@ -219,12 +223,50 @@ pub(crate) fn render(findings: &[Finding], color: bool) -> String {
     out
 }
 
+/// The keymap findings: one line naming the keymap files in effect, then one
+/// `error` per [`Issue`](crate::keymap::user::Issue) — a file or entry that was
+/// ignored, or a binding a file made untypeable — since each is configuration
+/// karet could not honor.
+pub(crate) fn keymap_findings(report: &KeymapReport) -> Vec<Finding> {
+    let files: Vec<String> = report
+        .files
+        .iter()
+        .filter_map(|file| {
+            let state = match file.status {
+                FileStatus::Missing => return None,
+                FileStatus::Loaded { entries } => format!("{entries} entries"),
+                FileStatus::Invalid => "ignored".to_string(),
+            };
+            Some(format!(
+                "{} {} ({state})",
+                file.source.label(),
+                file.path.display()
+            ))
+        })
+        .collect();
+    let summary = if files.is_empty() {
+        Finding::new(Severity::Info, "keymap", "defaults (no keymap.jsonc found)")
+    } else {
+        Finding::new(Severity::Ok, "keymap", files.join("; "))
+    };
+    std::iter::once(summary)
+        .chain(report.issues.iter().map(|issue| {
+            Finding::new(
+                Severity::Error,
+                "keymap",
+                format!("{}: {}", issue.path.display(), issue.message),
+            )
+        }))
+        .collect()
+}
+
 /// Run the doctor: probe the terminal (raw mode on, restored before printing),
-/// evaluate the findings against `settings`, print the report to stdout, and
-/// return the process exit code.
-pub(crate) fn run(settings: &Settings) -> i32 {
+/// evaluate the findings against `settings` and the loaded `keymap`, print the
+/// report to stdout, and return the process exit code.
+pub(crate) fn run(settings: &Settings, keymap: &KeymapReport) -> i32 {
     let probes = gather();
-    let findings = evaluate(&probes, settings);
+    let mut findings = evaluate(&probes, settings);
+    findings.extend(keymap_findings(keymap));
     print!("{}", render(&findings, std::io::stdout().is_terminal()));
     exit_code(&findings)
 }
@@ -424,5 +466,52 @@ mod tests {
         assert_eq!(exit_code(&[]), 0);
         assert_eq!(exit_code(&[ok.clone(), info.clone()]), 0);
         assert_eq!(exit_code(&[ok, info, error]), 1);
+    }
+
+    #[test]
+    fn keymap_without_files_is_informational() {
+        let findings = keymap_findings(&KeymapReport::default());
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].severity, Severity::Info);
+        assert_eq!(exit_code(&findings), 0);
+    }
+
+    #[test]
+    fn keymap_issues_are_errors_after_a_file_summary() {
+        use std::path::PathBuf;
+
+        use crate::keymap::user::FileReport;
+        use crate::keymap::user::Issue;
+        use crate::keymap::user::Source;
+        let path = PathBuf::from("/cfg/karet/keymap.jsonc");
+        let report = KeymapReport {
+            files: vec![
+                FileReport {
+                    source: Source::User,
+                    path: path.clone(),
+                    status: FileStatus::Loaded { entries: 2 },
+                },
+                FileReport {
+                    source: Source::Project,
+                    path: PathBuf::from("/repo/.karet/keymap.jsonc"),
+                    status: FileStatus::Missing,
+                },
+            ],
+            issues: vec![Issue {
+                path,
+                message: "binding 2: unknown command `nope`; skipped".to_string(),
+            }],
+        };
+        let findings = keymap_findings(&report);
+        assert_eq!(findings.len(), 2);
+        // A missing file is not listed; a loaded one is, with its entry count.
+        assert_eq!(findings[0].severity, Severity::Ok);
+        assert_eq!(
+            findings[0].detail,
+            "user /cfg/karet/keymap.jsonc (2 entries)"
+        );
+        assert_eq!(findings[1].severity, Severity::Error);
+        assert!(findings[1].detail.contains("unknown command `nope`"));
+        assert_eq!(exit_code(&findings), 1);
     }
 }

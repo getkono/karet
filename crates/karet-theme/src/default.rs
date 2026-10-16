@@ -94,6 +94,9 @@ pub(crate) fn dark() -> Theme {
     role(ThemeRole::DiffRemoved, rgb(0x33, 0x18, 0x1c));
     role(ThemeRole::DiffModified, rgb(0x1f, 0x2a, 0x40));
     role(ThemeRole::SearchMatch, rgb(0x3d, 0x59, 0xa1));
+    // The current match: a warm amber against the blue of every other match,
+    // still dark enough to keep the code on it readable.
+    role(ThemeRole::SearchMatchCurrent, rgb(0x7a, 0x5a, 0x1e));
     role(ThemeRole::Breakpoint, rgb(0xdb, 0x4b, 0x4b));
     // A secondary accent for mouse hover, distinct from the (bluer) Selection.
     role(ThemeRole::HoverHighlight, rgb(0x2e, 0x35, 0x50));

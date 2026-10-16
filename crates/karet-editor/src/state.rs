@@ -139,6 +139,11 @@ pub struct EditorState {
     ///
     /// [`longest_col`]: EditorState::longest_col
     pub(super) last_longest_col: u32,
+    /// Each line's hint-free horizontal extent, so the longest-line scan of
+    /// [`scroll_columns`](Self::scroll_columns) and each frame's visible-line
+    /// measurements re-measure a line only after the buffer or geometry
+    /// changed.
+    pub(super) extents: ExtentCache,
     /// The heads placed at the end of a wrapped row rather than the start of
     /// the next: that position is also where the next row starts, and these
     /// are drawn at the end of the row they were placed on. A pointer sets it
@@ -202,6 +207,7 @@ impl Default for EditorState {
             sticky_height: 0,
             last_visible_lines: 0,
             last_longest_col: 0,
+            extents: ExtentCache::default(),
             upstream: Vec::new(),
             goals: None,
             pointer_upstream: Cell::new(None),
@@ -400,17 +406,19 @@ impl EditorState {
             return;
         }
         let width = u32::from(self.last_content_width.max(1));
-        let longest = (0..buffer.line_count() as u32)
-            .map(|line| {
-                horizontal_extent(
-                    &line_chars(buffer, line),
-                    width,
-                    self.last_tab_width,
-                    self.hints_on(line),
-                )
-            })
-            .max()
-            .unwrap_or(0);
+        let mut longest = 0;
+        for line in 0..buffer.line_count() as u32 {
+            let hints = self.last_hints.line(line);
+            let extent = line_extent(
+                &mut self.extents,
+                buffer,
+                line,
+                width,
+                self.last_tab_width,
+                hints,
+            );
+            longest = longest.max(extent);
+        }
         // The scan is already paid for here, so keep the answer for the horizontal
         // scrollbar rather than making the render pay for it again every frame.
         self.last_longest_col = longest;

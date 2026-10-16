@@ -15,7 +15,7 @@ mod load_vscode;
 /// Number of [`StandardToken`](karet_core::StandardToken) classes (token id space).
 pub(crate) const TOKEN_COUNT: usize = 32;
 /// Number of [`ThemeRole`] variants.
-pub(crate) const ROLE_COUNT: usize = 38;
+pub(crate) const ROLE_COUNT: usize = 39;
 
 /// Errors produced while loading a theme.
 #[derive(Debug, thiserror::Error)]
@@ -415,6 +415,18 @@ mod tests {
             assert_ne!(marker, theme.fallback_fg);
             assert!(contrast_ratio(marker, bg) > 3.0);
         }
+    }
+
+    #[test]
+    fn the_current_search_match_reads_apart_from_the_other_matches() {
+        // Both are text backgrounds under code, so the current one must be its
+        // own color (not the fallback foreground, which would hide the text).
+        let theme = Theme::dark();
+        assert!((ThemeRole::SearchMatchCurrent as usize) < ROLE_COUNT);
+        let current = theme.role(ThemeRole::SearchMatchCurrent);
+        assert_ne!(current, theme.role(ThemeRole::SearchMatch));
+        assert_ne!(current, theme.role(ThemeRole::Selection));
+        assert_ne!(current, theme.fallback_fg);
     }
 
     #[cfg(feature = "view")]

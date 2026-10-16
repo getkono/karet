@@ -82,11 +82,15 @@ fn main() -> color_eyre::Result<()> {
     // over sane defaults). Diagnostics are handed to the app to surface as startup
     // notifications; loading itself never fails.
     let mut loaded_config = karet_session::config::load_report(std::slice::from_ref(&root));
+    // The user and project `keymap.jsonc` layer over the compiled-in bindings the
+    // same way; a bad file or entry is skipped and reported, never fatal.
+    let (keymap, keymap_report) = keymap::user::load(std::slice::from_ref(&root));
+    keymap::install(keymap);
 
     // `--doctor` acts like a subcommand: run the terminal diagnostics against the
     // loaded settings and exit — never enter the alternate screen or the app loop.
     if cli.doctor {
-        std::process::exit(doctor::run(&loaded_config.settings));
+        std::process::exit(doctor::run(&loaded_config.settings, &keymap_report));
     }
 
     // `--seam-query` acts like a subcommand: answer one question about the package and
@@ -170,6 +174,8 @@ fn main() -> color_eyre::Result<()> {
     // with an empty panel rather than computing status here.
     let mut app = app::App::new(root.clone(), Vec::new(), Vec::new(), syntax)
         .with_loaded_config(loaded_config);
+    // Keymap problems surface beside the settings ones, as startup notifications.
+    app.config_diagnostics.extend(keymap_report.diagnostics());
     // An explicit `--icons` flag (or `KARET_ICONS`) overrides `workbench.iconStyle`.
     if let Some(style) = cli.explicit_icon_style() {
         app = app.with_icons(style);

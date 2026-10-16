@@ -221,10 +221,10 @@ impl std::error::Error for ResolveNamedError {}
 
 /// Resolve a `--command` name to a palette command: a case-insensitive **exact**
 /// match on a command's title ([`Command::label`], e.g. "Source Control: Commit
-/// Graph") or its short slug ([`Command::hint_verb`], e.g. "graph"). Titles are
-/// unique; a slug shared by several commands is [`ResolveNamedError::Ambiguous`],
-/// and anything else is [`ResolveNamedError::Unknown`] with the closest titles as
-/// suggestions.
+/// Graph"), its stable id ([`Command::id`], e.g. "showCommitGraph"), or its short
+/// slug ([`Command::hint_verb`], e.g. "graph"). Titles and ids are unique; a slug
+/// shared by several commands is [`ResolveNamedError::Ambiguous`], and anything
+/// else is [`ResolveNamedError::Unknown`] with the closest titles as suggestions.
 ///
 /// # Errors
 /// Returns [`ResolveNamedError`] when the name matches no palette command exactly
@@ -232,7 +232,9 @@ impl std::error::Error for ResolveNamedError {}
 pub fn resolve_named(name: &str) -> Result<Command, ResolveNamedError> {
     let query = name.trim().to_lowercase();
     let commands = palette();
-    if let Some(cmd) = commands.iter().find(|c| c.label().to_lowercase() == query) {
+    if let Some(cmd) = commands.iter().find(|c| {
+        c.label().to_lowercase() == query || c.id().is_some_and(|id| id.to_lowercase() == query)
+    }) {
         return Ok(*cmd);
     }
     let slug_matches: Vec<Command> = commands
