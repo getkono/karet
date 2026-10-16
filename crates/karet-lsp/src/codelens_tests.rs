@@ -39,7 +39,13 @@ async fn the_handshake_declares_code_lenses() -> TestResult {
     let server_task = tokio::spawn(async move { server.handshake().await });
     let _client = LspClient::connect(read, write, Path::new("/w")).await?;
     let params = server_task.await?;
-    assert!(params["capabilities"]["textDocument"]["codeLens"].is_object());
+    let declared = &params["capabilities"]["textDocument"]["codeLens"];
+    assert!(declared.is_object());
+    assert!(
+        declared["dynamicRegistration"].is_null(),
+        "a registration's resolveProvider would be dropped"
+    );
+    assert!(params["capabilities"]["workspace"]["codeLens"].is_null());
     Ok(())
 }
 
