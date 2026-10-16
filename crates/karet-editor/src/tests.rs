@@ -13,6 +13,7 @@ mod display;
 mod grapheme;
 mod hit;
 mod inlay;
+mod long_line;
 mod motion;
 mod pointer;
 mod reveal;

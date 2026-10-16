@@ -353,6 +353,12 @@ pub enum ThemeRole {
     /// Inlay-hint text for a parameter name (`count:`), VS Code's
     /// `editorInlayHint.parameterForeground`.
     InlayHintParameter,
+    /// The current search match: the one the find bar's counter names and the
+    /// next Replace acts on, VS Code's `editor.findMatchBackground`.
+    ///
+    /// Split from [`SearchMatch`](Self::SearchMatch), which paints every other
+    /// match, so the match a step or a replace lands on reads apart at a glance.
+    SearchMatchCurrent,
 }
 
 #[cfg(test)]

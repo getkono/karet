@@ -234,6 +234,16 @@ async fn event_loop(
 
     let mut decoded_images = preview_image_results(app);
     let mut file_scans = app.file_index.take_receiver();
+    // Saving a `keymap.jsonc` rebinds live; the watcher lives as long as the loop.
+    let keymap_paths: Vec<std::path::PathBuf> =
+        crate::keymap::user::paths(std::slice::from_ref(&app.root))
+            .into_iter()
+            .map(|(_, path)| path)
+            .collect();
+    let (_keymap_watcher, mut keymap_changes) = match crate::keymap::user::watch(&keymap_paths) {
+        Some((watcher, rx)) => (Some(watcher), Some(rx)),
+        None => (None, None),
+    };
 
     loop {
         // Backend events (a definition answer, a debugger stop) move the caret
@@ -274,6 +284,11 @@ async fn event_loop(
             image = recv_decoded(&mut decoded_images) => accept_decoded(app, image),
             scan = recv_decoded(&mut file_scans) => if let Some(scan) = scan {
                 app.on_file_index(scan);
+            },
+            change = recv_decoded(&mut keymap_changes) => if change.is_some() {
+                // One reload covers a burst of events (an atomic-rename save).
+                while keymap_changes.as_mut().is_some_and(|rx| rx.try_recv().is_ok()) {}
+                app.reload_keymap();
             },
             () = async move {
                 match deadline {
