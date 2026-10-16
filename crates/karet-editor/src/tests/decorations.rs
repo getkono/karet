@@ -133,6 +133,48 @@ fn overlapping_modifiers_blend_across_priorities() {
     );
 }
 
+/// The underline colour is single-valued: a later, higher-priority underline
+/// takes the cells it shares with an earlier one, and at equal priority the
+/// earlier underline keeps them.
+#[test]
+fn the_highest_priority_underline_colours_an_overlap() {
+    let buffer = TextBuffer::from_text("abcdef");
+    let underline = |first, last, role| {
+        Decoration::new(span(first, last), DecorationKind::Underline, Some(role))
+    };
+    let raised = [
+        underline(0, 4, ThemeRole::DiagnosticWarning),
+        underline(2, 6, ThemeRole::DiagnosticError).with_priority(1),
+    ];
+    let target = render(&buffer, &raised, &mut EditorState::new());
+    assert_eq!(
+        cell(&target, 1).underline_color,
+        color(ThemeRole::DiagnosticWarning)
+    );
+    assert_eq!(
+        cell(&target, 3).underline_color,
+        color(ThemeRole::DiagnosticError)
+    );
+    assert_eq!(
+        cell(&target, 5).underline_color,
+        color(ThemeRole::DiagnosticError)
+    );
+
+    let tie = [
+        underline(0, 4, ThemeRole::DiagnosticWarning),
+        underline(2, 6, ThemeRole::DiagnosticError),
+    ];
+    let target = render(&buffer, &tie, &mut EditorState::new());
+    assert_eq!(
+        cell(&target, 3).underline_color,
+        color(ThemeRole::DiagnosticWarning)
+    );
+    assert_eq!(
+        cell(&target, 4).underline_color,
+        color(ThemeRole::DiagnosticError)
+    );
+}
+
 /// A line background styles every cell of its lines, not just its columns.
 #[test]
 fn a_line_background_styles_the_whole_line() {
