@@ -240,6 +240,61 @@ fn a_failed_run_is_reported_under_its_title() {
     );
 }
 
+/// A server whose runtime state changes may answer what it could not before,
+/// so a covered document is asked about again.
+#[test]
+fn a_server_state_change_asks_a_covered_document_again() {
+    let (backend, mut app) = answered(vec![lens(2, "Run", None)]);
+    app.request_code_lenses();
+    assert_eq!(
+        lens_requests(&backend).len(),
+        1,
+        "a covered document re-asked"
+    );
+    app.on_backend_event(
+        None,
+        SessionEvent::LanguageServerRuntimeChanged {
+            server: LanguageServerId::RustAnalyzer,
+            root: PathBuf::from("/workspace"),
+            state: karet_session::LanguageServerRuntimeState::Running,
+            error: None,
+        },
+    );
+    app.request_code_lenses();
+    assert_eq!(
+        lens_requests(&backend).len(),
+        2,
+        "the server's new state did not re-ask"
+    );
+}
+
+/// Closing a document drops its lenses and its request in flight, so a late
+/// answer to that request finds nothing to land on.
+#[test]
+fn closing_a_document_drops_its_lenses_and_pending_request() {
+    let (backend, mut app) = answered(vec![lens(2, "Run", None)]);
+    app.submit_edit(|caret, selection, _, base| {
+        Some(karet_editor::editing::insert(caret, selection, base, "x"))
+    });
+    app.request_code_lenses_at(Instant::now() + karet_session::LSP_CHANGE_DEBOUNCE * 2);
+    assert_eq!(
+        lens_requests(&backend).len(),
+        2,
+        "the edit was not re-asked"
+    );
+    let id = last_lens_request(&backend);
+    let version = app.buffer_version(DOC).unwrap_or_default();
+
+    app.on_backend_event(None, SessionEvent::Closed { doc: DOC });
+    assert!(!app.code_lenses.held.contains_key(&DOC));
+
+    app.on_code_lenses(Some(id), DOC, version, vec![lens(2, "Late", None)]);
+    assert!(
+        !app.code_lenses.held.contains_key(&DOC),
+        "an answer to a request dropped on close was adopted"
+    );
+}
+
 /// Turning `editor.codeLens` off clears what is shown at once.
 #[test]
 fn turning_lenses_off_clears_them() {
