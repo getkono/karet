@@ -42,8 +42,8 @@ body:
         library crate rather than the `karet` app, give the crate version and the commit
         you depend on instead.
       placeholder: |
-        X.Y.Z
-        commit:  <short sha> (<commit time>)
+        karet X.Y.Z
+        commit:  <short sha>[ (dirty)] (<commit time>)
         profile: ...
         rustc:   ...
         built:   ...
