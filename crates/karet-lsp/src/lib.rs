@@ -33,9 +33,11 @@
 //!   counts columns in UTF-16 code units. karet is internally UTF-32; the conversions live on
 //!   `karet_text::TextBuffer` (`line_col_to_utf16` / `utf16_to_line_col`) and are
 //!   applied by the consumer that owns the text (karet-session), not here.
-//! - **Document sync is full-text.** [`LspClient::did_change`] sends the whole
-//!   document on every change — the simplest correct v1; incremental sync is a
-//!   possible later optimization behind the same method.
+//! - **Document sync is the consumer's choice of two.** [`LspClient::did_change`]
+//!   sends the whole document, which every server accepts;
+//!   [`LspClient::did_change_incremental`] sends only the edited ranges, and is
+//!   refused without sending for a server that did not ask for incremental sync.
+//!   The consumer owns the text, so it decides which one an edit can use.
 //! - **Snippets are not advertised** (`completionItem.snippetSupport: false`), so
 //!   servers send plain-text completions; snippet syntax that leaks through anyway
 //!   is degraded to plain text at the completion mapping. An item's
@@ -731,9 +733,10 @@ impl LspClient {
     /// Notify the server that `doc` changed, replacing its content with `text`
     /// at document `version`.
     ///
-    /// Sync is **full-text** (see the crate docs): the whole document travels on
-    /// every change, which every server accepts regardless of the sync kind it
-    /// prefers. Callers should therefore debounce rapid edits.
+    /// Sync is **full-text**: the whole document travels on every change, which
+    /// every server accepts regardless of the sync kind it prefers. Callers
+    /// should therefore debounce rapid edits, and prefer
+    /// [`Self::did_change_incremental`] where the server supports it.
     ///
     /// # Errors
     /// Returns [`LspError::Protocol`] for an unconvertible path or
@@ -749,6 +752,50 @@ impl LspClient {
                 range_length: None,
                 text: text.to_owned(),
             }],
+        };
+        self.conn.notify("textDocument/didChange", params)
+    }
+
+    /// Notify the server that `doc` changed by `edits`, reaching document
+    /// `version` — incremental sync, for a server whose `textDocumentSync` is
+    /// `Incremental`.
+    ///
+    /// The edits travel as one `didChange` and are applied **in order**, each
+    /// against the text the previous one left, exactly as LSP applies a
+    /// notification's `contentChanges`. Ranges are UTF-16, like every position
+    /// crossing this crate. The caller owns the text and so owns the
+    /// correctness of the deltas: they must take the server's copy of the
+    /// document from the last version it was sent to `version`.
+    ///
+    /// # Errors
+    /// Returns [`LspError::Unsupported`] **without sending anything** when the
+    /// server did not ask for incremental sync (send the whole text with
+    /// [`Self::did_change`] instead), [`LspError::Protocol`] for an
+    /// unconvertible path, or [`LspError::Closed`] if the connection is gone.
+    pub async fn did_change_incremental(
+        &self,
+        doc: &Path,
+        version: i32,
+        edits: &[TextEdit],
+    ) -> Result<(), LspError> {
+        if self.capabilities().text_sync != karet_core::TextSyncKind::Incremental {
+            return Err(LspError::Unsupported {
+                method: "incremental textDocument/didChange",
+            });
+        }
+        let params = lsp_types::DidChangeTextDocumentParams {
+            text_document: lsp_types::VersionedTextDocumentIdentifier::new(
+                uri::path_to_uri(doc)?,
+                version,
+            ),
+            content_changes: edits
+                .iter()
+                .map(|edit| lsp_types::TextDocumentContentChangeEvent {
+                    range: Some(convert::range_to_lsp(edit.range)),
+                    range_length: None,
+                    text: edit.new_text.clone(),
+                })
+                .collect(),
         };
         self.conn.notify("textDocument/didChange", params)
     }

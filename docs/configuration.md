@@ -150,6 +150,8 @@ also beats a user-level `[rust]` `formatOnSave`.
 | `backup` | bool | `true` | Keep crash-recovery backups of unsaved buffers (see below). |
 | `backupInterval` | number | `30000` | Milliseconds a buffer stays dirty before its backup is written. |
 | `confirmOnExit` | bool | `true` | Prompt to save unsaved changes when quitting. |
+| `undoLimit` | number | `1000` | Most undo steps kept per buffer; `0` = no cap (see [Undo history](#undo-history)). |
+| `persistentUndo` | bool | `false` | Keep undo history across restarts, restored onto unchanged files. |
 
 ### `workbench`
 
@@ -457,6 +459,52 @@ applies it immediately; deleting a layer falls back to the remaining layers and
 defaults. `workbench.startupPanel` is intentionally not replayed during reload, and
 command-line overrides such as `--icons` remain authoritative.
 
+## Key bindings (`keymap.jsonc`)
+
+Key bindings live in their own JSONC file beside `setting.jsonc`, in two layers applied
+over the built-in keymap in order: the user's `$XDG_CONFIG_HOME/karet/keymap.jsonc`,
+then the project's `$GIT_ROOT/.karet/keymap.jsonc`. Each entry in `bindings` is applied
+in turn:
+
+```jsonc
+{
+  "$schema": "https://raw.githubusercontent.com/getkono/karet/master/docs/keymap.schema.json",
+  "bindings": [
+    // Bind a chord, or a space-separated sequence, to a command id.
+    { "key": "ctrl+k ctrl+c", "command": "toggleLineComment", "when": "editor" },
+    // A leading `-` unbinds: here only Ctrl+Q; without `key`, every binding of it.
+    { "key": "ctrl+q", "command": "-quit" }
+  ]
+}
+```
+
+- **`key`** — modifiers `ctrl`, `shift`, `alt` joined by `+` (`ctrl+shift+p`,
+  `alt+1`, `f12`, `ctrl++`). A bare letter's case carries Shift (`G` is `shift+g`); a
+  shifted symbol is written as the symbol itself (`?`, not `shift+/`).
+- **`command`** — a stable command id, lowerCamelCase (`openQuickOpen`,
+  `selectPanel.sourceControl`, `goToTab.3`). The schema lists every id; `--command`
+  accepts the id of any command the palette offers (not editing or motion ids such as
+  `caretUp`).
+- **`when`** — the layer the binding lives in (default `global`): `editor`,
+  `explorer`, `sourceControl`, `find`, `overlay`, … A more specific layer shadows
+  `global` while it is active. A modal layer (`overlay`, `find`, `searchInput`,
+  `searchList`, `problemsFilter`, `commitInput`, `commitConsole`, `revInput`,
+  `rename`, `contextMenu`, `confirm`, `explorerEdit`) reads one chord at a time, so it
+  takes single chords only: a sequence bound there is reported and skipped. For the
+  same reason a `global` sequence does not fire while the Search query, Search
+  results, or Problems filter has the keyboard, though it does everywhere else.
+
+A binding replaces any earlier binding of the same keys in the same layer, so the
+project file overrides the user file and both override the defaults. Saving either file
+reloads the keymap at once. A malformed file is ignored whole, a bad entry is skipped
+alone, and each problem raises a notification. A file that binds the same keys twice,
+or binds a chord that makes a longer one untypeable (`ctrl+k` alone would swallow every
+`Ctrl+K …` chord), is reported the same way. `karet --doctor` lists the keymap files in
+effect and every problem, exiting non-zero when there is one.
+
+The schema is generated from the id tables the parser reads; regenerate it with
+`KARET_BLESS=1 cargo test -p karet keymap_schema` (the same test fails on drift).
+
 ## Crash recovery (unsaved-change backups)
 
 karet keeps your unsaved work safe even if it crashes or a save fails. When a buffer
@@ -475,6 +523,20 @@ would overwrite.
   discard those on-disk changes.
 
 Set `files.backup` to `false` to disable the whole mechanism.
+
+## Undo history
+
+Each buffer keeps at most `files.undoLimit` undo steps (a run of typing is one step);
+once a new step would exceed it, the oldest is forgotten. `0` removes the cap.
+
+With `files.persistentUndo` on, undo survives a restart. When a file is saved, and when
+it is closed with no unsaved changes, its undo/redo history is written beside the swaps
+(`…/karet/swaps/*.karet-undo`), tagged with a fingerprint of the buffer's text. Reopening
+the file restores that history only if the file's content still matches the
+fingerprint; history for a file changed elsewhere since is deleted instead, and a
+history larger than 16 MiB is not kept at all. The files
+hold text you have deleted, which is why the setting is off by default; switching it off
+deletes each file's history the next time that file is saved or closed.
 
 ## Regenerating the schema
 

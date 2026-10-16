@@ -808,7 +808,9 @@ impl Session {
         let settings = &self.config.settings;
         let highlight_tx = &self.highlight_tx;
         let mut spell_without_syntax = Vec::new();
+        let undo_cap = settings.files.undo_cap();
         for (&doc_id, doc) in &mut self.store.docs {
+            doc.buffer.set_undo_limit(undo_cap);
             if update_syntax(settings, highlight_tx, doc_id, doc, None) {
                 spell_without_syntax.push(doc_id);
             }

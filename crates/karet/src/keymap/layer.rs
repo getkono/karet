@@ -208,6 +208,145 @@ pub enum Layer {
     ExplorerEdit,
 }
 
+impl Layer {
+    /// Every layer, in declaration order.
+    pub(super) const ALL: &'static [Layer] = &[
+        Layer::Global,
+        Layer::Sidebar,
+        Layer::Explorer,
+        Layer::SourceControl,
+        Layer::Outline,
+        Layer::Problems,
+        Layer::ProblemsFilter,
+        Layer::Editor,
+        Layer::DiffEditor,
+        Layer::Pager,
+        Layer::CommitGraph,
+        Layer::Seam,
+        Layer::Github,
+        Layer::LanguageServers,
+        Layer::Oversize,
+        Layer::Overlay,
+        Layer::Find,
+        Layer::SearchInput,
+        Layer::SearchList,
+        Layer::CommitInput,
+        Layer::CommitConsole,
+        Layer::RevInput,
+        Layer::Rename,
+        Layer::ContextMenu,
+        Layer::Confirm,
+        Layer::ExplorerEdit,
+    ];
+
+    /// The stable name a keymap file's `when` uses for this layer (lowerCamelCase,
+    /// like command ids). Spelled out rather than derived so a variant rename never
+    /// breaks a user's keymap.
+    #[must_use]
+    pub(super) const fn id(self) -> &'static str {
+        match self {
+            Layer::Global => "global",
+            Layer::Sidebar => "sidebar",
+            Layer::Explorer => "explorer",
+            Layer::SourceControl => "sourceControl",
+            Layer::Outline => "outline",
+            Layer::Problems => "problems",
+            Layer::ProblemsFilter => "problemsFilter",
+            Layer::Editor => "editor",
+            Layer::DiffEditor => "diffEditor",
+            Layer::Pager => "pager",
+            Layer::CommitGraph => "commitGraph",
+            Layer::Seam => "seam",
+            Layer::Github => "github",
+            Layer::LanguageServers => "languageServers",
+            Layer::Oversize => "oversize",
+            Layer::Overlay => "overlay",
+            Layer::Find => "find",
+            Layer::SearchInput => "searchInput",
+            Layer::SearchList => "searchList",
+            Layer::CommitInput => "commitInput",
+            Layer::CommitConsole => "commitConsole",
+            Layer::RevInput => "revInput",
+            Layer::Rename => "rename",
+            Layer::ContextMenu => "contextMenu",
+            Layer::Confirm => "confirm",
+            Layer::ExplorerEdit => "explorerEdit",
+        }
+    }
+
+    /// The layer a keymap file's `when` names, if any.
+    #[must_use]
+    pub(super) fn from_id(id: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|layer| layer.id() == id)
+    }
+}
+
+/// Every focus target, for walking the contexts a binding can be live in.
+const TARGETS: [FocusTarget; 16] = [
+    FocusTarget::Editor,
+    FocusTarget::DiffEditor,
+    FocusTarget::Pager,
+    FocusTarget::CommitGraph,
+    FocusTarget::Seam,
+    FocusTarget::Github,
+    FocusTarget::LanguageServers,
+    FocusTarget::Oversize,
+    FocusTarget::Explorer,
+    FocusTarget::Search,
+    FocusTarget::SourceControl,
+    FocusTarget::Spelling,
+    FocusTarget::Todos,
+    FocusTarget::Debug,
+    FocusTarget::Problems,
+    FocusTarget::Outline,
+];
+
+/// Whether a key sequence bound in `layer` can ever fire: only when the layer is
+/// live in some focus context. A modal resolves one chord at a time (an unbound
+/// chord is the modal's text input), so a layer live only under a modal never
+/// sees a sequence's second chord.
+#[must_use]
+pub(super) fn takes_sequences(layer: Layer) -> bool {
+    TARGETS
+        .into_iter()
+        .any(|target| active_layers(Context::focus(target)).contains(&layer))
+}
+
+/// Every distinct layer stack [`active_layers`] can return — the contexts in which
+/// two bindings can meet, which is what a conflict check needs to walk.
+#[must_use]
+pub(super) fn all_stacks() -> Vec<&'static [Layer]> {
+    let modals = [
+        Modal::Overlay,
+        Modal::Find,
+        Modal::SearchInput,
+        Modal::SearchList,
+        Modal::ProblemsFilter,
+        Modal::CommitInput,
+        Modal::RevInput,
+        Modal::Rename,
+        Modal::ContextMenu,
+        Modal::Confirm,
+        Modal::CommitConsole,
+        Modal::ExplorerEdit,
+    ];
+    let mut stacks: Vec<&'static [Layer]> = Vec::new();
+    let contexts = modals
+        .into_iter()
+        .map(|modal| Context {
+            modal: Some(modal),
+            target: FocusTarget::Editor,
+        })
+        .chain(TARGETS.into_iter().map(Context::focus));
+    for ctx in contexts {
+        let stack = active_layers(ctx);
+        if !stacks.contains(&stack) {
+            stacks.push(stack);
+        }
+    }
+    stacks
+}
+
 /// A text-capturing or transient context that shadows the focus layers. When one
 /// is active the focus (pane) layers are suppressed, so its keys can't leak through
 /// to the editor or sidebar; unbound keys become the modal's text input instead.
@@ -414,6 +553,26 @@ mod tests {
     }
 
     #[test]
+    fn only_focus_layers_take_sequences() {
+        // A focus layer (Global included) sees a sequence's later chords; a layer
+        // live only under a modal resolves one chord at a time.
+        for layer in [Layer::Global, Layer::Sidebar, Layer::Editor, Layer::Pager] {
+            assert!(takes_sequences(layer), "{layer:?}");
+        }
+        for layer in [
+            Layer::Overlay,
+            Layer::Find,
+            Layer::SearchInput,
+            Layer::SearchList,
+            Layer::ProblemsFilter,
+            Layer::Confirm,
+            Layer::ExplorerEdit,
+        ] {
+            assert!(!takes_sequences(layer), "{layer:?}");
+        }
+    }
+
+    #[test]
     fn global_is_always_last_for_focus_contexts() {
         for target in [
             FocusTarget::Editor,
@@ -430,6 +589,20 @@ mod tests {
                 Some(&Layer::Global)
             );
         }
+    }
+
+    #[test]
+    fn layer_ids_round_trip_and_every_layer_is_reachable() {
+        let stacks = all_stacks();
+        for &layer in Layer::ALL {
+            assert_eq!(Layer::from_id(layer.id()), Some(layer));
+            // A layer no stack holds could never fire a user binding.
+            assert!(
+                stacks.iter().any(|stack| stack.contains(&layer)),
+                "{layer:?} is in no stack"
+            );
+        }
+        assert_eq!(Layer::from_id("Editor"), None);
     }
 
     #[test]

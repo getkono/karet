@@ -108,6 +108,8 @@ pub use model::Signature;
 pub use model::SignatureHelp;
 pub use model::Symbol;
 pub use model::SymbolKind;
+pub use model::VirtualLine;
+pub use model::VirtualLineSide;
 pub use model::VirtualText;
 pub use model::VirtualTextPlacement;
 pub use model::WorkspaceSymbol;

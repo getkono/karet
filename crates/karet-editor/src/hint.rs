@@ -29,6 +29,8 @@
 //! where that same annotation begins.
 
 use karet_core::EolAlign;
+use karet_core::VirtualLine;
+use karet_core::VirtualLineSide;
 use karet_core::VirtualText;
 use karet_core::VirtualTextPlacement;
 use ratatui::layout::Rect;
@@ -76,6 +78,72 @@ impl LineHints<'_> {
             .filter(move |span| span.col == col)
             .map(|span| span.source)
     }
+}
+
+/// Every [`VirtualLine`] in a document, by the line and side it is anchored
+/// to: the rows a line takes besides its own.
+///
+/// Cached on the editor state for the same reason as [`HintIndex`]: a click
+/// resolves against the rows the last frame painted.
+#[derive(Clone, Debug, Default)]
+pub(super) struct BlockIndex {
+    /// `(line, source)` of each row above its line, sorted by line.
+    above: Vec<(u32, usize)>,
+    /// `(line, source)` of each row below its line, sorted by line.
+    below: Vec<(u32, usize)>,
+}
+
+impl BlockIndex {
+    /// Index `lines`, keeping supply order within one side of one line.
+    pub(super) fn new(lines: &[VirtualLine]) -> Self {
+        let mut above = Vec::new();
+        let mut below = Vec::new();
+        for (source, line) in lines.iter().enumerate() {
+            match line.side {
+                VirtualLineSide::Above => above.push((line.line, source)),
+                VirtualLineSide::Below => below.push((line.line, source)),
+                // A side newer than this renderer: a row in the wrong place
+                // would be worse than none.
+                _ => {},
+            }
+        }
+        // Stable, so rows on one side of a line keep their supply order.
+        above.sort_by_key(|&(line, _)| line);
+        below.sort_by_key(|&(line, _)| line);
+        Self { above, below }
+    }
+
+    /// The source indices of the rows above `line`, top first.
+    pub(super) fn above(&self, line: u32) -> &[(u32, usize)] {
+        on_line(&self.above, line)
+    }
+
+    /// The source indices of the rows below `line`, top first.
+    pub(super) fn below(&self, line: u32) -> &[(u32, usize)] {
+        on_line(&self.below, line)
+    }
+
+    /// Whether no line has a virtual line on either side.
+    pub(super) fn is_empty(&self) -> bool {
+        self.above.is_empty() && self.below.is_empty()
+    }
+
+    /// How many rows sit above `line`.
+    pub(super) fn above_count(&self, line: u32) -> u32 {
+        u32::try_from(self.above(line).len()).unwrap_or(u32::MAX)
+    }
+
+    /// How many rows sit below `line`.
+    pub(super) fn below_count(&self, line: u32) -> u32 {
+        u32::try_from(self.below(line).len()).unwrap_or(u32::MAX)
+    }
+}
+
+/// The entries of the line-sorted `entries` anchored to `line`.
+fn on_line(entries: &[(u32, usize)], line: u32) -> &[(u32, usize)] {
+    let start = entries.partition_point(|&(at, _)| at < line);
+    let end = entries.partition_point(|&(at, _)| at <= line);
+    entries.get(start..end).unwrap_or_default()
 }
 
 /// Every virtual text in a document, sorted so one line's are a contiguous
@@ -267,7 +335,7 @@ pub(super) fn record_virtual_text(
 
 /// `text` cut to at most `cells` screen cells, ending in `…` when it had to be
 /// cut. A wide character that would straddle the cut is dropped whole.
-fn truncate(text: &str, cells: u32) -> String {
+pub(super) fn truncate(text: &str, cells: u32) -> String {
     if text_width(text) <= cells {
         return text.to_owned();
     }
@@ -470,5 +538,22 @@ mod tests {
         assert_eq!(truncate("日本語", 1), "…");
         assert_eq!(truncate("日本語", 0), "");
         assert_eq!(truncate("ab", 2), "ab");
+    }
+
+    #[test]
+    fn virtual_lines_group_by_line_and_side_in_supply_order() {
+        let lines = [
+            VirtualLine::below(4, "b1", ThemeRole::Muted),
+            VirtualLine::above(4, "a1", ThemeRole::Muted),
+            VirtualLine::above(1, "x", ThemeRole::Muted),
+            VirtualLine::above(4, "a2", ThemeRole::Muted),
+        ];
+        let index = BlockIndex::new(&lines);
+        let sources = |rows: &[(u32, usize)]| rows.iter().map(|&(_, s)| s).collect::<Vec<_>>();
+        assert_eq!(sources(index.above(4)), vec![1, 3]);
+        assert_eq!(sources(index.below(4)), vec![0]);
+        assert_eq!(sources(index.above(1)), vec![2]);
+        assert_eq!((index.above_count(4), index.below_count(4)), (2, 1));
+        assert_eq!((index.above_count(0), index.below_count(1)), (0, 0));
     }
 }

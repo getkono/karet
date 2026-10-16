@@ -21,8 +21,10 @@ use std::path::PathBuf;
 use regex::Regex;
 use regex::RegexBuilder;
 
+mod case;
 mod lines;
 
+pub use case::preserve_case;
 pub use lines::search_chunks;
 
 /// Directory names every workspace walk prunes outright, on top of the

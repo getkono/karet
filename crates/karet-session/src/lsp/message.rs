@@ -29,6 +29,7 @@ use karet_lsp::Indentation;
 
 use super::code_actions::CodeActionAnswer;
 use super::code_actions::CodeActionCmd;
+use super::delta::DocumentDelta;
 use super::slot::SlotKey;
 use super::slot::SlotToken;
 use super::window::Notice;
@@ -52,14 +53,19 @@ pub(crate) enum ServerCmd {
         /// The full text.
         text: String,
     },
-    /// Forward `textDocument/didChange` (full text, debounced).
+    /// Forward `textDocument/didChange` (debounced): as ranges where `delta`
+    /// survives to the flush, else as the full text.
     DidChange {
         /// The document path.
         path: PathBuf,
         /// The document version.
         version: i32,
-        /// The full text after the change.
+        /// The full text after the change, always: the replay set keeps it.
         text: String,
+        /// The edits from the previous version, when the session could derive
+        /// them; cleared on receipt when they do not start from the version
+        /// the server task last saw (see `delta`).
+        delta: Option<DocumentDelta>,
     },
     /// Forward `textDocument/didClose`.
     DidClose {

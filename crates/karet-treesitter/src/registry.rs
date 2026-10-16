@@ -10,7 +10,7 @@ use crate::LanguageId;
 
 mod outlines;
 pub(crate) use outlines::outline_query;
-mod programming;
+pub(crate) mod programming;
 mod shells;
 mod structured;
 mod web;

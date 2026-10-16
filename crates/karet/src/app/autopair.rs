@@ -126,20 +126,88 @@ impl App {
         true
     }
 
-    /// Enter that opens an indented line between the halves of a bracket pair.
-    /// `false` when no caret sits between one, leaving the ordinary Enter.
-    pub(super) fn newline_auto_paired(&mut self) -> bool {
+    /// Enter that opens an indented line between the halves of a bracket pair,
+    /// with every other caret's newline indented by `syntax`. `false` when no
+    /// caret sits between one, leaving the ordinary Enter.
+    pub(super) fn newline_auto_paired(&mut self, syntax: Option<&SyntaxIndent>) -> bool {
         let indentation = self.active_indentation();
         let Some((rules, buffer, cursors, base, _)) = self.auto_pair_context() else {
             return false;
         };
-        let Some(edit) = autopair::newline(buffer, cursors, base, &rules, &indentation) else {
+        let indent = |range: Range| syntax.and_then(|s| s.for_range(buffer, range));
+        let Some(edit) =
+            autopair::newline_indented(buffer, cursors, base, &rules, &indentation, &indent)
+        else {
             return false;
         };
         self.submit_multi_edit(EditCause::Newline, edit);
         true
     }
 
+    /// The syntax-aware indentation for line breaks in the active code tab, or
+    /// `None` when its language has no indent query to consult (nor injects
+    /// one that might), so Enter copies the current line's indentation.
+    pub(super) fn syntax_indent(&self) -> Option<SyntaxIndent> {
+        let unit = self.active_indentation();
+        let Some(Tab {
+            kind:
+                TabKind::Code {
+                    path,
+                    doc: Some(_),
+                    buffer,
+                    ..
+                },
+            ..
+        }) = self.tabs.get(self.active)
+        else {
+            return None;
+        };
+        SyntaxIndent::new(path, buffer, unit)
+    }
+}
+
+/// One parse of a buffer, with the indent queries of its languages, answering
+/// what indentation a line break over a range of it opens with.
+pub(super) struct SyntaxIndent {
+    tree: karet_treesitter::LayeredTree,
+    indenter: karet_syntax::Indenter,
+    text: String,
+    unit: String,
+}
+
+impl SyntaxIndent {
+    /// Parse `buffer` as the language `path` names, with `unit` as one level.
+    fn new(path: &Path, buffer: &TextBuffer, unit: String) -> Option<Self> {
+        let lang = karet_treesitter::language_id_from_path(path)?;
+        if karet_treesitter::indents_query(lang).is_none()
+            && karet_treesitter::injections_query(lang).is_none()
+        {
+            return None;
+        }
+        let text = buffer.text();
+        let tree = karet_treesitter::LayeredParser::new()
+            .parse(lang, &text)
+            .ok()?;
+        let indenter = karet_syntax::Indenter::for_tree(&tree);
+        Some(Self {
+            tree,
+            indenter,
+            text,
+            unit,
+        })
+    }
+
+    /// The new line's indentation for a break replacing `range` of `buffer`
+    /// (the buffer this was parsed from), or `None` to copy the current line.
+    pub(super) fn for_range(&self, buffer: &TextBuffer, range: Range) -> Option<String> {
+        let before = buffer.line_col_to_byte(range.start).ok()?;
+        let after = buffer.line_col_to_byte(range.end).ok()?;
+        self.indenter
+            .newline_indent(&self.tree, &self.text, (before, after), &self.unit)
+    }
+}
+
+impl App {
     /// Record `positions` as the active view's open closers, at its current
     /// version and cursor set (or forget them all when there are none).
     fn remember_closers(&mut self, view: ViewId, positions: Vec<LineCol>) {

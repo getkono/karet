@@ -31,6 +31,10 @@ use ratatui::widgets::ScrollbarOrientation;
 use ratatui::widgets::ScrollbarState;
 use ratatui::widgets::Widget;
 
+mod markers;
+
+pub use markers::ScrollMarker;
+
 /// The two style slots a scrollbar paints with.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ScrollbarStyles {

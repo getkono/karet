@@ -98,6 +98,12 @@ impl Session {
         let (document_settings, editorconfig_error) =
             resolve_document_settings(&path, language_selector, &self.config.settings);
         apply_serialization_settings(&mut buffer, document_settings);
+        if must_create {
+            // No file, so no history of it to restore.
+            buffer.set_undo_limit(self.config.settings.files.undo_cap());
+        } else {
+            self.prepare_undo(&path, &mut buffer);
+        }
         if let Some(message) = editorconfig_error {
             self.emit(
                 id,
@@ -207,14 +213,14 @@ impl Session {
                     // Arm the backup clock on the clean→dirty transition (see
                     // `backup_tick`).
                     doc.sync_dirty_since(tick);
-                    // The single LSP apply site: forward the new full text
-                    // (debounced by the server task). A no-op while no server is
-                    // attached for this language.
+                    // The single LSP apply site: forward the edit (debounced by
+                    // the server task). A no-op while no server is attached for
+                    // this language.
                     retired.absorb(lsp.document_changed(
                         doc.language_selector,
                         &doc.path,
-                        applied.version,
-                        || doc.buffer.text(),
+                        &doc.buffer,
+                        Some(&applied),
                     ));
                     Some(applied.version)
                 },
@@ -272,8 +278,8 @@ impl Session {
             retired.absorb(lsp.document_changed(
                 doc.language_selector,
                 &doc.path,
-                applied.version,
-                || doc.buffer.text(),
+                &doc.buffer,
+                Some(&applied),
             ));
             // Jump the caret to the change: undo restores the whole pre-edit
             // selection set, redo the set the client reported right after the
@@ -449,10 +455,12 @@ impl Session {
             let spell_without_syntax =
                 update_syntax(settings, highlight_tx, doc_id, doc, Some(&applied.edits));
             doc.sync_dirty_since(tick);
-            let retired =
-                lsp.document_changed(doc.language_selector, &doc.path, applied.version, || {
-                    doc.buffer.text()
-                });
+            let retired = lsp.document_changed(
+                doc.language_selector,
+                &doc.path,
+                &doc.buffer,
+                Some(&applied),
+            );
             (spell_without_syntax, retired)
         };
         // Formatter edits are a document change like any other, so the same
@@ -603,6 +611,7 @@ impl Session {
                     self.lsp
                         .document_saved(doc.language_selector, &doc.path, || doc.buffer.text());
                 }
+                self.persist_undo(doc_id);
                 self.publish(doc_id, None);
                 self.emit(Some(id), Event::Saved { doc: doc_id });
                 self.wakatime_beat(doc_id, true);
@@ -683,6 +692,7 @@ impl Session {
                         store.remove(&doc.path);
                     }
                 }
+                self.persist_undo(doc_id);
                 self.publish(doc_id, None);
                 Ok(path)
             },
@@ -728,10 +738,12 @@ impl Session {
         let spell_without_syntax =
             update_syntax(settings, highlight_tx, doc_id, doc, Some(&applied.edits));
         doc.sync_dirty_since(tick);
-        let retired =
-            lsp.document_changed(doc.language_selector, &doc.path, applied.version, || {
-                doc.buffer.text()
-            });
+        let retired = lsp.document_changed(
+            doc.language_selector,
+            &doc.path,
+            &doc.buffer,
+            Some(&applied),
+        );
         self.adopt_retirement(retired);
         if spell_without_syntax {
             self.schedule_spell(doc_id);
@@ -794,6 +806,9 @@ impl Session {
                 self.pending_format_saves.remove(&id);
                 self.report_save_cancelled(id, SAVE_CANCELLED_CLOSED);
             }
+            // Before the document leaves the store: undo and redo since the last
+            // save still describe the file on disk when it closes clean.
+            self.persist_undo(doc_id);
             if let Some(doc) = self.store.docs.remove(&doc_id) {
                 self.store.by_path.remove(&doc.path);
                 let retired = self.lsp.document_closed(doc.language_selector, &doc.path);

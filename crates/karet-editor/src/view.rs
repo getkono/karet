@@ -1,5 +1,6 @@
 use std::ops::RangeInclusive;
 
+use super::hint::BlockIndex;
 use super::hint::EolItem;
 use super::hint::HintIndex;
 use super::hint::LineHints;
@@ -7,14 +8,54 @@ use super::hint::place_eol;
 use super::hint::record_virtual_text;
 use super::hint::row_room;
 use super::hint::text_width;
+use super::hint::truncate;
 use super::text::*;
 use super::visual::*;
 use super::*;
 
 mod display;
+mod virtual_paint;
 
 pub use display::LineNumbers;
 pub(crate) use display::gutter_width;
+
+/// Chars read past a row's right edge, so the grapheme cluster that straddles
+/// the edge is segmented whole — a flag or a ZWJ emoji sequence is several
+/// chars — and keeps the width it has when the full line is measured.
+const GRAPHEME_LOOKAHEAD: u32 = 32;
+
+/// The chars of unwrapped line `l` that a row starting at column `start` with
+/// `room` cells can show, plus [`GRAPHEME_LOOKAHEAD`], and their
+/// [`cluster_widths`].
+///
+/// The window starts at `start + 2 × room` chars and doubles until the chars
+/// past `start` (the lookahead aside) cover `room` cells, or the line ends. It
+/// is sized by cells rather than chars because a cluster can be many chars to
+/// one glyph: a ZWJ family emoji is five chars in two cells, so a fixed char
+/// budget would stop painting well short of the right edge. A tab counts one
+/// cell and hints none, so the estimate never overshoots what the walk paints.
+fn row_window(buffer: &TextBuffer, l: u32, start: u32, room: u32) -> (Vec<char>, Vec<u32>) {
+    let mut visible = room.saturating_mul(2).max(1);
+    loop {
+        let cap = start
+            .saturating_add(visible)
+            .saturating_add(GRAPHEME_LOOKAHEAD);
+        let chars = line_chars_prefix(buffer, l, cap);
+        let widths = cluster_widths(&chars);
+        let measured = chars.len().saturating_sub(GRAPHEME_LOOKAHEAD as usize);
+        let covered: u32 = chars
+            .iter()
+            .zip(&widths)
+            .take(measured)
+            .skip(start as usize)
+            .map(|(&ch, &w)| if ch == '\t' { 1 } else { w })
+            .fold(0, u32::saturating_add);
+        if chars.len() < cap as usize || covered >= room || cap == u32::MAX {
+            return (chars, widths);
+        }
+        visible = visible.saturating_mul(2);
+    }
+}
 
 /// The editor widget: a builder over the buffer and the (borrowed) data layers
 /// the application supplies. Render it as a ratatui [`StatefulWidget`] with an
@@ -28,6 +69,7 @@ pub struct Editor<'a> {
     decorations: &'a [Decoration],
     diagnostics: &'a [Diagnostic],
     virtual_text: &'a [VirtualText],
+    virtual_lines: &'a [VirtualLine],
     folds: &'a [Fold],
     focused: bool,
     cell_caret: bool,
@@ -56,6 +98,7 @@ impl<'a> Editor<'a> {
             decorations: &[],
             diagnostics: &[],
             virtual_text: &[],
+            virtual_lines: &[],
             folds: &[],
             focused: false,
             cell_caret: true,
@@ -239,57 +282,11 @@ impl Editor<'_> {
         None
     }
 
-    /// The style the virtual text at `source` paints in: its role's color over
-    /// the row's own background.
-    fn virtual_style(&self, source: usize, theme: &Theme) -> Style {
-        let role = self
-            .virtual_text
-            .get(source)
-            .map_or(ThemeRole::Muted, |text| text.role);
-        Style::default().fg(theme.role(role).to_ratatui())
-    }
-
-    /// Fit line `l`'s end-of-line virtual text into the `room` cells its last
-    /// row leaves free and append it, noting in `painted` the index and span
-    /// of each text that got any cells.
-    fn push_eol_spans(
-        &self,
-        spans: &mut Vec<Span<'static>>,
-        painted: &mut Vec<(usize, usize)>,
-        index: &HintIndex,
-        l: u32,
-        room: u32,
-        theme: &Theme,
-    ) {
-        let items: Vec<EolItem<'_>> = index
-            .eol_on(l)
-            .filter_map(|source| {
-                let text = self.virtual_text.get(source)?;
-                match text.placement {
-                    VirtualTextPlacement::EndOfLine { align, priority } => Some(EolItem {
-                        source,
-                        text: &text.text,
-                        align,
-                        priority,
-                    }),
-                    _ => None,
-                }
-            })
-            .collect();
-        let mut at = 0_u32;
-        for placed in place_eol(&items, room) {
-            if placed.offset > at {
-                spans.push(Span::raw(" ".repeat((placed.offset - at) as usize)));
-            }
-            at = placed.offset.saturating_add(text_width(&placed.text));
-            painted.push((placed.source, spans.len()));
-            let style = self.virtual_style(placed.source, theme);
-            spans.push(Span::styled(placed.text, style));
-        }
-    }
-
     /// Append the syntax-colored content spans for line `l`, honoring horizontal
     /// scroll, active selections, and text-background decorations.
+    ///
+    /// `room` is the screen cells left on the row after the gutter: the walk
+    /// stops once they are filled, since the frame clips anything past them.
     ///
     /// Returns whether the row ends with the selected line-break cell.
     #[allow(clippy::too_many_arguments)]
@@ -303,25 +300,38 @@ impl Editor<'_> {
         l: u32,
         theme: &Theme,
         default_fg: Rgba,
-        range: VisualRange,
+        (range, room): (VisualRange, u32),
         selections: &[Range],
         hints: LineHints<'_>,
     ) -> bool {
-        let Some(content) = self.buffer.line(l as usize) else {
-            return false;
-        };
         let Some(line_span) = self.buffer.line_to_byte_range(l as usize) else {
             return false;
         };
         let line_start = line_span.start.0;
+        let line_len = line_len(self.buffer, l);
+        // Only the chars up to the row's right edge are copied out and walked,
+        // so a minified line costs its visible window (plus the scrolled-off
+        // prefix, whose widths decide the tab stops), not its whole length. An
+        // unwrapped row has no end column, so its window grows until the
+        // cells it covers fill the room left on screen.
+        let (chars, widths) = if range.end == u32::MAX {
+            row_window(self.buffer, l, range.start, room)
+        } else {
+            let chars =
+                line_chars_prefix(self.buffer, l, range.end.saturating_add(GRAPHEME_LOOKAHEAD));
+            let widths = cluster_widths(&chars);
+            (chars, widths)
+        };
         let hl: &[HighlightSpan] = self.highlights.map_or(&[], |h| h.spans_in(line_span));
 
         let mut run = String::new();
         let mut run_style: Option<Style> = None;
         let mut col: u32 = 0;
         let mut display_col = 0_u32;
-        let chars: Vec<char> = content.chars().collect();
-        let widths = cluster_widths(&chars);
+        // Where on screen this row's first painted column sits, so the walk
+        // stops once the row is full rather than at the end of the line.
+        let mut row_origin = None;
+        let mut boff = 0_usize;
         let cells = |col: u32| widths.get(col as usize).copied().unwrap_or(0);
         // The shared horizontal scroll can start this row inside a cluster.
         // Its earlier chars took the cluster's cells off screen, so the chars
@@ -332,7 +342,9 @@ impl Editor<'_> {
             .into_iter()
             .find(|&bound| bound >= range.start)
             .unwrap_or(range.start);
-        for (boff, ch) in content.char_indices() {
+        for &ch in &chars {
+            let at = boff;
+            boff = boff.saturating_add(ch.len_utf8());
             if col < range.start {
                 // Hints before the row start still shift the running column,
                 // and a tab's expansion is measured from it. Skipping their
@@ -350,6 +362,12 @@ impl Editor<'_> {
                 continue;
             }
             if col >= range.end {
+                break;
+            }
+            let origin = *row_origin.get_or_insert(display_col);
+            // Stop only at a char that takes cells, so the zero-width tail of
+            // the cluster in the row's last cell stays with it.
+            if display_col.saturating_sub(origin) >= room && (cells(col) > 0 || ch == '\t') {
                 break;
             }
             // The hint anchored here renders *before* this character but after
@@ -371,7 +389,7 @@ impl Editor<'_> {
                 continue;
             }
             let width = character_width(ch, cells(col), display_col, self.tab_width);
-            let mut style = token_style(line_start + boff, hl, theme, default_fg);
+            let mut style = token_style(line_start + at, hl, theme, default_fg);
             // Diagnostics win an overlap: a squiggle carries more information than
             // "this is navigable", and losing it would hide a real problem. Theirs
             // is marked, so the frame's last pass can curl it.
@@ -427,12 +445,15 @@ impl Editor<'_> {
         // say -- has no character to precede, so it closes the row instead.
         // Anchored at the line's own length, never at `range.end`: an
         // unwrapped row carries `u32::MAX` there, which matches no hint at all.
-        let line_len = content.chars().count() as u32;
+        //
         // `range.start <= line_len` as well as `range.end >= line_len`: an
         // unwrapped row carries `u32::MAX` as its end, so the end test alone is
         // always true, and a line scrolled entirely off to the left would paint
-        // its trailing hint at the left margin over nothing.
-        if !hints.is_empty() && range.start <= line_len && range.end >= line_len {
+        // its trailing hint at the left margin over nothing. `col >= line_len`
+        // because a walk the right edge stopped never reached the line end, so
+        // what follows it is off screen and must not close a full row.
+        let ends_here = range.start <= line_len && range.end >= line_len && col >= line_len;
+        if !hints.is_empty() && ends_here {
             self.push_hint_spans(
                 spans,
                 painted,
@@ -449,9 +470,7 @@ impl Editor<'_> {
         // line or a line end inside a selection shows what a delete removes.
         // Only the row holding the line end paints it, after any trailing hint,
         // so no hit-tested cell moves.
-        let selected_break = range.start <= line_len
-            && range.end >= line_len
-            && newline_in_any(selections, l, line_len);
+        let selected_break = ends_here && newline_in_any(selections, l, line_len);
         if selected_break {
             let style = Style::default()
                 .fg(default_fg.to_ratatui())
@@ -459,39 +478,6 @@ impl Editor<'_> {
             spans.push(Span::styled(" ", style));
         }
         selected_break
-    }
-
-    /// Flush the pending run and emit the inline text anchored at `col`,
-    /// noting each one's index and span in `painted`.
-    ///
-    /// Threading the in-progress run through is what keeps inline text from
-    /// splitting a styled run it does not belong to.
-    fn push_hint_spans(
-        &self,
-        spans: &mut Vec<Span<'static>>,
-        painted: &mut Vec<(usize, usize)>,
-        (run, run_style): (&mut String, &mut Option<Style>),
-        hints: LineHints<'_>,
-        col: u32,
-        theme: &Theme,
-    ) {
-        let mut first = true;
-        for index in hints.at(col) {
-            let Some(text) = self.virtual_text.get(index) else {
-                continue;
-            };
-            if first {
-                if let Some(prev) = run_style.take() {
-                    spans.push(Span::styled(std::mem::take(run), prev));
-                }
-                first = false;
-            }
-            painted.push((index, spans.len()));
-            spans.push(Span::styled(
-                text.text.clone(),
-                self.virtual_style(index, theme),
-            ));
-        }
     }
 
     /// Warning/error diagnostics use a colored underline while preserving syntax
@@ -543,7 +529,10 @@ impl Editor<'_> {
         );
     }
 
-    fn sticky_blocks(&self, anchor: VisualAnchor, height: u16) -> Vec<SemanticBlock> {
+    /// The headers that stick above a viewport starting at `anchor`: a
+    /// block's header sticks once the top row is inside the block, past the
+    /// header's own first text row (virtual lines above it are outside).
+    fn sticky_blocks(&self, anchor: VisualAnchor, above: u32, height: u16) -> Vec<SemanticBlock> {
         if !self.sticky_scroll {
             return Vec::new();
         }
@@ -559,7 +548,7 @@ impl Editor<'_> {
             .filter(|block| {
                 block.scope_end >= anchor.line
                     && (block.header_start < anchor.line
-                        || (block.header_start == anchor.line && anchor.subrow > 0))
+                        || (block.header_start == anchor.line && anchor.subrow > above))
             })
             .collect();
         if active.len() > budget {
@@ -605,6 +594,7 @@ impl Editor<'_> {
             (default_fg, number_fg),
         );
         let mut painted = Vec::new();
+        let room = row_room(area, &spans);
         // Painted with its inline text, as `EditorState::pos_at` resolves a
         // click on it: the same mapping on both sides, so a click lands on
         // the character it is over.
@@ -614,10 +604,13 @@ impl Editor<'_> {
             line,
             theme,
             default_fg,
-            VisualRange {
-                start: state.scroll_col,
-                end: u32::MAX,
-            },
+            (
+                VisualRange {
+                    start: state.scroll_col,
+                    end: u32::MAX,
+                },
+                room,
+            ),
             selections,
             index.line(line),
         );
@@ -647,6 +640,7 @@ impl StatefulWidget for Editor<'_> {
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut EditorState) {
         state.last_virtual_text.clear();
+        state.last_virtual_lines.clear();
         state.last_fold_ellipses.clear();
         if area.width == 0 || area.height == 0 {
             return;
@@ -682,21 +676,22 @@ impl StatefulWidget for Editor<'_> {
         state.scroll_line = state.scroll_line.min(line_count.saturating_sub(1));
         if self.word_wrap {
             state.scroll_col = 0;
-        } else {
-            state.scroll_subrow = 0;
         }
 
         let width = u32::from(content_width);
         // Indexed once per frame and handed to `state` after the row loop, so
-        // a later mouse click resolves against the virtual text this frame
-        // painted. Held locally until then because `layout` borrows it while
-        // the loop is still assigning scroll positions.
+        // a later mouse click resolves against the virtual text and lines
+        // this frame painted. Held locally until then because `layout`
+        // borrows them while the loop is still assigning scroll positions.
         let hint_index = HintIndex::new(self.virtual_text);
+        let block_index = BlockIndex::new(self.virtual_lines);
         let layout = Layout {
             width,
             tab_width: self.tab_width,
             unwrapped_lines: self.unwrapped_lines,
             hints: &hint_index,
+            blocks: &block_index,
+            wrap: self.word_wrap,
         };
         if !self.word_wrap
             && state.follow_cursor
@@ -733,7 +728,7 @@ impl StatefulWidget for Editor<'_> {
             state.upstream.clear();
         }
         let upstream = state.upstream.contains(&state.cursor());
-        let mut sticky = self.sticky_blocks(anchor, area.height);
+        let mut sticky = self.sticky_blocks(anchor, layout.above(anchor.line), area.height);
         let off = state.reveal_margin();
         if state.follow_cursor {
             // Revealing moves the top, the top decides which headers stick,
@@ -745,38 +740,25 @@ impl StatefulWidget for Editor<'_> {
                 let height = area
                     .height
                     .saturating_sub(u16::try_from(sticky.len()).unwrap_or(u16::MAX));
-                let revealed = if self.word_wrap {
-                    reveal_visual_anchor(
-                        self.buffer,
-                        self.folds,
-                        layout,
-                        height,
-                        anchor,
-                        state.cursor(),
-                        upstream,
-                        off,
-                    )
-                } else {
-                    VisualAnchor {
-                        line: reveal_line(
-                            self.folds,
-                            anchor.line,
-                            state.cursor().line,
-                            u32::from(height),
-                            (off, state.last_line),
-                        ),
-                        subrow: 0,
-                    }
-                };
+                let revealed = reveal_visual_anchor(
+                    self.buffer,
+                    self.folds,
+                    layout,
+                    height,
+                    anchor,
+                    state.cursor(),
+                    upstream,
+                    off,
+                );
                 if revealed == anchor {
                     break;
                 }
                 anchor = revealed;
-                sticky = self.sticky_blocks(anchor, area.height);
+                sticky = self.sticky_blocks(anchor, layout.above(anchor.line), area.height);
             }
         }
         state.scroll_line = anchor.line;
-        state.scroll_subrow = if self.word_wrap { anchor.subrow } else { 0 };
+        state.scroll_subrow = anchor.subrow;
         state.follow_cursor = false;
         state.follow_col = None;
         state.last_folds.clear();
@@ -832,18 +814,39 @@ impl StatefulWidget for Editor<'_> {
             }
             let l = anchor.line;
             last_painted = Some(l);
+            let y = area
+                .y
+                .saturating_add(state.sticky_height)
+                .saturating_add(row);
+            let next = next_visual_anchor(self.buffer, self.folds, layout, anchor);
+            let ranges = layout.text_rows(self.buffer, l, state.scroll_col);
+            let (range_index, block) = match layout.kind(l, anchor.subrow, ranges.len() as u32) {
+                RowKind::Text(index) => (index as usize, None),
+                RowKind::Above(n) => (0, Some(block_index.above(l).get(n as usize))),
+                RowKind::Below(n) => (0, Some(block_index.below(l).get(n as usize))),
+            };
+            if let Some(block) = block {
+                if let Some(&(_, source)) = block {
+                    let rects = &mut state.last_virtual_lines;
+                    let col = state.scroll_col;
+                    self.draw_virtual_line(buf, area, y, gutter, source, col, theme, rects);
+                }
+                if next == anchor {
+                    break;
+                }
+                anchor = next;
+                continue;
+            }
             if !self.word_wrap {
-                widest_visible = widest_visible.max(horizontal_extent(
-                    &line_chars(self.buffer, l),
+                widest_visible = widest_visible.max(line_extent(
+                    &mut state.extents,
+                    self.buffer,
+                    l,
                     width,
                     self.tab_width,
                     layout.hints_on(l),
                 ));
             }
-            let y = area
-                .y
-                .saturating_add(state.sticky_height)
-                .saturating_add(row);
             // In read-only (pager) mode there is no active cursor line to emphasize.
             let is_cursor = !self.read_only && caret_lines.contains(&l);
             let row_bg = if is_cursor && self.cursor_line {
@@ -861,7 +864,7 @@ impl StatefulWidget for Editor<'_> {
                 Style::default().bg(row_bg.to_ratatui()),
             );
 
-            let first_row = !self.word_wrap || anchor.subrow == 0;
+            let first_row = range_index == 0;
             let fold = self.fold_at(l);
             let number_color = if is_cursor {
                 theme.role(ThemeRole::LineNumberActive)
@@ -875,31 +878,19 @@ impl StatefulWidget for Editor<'_> {
                 theme,
                 (default_fg, number_color),
             );
-            let ranges = if self.word_wrap {
-                visual_ranges(self.buffer, l, layout)
-            } else {
-                vec![VisualRange {
-                    start: state.scroll_col,
-                    end: u32::MAX,
-                }]
-            };
-            let range_index = if self.word_wrap {
-                (anchor.subrow as usize).min(ranges.len().saturating_sub(1))
-            } else {
-                0
-            };
             let range = ranges
                 .get(range_index)
                 .copied()
                 .unwrap_or_else(|| VisualRange::empty(0));
             let mut painted = Vec::new();
+            let room = row_room(area, &spans);
             let selected_break = self.push_content_spans(
                 &mut spans,
                 &mut painted,
                 l,
                 theme,
                 default_fg,
-                range,
+                (range, room),
                 &selections,
                 layout.hints_on(l),
             );
@@ -942,17 +933,13 @@ impl StatefulWidget for Editor<'_> {
                 );
             }
 
-            let next = if self.word_wrap {
-                next_visual_anchor(self.buffer, self.folds, layout, anchor)
-            } else {
-                next_line_anchor(self.folds, line_count, anchor)
-            };
             if next == anchor {
                 break;
             }
             anchor = next;
         }
         state.last_hints = hint_index;
+        state.last_blocks = block_index;
         state.last_visible_lines =
             last_painted.map_or(0, |last: u32| last.saturating_sub(state.scroll_line) + 1);
         if !self.word_wrap {

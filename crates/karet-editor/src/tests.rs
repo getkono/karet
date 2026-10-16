@@ -13,11 +13,13 @@ mod display;
 mod grapheme;
 mod hit;
 mod inlay;
+mod long_line;
 mod motion;
 mod pointer;
 mod reveal;
 mod selection;
 mod syntax_select;
+mod virtual_lines;
 mod virtual_text;
 
 #[test]

@@ -29,6 +29,18 @@ body:
       required: true
 
   - type: textarea
+    id: karet-version
+    attributes:
+      label: karet -V output
+      description: |
+        If you are running karet, paste the full output of `karet -V`. It names the
+        commit the binary was built from, so we can tell whether the capability has
+        landed since.
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
     id: additional-context
     attributes:
       label: Additional context

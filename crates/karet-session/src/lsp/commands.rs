@@ -29,6 +29,8 @@ use karet_lsp::LspError;
 use tokio::sync::mpsc;
 
 use super::code_actions::UNAVAILABLE;
+use super::delta::PendingChange;
+use super::delta::lines_agree;
 use super::health::FailureTally;
 use super::message::LspUpdate;
 use super::message::RenameAnswer;
@@ -67,9 +69,17 @@ pub(super) fn report_unsupported<T>(
 
 /// Send the pending `didChange`, if any -- what a command that must see the
 /// latest text does before it is served.
+///
+/// A send that fails leaves the server's copy behind the replay set's, which
+/// has already recorded the change's version, so the document is marked
+/// [`OpenDocument::resync`]: its next change goes out as the whole text rather
+/// than as ranges against text the server does not hold.
 pub(super) async fn flush_pending(
     client: &LspClient,
-    pending: &mut Option<(PathBuf, i32, String)>,
+    (pending, documents): (
+        &mut Option<PendingChange>,
+        &mut HashMap<PathBuf, OpenDocument>,
+    ),
     dead: &mut bool,
     tally: &mut FailureTally,
     updates: &mpsc::UnboundedSender<LspUpdate>,
@@ -80,8 +90,14 @@ pub(super) async fn flush_pending(
         *pending = None;
         return;
     }
-    if let Some((path, version, text)) = pending.take() {
-        let result = client.did_change(&path, version, &text).await;
+    if let Some(change) = pending.take() {
+        let path = change.path.clone();
+        let result = change.send(client).await;
+        if result.is_err()
+            && let Some(document) = documents.get_mut(&path)
+        {
+            document.resync = true;
+        }
         tally.note(result, dead, updates, key, token);
     }
 }
@@ -183,7 +199,11 @@ pub(super) async fn resolve_item(
 pub(super) async fn caret_query(
     client: &LspClient,
     cmd: ServerCmd,
-    (generation, pending): (u64, &mut Option<(PathBuf, i32, String)>),
+    (generation, pending, documents): (
+        u64,
+        &mut Option<PendingChange>,
+        &mut HashMap<PathBuf, OpenDocument>,
+    ),
     (dead, tally, updates, key, token): (
         &mut bool,
         &mut FailureTally,
@@ -192,7 +212,16 @@ pub(super) async fn caret_query(
         SlotToken,
     ),
 ) {
-    flush_pending(client, pending, dead, tally, updates, key, token).await;
+    flush_pending(
+        client,
+        (pending, documents),
+        dead,
+        tally,
+        updates,
+        key,
+        token,
+    )
+    .await;
     if *dead {
         // Nothing to ask: answer exactly as when there is no connection.
         return answer_empty(updates, cmd, generation);
@@ -543,9 +572,23 @@ pub(super) struct OpenDocument {
     pub(super) language: String,
     pub(super) version: i32,
     pub(super) text: String,
+    /// Whether the rope numbers `text`'s lines as LSP does (see `delta`).
+    pub(super) lines_agree: bool,
+    /// Whether the server's copy may lag `text` because a `didChange` to it
+    /// failed to send (see [`flush_pending`]): the next change must carry the
+    /// whole text.
+    pub(super) resync: bool,
 }
 
-pub(super) fn remember_document(documents: &mut HashMap<PathBuf, OpenDocument>, cmd: &ServerCmd) {
+/// Keep the replay set in step with `cmd`, and drop a change's delta that
+/// cannot take the server's copy to the new text: one not starting from the
+/// version last seen here (a change between was never queued), one following
+/// a change that failed to send, or one whose old or new text has lines the
+/// rope and the server number differently.
+pub(super) fn remember_document(
+    documents: &mut HashMap<PathBuf, OpenDocument>,
+    cmd: &mut ServerCmd,
+) {
     match cmd {
         ServerCmd::DidOpen {
             path,
@@ -559,6 +602,8 @@ pub(super) fn remember_document(documents: &mut HashMap<PathBuf, OpenDocument>, 
                     language: language.clone(),
                     version: *version,
                     text: text.clone(),
+                    lines_agree: lines_agree(text),
+                    resync: false,
                 },
             );
         },
@@ -566,15 +611,30 @@ pub(super) fn remember_document(documents: &mut HashMap<PathBuf, OpenDocument>, 
             path,
             version,
             text,
+            delta,
         } => {
-            if let Some(document) = documents.get_mut(path) {
-                document.version = *version;
-                document.text.clone_from(text);
+            let Some(document) = documents.get_mut(path) else {
+                *delta = None;
+                return;
+            };
+            let agree = lines_agree(text);
+            if !(agree && document.lines_agree)
+                || document.resync
+                || delta
+                    .as_ref()
+                    .is_some_and(|delta| delta.base_version != document.version)
+            {
+                *delta = None;
             }
+            document.version = *version;
+            document.text.clone_from(text);
+            document.lines_agree = agree;
+            document.resync = false;
         },
         ServerCmd::DidSave { path, text } => {
             if let Some(document) = documents.get_mut(path) {
                 document.text.clone_from(text);
+                document.lines_agree = lines_agree(text);
             }
         },
         ServerCmd::DidClose { path } => {

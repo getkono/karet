@@ -17,6 +17,8 @@ mod commit_graph;
 mod merge_conflict;
 #[path = "tests/save_mark.rs"]
 mod save_mark;
+#[path = "tests/scroll_markers.rs"]
+mod scroll_markers;
 #[path = "tests/search_panel.rs"]
 mod search_panel;
 

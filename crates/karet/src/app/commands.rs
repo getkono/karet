@@ -274,11 +274,29 @@ impl App {
             Command::InsertNewline => {
                 // Markdown list items continue themselves (marker, numbering,
                 // checkbox); Enter between a bracket pair opens an indented
-                // line; everything else gets the ordinary auto-indent.
-                if !self.markdown_insert_newline() && !self.newline_auto_paired() {
-                    self.submit_edit_with_cause(EditCause::Newline, |caret, sel, buf, base| {
-                        Some(editing::newline(caret, sel, buf, base))
-                    });
+                // line; everything else gets the ordinary auto-indent, from the
+                // language's indent query where it has one.
+                if !self.markdown_insert_newline() {
+                    let syntax = self.syntax_indent();
+                    if !self.newline_auto_paired(syntax.as_ref()) {
+                        self.submit_edit_with_cause(
+                            EditCause::Newline,
+                            move |caret, sel, buf, base| {
+                                let range = sel.unwrap_or(Range {
+                                    start: caret,
+                                    end: caret,
+                                });
+                                let indent = syntax.as_ref().and_then(|s| s.for_range(buf, range));
+                                Some(editing::newline_indented(
+                                    caret,
+                                    sel,
+                                    buf,
+                                    base,
+                                    indent.as_deref(),
+                                ))
+                            },
+                        );
+                    }
                 }
             },
             Command::Indent => self.indent_or_toggle_focus(),
@@ -399,6 +417,9 @@ impl App {
             Command::FindToggleRegex => self.find_toggle_option(SearchOption::Regex),
             Command::FindToggleCase => self.find_toggle_option(SearchOption::Case),
             Command::FindToggleWord => self.find_toggle_option(SearchOption::Word),
+            Command::FindTogglePreserveCase => self.find_toggle_option(SearchOption::PreserveCase),
+            Command::FindToggleInSelection => self.find_toggle_option(SearchOption::InSelection),
+            Command::FindSelectAllMatches => self.find_select_all_matches(),
             Command::CommitSubmit => self.commit_submit(),
             Command::CommitCancel => self.commit_cancel(),
             Command::CommitConsoleClose => self.commit_console_dismiss(),
