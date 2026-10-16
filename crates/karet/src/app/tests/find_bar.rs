@@ -145,6 +145,54 @@ fn closing_the_bar_drops_the_selection_scope() {
 }
 
 #[test]
+fn a_bar_closed_by_a_tab_switch_reopens_without_its_scope() {
+    let mut rig = Rig::new("ab [ab|] ab");
+    rig.step(Step::Key(KeyCode::Char('f'), KeyModifiers::CONTROL));
+    rig.step(alt('l'));
+    assert!(find_state(&rig).is_some_and(|f| f.scope.is_some()));
+    // Away and back again: the bar closes without Esc ever reaching it.
+    rig.app.push_tab(text_tab("other.rs", "x"));
+    rig.app.select_tab(0);
+    assert!(!rig.app.find_open);
+    open(&mut rig, "ab", "");
+    assert!(find_state(&rig).is_some_and(|f| f.scope.is_none()));
+    assert_eq!(find_state(&rig).map(|f| f.count), Some(3));
+}
+
+#[test]
+fn a_bar_closed_by_a_tab_close_reopens_without_its_scope() {
+    let mut rig = Rig::new("ab [ab|] ab");
+    rig.app.push_tab(text_tab("other.rs", "x"));
+    rig.app.select_tab(0);
+    rig.step(Step::Key(KeyCode::Char('f'), KeyModifiers::CONTROL));
+    rig.step(alt('l'));
+    assert!(find_state(&rig).is_some_and(|f| f.scope.is_some()));
+    // Closing a background tab closes the bar over this one.
+    rig.app.close_tab_at(1);
+    assert!(!rig.app.find_open);
+    open(&mut rig, "ab", "");
+    assert!(find_state(&rig).is_some_and(|f| f.scope.is_none()));
+}
+
+#[test]
+fn replace_all_in_the_caret_line_leaves_the_next_line_start_alone() {
+    let mut rig = Rig::new("ab\n|cd\nef");
+    rig.step(Step::Key(KeyCode::Char('f'), KeyModifiers::CONTROL));
+    rig.step(alt('l'));
+    if let Some(find) = rig.app.active_find_mut() {
+        find.regex = true;
+    }
+    open(&mut rig, "(?m)^", "> ");
+    // The scope ends at the next line's start; the empty match there is not in it.
+    assert_eq!(find_state(&rig).map(|f| f.count), Some(1));
+    rig.step(Step::Cmd(Command::FindReplaceAll));
+    assert_eq!(text_of(&rig), "ab\n> cd\nef");
+    // Text inserted at the scope's start stays inside the scope.
+    open(&mut rig, ">", "");
+    assert_eq!(find_state(&rig).map(|f| f.count), Some(1));
+}
+
+#[test]
 fn preserve_case_follows_each_matchs_case_in_replace_all() {
     let mut rig = Rig::new("|foo Foo FOO");
     open(&mut rig, "foo", "bar");

@@ -11,7 +11,15 @@ impl App {
             ..
         }) = self.tabs.get_mut(self.active)
         {
-            find.get_or_insert_with(FindState::default).focused = true;
+            let find = find.get_or_insert_with(FindState::default);
+            find.focused = true;
+            // A bar that was closed by any path — Esc, a tab switch, a tab
+            // close, a preview install — reopens without the Search in
+            // Selection scope it had: the selection it was captured from is
+            // gone. Re-focusing a bar that is still open keeps it.
+            if !self.find_open {
+                find.scope = None;
+            }
             self.find_open = true;
             self.focus = Focus::Editor;
             // Rebuild decorations against the current buffer — cheap no-op for a
@@ -901,17 +909,32 @@ fn mark_current(decos: &mut [Decoration], current: usize) {
 }
 
 /// Whether a match over `range` counts under the Search in Selection `scope`:
-/// every match without one, otherwise only a match wholly inside it.
+/// every match without one, otherwise only a match wholly inside it. An
+/// empty-width match (a regex `^` or `$`) at `scope.end` sits on the boundary
+/// with the text after the scope, so it counts only for an empty scope.
 fn in_scope(scope: Option<Range>, range: Range) -> bool {
-    scope.is_none_or(|scope| scope.start <= range.start && range.end <= scope.end)
+    scope.is_none_or(|scope| {
+        scope.start <= range.start
+            && range.end <= scope.end
+            && (range.start < scope.end || scope.start == scope.end)
+    })
 }
 
 /// `scope` carried through `edits` (sorted, non-overlapping), so a replacement
 /// inside the scope grows or shrinks it rather than leaving it on stale text.
+/// Text inserted exactly at `scope.start` lands inside the scope: the start
+/// stays before it rather than being pushed past it.
 fn map_scope(scope: Option<Range>, edits: &[TextEdit]) -> Option<Range> {
-    scope.map(|scope| Range {
-        start: editing::map_position(scope.start, edits),
-        end: editing::map_position(scope.end, edits),
+    scope.map(|scope| {
+        let moves_start: Vec<TextEdit> = edits
+            .iter()
+            .filter(|edit| !(edit.range.is_empty() && edit.range.start == scope.start))
+            .cloned()
+            .collect();
+        Range {
+            start: editing::map_position(scope.start, &moves_start),
+            end: editing::map_position(scope.end, edits),
+        }
     })
 }
 
