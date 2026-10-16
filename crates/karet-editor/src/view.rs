@@ -21,44 +21,6 @@ pub use display::LineNumbers;
 pub(crate) use display::gutter_width;
 pub use glyphs::RenderWhitespace;
 
-/// Chars read past a row's right edge, so the grapheme cluster that straddles
-/// the edge is segmented whole — a flag or a ZWJ emoji sequence is several
-/// chars — and keeps the width it has when the full line is measured.
-const GRAPHEME_LOOKAHEAD: u32 = 32;
-
-/// The chars of unwrapped line `l` that a row starting at column `start` with
-/// `room` cells can show, plus [`GRAPHEME_LOOKAHEAD`], and their
-/// [`cluster_widths`].
-///
-/// The window starts at `start + 2 × room` chars and doubles until the chars
-/// past `start` (the lookahead aside) cover `room` cells, or the line ends. It
-/// is sized by cells rather than chars because a cluster can be many chars to
-/// one glyph: a ZWJ family emoji is five chars in two cells, so a fixed char
-/// budget would stop painting well short of the right edge. A tab counts one
-/// cell and hints none, so the estimate never overshoots what the walk paints.
-fn row_window(buffer: &TextBuffer, l: u32, start: u32, room: u32) -> (Vec<char>, Vec<u32>) {
-    let mut visible = room.saturating_mul(2).max(1);
-    loop {
-        let cap = start
-            .saturating_add(visible)
-            .saturating_add(GRAPHEME_LOOKAHEAD);
-        let chars = line_chars_prefix(buffer, l, cap);
-        let widths = cluster_widths(&chars);
-        let measured = chars.len().saturating_sub(GRAPHEME_LOOKAHEAD as usize);
-        let covered: u32 = chars
-            .iter()
-            .zip(&widths)
-            .take(measured)
-            .skip(start as usize)
-            .map(|(&ch, &w)| if ch == '\t' { 1 } else { w })
-            .fold(0, u32::saturating_add);
-        if chars.len() < cap as usize || covered >= room || cap == u32::MAX {
-            return (chars, widths);
-        }
-        visible = visible.saturating_mul(2);
-    }
-}
-
 /// The editor widget: a builder over the buffer and the (borrowed) data layers
 /// the application supplies. Render it as a ratatui [`StatefulWidget`] with an
 /// [`EditorState`].
