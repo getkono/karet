@@ -563,6 +563,7 @@ mod code_action_tests;
 mod code_lens_tests;
 mod completion_tests;
 mod disabled_tests;
+mod document_highlight_tests;
 mod failure_policy_tests;
 mod format_tests;
 mod hint_tests;

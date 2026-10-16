@@ -14,10 +14,13 @@ use super::updates::utf16_caret;
 use super::updates::utf16_range_to_buffer;
 use super::*;
 use crate::api::AppliedWorkspaceEdit;
+use crate::api::DocumentHighlight;
 use crate::api::FormatRequest;
 use crate::api::FormatScope;
+use crate::api::HighlightKind;
 use crate::api::LocationKind;
 use crate::api::RenameTarget;
+use crate::lsp::DocumentHighlightsAnswer;
 use crate::lsp::FormattingScope;
 use crate::lsp::LspUpdate;
 use crate::lsp::RenameAnswer;
@@ -311,10 +314,67 @@ impl Session {
         }
     }
 
+    /// Forward a [`Command::DocumentHighlights`], or answer it with no
+    /// highlights when no server serves the document.
+    pub(super) fn document_highlights(&mut self, id: RequestId, doc_id: DocumentId, at: LineCol) {
+        let Some(doc) = Self::doc_or_report(&self.store, &self.events, id, doc_id) else {
+            return;
+        };
+        let version = doc.buffer.version();
+        let position = utf16_caret(doc, at);
+        let request = (id, doc_id, version);
+        if !self
+            .lsp
+            .document_highlights(doc.language_selector, request, &doc.path, position)
+        {
+            let answer = Event::DocumentHighlights {
+                doc: doc_id,
+                version,
+                highlights: None,
+            };
+            self.emit(Some(id), answer);
+        }
+    }
+
+    /// Turn a server's document highlights into [`Event::DocumentHighlights`],
+    /// in buffer columns. A document that has changed since the request gets
+    /// `None`: the ranges describe text that is no longer there.
+    pub(super) fn adopt_document_highlights(&mut self, answer: DocumentHighlightsAnswer) {
+        let DocumentHighlightsAnswer {
+            request,
+            doc,
+            version,
+            highlights,
+        } = answer;
+        let highlights = match self.store.docs.get(&doc) {
+            Some(document) if document.buffer.version() == version => highlights.map(|found| {
+                found
+                    .into_iter()
+                    .map(|highlight| DocumentHighlight {
+                        range: utf16_range_to_buffer(&document.buffer, highlight.range),
+                        kind: match highlight.kind {
+                            karet_lsp::HighlightKind::Text => HighlightKind::Text,
+                            karet_lsp::HighlightKind::Read => HighlightKind::Read,
+                            karet_lsp::HighlightKind::Write => HighlightKind::Write,
+                        },
+                    })
+                    .collect()
+            }),
+            _ => None,
+        };
+        let event = Event::DocumentHighlights {
+            doc,
+            version,
+            highlights,
+        };
+        self.emit(Some(request), event);
+    }
+
     /// Settle an answer the generation fence turned away: a save's formatting
     /// still completes the save, unformatted, and selection ranges still
     /// answer the request with empty chains, because `Command::SelectionRanges`
-    /// is always answered and Expand Selection waits on it. A code-lens
+    /// is always answered and Expand Selection waits on it. Document
+    /// highlights are answered with none for the same reason. A code-lens
     /// listing is answered as unanswered, so the client asks again, and a
     /// lens run reports how it went, since its command did run. Every other
     /// fenced answer is advisory and simply dropped.
@@ -331,6 +391,10 @@ impl Session {
             LspUpdate::SelectionRanges { mut answer, .. } => {
                 answer.chains.iter_mut().for_each(Vec::clear);
                 self.adopt_selection_ranges(answer);
+            },
+            LspUpdate::DocumentHighlights { mut answer, .. } => {
+                answer.highlights = None;
+                self.adopt_document_highlights(answer);
             },
             LspUpdate::CodeLens { answer, .. } => self.adopt_code_lens(answer.fenced()),
             _ => {},

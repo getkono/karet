@@ -151,6 +151,7 @@ fn advertised_capabilities(behavior: Behavior) -> Value {
         "implementationProvider": true,
         "typeHierarchyProvider": true,
         "selectionRangeProvider": true,
+        "documentHighlightProvider": true,
     });
     if matches!(behavior, Behavior::Formats | Behavior::FormatsNever) {
         capabilities["documentFormattingProvider"] = json!(true);
@@ -221,6 +222,22 @@ fn selection_range_reply(positions: &Value) -> Value {
         })
         .collect();
     Value::Array(chains)
+}
+
+/// The double's answer to `textDocument/documentHighlight`: a write over the
+/// one UTF-16 code unit after the position, echoing it to prove the request
+/// crossed in UTF-16 columns, and a kindless highlight over characters 0..2
+/// of line 1.
+fn document_highlight_reply(position: &Value) -> Value {
+    let line = position["line"].as_u64().unwrap_or(0);
+    let character = position["character"].as_u64().unwrap_or(0);
+    json!([
+        {"range": {"start": {"line": line, "character": character},
+                   "end": {"line": line, "character": character + 1}},
+         "kind": 3},
+        {"range": {"start": {"line": 1, "character": 0},
+                   "end": {"line": 1, "character": 2}}}
+    ])
 }
 
 /// The double's answer to the three code-action methods.
@@ -488,6 +505,14 @@ pub(super) fn test_connector(
                         },
                         Some("textDocument/selectionRange") => {
                             let result = selection_range_reply(&msg["params"]["positions"]);
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": result}),
+                            )
+                            .await;
+                        },
+                        Some("textDocument/documentHighlight") => {
+                            let result = document_highlight_reply(&msg["params"]["position"]);
                             write_msg(
                                 &mut server_write,
                                 &json!({"jsonrpc": "2.0", "id": msg["id"], "result": result}),

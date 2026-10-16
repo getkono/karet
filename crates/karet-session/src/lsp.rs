@@ -61,6 +61,7 @@ use karet_lsp::LspClient;
 use karet_lsp::LspError;
 use karet_lsp::LspSpec;
 pub(crate) use message::DiagnosticLayer;
+pub(crate) use message::DocumentHighlightsAnswer;
 pub(crate) use message::FormattingAsk;
 pub(crate) use message::FormattingScope;
 pub(crate) use message::LspUpdate;
@@ -296,6 +297,7 @@ impl LspManager {
             | LspUpdate::Hover { generation, .. }
             | LspUpdate::SignatureHelp { generation, .. }
             | LspUpdate::SelectionRanges { generation, .. }
+            | LspUpdate::DocumentHighlights { generation, .. }
             | LspUpdate::Unsupported { generation, .. }
             | LspUpdate::Definitions { generation, .. }
             | LspUpdate::WorkspaceSymbols { generation, .. }

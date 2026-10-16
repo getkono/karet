@@ -342,3 +342,31 @@ fn an_unanswerable_selection_range_request_answers_an_empty_chain_per_caret() {
         Ok(LspUpdate::SelectionRanges { generation: 7, answer }) if answer == expected
     ));
 }
+
+/// With no connection, a document-highlight request is answered `None`, so
+/// the client falls back to matching the word as text.
+#[test]
+fn an_unanswerable_document_highlight_request_answers_none() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    answer_empty(
+        &tx,
+        ServerCmd::DocumentHighlights {
+            request: RequestId(1),
+            doc: DocumentId(2),
+            version: 3,
+            path: PathBuf::from("main.rs"),
+            position: LineCol::new(0, 1),
+        },
+        7,
+    );
+    let expected = DocumentHighlightsAnswer {
+        request: RequestId(1),
+        doc: DocumentId(2),
+        version: 3,
+        highlights: None,
+    };
+    assert!(matches!(
+        rx.try_recv(),
+        Ok(LspUpdate::DocumentHighlights { generation: 7, answer }) if answer == expected
+    ));
+}
