@@ -262,3 +262,78 @@ fn a_listing_from_a_retired_generation_is_answered_unanswered() -> TestResult {
     assert_eq!(answer, Some(version));
     Ok(())
 }
+
+/// A listing answered for a version the buffer has since moved past is
+/// reported failed: its ranges describe text that is gone. The same answer at
+/// the current version is adopted, so it is the version that failed it.
+#[test]
+fn a_listing_for_a_superseded_version_is_answered_failed() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let path = rust_file(&dir, "notes.txt", TEXT).ok_or("write failed")?;
+    let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
+    session.handle(
+        RequestId(1),
+        Command::OpenDocument {
+            path,
+            language: None,
+        },
+    );
+    let doc = DocumentId(1);
+    let old = session
+        .document(doc)
+        .map(|d| d.version())
+        .ok_or("no document")?;
+    session.handle(
+        RequestId(2),
+        Command::ApplyChange {
+            doc,
+            change: Change::new(
+                old,
+                vec![TextEdit {
+                    range: Range::new(LineCol::new(1, 0), LineCol::new(1, 0))
+                        .map_err(|e| format!("{e}"))?,
+                    new_text: "x".to_owned(),
+                }],
+            ),
+            cause: EditCause::Type,
+        },
+    );
+    let current = session
+        .document(doc)
+        .map(|d| d.version())
+        .ok_or("no document")?;
+    assert_ne!(current, old, "the edit moved the version on");
+    while events.try_recv().is_some() {}
+
+    for (request, version) in [(RequestId(3), old), (RequestId(4), current)] {
+        session.apply_lsp_update(LspUpdate::CodeLens {
+            generation: 0,
+            answer: CodeLensAnswer::Listed {
+                request,
+                doc,
+                version,
+                lenses: Some(vec![CodeLens::default()]),
+            },
+        });
+    }
+
+    let (mut stale, mut fresh) = (None, None);
+    while let Some((id, event)) = events.try_recv() {
+        match (id, event) {
+            (Some(RequestId(3)), Event::CodeLensesFailed { version, .. }) => stale = Some(version),
+            (Some(RequestId(3)), Event::CodeLenses { .. }) => {
+                return Err("a listing for a superseded version was adopted".into());
+            },
+            (
+                Some(RequestId(4)),
+                Event::CodeLenses {
+                    version, lenses, ..
+                },
+            ) => fresh = Some((version, lenses.len())),
+            _ => {},
+        }
+    }
+    assert_eq!(stale, Some(old));
+    assert_eq!(fresh, Some((current, 1)));
+    Ok(())
+}
