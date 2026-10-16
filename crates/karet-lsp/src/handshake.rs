@@ -125,6 +125,14 @@ pub(crate) fn initialize_params(root: &Path) -> Result<lsp_types::InitializePara
                 code_description_support: Some(true),
                 ..lsp_types::PublishDiagnosticsClientCapabilities::default()
             }),
+            // `LspClient::pull_diagnostics`. A registration's options carry
+            // only an identifier and dependency flags, which a pull does not
+            // need, so registering dynamically loses nothing. Related
+            // documents' reports are returned beside the asked one's.
+            diagnostic: Some(lsp_types::DiagnosticClientCapabilities {
+                dynamic_registration: Some(true),
+                related_document_support: Some(true),
+            }),
             // Declared at all so a server knows the client renders hints;
             // some only compute them for a client that says so. What a hover
             // or a Ctrl+click needs may be deferred: `LspClient::resolve_inlay_hint`

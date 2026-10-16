@@ -388,6 +388,13 @@ impl Connection {
             .collect()
     }
 
+    /// Record `wire` as the server's complete diagnostics for `path`, as a
+    /// publication would, so a pulled report reaches the code-action context
+    /// the same way a pushed one does.
+    pub(crate) fn remember_diagnostics(&self, path: &Path, wire: &[lsp_types::Diagnostic]) {
+        remember(&self.0.handler().published, path, wire);
+    }
+
     /// Subscribe to the server's refresh requests.
     pub(crate) fn refreshes(&self) -> broadcast::Receiver<ServerRefresh> {
         self.0.handler().refreshes.subscribe()
@@ -426,6 +433,18 @@ fn answer_server_request(
     }
 }
 
+/// Replace what `published` holds for `path` with `wire`, the server's
+/// complete set for it; an empty set forgets the file.
+fn remember(published: &Mutex<PublishedSets>, path: &Path, wire: &[lsp_types::Diagnostic]) {
+    if let Ok(mut sets) = published.lock() {
+        if wire.is_empty() {
+            sets.remove(path);
+        } else {
+            sets.insert(path.to_path_buf(), wire.to_vec());
+        }
+    }
+}
+
 /// Decode and broadcast one `textDocument/publishDiagnostics` notification,
 /// remembering its wire form in `published`.
 fn route_diagnostics(
@@ -444,13 +463,7 @@ fn route_diagnostics(
         tracing::debug!(uri = %parsed.uri.as_str(), "ignoring diagnostics for a non-file URI");
         return;
     };
-    if let Ok(mut sets) = published.lock() {
-        if parsed.diagnostics.is_empty() {
-            sets.remove(&path);
-        } else {
-            sets.insert(path.clone(), parsed.diagnostics.clone());
-        }
-    }
+    remember(published, &path, &parsed.diagnostics);
     let mapped = parsed
         .diagnostics
         .into_iter()
