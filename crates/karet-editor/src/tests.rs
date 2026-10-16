@@ -9,6 +9,7 @@ mod caret_ops;
 mod carets;
 mod change_lane;
 mod comment;
+mod decorations;
 mod diagnostics;
 mod display;
 mod glyphs;
