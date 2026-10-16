@@ -132,6 +132,21 @@ the newest caret primary, because the viewport and every single-caret feature
 follow the primary, and the caret just added is the one the user is looking
 at. Esc still keeps the original caret, as in VS Code.
 
+## Occurrence highlight
+
+| Input | Behaviour | Status |
+|---|---|---|
+| The primary caret rests on a word | Once the caret and the text have been still for the edit debounce (150ms), paint every occurrence of the symbol under the caret behind the text: the language server's document highlights (`textDocument/documentHighlight`) when the document's server answers, a write in a stronger color than a read or a textual mention. When no server answers (none serves the document, it does not offer document highlights, or the request fails), paint every whole-word, case-sensitive match of the word the caret is on, or of the one ending at it. A server that answers with no highlights paints nothing. Off a word, or with a selection, nothing is asked. | app unit tests (`tests/occurrences.rs`) |
+| Moving the caret, editing | A move that stays on a painted occurrence keeps the paint until the next answer replaces it; a move off every occurrence, an edit, or a selection takes it down at once. An answer for a caret or text that moved on before it arrived is dropped. | app unit tests (`tests/occurrences.rs`) |
+
+Deviation: VS Code also highlights the other matches of a selected word
+(`editor.selectionHighlight`). karet paints occurrences from a bare caret only,
+since the find bar and Ctrl+Shift+L already cover a selection's matches. Until
+the theme carries roles of its own for occurrences (VS Code's
+`editor.wordHighlightBackground` and `editor.wordHighlightStrongBackground`),
+reads and textual mentions take the list-hover color and writes the
+matching-bracket color.
+
 ## Indentation
 
 The indent unit is the document's resolved indentation: EditorConfig, then the

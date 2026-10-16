@@ -33,6 +33,8 @@ impl App {
         let code_lens = self.code_lens_next_wake(now);
         // Likewise the lightbulb probe, once the caret has settled.
         let code_actions = self.code_action_next_wake(now);
+        // And the occurrence highlight, once the caret has rested on a word.
+        let occurrences = self.occurrence_next_wake(now);
         // Likewise a workspace-symbol query, once typing pauses.
         let workspace_symbols = self.workspace_symbol_next_wake(now);
         // Generation runs for seconds with no output to stream, so its spinner is
@@ -66,6 +68,7 @@ impl App {
             inlay,
             code_lens,
             code_actions,
+            occurrences,
             workspace_symbols,
             ai_commit,
             operation,
@@ -205,6 +208,11 @@ impl App {
             SessionEvent::SelectionRanges { doc, chains, .. } => {
                 self.on_selection_ranges(id, doc, chains);
             },
+            SessionEvent::DocumentHighlights {
+                doc,
+                version,
+                highlights,
+            } => self.on_document_highlights(id, doc, version, highlights),
             SessionEvent::SignatureHelp { doc, help, options } => {
                 self.on_signature_help(id, doc, help, options);
             },

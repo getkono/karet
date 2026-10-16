@@ -36,6 +36,7 @@ mod markdown_edit;
 mod mouse;
 mod navigation;
 mod notifications;
+mod occurrences;
 mod panes;
 mod pending;
 mod problems;
@@ -569,6 +570,8 @@ pub struct App {
     /// The quick-fix menu's pending request, the action being run, and the
     /// gutter lightbulb's probe.
     pub(crate) code_actions: code_actions::CodeActions,
+    /// The occurrence-highlight probe and what it found (see [`occurrences`]).
+    pub(crate) occurrences: occurrences::Occurrences,
     /// Each pane's Go Back / Go Forward history, keyed by the pane it navigates.
     pub(crate) nav_history: HashMap<PaneId, navigation::NavHistory>,
     /// The Ctrl-hovered symbol the editor should underline as navigable.
