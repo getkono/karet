@@ -289,6 +289,7 @@ command_ids! {
     ToggleInlineBlame => "toggleInlineBlame",
     OpenBlameDetail => "openBlameDetail",
     ShowLoadedConfig => "showLoadedConfig",
+    SelectColorTheme => "selectColorTheme",
     ManageLanguageServers => "manageLanguageServers",
     CheckLanguageServerUpdates => "checkLanguageServerUpdates",
     ShowLanguageServerLog => "showLanguageServerLog",

@@ -157,9 +157,24 @@ also beats a user-level `[rust]` `formatOnSave`.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `colorTheme` | string | `"dark"` | Built-in `"dark"`, or a path to a VS Code `.json` theme (see [scope](scope.md#tui-theming)). |
+| `colorTheme` | string | `"dark"` | Built-in `"dark"`, or a path to a VS Code `.json` theme (see [scope](scope.md#tui-theming)); the [theme picker](#color-themes) previews and chooses among them. |
 | `iconStyle` | `"nerdFont"`\|`"unicode"`\|`"ascii"` | `"nerdFont"` | File-tree / activity-bar glyphs. |
 | `startupPanel` | `"explorer"`\|`"search"`\|`"sourceControl"`\|`"none"` | `"explorer"` | Sidebar panel shown at startup. |
+
+#### Color themes
+
+**Settings: Select Color Theme…** in the command palette lists the built-in
+`Dark` theme, every VS Code `.json` theme in a `themes` directory beside a
+`setting.jsonc` — the user's `$XDG_CONFIG_HOME/karet/themes/` and the project's
+`$GIT_ROOT/.karet/themes/` — and the file `colorTheme` names when it lives
+anywhere else. Each row's hint says which of `built-in`, `user`, `project` or
+`settings` it came from.
+
+Moving through the list repaints the UI in the highlighted theme; Esc puts back
+the theme from before, Enter keeps the highlighted one. The pick lasts for the
+session and is never written to a settings file: to keep it, set `colorTheme` to
+the theme's path. A live reload keeps the pick while it leaves `colorTheme` as it
+was, and applies the setting once `colorTheme` itself changes.
 
 ### `search`
 

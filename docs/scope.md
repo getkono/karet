@@ -30,7 +30,10 @@ Recorded here because each was weighed against the non-goals below and kept:
 
 **Out of scope.** karet ships one built-in dark theme and loads
 [VS Code JSON themes](configuration.md#workbench) via `workbench.colorTheme` —
-that is the whole theming surface.
+that is the whole theming surface. **Settings: Select Color Theme…** is a way
+to choose among those themes, not a new surface: it lists the built-in theme
+and the `.json` themes in the [`themes` directories](configuration.md#color-themes),
+previews the highlighted one live, and keeps the pick for the session only.
 
 Deliberately not built:
 

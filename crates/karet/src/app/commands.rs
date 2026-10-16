@@ -363,6 +363,7 @@ impl App {
                     self.open_loaded_config(self.loaded_config.clone());
                 }
             },
+            Command::SelectColorTheme => self.open_theme_picker(),
             Command::ManageLanguageServers => self.open_language_servers(),
             Command::CheckLanguageServerUpdates => {
                 self.open_language_servers();

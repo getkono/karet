@@ -184,6 +184,9 @@ impl App {
         self.reconcile_completion();
         self.reconcile_hover();
         self.reconcile_rename();
+        // The theme picker previews the row a key highlighted, and puts the
+        // theme back when a key closed it.
+        self.sync_theme_preview();
         self.request_live_blame();
         if dismiss_outline_after {
             self.dismiss_outline_overlay();
@@ -329,6 +332,7 @@ impl App {
         match modal {
             Modal::Overlay => {
                 self.edit_overlay_query(|overlay| overlay.push_str(text));
+                self.sync_theme_preview();
             },
             Modal::Find => {
                 let Some(find) = self.active_find_mut() else {
@@ -419,6 +423,7 @@ impl App {
             OverlayEvent::AcceptFile(path) => self.open_path(&path),
             OverlayEvent::AcceptWorkspace(root) => self.reopen_on_workspace(root),
             OverlayEvent::AcceptSeamRoot(root) => self.open_seam_view_at(root),
+            OverlayEvent::AcceptTheme(choice) => self.accept_theme(choice),
             OverlayEvent::AcceptLocation { path, position }
             | OverlayEvent::AcceptSymbol { path, position, .. } => {
                 self.jump_to_location(&path, position);

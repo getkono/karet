@@ -73,6 +73,7 @@ mod surface_select;
 mod syntax_select;
 mod tab_focus;
 mod tabs_search;
+mod theme_picker;
 mod todos;
 mod unsupported;
 mod vertical_motion;
