@@ -3,8 +3,9 @@
 //! diagnostics, changed lines, search matches, selections.
 //!
 //! A marker is a range in the same unit as the track's [`ScrollExtent`], and it is
-//! mapped onto the track with the same proportion the thumb is: a marker on the
-//! first visible unit lands on the thumb's first cell. Markers are an overlay on a
+//! mapped onto the track with the same proportion and rounding the thumb is: a
+//! marker on the first visible unit lands on the thumb — on its first cell unless
+//! the thumb is pinned against the end of the track. Markers are an overlay on a
 //! bar that was already painted, so a track whose content fits — and so painted no
 //! bar — paints no markers either: everything they would point at is on screen.
 
@@ -66,14 +67,19 @@ impl ScrollMarker {
             start + 1
         };
         let end = if end > content { content } else { end };
-        let first = start * len / content;
+        // Unit `u` sits at `u * len / content` cells along the track, rounded to
+        // the nearest cell exactly as `ScrollExtent::thumb` rounds the thumb's
+        // start, so a marker on the first visible unit lands on the thumb rather
+        // than on the groove just before it.
+        let half = content / 2;
+        let first = (start * len + half) / content;
         let first = if first >= len { len - 1 } else { first };
         // A cell is marked when a marked unit starts in it, or when the range
         // covers the whole cell (content shorter than the track). Taking the
         // cell a unit merely *ends* in would smear a one-line marker across two
         // cells whenever that line straddles a cell boundary.
-        let starts = (end - 1) * len / content + 1;
-        let covered = end * len / content;
+        let starts = ((end - 1) * len + half) / content + 1;
+        let covered = (end * len + half) / content;
         let last = if covered > starts { covered } else { starts };
         let last = if last > len { len } else { last };
         let last = if last <= first { first + 1 } else { last };
@@ -177,9 +183,14 @@ mod tests {
         let cells = |start, end| ScrollMarker::new(start, end, red()).cells(extent, 10);
 
         assert_eq!(cells(0, 1), Some((0, 1)));
-        assert_eq!(cells(55, 55), Some((5, 6)), "an empty range marks its line");
+        assert_eq!(cells(54, 54), Some((5, 6)), "an empty range marks its line");
         assert_eq!(
-            cells(19, 21),
+            cells(55, 56),
+            Some((6, 7)),
+            "a unit rounds to the nearest cell"
+        );
+        assert_eq!(
+            cells(14, 16),
             Some((1, 3)),
             "a range crossing a cell boundary marks both cells"
         );
@@ -198,13 +209,39 @@ mod tests {
 
     #[test]
     fn a_line_straddling_a_cell_boundary_marks_only_the_cell_it_starts_in() {
-        // 1001 lines on 20 cells: line 900 runs from cell 17.98 to 18.002.
+        // 1001 lines on 20 cells, rounded to the nearest cell: line 925 runs from
+        // cell 18.98 to 19.001.
         let extent = ScrollExtent::new(1001, 0, 20);
 
         assert_eq!(
-            ScrollMarker::new(900, 901, red()).cells(extent, 20),
-            Some((17, 18))
+            ScrollMarker::new(925, 926, red()).cells(extent, 20),
+            Some((18, 19))
         );
+    }
+
+    #[test]
+    fn a_marker_on_the_first_visible_line_lands_on_the_thumb() {
+        // 100 lines at position 15 on a 10-cell track: line 15 sits at cell 1.5,
+        // which the thumb rounds up to cell 2 — rounding down would put the
+        // marker on the groove just above the thumb.
+        let extent = ScrollExtent::new(100, 15, 10);
+        let (thumb_start, thumb_len) = extent.thumb(10);
+        let cells = ScrollMarker::new(15, 16, red()).cells(extent, 10);
+
+        assert_eq!((thumb_start, thumb_len), (2, 1));
+        assert_eq!(cells, Some((2, 3)));
+
+        // At the thumb's pinned end every visible line still lands on it.
+        let end = ScrollExtent::new(100, 90, 10);
+        let (start, len) = end.thumb(10);
+        for line in 90..100 {
+            let marked = ScrollMarker::new(line, line + 1, red()).cells(end, 10);
+            let first = marked.map_or(u16::MAX, |(first, _)| first);
+            assert!(
+                (start..start + len).contains(&first),
+                "line {line} off the thumb"
+            );
+        }
     }
 
     #[test]
@@ -243,14 +280,14 @@ mod tests {
             vertical: Some(area),
             horizontal: None,
         };
-        // Thumb over cells 0..1; markers at line 5 (thumb) and line 50 (groove).
+        // Thumb over cells 0..1; markers at line 4 (thumb) and line 50 (groove).
         let painted = tracks.paint_marked(
             &mut buf,
             styles(),
             ScrollExtent::new(100, 0, 10),
             ScrollExtent::default(),
             &[
-                ScrollMarker::new(5, 6, red()),
+                ScrollMarker::new(4, 5, red()),
                 ScrollMarker::new(50, 51, Style::default().fg(Color::Yellow)),
             ],
         );
