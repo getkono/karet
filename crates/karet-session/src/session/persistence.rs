@@ -227,13 +227,9 @@ impl Session {
             // The buffer was replaced wholesale, so the worker's retained tree is void:
             // `None` edits force it to start over.
             let spell_without_syntax = update_syntax(settings, highlight_tx, doc_id, doc, None);
-            // The on-disk content is the new truth; keep the server in sync.
-            let retired = lsp.document_changed(
-                doc.language_selector,
-                &doc.path,
-                doc.buffer.version(),
-                || doc.buffer.text(),
-            );
+            // The on-disk content is the new truth; keep the server in sync. No
+            // edit produced it, so it travels as the full text.
+            let retired = lsp.document_changed(doc.language_selector, &doc.path, &doc.buffer, None);
             (doc.buffer.version(), spell_without_syntax, retired)
         };
         self.adopt_retirement(retired);

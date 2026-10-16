@@ -193,7 +193,8 @@ async fn relative_root_and_document_paths_reach_lsp_as_absolute_uris() -> TestRe
     let _ = manager.document_opened(Some("rust"), Some("rust"), &path, 1, || {
         "fn main() {}".into()
     });
-    let _ = manager.document_changed(Some("rust"), &path, 2, || "fn changed() {}".into());
+    let changed = karet_text::TextBuffer::from_text("fn changed() {}");
+    let _ = manager.document_changed(Some("rust"), &path, &changed, None);
     manager.document_saved(Some("rust"), &path, || "fn changed() {}".into());
     let _ = manager.document_closed(Some("rust"), &path);
 

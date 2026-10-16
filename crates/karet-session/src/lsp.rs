@@ -3,8 +3,9 @@
 //! The [`LspManager`] lives on the session actor and owns one background task per
 //! language. A task is spawned lazily on the first open of a matching document; it
 //! owns the [`LspClient`], serializes document sync ahead of requests (a
-//! completion always sees the latest text), debounces full-text `didChange`
-//! forwards, and reports back to the actor on an [`LspUpdate`] channel — the
+//! completion always sees the latest text), debounces `didChange` forwards --
+//! sent as ranges to a server that asked for incremental sync, else as the
+//! full text (see `delta`) -- and reports back to the actor on an [`LspUpdate`] channel — the
 //! session converts positions (LSP UTF-16 ↔ buffer UTF-32) there, where the
 //! buffer lives, and emits the answering [`Event`](crate::api::Event).
 //!
@@ -17,6 +18,7 @@ mod catalog;
 mod code_actions;
 mod commands;
 mod connector;
+mod delta;
 mod format;
 mod forward;
 mod health;
@@ -748,14 +750,19 @@ impl LspManager {
         }
     }
 
-    /// Forward an edit (full text, debounced by the server task). A no-op for
+    /// Forward an edit to `buffer` (debounced by the server task). A no-op for
     /// languages without a running server.
+    ///
+    /// `applied` is the edit that just produced `buffer`'s current version, when
+    /// there is one: its content changes ride beside the full text, so a server
+    /// that takes incremental sync is sent only those. `None` (a reload that
+    /// replaced the content wholesale) always sends the full text.
     pub(crate) fn document_changed(
         &mut self,
         language: Option<&str>,
         path: &Path,
-        version: u64,
-        text: impl FnOnce() -> String,
+        buffer: &karet_text::TextBuffer,
+        applied: Option<&karet_text::Applied>,
     ) -> Retired {
         if language_key(language).is_none() {
             return Retired::default();
@@ -770,7 +777,18 @@ impl LspManager {
         if senders.is_empty() {
             return Retired::default();
         }
-        let text = text();
+        let version = buffer.version();
+        let text = buffer.text();
+        // Every edit bumps the version by one, so the delta starts at the one
+        // before -- provided `applied` is what made the current version.
+        let delta = applied
+            .filter(|applied| applied.version == version)
+            .and_then(|applied| delta::content_changes(buffer, applied))
+            .zip(version.checked_sub(1))
+            .map(|(edits, base)| delta::DocumentDelta {
+                base_version: version_i32(base),
+                edits,
+            });
         let mut undelivered = Vec::new();
         for (key, tx) in senders {
             if tx
@@ -778,6 +796,7 @@ impl LspManager {
                     path: path.clone(),
                     version: version_i32(version),
                     text: text.clone(),
+                    delta: delta.clone(),
                 })
                 .is_err()
             {
@@ -788,7 +807,8 @@ impl LspManager {
         }
         // A dropped `didChange` leaves the server's copy of the file behind the
         // buffer, so every answer it gives is about text the user no longer has.
-        // Sync is full-text, so the next edit that *does* land repairs it -- but
+        // The next edit that *does* land repairs it, as the full text: its delta
+        // starts from a version the task never saw, so the task drops it -- but
         // until then the condition is real and was previously invisible.
         let mut retired = Retired::default();
         for key in undelivered {

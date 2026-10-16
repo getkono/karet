@@ -29,6 +29,8 @@ use karet_lsp::LspError;
 use tokio::sync::mpsc;
 
 use super::code_actions::UNAVAILABLE;
+use super::delta::PendingChange;
+use super::delta::lines_agree;
 use super::health::FailureTally;
 use super::message::LspUpdate;
 use super::message::RenameAnswer;
@@ -69,7 +71,7 @@ pub(super) fn report_unsupported<T>(
 /// latest text does before it is served.
 pub(super) async fn flush_pending(
     client: &LspClient,
-    pending: &mut Option<(PathBuf, i32, String)>,
+    pending: &mut Option<PendingChange>,
     dead: &mut bool,
     tally: &mut FailureTally,
     updates: &mpsc::UnboundedSender<LspUpdate>,
@@ -80,8 +82,8 @@ pub(super) async fn flush_pending(
         *pending = None;
         return;
     }
-    if let Some((path, version, text)) = pending.take() {
-        let result = client.did_change(&path, version, &text).await;
+    if let Some(change) = pending.take() {
+        let result = change.send(client).await;
         tally.note(result, dead, updates, key, token);
     }
 }
@@ -183,7 +185,7 @@ pub(super) async fn resolve_item(
 pub(super) async fn caret_query(
     client: &LspClient,
     cmd: ServerCmd,
-    (generation, pending): (u64, &mut Option<(PathBuf, i32, String)>),
+    (generation, pending): (u64, &mut Option<PendingChange>),
     (dead, tally, updates, key, token): (
         &mut bool,
         &mut FailureTally,
@@ -543,9 +545,18 @@ pub(super) struct OpenDocument {
     pub(super) language: String,
     pub(super) version: i32,
     pub(super) text: String,
+    /// Whether the rope numbers `text`'s lines as LSP does (see `delta`).
+    pub(super) lines_agree: bool,
 }
 
-pub(super) fn remember_document(documents: &mut HashMap<PathBuf, OpenDocument>, cmd: &ServerCmd) {
+/// Keep the replay set in step with `cmd`, and drop a change's delta that
+/// cannot take the server's copy to the new text: one not starting from the
+/// version last seen here (a change between was never queued), or one whose
+/// old or new text has lines the rope and the server number differently.
+pub(super) fn remember_document(
+    documents: &mut HashMap<PathBuf, OpenDocument>,
+    cmd: &mut ServerCmd,
+) {
     match cmd {
         ServerCmd::DidOpen {
             path,
@@ -559,6 +570,7 @@ pub(super) fn remember_document(documents: &mut HashMap<PathBuf, OpenDocument>, 
                     language: language.clone(),
                     version: *version,
                     text: text.clone(),
+                    lines_agree: lines_agree(text),
                 },
             );
         },
@@ -566,15 +578,28 @@ pub(super) fn remember_document(documents: &mut HashMap<PathBuf, OpenDocument>, 
             path,
             version,
             text,
+            delta,
         } => {
-            if let Some(document) = documents.get_mut(path) {
-                document.version = *version;
-                document.text.clone_from(text);
+            let Some(document) = documents.get_mut(path) else {
+                *delta = None;
+                return;
+            };
+            let agree = lines_agree(text);
+            if !(agree && document.lines_agree)
+                || delta
+                    .as_ref()
+                    .is_some_and(|delta| delta.base_version != document.version)
+            {
+                *delta = None;
             }
+            document.version = *version;
+            document.text.clone_from(text);
+            document.lines_agree = agree;
         },
         ServerCmd::DidSave { path, text } => {
             if let Some(document) = documents.get_mut(path) {
                 document.text.clone_from(text);
+                document.lines_agree = lines_agree(text);
             }
         },
         ServerCmd::DidClose { path } => {

@@ -329,8 +329,8 @@ impl Session {
             retired.absorb(lsp.document_changed(
                 doc.language_selector,
                 &doc.path,
-                result.version,
-                || doc.buffer.text(),
+                &doc.buffer,
+                Some(&result),
             ));
             doc.lang_id.is_none()
         };
