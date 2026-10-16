@@ -19,6 +19,11 @@ mod virtual_paint;
 pub use display::LineNumbers;
 pub(crate) use display::gutter_width;
 
+/// Chars read past a row's right edge, so the grapheme cluster that straddles
+/// the edge is segmented whole — a flag or a ZWJ emoji sequence is several
+/// chars — and keeps the width it has when the full line is measured.
+const GRAPHEME_LOOKAHEAD: u32 = 32;
+
 /// The editor widget: a builder over the buffer and the (borrowed) data layers
 /// the application supplies. Render it as a ratatui [`StatefulWidget`] with an
 /// [`EditorState`].
@@ -247,6 +252,9 @@ impl Editor<'_> {
     /// Append the syntax-colored content spans for line `l`, honoring horizontal
     /// scroll, active selections, and text-background decorations.
     ///
+    /// `room` is the screen cells left on the row after the gutter: the walk
+    /// stops once they are filled, since the frame clips anything past them.
+    ///
     /// Returns whether the row ends with the selected line-break cell.
     #[allow(clippy::too_many_arguments)]
     // The already-resolved render palette and geometry for one row, plus the
@@ -259,24 +267,42 @@ impl Editor<'_> {
         l: u32,
         theme: &Theme,
         default_fg: Rgba,
-        range: VisualRange,
+        (range, room): (VisualRange, u32),
         selections: &[Range],
         hints: LineHints<'_>,
     ) -> bool {
-        let Some(content) = self.buffer.line(l as usize) else {
-            return false;
-        };
         let Some(line_span) = self.buffer.line_to_byte_range(l as usize) else {
             return false;
         };
         let line_start = line_span.start.0;
+        let line_len = line_len(self.buffer, l);
+        // Only the chars up to the row's right edge are copied out and walked,
+        // so a minified line costs its visible window (plus the scrolled-off
+        // prefix, whose widths decide the tab stops), not its whole length. An
+        // unwrapped row has no end column, so its window is bounded by the
+        // room left on screen instead: every char a cell-taking glyph needs
+        // at least one cell, so twice the room covers a row even when half
+        // its chars are zero-width marks.
+        let window_end = if range.end == u32::MAX {
+            range.start.saturating_add(room.saturating_mul(2))
+        } else {
+            range.end
+        };
+        let chars = line_chars_prefix(
+            self.buffer,
+            l,
+            window_end.saturating_add(GRAPHEME_LOOKAHEAD),
+        );
         let hl: &[HighlightSpan] = self.highlights.map_or(&[], |h| h.spans_in(line_span));
 
         let mut run = String::new();
         let mut run_style: Option<Style> = None;
         let mut col: u32 = 0;
         let mut display_col = 0_u32;
-        let chars: Vec<char> = content.chars().collect();
+        // Where on screen this row's first painted column sits, so the walk
+        // stops once the row is full rather than at the end of the line.
+        let mut row_origin = None;
+        let mut boff = 0_usize;
         let widths = cluster_widths(&chars);
         let cells = |col: u32| widths.get(col as usize).copied().unwrap_or(0);
         // The shared horizontal scroll can start this row inside a cluster.
@@ -288,7 +314,9 @@ impl Editor<'_> {
             .into_iter()
             .find(|&bound| bound >= range.start)
             .unwrap_or(range.start);
-        for (boff, ch) in content.char_indices() {
+        for &ch in &chars {
+            let at = boff;
+            boff = boff.saturating_add(ch.len_utf8());
             if col < range.start {
                 // Hints before the row start still shift the running column,
                 // and a tab's expansion is measured from it. Skipping their
@@ -306,6 +334,10 @@ impl Editor<'_> {
                 continue;
             }
             if col >= range.end {
+                break;
+            }
+            let origin = *row_origin.get_or_insert(display_col);
+            if display_col.saturating_sub(origin) >= room {
                 break;
             }
             // The hint anchored here renders *before* this character but after
@@ -327,7 +359,7 @@ impl Editor<'_> {
                 continue;
             }
             let width = character_width(ch, cells(col), display_col, self.tab_width);
-            let mut style = token_style(line_start + boff, hl, theme, default_fg);
+            let mut style = token_style(line_start + at, hl, theme, default_fg);
             // Diagnostics win an overlap: a squiggle carries more information than
             // "this is navigable", and losing it would hide a real problem. Theirs
             // is marked, so the frame's last pass can curl it.
@@ -383,12 +415,15 @@ impl Editor<'_> {
         // say -- has no character to precede, so it closes the row instead.
         // Anchored at the line's own length, never at `range.end`: an
         // unwrapped row carries `u32::MAX` there, which matches no hint at all.
-        let line_len = content.chars().count() as u32;
+        //
         // `range.start <= line_len` as well as `range.end >= line_len`: an
         // unwrapped row carries `u32::MAX` as its end, so the end test alone is
         // always true, and a line scrolled entirely off to the left would paint
-        // its trailing hint at the left margin over nothing.
-        if !hints.is_empty() && range.start <= line_len && range.end >= line_len {
+        // its trailing hint at the left margin over nothing. `col >= line_len`
+        // because a walk the right edge stopped never reached the line end, so
+        // what follows it is off screen and must not close a full row.
+        let ends_here = range.start <= line_len && range.end >= line_len && col >= line_len;
+        if !hints.is_empty() && ends_here {
             self.push_hint_spans(
                 spans,
                 painted,
@@ -405,9 +440,7 @@ impl Editor<'_> {
         // line or a line end inside a selection shows what a delete removes.
         // Only the row holding the line end paints it, after any trailing hint,
         // so no hit-tested cell moves.
-        let selected_break = range.start <= line_len
-            && range.end >= line_len
-            && newline_in_any(selections, l, line_len);
+        let selected_break = ends_here && newline_in_any(selections, l, line_len);
         if selected_break {
             let style = Style::default()
                 .fg(default_fg.to_ratatui())
@@ -531,6 +564,7 @@ impl Editor<'_> {
             (default_fg, number_fg),
         );
         let mut painted = Vec::new();
+        let room = row_room(area, &spans);
         // Painted with its inline text, as `EditorState::pos_at` resolves a
         // click on it: the same mapping on both sides, so a click lands on
         // the character it is over.
@@ -540,10 +574,13 @@ impl Editor<'_> {
             line,
             theme,
             default_fg,
-            VisualRange {
-                start: state.scroll_col,
-                end: u32::MAX,
-            },
+            (
+                VisualRange {
+                    start: state.scroll_col,
+                    end: u32::MAX,
+                },
+                room,
+            ),
             selections,
             index.line(line),
         );
@@ -771,8 +808,10 @@ impl StatefulWidget for Editor<'_> {
                 continue;
             }
             if !self.word_wrap {
-                widest_visible = widest_visible.max(horizontal_extent(
-                    &line_chars(self.buffer, l),
+                widest_visible = widest_visible.max(line_extent(
+                    &mut state.extents,
+                    self.buffer,
+                    l,
                     width,
                     self.tab_width,
                     layout.hints_on(l),
@@ -814,13 +853,14 @@ impl StatefulWidget for Editor<'_> {
                 .copied()
                 .unwrap_or_else(|| VisualRange::empty(0));
             let mut painted = Vec::new();
+            let room = row_room(area, &spans);
             let selected_break = self.push_content_spans(
                 &mut spans,
                 &mut painted,
                 l,
                 theme,
                 default_fg,
-                range,
+                (range, room),
                 &selections,
                 layout.hints_on(l),
             );

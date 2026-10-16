@@ -1,5 +1,7 @@
 use unicode_segmentation::UnicodeSegmentation;
 
+use super::hint::LineHints;
+
 use super::*;
 
 /// Whether the cell at line `l`, column `col` lies within any of `selections`.
@@ -292,11 +294,114 @@ pub(super) fn last_line(buffer: &TextBuffer) -> u32 {
     (buffer.line_count().max(1) - 1) as u32
 }
 
-/// The length (in `char`s) of line `line` in `buffer`.
+/// The length (in `char`s) of line `line` in `buffer` (0 past the end).
+///
+/// Read off the rope's line index rather than by copying the line out, so it
+/// costs the same on a minified one-line file as on a short line.
 pub(super) fn line_len(buffer: &TextBuffer, line: u32) -> u32 {
+    if line as usize >= buffer.line_count() {
+        return 0;
+    }
+    buffer.clamp(LineCol::new(line, u32::MAX)).col
+}
+
+/// The cache key of an [`ExtentCache`]: the buffer content (its edit version,
+/// line count and byte length) and the geometry the extents were measured at
+/// (viewport width, tab width).
+type ExtentKey = (u64, usize, usize, u32, u16);
+
+/// Each line's horizontal extent with no inlay hints, measured once per
+/// buffer content and geometry.
+///
+/// The horizontal scroll clamp needs the widest line in the document, and
+/// measuring that copies and walks every line. Remembering each line's answer
+/// makes repeated horizontal scrolls — and every frame's visible-line
+/// measurements — cost a lookup per line until the next edit. Lines that carry
+/// inlay hints are measured live by [`line_extent`], since hints change between
+/// frames without the buffer changing.
+#[derive(Clone, Debug, Default)]
+pub(super) struct ExtentCache {
+    key: Option<ExtentKey>,
+    extents: Vec<Option<u32>>,
+}
+
+impl ExtentCache {
+    /// Line `line`'s hint-free [`horizontal_extent`] at `width` and
+    /// `tab_width`, measured on first request after the buffer or geometry
+    /// changed (0 past the end).
+    ///
+    /// [`horizontal_extent`]: super::visual::horizontal_extent
+    pub(super) fn plain(
+        &mut self,
+        buffer: &TextBuffer,
+        line: u32,
+        width: u32,
+        tab_width: u16,
+    ) -> u32 {
+        let key = (
+            buffer.version(),
+            buffer.line_count(),
+            buffer.len_bytes(),
+            width,
+            tab_width,
+        );
+        if self.key != Some(key) {
+            self.key = Some(key);
+            self.extents.clear();
+            self.extents.resize(buffer.line_count(), None);
+        }
+        let Some(slot) = self.extents.get_mut(line as usize) else {
+            return 0;
+        };
+        *slot.get_or_insert_with(|| {
+            super::visual::horizontal_extent(
+                &line_chars(buffer, line),
+                width,
+                tab_width,
+                LineHints::default(),
+            )
+        })
+    }
+}
+
+/// Line `line`'s horizontal extent with `hints` painted on it: cached in
+/// `cache` when the line has none, measured live otherwise.
+pub(super) fn line_extent(
+    cache: &mut ExtentCache,
+    buffer: &TextBuffer,
+    line: u32,
+    width: u32,
+    tab_width: u16,
+    hints: LineHints<'_>,
+) -> u32 {
+    if hints.is_empty() {
+        cache.plain(buffer, line, width, tab_width)
+    } else {
+        super::visual::horizontal_extent(&line_chars(buffer, line), width, tab_width, hints)
+    }
+}
+
+/// The first `cap` `char`s of line `line` in `buffer` — all of them when the
+/// line is shorter, none past the end.
+///
+/// Only that prefix is copied out of the rope, so a renderer that needs the
+/// columns up to the right edge of the viewport pays for those and not for
+/// the rest of a megabyte-long line.
+pub(super) fn line_chars_prefix(buffer: &TextBuffer, line: u32, cap: u32) -> Vec<char> {
+    let Some(span) = buffer.line_to_byte_range(line as usize) else {
+        return Vec::new();
+    };
+    let end = buffer
+        .line_col_to_byte(LineCol::new(line, cap))
+        .unwrap_or(span.end);
     buffer
-        .line(line as usize)
-        .map_or(0, |s| s.chars().count() as u32)
+        .slice(karet_core::Span {
+            start: span.start,
+            end,
+        })
+        .unwrap_or_default()
+        .chars()
+        .collect()
 }
 
 /// The `char`s of line `line` in `buffer` (empty past the end).
@@ -395,9 +500,15 @@ pub(super) fn col_in_range(l: u32, col: u32, range: Range) -> bool {
 }
 
 /// The semantic token covering absolute byte `abs`, if any highlight span claims it.
+///
+/// `hl` is byte-ordered and non-overlapping (the [`Highlights`] invariant), so
+/// the covering span is found by bisection. A linear scan here made painting a
+/// row cost its characters times its spans, which on a minified line with
+/// tens of thousands of tokens is quadratic.
 pub(super) fn token_at(abs: usize, hl: &[HighlightSpan]) -> Option<TokenId> {
-    hl.iter()
-        .find(|s| s.span.start.0 <= abs && abs < s.span.end.0)
+    let first = hl.partition_point(|s| s.span.end.0 <= abs);
+    hl.get(first)
+        .filter(|s| s.span.start.0 <= abs)
         .map(|s| s.token)
 }
 
