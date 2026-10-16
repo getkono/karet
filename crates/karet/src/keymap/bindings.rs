@@ -331,6 +331,8 @@ pub(super) static BINDINGS: &[Binding] = &[
     seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('6'))], Command::FoldLevel(6)),
     // A legacy terminal sends Ctrl+/ as Ctrl+7, so there `Ctrl+K Ctrl+/` folds level 7.
     seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('7'))], Command::FoldLevel(7)),
+    // A legacy terminal sends Ctrl+[ as Esc (cancelling the chord) and Ctrl+]
+    // as Ctrl+5 (fold level 5); the palette reaches both commands there.
     seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('['))], Command::FoldRecursively),
     seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char(']'))], Command::UnfoldRecursively),
     seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('/'))], Command::FoldAllComments),
