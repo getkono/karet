@@ -362,63 +362,72 @@ pub(crate) fn source_links(line: &str, markdown: bool) -> Vec<SourceLink> {
 }
 
 /// Find every inline Markdown link, `[text](target "title")`, in `line`.
+///
+/// One forward pass: each unescaped `]` closes the nearest open `[` (so link
+/// text may nest balanced brackets), and only a `]` that closed one and is
+/// followed by `(` has its destination parsed. A link cannot contain a link,
+/// so a found link's end forgets every `[` before it.
+///
+/// This runs on every Ctrl-held pointer event, so its cost is linear in the
+/// line: the destinations that fail to parse share a scan budget of twice
+/// the line's length, and once it is spent the rest of the line's Markdown
+/// links go unfound (its bare URLs are still found by the caller).
 fn inline_links(line: &str) -> Vec<SourceLink> {
     let mut links = Vec::new();
+    let mut opens: Vec<usize> = Vec::new();
+    let mut budget = line.len().saturating_mul(2);
     let mut at = 0usize;
-    while let Some(offset) = line[at..].find("](") {
-        let close = at + offset;
-        let found = (!escaped(line, close))
-            .then(|| opening_bracket(line, close))
-            .flatten()
-            .zip(destination(line, close + "](".len()));
-        match found {
-            Some((open, (target, end))) if !target.is_empty() => {
-                links.push(SourceLink {
-                    range: open..end,
-                    target,
-                });
-                at = end;
+    while let Some(character) = line[at..].chars().next() {
+        let next = at + character.len_utf8();
+        match character {
+            // A backslash escapes the character after it, bracket or not.
+            '\\' => {
+                at = line[next..]
+                    .chars()
+                    .next()
+                    .map_or(next, |escaped| next + escaped.len_utf8());
+                continue;
             },
-            _ => at = close + "](".len(),
+            '[' => opens.push(at),
+            ']' => {
+                if let Some(open) = opens.pop()
+                    && line[next..].starts_with('(')
+                {
+                    let from = next + '('.len_utf8();
+                    let mut limit = from.saturating_add(budget).min(line.len());
+                    while !line.is_char_boundary(limit) {
+                        limit -= 1;
+                    }
+                    match destination(&line[..limit], from) {
+                        Ok((target, end)) if !target.is_empty() => {
+                            links.push(SourceLink {
+                                range: open..end,
+                                target,
+                            });
+                            opens.clear();
+                            at = end;
+                            continue;
+                        },
+                        Ok((_, end)) | Err(end) => {
+                            budget = budget.saturating_sub(end - from);
+                        },
+                    }
+                }
+            },
+            _ => {},
         }
+        at = next;
     }
     links
 }
 
-/// Whether the character at byte `at` is backslash-escaped.
-fn escaped(line: &str, at: usize) -> bool {
-    let slashes = line[..at]
-        .chars()
-        .rev()
-        .take_while(|character| *character == '\\')
-        .count();
-    slashes % 2 == 1
-}
-
-/// The `[` that the `]` at byte `close` closes, allowing nested brackets.
-fn opening_bracket(line: &str, close: usize) -> Option<usize> {
-    let mut depth = 0usize;
-    for (at, character) in line[..close].char_indices().rev() {
-        match character {
-            ']' if !escaped(line, at) => depth += 1,
-            '[' if !escaped(line, at) => {
-                if depth == 0 {
-                    return Some(at);
-                }
-                depth -= 1;
-            },
-            _ => {},
-        }
-    }
-    None
-}
-
 /// Parse a link destination and optional title starting at byte `from` (just
-/// past the `](`), returning the destination and the byte just past the `)`.
-fn destination(line: &str, from: usize) -> Option<(String, usize)> {
+/// past the `](`), returning the destination and the byte just past the `)`,
+/// or else the byte the scan stopped at.
+fn destination(line: &str, from: usize) -> Result<(String, usize), usize> {
     let mut at = skip_blanks(line, from);
     let target = if line[at..].starts_with('<') {
-        let len = line[at + 1..].find('>')?;
+        let len = line[at + 1..].find('>').ok_or(line.len())?;
         let target = &line[at + 1..at + 1 + len];
         at += len + "<>".len();
         target
@@ -447,19 +456,21 @@ fn destination(line: &str, from: usize) -> Option<(String, usize)> {
         target
     };
     at = skip_blanks(line, at);
-    let closer = match line[at..].chars().next()? {
+    let closer = match line[at..].chars().next().ok_or(at)? {
         '"' => Some('"'),
         '\'' => Some('\''),
         '(' => Some(')'),
         _ => None,
     };
     if let Some(closer) = closer {
-        let len = line[at + 1..].find(closer)?;
+        let len = line[at + 1..].find(closer).ok_or(line.len())?;
         at = skip_blanks(line, at + 1 + len + closer.len_utf8());
     }
-    line[at..]
-        .starts_with(')')
-        .then(|| (target.to_string(), at + ')'.len_utf8()))
+    if line[at..].starts_with(')') {
+        Ok((target.to_string(), at + ')'.len_utf8()))
+    } else {
+        Err(at)
+    }
 }
 
 /// The byte just past the spaces and tabs starting at `from`.
@@ -738,6 +749,37 @@ mod tests {
         ] {
             assert!(source(line, true).is_empty(), "{line}");
         }
+    }
+
+    #[test]
+    fn a_link_inside_link_text_wins_over_the_outer_brackets() {
+        // CommonMark: links do not nest, so the inner one is the link and the
+        // outer brackets are text. An inner `](` that is no link leaves the
+        // outer one standing.
+        assert_eq!(
+            source("[a [b](c.md) d](e.md)", true),
+            [("[b](c.md)".to_string(), "c.md".to_string())]
+        );
+        assert_eq!(
+            source("[a [b](c d) e](f.md)", true),
+            [("[a [b](c d) e](f.md)".to_string(), "f.md".to_string())]
+        );
+    }
+
+    #[test]
+    fn a_long_line_of_unfinished_links_is_scanned_in_linear_time() {
+        // Each `](` here once rescanned to the line start and its destination
+        // to the line end: quadratic, which on lines this long would hang the
+        // test rather than fail it.
+        assert!(source(&"](".repeat(100_000), true).is_empty());
+        assert!(source(&"[a](b".repeat(40_000), true).is_empty());
+        // The budget only pays for failed destinations, so short failures
+        // before a link do not cost it the link.
+        let line = format!("{}[ok](x.md)", "[a](b c) ".repeat(1_000));
+        assert_eq!(
+            source(&line, true),
+            [("[ok](x.md)".to_string(), "x.md".to_string())]
+        );
     }
 
     #[test]
