@@ -20,14 +20,14 @@ fn line_change_requests(backend: &RecordingBackend) -> Vec<(RequestId, DocumentI
 }
 
 fn added(line: u32) -> Decoration {
-    Decoration {
-        range: Range {
+    Decoration::new(
+        Range {
             start: LineCol::new(line, 0),
             end: LineCol::new(line, 0),
         },
-        kind: DecorationKind::ChangeMarker { glyph: '\u{258e}' },
-        role: Some(ThemeRole::GutterAdded),
-    }
+        DecorationKind::ChangeMarker { glyph: '\u{258e}' },
+        Some(ThemeRole::GutterAdded),
+    )
 }
 
 /// An app on a recording backend with one code tab backed by document 9.

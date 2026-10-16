@@ -12,17 +12,17 @@ fn color_swatch_decorations(buffer: &TextBuffer, first_line: u32, height: u16) -
             break;
         };
         for (range, rgba) in karet_syntax::color::detect(&text) {
-            out.push(Decoration {
-                range: karet_core::Range {
+            out.push(Decoration::new(
+                karet_core::Range {
                     start: karet_core::LineCol::new(line, u32::try_from(range.start).unwrap_or(0)),
                     end: karet_core::LineCol::new(
                         line,
                         u32::try_from(range.end).unwrap_or(u32::MAX),
                     ),
                 },
-                kind: karet_core::DecorationKind::ColorSwatch { rgba },
-                role: None,
-            });
+                karet_core::DecorationKind::ColorSwatch { rgba },
+                None,
+            ));
         }
     }
     out
@@ -139,19 +139,21 @@ pub(super) fn manifest_hint_text(hints: &[karet_session::ManifestHint]) -> Vec<V
 fn breakpoint_decorations(breakpoints: &std::collections::BTreeMap<u32, bool>) -> Vec<Decoration> {
     breakpoints
         .iter()
-        .map(|(&line, &verified)| Decoration {
-            range: karet_core::Range {
-                start: karet_core::LineCol::new(line, 0),
-                end: karet_core::LineCol::new(line, 0),
-            },
-            kind: karet_core::DecorationKind::GutterMarker {
-                glyph: if verified { '●' } else { '○' },
-            },
-            role: Some(if verified {
-                ThemeRole::Breakpoint
-            } else {
-                ThemeRole::Muted
-            }),
+        .map(|(&line, &verified)| {
+            Decoration::new(
+                karet_core::Range {
+                    start: karet_core::LineCol::new(line, 0),
+                    end: karet_core::LineCol::new(line, 0),
+                },
+                karet_core::DecorationKind::GutterMarker {
+                    glyph: if verified { '●' } else { '○' },
+                },
+                Some(if verified {
+                    ThemeRole::Breakpoint
+                } else {
+                    ThemeRole::Muted
+                }),
+            )
         })
         .collect()
 }
@@ -167,14 +169,14 @@ pub(super) fn debug_decorations(ctx: &PaneCtx, path: &std::path::Path) -> Vec<De
     if let Some((stop_path, stop_line)) = ctx.debug_stopped
         && stop_path == path
     {
-        out.push(Decoration {
-            range: karet_core::Range {
+        out.push(Decoration::new(
+            karet_core::Range {
                 start: karet_core::LineCol::new(*stop_line, 0),
                 end: karet_core::LineCol::new(*stop_line, 0),
             },
-            kind: karet_core::DecorationKind::LineBackground,
-            role: Some(ThemeRole::DebugStoppedLine),
-        });
+            karet_core::DecorationKind::LineBackground,
+            Some(ThemeRole::DebugStoppedLine),
+        ));
     }
     out
 }
@@ -365,14 +367,14 @@ mod diagnostic_text_tests {
 
     #[test]
     fn the_merged_pane_signs_its_problems_after_its_markers_and_shows_caret_messages() {
-        let marker = Decoration {
-            range: karet_core::Range {
+        let marker = Decoration::new(
+            karet_core::Range {
                 start: LineCol::new(1, 0),
                 end: LineCol::new(1, 0),
             },
-            kind: karet_core::DecorationKind::GutterMarker { glyph: '│' },
-            role: Some(ThemeRole::Muted),
-        };
+            karet_core::DecorationKind::GutterMarker { glyph: '│' },
+            Some(ThemeRole::Muted),
+        );
         let mut misspelled = diagnostic(1, Severity::Warning, "Unknown word");
         misspelled.source = Some("karet-spell".to_owned());
         let all = [

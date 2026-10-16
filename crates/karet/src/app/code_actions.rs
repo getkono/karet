@@ -401,16 +401,16 @@ impl App {
             return None;
         }
         let line = key.range.start.line;
-        Some(Decoration {
-            range: Range {
+        Some(Decoration::new(
+            Range {
                 start: LineCol::new(line, 0),
                 end: LineCol::new(line, 0),
             },
-            kind: DecorationKind::GutterMarker {
+            DecorationKind::GutterMarker {
                 glyph: bulb_glyph(self.icon_style),
             },
-            role: Some(ThemeRole::DiagnosticWarning),
-        })
+            Some(ThemeRole::DiagnosticWarning),
+        ))
     }
 }
 

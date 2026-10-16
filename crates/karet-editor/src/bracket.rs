@@ -403,14 +403,14 @@ pub fn bracket_decorations(
             continue;
         };
         for at in [pair.open, pair.close] {
-            let deco = Decoration {
-                range: Range {
+            let deco = Decoration::new(
+                Range {
                     start: at,
                     end: LineCol::new(at.line, at.col + 1),
                 },
-                kind: DecorationKind::TextBackground,
-                role: Some(ThemeRole::MatchingBracket),
-            };
+                DecorationKind::TextBackground,
+                Some(ThemeRole::MatchingBracket),
+            );
             if !out.contains(&deco) {
                 out.push(deco);
             }

@@ -731,14 +731,14 @@ fn render_draws_status_glyph() {
     let theme = Theme::dark();
     let status = vec![(
         dir.path.join("a.txt"),
-        Decoration {
-            range: Range {
+        Decoration::new(
+            Range {
                 start: LineCol::new(0, 0),
                 end: LineCol::new(0, 0),
             },
-            kind: DecorationKind::GutterMarker { glyph: 'M' },
-            role: Some(ThemeRole::DiffModified),
-        },
+            DecorationKind::GutterMarker { glyph: 'M' },
+            Some(ThemeRole::DiffModified),
+        ),
     )];
     let area = Rect::new(0, 0, 30, 4);
     let mut buf = Buffer::empty(area);
