@@ -293,8 +293,59 @@ fn rainbow_depth_carries_across_lines_and_pops_to_its_own_kind() {
 fn bracket_depths_restart_when_asked_for_an_earlier_line() {
     let buffer = TextBuffer::from_text("(\n(\n))\n");
     let mut depths = bracket::BracketDepths::new(&buffer, None);
-    assert_eq!(depths.line(2), [Some(1), Some(0)]);
-    assert_eq!(depths.line(2), [Some(1), Some(0)], "a repeated line");
-    assert_eq!(depths.line(1), [Some(1)], "rescanned from the top");
-    assert_eq!(depths.line(0), [Some(0)]);
+    assert_eq!(depths.line(2, u32::MAX), [Some(1), Some(0)]);
+    assert_eq!(
+        depths.line(2, u32::MAX),
+        [Some(1), Some(0)],
+        "a repeated line"
+    );
+    assert_eq!(
+        depths.line(1, u32::MAX),
+        [Some(1)],
+        "rescanned from the top"
+    );
+    assert_eq!(depths.line(0, u32::MAX), [Some(0)]);
+}
+
+#[test]
+fn bracket_depths_read_a_painted_line_only_as_far_as_asked() {
+    let buffer = TextBuffer::from_text("(()\n)\n");
+    let mut depths = bracket::BracketDepths::new(&buffer, None);
+    assert_eq!(depths.line(0, 2), [Some(0), Some(1)], "the row's prefix");
+    assert_eq!(
+        depths.line(0, 3),
+        [Some(0), Some(1), Some(1)],
+        "a later row"
+    );
+    // Moving on reads the whole of line 0: its `)` closed the inner `(`.
+    assert_eq!(depths.line(1, u32::MAX), [Some(0)]);
+}
+
+#[test]
+fn bracket_depths_restart_after_a_jump_past_the_scan_bound() {
+    // Line 0 opens a bracket; the closer sits more than the scan bound below.
+    let far = bracket::SCAN_LINES + 5;
+    let text = format!("(\n{})\n", "\n".repeat(far - 1));
+    let buffer = TextBuffer::from_text(&text);
+    let mut depths = bracket::BracketDepths::new(&buffer, None);
+    assert_eq!(depths.line(0, u32::MAX), [Some(0)]);
+    let line = u32::try_from(far).unwrap_or(u32::MAX);
+    assert_eq!(
+        depths.line(line, u32::MAX),
+        [None],
+        "the opener lies beyond the restarted scan's lookback"
+    );
+}
+
+#[test]
+fn trailing_whitespace_longer_than_the_tail_window_is_all_marked() {
+    let text = format!("ab c{}\n", " ".repeat(70));
+    let buffer = TextBuffer::from_text(&text);
+    let area = Rect::new(0, 0, 80, 1);
+    let target = paint(
+        Editor::new(&buffer).render_whitespace(RenderWhitespace::Trailing),
+        area,
+        LineCol::new(0, 0),
+    );
+    assert_eq!(row(&target, 0, 74), format!("ab c{}", "\u{b7}".repeat(70)));
 }

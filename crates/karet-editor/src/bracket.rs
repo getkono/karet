@@ -80,6 +80,41 @@ fn brackets_on(
 ) -> Option<Vec<Option<Bracket>>> {
     let text = buffer.line(idx)?;
     let span = buffer.line_to_byte_range(idx)?;
+    Some(classify(highlights, span, &text))
+}
+
+/// The brackets of the first `cap` chars of line `idx`, as [`brackets_on`]
+/// gives them for the whole line: only that prefix is copied out of the
+/// buffer, so a minified line costs the chars asked for, not its length.
+/// Empty past the last line.
+fn brackets_in_prefix(
+    buffer: &TextBuffer,
+    highlights: Option<&Highlights>,
+    idx: usize,
+    cap: u32,
+) -> Vec<Option<Bracket>> {
+    let Some(line) = buffer.line_to_byte_range(idx) else {
+        return Vec::new();
+    };
+    let end = u32::try_from(idx)
+        .ok()
+        .and_then(|l| buffer.line_col_to_byte(LineCol::new(l, cap)).ok())
+        .unwrap_or(line.end);
+    let span = karet_core::Span {
+        start: line.start,
+        end,
+    };
+    let text = buffer.slice(span).unwrap_or_default();
+    classify(highlights, span, &text)
+}
+
+/// One slot per `char` of `text`, the bytes `span` of the buffer: the code
+/// bracket it is, or `None` (not a bracket, or one `highlights` marks as text).
+fn classify(
+    highlights: Option<&Highlights>,
+    span: karet_core::Span,
+    text: &str,
+) -> Vec<Option<Bracket>> {
     let opaque: Vec<_> = highlights
         .map(|h| h.spans_in(span))
         .unwrap_or_default()
@@ -87,8 +122,7 @@ fn brackets_on(
         .filter(|s| is_opaque(s.token))
         .map(|s| s.span)
         .collect();
-    let slots = text
-        .char_indices()
+    text.char_indices()
         .map(|(off, ch)| {
             let byte = span.start.0 + off;
             let bracket = OPEN
@@ -104,8 +138,7 @@ fn brackets_on(
             let hidden = opaque.iter().any(|s| s.start.0 <= byte && byte < s.end.0);
             (!hidden).then_some(bracket)
         })
-        .collect();
-    Some(slots)
+        .collect()
 }
 
 /// The code bracket at `pos`, if any.
@@ -268,23 +301,25 @@ pub(crate) fn unclosed_opener(
 /// The nesting depth of each code bracket on the lines a frame paints, for
 /// bracket-pair colourisation.
 ///
-/// Lines are asked for in ascending order (sticky headers, then the rows
-/// below them), so one forward scan serves the frame: it starts
-/// [`SCAN_LINES`] above the first line asked for — the bound the pair
-/// matcher scans to as well — and keeps a stack of the open brackets'
-/// kinds. Every kind nests together, so `{ ( [ ] ) }` takes three depths.
-/// A closer pops back to the nearest opener of its own kind, dropping any
-/// unclosed opener above it; a closer with no opener has no depth and keeps
-/// its ordinary colour.
+/// Lines are asked for in ascending order, so one forward scan serves the
+/// frame: it starts [`SCAN_LINES`] above the first line asked for — the
+/// bound the pair matcher scans to as well — and keeps a stack of the open
+/// brackets' kinds. A jump forward of more than [`SCAN_LINES`] (past a large
+/// fold) restarts it the same distance above the line, so no frame steps
+/// more lines than that per line it paints. Every kind nests together, so
+/// `{ ( [ ] ) }` takes three depths. A closer pops back to the nearest
+/// opener of its own kind, dropping any unclosed opener above it; a closer
+/// with no opener has no depth and keeps its ordinary colour.
+///
+/// A painted line is read only as far as its row shows; the rest of it is
+/// read once, when the scan moves past it to a later line.
 pub(crate) struct BracketDepths<'a> {
     buffer: &'a TextBuffer,
     highlights: Option<&'a Highlights>,
-    /// The next line the scan reads, once it has started.
+    /// The first line the stack has not consumed, once the scan has started.
     next: Option<usize>,
-    /// The kinds of the brackets still open where the scan stands.
+    /// The kinds of the brackets still open at the start of line `next`.
     stack: Vec<usize>,
-    /// The last line answered and its depths, for the rows of a wrapped line.
-    last: Option<(u32, Vec<Option<usize>>)>,
 }
 
 impl<'a> BracketDepths<'a> {
@@ -295,49 +330,51 @@ impl<'a> BracketDepths<'a> {
             highlights,
             next: None,
             stack: Vec::new(),
-            last: None,
         }
     }
 
-    /// Advance the stack over line `idx`, returning each char's depth.
-    fn step(&mut self, idx: usize) -> Vec<Option<usize>> {
-        let slots = brackets_on(self.buffer, self.highlights, idx).unwrap_or_default();
-        slots
-            .into_iter()
-            .map(|slot| {
-                let bracket = slot?;
-                if bracket.open {
-                    self.stack.push(bracket.kind);
-                    return Some(self.stack.len() - 1);
-                }
-                let depth = self.stack.iter().rposition(|&kind| kind == bracket.kind)?;
-                self.stack.truncate(depth);
-                Some(depth)
-            })
-            .collect()
-    }
-
-    /// The depth of each char of `line` (`None` for anything that is not a
-    /// code bracket with a place in the nesting). Asking for a line above
-    /// the one asked for last restarts the scan.
-    pub(crate) fn line(&mut self, line: u32) -> &[Option<usize>] {
+    /// The depth of each of the first `cap` chars of `line` (`None` for
+    /// anything that is not a code bracket with a place in the nesting).
+    /// Asking for a line above the one asked for last restarts the scan;
+    /// asking for the same line again (the next row of a wrapped line) reads
+    /// it again from its start.
+    pub(crate) fn line(&mut self, line: u32, cap: u32) -> Vec<Option<usize>> {
         let idx = line as usize;
-        if self.last.as_ref().is_none_or(|(at, _)| *at != line) {
-            if self.next.is_none_or(|next| next > idx) {
-                self.next = Some(idx.saturating_sub(SCAN_LINES));
-                self.stack.clear();
-            }
-            let mut next = self.next.unwrap_or(idx);
-            while next < idx {
-                self.step(next);
-                next += 1;
-            }
-            let depths = self.step(idx);
-            self.next = Some(idx + 1);
-            self.last = Some((line, depths));
+        if self
+            .next
+            .is_none_or(|next| next > idx || idx - next > SCAN_LINES)
+        {
+            self.next = Some(idx.saturating_sub(SCAN_LINES));
+            self.stack.clear();
         }
-        self.last.as_ref().map_or(&[], |(_, depths)| depths)
+        let mut next = self.next.unwrap_or(idx);
+        while next < idx {
+            let slots = brackets_in_prefix(self.buffer, self.highlights, next, u32::MAX);
+            nest(&mut self.stack, slots);
+            next += 1;
+        }
+        self.next = Some(idx);
+        let slots = brackets_in_prefix(self.buffer, self.highlights, idx, cap);
+        nest(&mut self.stack.clone(), slots)
     }
+}
+
+/// Advance `stack` over one line's bracket `slots`, returning each char's
+/// depth.
+fn nest(stack: &mut Vec<usize>, slots: Vec<Option<Bracket>>) -> Vec<Option<usize>> {
+    slots
+        .into_iter()
+        .map(|slot| {
+            let bracket = slot?;
+            if bracket.open {
+                stack.push(bracket.kind);
+                return Some(stack.len() - 1);
+            }
+            let depth = stack.iter().rposition(|&kind| kind == bracket.kind)?;
+            stack.truncate(depth);
+            Some(depth)
+        })
+        .collect()
 }
 
 /// The pair a bracket command acts on at `pos`: the one touching it, else the

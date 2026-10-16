@@ -298,7 +298,12 @@ impl Editor<'_> {
     /// `room` is the screen cells left on the row after the gutter: the walk
     /// stops once they are filled, since the frame clips anything past them.
     ///
-    /// Returns whether the row ends with the selected line-break cell.
+    /// `glyphs` draws the row's guides, whitespace and bracket colours over
+    /// the chars it walks; they are computed here, once the row's window of
+    /// chars is known, so their cost is bounded by it too.
+    ///
+    /// Returns whether the row ends with the selected line-break cell, and
+    /// the row's glyphs.
     #[allow(clippy::too_many_arguments)]
     // The already-resolved render palette and geometry for one row, plus the
     // row's inline text and the record of where it went. Bundling them would
@@ -313,10 +318,10 @@ impl Editor<'_> {
         (range, room): (VisualRange, u32),
         selections: &[Range],
         hints: LineHints<'_>,
-        glyphs: Option<&glyphs::RowGlyphs>,
-    ) -> bool {
+        glyphs: Option<&mut glyphs::GlyphFrame<'_>>,
+    ) -> (bool, Option<glyphs::RowGlyphs>) {
         let Some(line_span) = self.buffer.line_to_byte_range(l as usize) else {
-            return false;
+            return (false, None);
         };
         let line_start = line_span.start.0;
         let line_len = line_len(self.buffer, l);
@@ -333,6 +338,7 @@ impl Editor<'_> {
             let widths = cluster_widths(&chars);
             (chars, widths)
         };
+        let glyphs = glyphs.map(|frame| frame.row(l, &chars));
         let hl: &[HighlightSpan] = self.highlights.map_or(&[], |h| h.spans_in(line_span));
 
         let mut run = String::new();
@@ -401,7 +407,7 @@ impl Editor<'_> {
             }
             let width = character_width(ch, cells(col), display_col, self.tab_width);
             let mut style = token_style(line_start + at, hl, theme, default_fg);
-            if let Some(color) = glyphs.and_then(|g| g.bracket(col)) {
+            if let Some(color) = glyphs.as_ref().and_then(|g| g.bracket(col)) {
                 style = style.fg(color.to_ratatui());
             }
             // Diagnostics win an overlap: a squiggle carries more information than
@@ -433,8 +439,9 @@ impl Editor<'_> {
                 style = style.bg(bg.to_ratatui());
             }
             // A guide or whitespace mark takes the blanks the char paints.
-            let glyph =
-                glyphs.and_then(|g| g.whitespace(&chars, (col, display_col, width), selected));
+            let glyph = glyphs
+                .as_ref()
+                .and_then(|g| g.whitespace(&chars, (col, display_col, width), selected));
             if let Some((_, color)) = &glyph {
                 style = style.fg(color.to_ratatui());
             }
@@ -492,7 +499,7 @@ impl Editor<'_> {
                 .bg(theme.role(ThemeRole::Selection).to_ratatui());
             spans.push(Span::styled(" ", style));
         }
-        selected_break
+        (selected_break, glyphs)
     }
 
     /// Warning/error diagnostics use a colored underline while preserving syntax
@@ -903,8 +910,7 @@ impl StatefulWidget for Editor<'_> {
                 .unwrap_or_else(|| VisualRange::empty(0));
             let mut painted = Vec::new();
             let room = row_room(area, &spans);
-            let glyphs = glyph_frame.as_mut().map(|frame| frame.row(l));
-            let selected_break = self.push_content_spans(
+            let (selected_break, glyphs) = self.push_content_spans(
                 &mut spans,
                 &mut painted,
                 l,
@@ -913,7 +919,7 @@ impl StatefulWidget for Editor<'_> {
                 (range, room),
                 &selections,
                 layout.hints_on(l),
-                glyphs.as_ref(),
+                glyph_frame.as_mut(),
             );
             // A wrapped last row that exactly fills the content width pushes
             // the break cell one column past the area, where `set_line` clips

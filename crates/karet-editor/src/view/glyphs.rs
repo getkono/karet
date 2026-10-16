@@ -159,9 +159,11 @@ pub(super) struct GlyphFrame<'a> {
 }
 
 impl GlyphFrame<'_> {
-    /// The glyphs line `l` draws. Asked for in ascending line order, as the
-    /// bracket scan requires.
-    pub(super) fn row(&mut self, l: u32) -> RowGlyphs {
+    /// The glyphs a row of line `l` draws, `chars` being the prefix of the
+    /// line the row walks (up to its right edge): bracket depths are read only
+    /// that far, so a row of a minified line costs its window, not the line.
+    /// Asked for in ascending line order, as the bracket scan requires.
+    pub(super) fn row(&mut self, l: u32, chars: &[char]) -> RowGlyphs {
         let unit = u32::from(self.tab_width.max(1));
         let (leading_end, own) = leading(self.buffer, l, self.tab_width);
         let indent = if self.guides {
@@ -177,7 +179,7 @@ impl GlyphFrame<'_> {
         let depths = self
             .brackets
             .as_mut()
-            .map(|scan| scan.line(l).to_vec())
+            .map(|scan| scan.line(l, u32::try_from(chars.len()).unwrap_or(u32::MAX)))
             .unwrap_or_default();
         RowGlyphs {
             unit,
@@ -388,11 +390,32 @@ fn nonblank_below(buffer: &TextBuffer, l: u32, tab_width: u16) -> Option<(u32, u
 }
 
 /// The char column past the last non-whitespace character of line `l`.
+///
+/// Read from the line's end in doubling windows, so a long line costs its
+/// trailing whitespace rather than its length.
 fn trailing_start(buffer: &TextBuffer, l: u32) -> u32 {
-    let text = buffer.line(l as usize).unwrap_or_default();
-    let body = text.trim_end_matches(['\r', '\n']);
-    let kept = body.trim_end_matches([' ', '\t']);
-    u32::try_from(kept.chars().count()).unwrap_or(u32::MAX)
+    let (Some(span), len) = (buffer.line_to_byte_range(l as usize), line_len(buffer, l)) else {
+        return 0;
+    };
+    let mut window = 64_u32;
+    loop {
+        let from = len.saturating_sub(window);
+        let start = buffer
+            .line_col_to_byte(LineCol::new(l, from))
+            .unwrap_or(span.start);
+        let tail = buffer
+            .slice(karet_core::Span {
+                start,
+                end: span.end,
+            })
+            .unwrap_or_default();
+        let blank = tail.chars().rev().take_while(|&ch| ch == ' ' || ch == '\t');
+        let blank = u32::try_from(blank.count()).unwrap_or(u32::MAX);
+        if from == 0 || blank < len - from {
+            return len.saturating_sub(blank);
+        }
+        window = window.saturating_mul(2);
+    }
 }
 
 /// The guide of the block holding a caret on line `cursor`: the deepest
