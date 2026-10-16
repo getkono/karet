@@ -112,6 +112,8 @@ impl App {
             Command::SidebarCollapse => self.sidebar_collapse(),
             Command::SidebarToggleExpand => self.sidebar_toggle_expand(),
             Command::ToggleOutline => self.toggle_outline(),
+            Command::ToggleZenMode => self.toggle_zen_mode(),
+            Command::ToggleMaximizePane => self.toggle_maximize_pane(),
             Command::OutlineUp => self.outline_step(-1),
             Command::OutlineDown => self.outline_step(1),
             Command::OutlineActivate => self.outline_activate(),
@@ -607,6 +609,57 @@ impl App {
         } else {
             editor.go_to_bracket(buffer, Some(highlights));
         }
+    }
+
+    /// Enter or leave Zen Mode.
+    ///
+    /// Entering hides the sidebar and the outline here, and the view switcher
+    /// and status bar where the frame is laid out; focus moves to the editor when
+    /// it sat on a panel that just vanished. A panel opened while Zen Mode is on
+    /// (Ctrl+Shift+F, say) still shows, so no command strands focus somewhere
+    /// invisible. Leaving shows again what entering hid, and keeps open whatever
+    /// was opened meanwhile.
+    pub(super) fn toggle_zen_mode(&mut self) {
+        if let Some(restore) = self.modes.zen.take() {
+            self.sidebar_visible |= restore.sidebar;
+            if restore.outline && !self.outline.visible {
+                self.outline.visible = true;
+                self.request_active_outline();
+                self.sync_outline_selection();
+            }
+            return;
+        }
+        self.modes.zen = Some(ZenRestore {
+            sidebar: self.sidebar_visible,
+            outline: self.outline.visible,
+        });
+        self.sidebar_visible = false;
+        self.outline.visible = false;
+        self.outline.overlay = false;
+        if matches!(self.focus, Focus::Sidebar | Focus::Outline) {
+            self.focus = Focus::Editor;
+        }
+    }
+
+    /// Draw the focused pane alone across the content area, or tile every pane
+    /// again. With a single pane there is nothing to maximise, so it stays off.
+    pub(super) fn toggle_maximize_pane(&mut self) {
+        self.modes.maximized = match self.maximized_pane() {
+            None if self.layout.pane_count() > 1 => Some(self.focus_pane()),
+            _ => None,
+        };
+    }
+
+    /// The pane drawn alone across the content area, if one is.
+    ///
+    /// A maximised pane holds only while it keeps focus: focusing another pane
+    /// (Ctrl+K arrow, a split, closing the pane) tiles the layout again rather
+    /// than swapping which pane fills the screen, as VS Code's maximised group
+    /// does.
+    pub(crate) fn maximized_pane(&self) -> Option<PaneId> {
+        self.modes
+            .maximized
+            .filter(|&pane| pane == self.focus_pane() && self.layout.pane_count() > 1)
     }
 }
 

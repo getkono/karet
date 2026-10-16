@@ -109,6 +109,7 @@ impl App {
             view_chrome_rect: Rect::default(),
             view_hits: Vec::new(),
             outline: OutlinePanel::default(),
+            modes: ScreenModes::default(),
             header_action_hits: Vec::new(),
             nested_repository_status: HashMap::new(),
             nested_repository_pending: HashMap::new(),
