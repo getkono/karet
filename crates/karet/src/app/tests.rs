@@ -74,6 +74,8 @@ mod surface_select;
 mod syntax_select;
 mod tab_focus;
 mod tabs_search;
+#[cfg(all(unix, feature = "terminal"))]
+mod terminal;
 mod theme_picker;
 mod todos;
 mod unsupported;

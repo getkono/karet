@@ -100,6 +100,10 @@ pub(crate) struct TerminalHost {
     tx: mpsc::UnboundedSender<TerminalEvent>,
     rx: Option<TerminalEvents>,
     next: u64,
+    /// The program [`Self::spawn`] starts in place of the user's shell, so app
+    /// tests run a known, side-effect-free command.
+    #[cfg(test)]
+    program: Option<Vec<String>>,
 }
 
 impl Default for TerminalHost {
@@ -109,6 +113,8 @@ impl Default for TerminalHost {
             tx,
             rx: Some(rx),
             next: 1,
+            #[cfg(test)]
+            program: None,
         }
     }
 }
@@ -131,8 +137,18 @@ impl TerminalHost {
         rows: u16,
     ) -> Result<TerminalPane, String> {
         let mut command = CommandBuilder::new_default_prog();
+        #[cfg(test)]
+        if let Some(argv) = &self.program {
+            command = CommandBuilder::from_argv(argv.iter().map(Into::into).collect());
+        }
         command.cwd(cwd);
         self.spawn_command(command, columns, rows)
+    }
+
+    /// Make [`Self::spawn`] start `argv` instead of the user's shell.
+    #[cfg(test)]
+    pub(crate) fn use_program(&mut self, argv: &[&str]) {
+        self.program = Some(argv.iter().map(|arg| (*arg).to_owned()).collect());
     }
 
     /// Start `command` on a fresh PTY (the shared body of [`Self::spawn`], also
