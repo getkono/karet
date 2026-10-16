@@ -422,6 +422,11 @@ mod tests {
         assert_eq!(enter("yaml", "a:<|>")?, some("    "));
         assert_eq!(enter("yaml", "a:\n  b: 1<|>")?, some("    "));
         assert_eq!(enter("yaml", "a: 1<|>")?, None);
+        // A sequence sits at its own column, which YAML lets equal its key's:
+        // Enter after an item keeps the item column (the copy-indent fallback).
+        assert_eq!(enter("yaml", "steps:\n- run: x<|>")?, None);
+        assert_eq!(enter("yaml", "steps:\n  - run: x<|>")?, None);
+        assert_eq!(enter("yaml", "a:\n  steps:\n  - x<|>")?, some("    "));
         Ok(())
     }
 
