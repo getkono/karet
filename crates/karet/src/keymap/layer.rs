@@ -320,12 +320,15 @@ const TARGETS: [FocusTarget; 17] = [
 /// Whether a key sequence bound in `layer` can ever fire: only when the layer is
 /// live in some focus context. A modal resolves one chord at a time (an unbound
 /// chord is the modal's text input), so a layer live only under a modal never
-/// sees a sequence's second chord.
+/// sees a sequence's second chord. The terminal is the same: every key it does
+/// not bind goes to the shell, one chord at a time, so a sequence's first chord
+/// would never wait for its second.
 #[must_use]
 pub(super) fn takes_sequences(layer: Layer) -> bool {
-    TARGETS
-        .into_iter()
-        .any(|target| active_layers(Context::focus(target)).contains(&layer))
+    layer != Layer::Terminal
+        && TARGETS
+            .into_iter()
+            .any(|target| active_layers(Context::focus(target)).contains(&layer))
 }
 
 /// Every distinct layer stack [`active_layers`] can return — the contexts in which
@@ -605,6 +608,8 @@ mod tests {
             Layer::ProblemsFilter,
             Layer::Confirm,
             Layer::ExplorerEdit,
+            // A focus layer, but its unbound keys go to the shell one at a time.
+            Layer::Terminal,
         ] {
             assert!(!takes_sequences(layer), "{layer:?}");
         }

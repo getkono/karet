@@ -509,6 +509,13 @@ fn parse_entry(raw: RawEntry) -> Result<Op, String> {
     let layer = layer.unwrap_or(Layer::Global);
     // Modal input resolves one chord at a time, so a sequence there loads but
     // never fires; refuse it rather than keep a binding nobody can type.
+    if seq.len() > 1 && layer == Layer::Terminal {
+        return Err(
+            "`terminal` sends every key it does not bind to the shell, so it takes \
+             single chords only; a key sequence there can never be typed"
+                .to_owned(),
+        );
+    }
     if seq.len() > 1 && !takes_sequences(layer) {
         return Err(format!(
             "`{}` is a modal layer, which takes single chords only; a key sequence \
