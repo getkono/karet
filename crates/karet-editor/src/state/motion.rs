@@ -5,10 +5,6 @@
 
 use super::*;
 
-/// The lines a layout keeps on one row: every one. An unwrapped view walks
-/// rows through this, so it steps one shown buffer line per row.
-static ONE_ROW_PER_LINE: [RangeInclusive<u32>; 1] = [0..=u32::MAX];
-
 /// A caret motion, applied to every caret by [`EditorState::move_carets`].
 ///
 /// Motions move through the text as the last render showed it: a collapsed
@@ -129,10 +125,16 @@ struct Rows<'a> {
 }
 
 impl Rows<'_> {
-    /// The row `anchor` names, clamped to its line's rows.
+    /// The text row `anchor` names, clamped to its line's text rows: a
+    /// virtual line above them names the first, one below the last.
     fn row(&self, anchor: VisualAnchor) -> Row {
         let ranges = visual_ranges(self.buffer, anchor.line, self.layout);
-        let index = (anchor.subrow as usize).min(ranges.len().saturating_sub(1));
+        let count = ranges.len() as u32;
+        let index = match self.layout.kind(anchor.line, anchor.subrow, count) {
+            RowKind::Above(_) => 0,
+            RowKind::Text(index) => index,
+            RowKind::Below(_) => count.saturating_sub(1),
+        } as usize;
         let range = ranges
             .get(index)
             .copied()
@@ -140,7 +142,7 @@ impl Rows<'_> {
         Row {
             anchor: VisualAnchor {
                 line: anchor.line,
-                subrow: index as u32,
+                subrow: self.layout.above(anchor.line) + index as u32,
             },
             range,
             last: index + 1 >= ranges.len(),
@@ -169,18 +171,39 @@ impl Rows<'_> {
         )
     }
 
-    /// The row `rows` shown rows below (`down`) or above `from`, and whether
-    /// there were that many; when not, the first or last row reached.
+    /// The text row `rows` text rows below (`down`) or above `from`, and
+    /// whether there were that many; when not, the first or last text row
+    /// reached. Virtual lines are stepped over: no caret lands on one.
     fn walk(&self, from: VisualAnchor, rows: u32, down: bool) -> (VisualAnchor, bool) {
+        self.walk_rows(from, rows, down, true)
+    }
+
+    /// The row `rows` rows below (`down`) or above `from`, counting only
+    /// text rows when `text_only` and every row on screen otherwise, and
+    /// whether there were that many.
+    fn walk_rows(
+        &self,
+        from: VisualAnchor,
+        rows: u32,
+        down: bool,
+        text_only: bool,
+    ) -> (VisualAnchor, bool) {
         let mut at = normalize_visual_anchor(self.buffer, self.folds, self.layout, from);
         for _ in 0..rows {
-            let next = if down {
-                next_visual_anchor(self.buffer, self.folds, self.layout, at)
-            } else {
-                previous_visual_anchor(self.buffer, self.folds, self.layout, at)
-            };
-            if next == at {
-                return (at, false);
+            let mut next = at;
+            loop {
+                let step = if down {
+                    next_visual_anchor(self.buffer, self.folds, self.layout, next)
+                } else {
+                    previous_visual_anchor(self.buffer, self.folds, self.layout, next)
+                };
+                if step == next {
+                    return (at, false);
+                }
+                next = step;
+                if !text_only || self.row(next).anchor == next {
+                    break;
+                }
             }
             at = next;
         }
@@ -338,20 +361,13 @@ fn step(buffer: &TextBuffer, motion: Motion, from: LineCol) -> LineCol {
 impl EditorState {
     /// The rows the last render laid `buffer` out in.
     fn rows<'a>(&'a self, buffer: &'a TextBuffer) -> Rows<'a> {
-        let layout = if self.last_word_wrap {
-            self.layout(u32::from(self.last_content_width.max(1)))
-        } else {
-            Layout {
-                width: u32::MAX,
-                tab_width: self.last_tab_width,
-                unwrapped_lines: &ONE_ROW_PER_LINE,
-                hints: &self.last_hints,
-            }
-        };
         Rows {
             buffer,
             folds: &self.last_folds,
-            layout,
+            layout: self.row_layout(
+                u32::from(self.last_content_width.max(1)),
+                self.last_word_wrap,
+            ),
         }
     }
 
@@ -370,11 +386,7 @@ impl EditorState {
         let target = rows.row_of(pos, self.upstream.contains(&pos)).anchor;
         let top = VisualAnchor {
             line: self.scroll_line,
-            subrow: if self.last_word_wrap {
-                self.scroll_subrow
-            } else {
-                0
-            },
+            subrow: self.scroll_subrow,
         };
         let mut at = normalize_visual_anchor(rows.buffer, rows.folds, rows.layout, top);
         for row in 0..u32::from(self.last_height) {
@@ -448,7 +460,8 @@ impl EditorState {
             .zip(moved.get(self.cursors.primary))
             .map(|(row, (_, step))| {
                 let at = rows.row_of(step.to, step.upstream).anchor;
-                rows.walk(at, row, false).0
+                // Screen rows, virtual lines included.
+                rows.walk_rows(at, row, false, false).0
             });
         let goals = motion.is_vertical().then(|| Goals {
             version: buffer.version(),
