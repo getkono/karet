@@ -58,6 +58,7 @@ const ROLE_KEYS: &[(&str, ThemeRole)] = &[
     ),
     ("editorBracketMatch.background", ThemeRole::MatchingBracket),
     ("editorInlayHint.foreground", ThemeRole::InlayHint),
+    ("editorCodeLens.foreground", ThemeRole::CodeLens),
     ("diffEditor.insertedTextBackground", ThemeRole::DiffAdded),
     ("diffEditor.removedTextBackground", ThemeRole::DiffRemoved),
     ("editorGutter.addedBackground", ThemeRole::GutterAdded),
@@ -331,6 +332,13 @@ mod tests {
             t.role(ThemeRole::InlayHintParameter),
             Rgba::rgb(0x30, 0x30, 0x30)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn the_code_lens_key_colors_the_code_lens_role() -> Result<(), ThemeError> {
+        let t = Theme::load_vscode(r##"{"colors":{"editorCodeLens.foreground":"#405060"}}"##)?;
+        assert_eq!(t.role(ThemeRole::CodeLens), Rgba::rgb(0x40, 0x50, 0x60));
         Ok(())
     }
 

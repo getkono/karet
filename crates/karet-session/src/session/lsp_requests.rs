@@ -314,7 +314,9 @@ impl Session {
     /// Settle an answer the generation fence turned away: a save's formatting
     /// still completes the save, unformatted, and selection ranges still
     /// answer the request with empty chains, because `Command::SelectionRanges`
-    /// is always answered and Expand Selection waits on it. Every other
+    /// is always answered and Expand Selection waits on it. A code-lens
+    /// listing is answered as unanswered, so the client asks again, and a
+    /// lens run reports how it went, since its command did run. Every other
     /// fenced answer is advisory and simply dropped.
     pub(super) fn settle_retired_answer(&mut self, update: LspUpdate) {
         match update {
@@ -330,6 +332,7 @@ impl Session {
                 answer.chains.iter_mut().for_each(Vec::clear);
                 self.adopt_selection_ranges(answer);
             },
+            LspUpdate::CodeLens { answer, .. } => self.adopt_code_lens(answer.fenced()),
             _ => {},
         }
     }

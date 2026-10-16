@@ -162,9 +162,11 @@ impl App {
             completion_matcher: karet_fuzzy::Matcher::new(),
             pending_hover: None,
             pending_expand: None,
+            theme_ui: theme_picker::ThemeUi::default(),
             hover_ui: None,
             signature: signature::SignatureState::default(),
             inlay_ui: inlay::InlayUi::default(),
+            code_lenses: code_lens::CodeLensState::default(),
             diagnostic_view: None,
             debug_state: karet_session::DebugSessionState::Idle,
             debug_detail: String::new(),
@@ -229,15 +231,9 @@ impl App {
         self.config_diagnostics = loaded.diagnostics.clone();
         self.loaded_config = loaded;
 
-        // Theme: the built-in "dark", or a path to a VS Code .json theme.
-        match load_theme(&settings.workbench.color_theme) {
-            Ok(theme) => self.theme = theme,
-            Err(message) => self.config_diagnostics.push(ConfigDiagnostic {
-                path: PathBuf::from(&settings.workbench.color_theme),
-                message,
-                severity: Severity::Warning,
-            }),
-        }
+        // Theme: the built-in "dark", or a path to a VS Code .json theme —
+        // unless the theme picker chose one this session.
+        self.apply_configured_theme(&settings.workbench.color_theme);
 
         if self.icon_override.is_none() {
             self.icon_style = settings.workbench.icon_style.into();
@@ -273,6 +269,7 @@ impl App {
             self.inlay_ui.flipped = false;
         }
         self.apply_inlay_visibility();
+        self.apply_code_lens_visibility();
         if decorations_turned_on {
             self.request_all_line_changes();
         }

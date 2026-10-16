@@ -193,6 +193,39 @@ fn replace_all_in_the_caret_line_leaves_the_next_line_start_alone() {
 }
 
 #[test]
+fn the_last_caret_line_counts_its_end_of_buffer_empty_match() {
+    // The last line has no line break, so its scope ends at the end of the
+    // buffer; its own `$` match sits there and counts, as on every other line.
+    let mut rig = Rig::new("ab\n|cd");
+    rig.step(Step::Key(KeyCode::Char('f'), KeyModifiers::CONTROL));
+    rig.step(alt('l'));
+    if let Some(find) = rig.app.active_find_mut() {
+        find.regex = true;
+    }
+    open(&mut rig, "(?m)$", ";");
+    assert_eq!(find_state(&rig).map(|f| f.count), Some(1));
+    rig.step(Step::Cmd(Command::FindReplaceAll));
+    assert_eq!(text_of(&rig), "ab\ncd;");
+}
+
+#[test]
+fn a_trailing_newline_keeps_the_empty_last_line_out_of_the_caret_line_scope() {
+    // The caret line's scope ends at the end of the buffer, but on the empty
+    // line after the trailing newline: that line's `$` match is not the caret
+    // line's, so only the one before the newline counts.
+    let mut rig = Rig::new("ab\n|cd\n");
+    rig.step(Step::Key(KeyCode::Char('f'), KeyModifiers::CONTROL));
+    rig.step(alt('l'));
+    if let Some(find) = rig.app.active_find_mut() {
+        find.regex = true;
+    }
+    open(&mut rig, "(?m)$", ";");
+    assert_eq!(find_state(&rig).map(|f| f.count), Some(1));
+    rig.step(Step::Cmd(Command::FindReplaceAll));
+    assert_eq!(text_of(&rig), "ab\ncd;\n");
+}
+
+#[test]
 fn preserve_case_follows_each_matchs_case_in_replace_all() {
     let mut rig = Rig::new("|foo Foo FOO");
     open(&mut rig, "foo", "bar");

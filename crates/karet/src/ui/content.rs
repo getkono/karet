@@ -163,7 +163,7 @@ pub(super) fn draw_pane_content(
                     .chain(frame_decos.iter())
                     .cloned()
                     .collect();
-                let (virtual_text, inlay_parts, blame_index) =
+                let (virtual_text, inlay_parts, blame_index, lens_lines) =
                     swatches::frame_virtual_text(ctx, *doc, buffer, (&problems, cursors));
                 let editor = Editor::new(buffer)
                     .highlights(highlights)
@@ -172,6 +172,7 @@ pub(super) fn draw_pane_content(
                     .decorations(&combined)
                     .diagnostics(diagnostics)
                     .virtual_text(&virtual_text)
+                    .virtual_lines(&lens_lines)
                     .folds(&fold_lines)
                     .focused(ctx.editor_focused)
                     .cell_caret(!ctx.graphical_cursor)

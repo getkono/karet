@@ -108,7 +108,7 @@ fn run(jobs: &Receiver<HighlightJob>, results: &tokio_mpsc::UnboundedSender<High
     let mut blocker = SemanticBlocker::new();
     let mut outline = OutlineExtractor::new();
     let mut tables = TableFinder::default();
-    let mut trees: HashMap<DocumentId, LayeredTree> = HashMap::new();
+    let mut trees: HashMap<DocumentId, Retained> = HashMap::new();
     let mut pending: HashMap<DocumentId, HighlightRequest> = HashMap::new();
 
     // NOTE: this is backpressure *coalescing*, deliberately not the spell
@@ -141,10 +141,19 @@ fn run(jobs: &Receiver<HighlightJob>, results: &tokio_mpsc::UnboundedSender<High
     }
 }
 
+/// What the worker keeps of a document between versions, so the next one can
+/// reparse and re-highlight incrementally.
+struct Retained {
+    tree: LayeredTree,
+    /// The highlights of `tree` before the semantic-comment pass, which runs
+    /// afresh on every version.
+    highlights: Arc<Highlights>,
+}
+
 /// Fold `job` into the pending set.
 fn absorb(
     pending: &mut HashMap<DocumentId, HighlightRequest>,
-    trees: &mut HashMap<DocumentId, LayeredTree>,
+    trees: &mut HashMap<DocumentId, Retained>,
     job: HighlightJob,
 ) {
     match job {
@@ -182,47 +191,67 @@ fn merge(previous: HighlightRequest, next: HighlightRequest) -> HighlightRequest
 
 /// Parse (incrementally where possible) and highlight one document version,
 /// running the semantic-comment pass over the result when `semantic` is set.
+///
+/// An incremental reparse re-highlights only the ranges it reports changed
+/// (see [`LayeredHighlighter::rehighlight`]); the result is the same as a full
+/// highlight. Folds, blocks, symbols, error lines and tables are still derived
+/// from the whole tree.
 fn compute(
     parser: &mut LayeredParser,
     highlighter: &mut LayeredHighlighter,
     blocker: &mut SemanticBlocker,
     outline: &mut OutlineExtractor,
     tables: &mut TableFinder,
-    trees: &mut HashMap<DocumentId, LayeredTree>,
+    trees: &mut HashMap<DocumentId, Retained>,
     request: HighlightRequest,
 ) -> Option<HighlightResult> {
     let text = request.text.as_str();
     let reusable = request.edits.is_some()
         && trees
             .get(&request.doc)
-            .is_some_and(|tree| tree.root().language() == request.lang);
+            .is_some_and(|kept| kept.tree.root().language() == request.lang);
+    let edits = request.edits.as_deref().unwrap_or(&[]);
 
+    let mut changed = None;
     if reusable {
-        let edits = request.edits.as_deref().unwrap_or(&[]);
-        let failed = trees
+        let reparsed = trees
             .get_mut(&request.doc)
-            .is_some_and(|tree| parser.reparse(tree, edits, text).is_err());
-        if failed {
+            .map(|kept| parser.reparse_changed(&mut kept.tree, edits, text));
+        match reparsed {
+            Some(Ok(ranges)) => changed = Some(ranges),
             // Fall back to a cold parse rather than keep a tree of unknown validity.
-            trees.remove(&request.doc);
+            _ => drop(trees.remove(&request.doc)),
         }
     } else {
         trees.remove(&request.doc);
     }
 
-    if let Entry::Vacant(slot) = trees.entry(request.doc) {
-        slot.insert(parser.parse(request.lang, text).ok()?);
+    let kept = match trees.entry(request.doc) {
+        Entry::Occupied(slot) => slot.into_mut(),
+        Entry::Vacant(slot) => {
+            let tree = parser.parse(request.lang, text).ok()?;
+            let highlights = Arc::new(highlighter.highlight(&tree, text));
+            slot.insert(Retained { tree, highlights })
+        },
+    };
+    if let Some(changed) = changed {
+        let fresh = highlighter.rehighlight(&kept.tree, text, &kept.highlights, edits, &changed);
+        kept.highlights = Arc::new(fresh);
     }
-    let tree = trees.get(&request.doc)?;
+    let tree = &kept.tree;
 
-    let mut highlights = highlighter.highlight(tree, text);
-    if let Some(config) = request.semantic.as_ref() {
-        highlights = karet_syntax::mark_semantic_comments(text, &highlights, config);
-    }
+    let highlights = match request.semantic.as_ref() {
+        Some(config) => Arc::new(karet_syntax::mark_semantic_comments(
+            text,
+            &kept.highlights,
+            config,
+        )),
+        None => Arc::clone(&kept.highlights),
+    };
     Some(HighlightResult {
         doc: request.doc,
         version: request.version,
-        highlights: Arc::new(highlights),
+        highlights,
         folds: Arc::new(karet_syntax::fold(tree.root())),
         semantic_blocks: Arc::new(blocker.analyze(tree.root(), text)),
         symbols: Arc::new(outline.analyze_layers(tree, text)),
@@ -431,6 +460,83 @@ mod tests {
             request,
         )?;
         Some(result.highlights.all().iter().map(|s| s.token.0).collect())
+    }
+
+    /// The token runs `compute` publishes for `text`, against `trees`.
+    fn compute_spans(
+        trees: &mut HashMap<DocumentId, Retained>,
+        lang: LanguageId,
+        text: &str,
+        edits: Option<Vec<Edit>>,
+    ) -> Option<Vec<(usize, usize, u16)>> {
+        let request = HighlightRequest {
+            doc: DocumentId(1),
+            version: 1,
+            lang,
+            text: text.into(),
+            semantic: Some(SemanticCommentConfig::default()),
+            edits,
+        };
+        let result = compute(
+            &mut LayeredParser::new(),
+            &mut LayeredHighlighter::new(),
+            &mut SemanticBlocker::new(),
+            &mut OutlineExtractor::new(),
+            &mut TableFinder::default(),
+            trees,
+            request,
+        )?;
+        Some(
+            result
+                .highlights
+                .all()
+                .iter()
+                .map(|s| (s.span.start.0, s.span.end.0, s.token.0))
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn incremental_versions_publish_what_a_cold_highlight_would() {
+        let Some(rust) = karet_treesitter::language_id_from_injection_name("rust") else {
+            return; // rust grammar not compiled in; nothing to test
+        };
+        let mut text = String::from("fn a() {}\n\n/// Doc.\nfn b() { let x = 1; }\n");
+        let mut trees = HashMap::new();
+        assert!(compute_spans(&mut trees, rust, &text, None).is_some());
+        // Each step: (needle to replace, replacement); the version after each is
+        // computed incrementally and must match a cold compute of the same text.
+        for (needle, with) in [
+            ("let x", "// TODO: x\n    let x"),
+            ("1;", "\"open"),
+            ("\"open", "\"closed\";"),
+            ("fn a", "/* fn a"),
+            ("/* ", ""),
+        ] {
+            let start = text.find(needle).unwrap_or_default();
+            let end = start + needle.len();
+            let old = text.clone();
+            text.replace_range(start..end, with);
+            let point = |s: &str, byte: usize| {
+                let before = s.get(..byte).unwrap_or("");
+                let row = before.matches('\n').count();
+                let col = before.rfind('\n').map_or(byte, |i| byte - i - 1);
+                karet_core::BytePoint::new(row, col)
+            };
+            let edit = Edit {
+                start_byte: start,
+                old_end_byte: end,
+                new_end_byte: start + with.len(),
+                start_point: point(&old, start),
+                old_end_point: point(&old, end),
+                new_end_point: point(&text, start + with.len()),
+                replaced: needle.to_owned(),
+            };
+            let incremental = compute_spans(&mut trees, rust, &text, Some(vec![edit]));
+            let cold = compute_spans(&mut HashMap::new(), rust, &text, None);
+            assert!(incremental.is_some());
+            assert_eq!(incremental, cold, "after replacing {needle:?} in {text:?}");
+        }
     }
 
     #[test]

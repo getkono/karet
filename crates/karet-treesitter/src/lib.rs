@@ -14,6 +14,7 @@ use std::collections::hash_map::Entry;
 use karet_core::BytePos;
 use karet_core::Span;
 
+mod changes;
 mod detect;
 mod indent;
 mod injection;
@@ -23,6 +24,8 @@ mod walk;
 #[cfg(test)]
 mod tests;
 
+pub use changes::merge_spans;
+pub use changes::shift_span;
 pub use detect::language_id_from_injection_name;
 pub use detect::language_id_from_path;
 pub use detect::language_name_from_path;
@@ -420,9 +423,29 @@ impl SyntaxTree {
     /// that keeps the streaming-iterator query API inside this crate.
     #[must_use]
     pub fn captures(&self, query: &Query, text: &str) -> Vec<RawCapture> {
+        self.captures_with(tree_sitter::QueryCursor::new(), query, text)
+    }
+
+    /// [`captures`](Self::captures) restricted to the matches that intersect
+    /// `range`.
+    ///
+    /// A match is kept whole, so a capture may reach outside `range`: a string
+    /// node holding the range is reported with its full extent.
+    #[must_use]
+    pub fn captures_in(&self, query: &Query, text: &str, range: Span) -> Vec<RawCapture> {
+        let mut cursor = tree_sitter::QueryCursor::new();
+        cursor.set_byte_range(range.start.0..range.end.0);
+        self.captures_with(cursor, query, text)
+    }
+
+    fn captures_with(
+        &self,
+        mut cursor: tree_sitter::QueryCursor,
+        query: &Query,
+        text: &str,
+    ) -> Vec<RawCapture> {
         use tree_sitter::StreamingIterator;
 
-        let mut cursor = tree_sitter::QueryCursor::new();
         let mut it = cursor.captures(&query.inner, self.tree.root_node(), text.as_bytes());
         let mut out = Vec::new();
         while let Some((m, idx)) = it.next() {
@@ -670,12 +693,56 @@ impl LayeredParser {
         edits: &[Edit],
         text: &str,
     ) -> Result<(), TsError> {
+        self.reparse_changed(tree, edits, text).map(drop)
+    }
+
+    /// [`reparse`](Self::reparse), returning the byte ranges of `text` whose
+    /// syntax may differ from `tree` before the edits: sorted, disjoint, and
+    /// covering every range the edits wrote, every range where the root tree's
+    /// structure changed, and the span of every injected layer that is new, gone,
+    /// or reparsed over edited text. Outside them, a query over the new tree
+    /// finds what it found over the old one, moved by the edits.
+    ///
+    /// Too many edits at once (a large multi-cursor replace) report the whole
+    /// document rather than track each one.
+    ///
+    /// # Errors
+    /// Returns [`TsError::ParseFailed`] if the root cannot be reparsed.
+    pub fn reparse_changed(
+        &mut self,
+        tree: &mut LayeredTree,
+        edits: &[Edit],
+        text: &str,
+    ) -> Result<Vec<Span>, TsError> {
+        let edited = changes::edited_ranges(edits);
         for edit in edits {
             tree.root.edit(edit);
+            // The old layers are only compared when the edits are tracked.
+            if edited.is_some() {
+                for child in &mut tree.children {
+                    child.edit(edit);
+                }
+            }
         }
+        // Cloning a tree shares its nodes; it costs a reference count.
+        let old_root = SyntaxTree {
+            tree: tree.root.tree.clone(),
+            lang: tree.root.lang,
+        };
         tree.root.reparse(&mut self.pool, text)?;
-        tree.children = self.build_layers(&tree.root, text);
-        Ok(())
+        let old_children =
+            std::mem::replace(&mut tree.children, self.build_layers(&tree.root, text));
+
+        let Some(mut changed) = edited else {
+            return Ok(vec![Span {
+                start: BytePos(0),
+                end: BytePos(text.len()),
+            }]);
+        };
+        let layers = changes::layer_changes(&old_children, &tree.children, &changed);
+        changed.extend(tree.root.changed_ranges(&old_root));
+        changed.extend(layers);
+        Ok(changes::merge_spans(changed))
     }
 
     /// Expand every injected layer beneath `root`, breadth-first.

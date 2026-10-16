@@ -17,6 +17,7 @@ use std::io::IsTerminal;
 use karet_fileview::image::GraphicsProtocol;
 use karet_session::Settings;
 
+use crate::color_depth::ColorDepth;
 use crate::keymap::user::FileStatus;
 use crate::keymap::user::KeymapReport;
 use crate::term_caps::TerminalCapabilities;
@@ -67,6 +68,8 @@ pub(crate) struct Probes {
     pub term: Option<String>,
     /// `$TERM_PROGRAM`, when set.
     pub term_program: Option<String>,
+    /// `$COLORTERM`, when set.
+    pub colorterm: Option<String>,
 }
 
 /// Restores the terminal's cooked mode on drop, so an early return (or a panic
@@ -102,6 +105,7 @@ fn gather() -> Probes {
         caps: term_caps::probe_all(),
         term: std::env::var("TERM").ok(),
         term_program: std::env::var("TERM_PROGRAM").ok(),
+        colorterm: std::env::var("COLORTERM").ok(),
     }
 }
 
@@ -113,6 +117,8 @@ fn gather() -> Probes {
 ///   explicitly `true` (the user demanded the graphical caret); otherwise plain
 ///   `info` (images degrade to halfblocks).
 /// - OSC 22 pointer shapes are a nicety → never worse than `info`.
+/// - colour depth → `info` when truecolor is absent (theme colours are
+///   quantised to the 256-colour palette).
 pub(crate) fn evaluate(probes: &Probes, settings: &Settings) -> Vec<Finding> {
     let caps = &probes.caps;
     let unset = || "(unset)".to_string();
@@ -160,6 +166,20 @@ pub(crate) fn evaluate(probes: &Probes, settings: &Settings) -> Vec<Finding> {
                 "not detected — diagnostics use a straight underline",
             )
         },
+        match caps.color_depth {
+            ColorDepth::TrueColor => {
+                Finding::new(Severity::Ok, "colour depth", ColorDepth::TrueColor.label())
+            },
+            ColorDepth::Indexed256 => Finding::new(
+                Severity::Info,
+                "colour depth",
+                format!(
+                    "{} — theme colours are quantised; set COLORTERM=truecolor if the \
+                     terminal draws 24-bit colour",
+                    ColorDepth::Indexed256.label()
+                ),
+            ),
+        },
         Finding::new(
             Severity::Info,
             "TERM",
@@ -169,6 +189,11 @@ pub(crate) fn evaluate(probes: &Probes, settings: &Settings) -> Vec<Finding> {
             Severity::Info,
             "TERM_PROGRAM",
             probes.term_program.clone().unwrap_or_else(unset),
+        ),
+        Finding::new(
+            Severity::Info,
+            "COLORTERM",
+            probes.colorterm.clone().unwrap_or_else(unset),
         ),
         Finding::new(
             Severity::Info,
@@ -284,9 +309,11 @@ mod tests {
                 kitty_graphics: Some(true),
                 osc22_pointer_shape: Some(true),
                 undercurl: true,
+                color_depth: ColorDepth::TrueColor,
             },
             term: Some("xterm-kitty".to_string()),
             term_program: None,
+            colorterm: Some("truecolor".to_string()),
         }
     }
 
@@ -299,9 +326,11 @@ mod tests {
                 kitty_graphics: None,
                 osc22_pointer_shape: None,
                 undercurl: false,
+                color_depth: ColorDepth::Indexed256,
             },
             term: Some("xterm-256color".to_string()),
             term_program: None,
+            colorterm: None,
         }
     }
 
@@ -418,16 +447,48 @@ mod tests {
     }
 
     #[test]
+    fn colour_depth_is_reported_and_a_fallback_is_never_an_error() {
+        let truecolor = evaluate(&all_supported(), &Settings::default());
+        let depth = finding(&truecolor, "colour depth");
+        assert_eq!(depth.severity, Severity::Ok);
+        assert_eq!(depth.detail, "truecolor (24-bit)");
+
+        let fallback = evaluate(&none_supported(), &Settings::default());
+        let depth = finding(&fallback, "colour depth");
+        assert_eq!(depth.severity, Severity::Info);
+        assert!(
+            depth.detail.starts_with("256 colours") && depth.detail.contains("COLORTERM"),
+            "the fallback names the depth and the override: {}",
+            depth.detail
+        );
+    }
+
+    #[test]
     fn environment_and_version_are_reported_as_info() {
         let findings = evaluate(&none_supported(), &Settings::default());
         assert_eq!(finding(&findings, "TERM").detail, "xterm-256color");
         assert_eq!(finding(&findings, "TERM_PROGRAM").detail, "(unset)");
+        assert_eq!(finding(&findings, "COLORTERM").detail, "(unset)");
+        assert_eq!(
+            finding(
+                &evaluate(&all_supported(), &Settings::default()),
+                "COLORTERM"
+            )
+            .detail,
+            "truecolor"
+        );
         assert_eq!(finding(&findings, "graphics protocol").detail, "halfblocks");
         assert_eq!(
             finding(&findings, "karet version").detail,
             crate::cli::VERSION_LINE
         );
-        for name in ["TERM", "TERM_PROGRAM", "graphics protocol", "karet version"] {
+        for name in [
+            "TERM",
+            "TERM_PROGRAM",
+            "COLORTERM",
+            "graphics protocol",
+            "karet version",
+        ] {
             assert_eq!(finding(&findings, name).severity, Severity::Info);
         }
     }

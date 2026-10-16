@@ -17,6 +17,7 @@
 
 mod catalog;
 mod code_actions;
+mod code_lens;
 mod commands;
 mod connector;
 mod delta;
@@ -49,6 +50,8 @@ pub(crate) use catalog::managed_arguments;
 pub(crate) use catalog::serves_language;
 pub(crate) use code_actions::CodeActionAnswer;
 pub(crate) use code_actions::CodeActionCmd;
+pub(crate) use code_lens::CodeLensAnswer;
+pub(crate) use code_lens::CodeLensCmd;
 pub(crate) use connector::Connector;
 use connector::spawn_connector;
 use karet_core::LineCol;
@@ -297,6 +300,7 @@ impl LspManager {
             | LspUpdate::WorkspaceEdit { generation, .. }
             | LspUpdate::PrepareRename { generation, .. }
             | LspUpdate::CodeAction { generation, .. }
+            | LspUpdate::CodeLens { generation, .. }
             | LspUpdate::Formatting { generation, .. }
             | LspUpdate::SyncFailed { generation, .. }
             | LspUpdate::PreflightFailed { generation, .. }

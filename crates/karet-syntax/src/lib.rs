@@ -153,12 +153,13 @@ impl Indenter {
         (before, after): (BytePos, BytePos),
         unit: &str,
     ) -> Option<String> {
-        let anchor = tree.layers_at(before).into_iter().find_map(|layer| {
+        let (layer, anchor) = tree.layers_at(before).into_iter().find_map(|layer| {
             let query = self.queries.get(&layer.language())?;
-            layer.newline_indent(query, text, before, after)
+            Some((layer, layer.newline_indent(query, text, before, after)?))
         })?;
         if anchor.deeper {
-            indent::deeper(text, anchor.line_start.0, before.0, unit)
+            let literal = |at: usize| indent::in_literal(layer, BytePos(at));
+            indent::deeper(text, anchor.line_start.0, before.0, unit, literal)
         } else {
             indent::line_indent(text, anchor.line_start.0).map(str::to_owned)
         }
@@ -580,6 +581,35 @@ pub fn add_one() {}
             Some("  ")
         );
         assert_eq!(enter("python", "def f():<|>", "\t")?.as_deref(), Some("\t"));
+        Ok(())
+    }
+
+    #[test]
+    fn indenter_ignores_string_and_comment_lines_as_body() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // A string's closing `"""` and a comment, both at 6 spaces in an 8-space
+        // body: the code lines decide.
+        let src = "class A:\n    def f(self):\n        x = \"\"\"\n  a\n      \"\"\"\n      # c\n        y<|>";
+        assert_eq!(enter("python", src, "\t")?.as_deref(), Some("        "));
+        let src = "fn f() {\n    /*\n  c\n  */\n    x();<|>\n}";
+        assert_eq!(enter("rust", src, "\t")?.as_deref(), Some("    "));
+        // A line that opens a string is code: a docstring sets the body.
+        let src = "def f():\n  \"\"\"doc\n\"\"\"<|>";
+        assert_eq!(enter("python", src, "\t")?.as_deref(), Some("  "));
+        Ok(())
+    }
+
+    #[test]
+    fn indenter_leaves_doc_comments_out_of_the_files_step() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // Each ` * ` steps one space in from its `/**`; there are more of those
+        // than four-space code steps, yet a new `{` with no body still opens
+        // four spaces in.
+        let src = "/**\n * a\n */\nfunction f() {\n    /**\n     * b\n     */\n    function g() {\n        /**\n         * c\n         */\n        if (x) {<|>\n    }\n}\n";
+        assert_eq!(
+            enter("javascript", src, "\t")?.as_deref(),
+            Some("            ")
+        );
         Ok(())
     }
 

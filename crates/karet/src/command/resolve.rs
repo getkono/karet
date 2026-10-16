@@ -96,6 +96,7 @@ static PALETTE: &[Command] = &[
     Command::OpenBlameDetail,
     Command::ShowDependencyGraph,
     Command::ShowLoadedConfig,
+    Command::SelectColorTheme,
     Command::ManageLanguageServers,
     Command::CheckLanguageServerUpdates,
     Command::ShowLanguageServerLog,

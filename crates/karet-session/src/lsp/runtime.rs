@@ -1,6 +1,7 @@
 use karet_core::ServerFeature;
 
 use super::code_actions;
+use super::code_lens;
 use super::commands::OpenDocument;
 use super::commands::answer_empty;
 use super::commands::answer_reconnecting;
@@ -389,6 +390,11 @@ pub(super) async fn server_task(task: ServerTask) {
                 code_actions::deliver(
                     answer, &mut tally, &mut dead, &updates, &key, token, generation,
                 );
+                None
+            },
+            health::Wake::Lens(answer) => {
+                let slot = (&key, token);
+                code_lens::deliver(answer, &mut tally, &mut dead, &updates, slot, generation);
                 None
             },
             health::Wake::Command(None) => break, // the session dropped the manager
@@ -812,6 +818,33 @@ pub(super) async fn server_task(task: ServerTask) {
                             code_actions::serve(active, cmd, &mut context).await
                         };
                         let _ = updates.send(LspUpdate::CodeAction { generation, answer });
+                    },
+                },
+                ServerCmd::CodeLens(cmd) => match cmd.into_listing() {
+                    // A listing is background work: no flush, and no await --
+                    // it launches below, as a hint request does. See `code_lens`.
+                    Ok(listing) => flights.lenses.ask(listing, &updates, generation),
+                    Err((request, lens)) => {
+                        flush_pending(
+                            active,
+                            (&mut pending, &mut documents),
+                            &mut dead,
+                            &mut tally,
+                            &updates,
+                            &key,
+                            token,
+                        )
+                        .await;
+                        let mut context = code_actions::StepContext {
+                            tally: &mut tally,
+                            dead: &mut dead,
+                            updates: &updates,
+                            key: &key,
+                            token,
+                            generation,
+                        };
+                        let answer = code_lens::run(active, request, lens, &mut context).await;
+                        let _ = updates.send(LspUpdate::CodeLens { generation, answer });
                     },
                 },
                 ServerCmd::Formatting {

@@ -441,6 +441,11 @@
             "enabled": false
           }
         },
+        "codeLens": {
+          "description": "Show the language server's code lenses on rows above the code they describe.",
+          "type": "boolean",
+          "default": true
+        },
         "colorHighlight": {
           "description": "Inline swatches on color literals (hex, `rgb()`, `hsl()`).",
           "$ref": "#/$defs/ColorHighlight",

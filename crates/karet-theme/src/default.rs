@@ -111,6 +111,9 @@ pub(crate) fn dark() -> Theme {
     // apart by hue: a muted blue for types, a muted violet for parameter names.
     role(ThemeRole::InlayHintType, rgb(0x4a, 0x6a, 0x8c));
     role(ThemeRole::InlayHintParameter, rgb(0x6e, 0x5c, 0x92));
+    // Code lenses read like inlay hints' neighbours: dim, but a step brighter,
+    // since each title is something to click.
+    role(ThemeRole::CodeLens, rgb(0x73, 0x7a, 0xa2));
     // Explorer file-icon tints, keyed to the coarse file Category.
     role(ThemeRole::FileIconText, rgb(0x7a, 0xa2, 0xf7));
     role(ThemeRole::FileIconMedia, rgb(0x9e, 0xce, 0x6a));
