@@ -683,14 +683,14 @@ fn a_fold_header_draws_its_chevron_in_the_fold_lane_beside_its_marker() {
             collapsed: true,
         },
     ];
-    let marker = Decoration {
-        range: Range {
+    let marker = Decoration::new(
+        Range {
             start: LineCol::new(0, 0),
             end: LineCol::new(0, 0),
         },
-        kind: DecorationKind::GutterMarker { glyph: '●' },
-        role: None,
-    };
+        DecorationKind::GutterMarker { glyph: '●' },
+        None,
+    );
     let area = Rect::new(0, 0, 20, 3);
     let mut target = Buffer::empty(area);
     let mut state = EditorState::new();

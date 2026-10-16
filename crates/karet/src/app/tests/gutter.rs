@@ -233,14 +233,14 @@ fn a_file_no_debugger_runs_takes_no_breakpoint() {
 /// An added-lines change marker over `first..=last`, as the VCS worker
 /// publishes it.
 fn added(first: u32, last: u32) -> Decoration {
-    Decoration {
-        range: Range {
+    Decoration::new(
+        Range {
             start: LineCol::new(first, 0),
             end: LineCol::new(last, 0),
         },
-        kind: DecorationKind::ChangeMarker { glyph: '\u{258e}' },
-        role: Some(ThemeRole::GutterAdded),
-    }
+        DecorationKind::ChangeMarker { glyph: '\u{258e}' },
+        Some(ThemeRole::GutterAdded),
+    )
 }
 
 /// A rig over `marked` whose document (9) holds `markers`, on a recording

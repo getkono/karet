@@ -61,15 +61,17 @@ pub fn diagnostic_signs(diagnostics: &[Diagnostic]) -> Vec<Decoration> {
     }
     worst
         .into_iter()
-        .map(|(line, severity)| Decoration {
-            range: Range {
-                start: LineCol::new(line, 0),
-                end: LineCol::new(line, 0),
-            },
-            kind: DecorationKind::GutterMarker {
-                glyph: severity_sign(severity),
-            },
-            role: Some(severity_role(severity)),
+        .map(|(line, severity)| {
+            Decoration::new(
+                Range {
+                    start: LineCol::new(line, 0),
+                    end: LineCol::new(line, 0),
+                },
+                DecorationKind::GutterMarker {
+                    glyph: severity_sign(severity),
+                },
+                Some(severity_role(severity)),
+            )
         })
         .collect()
 }

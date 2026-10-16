@@ -6,14 +6,14 @@ use crate::*;
 
 /// A one-line decoration of `kind` on `line`, colored by `role`.
 fn on_line(line: u32, kind: DecorationKind, role: Option<ThemeRole>) -> Decoration {
-    Decoration {
-        range: Range {
+    Decoration::new(
+        Range {
             start: LineCol::new(line, 0),
             end: LineCol::new(line, 0),
         },
         kind,
         role,
-    }
+    )
 }
 
 fn breakpoint(line: u32) -> Decoration {

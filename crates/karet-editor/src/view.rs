@@ -13,6 +13,7 @@ use super::text::*;
 use super::visual::*;
 use super::*;
 
+mod decorate;
 mod display;
 mod glyphs;
 mod virtual_paint;
@@ -31,6 +32,7 @@ pub struct Editor<'a> {
     highlights: Option<&'a Highlights>,
     theme: Option<&'a Theme>,
     decorations: &'a [Decoration],
+    decoration_index: decorate::DecorationIndex,
     diagnostics: &'a [Diagnostic],
     virtual_text: &'a [VirtualText],
     virtual_lines: &'a [VirtualLine],
@@ -64,6 +66,7 @@ impl<'a> Editor<'a> {
             highlights: None,
             theme: None,
             decorations: &[],
+            decoration_index: decorate::DecorationIndex::default(),
             diagnostics: &[],
             virtual_text: &[],
             virtual_lines: &[],
@@ -169,9 +172,15 @@ impl<'a> Editor<'a> {
     }
 
     /// Supply decorations (VCS markers, breakpoints, search highlights, …).
+    ///
+    /// Where they overlap, the higher [`priority`](Decoration::priority) wins
+    /// each single-valued attribute and ties go to the one earlier in the
+    /// slice; modifiers blend. They are indexed by line here, once, so a
+    /// frame's lookups cost its visible lines rather than the whole slice.
     #[must_use]
     pub fn decorations(mut self, decorations: &'a [Decoration]) -> Self {
         self.decorations = decorations;
+        self.decoration_index = decorate::DecorationIndex::new(decorations);
         self
     }
 
@@ -212,48 +221,6 @@ impl<'a> Editor<'a> {
 }
 
 impl Editor<'_> {
-    /// The background color for column `col` on line `l`, from line/text-background
-    /// decorations (e.g. search matches).
-    fn decoration_bg(&self, l: u32, col: u32, theme: &Theme) -> Option<Rgba> {
-        for d in self.decorations {
-            let Some(role) = d.role else { continue };
-            let covers = match &d.kind {
-                DecorationKind::LineBackground => line_in_range(l, d.range),
-                DecorationKind::TextBackground => col_in_range(l, col, d.range),
-                _ => false,
-            };
-            if covers {
-                return Some(theme.role(role));
-            }
-        }
-        None
-    }
-
-    /// The swatch background + contrasting foreground for column `col` on line
-    /// `l`, when a [`DecorationKind::ColorSwatch`] covers the cell. The
-    /// foreground is whichever of black/white contrasts better, so the chip
-    /// stays legible on any color; alpha is ignored (cells cannot blend).
-    fn swatch_style(&self, l: u32, col: u32) -> Option<(Rgba, Rgba)> {
-        for d in self.decorations {
-            if let DecorationKind::ColorSwatch { rgba } = &d.kind
-                && col_in_range(l, col, d.range)
-            {
-                let bg = Rgba::rgb(rgba[0], rgba[1], rgba[2]);
-                let black = Rgba::rgb(0, 0, 0);
-                let white = Rgba::rgb(255, 255, 255);
-                let fg = if karet_theme::contrast_ratio(black, bg)
-                    >= karet_theme::contrast_ratio(white, bg)
-                {
-                    black
-                } else {
-                    white
-                };
-                return Some((bg, fg));
-            }
-        }
-        None
-    }
-
     /// Append the syntax-colored content spans for line `l`, honoring horizontal
     /// scroll, active selections, and text-background decorations.
     ///
@@ -302,6 +269,7 @@ impl Editor<'_> {
         };
         let glyphs = glyphs.map(|frame| frame.row(l, &chars));
         let hl: &[HighlightSpan] = self.highlights.map_or(&[], |h| h.spans_in(line_span));
+        let line_decos = self.line_decorations(l);
 
         let mut run = String::new();
         let mut run_style: Option<Style> = None;
@@ -372,30 +340,32 @@ impl Editor<'_> {
             if let Some(color) = glyphs.as_ref().and_then(|g| g.bracket(col)) {
                 style = style.fg(color.to_ratatui());
             }
+            let deco = Self::cell_decoration(&line_decos, (l, col), theme, default_fg);
             // Diagnostics win an overlap: a squiggle carries more information than
             // "this is navigable", and losing it would hide a real problem. Theirs
             // is marked, so the frame's last pass can curl it.
             if let Some((color, mark)) = self
                 .diagnostic_underline(l, col, theme)
                 .map(|color| (color, diagnostic::DIAGNOSTIC_UNDERLINE))
-                .or_else(|| {
-                    let color = self.decoration_underline(l, col, theme, default_fg)?;
-                    Some((color, Modifier::empty()))
-                })
+                .or_else(|| Some((deco.underline?, Modifier::empty())))
             {
                 style = style
                     .underline_color(color.to_ratatui())
                     .add_modifier(Modifier::UNDERLINED | mark);
             }
             style = style.add_modifier(diagnostic::tag_modifiers(self.diagnostics, l, col));
+            style = style.add_modifier(deco.modifiers);
             let selected = in_any(selections, l, col);
+            // A swatch's contrasting foreground goes with its background, which
+            // a selection replaces; a decoration's own foreground stays.
+            let swatch_fg = deco.swatch_fg.filter(|_| !selected);
+            if let Some(fg) = swatch_fg.or(deco.fg) {
+                style = style.fg(fg.to_ratatui());
+            }
             let bg = if selected {
                 Some(theme.role(ThemeRole::Selection))
-            } else if let Some((swatch_bg, swatch_fg)) = self.swatch_style(l, col) {
-                style = style.fg(swatch_fg.to_ratatui());
-                Some(swatch_bg)
             } else {
-                self.decoration_bg(l, col, theme)
+                deco.bg
             };
             if let Some(bg) = bg {
                 style = style.bg(bg.to_ratatui());
@@ -473,26 +443,6 @@ impl Editor<'_> {
             .filter(|diagnostic| col_in_range(line, col, diagnostic.range))
             .min_by_key(|diagnostic| diagnostic.severity)
             .map(|diagnostic| theme.role(diagnostic::severity_role(diagnostic.severity)))
-    }
-
-    /// The underline color for column `col` on line `l`, from underline decorations.
-    ///
-    /// A decoration with no role underlines in the text's own foreground, so the
-    /// treatment reads as an underline rather than as a recolouring.
-    fn decoration_underline(
-        &self,
-        l: u32,
-        col: u32,
-        theme: &Theme,
-        default_fg: Rgba,
-    ) -> Option<Rgba> {
-        self.decorations
-            .iter()
-            .find(|decoration| {
-                matches!(decoration.kind, DecorationKind::Underline)
-                    && col_in_range(l, col, decoration.range)
-            })
-            .map(|decoration| decoration.role.map_or(default_fg, |role| theme.role(role)))
     }
 
     /// Draw the caret at buffer position `at` as a reversed cell, when it falls within

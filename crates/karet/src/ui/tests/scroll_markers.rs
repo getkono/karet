@@ -27,14 +27,14 @@ fn app_with_match(lines: usize, matched: u32) -> crate::app::App {
     let mut app = app();
     let mut tab = text_tab("notes.txt", &text);
     if let TabKind::Code { search_decos, .. } = &mut tab.kind {
-        search_decos.push(Decoration {
-            range: Range {
+        search_decos.push(Decoration::new(
+            Range {
                 start: LineCol::new(matched, 0),
                 end: LineCol::new(matched, 4),
             },
-            kind: DecorationKind::TextBackground,
-            role: Some(ThemeRole::SearchMatch),
-        });
+            DecorationKind::TextBackground,
+            Some(ThemeRole::SearchMatch),
+        ));
     }
     app.tabs.push(tab);
     app.active = app.tabs.len() - 1;

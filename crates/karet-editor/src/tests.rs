@@ -9,6 +9,7 @@ mod caret_ops;
 mod carets;
 mod change_lane;
 mod comment;
+mod decorations;
 mod diagnostics;
 mod display;
 mod glyphs;
@@ -51,20 +52,20 @@ fn color_swatch_paints_the_color_with_a_contrasting_foreground() {
         return;
     };
     let decorations = [
-        Decoration {
-            range: light,
-            kind: DecorationKind::ColorSwatch {
+        Decoration::new(
+            light,
+            DecorationKind::ColorSwatch {
                 rgba: [0xff, 0xcc, 0x00, 0xff],
             },
-            role: None,
-        },
-        Decoration {
-            range: dark,
-            kind: DecorationKind::ColorSwatch {
+            None,
+        ),
+        Decoration::new(
+            dark,
+            DecorationKind::ColorSwatch {
                 rgba: [0x22, 0x22, 0x22, 0xff],
             },
-            role: None,
-        },
+            None,
+        ),
     ];
     let mut state = EditorState::new();
     let area = Rect::new(0, 0, 30, 1);
@@ -103,13 +104,13 @@ fn color_swatch_yields_to_an_overlapping_selection() {
     let Ok(range) = Range::new(LineCol::new(0, 0), LineCol::new(0, 7)) else {
         return;
     };
-    let decoration = Decoration {
+    let decoration = Decoration::new(
         range,
-        kind: DecorationKind::ColorSwatch {
+        DecorationKind::ColorSwatch {
             rgba: [0xff, 0xcc, 0x00, 0xff],
         },
-        role: None,
-    };
+        None,
+    );
     let mut state = EditorState::new();
     state.set_cursor_state(
         &buffer,
@@ -813,11 +814,7 @@ fn an_underline_decoration_underlines_exactly_its_range() {
     let Ok(range) = Range::new(LineCol::new(0, 4), LineCol::new(0, 10)) else {
         return;
     };
-    let decoration = Decoration {
-        range,
-        kind: DecorationKind::Underline,
-        role: None,
-    };
+    let decoration = Decoration::new(range, DecorationKind::Underline, None);
     let area = Rect::new(0, 0, 40, 1);
     let mut target = Buffer::empty(area);
     Editor::new(&buffer)
@@ -845,11 +842,7 @@ fn a_diagnostic_outranks_an_underline_decoration_on_the_same_cell() {
     let Ok(range) = Range::new(LineCol::new(0, 4), LineCol::new(0, 10)) else {
         return;
     };
-    let decoration = Decoration {
-        range,
-        kind: DecorationKind::Underline,
-        role: None,
-    };
+    let decoration = Decoration::new(range, DecorationKind::Underline, None);
     let diagnostic = Diagnostic {
         range,
         severity: Severity::Error,

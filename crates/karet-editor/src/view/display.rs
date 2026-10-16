@@ -136,7 +136,7 @@ pub(super) fn record_fold_ellipsis(
 
 impl Editor<'_> {
     /// The glyph + color of the first decoration on line `l` that `pick`
-    /// accepts, in decoration order.
+    /// accepts, highest priority first and ties in decoration order.
     fn gutter_glyph(
         &self,
         l: u32,
@@ -144,13 +144,10 @@ impl Editor<'_> {
         default_fg: Rgba,
         pick: fn(&DecorationKind) -> Option<char>,
     ) -> Option<(char, Rgba)> {
-        self.decorations
-            .iter()
-            .filter(|d| line_in_range(l, d.range))
-            .find_map(|d| {
-                let glyph = pick(&d.kind)?;
-                Some((glyph, d.role.map_or(default_fg, |r| theme.role(r))))
-            })
+        self.line_decorations(l).into_iter().find_map(|d| {
+            let glyph = pick(&d.kind)?;
+            Some((glyph, d.role.map_or(default_fg, |r| theme.role(r))))
+        })
     }
 
     /// The marker column's glyph + color for line `l`: its first

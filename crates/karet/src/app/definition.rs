@@ -377,13 +377,13 @@ impl App {
     pub(crate) fn definition_underline_decoration(&self) -> Option<Decoration> {
         let hover = self.definition_hover?;
         let tab = self.tabs.get(self.active)?;
-        (tab.view == hover.view).then_some(Decoration {
-            range: hover.range,
-            kind: DecorationKind::Underline,
-            // No role: the underline takes the token's own foreground, so it can
-            // never come out illegible in a theme that never anticipated it.
-            role: None,
-        })
+        // No role: the underline takes the token's own foreground, so it can
+        // never come out illegible in a theme that never anticipated it.
+        (tab.view == hover.view).then_some(Decoration::new(
+            hover.range,
+            DecorationKind::Underline,
+            None,
+        ))
     }
 }
 

@@ -188,16 +188,16 @@ fn decorate_conflict(decorations: &mut Vec<Decoration>, conflict: Conflict) {
 
 fn marker_decorations(decorations: &mut Vec<Decoration>, line: usize, glyph: char) {
     let range = line_range(line);
-    decorations.push(Decoration {
+    decorations.push(Decoration::new(
         range,
-        kind: DecorationKind::GutterMarker { glyph },
-        role: Some(ThemeRole::DiffModified),
-    });
-    decorations.push(Decoration {
+        DecorationKind::GutterMarker { glyph },
+        Some(ThemeRole::DiffModified),
+    ));
+    decorations.push(Decoration::new(
         range,
-        kind: DecorationKind::LineBackground,
-        role: Some(ThemeRole::DiffModified),
-    });
+        DecorationKind::LineBackground,
+        Some(ThemeRole::DiffModified),
+    ));
 }
 
 fn section_decoration(
@@ -209,14 +209,14 @@ fn section_decoration(
     if start >= end {
         return;
     }
-    decorations.push(Decoration {
-        range: Range {
+    decorations.push(Decoration::new(
+        Range {
             start: LineCol::new(start as u32, 0),
             end: LineCol::new((end - 1) as u32, u32::MAX),
         },
-        kind: DecorationKind::LineBackground,
-        role: Some(role),
-    });
+        DecorationKind::LineBackground,
+        Some(role),
+    ));
 }
 
 fn line_range(line: usize) -> Range {

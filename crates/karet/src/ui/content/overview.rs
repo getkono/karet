@@ -76,11 +76,7 @@ mod tests {
     }
 
     fn decoration(first: u32, last: u32, role: Option<ThemeRole>) -> Decoration {
-        Decoration {
-            range: range(first, last),
-            kind: DecorationKind::TextBackground,
-            role,
-        }
+        Decoration::new(range(first, last), DecorationKind::TextBackground, role)
     }
 
     #[test]

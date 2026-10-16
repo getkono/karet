@@ -123,14 +123,14 @@ fn each_line_shows_its_most_severe_sign_in_the_severity_color() {
 #[test]
 fn an_earlier_marker_keeps_the_lane_from_a_sign() {
     let buffer = TextBuffer::from_text("a\n");
-    let breakpoint = Decoration {
-        range: Range {
+    let breakpoint = Decoration::new(
+        Range {
             start: LineCol::new(0, 0),
             end: LineCol::new(0, 0),
         },
-        kind: DecorationKind::GutterMarker { glyph: '●' },
-        role: Some(ThemeRole::Breakpoint),
-    };
+        DecorationKind::GutterMarker { glyph: '●' },
+        Some(ThemeRole::Breakpoint),
+    );
     let mut decorations = vec![breakpoint];
     decorations.extend(diagnostic_signs(&[diagnostic(
         0,
@@ -190,14 +190,14 @@ fn render_underlines(
 ) -> Buffer {
     let buffer = TextBuffer::from_text(text);
     let diagnostics = [diagnostic(0, diagnosed, Severity::Error, "boom")];
-    let link = [Decoration {
-        range: Range {
+    let link = [Decoration::new(
+        Range {
             start: LineCol::new(0, navigable.0),
             end: LineCol::new(0, navigable.1),
         },
-        kind: DecorationKind::Underline,
-        role: None,
-    }];
+        DecorationKind::Underline,
+        None,
+    )];
     let area = Rect::new(0, 0, width, 1);
     let mut target = Buffer::empty(area);
     Editor::new(&buffer)

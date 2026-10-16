@@ -145,13 +145,15 @@ impl App {
                 let end = buffer.byte_to_line_col(BytePos(buffer.len_bytes()));
                 *decos = matches
                     .iter()
-                    .map(|m| Decoration {
-                        range: Range {
-                            start: buffer.byte_to_line_col(BytePos(m.start)),
-                            end: buffer.byte_to_line_col(BytePos(m.end)),
-                        },
-                        kind: DecorationKind::TextBackground,
-                        role: Some(ThemeRole::SearchMatch),
+                    .map(|m| {
+                        Decoration::new(
+                            Range {
+                                start: buffer.byte_to_line_col(BytePos(m.start)),
+                                end: buffer.byte_to_line_col(BytePos(m.end)),
+                            },
+                            DecorationKind::TextBackground,
+                            Some(ThemeRole::SearchMatch),
+                        )
                     })
                     .filter(|deco| in_scope(scope, deco.range, end))
                     .collect();
@@ -751,13 +753,15 @@ impl App {
                     search_chunks(buffer.chunks(), &query)
                         .unwrap_or_default()
                         .iter()
-                        .map(|m| Decoration {
-                            range: Range {
-                                start: buffer.byte_to_line_col(BytePos(m.start)),
-                                end: buffer.byte_to_line_col(BytePos(m.end)),
-                            },
-                            kind: DecorationKind::TextBackground,
-                            role: Some(ThemeRole::SearchMatch),
+                        .map(|m| {
+                            Decoration::new(
+                                Range {
+                                    start: buffer.byte_to_line_col(BytePos(m.start)),
+                                    end: buffer.byte_to_line_col(BytePos(m.end)),
+                                },
+                                DecorationKind::TextBackground,
+                                Some(ThemeRole::SearchMatch),
+                            )
                         })
                         .collect()
                 } else {

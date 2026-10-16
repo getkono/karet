@@ -95,14 +95,14 @@ fn normalized(text: &str) -> String {
 
 /// One change-lane decoration spanning zero-based lines `first..=last`.
 fn marker(first: u32, last: u32, glyph: char, role: ThemeRole) -> Decoration {
-    Decoration {
-        range: Range {
+    Decoration::new(
+        Range {
             start: LineCol::new(first, 0),
             end: LineCol::new(last, 0),
         },
-        kind: DecorationKind::ChangeMarker { glyph },
-        role: Some(role),
-    }
+        DecorationKind::ChangeMarker { glyph },
+        Some(role),
+    )
 }
 
 #[cfg(test)]
