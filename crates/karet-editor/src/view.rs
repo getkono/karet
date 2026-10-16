@@ -933,12 +933,12 @@ impl StatefulWidget for Editor<'_> {
                     Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui()),
                 ));
             }
-            // The end-of-line slot is on the last row, and only while the
-            // line's end is not scrolled off to the left: past it, the slot
-            // would float at the margin over nothing.
             // Guides a blank line runs past its end stop where end-of-line
             // text starts, so they never cut into a space inside it.
             let mut guide_limit = area.right();
+            // The end-of-line slot is on the last row, and only while the
+            // line's end is not scrolled off to the left: past it, the slot
+            // would float at the margin over nothing.
             if range_index + 1 == ranges.len() && range.start <= line_len(self.buffer, l) {
                 let room = row_room(area, &spans);
                 let before = spans.len();
