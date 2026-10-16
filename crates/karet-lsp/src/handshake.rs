@@ -93,8 +93,9 @@ pub(crate) fn initialize_params(root: &Path) -> Result<lsp_types::InitializePara
         text_document: Some(lsp_types::TextDocumentClientCapabilities {
             completion: Some(lsp_types::CompletionClientCapabilities {
                 completion_item: Some(lsp_types::CompletionItemCapability {
-                    // Snippets degrade to plain text (see the crate docs).
-                    snippet_support: Some(false),
+                    // Snippets expand to their text plus their stops (see
+                    // the crate docs).
+                    snippet_support: Some(true),
                     deprecated_support: Some(true),
                     commit_characters_support: Some(true),
                     documentation_format: Some(vec![

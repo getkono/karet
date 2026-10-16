@@ -324,7 +324,9 @@ What the client declares at the handshake is kept to what it honours:
   between. The server's trigger characters re-request completions (`.` and
   `::` stand in until it has answered once); its commit characters accept the
   selection before they are typed; typing over an incomplete list asks again.
-  Snippets are still not declared: snippet text degrades to plain text.
+  `snippetSupport` is declared: a snippet inserts the text it shows before
+  any edit, then Tab and Shift+Tab move between its tabstops (mirrored ones
+  edited together) until the final stop, and Esc leaves it.
 - `dynamicRegistration` for the gated requests whose registration carries
   nothing karet reads beyond "on": hover, definition, implementation, type
   hierarchy, document and workspace symbols, rename, formatting, range

@@ -38,9 +38,11 @@
 //!   [`LspClient::did_change_incremental`] sends only the edited ranges, and is
 //!   refused without sending for a server that did not ask for incremental sync.
 //!   The consumer owns the text, so it decides which one an edit can use.
-//! - **Snippets are not advertised** (`completionItem.snippetSupport: false`), so
-//!   servers send plain-text completions; snippet syntax that leaks through anyway
-//!   is degraded to plain text at the completion mapping. An item's
+//! - **Snippets are advertised** (`completionItem.snippetSupport: true`). A
+//!   snippet completion maps to the text it inserts before anyone edits it
+//!   (placeholders filled in, the first choice chosen), with its stops beside it
+//!   in [`karet_core::CompletionItem::tabstops`] for a consumer that runs a
+//!   snippet session; one that does not inserts the text as is. An item's
 //!   documentation, detail and additional edits may be deferred to
 //!   [`LspClient::resolve_completion`].
 //!
@@ -498,7 +500,7 @@ impl LspClient {
     /// in-process or remote byte stream.
     ///
     /// The handshake advertises the `utf-16` position encoding, completion
-    /// without snippet support, diagnostics with related information, inlay
+    /// with snippet support, diagnostics with related information, inlay
     /// hints with `workspace/inlayHint/refresh` support, and dynamic
     /// registration for the gated requests whose registration the client
     /// honours -- each scoped to the documents its `documentSelector` covers

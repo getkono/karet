@@ -4,6 +4,7 @@ use karet_core::CompletionTrigger;
 use super::*;
 
 mod accept;
+mod snippet;
 
 impl App {
     /// The active code tab's completion target: `(document, caret)`.

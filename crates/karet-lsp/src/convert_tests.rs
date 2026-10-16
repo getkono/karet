@@ -272,7 +272,7 @@ fn insert_text_resolution_precedence() {
 }
 
 #[test]
-fn snippet_format_degrades_everywhere() {
+fn snippet_format_expands_everywhere_and_keeps_its_stops() {
     let mut item = bare_item("push");
     item.insert_text_format = Some(lsp_types::InsertTextFormat::SNIPPET);
     item.text_edit = Some(lsp_types::CompletionTextEdit::Edit(lsp_types::TextEdit {
@@ -282,19 +282,26 @@ fn snippet_format_degrades_everywhere() {
     let mapped = completion_item_from_lsp(item);
     assert_eq!(mapped.insert_text, "push(ch)");
     assert_eq!(mapped.edit.map(|e| e.new_text), Some("push(ch)".into()));
+    let spans: Vec<_> = mapped
+        .tabstops
+        .iter()
+        .map(|t| (t.index, t.spans.clone()))
+        .collect();
+    assert_eq!(spans, vec![(1, vec![(5, 7)]), (0, vec![(8, 8)])]);
 
     let mut item = bare_item("if");
     item.insert_text_format = Some(lsp_types::InsertTextFormat::SNIPPET);
     item.insert_text = Some("if ${1:cond} {\n\t$0\n}".into());
-    assert_eq!(
-        completion_item_from_lsp(item).insert_text,
-        "if cond {\n\t\n}"
-    );
+    let mapped = completion_item_from_lsp(item);
+    assert_eq!(mapped.insert_text, "if cond {\n\t\n}");
+    assert_eq!(mapped.tabstops.len(), 2);
 
     // Plain-text format is left untouched even if it looks snippety.
     let mut item = bare_item("x");
     item.insert_text = Some("literal $1".into());
-    assert_eq!(completion_item_from_lsp(item).insert_text, "literal $1");
+    let mapped = completion_item_from_lsp(item);
+    assert_eq!(mapped.insert_text, "literal $1");
+    assert!(mapped.tabstops.is_empty());
 }
 
 #[test]
