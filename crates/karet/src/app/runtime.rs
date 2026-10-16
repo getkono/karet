@@ -238,6 +238,7 @@ async fn event_loop(
 
     let mut decoded_images = preview_image_results(app);
     let mut file_scans = app.file_index.take_receiver();
+    let mut terminal_events = terminal_events(app);
     // Saving a `keymap.jsonc` rebinds live; the watcher lives as long as the loop.
     let keymap_paths: Vec<std::path::PathBuf> =
         crate::keymap::user::paths(std::slice::from_ref(&app.root))
@@ -292,6 +293,7 @@ async fn event_loop(
             scan = recv_decoded(&mut file_scans) => if let Some(scan) = scan {
                 app.on_file_index(scan);
             },
+            terminal = recv_decoded(&mut terminal_events) => accept_terminal(app, terminal),
             change = recv_decoded(&mut keymap_changes) => if change.is_some() {
                 // One reload covers a burst of events (an atomic-rename save).
                 while keymap_changes.as_mut().is_some_and(|rx| rx.try_recv().is_ok()) {}
@@ -327,6 +329,9 @@ async fn event_loop(
         }
         while let Some(scan) = file_scans.as_mut().and_then(|rx| rx.try_recv().ok()) {
             app.on_file_index(scan);
+        }
+        while let Some(event) = terminal_events.as_mut().and_then(|rx| rx.try_recv().ok()) {
+            accept_terminal(app, Some(event));
         }
 
         if app.should_quit {
@@ -369,6 +374,32 @@ pub(super) fn accept_decoded(app: &mut App, image: Option<crate::preview_images:
 
 #[cfg(not(feature = "images"))]
 pub(super) fn accept_decoded(_app: &mut App, _image: Option<std::convert::Infallible>) {}
+
+/// The channel the integrated terminals report on (`None` in a lean build).
+#[cfg(feature = "terminal")]
+type TerminalEvents = Option<crate::terminal::TerminalEvents>;
+#[cfg(not(feature = "terminal"))]
+type TerminalEvents = Option<mpsc::UnboundedReceiver<std::convert::Infallible>>;
+
+#[cfg(feature = "terminal")]
+fn terminal_events(app: &mut App) -> TerminalEvents {
+    app.terminals.take_receiver()
+}
+
+#[cfg(not(feature = "terminal"))]
+fn terminal_events(_app: &mut App) -> TerminalEvents {
+    None
+}
+
+#[cfg(feature = "terminal")]
+fn accept_terminal(app: &mut App, event: Option<crate::terminal::TerminalEvent>) {
+    if let Some(event) = event {
+        app.on_terminal_event(event);
+    }
+}
+
+#[cfg(not(feature = "terminal"))]
+fn accept_terminal(_app: &mut App, _event: Option<std::convert::Infallible>) {}
 
 /// Dispatch one terminal event to the app.
 pub(super) fn handle_terminal_event(app: &mut App, event: Event) {

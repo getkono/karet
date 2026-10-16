@@ -71,6 +71,14 @@ impl App {
             Command::CloseAllTabs => self.guarded_close(CloseRequest::AllTabs),
             Command::ReopenClosedTab => self.reopen_closed_tab(),
             Command::OpenAnyway => self.open_active_anyway(),
+            Command::ToggleTerminal
+            | Command::NewTerminal
+            | Command::TerminalCopy
+            | Command::TerminalPaste
+            | Command::TerminalScrollPageUp
+            | Command::TerminalScrollPageDown
+            | Command::TerminalScrollToTop
+            | Command::TerminalScrollToBottom => self.terminal_command(command),
             Command::DismissNotification => self.notifications.dismiss_latest(),
             Command::DismissAllNotifications => self.notifications.dismiss_all(),
             Command::MarkdownPreviewSide => self.open_markdown_preview_side(),
@@ -586,5 +594,18 @@ impl App {
         } else {
             editor.go_to_bracket(buffer, Some(highlights));
         }
+    }
+}
+
+#[cfg(not(feature = "terminal"))]
+impl App {
+    /// A lean build has no integrated terminal; its commands say so rather than
+    /// vanishing, so a keymap naming them still parses and explains itself.
+    fn terminal_command(&mut self, _command: Command) {
+        self.notify(
+            Report::Refusal,
+            NotificationKind::System,
+            "this build has no integrated terminal (built without the `terminal` feature)",
+        );
     }
 }

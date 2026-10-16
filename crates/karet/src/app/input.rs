@@ -120,6 +120,13 @@ impl App {
             self.diagnostic_view_key(key);
             return;
         }
+        // A focused terminal takes the key before any editor hook: Esc must reach
+        // the shell (vim, less) even while a toast is showing.
+        #[cfg(feature = "terminal")]
+        if self.terminal_owns_keyboard() {
+            self.terminal_key(key);
+            return;
+        }
         // Tab-driven key hooks only apply while the editor shell owns the content
         // area; in another view the active tab is off screen, and a key aimed at
         // the showing view must not reach it.

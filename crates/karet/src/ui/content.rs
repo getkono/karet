@@ -41,6 +41,10 @@ pub(super) fn draw_pane_content(
     let mut markdown_preview_rect = Rect::default();
     match &mut tab.kind {
         TabKind::Welcome => draw_welcome(f, theme, area),
+        #[cfg(feature = "terminal")]
+        TabKind::Terminal(pane) => {
+            super::terminal::draw_terminal(f.buffer_mut(), theme, area, pane, ctx.editor_focused);
+        },
         TabKind::Seam(state) => super::seam::draw_seam(f, theme, area, state, ctx.icon_style),
         TabKind::LanguageServers(view) => {
             draw_language_servers(f, theme, area, view, ctx.language_servers, hits)

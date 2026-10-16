@@ -33,6 +33,8 @@ mod render;
 mod seam_query;
 mod tab;
 mod term_caps;
+#[cfg(feature = "terminal")]
+mod terminal;
 mod ui;
 mod view;
 mod workspace;

@@ -61,6 +61,11 @@ pub enum EditorTab {
     LanguageServers,
     /// A too-large-file placeholder, which offers an "open anyway" override.
     Oversize,
+    /// An integrated terminal, which takes nearly every key for its shell.
+    // Built only with the `terminal` feature; the keymap keeps the variant (and
+    // its layer id) in lean builds so a keymap file naming the layer still parses.
+    #[cfg_attr(not(feature = "terminal"), allow(dead_code))]
+    Terminal,
 }
 
 /// The single pane that currently holds keyboard focus.
@@ -90,6 +95,8 @@ pub enum FocusTarget {
     LanguageServers,
     /// A too-large-file placeholder, which offers an "open anyway" override.
     Oversize,
+    /// An integrated terminal tab.
+    Terminal,
     /// The file explorer panel.
     Explorer,
     /// The workspace search panel.
@@ -130,6 +137,7 @@ impl FocusTarget {
                 EditorTab::Seam => FocusTarget::Seam,
                 EditorTab::LanguageServers => FocusTarget::LanguageServers,
                 EditorTab::Oversize => FocusTarget::Oversize,
+                EditorTab::Terminal => FocusTarget::Terminal,
                 EditorTab::Plain => FocusTarget::Editor,
             },
             Focus::Sidebar => match panel {
@@ -184,6 +192,11 @@ pub enum Layer {
     /// override). A placeholder is not editable, so this does not stack the
     /// [`Editor`](Layer::Editor) layer.
     Oversize,
+    /// Active when an integrated terminal has focus. It stacks over nothing: a
+    /// key it does not bind goes to the shell, so the few app keys that must
+    /// still work there (toggle, copy/paste, scrollback, the palette, tab
+    /// switching) are bound in this layer itself.
+    Terminal,
     /// Active while the quick-open / command-palette overlay is open.
     Overlay,
     /// Active while the in-file find bar is open.
@@ -226,6 +239,7 @@ impl Layer {
         Layer::Github,
         Layer::LanguageServers,
         Layer::Oversize,
+        Layer::Terminal,
         Layer::Overlay,
         Layer::Find,
         Layer::SearchInput,
@@ -260,6 +274,7 @@ impl Layer {
             Layer::Github => "github",
             Layer::LanguageServers => "languageServers",
             Layer::Oversize => "oversize",
+            Layer::Terminal => "terminal",
             Layer::Overlay => "overlay",
             Layer::Find => "find",
             Layer::SearchInput => "searchInput",
@@ -282,7 +297,7 @@ impl Layer {
 }
 
 /// Every focus target, for walking the contexts a binding can be live in.
-const TARGETS: [FocusTarget; 16] = [
+const TARGETS: [FocusTarget; 17] = [
     FocusTarget::Editor,
     FocusTarget::DiffEditor,
     FocusTarget::Pager,
@@ -291,6 +306,7 @@ const TARGETS: [FocusTarget; 16] = [
     FocusTarget::Github,
     FocusTarget::LanguageServers,
     FocusTarget::Oversize,
+    FocusTarget::Terminal,
     FocusTarget::Explorer,
     FocusTarget::Search,
     FocusTarget::SourceControl,
@@ -452,6 +468,10 @@ pub fn active_layers(ctx: Context) -> &'static [Layer] {
             // #211: FocusTarget::Agents => &[L::Agents, L::Global],
             FocusTarget::LanguageServers => &[L::LanguageServers, L::Global],
             FocusTarget::Oversize => &[L::Oversize, L::Global],
+            // The shell owns the keyboard: Global is deliberately not stacked, so
+            // Ctrl+P, Tab, Ctrl+B and the rest reach the program as they would in
+            // any terminal.
+            FocusTarget::Terminal => &[L::Terminal],
             FocusTarget::Explorer => &[L::Explorer, L::Sidebar, L::Global],
             FocusTarget::Search => &[L::Sidebar, L::Global],
             // A results list with no text input of its own: the shared sidebar
@@ -549,6 +569,24 @@ mod tests {
                 View::Editor
             ),
             FocusTarget::LanguageServers
+        );
+    }
+
+    #[test]
+    fn a_terminal_stacks_only_its_own_layer() {
+        // Global is not stacked: its Tab, Ctrl+P, Ctrl+B… belong to the shell.
+        assert_eq!(
+            active_layers(Context::focus(FocusTarget::Terminal)),
+            &[Layer::Terminal]
+        );
+        assert_eq!(
+            FocusTarget::from(
+                Focus::Editor,
+                SidebarPanel::Explorer,
+                EditorTab::Terminal,
+                View::Editor
+            ),
+            FocusTarget::Terminal
         );
     }
 

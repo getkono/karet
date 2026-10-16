@@ -427,6 +427,11 @@ pub enum TabKind {
         /// been drawn once.
         list_rect: Rect,
     },
+    /// An integrated terminal: a shell on a pseudo-terminal, started in the
+    /// workspace root. Several may be open at once; each owns its shell, which
+    /// is hung up when the tab closes.
+    #[cfg(feature = "terminal")]
+    Terminal(Box<crate::terminal::TerminalPane>),
 }
 
 /// An open tab: a title, its content, and per-view editor state.
@@ -694,6 +699,21 @@ impl Tab {
         )
     }
 
+    /// An integrated terminal tab showing `pane`.
+    #[cfg(feature = "terminal")]
+    #[must_use]
+    pub(crate) fn terminal(pane: crate::terminal::TerminalPane) -> Self {
+        let title = terminal_title(&pane);
+        Self::new(title, TabKind::Terminal(Box::new(pane)))
+    }
+
+    /// Whether this tab is an integrated terminal.
+    #[cfg(feature = "terminal")]
+    #[must_use]
+    pub(crate) fn is_terminal(&self) -> bool {
+        matches!(self.kind, TabKind::Terminal(_))
+    }
+
     /// A read-only compare view for the diff between two points.
     #[must_use]
     pub fn compare(
@@ -740,6 +760,8 @@ impl Tab {
             | TabKind::Compare { .. }
             | TabKind::CommitGraph { .. } => None,
             TabKind::StashPreview { .. } | TabKind::ServerLog { .. } => None,
+            #[cfg(feature = "terminal")]
+            TabKind::Terminal(_) => None,
         }
     }
 
@@ -774,6 +796,8 @@ impl Tab {
             TabKind::CommitGraph { .. } => "commits",
             TabKind::Welcome => "",
             TabKind::LanguageServers(_) => "language servers",
+            #[cfg(feature = "terminal")]
+            TabKind::Terminal(_) => "terminal",
         }
     }
 
@@ -791,6 +815,21 @@ impl Tab {
             label.push_str(" · mixed EOL");
         }
         Some(label)
+    }
+}
+
+/// A terminal tab's title: the program's own title when it set one, else
+/// `Terminal N`; an exited shell says so.
+#[cfg(feature = "terminal")]
+#[must_use]
+pub(crate) fn terminal_title(pane: &crate::terminal::TerminalPane) -> String {
+    let base = pane
+        .title()
+        .map_or_else(|| format!("Terminal {}", pane.id().0), str::to_owned);
+    if pane.exit_status().is_some() {
+        format!("{base} (exited)")
+    } else {
+        base
     }
 }
 
@@ -817,6 +856,8 @@ fn tab_kind_path(kind: &TabKind) -> Option<&Path> {
         | TabKind::Commit { .. }
         | TabKind::Compare { .. }
         | TabKind::CommitGraph { .. } => None,
+        #[cfg(feature = "terminal")]
+        TabKind::Terminal(_) => None,
     }
 }
 

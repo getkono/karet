@@ -57,6 +57,8 @@ mod startup;
 mod state;
 mod syntax_select;
 mod tabs;
+#[cfg(feature = "terminal")]
+mod terminal;
 pub(crate) mod theme_picker;
 mod todos;
 mod unsupported;
@@ -595,6 +597,10 @@ pub struct App {
     pub(crate) image_area: Option<Rect>,
     /// Local images the markdown preview paints, decoded off the UI thread.
     pub(crate) preview_images: crate::preview_images::PreviewImages,
+    /// Starts integrated terminals and owns the channel their output and exit
+    /// notices arrive on (taken by the UI loop).
+    #[cfg(feature = "terminal")]
+    pub(crate) terminals: crate::terminal::TerminalHost,
     /// The tab index whose image is currently transmitted to the terminal.
     shown_image: Option<ViewId>,
     /// The document page currently transmitted, so paging a PDF re-transmits even

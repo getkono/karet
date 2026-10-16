@@ -19,6 +19,8 @@ mod seam;
 mod secondary;
 mod sidebar;
 mod status;
+#[cfg(feature = "terminal")]
+mod terminal;
 mod view_chrome;
 
 #[cfg(test)]
