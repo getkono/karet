@@ -94,6 +94,9 @@ pub(crate) fn diagnostic_from_lsp(d: lsp_types::Diagnostic) -> Diagnostic {
             lsp_types::NumberOrString::Number(n) => n.to_string(),
             lsp_types::NumberOrString::String(s) => s,
         }),
+        code_href: d
+            .code_description
+            .map(|description| description.href.to_string()),
         tags: d
             .tags
             .unwrap_or_default()

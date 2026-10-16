@@ -214,6 +214,7 @@ mod tests {
             message: message.to_owned(),
             source: Some("test-lsp".to_owned()),
             code: None,
+            code_href: None,
             tags: Vec::new(),
             related: Vec::new(),
         }

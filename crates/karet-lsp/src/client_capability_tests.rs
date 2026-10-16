@@ -35,6 +35,19 @@ async fn the_handshake_declares_inlay_hints_and_their_refresh() -> TestResult {
 }
 
 #[tokio::test]
+async fn the_handshake_declares_what_published_diagnostics_carry() -> TestResult {
+    let ((read, write), mut server) = wire();
+    let server_task = tokio::spawn(async move { server.handshake().await });
+    let _client = LspClient::connect(read, write, Path::new("/w")).await?;
+    let params = server_task.await?;
+    let publish = &params["capabilities"]["textDocument"]["publishDiagnostics"];
+
+    assert_eq!(publish["relatedInformation"], json!(true));
+    assert_eq!(publish["codeDescriptionSupport"], json!(true));
+    Ok(())
+}
+
+#[tokio::test]
 async fn dynamic_registration_is_declared_only_where_it_is_honoured() -> TestResult {
     let ((read, write), mut server) = wire();
     let server_task = tokio::spawn(async move { server.handshake().await });

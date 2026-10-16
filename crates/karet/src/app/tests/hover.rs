@@ -48,6 +48,7 @@ fn diagnostic(line: u32, cols: (u32, u32), severity: Severity, message: &str) ->
         message: message.to_owned(),
         source: Some("rust-analyzer".to_owned()),
         code: None,
+        code_href: None,
         tags: Vec::new(),
         related: Vec::new(),
     }

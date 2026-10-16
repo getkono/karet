@@ -11,6 +11,7 @@ fn spell_diagnostic(message: &str) -> Diagnostic {
         message: message.to_string(),
         source: Some("karet-spell".to_string()),
         code: Some("en_US".to_string()),
+        code_href: None,
         tags: Vec::new(),
         related: Vec::new(),
     }

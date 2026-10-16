@@ -69,6 +69,7 @@ mod tests {
             message: String::new(),
             source: None,
             code: None,
+            code_href: None,
             tags: Vec::new(),
             related: Vec::new(),
         }

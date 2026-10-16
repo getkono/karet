@@ -121,6 +121,8 @@ pub(crate) fn initialize_params(root: &Path) -> Result<lsp_types::InitializePara
             }),
             publish_diagnostics: Some(lsp_types::PublishDiagnosticsClientCapabilities {
                 related_information: Some(true),
+                // Mapped to `Diagnostic::code_href`.
+                code_description_support: Some(true),
                 ..lsp_types::PublishDiagnosticsClientCapabilities::default()
             }),
             // Declared at all so a server knows the client renders hints;

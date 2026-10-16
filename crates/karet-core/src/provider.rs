@@ -127,6 +127,7 @@ mod formatter_tests {
             message: "boom".to_owned(),
             source: Some("demo".to_owned()),
             code: None,
+            code_href: None,
             tags: Vec::new(),
             related: Vec::new(),
         };

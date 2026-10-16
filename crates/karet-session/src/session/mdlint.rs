@@ -53,6 +53,7 @@ fn diagnostic(issue: &lint::Issue) -> Diagnostic {
         message: format!("{} ({}/{})", issue.message, issue.rule, issue.alias),
         source: Some(LINT_SOURCE.to_owned()),
         code: Some(issue.rule.to_owned()),
+        code_href: None,
         tags: Vec::new(),
         related: Vec::new(),
     }
