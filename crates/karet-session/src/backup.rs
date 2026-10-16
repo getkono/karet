@@ -37,6 +37,11 @@ const UNDO_EXT: &str = "karet-undo";
 /// The persisted-undo format version; a file of another version is discarded.
 const UNDO_SCHEMA_VERSION: u32 = 1;
 
+/// The largest persisted-undo file written. The step cap bounds how many steps
+/// a history holds, not how big each is (a whole-file reformat stores the file
+/// twice), so a history past this is not persisted at all.
+const MAX_UNDO_BYTES: usize = 16 * 1024 * 1024;
+
 /// Metadata describing one swap: enough to identify the file it backs up, detect that
 /// the original changed underneath, and present a recovery prompt.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -196,6 +201,12 @@ impl SwapStore {
             history: history.clone(),
         };
         let bytes = serde_json::to_vec(&record).map_err(std::io::Error::other)?;
+        if bytes.len() > MAX_UNDO_BYTES {
+            // Too big to be worth rewriting on every save; an older, smaller
+            // history no longer describes the file, so it goes too.
+            self.remove_undo(original);
+            return Ok(());
+        }
         write_atomic(&self.dir, &self.undo_path(original), &bytes)
     }
 
@@ -444,6 +455,28 @@ mod tests {
         let original = PathBuf::from("/work/a.txt");
         store.write_undo(&original, &edited_history()?)?;
         store.write_undo(&original, &karet_text::TextBuffer::new().history_snapshot())?;
+        assert_eq!(store.read_undo(&original), None);
+        assert_eq!(std::fs::read_dir(dir.path())?.count(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn an_oversized_history_is_not_persisted_and_drops_the_old_one() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let store = SwapStore::with_dir(dir.path().to_path_buf(), 1);
+        let original = PathBuf::from("/work/big.txt");
+        store.write_undo(&original, &edited_history()?)?;
+
+        let mut buffer = karet_text::TextBuffer::new();
+        let big = karet_core::Change::new(
+            0,
+            vec![karet_core::TextEdit {
+                range: karet_core::Range::default(),
+                new_text: "x".repeat(MAX_UNDO_BYTES + 1),
+            }],
+        );
+        buffer.apply_simple(&big)?;
+        store.write_undo(&original, &buffer.history_snapshot())?;
         assert_eq!(store.read_undo(&original), None);
         assert_eq!(std::fs::read_dir(dir.path())?.count(), 0);
         Ok(())

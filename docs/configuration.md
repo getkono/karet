@@ -487,7 +487,8 @@ With `files.persistentUndo` on, undo survives a restart. When a file is saved, a
 it is closed with no unsaved changes, its undo/redo history is written beside the swaps
 (`…/karet/swaps/*.karet-undo`), tagged with a fingerprint of the buffer's text. Reopening
 the file restores that history only if the file's content still matches the
-fingerprint; history for a file changed elsewhere since is deleted instead. The files
+fingerprint; history for a file changed elsewhere since is deleted instead, and a
+history larger than 16 MiB is not kept at all. The files
 hold text you have deleted, which is why the setting is off by default; switching it off
 deletes each file's history the next time that file is saved or closed.
 
