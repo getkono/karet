@@ -66,6 +66,7 @@ async fn dynamic_registration_is_declared_only_where_it_is_honoured() -> TestRes
         "formatting",
         "rangeFormatting",
         "selectionRange",
+        "documentHighlight",
         "inlayHint",
         "diagnostic",
     ] {

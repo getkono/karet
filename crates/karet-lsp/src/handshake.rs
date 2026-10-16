@@ -175,6 +175,8 @@ pub(crate) fn initialize_params(root: &Path) -> Result<lsp_types::InitializePara
             selection_range: Some(lsp_types::SelectionRangeClientCapabilities {
                 dynamic_registration: Some(true),
             }),
+            // `LspClient::document_highlights`, for occurrence highlighting.
+            document_highlight: Some(dynamic),
             code_action: Some(code_action_capabilities()),
             // `LspClient::code_lenses`; a deferred title and command are filled
             // in by `LspClient::resolve_code_lens`, handing `data` back

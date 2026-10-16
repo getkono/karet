@@ -48,7 +48,7 @@
 //!
 //! Transport, lifecycle, document sync, diagnostics (pushed, and pulled through
 //! [`LspClient::pull_diagnostics`]), completion, navigation,
-//! symbols, inlay hints, rename, signature help, code actions (with
+//! symbols, document highlights, inlay hints, rename, signature help, code actions (with
 //! `codeAction/resolve` and `workspace/executeCommand`), and document/range
 //! formatting are implemented as typed, non-panicking operations.
 
@@ -60,6 +60,8 @@
 pub use apply_edit::ApplyEditRequest;
 pub use code_action::CodeActionTrigger;
 pub use config::ConnectOptions;
+pub use highlight::DocumentHighlight;
+pub use highlight::HighlightKind;
 pub use karet_jsonrpc::framing::content_length as codec;
 pub use launch::ExitReport;
 pub use launch::LaunchCause;
@@ -85,6 +87,7 @@ mod conn;
 mod convert;
 mod gate;
 mod handshake;
+mod highlight;
 mod inlay;
 mod launch;
 mod navigation;
