@@ -435,6 +435,81 @@ mod tests {
     }
 
     #[test]
+    fn undo_limit_bounds_buffer_undo() {
+        let mut b = TextBuffer::from_text("");
+        b.set_undo_limit(Some(2));
+        assert_eq!(b.undo_limit(), Some(2));
+        for col in 0..4 {
+            assert!(b.apply_simple(&ins(b.version(), 0, col, "x")).is_ok());
+        }
+        assert_eq!(b.undo_len(), 2);
+        assert!(b.undo().is_some());
+        assert!(b.undo().is_some());
+        assert!(b.undo().is_none(), "the two oldest steps were forgotten");
+        assert_eq!(b.line(0).as_deref(), Some("xx"));
+    }
+
+    #[test]
+    fn reload_keeps_the_undo_limit() {
+        let mut b = TextBuffer::from_text("a");
+        b.set_undo_limit(Some(5));
+        b.adopt_content(TextBuffer::from_text("b"));
+        assert_eq!(b.undo_limit(), Some(5));
+    }
+
+    #[test]
+    fn history_round_trips_into_a_fresh_buffer_with_the_same_text() {
+        let mut b = TextBuffer::from_text("hello");
+        assert!(b.apply_simple(&ins(0, 0, 5, " world")).is_ok());
+        assert!(b.apply_simple(&ins(b.version(), 0, 0, ">")).is_ok());
+        assert!(b.undo().is_some());
+        let snapshot = b.history_snapshot();
+
+        let mut fresh = TextBuffer::from_text("hello world");
+        let before = fresh.version();
+        assert_eq!(fresh.restore_history(snapshot), Ok(()));
+        assert!(fresh.version() > before, "restoring bumps the version");
+        assert!(!fresh.is_dirty());
+        assert!(fresh.redo().is_some());
+        assert_eq!(fresh.line(0).as_deref(), Some(">hello world"));
+        assert!(fresh.undo().is_some());
+        assert!(fresh.undo().is_some());
+        assert_eq!(fresh.line(0).as_deref(), Some("hello"));
+        assert!(fresh.undo().is_none());
+    }
+
+    #[test]
+    fn history_is_refused_by_different_text() {
+        let mut b = TextBuffer::from_text("hello");
+        assert!(b.apply_simple(&ins(0, 0, 5, "!")).is_ok());
+        let snapshot = b.history_snapshot();
+        let mut other = TextBuffer::from_text("hello");
+        let version = other.version();
+        assert_eq!(
+            other.restore_history(snapshot),
+            Err(TextError::HistoryMismatch)
+        );
+        assert!(
+            other.undo().is_none(),
+            "a refused restore leaves history alone"
+        );
+        assert_eq!(other.version(), version);
+    }
+
+    #[test]
+    fn a_restored_head_never_claims_a_later_cursor_report() {
+        let caret = |col| CursorState::single(karet_core::Selection::caret(LineCol::new(0, col)));
+        let mut b = TextBuffer::from_text("ab");
+        assert!(b.apply_simple(&ins(0, 0, 2, "c")).is_ok());
+        let mut fresh = TextBuffer::from_text("abc");
+        assert_eq!(fresh.restore_history(b.history_snapshot()), Ok(()));
+        // Nothing was edited since the restore, so this report is a caret move.
+        fresh.note_cursor_after(&caret(1));
+        assert!(fresh.undo().is_some());
+        assert_eq!(fresh.redo().unwrap_or_default().restored_cursor, None);
+    }
+
+    #[test]
     fn redo_without_a_reported_cursor_restores_none() {
         let mut b = TextBuffer::from_text("hello");
         assert!(b.apply_simple(&ins(0, 0, 5, "!")).is_ok());
