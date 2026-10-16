@@ -241,10 +241,17 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(Editor, false, true,  false, PageUp,    Command::SelectPageUp),
     b(Editor, true,  false, false, Char('a'), Command::EditorSelectAll),
     // Multi-cursor (VS Code parity): Ctrl+Alt+Up/Down stack carets vertically, Ctrl+D
-    // grows the selection to the next occurrence of the word / current selection.
+    // grows the selection to the next occurrence of the word / current selection,
+    // Ctrl+Shift+L selects every occurrence, Ctrl+K Ctrl+D moves the last one on,
+    // Shift+Alt+I puts a caret at each selected line's end, and Ctrl+U undoes the
+    // last of these.
     b(Editor, true,  false, true,  Up,        Command::AddCursorAbove),
     b(Editor, true,  false, true,  Down,      Command::AddCursorBelow),
     b(Editor, true,  false, false, Char('d'), Command::AddCursorNextOccurrence),
+    b(Editor, true,  true,  false, Char('l'), Command::SelectAllOccurrences),
+    seq(Editor, chord(true, false, false, Char('k')), &[chord(true, false, false, Char('d'))], Command::SkipOccurrence),
+    b(Editor, false, true,  true,  Char('i'), Command::AddCursorsToLineEnds),
+    b(Editor, true,  false, false, Char('u'), Command::UndoCaretOperation),
     // Box selection (VS Code parity): the keyboard path for Shift+Alt+drag,
     // which terminals and window managers that keep Alt or Shift lose.
     b(Editor, true,  true,  true,  Up,        Command::ColumnSelectUp),

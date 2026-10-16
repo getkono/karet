@@ -4,6 +4,7 @@ use crossterm::event::KeyModifiers;
 use super::*;
 use crate::view::View;
 
+mod carets;
 mod context;
 mod hints;
 mod navigation;

@@ -247,6 +247,17 @@ pub enum Command {
     AddCursorBelow,
     /// Select the word under the caret, then add a caret at the next occurrence.
     AddCursorNextOccurrence,
+    /// Select every occurrence of the word under the caret, or of the primary
+    /// selection's text (Ctrl+Shift+L).
+    SelectAllOccurrences,
+    /// Move the most recently added occurrence selection on to the next
+    /// occurrence, leaving the one it was on unselected (Ctrl+K Ctrl+D).
+    SkipOccurrence,
+    /// Restore the carets from before the last caret operation (Ctrl+U).
+    UndoCaretOperation,
+    /// Replace each selection with a caret at the end of every line it spans
+    /// (Shift+Alt+I).
+    AddCursorsToLineEnds,
     /// Grow the box (column) selection one line up.
     ColumnSelectUp,
     /// Grow the box (column) selection one line down.
@@ -887,6 +898,10 @@ impl Command {
             Self::AddCursorAbove => "Add Cursor Above",
             Self::AddCursorBelow => "Add Cursor Below",
             Self::AddCursorNextOccurrence => "Add Cursor to Next Occurrence",
+            Self::SelectAllOccurrences => "Select All Occurrences",
+            Self::SkipOccurrence => "Move Last Selection to Next Occurrence",
+            Self::UndoCaretOperation => "Undo Last Cursor Operation",
+            Self::AddCursorsToLineEnds => "Add Cursors to Line Ends",
             Self::ColumnSelectUp => "Column Select Up",
             Self::ColumnSelectDown => "Column Select Down",
             Self::ColumnSelectLeft => "Column Select Left",

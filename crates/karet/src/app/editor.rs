@@ -390,16 +390,17 @@ impl App {
         }
     }
 
-    /// Select the word under the caret, then add a caret at the next occurrence
-    /// (Ctrl+D).
-    pub(super) fn add_cursor_next_occurrence(&mut self) {
+    /// Run the multi-caret operation `op` on the active code tab: Ctrl+D, Select
+    /// All Occurrences, Skip Occurrence, Add Cursors to Line Ends, and Undo Last
+    /// Cursor Operation.
+    pub(super) fn caret_op(&mut self, op: impl FnOnce(&mut EditorState, &TextBuffer)) {
         if let Some(Tab {
             kind: TabKind::Code { buffer, .. },
             editor,
             ..
         }) = self.tabs.get_mut(self.active)
         {
-            editor.add_next_occurrence(buffer);
+            op(editor, buffer);
         }
     }
 

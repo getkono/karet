@@ -172,6 +172,18 @@ pub(super) fn find_next(
     })
 }
 
+/// Every occurrence of `needle` in the buffer, in document order, under the same
+/// matching rules as [`find_next`]. Empty for an empty needle.
+pub(super) fn find_all(buffer: &TextBuffer, needle: &str, whole_word: bool) -> Vec<Range> {
+    if needle.is_empty() {
+        return Vec::new();
+    }
+    let parts: Vec<&str> = needle.split('\n').collect();
+    (0..=last_line(buffer))
+        .flat_map(|l| matches_on_line(buffer, l, &parts, whole_word))
+        .collect()
+}
+
 /// Every occurrence of the needle `parts` (its text split at line breaks) that starts
 /// on line `line`, left to right and non-overlapping.
 fn matches_on_line(buffer: &TextBuffer, line: u32, parts: &[&str], whole_word: bool) -> Vec<Range> {

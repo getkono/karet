@@ -488,15 +488,17 @@ impl EditorState {
 
     /// Add a bare caret one row above the primary, at the primary's goal
     /// column, as the new primary; it merges if it lands on another caret. A
-    /// no-op on the first row.
+    /// no-op on the first row. Undone by
+    /// [`undo_caret_operation`](Self::undo_caret_operation).
     pub fn add_caret_above(&mut self, buffer: &TextBuffer) {
-        self.add_caret_vertically(buffer, false);
+        self.caret_op(buffer, |state| state.add_caret_vertically(buffer, false));
     }
 
     /// Add a bare caret one row below the primary, at the primary's goal
-    /// column, as the new primary. A no-op on the last row.
+    /// column, as the new primary. A no-op on the last row. Undone by
+    /// [`undo_caret_operation`](Self::undo_caret_operation).
     pub fn add_caret_below(&mut self, buffer: &TextBuffer) {
-        self.add_caret_vertically(buffer, true);
+        self.caret_op(buffer, |state| state.add_caret_vertically(buffer, true));
     }
 
     /// [`add_caret_above`](Self::add_caret_above) or, `down`,

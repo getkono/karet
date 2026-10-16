@@ -52,8 +52,8 @@ fn typing_and_rendering_never_copy_the_document() {
     app.tabs[app.active]
         .editor
         .set_carets(&[LineCol::new(2, 1)]);
-    app.add_cursor_next_occurrence(); // select the word
-    app.add_cursor_next_occurrence(); // add the next "foo"
+    app.dispatch(Command::AddCursorNextOccurrence); // select the word
+    app.dispatch(Command::AddCursorNextOccurrence); // add the next "foo"
     draw(&mut app);
     assert!(app.tabs[app.active].editor.has_multiple_cursors());
     assert!(
