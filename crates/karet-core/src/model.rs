@@ -21,6 +21,7 @@ pub use completion::CompletionItem;
 pub use completion::CompletionKind;
 pub use completion::CompletionList;
 pub use completion::CompletionTrigger;
+pub use completion::Tabstop;
 pub use inlay::InlayHint;
 pub use inlay::InlayHintKind;
 pub use inlay::InlayHintLabelPart;

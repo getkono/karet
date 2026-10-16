@@ -112,7 +112,7 @@ pub(crate) fn everything() -> Value {
 }
 
 #[tokio::test]
-async fn connect_negotiates_utf16_and_no_snippets() -> TestResult {
+async fn connect_negotiates_utf16_and_snippets() -> TestResult {
     let ((read, write), mut server) = wire();
     let server_task = tokio::spawn(async move {
         let params = server.handshake().await;
@@ -122,7 +122,7 @@ async fn connect_negotiates_utf16_and_no_snippets() -> TestResult {
         );
         assert_eq!(
             params["capabilities"]["textDocument"]["completion"]["completionItem"]["snippetSupport"],
-            json!(false)
+            json!(true)
         );
         assert_eq!(params["rootUri"], json!("file:///tmp/ws"));
         assert_eq!(
@@ -474,7 +474,8 @@ async fn completion_end_to_end() -> TestResult {
         Some("fn push(&mut self, ch: char)")
     );
     assert_eq!(items[0].sort_text.as_deref(), Some("0000"));
-    assert_eq!(items[0].insert_text, "push(ch)"); // snippet degraded
+    assert_eq!(items[0].insert_text, "push(ch)"); // snippet expanded
+    assert_eq!(items[0].tabstops.len(), 2); // `${1:ch}` and `$0`
     assert!(items[0].deprecated); // via tag
     let edit = items[0].edit.clone().ok_or("expected a text edit")?;
     assert_eq!(edit.range.start, LineCol::new(3, 5));
