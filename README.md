@@ -125,6 +125,7 @@ VS Code where VS Code has an answer.
 | `Ctrl+K 1/2/3` | Switch top-level view |
 | `Ctrl+K S` / `Ctrl+K V` | Seam view / Markdown preview to the side |
 | `F5` / `F9` | Start debugging / toggle breakpoint |
+| ``Ctrl+` `` / ``Ctrl+Shift+` `` | Toggle the integrated terminal / start another terminal (shells start in the workspace root) |
 | `Ctrl+Q` | Quit |
 
 In a diff, `\` toggles inline versus side-by-side, `]` / `[` move between changed

@@ -25,6 +25,13 @@ Cargo features so a build can drop their dependency trees (issue #23):
   the commit box reports that the build has no AI support rather than offering a
   key that cannot work.
 
+- **`terminal`** pulls the integrated terminal: `portable-pty` (pure-Rust PTY
+  handling over `libc`/`nix` on Unix and the ConPTY APIs on Windows) and
+  `alacritty_terminal` (the VT emulator, with its `serde` default off). Neither
+  links a system C library — `cargo tree -p karet -e normal -i portable-pty`
+  shows only OS-syscall shims beneath them. Off, the terminal commands report
+  that the build has no terminal.
+
 All are **on by default**, so the shipped binary is unchanged. A
 `--no-default-features` build compiles them all out; a disabled file type falls
 through to the existing placeholder ("Image preview unavailable" / "PDF
