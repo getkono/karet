@@ -73,6 +73,8 @@ pub(super) fn draw_terminal(
     if grid_area.width > 0 && grid_area.height > 0 {
         pane.resize(grid_area.width, grid_area.height);
     }
+    // Before reading the grid, so output parsed after this read is announced.
+    pane.acknowledge_output();
     let links = paint_grid(buf, grid_area, &pane.term(), &palette, focused);
     for (row, start, end, uri) in links {
         super::osc8::link_row(buf, row, start, end, &uri);

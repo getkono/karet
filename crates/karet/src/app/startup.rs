@@ -143,6 +143,8 @@ impl App {
             preview_images: crate::preview_images::PreviewImages::default(),
             #[cfg(feature = "terminal")]
             terminals: crate::terminal::TerminalHost::default(),
+            #[cfg(feature = "terminal")]
+            terminal_frame: super::terminal::TerminalFrame::default(),
             shown_image: None,
             shown_page: 0,
             shown_graphics_caret: None,

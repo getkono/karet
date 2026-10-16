@@ -16,6 +16,44 @@ use crate::terminal::TerminalPane;
 /// The grid a terminal starts on before its first paint sizes it to its pane.
 const DEFAULT_SIZE: (u16, u16) = (80, 24);
 
+/// The least time between two repaints that terminal output asks for (about 60
+/// frames a second), so a program printing without pause cannot keep a core
+/// busy repainting the whole screen.
+pub(super) const TERMINAL_FRAME_INTERVAL: Duration = Duration::from_millis(16);
+
+/// The frame cap terminal output repaints under: when the last frame was
+/// painted, and the repaint scheduled for output that arrived too soon after it.
+#[derive(Debug, Default)]
+pub(crate) struct TerminalFrame {
+    drawn: Option<Instant>,
+    due: Option<Instant>,
+}
+
+impl TerminalFrame {
+    /// Output for a visible terminal arrived at `now`: whether to repaint at
+    /// once. Too soon after the last frame, the repaint is scheduled instead.
+    fn output(&mut self, now: Instant) -> bool {
+        match self.drawn.map(|drawn| drawn + TERMINAL_FRAME_INTERVAL) {
+            Some(next) if now < next => {
+                self.due.get_or_insert(next);
+                false
+            },
+            _ => true,
+        }
+    }
+
+    /// A frame was painted at `now`; it showed whatever output was waiting.
+    pub(super) fn drawn(&mut self, now: Instant) {
+        self.drawn = Some(now);
+        self.due = None;
+    }
+
+    /// How long until the scheduled terminal repaint, if one is.
+    pub(super) fn next_wake(&self, now: Instant) -> Option<Duration> {
+        self.due.map(|due| due.saturating_duration_since(now))
+    }
+}
+
 impl App {
     /// The active tab's terminal, when the active tab is one.
     pub(super) fn active_terminal(&self) -> Option<&TerminalPane> {
@@ -292,8 +330,27 @@ impl App {
         }
     }
 
-    /// Apply one report from a terminal's background threads, wherever its tab is.
-    pub(super) fn on_terminal_event(&mut self, event: TerminalEvent) {
+    /// Whether terminal `id` is the active tab of some pane, so its output can
+    /// show.
+    fn terminal_visible(&self, id: crate::terminal::TerminalId) -> bool {
+        let shows = |tab: Option<&Tab>| matches!(tab.map(|tab| &tab.kind), Some(TabKind::Terminal(pane)) if pane.id() == id);
+        shows(self.tabs.get(self.active))
+            || self
+                .stored
+                .values()
+                .any(|stored| shows(stored.tabs.get(stored.active)))
+    }
+
+    /// Apply one report from a terminal's background threads, wherever its tab
+    /// is, at `now`. Returns whether the screen needs repainting now.
+    ///
+    /// Output is acknowledged by painting the terminal (`ui::terminal`), never
+    /// here: a terminal no pane shows stays unacknowledged, so it announces no
+    /// more output, and wakes nothing, until it is shown again.
+    pub(super) fn on_terminal_event(&mut self, event: TerminalEvent, now: Instant) -> bool {
+        if event.kind == TerminalEventKind::Output {
+            return self.terminal_visible(event.id) && self.terminal_frame.output(now);
+        }
         let mut copied = None;
         for tab in self.all_tabs_mut() {
             let TabKind::Terminal(pane) = &mut tab.kind else {
@@ -303,8 +360,7 @@ impl App {
                 continue;
             }
             match &event.kind {
-                // The repaint that follows every loop wake-up shows it.
-                TerminalEventKind::Output => pane.acknowledge_output(),
+                TerminalEventKind::Output => {},
                 TerminalEventKind::Title(title) => pane.set_title(Some(title)),
                 TerminalEventKind::ResetTitle => pane.set_title(None),
                 TerminalEventKind::Clipboard(text) => copied = Some(text.clone()),
@@ -319,6 +375,8 @@ impl App {
         if let Some(text) = copied {
             self.copy_to_clipboard(text, "terminal selection");
         }
+        // A title, an exit or a copy notice shows at once; the bell shows nothing.
+        event.kind != TerminalEventKind::Bell
     }
 }
 

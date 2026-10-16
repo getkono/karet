@@ -603,6 +603,9 @@ pub struct App {
     /// notices arrive on (taken by the UI loop).
     #[cfg(feature = "terminal")]
     pub(crate) terminals: crate::terminal::TerminalHost,
+    /// The frame cap terminal output repaints under.
+    #[cfg(feature = "terminal")]
+    terminal_frame: terminal::TerminalFrame,
     /// The tab index whose image is currently transmitted to the terminal.
     shown_image: Option<ViewId>,
     /// The document page currently transmitted, so paging a PDF re-transmits even

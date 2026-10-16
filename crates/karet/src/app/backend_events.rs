@@ -50,8 +50,14 @@ impl App {
             }) => COMMIT_REVEAL.checked_sub(since.elapsed()),
             _ => None,
         };
+        // Terminal output held back by the frame cap.
+        #[cfg(feature = "terminal")]
+        let terminal = self.terminal_frame.next_wake(now);
+        #[cfg(not(feature = "terminal"))]
+        let terminal = None;
         [
             notif,
+            terminal,
             spinner,
             auto_save,
             caret,

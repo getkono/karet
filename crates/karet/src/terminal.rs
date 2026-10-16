@@ -18,7 +18,8 @@
 //! every pane ([`TerminalHost::take_receiver`]), and repaints from the grid under
 //! a brief lock. Output is coalesced: a pane announces new output once, and only
 //! announces again after the UI has acknowledged it ([`TerminalPane::acknowledge_output`]),
-//! so a shell printing as fast as it can never floods the channel.
+//! so a shell printing as fast as it can never floods the channel. The UI
+//! acknowledges by painting the pane, so a terminal nobody sees wakes nothing.
 //!
 //! Everything here is behind the `karet` app's default-on `terminal` feature.
 

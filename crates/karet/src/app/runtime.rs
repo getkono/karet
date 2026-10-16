@@ -250,16 +250,24 @@ async fn event_loop(
         None => (None, None),
     };
 
+    // Every wake-up repaints, except one that brought only integrated-terminal
+    // output arriving faster than its frame cap: that output waits for the
+    // scheduled terminal frame (`next_wake`) instead.
+    let mut redraw = true;
     loop {
         // Backend events (a definition answer, a debugger stop) move the caret
         // too; one look per frame records them for Go Back.
         app.observe_navigation();
-        app.sync_preview_graphics();
-        terminal.draw(|f| {
-            ui::draw(f, app);
-            crate::color_depth::fit_buffer(f.buffer_mut(), color_depth);
-        })?;
-        app.flush_graphics();
+        if redraw {
+            app.sync_preview_graphics();
+            terminal.draw(|f| {
+                ui::draw(f, app);
+                crate::color_depth::fit_buffer(f.buffer_mut(), color_depth);
+            })?;
+            app.flush_graphics();
+            note_frame(app);
+        }
+        redraw = true;
         // The graph view only learns its viewport height by being painted; top its
         // history up once that is known, so the first screen is already backed by more
         // history than it shows.
@@ -294,7 +302,7 @@ async fn event_loop(
             scan = recv_decoded(&mut file_scans) => if let Some(scan) = scan {
                 app.on_file_index(scan);
             },
-            terminal = recv_decoded(&mut terminal_events) => accept_terminal(app, terminal),
+            terminal = recv_decoded(&mut terminal_events) => redraw = accept_terminal(app, terminal),
             change = recv_decoded(&mut keymap_changes) => if change.is_some() {
                 // One reload covers a burst of events (an atomic-rename save).
                 while keymap_changes.as_mut().is_some_and(|rx| rx.try_recv().is_ok()) {}
@@ -314,25 +322,30 @@ async fn event_loop(
 
         // Drain everything else that is ready so a burst collapses into one frame.
         while let Ok(event) = input_rx.try_recv() {
+            redraw = true;
             handle_terminal_event(app, event);
             if app.should_quit {
                 break;
             }
         }
         while let Some((id, ev)) = events.try_recv() {
+            redraw = true;
             app.on_backend_event(id, ev);
         }
         while let Some((doc, snap)) = snaps.try_recv() {
+            redraw = true;
             app.on_snapshot(doc, &snap);
         }
         while let Some(image) = decoded_images.as_mut().and_then(|rx| rx.try_recv().ok()) {
+            redraw = true;
             accept_decoded(app, Some(image));
         }
         while let Some(scan) = file_scans.as_mut().and_then(|rx| rx.try_recv().ok()) {
+            redraw = true;
             app.on_file_index(scan);
         }
         while let Some(event) = terminal_events.as_mut().and_then(|rx| rx.try_recv().ok()) {
-            accept_terminal(app, Some(event));
+            redraw |= accept_terminal(app, Some(event));
         }
 
         if app.should_quit {
@@ -392,15 +405,25 @@ fn terminal_events(_app: &mut App) -> TerminalEvents {
     None
 }
 
+/// Apply a terminal report; returns whether it needs a repaint now.
 #[cfg(feature = "terminal")]
-fn accept_terminal(app: &mut App, event: Option<crate::terminal::TerminalEvent>) {
-    if let Some(event) = event {
-        app.on_terminal_event(event);
-    }
+fn accept_terminal(app: &mut App, event: Option<crate::terminal::TerminalEvent>) -> bool {
+    event.is_some_and(|event| app.on_terminal_event(event, Instant::now()))
 }
 
 #[cfg(not(feature = "terminal"))]
-fn accept_terminal(_app: &mut App, _event: Option<std::convert::Infallible>) {}
+fn accept_terminal(_app: &mut App, _event: Option<std::convert::Infallible>) -> bool {
+    false
+}
+
+/// Record that a frame was painted, for the terminal frame cap.
+#[cfg(feature = "terminal")]
+fn note_frame(app: &mut App) {
+    app.terminal_frame.drawn(Instant::now());
+}
+
+#[cfg(not(feature = "terminal"))]
+fn note_frame(_app: &mut App) {}
 
 /// Dispatch one terminal event to the app.
 pub(super) fn handle_terminal_event(app: &mut App, event: Event) {
