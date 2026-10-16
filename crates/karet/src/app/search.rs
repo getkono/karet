@@ -914,12 +914,17 @@ fn mark_current(decos: &mut [Decoration], current: usize) {
 /// every match without one, otherwise only a match wholly inside it. An
 /// empty-width match (a regex `^` or `$`) at `scope.end` sits on the boundary
 /// with the text after the scope, so it counts only for an empty scope or
-/// where `scope.end` is `buffer_end`, with no text after it to belong to.
+/// where `scope.end` is `buffer_end` mid-line, with no text after it to belong
+/// to. A `buffer_end` at column 0 is the empty line after a trailing newline:
+/// a scope ending there is the line before it, whose own `$` already counted
+/// before the newline, so the empty line's match lies outside it.
 fn in_scope(scope: Option<Range>, range: Range, buffer_end: LineCol) -> bool {
     scope.is_none_or(|scope| {
         scope.start <= range.start
             && range.end <= scope.end
-            && (range.start < scope.end || scope.start == scope.end || scope.end == buffer_end)
+            && (range.start < scope.end
+                || scope.start == scope.end
+                || (scope.end == buffer_end && scope.end.col > 0))
     })
 }
 
