@@ -150,6 +150,8 @@ also beats a user-level `[rust]` `formatOnSave`.
 | `backup` | bool | `true` | Keep crash-recovery backups of unsaved buffers (see below). |
 | `backupInterval` | number | `30000` | Milliseconds a buffer stays dirty before its backup is written. |
 | `confirmOnExit` | bool | `true` | Prompt to save unsaved changes when quitting. |
+| `undoLimit` | number | `1000` | Most undo steps kept per buffer; `0` = no cap (see [Undo history](#undo-history)). |
+| `persistentUndo` | bool | `false` | Keep undo history across restarts, restored onto unchanged files. |
 
 ### `workbench`
 
@@ -475,6 +477,19 @@ would overwrite.
   discard those on-disk changes.
 
 Set `files.backup` to `false` to disable the whole mechanism.
+
+## Undo history
+
+Each buffer keeps at most `files.undoLimit` undo steps (a run of typing is one step);
+once a new step would exceed it, the oldest is forgotten. `0` removes the cap.
+
+With `files.persistentUndo` on, undo survives a restart. When a file is saved, and when
+it is closed with no unsaved changes, its undo/redo history is written beside the swaps
+(`…/karet/swaps/*.karet-undo`), tagged with a fingerprint of the buffer's text. Reopening
+the file restores that history only if the file's content still matches the
+fingerprint; history for a file changed elsewhere since is deleted instead. The files
+hold text you have deleted, which is why the setting is off by default; switching it off
+deletes each file's history the next time that file is saved or closed.
 
 ## Regenerating the schema
 

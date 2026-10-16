@@ -828,6 +828,18 @@
             "type": "string"
           }
         },
+        "persistentUndo": {
+          "description": "Keep undo history across restarts: it is written next to the\ncrash-recovery swaps when a file is saved or closed, and restored when\nthe file is reopened unchanged.",
+          "type": "boolean",
+          "default": false
+        },
+        "undoLimit": {
+          "description": "The most undo steps kept per buffer; the oldest are forgotten first.\n`0` keeps every step (no cap).",
+          "type": "integer",
+          "format": "uint64",
+          "default": 1000,
+          "minimum": 0
+        },
         "watcherExclude": {
           "description": "Glob patterns excluded from the filesystem watcher.",
           "type": "array",
