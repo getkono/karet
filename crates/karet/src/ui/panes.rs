@@ -115,6 +115,7 @@ pub(super) fn draw_panes(
                 tab_width,
                 diagnostics: &app.docs.diagnostics,
                 inlay_hints: &app.docs.inlay_hints,
+                symbols: &app.docs.symbols,
                 line_changes: app
                     .settings
                     .git
@@ -172,6 +173,7 @@ pub(super) fn draw_panes(
                 tab_width,
                 diagnostics: &app.docs.diagnostics,
                 inlay_hints: &app.docs.inlay_hints,
+                symbols: &app.docs.symbols,
                 line_changes: app
                     .settings
                     .git
@@ -285,15 +287,7 @@ pub(super) fn render_pane(
     .split(area);
     let (tabstrip_rect, tab_hits, action_hits) = draw_pane_tabs(f, tabs, active, ctx, parts[0]);
     let (breadcrumb_rect, breadcrumb_hits, lsp_badge_hit) = if bc == 1 {
-        let (hits, badge_hit) = draw_pane_breadcrumb(
-            f,
-            tabs.get(active),
-            ctx.theme,
-            ctx.root,
-            ctx.icon_style,
-            ctx.lsp_badge,
-            parts[1],
-        );
+        let (hits, badge_hit) = draw_pane_breadcrumb(f, tabs.get(active), ctx, parts[1]);
         (parts[1], hits, badge_hit)
     } else {
         (Rect::default(), Vec::new(), None)

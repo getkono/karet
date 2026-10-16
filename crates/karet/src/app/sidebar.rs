@@ -88,9 +88,10 @@ impl App {
     }
 
     /// Request the active code document's symbols unless a set for its current
-    /// version is cached or already in flight. Shared by the outline panel and
-    /// Go to Symbol in Editor, which both read the cached tree.
-    pub(super) fn request_active_symbols(&mut self) {
+    /// version is cached or already in flight. Shared by the outline panel, Go
+    /// to Symbol in Editor, and the breadcrumb's symbol chain, which all read the
+    /// cached tree.
+    pub(crate) fn request_active_symbols(&mut self) {
         let Some((doc, version)) = self.tabs.get(self.active).and_then(|tab| match &tab.kind {
             TabKind::Code {
                 language,

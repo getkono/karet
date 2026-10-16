@@ -614,3 +614,117 @@ fn an_answer_after_the_picker_closed_is_dropped() {
     assert!(rows(&app).is_empty());
     assert!(app.quick_open_loading().is_none());
 }
+
+/// `mod m` over the whole file, holding `run` (line 0) and `stop` (line 2).
+fn module_tree() -> Vec<karet_core::Symbol> {
+    let mut module = function("m", 0);
+    module.kind = karet_core::SymbolKind::Module;
+    module.range.end = LineCol::new(3, 0);
+    module.children = vec![function("run", 0), function("stop", 2)];
+    vec![module]
+}
+
+fn land_symbols(app: &mut App, symbols: Vec<karet_core::Symbol>) {
+    app.on_backend_event(
+        None,
+        SessionEvent::Symbols {
+            doc: DocumentId(17),
+            symbols,
+        },
+    );
+}
+
+/// Draw the shell and return the only pane's painted breadcrumb row.
+fn breadcrumb_row(app: &mut App) -> String {
+    let painted = screen(app, 120, 12);
+    let row = app.pane_frames.first().map_or(0, |f| f.breadcrumb_rect.y);
+    painted.get(usize::from(row)).cloned().unwrap_or_default()
+}
+
+#[test]
+fn the_breadcrumb_asks_for_symbols_and_names_those_around_the_caret() {
+    let (_dir, mut app, backend) = symbol_app();
+    let _ = screen(&mut app, 120, 12);
+    assert_eq!(
+        symbol_requests(&backend),
+        1,
+        "asked for without the outline or the picker"
+    );
+    let _ = screen(&mut app, 120, 12);
+    assert_eq!(symbol_requests(&backend), 1, "one request per version");
+
+    land_symbols(&mut app, module_tree());
+    app.tabs[app.active]
+        .editor
+        .set_carets(&[LineCol::new(2, 5)]);
+    let row = breadcrumb_row(&mut app);
+    let sep = karet_widgets::breadcrumbs::BREADCRUMB_SEP;
+    assert!(
+        row.contains(&format!("main.rs{sep}m{sep}stop")),
+        "the chain follows the file name: {row}"
+    );
+    let targets: Vec<BreadcrumbTarget> = app
+        .pane_frames
+        .first()
+        .map(|f| f.breadcrumb_hits.iter().map(|h| h.target.clone()).collect())
+        .unwrap_or_default();
+    assert_eq!(
+        targets.iter().rev().take(2).collect::<Vec<_>>(),
+        [&BreadcrumbTarget::Symbol(1), &BreadcrumbTarget::Symbol(0)]
+    );
+
+    // Outside every symbol the path paints alone.
+    land_symbols(&mut app, vec![function("run", 0)]);
+    let row = breadcrumb_row(&mut app);
+    assert!(row.trim_end().ends_with("main.rs"), "{row}");
+}
+
+#[test]
+fn clicking_a_symbol_segment_opens_its_siblings_and_accepting_one_jumps_there() {
+    let (_dir, mut app, _backend) = symbol_app();
+    land_symbols(&mut app, module_tree());
+    app.tabs[app.active]
+        .editor
+        .set_carets(&[LineCol::new(2, 5)]);
+    let _ = screen(&mut app, 120, 12);
+    let (row, stop) = app
+        .pane_frames
+        .first()
+        .and_then(|f| {
+            let hit = f
+                .breadcrumb_hits
+                .iter()
+                .find(|h| h.target == BreadcrumbTarget::Symbol(1))?;
+            Some((f.breadcrumb_rect.y, hit.start))
+        })
+        .unwrap_or_default();
+    assert!(stop > 0, "the `stop` segment was recorded");
+    app.handle_mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: stop,
+        row,
+        modifiers: KeyModifiers::NONE,
+    });
+    assert_eq!(rows(&app), ["run", "stop"]);
+    assert_eq!(
+        app.overlay.as_ref().map(Overlay::selected),
+        Some(1),
+        "the clicked symbol is highlighted"
+    );
+    if let Some(overlay) = app.overlay.as_mut() {
+        overlay.select_up();
+    }
+    app.overlay_accept();
+    assert!(app.overlay.is_none());
+    assert_eq!(app.tabs[app.active].editor.cursor(), LineCol::new(0, 3));
+}
+
+#[test]
+fn a_symbol_depth_the_chain_no_longer_reaches_opens_nothing() {
+    let (_dir, mut app, _backend) = symbol_app();
+    land_symbols(&mut app, module_tree());
+    app.open_sibling_symbols(3);
+    assert!(app.overlay.is_none());
+    app.open_sibling_symbols(0);
+    assert_eq!(rows(&app), ["m"], "the top level, at the caret's module");
+}

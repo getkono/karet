@@ -121,6 +121,24 @@ impl App {
         Overlay::document_symbols(path, symbols)
     }
 
+    /// Open the breadcrumb's sibling picker for the symbol at `depth` in the
+    /// chain enclosing the active tab's caret: every symbol on that level of the
+    /// document's tree, the one the breadcrumb shows highlighted. The chain is
+    /// the one the breadcrumb painted, from the same cached symbols and caret;
+    /// a depth the chain no longer reaches opens nothing.
+    pub(super) fn open_sibling_symbols(&mut self, depth: usize) {
+        let overlay = self.tabs.get(self.active).and_then(|tab| {
+            let path = tab.path()?;
+            let symbols = self.docs.symbols.get(&Self::tab_doc(tab)?)?;
+            let chain = crate::outline::enclosing_path(symbols, tab.editor.cursor());
+            let (siblings, current) = crate::outline::siblings_at(symbols, &chain, depth)?;
+            Some(Overlay::sibling_symbols(path, siblings, current))
+        });
+        if let Some(overlay) = overlay {
+            self.overlay = Some(overlay);
+        }
+    }
+
     /// Apply `edit` to the open overlay's query, then follow it into
     /// quick-open's mode only when the text actually changed: a key that edits
     /// nothing (an arrow, Home, Tab) keeps the computed line lists, and the row

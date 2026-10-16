@@ -74,11 +74,12 @@ impl App {
         true
     }
 
-    /// Handle a left click on a pane's breadcrumb row: a segment reveals its path
-    /// prefix in the Explorer; a separator gap (or an inert segment above the
-    /// workspace root) does nothing. Either way the click is consumed so it never
-    /// falls through to the tab strip or editor underneath. Returns `true` when
-    /// consumed.
+    /// Handle a left click on a pane's breadcrumb row: a path segment reveals its
+    /// prefix in the Explorer, and a symbol segment focuses its pane and opens
+    /// the picker over that symbol's siblings; a separator gap (or an inert
+    /// segment above the workspace root) does nothing. Either way the click is
+    /// consumed so it never falls through to the tab strip or editor underneath.
+    /// Returns `true` when consumed.
     pub(in crate::app) fn handle_breadcrumb_mouse(&mut self, mouse: MouseEvent) -> bool {
         if !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
             return false;
@@ -98,18 +99,26 @@ impl App {
             self.dispatch(Command::ManageLanguageServers);
             return true;
         }
-        let Some(hit) = self.pane_frames.iter().find_map(|f| {
+        let Some((pane, hit)) = self.pane_frames.iter().find_map(|f| {
             rect_contains(f.breadcrumb_rect, point).then(|| {
-                f.breadcrumb_hits
+                let target = f
+                    .breadcrumb_hits
                     .iter()
                     .find(|h| mouse.column >= h.start && mouse.column < h.end)
-                    .map(|h| h.path.clone())
+                    .map(|h| h.target.clone());
+                (f.pane, target)
             })
         }) else {
             return false;
         };
-        if let Some(path) = hit {
-            self.reveal_in_explorer(&path);
+        match hit {
+            Some(BreadcrumbTarget::Path(path)) => self.reveal_in_explorer(&path),
+            Some(BreadcrumbTarget::Symbol(depth)) => {
+                // The chain names the pane's active tab, so the picker opens on it.
+                self.focus_pane_switch(pane);
+                self.open_sibling_symbols(depth);
+            },
+            None => {},
         }
         true
     }
