@@ -132,6 +132,24 @@ fn a_row_of_many_char_clusters_paints_to_the_right_edge() {
 }
 
 #[test]
+fn a_zero_width_line_caps_its_row_window() {
+    // A million zero-width spaces never cover a cell, so an uncapped window
+    // would double until it held the whole line.
+    let text = "\u{200B}".repeat(1_000_000);
+    let buffer = TextBuffer::from_text(&text);
+    // Seventeen cells of room, at most 32 chars a cell, plus the lookahead.
+    let (chars, widths) = row_window(&buffer, 0, 0, 17);
+    assert_eq!(chars.len(), 17 * 32 + 32);
+    assert_eq!(widths.len(), chars.len());
+    let (chars, _) = row_window(&buffer, 0, 500_000, 17);
+    assert_eq!(chars.len(), 500_000 + 17 * 32 + 32, "scrolled far in");
+
+    // The row still renders, and paints nothing past the gutter.
+    let target = render_line(&text, 20, 0);
+    assert_eq!(row(&target, 0).trim_end(), " 1");
+}
+
+#[test]
 fn a_long_line_scrolled_to_its_end_still_closes_with_its_trailing_hint() {
     let text = alphabet(10_000);
     let buffer = TextBuffer::from_text(&text);

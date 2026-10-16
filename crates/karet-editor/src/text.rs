@@ -403,6 +403,56 @@ pub(super) fn line_chars_prefix(buffer: &TextBuffer, line: u32, cap: u32) -> Vec
         .collect()
 }
 
+/// Chars read past a row's right edge, so the grapheme cluster that straddles
+/// the edge is segmented whole — a flag or a ZWJ emoji sequence is several
+/// chars — and keeps the width it has when the full line is measured.
+pub(super) const GRAPHEME_LOOKAHEAD: u32 = 32;
+
+/// The chars of unwrapped line `l` that a row starting at column `start` with
+/// `room` cells can show, plus [`GRAPHEME_LOOKAHEAD`], and their
+/// [`cluster_widths`].
+///
+/// The window starts at `start + 2 × room` chars and doubles until the chars
+/// past `start` (the lookahead aside) cover `room` cells, or the line ends. It
+/// is sized by cells rather than chars because a cluster can be many chars to
+/// one glyph: a ZWJ family emoji is five chars in two cells, so a fixed char
+/// budget would stop painting well short of the right edge. A tab counts one
+/// cell and hints none, so the estimate never overshoots what the walk paints.
+///
+/// The doubling stops at `room ×` [`GRAPHEME_LOOKAHEAD`] chars past `start`:
+/// one cell's cluster is taken to span at most the lookahead, the same bound
+/// the right edge already relies on. Without it a line of only zero-width chars
+/// (a million U+200B) never covers a cell, so every pass would re-copy and
+/// re-segment it from char 0 until the window reached the line end.
+pub(super) fn row_window(
+    buffer: &TextBuffer,
+    l: u32,
+    start: u32,
+    room: u32,
+) -> (Vec<char>, Vec<u32>) {
+    let most = room.saturating_mul(GRAPHEME_LOOKAHEAD).max(1);
+    let mut visible = room.saturating_mul(2).clamp(1, most);
+    loop {
+        let cap = start
+            .saturating_add(visible)
+            .saturating_add(GRAPHEME_LOOKAHEAD);
+        let chars = line_chars_prefix(buffer, l, cap);
+        let widths = cluster_widths(&chars);
+        let measured = chars.len().saturating_sub(GRAPHEME_LOOKAHEAD as usize);
+        let covered: u32 = chars
+            .iter()
+            .zip(&widths)
+            .take(measured)
+            .skip(start as usize)
+            .map(|(&ch, &w)| if ch == '\t' { 1 } else { w })
+            .fold(0, u32::saturating_add);
+        if chars.len() < cap as usize || covered >= room || cap == u32::MAX || visible >= most {
+            return (chars, widths);
+        }
+        visible = visible.saturating_mul(2).min(most);
+    }
+}
+
 /// The `char`s of line `line` in `buffer` (empty past the end).
 pub(super) fn line_chars(buffer: &TextBuffer, line: u32) -> Vec<char> {
     buffer
