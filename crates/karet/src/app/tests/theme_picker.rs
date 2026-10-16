@@ -176,6 +176,30 @@ fn enter_keeps_the_highlighted_theme_for_the_session() {
 }
 
 #[test]
+fn accepting_the_configured_theme_clears_the_session_pick() {
+    let (dir, mut app) = picker_app();
+    key(&mut app, KeyCode::Down);
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(app.theme, loaded(&dir.path().join("amber.json")));
+
+    // Reopened on the pick, move back up to the configured built-in row.
+    app.open_theme_picker_from(&[(ThemeSource::User, dir.path().to_path_buf())]);
+    key(&mut app, KeyCode::Up);
+    assert_eq!(app.overlay.as_ref().map(Overlay::selected), Some(0));
+    key(&mut app, KeyCode::Enter);
+    assert!(app.overlay.is_none());
+    assert_eq!(app.theme, Theme::dark());
+    assert_eq!(last_message(&app).as_deref(), Some("color theme: Dark"));
+
+    // With the pick cleared, a reload that leaves workbench.colorTheme alone
+    // follows the setting rather than bringing amber back.
+    let mut config = app.loaded_config.clone();
+    config.settings.editor.tab_size += 1;
+    app.apply_loaded_config(config, false);
+    assert_eq!(app.theme, Theme::dark());
+}
+
+#[test]
 fn a_reload_keeps_the_pick_until_the_setting_itself_changes() {
     let (dir, mut app) = picker_app();
     key(&mut app, KeyCode::Down);
