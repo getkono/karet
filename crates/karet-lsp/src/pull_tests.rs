@@ -129,6 +129,33 @@ async fn an_unchanged_report_carries_no_set() -> TestResult {
     Ok(())
 }
 
+/// A partial report (sent though no `partialResultToken` was) says nothing
+/// about the asked document: no set and no result id, so the caller keeps what
+/// it shows, while the related documents' full reports are still taken.
+#[tokio::test]
+async fn a_partial_report_keeps_only_its_related_documents() -> TestResult {
+    let (client, server) = connect(pulling()).await?;
+    let serving = answer(
+        server,
+        json!({
+            "relatedDocuments": {
+                "file:///w/b.rs": {"kind": "full", "items": [{"range": range(0), "message": "there"}]},
+                "file:///w/c.rs": {"kind": "unchanged", "resultId": "c1"}
+            }
+        }),
+    );
+    let pulled = client
+        .pull_diagnostics(Path::new("/w/a.rs"), Some("r0"))
+        .await?;
+    serving.await?;
+    assert_eq!(pulled.diagnostics, None);
+    assert_eq!(pulled.result_id, None);
+    assert_eq!(pulled.related.len(), 1);
+    assert_eq!(pulled.related[0].path, PathBuf::from("/w/b.rs"));
+    assert_eq!(pulled.related[0].diagnostics[0].message, "there");
+    Ok(())
+}
+
 /// A server that never offered pull diagnostics is not asked.
 #[tokio::test]
 async fn a_server_without_pull_diagnostics_is_not_asked() -> TestResult {
