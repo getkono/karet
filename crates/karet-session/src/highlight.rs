@@ -17,12 +17,14 @@ use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
 
 use karet_syntax::FoldRegions;
+use karet_syntax::Folder;
 use karet_syntax::Highlights;
 use karet_syntax::LayeredHighlighter;
 use karet_syntax::OutlineExtractor;
 use karet_syntax::SemanticBlocker;
 use karet_syntax::SemanticBlocks;
 use karet_syntax::SemanticCommentConfig;
+use karet_text::TextBuffer;
 use karet_text::TextSnapshot;
 use karet_treesitter::Edit;
 use karet_treesitter::LanguageId;
@@ -77,6 +79,47 @@ pub(crate) struct HighlightResult {
     pub table_lines: Arc<Vec<RangeInclusive<u32>>>,
 }
 
+/// The largest grammar-less document whose fold regions come from its
+/// indentation: the scan runs on the session actor for every edit, so a file
+/// past the bound goes without folds rather than stall typing.
+const INDENT_FOLD_MAX_BYTES: usize = 4 * 1024 * 1024;
+
+/// The fold regions of a document no grammar parses, from its indentation,
+/// with tabs as wide as the tab size `settings` resolve for `language` (see
+/// [`karet_syntax::fold_by_indent`]).
+pub(crate) fn indent_folds(
+    settings: &crate::config::Settings,
+    language: Option<&'static str>,
+    buffer: &TextBuffer,
+) -> Arc<FoldRegions> {
+    if buffer.len_bytes() > INDENT_FOLD_MAX_BYTES {
+        return Arc::default();
+    }
+    let tab_size = settings.editor.for_language(language).tab_size();
+    let text = buffer.text_snapshot();
+    Arc::new(karet_syntax::fold_by_indent(&text, u32::from(tab_size)))
+}
+
+/// The analyses the worker derives from each parse beyond highlighting, each
+/// keeping its compiled queries across jobs.
+struct Analyzers {
+    blocker: SemanticBlocker,
+    outline: OutlineExtractor,
+    tables: TableFinder,
+    folder: Folder,
+}
+
+impl Default for Analyzers {
+    fn default() -> Self {
+        Self {
+            blocker: SemanticBlocker::new(),
+            outline: OutlineExtractor::new(),
+            tables: TableFinder::default(),
+            folder: Folder::new(),
+        }
+    }
+}
+
 /// Start the worker thread, returning its job sender and result receiver.
 ///
 /// If the thread cannot be spawned the result sender is dropped, the receiver closes,
@@ -105,9 +148,7 @@ pub(crate) fn spawn() -> (
 fn run(jobs: &Receiver<HighlightJob>, results: &tokio_mpsc::UnboundedSender<HighlightResult>) {
     let mut parser = LayeredParser::new();
     let mut highlighter = LayeredHighlighter::new();
-    let mut blocker = SemanticBlocker::new();
-    let mut outline = OutlineExtractor::new();
-    let mut tables = TableFinder::default();
+    let mut analyzers = Analyzers::default();
     let mut trees: HashMap<DocumentId, Retained> = HashMap::new();
     let mut pending: HashMap<DocumentId, HighlightRequest> = HashMap::new();
 
@@ -128,9 +169,7 @@ fn run(jobs: &Receiver<HighlightJob>, results: &tokio_mpsc::UnboundedSender<High
             if let Some(result) = compute(
                 &mut parser,
                 &mut highlighter,
-                &mut blocker,
-                &mut outline,
-                &mut tables,
+                &mut analyzers,
                 &mut trees,
                 request,
             ) && results.send(result).is_err()
@@ -199,9 +238,7 @@ fn merge(previous: HighlightRequest, next: HighlightRequest) -> HighlightRequest
 fn compute(
     parser: &mut LayeredParser,
     highlighter: &mut LayeredHighlighter,
-    blocker: &mut SemanticBlocker,
-    outline: &mut OutlineExtractor,
-    tables: &mut TableFinder,
+    analyzers: &mut Analyzers,
     trees: &mut HashMap<DocumentId, Retained>,
     request: HighlightRequest,
 ) -> Option<HighlightResult> {
@@ -252,11 +289,11 @@ fn compute(
         doc: request.doc,
         version: request.version,
         highlights,
-        folds: Arc::new(karet_syntax::fold(tree.root())),
-        semantic_blocks: Arc::new(blocker.analyze(tree.root(), text)),
-        symbols: Arc::new(outline.analyze_layers(tree, text)),
+        folds: Arc::new(analyzers.folder.analyze(tree.root(), text)),
+        semantic_blocks: Arc::new(analyzers.blocker.analyze(tree.root(), text)),
+        symbols: Arc::new(analyzers.outline.analyze_layers(tree, text)),
         error_lines: Arc::new(tree.error_lines()),
-        table_lines: Arc::new(tables.line_ranges(tree.root(), text)),
+        table_lines: Arc::new(analyzers.tables.line_ranges(tree.root(), text)),
     })
 }
 
@@ -438,9 +475,6 @@ mod tests {
         let text = "// TODO: fix this\nfn main() {}\n";
         let mut parser = LayeredParser::new();
         let mut highlighter = LayeredHighlighter::new();
-        let mut blocker = SemanticBlocker::new();
-        let mut outline = OutlineExtractor::new();
-        let mut tables = TableFinder::default();
         let mut trees = HashMap::new();
         let request = HighlightRequest {
             doc: DocumentId(1),
@@ -453,9 +487,7 @@ mod tests {
         let result = compute(
             &mut parser,
             &mut highlighter,
-            &mut blocker,
-            &mut outline,
-            &mut tables,
+            &mut Analyzers::default(),
             &mut trees,
             request,
         )?;
@@ -480,9 +512,7 @@ mod tests {
         let result = compute(
             &mut LayeredParser::new(),
             &mut LayeredHighlighter::new(),
-            &mut SemanticBlocker::new(),
-            &mut OutlineExtractor::new(),
-            &mut TableFinder::default(),
+            &mut Analyzers::default(),
             trees,
             request,
         )?;
@@ -582,9 +612,7 @@ mod tests {
         let result = compute(
             &mut LayeredParser::new(),
             &mut LayeredHighlighter::new(),
-            &mut SemanticBlocker::new(),
-            &mut OutlineExtractor::new(),
-            &mut TableFinder::default(),
+            &mut Analyzers::default(),
             &mut trees,
             request,
         )?;
@@ -675,5 +703,63 @@ mod tests {
         absorb(&mut pending, &mut trees, HighlightJob::Drop(DocumentId(1)));
         assert!(pending.is_empty());
         assert!(trees.is_empty());
+    }
+
+    #[test]
+    fn compute_publishes_the_fold_query_regions_with_their_kinds() {
+        use karet_syntax::FoldKind;
+        let Some(rust) = karet_treesitter::language_id_from_injection_name("rust") else {
+            return;
+        };
+        let text = "use a;\nuse b;\n// one\n// two\nfn f() {\n    1;\n}\n";
+        let request = HighlightRequest {
+            doc: DocumentId(1),
+            version: 1,
+            lang: rust,
+            text: text.into(),
+            semantic: None,
+            edits: None,
+        };
+        let result = compute(
+            &mut LayeredParser::new(),
+            &mut LayeredHighlighter::new(),
+            &mut Analyzers::default(),
+            &mut HashMap::new(),
+            request,
+        );
+        let folds: Vec<_> = result
+            .iter()
+            .flat_map(|r| r.folds.regions().iter().map(|f| (f.start, f.end, f.kind)))
+            .collect();
+        assert_eq!(
+            folds,
+            [
+                (0, 1, FoldKind::Imports),
+                (2, 3, FoldKind::Comment),
+                (4, 6, FoldKind::Code),
+            ]
+        );
+    }
+
+    #[test]
+    fn indent_folds_honour_the_tab_size_and_the_size_bound() {
+        let buffer = TextBuffer::from_text("a\n\tb\n    c\n");
+        // At widths 4 and 8 the four spaces are no deeper than the tab, so both
+        // lines sit directly under `a`; at width 2 they nest inside the tab's line.
+        let ends = |tab| {
+            let mut settings = crate::config::Settings::default();
+            settings.editor.tab_size = tab;
+            indent_folds(&settings, None, &buffer)
+                .regions()
+                .iter()
+                .map(|r| (r.start, r.end))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ends(4), [(0, 2)]);
+        assert_eq!(ends(8), [(0, 2)]);
+        assert_eq!(ends(2), [(0, 2), (1, 2)]);
+        let huge = TextBuffer::from_text(&format!("a\n  b\n{}", " ".repeat(INDENT_FOLD_MAX_BYTES)));
+        let settings = crate::config::Settings::default();
+        assert!(indent_folds(&settings, None, &huge).regions().is_empty());
     }
 }

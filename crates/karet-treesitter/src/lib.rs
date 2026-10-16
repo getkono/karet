@@ -16,6 +16,7 @@ use karet_core::Span;
 
 mod changes;
 mod detect;
+mod folds;
 mod indent;
 mod injection;
 mod registry;
@@ -108,6 +109,18 @@ pub fn outline_query(lang: LanguageId) -> Option<Cow<'static, str>> {
 #[must_use]
 pub fn indents_query(lang: LanguageId) -> Option<&'static str> {
     indent::query_source(lang)
+}
+
+/// The fold query for `lang`, if karet ships one for its grammar (Rust,
+/// Python, JavaScript, TypeScript/TSX, JSON, Go, C, C++, YAML and Lua).
+///
+/// `@fold` captures a construct that folds from the line it starts on through
+/// the line it ends on; `@fold.comment` and `@fold.imports` capture one comment
+/// or import declaration each, which a consumer joins into a block when they sit
+/// on adjacent lines. `None` means the caller keeps a grammar-agnostic fallback.
+#[must_use]
+pub fn folds_query(lang: LanguageId) -> Option<&'static str> {
+    folds::query_source(lang)
 }
 
 /// A pool of reusable tree-sitter parsers, keyed by [`LanguageId`].

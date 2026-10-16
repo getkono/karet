@@ -111,6 +111,43 @@ pub struct FoldRegion {
     pub start: u32,
     /// The 0-based last line of the region, inclusive.
     pub end: u32,
+    /// What the region holds, so a consumer can fold every comment or import
+    /// block at once. [`FoldKind::Code`] for anything not classified.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub kind: FoldKind,
+}
+
+impl FoldRegion {
+    /// A [`FoldKind::Code`] region over lines `start..=end`.
+    #[must_use]
+    pub const fn new(start: u32, end: u32) -> Self {
+        Self {
+            start,
+            end,
+            kind: FoldKind::Code,
+        }
+    }
+
+    /// This region with its kind set to `kind`.
+    #[must_use]
+    pub const fn with_kind(self, kind: FoldKind) -> Self {
+        Self { kind, ..self }
+    }
+}
+
+/// What a [`FoldRegion`] holds. Mirrors the LSP `FoldingRangeKind` classes, so a
+/// server's ranges and a grammar's fold query land in one vocabulary.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
+pub enum FoldKind {
+    /// A code construct (a block, an item, a literal) or anything unclassified.
+    #[default]
+    Code,
+    /// A comment block: one multi-line comment, or a run of line comments.
+    Comment,
+    /// A run of import (`use`, `import`, `#include`) declarations.
+    Imports,
 }
 
 /// The foldable regions of a buffer, in document order (outermost first), with at
@@ -171,7 +208,11 @@ mod tests {
 
     #[test]
     fn fold_regions_round_trip() {
-        let f = FoldRegions::from_sorted_regions(vec![FoldRegion { start: 0, end: 4 }]);
-        assert_eq!(f.regions(), &[FoldRegion { start: 0, end: 4 }]);
+        let f = FoldRegions::from_sorted_regions(vec![FoldRegion::new(0, 4)]);
+        assert_eq!(f.regions(), &[FoldRegion::new(0, 4)]);
+        assert_eq!(f.regions()[0].kind, FoldKind::Code);
+        let comment = FoldRegion::new(1, 2).with_kind(FoldKind::Comment);
+        assert_eq!((comment.start, comment.end), (1, 2));
+        assert_eq!(comment.kind, FoldKind::Comment);
     }
 }
