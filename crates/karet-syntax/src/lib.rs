@@ -600,6 +600,20 @@ pub fn add_one() {}
     }
 
     #[test]
+    fn indenter_leaves_doc_comments_out_of_the_files_step() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // Each ` * ` steps one space in from its `/**`; there are more of those
+        // than four-space code steps, yet a new `{` with no body still opens
+        // four spaces in.
+        let src = "/**\n * a\n */\nfunction f() {\n    /**\n     * b\n     */\n    function g() {\n        /**\n         * c\n         */\n        if (x) {<|>\n    }\n}\n";
+        assert_eq!(
+            enter("javascript", src, "\t")?.as_deref(),
+            Some("            ")
+        );
+        Ok(())
+    }
+
+    #[test]
     fn indenter_follows_the_injected_language_at_the_caret()
     -> Result<(), Box<dyn std::error::Error>> {
         // Markdown ships no indent query; the fence's Rust does.
