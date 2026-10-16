@@ -249,6 +249,12 @@ fn multi_line_paste_reindents_from_the_indent_query() -> Result<(), crate::clipb
             "fn f() {\n    a();\n\n    b();|\n}",
         ),
         (
+            "a blank first line leaves the first solid line to set the base",
+            "fn f() {\n|\n}",
+            "\n    if a {\n        b();\n    }",
+            "fn f() {\n\n    if a {\n        b();\n    }|\n}",
+        ),
+        (
             "a selection on its own line is replaced at the level",
             "fn f() {\n    [x|]\n}",
             deep,
@@ -306,7 +312,7 @@ fn multi_line_paste_reindents_from_the_indent_query() -> Result<(), crate::clipb
 #[test]
 fn a_karet_copy_reindents_from_its_first_lines_level()
 -> Result<(), crate::clipboard::ClipboardError> {
-    let rows: [(&str, crate::clipboard::Copied, &str); 2] = [
+    let rows: [(&str, crate::clipboard::Copied, &str); 3] = [
         (
             "a selection taken after the indentation",
             crate::clipboard::Copied {
@@ -324,6 +330,15 @@ fn a_karet_copy_reindents_from_its_first_lines_level()
                 indents: vec!["        ".into(), "            ".into()],
             },
             "fn f() {\n    a();\n        b();\n|\n}",
+        ),
+        (
+            "a selection begun on an unindented blank line",
+            crate::clipboard::Copied {
+                pieces: vec!["\n    fn x() {\n        y();\n    }".into()],
+                whole_lines: false,
+                indents: vec![String::new()],
+            },
+            "fn f() {\n\n    fn x() {\n        y();\n    }|\n}",
         ),
     ];
     for (name, copied, expect) in rows {

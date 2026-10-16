@@ -61,7 +61,20 @@ fn line_indent(buffer: &TextBuffer, line: u32) -> String {
 /// shallower than `base` keeps that shortfall below `target` (down to no
 /// indentation at all). A blank line, and one whose indentation is neither a
 /// prefix nor an extension of `base` (tabs against spaces), keep theirs.
+///
+/// A blank first line says nothing about the block's level, so then `base` is
+/// the indentation of the first line that is not blank, and that line lands at
+/// `target`.
 fn reindent(block: &str, base: &str, target: &str) -> String {
+    let blank = |line: &str| line.trim_matches([' ', '\t', '\r']).is_empty();
+    let base = if block.split('\n').next().is_some_and(blank) {
+        block
+            .split('\n')
+            .find(|line| !blank(line))
+            .map_or(base, leading)
+    } else {
+        base
+    };
     let mut out = String::with_capacity(block.len());
     for (row, line) in block.split('\n').enumerate() {
         if row > 0 {
@@ -70,7 +83,7 @@ fn reindent(block: &str, base: &str, target: &str) -> String {
         let ws = leading(line);
         let rest = &line[ws.len()..];
         if row == 0 {
-            if !rest.is_empty() {
+            if !blank(line) {
                 out.push_str(target);
             }
             out.push_str(rest);
@@ -533,8 +546,18 @@ mod tests {
         assert_eq!(reindent("a\nb", "    ", "  "), "  a\nb");
         // Blank lines, and indentation that does not extend `base`, stay.
         assert_eq!(reindent("a\n  \n\tb", "    ", "  "), "  a\n  \n\tb");
-        // A blank first line takes no indentation; a final newline stays.
-        assert_eq!(reindent("\n  b\n", "", "  "), "\n    b\n");
+        // A blank first line takes no indentation, and the first line that is
+        // not blank gives the base instead, whatever was recorded; a final
+        // newline stays.
+        assert_eq!(reindent("\n  b\n", "", "  "), "\n  b\n");
+        assert_eq!(
+            reindent("\n    fn x() {\n        y();\n    }", "", "    "),
+            "\n    fn x() {\n        y();\n    }"
+        );
+        assert_eq!(
+            reindent("  \r\n\n  a\n    b", "  ", "\t"),
+            "\r\n\n\ta\n\t  b"
+        );
     }
 
     #[test]
