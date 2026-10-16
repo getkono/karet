@@ -142,6 +142,7 @@ impl App {
                 // Over the rope's chunks, so a find bar left open while typing
                 // never copies the whole document per keystroke (#420).
                 let matches = search_chunks(buffer.chunks(), &q).unwrap_or_default();
+                let end = buffer.byte_to_line_col(BytePos(buffer.len_bytes()));
                 *decos = matches
                     .iter()
                     .map(|m| Decoration {
@@ -152,7 +153,7 @@ impl App {
                         kind: DecorationKind::TextBackground,
                         role: Some(ThemeRole::SearchMatch),
                     })
-                    .filter(|deco| in_scope(scope, deco.range))
+                    .filter(|deco| in_scope(scope, deco.range, end))
                     .collect();
                 count = decos.len();
                 // Resolved from the caret in both cases, never carried over by
@@ -315,10 +316,11 @@ impl App {
                 editor,
                 ..
             }) => {
+                let end = buffer.byte_to_line_col(BytePos(buffer.len_bytes()));
                 let edits: Vec<TextEdit> =
                     planned_replacements(text, buffer, &query, &replacement, preserve)
                         .into_iter()
-                        .filter(|edit| in_scope(scope, edit.range))
+                        .filter(|edit| in_scope(scope, edit.range, end))
                         .collect();
                 if edits.is_empty() {
                     return;
@@ -911,12 +913,18 @@ fn mark_current(decos: &mut [Decoration], current: usize) {
 /// Whether a match over `range` counts under the Search in Selection `scope`:
 /// every match without one, otherwise only a match wholly inside it. An
 /// empty-width match (a regex `^` or `$`) at `scope.end` sits on the boundary
-/// with the text after the scope, so it counts only for an empty scope.
-fn in_scope(scope: Option<Range>, range: Range) -> bool {
+/// with the text after the scope, so it counts only for an empty scope or
+/// where `scope.end` is `buffer_end` mid-line, with no text after it to belong
+/// to. A `buffer_end` at column 0 is the empty line after a trailing newline:
+/// a scope ending there is the line before it, whose own `$` already counted
+/// before the newline, so the empty line's match lies outside it.
+fn in_scope(scope: Option<Range>, range: Range, buffer_end: LineCol) -> bool {
     scope.is_none_or(|scope| {
         scope.start <= range.start
             && range.end <= scope.end
-            && (range.start < scope.end || scope.start == scope.end)
+            && (range.start < scope.end
+                || scope.start == scope.end
+                || (scope.end == buffer_end && scope.end.col > 0))
     })
 }
 
