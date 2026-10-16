@@ -165,6 +165,13 @@ pub(crate) fn initialize_params(root: &Path) -> Result<lsp_types::InitializePara
                 dynamic_registration: Some(true),
             }),
             code_action: Some(code_action_capabilities()),
+            // `LspClient::code_lenses`; a deferred title and command are filled
+            // in by `LspClient::resolve_code_lens`, handing `data` back
+            // untouched. `workspace.codeLens.refreshSupport` is not declared:
+            // lenses are re-asked as the text changes instead.
+            code_lens: Some(lsp_types::CodeLensClientCapabilities {
+                dynamic_registration: Some(true),
+            }),
             ..lsp_types::TextDocumentClientCapabilities::default()
         }),
         workspace: Some(lsp_types::WorkspaceClientCapabilities {
