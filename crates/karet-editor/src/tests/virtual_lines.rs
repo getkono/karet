@@ -1,6 +1,7 @@
 //! Virtual lines: whole rows above or below a buffer line that the row walk
 //! counts everywhere — painting, scrolling, reveal, hit-testing, motion and
-//! folds.
+//! folds — plus what that one walk, now shared by wrapped and unwrapped
+//! views, does to folds in either.
 
 use super::*;
 
@@ -298,4 +299,40 @@ fn a_header_with_rows_above_it_sticks_only_once_its_own_row_scrolls_off() {
     let target = render(&mut state);
     assert_eq!(row(&target, 0).trim_end(), " 1 fn f() {");
     assert_eq!(row(&target, 1).trim_end(), "   note");
+}
+
+#[test]
+fn overflow_row_scrolling_steps_over_a_collapsed_fold_as_one_row() {
+    let buffer = TextBuffer::from_text("head\na\nb\nc\ntail\n");
+    let folds = [Fold {
+        start: 0,
+        end: 3,
+        collapsed: true,
+    }];
+    let mut state = EditorState::new();
+    state.scroll_rows(&buffer, &folds, false, 1);
+    assert_eq!(state.scroll_line, 4, "the fold's hidden lines take no rows");
+    state.scroll_rows(&buffer, &folds, false, -1);
+    assert_eq!(state.scroll_line, 0);
+    state.scroll_rows(&buffer, &folds, false, i32::MAX);
+    assert_eq!(state.scroll_line, 5, "clamped to the last line");
+}
+
+#[test]
+fn a_caret_hidden_in_a_fold_is_revealed_through_its_header_wrapped_or_not() {
+    let buffer = TextBuffer::from_text("l0\nl1\nhead\nin\ntail\nl5\n");
+    let folds = [Fold {
+        start: 2,
+        end: 3,
+        collapsed: true,
+    }];
+    for wrap in [false, true] {
+        let area = Rect::new(0, 0, 10, 2);
+        let mut state = EditorState::new();
+        frame(&buffer, &[], &folds, wrap, area, &mut state);
+        state.scroll_to_line(5);
+        state.goto(&buffer, LineCol::new(3, 1));
+        let target = frame(&buffer, &[], &folds, wrap, area, &mut state);
+        assert_eq!(row(&target, 0).trim_end(), " 3▸head ⋯", "wrap: {wrap}");
+    }
 }
