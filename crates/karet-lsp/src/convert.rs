@@ -37,7 +37,7 @@ use karet_core::WorkspaceEdit;
 use karet_core::WorkspaceSymbol;
 
 use crate::LspError;
-use crate::snippet::strip_snippet;
+use crate::snippet::parse_snippet;
 use crate::uri::uri_to_path;
 
 /// Map an LSP position (UTF-16 columns, passed through — see the module docs).
@@ -669,8 +669,9 @@ fn symbol_kind_from_lsp(kind: lsp_types::SymbolKind) -> SymbolKind {
 /// Map one completion item.
 ///
 /// - **Insert text** resolves per LSP precedence: `textEdit.newText`, else
-///   `insertText`, else the label. Snippet-format text is degraded to plain
-///   text (see [`crate::snippet`]).
+///   `insertText`, else the label. Snippet-format text is expanded to the text
+///   it inserts, its stops kept beside it as `tabstops` (see
+///   [`crate::snippet`]).
 /// - **`textEdit`** maps to a neutral [`TextEdit`] (UTF-16 range passthrough);
 ///   an insert/replace edit puts its *insert* range there and keeps its
 ///   *replace* range beside it, so the consumer chooses.
@@ -684,9 +685,12 @@ fn symbol_kind_from_lsp(kind: lsp_types::SymbolKind) -> SymbolKind {
 /// server resolves items.
 pub(crate) fn completion_item_from_lsp(item: lsp_types::CompletionItem) -> CompletionItem {
     let is_snippet = item.insert_text_format == Some(lsp_types::InsertTextFormat::SNIPPET);
-    let degrade = |text: String| {
+    let mut tabstops = Vec::new();
+    let mut degrade = |text: String| {
         if is_snippet {
-            strip_snippet(&text)
+            let snippet = parse_snippet(&text);
+            tabstops = snippet.tabstops;
+            snippet.text
         } else {
             text
         }
@@ -744,6 +748,7 @@ pub(crate) fn completion_item_from_lsp(item: lsp_types::CompletionItem) -> Compl
                 .collect()
         }),
         payload: None,
+        tabstops,
     }
 }
 

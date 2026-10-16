@@ -87,6 +87,34 @@ pub struct CompletionItem {
     /// detail, additional edits); `None` when there is nothing left to fill in.
     #[cfg_attr(feature = "serde", serde(default))]
     pub payload: Option<String>,
+    /// The snippet stops in the inserted text -- [`edit`](Self::edit)'s
+    /// `new_text` where there is an edit, else
+    /// [`insert_text`](Self::insert_text) -- in the order a snippet session
+    /// visits them, the final stop (`$0`) last. Empty for an item that is
+    /// plain text: the inserted text is then all there is, the caret after it.
+    ///
+    /// The inserted text is already what a snippet shows before anyone edits
+    /// it (placeholders filled in, the first choice chosen), so a consumer
+    /// with no snippet session can ignore this and insert the text as is.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub tabstops: Vec<Tabstop>,
+}
+
+/// One stop of a snippet: where a session puts the caret (or carets) next.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Tabstop {
+    /// The snippet's number for it (`$1` is 1); 0 is the final stop.
+    pub index: u32,
+    /// Where it sits in the inserted text, as `[start, end)` character
+    /// offsets, in text order: one span per occurrence, so a stop that is
+    /// mirrored has several, all holding the same text. An empty span is a
+    /// bare caret position; a non-empty one is a placeholder, selected when
+    /// the session reaches it.
+    pub spans: Vec<(u32, u32)>,
+    /// The options a choice stop (`${1|one,two|}`) offers, the first of them
+    /// already inserted; empty for any other stop.
+    pub choices: Vec<String>,
 }
 
 impl CompletionItem {
@@ -108,6 +136,7 @@ impl CompletionItem {
             additional_edits: Vec::new(),
             commit_characters: None,
             payload: None,
+            tabstops: Vec::new(),
         }
     }
 
@@ -238,6 +267,11 @@ mod tests {
             documentation: Some(docs.clone()),
             additional_edits: vec![edit(0, "use std::vec::Vec;\n")],
             insert_text: "other".to_owned(),
+            tabstops: vec![Tabstop {
+                index: 0,
+                spans: vec![(0, 0)],
+                choices: Vec::new(),
+            }],
             payload: Some("{\"again\":1}".to_owned()),
             ..CompletionItem::new("push", CompletionKind::Method)
         });
@@ -245,6 +279,10 @@ mod tests {
         assert_eq!(held.documentation, Some(docs));
         assert_eq!(held.additional_edits.len(), 1);
         assert_eq!(held.insert_text, "push");
+        assert!(
+            held.tabstops.is_empty(),
+            "the stops belong to what is inserted"
+        );
         assert_eq!(held.payload, None);
     }
 
@@ -271,8 +309,24 @@ mod tests {
                 "insert_text":"a","edit":null,"sort_text":null,"deprecated":false}"#,
         )?;
         assert_eq!(read, CompletionItem::new("a", CompletionKind::Text));
+        let snippet = CompletionItem {
+            insert_text: "push(ch)".to_owned(),
+            tabstops: vec![
+                Tabstop {
+                    index: 1,
+                    spans: vec![(5, 7)],
+                    choices: vec!["ch".to_owned(), "c".to_owned()],
+                },
+                Tabstop {
+                    index: 0,
+                    spans: vec![(8, 8)],
+                    choices: Vec::new(),
+                },
+            ],
+            ..CompletionItem::new("push", CompletionKind::Method)
+        };
         let list = CompletionList {
-            items: vec![read],
+            items: vec![read, snippet],
             incomplete: true,
         };
         let back: CompletionList = serde_json::from_str(&serde_json::to_string(&list)?)?;
