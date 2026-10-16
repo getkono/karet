@@ -215,6 +215,73 @@ fn additional_edits_move_the_stops() {
     assert_eq!(selections(&app), vec![span(2, 5, 7)]);
 }
 
+/// Falsified by a copy's stops placed at its caret's position before the
+/// other copies' inserts shifted it (the second copy on a line selecting
+/// inside the first), or by a copy left unselected.
+#[test]
+fn every_caret_gets_a_copy_whose_stops_are_selected() {
+    let (backend, mut app) = completion_app("pu pu\n", LineCol::new(0, 5));
+    app.tabs[app.active]
+        .editor
+        .set_carets(&[LineCol::new(0, 2), LineCol::new(0, 5)]);
+    accept(&mut app, &backend, push_item());
+    assert_eq!(code_tab_text(&app), "push(ch, n) push(ch, n)\n");
+    assert_eq!(selections(&app), vec![span(0, 5, 7), span(0, 17, 19)]);
+    typed(&mut app, "c");
+    assert_eq!(code_tab_text(&app), "push(c, n) push(c, n)\n");
+    key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+    assert_eq!(selections(&app), vec![span(0, 8, 9), span(0, 19, 20)]);
+}
+
+/// The same across lines, with an import above both copies moving each of
+/// them down a line.
+#[test]
+fn copies_on_several_lines_follow_the_additional_edits() {
+    let (backend, mut app) = completion_app("x\npu\npu\n", LineCol::new(2, 2));
+    app.tabs[app.active]
+        .editor
+        .set_carets(&[LineCol::new(1, 2), LineCol::new(2, 2)]);
+    let item = CompletionItem {
+        additional_edits: vec![TextEdit {
+            range: span(0, 0, 0),
+            new_text: "use x;\n".to_owned(),
+        }],
+        ..push_item()
+    };
+    accept(&mut app, &backend, item);
+    assert_eq!(code_tab_text(&app), "use x;\nx\npush(ch, n)\npush(ch, n)\n");
+    assert_eq!(selections(&app), vec![span(2, 5, 7), span(3, 5, 7)]);
+    key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+    assert_eq!(selections(&app), vec![span(2, 9, 10), span(3, 9, 10)]);
+}
+
+/// Falsified by the old session's later stops (`n`) surviving the new
+/// item's accept, or by the new item's first stop not being selected.
+#[test]
+fn a_snippet_accepted_in_a_session_replaces_it() {
+    let (backend, mut app) = completion_app("v.pu\n", LineCol::new(0, 4));
+    accept(&mut app, &backend, push_item());
+    typed(&mut app, "ne");
+    let item = snippet_item(
+        "new",
+        "new(a)",
+        vec![stop(1, &[(4, 5)]), stop(0, &[(6, 6)])],
+    );
+    accept(&mut app, &backend, item);
+    assert_eq!(code_tab_text(&app), "v.push(new(a), n)\n");
+    assert_eq!(selections(&app), vec![span(0, 11, 12)], "`a` is selected");
+    key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+    assert_eq!(
+        selections(&app),
+        vec![span(0, 13, 13)],
+        "the new item's final stop, not the old session's `n`"
+    );
+    assert!(
+        app.snippet.is_none(),
+        "the old session went with the accept"
+    );
+}
+
 /// A plain completion accepted inside a placeholder fills it in, and the
 /// session carries on past it.
 #[test]
