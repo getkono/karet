@@ -671,3 +671,39 @@ fn scrolling_the_inventory_leaves_a_selection_that_is_already_in_view_alone() {
         "a window that still holds the selection must not move it"
     );
 }
+
+#[test]
+fn a_find_bar_match_far_below_the_viewport_ticks_the_scrollbar() {
+    // The find bar's own matches (the tab's `decos`, not the workspace search's
+    // `search_decos`) feed the overview: open the bar over a long file whose only
+    // match is 90% of the way down, and that match ticks the scrollbar's groove.
+    let text: String = (0..1000)
+        .map(|n| {
+            if n == 900 {
+                "needle\n".to_owned()
+            } else {
+                format!("line {n}\n")
+            }
+        })
+        .collect();
+    let mut app = app();
+    app.push_tab(text_tab("notes.txt", &text));
+    app.dispatch(Command::OpenFind);
+    if let Some(find) = app.active_find_mut() {
+        find.query = "needle".to_owned();
+    }
+    // Rebuild the matches without moving the caret, so the match stays off screen.
+    app.refresh_find();
+    assert_eq!(app.active_find().map(|f| f.count), Some(1));
+
+    let colour = app.theme.role(ThemeRole::SearchMatch).to_ratatui();
+    let buffer = frame(&mut app, 80, 24);
+    let area = buffer.area;
+    let ticks: Vec<(u16, u16)> = (area.y..area.bottom())
+        .flat_map(|y| (area.x..area.right()).map(move |x| (x, y)))
+        .filter(|&(x, y)| buffer[(x, y)].symbol() == "━" && buffer[(x, y)].fg == colour)
+        .collect();
+    assert_eq!(ticks.len(), 1, "one match, one tick: {ticks:?}");
+    let (_, y) = ticks[0];
+    assert!(y > area.height / 2, "tick at row {y}");
+}
