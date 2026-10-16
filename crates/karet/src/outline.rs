@@ -139,6 +139,63 @@ impl From<&Symbol> for OutlineEntry {
     }
 }
 
+/// The chain of symbols enclosing `caret`, outermost first, as the index of each
+/// within its parent's children (the first within `symbols` itself) — the path
+/// the breadcrumb paints and its sibling picker walks. A symbol encloses the
+/// caret when its full range holds it, the end included, so a caret just past a
+/// closing brace still names the block. Where siblings overlap, the one that
+/// starts last (the tighter fit) wins. Empty when no symbol encloses the caret.
+#[must_use]
+pub fn enclosing_path(symbols: &[Symbol], caret: LineCol) -> Vec<usize> {
+    let mut path = Vec::new();
+    let mut level = symbols;
+    while let Some((index, symbol)) = level
+        .iter()
+        .enumerate()
+        .filter(|(_, symbol)| symbol.range.start <= caret && caret <= symbol.range.end)
+        .max_by_key(|(_, symbol)| symbol.range.start)
+    {
+        path.push(index);
+        level = &symbol.children;
+    }
+    path
+}
+
+/// The symbols `path` (from [`enclosing_path`]) names, outermost first. A path
+/// that leaves the tree stops at the last symbol it reached.
+#[must_use]
+pub fn resolve_path<'a>(symbols: &'a [Symbol], path: &[usize]) -> Vec<&'a Symbol> {
+    let mut chain = Vec::with_capacity(path.len());
+    let mut level = symbols;
+    for &index in path {
+        let Some(symbol) = level.get(index) else {
+            break;
+        };
+        chain.push(symbol);
+        level = &symbol.children;
+    }
+    chain
+}
+
+/// The symbol at `depth` along `path` and its siblings: the level it sits in and
+/// its index there. `None` when `path` does not reach that deep.
+#[must_use]
+pub fn siblings_at<'a>(
+    symbols: &'a [Symbol],
+    path: &[usize],
+    depth: usize,
+) -> Option<(&'a [Symbol], usize)> {
+    let index = *path.get(depth)?;
+    let parents = resolve_path(symbols, path.get(..depth)?);
+    if parents.len() != depth {
+        return None;
+    }
+    let level = parents
+        .last()
+        .map_or(symbols, |parent| &parent.children[..]);
+    (index < level.len()).then_some((level, index))
+}
+
 fn push_rows(entries: &[OutlineEntry], depth: usize, rows: &mut Vec<OutlineRow>) {
     for e in entries {
         rows.push(OutlineRow {
@@ -238,6 +295,107 @@ mod tests {
             entries[0].children[1].target,
             Some(OutlineTarget::Text(LineCol::new(4, 0)))
         );
+    }
+
+    /// A symbol spanning `start..=end` lines (column 0 to 1), named at its start.
+    fn spanning(name: &str, start: u32, end: u32, children: Vec<Symbol>) -> Symbol {
+        Symbol {
+            name: name.into(),
+            kind: SymbolKind::Function,
+            detail: None,
+            range: karet_core::Range {
+                start: LineCol::new(start, 0),
+                end: LineCol::new(end, 1),
+            },
+            selection_range: karet_core::Range {
+                start: LineCol::new(start, 3),
+                end: LineCol::new(start, 4),
+            },
+            container_name: None,
+            children,
+        }
+    }
+
+    /// `mod a` (0..=10) holding `fn b` (1..=3) and `struct c` (5..=9, holding
+    /// `d` at 6..=7), then a top-level `e` (12..=14).
+    fn nested() -> Vec<Symbol> {
+        vec![
+            spanning(
+                "a",
+                0,
+                10,
+                vec![
+                    spanning("b", 1, 3, Vec::new()),
+                    spanning("c", 5, 9, vec![spanning("d", 6, 7, Vec::new())]),
+                ],
+            ),
+            spanning("e", 12, 14, Vec::new()),
+        ]
+    }
+
+    fn names(symbols: &[Symbol], caret: LineCol) -> Vec<String> {
+        resolve_path(symbols, &enclosing_path(symbols, caret))
+            .into_iter()
+            .map(|symbol| symbol.name.clone())
+            .collect()
+    }
+
+    #[test]
+    fn the_enclosing_path_descends_to_the_innermost_symbol() {
+        let tree = nested();
+        assert_eq!(enclosing_path(&tree, LineCol::new(6, 4)), [0, 1, 0]);
+        assert_eq!(names(&tree, LineCol::new(6, 4)), ["a", "c", "d"]);
+        assert_eq!(names(&tree, LineCol::new(4, 0)), ["a"], "between b and c");
+        assert_eq!(names(&tree, LineCol::new(13, 0)), ["e"]);
+    }
+
+    #[test]
+    fn a_caret_outside_every_symbol_has_no_chain() {
+        let tree = nested();
+        assert!(enclosing_path(&tree, LineCol::new(11, 0)).is_empty());
+        assert!(enclosing_path(&[], LineCol::new(0, 0)).is_empty());
+    }
+
+    #[test]
+    fn a_range_holds_its_own_end() {
+        let tree = nested();
+        assert_eq!(names(&tree, LineCol::new(3, 1)), ["a", "b"]);
+        assert_eq!(names(&tree, LineCol::new(3, 2)), ["a"]);
+    }
+
+    #[test]
+    fn overlapping_siblings_resolve_to_the_one_starting_last() {
+        let tree = vec![
+            spanning("outer", 0, 9, Vec::new()),
+            spanning("inner", 2, 4, Vec::new()),
+        ];
+        assert_eq!(names(&tree, LineCol::new(3, 0)), ["inner"]);
+        assert_eq!(names(&tree, LineCol::new(6, 0)), ["outer"]);
+    }
+
+    #[test]
+    fn siblings_at_a_depth_are_that_level_of_the_tree() {
+        let tree = nested();
+        let path = [0, 1, 0];
+        let level = |depth| {
+            siblings_at(&tree, &path, depth).map(|(level, index)| {
+                let names: Vec<_> = level.iter().map(|s| s.name.as_str()).collect();
+                (names, index)
+            })
+        };
+        assert_eq!(level(0), Some((vec!["a", "e"], 0)));
+        assert_eq!(level(1), Some((vec!["b", "c"], 1)));
+        assert_eq!(level(2), Some((vec!["d"], 0)));
+        assert_eq!(level(3), None, "deeper than the path");
+    }
+
+    #[test]
+    fn a_path_from_a_different_tree_resolves_no_further_than_it_fits() {
+        let tree = nested();
+        // A stale path: `a` has two children, not three.
+        assert_eq!(resolve_path(&tree, &[0, 5, 0]).len(), 1);
+        assert_eq!(siblings_at(&tree, &[0, 5, 0], 1), None);
+        assert_eq!(siblings_at(&tree, &[0, 5, 0], 2), None);
     }
 
     #[test]

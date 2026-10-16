@@ -323,7 +323,7 @@ fn breadcrumb_frame(app: &App, segment: PathBuf) -> PaneFrame {
         breadcrumb_hits: vec![BreadcrumbHit {
             start: 12,
             end: 15,
-            path: segment,
+            target: BreadcrumbTarget::Path(segment),
         }],
         content_rect: Rect {
             x: 10,
@@ -406,7 +406,10 @@ fn the_frame_records_breadcrumb_hits_only_within_the_workspace() {
     let paths: Vec<_> = frame
         .breadcrumb_hits
         .iter()
-        .map(|h| h.path.clone())
+        .filter_map(|h| match &h.target {
+            BreadcrumbTarget::Path(path) => Some(path.clone()),
+            BreadcrumbTarget::Symbol(_) => None,
+        })
         .collect();
     // Segments above the workspace root ("/", "tmp", …) are inert: only the
     // root itself and the components below it are recorded.

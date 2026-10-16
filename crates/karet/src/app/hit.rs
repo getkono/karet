@@ -16,6 +16,7 @@ pub(crate) struct TabHit {
 }
 
 pub(crate) use karet_widgets::breadcrumbs::BreadcrumbHit;
+pub(crate) use karet_widgets::breadcrumbs::BreadcrumbTarget;
 
 /// A clickable changed-file row from a commit or compare view's last frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -162,6 +162,10 @@ use crate::tab::ViewMode;
 /// Draw one frame of the shell.
 pub fn draw(f: &mut Frame, app: &mut App) {
     app.unfold_around_carets();
+    // The breadcrumb names the symbols around the caret, so the active document's
+    // symbols are kept current whether or not the outline is open. Asked once per
+    // buffer version: a version already cached or in flight asks nothing.
+    app.request_active_symbols();
     let theme = app.theme.clone();
     let area = f.area();
     // Collected into a local and handed over at the end rather than cleared on `app`
@@ -471,6 +475,9 @@ struct PaneCtx<'a> {
     diagnostics: &'a HashMap<DocumentId, Vec<Diagnostic>>,
     /// Inlay hints keyed by backend document, in buffer columns.
     inlay_hints: &'a HashMap<DocumentId, Vec<InlayHint>>,
+    /// Cached document symbols keyed by backend document, for the breadcrumb's
+    /// enclosing-symbol chain.
+    symbols: &'a HashMap<DocumentId, Vec<karet_core::Symbol>>,
     /// Uncommitted-line gutter markers keyed by backend document; `None` while
     /// `git.decorations` is off.
     line_changes: Option<&'a HashMap<DocumentId, Vec<Decoration>>>,
@@ -792,31 +799,34 @@ fn save_mark(tab: &Tab, icon_style: karet_filetype::IconStyle) -> char {
     if tab.dirty { '\u{25cf}' } else { ' ' }
 }
 
-/// Draw the pane's breadcrumb (the active tab's path components joined by `›`)
-/// via the shared widget, and return the clickable segment regions.
-/// Draw one pane's breadcrumb, reserving its right edge for the LSP badge.
+/// Draw one pane's breadcrumb — the active tab's path components, then the
+/// symbols enclosing its caret, joined by `›` — via the shared widget,
+/// reserving the row's right edge for the LSP badge.
 ///
 /// The badge is painted here rather than inside `karet_widgets::breadcrumbs`
 /// because the widget crate must not learn what a language-server state is; it
-/// keeps its neutral API and simply gets a narrower `Rect`.
+/// keeps its neutral API and simply gets a narrower `Rect`. The symbol chain is
+/// resolved here for the same reason: the widget takes plain labels.
 ///
-/// Returns the path hits and, when a badge was painted, the columns it occupies.
+/// Returns the segment hits and, when a badge was painted, the columns it
+/// occupies.
 fn draw_pane_breadcrumb(
     f: &mut Frame,
     tab: Option<&Tab>,
-    theme: &Theme,
-    root: &Path,
-    icon_style: karet_filetype::IconStyle,
-    badge: Option<LanguageServerBadgeSummary>,
+    ctx: &PaneCtx,
     area: Rect,
 ) -> (Vec<crate::app::BreadcrumbHit>, Option<(u16, u16)>) {
+    let (theme, icon_style) = (ctx.theme, ctx.icon_style);
     let Some(path) = tab.and_then(Tab::path) else {
         return (Vec::new(), None);
     };
+    let symbols = tab
+        .map(|tab| symbol_chain(tab, ctx.symbols))
+        .unwrap_or_default();
     // The path yields the badge's columns, not the other way round: a breadcrumb
     // too narrow to hold both keeps the path, because a truncated path is still
     // readable while a half-painted badge is not.
-    let (crumbs, badge_hit) = match badge {
+    let (crumbs, badge_hit) = match ctx.lsp_badge {
         Some(badge) => {
             let text = lsp_badge::compact(badge, icon_style);
             let width = cell_width(&text);
@@ -846,10 +856,29 @@ fn draw_pane_breadcrumb(
     };
     let hits = karet_widgets::breadcrumbs::Breadcrumbs {
         path,
-        root,
+        root: ctx.root,
         is_symlink: tab.is_some_and(|tab| tab.is_symlink),
         icon_style,
+        symbols: &symbols,
     }
     .draw(f, theme, crumbs);
     (hits, badge_hit)
+}
+
+/// The names of the symbols enclosing `tab`'s caret, outermost first, from its
+/// document's cached symbols. The cache may trail the buffer by an edit; the
+/// chain then follows the last answer until the fresh one lands. Empty for a tab
+/// with no backend document or no symbols yet.
+fn symbol_chain(tab: &Tab, symbols: &HashMap<DocumentId, Vec<karet_core::Symbol>>) -> Vec<String> {
+    let TabKind::Code { doc: Some(doc), .. } = &tab.kind else {
+        return Vec::new();
+    };
+    let Some(symbols) = symbols.get(doc) else {
+        return Vec::new();
+    };
+    let path = crate::outline::enclosing_path(symbols, tab.editor.cursor());
+    crate::outline::resolve_path(symbols, &path)
+        .into_iter()
+        .map(|symbol| symbol.name.clone())
+        .collect()
 }

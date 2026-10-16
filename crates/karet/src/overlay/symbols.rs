@@ -35,6 +35,9 @@ pub const DOCUMENT_SYMBOL_PREFIX: &str = "@";
 /// The document-symbol picker's title, which is also how it is told apart.
 const DOCUMENT_SYMBOLS_TITLE: &str = "Go to Symbol in Editor";
 
+/// The breadcrumb's sibling picker's title.
+const SIBLING_SYMBOLS_TITLE: &str = "Go to Sibling Symbol";
+
 /// The sigil that turns quick-open into Go to Symbol in Workspace.
 pub const WORKSPACE_SYMBOL_PREFIX: &str = "#";
 
@@ -90,6 +93,36 @@ impl Overlay {
     pub fn document_symbols(path: Option<&Path>, symbols: &[Symbol]) -> Self {
         let rows = symbol_rows(path, symbols);
         Self::Picker(Picker::new(DOCUMENT_SYMBOLS_TITLE, rows).with_prefix(DOCUMENT_SYMBOL_PREFIX))
+    }
+
+    /// Build the breadcrumb's sibling picker: one row per symbol in `siblings`
+    /// (one level of the document's tree, the clicked symbol among them), in
+    /// document order, with `current` highlighted. Their own children are not
+    /// listed — that is the next breadcrumb segment's picker. It is not a
+    /// quick-open mode, so a fresh symbol answer does not refill it with the
+    /// whole document and typing a sigil does not change what it lists.
+    #[must_use]
+    pub fn sibling_symbols(path: &Path, siblings: &[Symbol], current: usize) -> Self {
+        let mut order: Vec<usize> = (0..siblings.len()).collect();
+        order.sort_by_key(|&i| siblings.get(i).map(|s| s.selection_range.start));
+        let rows = order
+            .iter()
+            .filter_map(|&i| siblings.get(i))
+            .map(|symbol| {
+                let accept = OverlayEvent::AcceptSymbol {
+                    path: path.to_path_buf(),
+                    position: symbol.selection_range.start,
+                    detail: kind_info(symbol.kind).1.to_string(),
+                };
+                (symbol.name.clone(), accept)
+            })
+            .collect();
+        let mut picker = Picker::new(SIBLING_SYMBOLS_TITLE, rows);
+        let row = order.iter().position(|&i| i == current).unwrap_or_default();
+        for _ in 0..row {
+            picker.select_down();
+        }
+        Self::Picker(picker)
     }
 
     /// Which quick-open mode this overlay is, or `None` for any other overlay.
@@ -502,6 +535,38 @@ mod tests {
         let mut files = Overlay::quick_open(vec![("a.rs".to_string(), PathBuf::from("/w/a.rs"))]);
         files.set_document_symbols(Some(&path), &tree());
         assert_eq!(files.rows(), vec!["a.rs"]);
+    }
+
+    #[test]
+    fn the_sibling_picker_lists_one_level_in_document_order_at_the_clicked_symbol() {
+        let path = PathBuf::from("/w/src/lib.rs");
+        // Out of document order on purpose: the picker sorts by position.
+        let mut level = tree();
+        level.reverse();
+        let current = level.iter().position(|s| s.name == "Widget").unwrap_or(9);
+        let mut overlay = Overlay::sibling_symbols(&path, &level, current);
+        assert_eq!(
+            overlay.rows(),
+            vec!["helper", "Widget", "main"],
+            "children are not listed"
+        );
+        assert_eq!(overlay.selected(), 1, "the clicked symbol is highlighted");
+        assert_eq!(overlay.quick_open_mode(), None);
+        match overlay.accept() {
+            OverlayEvent::AcceptSymbol {
+                path: at,
+                position,
+                detail,
+            } => {
+                assert_eq!(at, path);
+                assert_eq!(position, LineCol::new(3, 4));
+                assert_eq!(detail, "struct");
+            },
+            _ => unreachable!("a sibling row jumps to its symbol"),
+        }
+        // A fresh answer for the whole document leaves it as it is.
+        overlay.set_document_symbols(Some(&path), &[]);
+        assert_eq!(overlay.rows().len(), 3);
     }
 
     #[test]
