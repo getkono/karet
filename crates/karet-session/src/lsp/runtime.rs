@@ -11,6 +11,7 @@ use super::commands::remember_document;
 use super::commands::report_unsupported;
 use super::commands::resolve_hint;
 use super::commands::resolve_item;
+use super::delta::PendingChange;
 use super::forward::forward_diagnostics;
 use super::health::FailureTally;
 use super::health::{self};
@@ -99,7 +100,7 @@ pub(super) async fn server_task(task: ServerTask) {
     let mut flights = Flights::default();
     let mut diagnostic_task: Option<tokio::task::JoinHandle<()>> = None;
     let mut documents = HashMap::<PathBuf, OpenDocument>::new();
-    let mut pending: Option<(PathBuf, i32, String)> = None;
+    let mut pending: Option<PendingChange> = None;
     // When the pending edit will have been quiet for `CHANGE_DEBOUNCE`: timed
     // from the last *edit*, not the last command, so a hint request waiting on
     // the flush does not itself push the flush back.
@@ -160,10 +161,10 @@ pub(super) async fn server_task(task: ServerTask) {
                     },
                     () = tokio::time::sleep_until(restart_at) => {},
                     cmd = rx.recv() => {
-                        let Some(cmd) = cmd else {
+                        let Some(mut cmd) = cmd else {
                             break;
                         };
-                        remember_document(&mut documents, &cmd);
+                        remember_document(&mut documents, &mut cmd);
                         // An open circuit is a cooldown, but one a server that
                         // keeps dying can sit in indefinitely -- so its hints
                         // are treated as gone rather than held stale forever.
@@ -271,8 +272,8 @@ pub(super) async fn server_task(task: ServerTask) {
                         );
                         // Drain rather than return: callers must keep getting
                         // empty answers instead of waiting on a dead channel.
-                        while let Some(cmd) = rx.recv().await {
-                            remember_document(&mut documents, &cmd);
+                        while let Some(mut cmd) = rx.recv().await {
+                            remember_document(&mut documents, &mut cmd);
                             answer_empty(&updates, cmd, generation);
                         }
                         return;
@@ -344,7 +345,7 @@ pub(super) async fn server_task(task: ServerTask) {
                 };
                 flush_pending(
                     active,
-                    &mut pending,
+                    (&mut pending, &mut documents),
                     &mut dead,
                     &mut tally,
                     &updates,
@@ -393,8 +394,8 @@ pub(super) async fn server_task(task: ServerTask) {
             health::Wake::Command(None) => break, // the session dropped the manager
             health::Wake::Command(Some(cmd)) => Some(cmd),
         };
-        if let Some(cmd) = cmd {
-            remember_document(&mut documents, &cmd);
+        if let Some(mut cmd) = cmd {
+            remember_document(&mut documents, &mut cmd);
             let Some(active) = client.as_deref() else {
                 answer_reconnecting(&updates, cmd, generation);
                 continue;
@@ -404,13 +405,15 @@ pub(super) async fn server_task(task: ServerTask) {
                     path,
                     version,
                     text,
+                    delta,
                 } => {
-                    // Coalesce successive edits to the same document; an edit to a
-                    // different document flushes the previous one first (order).
-                    if pending.as_ref().is_some_and(|(p, ..)| *p != path) {
+                    // Coalesce successive edits to the same document, composing
+                    // their deltas; an edit to a different document flushes the
+                    // previous one first (order).
+                    if pending.as_ref().is_some_and(|change| change.path != path) {
                         flush_pending(
                             active,
-                            &mut pending,
+                            (&mut pending, &mut documents),
                             &mut dead,
                             &mut tally,
                             &updates,
@@ -420,7 +423,11 @@ pub(super) async fn server_task(task: ServerTask) {
                         .await;
                     }
                     if !dead {
-                        pending = Some((path, version, text));
+                        pending = Some(PendingChange::coalesce(
+                            pending.take(),
+                            (path, version, text),
+                            delta,
+                        ));
                         flush_at = Instant::now() + CHANGE_DEBOUNCE;
                     }
                 },
@@ -432,7 +439,7 @@ pub(super) async fn server_task(task: ServerTask) {
                 } => {
                     flush_pending(
                         active,
-                        &mut pending,
+                        (&mut pending, &mut documents),
                         &mut dead,
                         &mut tally,
                         &updates,
@@ -450,7 +457,7 @@ pub(super) async fn server_task(task: ServerTask) {
                 ServerCmd::DidClose { path } => {
                     flush_pending(
                         active,
-                        &mut pending,
+                        (&mut pending, &mut documents),
                         &mut dead,
                         &mut tally,
                         &updates,
@@ -466,7 +473,7 @@ pub(super) async fn server_task(task: ServerTask) {
                 ServerCmd::DidSave { path, text } => {
                     flush_pending(
                         active,
-                        &mut pending,
+                        (&mut pending, &mut documents),
                         &mut dead,
                         &mut tally,
                         &updates,
@@ -491,7 +498,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     // The server must see the latest text before completing in it.
                     flush_pending(
                         active,
-                        &mut pending,
+                        (&mut pending, &mut documents),
                         &mut dead,
                         &mut tally,
                         &updates,
@@ -563,7 +570,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     // Symbol ranges must describe the same text revision as the request.
                     flush_pending(
                         active,
-                        &mut pending,
+                        (&mut pending, &mut documents),
                         &mut dead,
                         &mut tally,
                         &updates,
@@ -592,7 +599,8 @@ pub(super) async fn server_task(task: ServerTask) {
                 | ServerCmd::SignatureHelp { .. }
                 | ServerCmd::SelectionRanges { .. }) => {
                     let health = (&mut dead, &mut tally, &updates, &key, token);
-                    caret_query(active, cmd, (generation, &mut pending), health).await;
+                    let queue = (generation, &mut pending, &mut documents);
+                    caret_query(active, cmd, queue, health).await;
                 },
                 ServerCmd::Definition {
                     request,
@@ -604,7 +612,7 @@ pub(super) async fn server_task(task: ServerTask) {
                 } => {
                     flush_pending(
                         active,
-                        &mut pending,
+                        (&mut pending, &mut documents),
                         &mut dead,
                         &mut tally,
                         &updates,
@@ -641,7 +649,7 @@ pub(super) async fn server_task(task: ServerTask) {
                 ServerCmd::WorkspaceSymbols { request, query } => {
                     flush_pending(
                         active,
-                        &mut pending,
+                        (&mut pending, &mut documents),
                         &mut dead,
                         &mut tally,
                         &updates,
@@ -682,7 +690,7 @@ pub(super) async fn server_task(task: ServerTask) {
                 } => {
                     flush_pending(
                         active,
-                        &mut pending,
+                        (&mut pending, &mut documents),
                         &mut dead,
                         &mut tally,
                         &updates,
@@ -731,7 +739,7 @@ pub(super) async fn server_task(task: ServerTask) {
                 } => {
                     flush_pending(
                         active,
-                        &mut pending,
+                        (&mut pending, &mut documents),
                         &mut dead,
                         &mut tally,
                         &updates,
@@ -782,7 +790,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     Err(cmd) => {
                         flush_pending(
                             active,
-                            &mut pending,
+                            (&mut pending, &mut documents),
                             &mut dead,
                             &mut tally,
                             &updates,
@@ -815,7 +823,7 @@ pub(super) async fn server_task(task: ServerTask) {
                 } => {
                     flush_pending(
                         active,
-                        &mut pending,
+                        (&mut pending, &mut documents),
                         &mut dead,
                         &mut tally,
                         &updates,
@@ -849,7 +857,7 @@ pub(super) async fn server_task(task: ServerTask) {
         // have just arrived for a path with none, and a finished one frees its
         // document for the next: launch what is ready. Probes alike.
         if !dead && let Some(active) = client.as_ref() {
-            flights.launch_ready(active, pending.as_ref().map(|(path, ..)| path.as_path()));
+            flights.launch_ready(active, pending.as_ref().map(|change| change.path.as_path()));
         }
         if dead {
             let _ = client.take();

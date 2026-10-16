@@ -207,14 +207,14 @@ impl Session {
                     // Arm the backup clock on the clean→dirty transition (see
                     // `backup_tick`).
                     doc.sync_dirty_since(tick);
-                    // The single LSP apply site: forward the new full text
-                    // (debounced by the server task). A no-op while no server is
-                    // attached for this language.
+                    // The single LSP apply site: forward the edit (debounced by
+                    // the server task). A no-op while no server is attached for
+                    // this language.
                     retired.absorb(lsp.document_changed(
                         doc.language_selector,
                         &doc.path,
-                        applied.version,
-                        || doc.buffer.text(),
+                        &doc.buffer,
+                        Some(&applied),
                     ));
                     Some(applied.version)
                 },
@@ -272,8 +272,8 @@ impl Session {
             retired.absorb(lsp.document_changed(
                 doc.language_selector,
                 &doc.path,
-                applied.version,
-                || doc.buffer.text(),
+                &doc.buffer,
+                Some(&applied),
             ));
             // Jump the caret to the change: undo restores the whole pre-edit
             // selection set, redo the set the client reported right after the
@@ -449,10 +449,12 @@ impl Session {
             let spell_without_syntax =
                 update_syntax(settings, highlight_tx, doc_id, doc, Some(&applied.edits));
             doc.sync_dirty_since(tick);
-            let retired =
-                lsp.document_changed(doc.language_selector, &doc.path, applied.version, || {
-                    doc.buffer.text()
-                });
+            let retired = lsp.document_changed(
+                doc.language_selector,
+                &doc.path,
+                &doc.buffer,
+                Some(&applied),
+            );
             (spell_without_syntax, retired)
         };
         // Formatter edits are a document change like any other, so the same
@@ -728,10 +730,12 @@ impl Session {
         let spell_without_syntax =
             update_syntax(settings, highlight_tx, doc_id, doc, Some(&applied.edits));
         doc.sync_dirty_since(tick);
-        let retired =
-            lsp.document_changed(doc.language_selector, &doc.path, applied.version, || {
-                doc.buffer.text()
-            });
+        let retired = lsp.document_changed(
+            doc.language_selector,
+            &doc.path,
+            &doc.buffer,
+            Some(&applied),
+        );
         self.adopt_retirement(retired);
         if spell_without_syntax {
             self.schedule_spell(doc_id);

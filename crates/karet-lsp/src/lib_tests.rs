@@ -916,3 +916,6 @@ mod client_capability;
 
 #[path = "protocol_tests.rs"]
 mod protocol;
+
+#[path = "sync_tests.rs"]
+mod sync;
