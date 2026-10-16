@@ -57,11 +57,6 @@ const ROLE_KEYS: &[(&str, ThemeRole)] = &[
         ThemeRole::LineNumberActive,
     ),
     ("editorBracketMatch.background", ThemeRole::MatchingBracket),
-    ("editor.findMatchBackground", ThemeRole::SearchMatchCurrent),
-    (
-        "editor.findMatchHighlightBackground",
-        ThemeRole::SearchMatch,
-    ),
     ("editorInlayHint.foreground", ThemeRole::InlayHint),
     ("diffEditor.insertedTextBackground", ThemeRole::DiffAdded),
     ("diffEditor.removedTextBackground", ThemeRole::DiffRemoved),
@@ -74,6 +69,20 @@ const ROLE_KEYS: &[(&str, ThemeRole)] = &[
     ("list.activeSelectionBackground", ThemeRole::ActiveEditorRow),
     ("scrollbarSlider.background", ThemeRole::ScrollbarThumb),
     ("editorOverviewRuler.border", ThemeRole::ScrollbarTrack),
+];
+
+/// VS Code find-match keys, composited over `editor.background` at load time.
+///
+/// Themes conventionally make these translucent (Dark+ ships
+/// `#ea5c0055` for the other matches) so the text shows through, and a terminal
+/// cell cannot carry alpha: taken as-is, the other matches would paint opaque and
+/// saturated, louder than the current match.
+const BLENDED_ROLE_KEYS: &[(&str, ThemeRole)] = &[
+    ("editor.findMatchBackground", ThemeRole::SearchMatchCurrent),
+    (
+        "editor.findMatchHighlightBackground",
+        ThemeRole::SearchMatch,
+    ),
 ];
 
 /// VS Code's per-kind inlay-hint color keys, each inheriting
@@ -95,6 +104,13 @@ pub(crate) fn load(json: &str) -> Result<Theme, ThemeError> {
     for (key, role) in ROLE_KEYS {
         if let Some(color) = root.colors.get(*key).and_then(|h| Rgba::from_hex(h)) {
             theme.roles[*role as usize] = color;
+        }
+    }
+    // After `ROLE_KEYS`, so the backdrop is the theme's own background.
+    let backdrop = theme.role(ThemeRole::Background);
+    for (key, role) in BLENDED_ROLE_KEYS {
+        if let Some(color) = root.colors.get(*key).and_then(|h| Rgba::from_hex(h)) {
+            theme.roles[*role as usize] = composite_over(color, backdrop);
         }
     }
     // VS Code falls back from a per-kind hint color to the general one, so a
@@ -143,6 +159,22 @@ pub(crate) fn load(json: &str) -> Result<Theme, ThemeError> {
     theme.fallback_fg = theme.role(ThemeRole::Foreground);
     theme.dark = is_dark_color(theme.role(ThemeRole::Background));
     Ok(theme)
+}
+
+/// Alpha-composite `color` over the opaque `backdrop`, giving an opaque color
+/// (source-over, rounded to nearest).
+fn composite_over(color: Rgba, backdrop: Rgba) -> Rgba {
+    let a = u16::from(color.a);
+    let mix = |fg: u8, bg: u8| {
+        let blended = (u16::from(fg) * a + u16::from(bg) * (255 - a) + 127) / 255;
+        // `blended` is a weighted mean of two `u8`s, so it always fits.
+        u8::try_from(blended).unwrap_or(u8::MAX)
+    };
+    Rgba::rgb(
+        mix(color.r, backdrop.r),
+        mix(color.g, backdrop.g),
+        mix(color.b, backdrop.b),
+    )
 }
 
 /// A single `scope` string may be a comma-separated list of selectors.
@@ -304,22 +336,55 @@ mod tests {
 
     #[test]
     fn find_match_keys_overlay_the_current_and_other_match_roles() -> Result<(), ThemeError> {
+        // Dark+'s values: an opaque current match, translucent other matches.
         let json = r##"{
             "colors": {
+                "editor.background": "#1e1e1e",
                 "editor.findMatchBackground": "#515c6a",
                 "editor.findMatchHighlightBackground": "#ea5c0055"
             }
         }"##;
         let t = Theme::load_vscode(json)?;
+        // An opaque key is taken as written.
         assert_eq!(
             t.role(ThemeRole::SearchMatchCurrent),
             Rgba::rgb(0x51, 0x5c, 0x6a)
         );
+        // A translucent key is composited over the theme's own background
+        // (1/3 orange over #1e1e1e), not painted as opaque orange.
+        assert_eq!(t.role(ThemeRole::SearchMatch), Rgba::rgb(98, 51, 20));
+        Ok(())
+    }
+
+    /// The backdrop is the loaded theme's background, whichever order the keys
+    /// appear in, and a fully transparent key leaves exactly that background.
+    #[test]
+    fn find_match_keys_composite_over_the_theme_background() -> Result<(), ThemeError> {
+        let json = r##"{
+            "colors": {
+                "editor.findMatchHighlightBackground": "#ff000000",
+                "editor.findMatchBackground": "#ffffff80",
+                "editor.background": "#000000"
+            }
+        }"##;
+        let t = Theme::load_vscode(json)?;
+        assert_eq!(t.role(ThemeRole::SearchMatch), Rgba::rgb(0, 0, 0));
         assert_eq!(
-            Some(t.role(ThemeRole::SearchMatch)),
-            Rgba::from_hex("#ea5c0055")
+            t.role(ThemeRole::SearchMatchCurrent),
+            Rgba::rgb(128, 128, 128)
         );
         Ok(())
+    }
+
+    #[test]
+    fn composite_over_bounds() {
+        let bg = Rgba::rgb(10, 20, 30);
+        let opaque = Rgba::rgb(200, 100, 0);
+        assert_eq!(composite_over(opaque, bg), opaque);
+        let clear = Rgba { a: 0, ..opaque };
+        assert_eq!(composite_over(clear, bg), bg);
+        let white = Rgba::rgb(255, 255, 255);
+        assert_eq!(composite_over(Rgba { a: 254, ..white }, white), white);
     }
 
     /// A theme that colors only the general hint key colors every kind, as
