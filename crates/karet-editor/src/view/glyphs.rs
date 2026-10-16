@@ -80,6 +80,23 @@ impl<'a> Editor<'a> {
         self
     }
 
+    /// Paint the guides blank line `l` runs past its end on the row that
+    /// starts at char column `start`, `x` being where its text starts on
+    /// screen, into blank cells left of `limit`. A non-blank line has none.
+    pub(super) fn paint_blank_guides(
+        &self,
+        buf: &mut Buffer,
+        glyphs: &RowGlyphs,
+        (l, start): (u32, u32),
+        (x, y): (u16, u16),
+        limit: u16,
+    ) {
+        if glyphs.blank_past(line_len(self.buffer, l)) {
+            let origin = display_origin(self.buffer, l, start, self.tab_width);
+            glyphs.paint_past_end(buf, (x, y), origin, limit);
+        }
+    }
+
     /// Whether any option here changes what a row paints.
     pub(super) fn draws_glyphs(&self) -> bool {
         self.indent_guides
@@ -246,6 +263,9 @@ impl RowGlyphs {
             return None;
         }
         let shows = self.shows(chars, col, selected);
+        if !shows && (col >= self.leading_end || self.indent == 0) {
+            return None;
+        }
         let mut color = shows.then_some(self.colors.guide);
         let mut text = String::new();
         for offset in 0..width.max(1) {
@@ -274,15 +294,9 @@ impl RowGlyphs {
     }
 
     /// Paint the guides a blank line runs past its own whitespace, into the
-    /// cells of row `y` that are still blank. `x` is where display column
-    /// `origin` (the row's first) is on screen.
-    pub(super) fn paint_past_end(
-        &self,
-        buf: &mut Buffer,
-        area: Rect,
-        (x, y): (u16, u16),
-        origin: u32,
-    ) {
+    /// cells of row `y` left of `limit` that are still blank. `x` is where
+    /// display column `origin` (the row's first) is on screen.
+    fn paint_past_end(&self, buf: &mut Buffer, (x, y): (u16, u16), origin: u32, limit: u16) {
         let mut at = self.own.next_multiple_of(self.unit);
         while at < self.indent {
             let screen = at
@@ -290,7 +304,7 @@ impl RowGlyphs {
                 .and_then(|offset| u16::try_from(offset).ok())
                 .map(|offset| x.saturating_add(offset));
             if let (Some(screen), Some(color)) = (screen, self.guide_at(at))
-                && screen < area.right()
+                && screen < limit
                 && let Some(cell) = buf.cell_mut((screen, y))
                 && cell.symbol() == " "
             {
@@ -302,7 +316,7 @@ impl RowGlyphs {
 
     /// Whether this line is blank (whitespace only), so its guides run past
     /// its end.
-    pub(super) fn blank_past(&self, line_len: u32) -> bool {
+    fn blank_past(&self, line_len: u32) -> bool {
         self.leading_end >= line_len && self.indent > self.own
     }
 }
@@ -332,7 +346,7 @@ fn leading(buffer: &TextBuffer, l: u32, tab_width: u16) -> (u32, u32) {
 /// The display column a row of whitespace-only line `l` that starts at char
 /// column `start` begins at: the width of the chars scrolled off, and one
 /// cell per column scrolled past the line's end.
-pub(super) fn display_origin(buffer: &TextBuffer, l: u32, start: u32, tab_width: u16) -> u32 {
+fn display_origin(buffer: &TextBuffer, l: u32, start: u32, tab_width: u16) -> u32 {
     let chars = line_chars_prefix(buffer, l, start);
     let mut width = 0_u32;
     let mut cols = 0_u32;

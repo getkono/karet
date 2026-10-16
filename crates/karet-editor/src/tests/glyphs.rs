@@ -106,6 +106,30 @@ fn the_carets_block_draws_its_guide_in_the_active_colour() {
 }
 
 #[test]
+fn a_blank_lines_guides_stop_where_its_end_of_line_text_starts() {
+    let buffer = TextBuffer::from_text("{\n        a\n\n        b\n");
+    let blame = [VirtualText {
+        line: 2,
+        placement: VirtualTextPlacement::EndOfLine {
+            align: karet_core::EolAlign::Left,
+            priority: 0,
+        },
+        text: "  x y z w".to_owned(),
+        role: ThemeRole::Muted,
+    }];
+    let area = Rect::new(0, 0, 14, 4);
+    let target = paint(
+        Editor::new(&buffer)
+            .indent_guides(true)
+            .virtual_text(&blame),
+        area,
+        LineCol::new(0, 0),
+    );
+    assert_eq!(row(&target, 2, 9), "  x y z w", "no guide cuts into it");
+    assert_eq!(row(&target, 1, 9), "│   │   a");
+}
+
+#[test]
 fn guides_step_by_the_tab_width_and_cross_hard_tabs() {
     let buffer = TextBuffer::from_text("{\n\t\tx\n  y\n");
     let area = Rect::new(0, 0, 10, 3);

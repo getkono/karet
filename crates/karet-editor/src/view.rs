@@ -936,19 +936,25 @@ impl StatefulWidget for Editor<'_> {
             // The end-of-line slot is on the last row, and only while the
             // line's end is not scrolled off to the left: past it, the slot
             // would float at the margin over nothing.
+            // Guides a blank line runs past its end stop where end-of-line
+            // text starts, so they never cut into a space inside it.
+            let mut guide_limit = area.right();
             if range_index + 1 == ranges.len() && range.start <= line_len(self.buffer, l) {
                 let room = row_room(area, &spans);
+                let before = spans.len();
                 self.push_eol_spans(&mut spans, &mut painted, &hint_index, l, room, theme);
+                if spans.len() > before {
+                    let room = u16::try_from(room).unwrap_or(u16::MAX);
+                    guide_limit = area.right().saturating_sub(room);
+                }
             }
             record_virtual_text(&mut state.last_virtual_text, area, y, &spans, &painted);
             buf.set_line(area.x, y, &Line::from(spans), area.width);
             if let Some(glyphs) = &glyphs
                 && ranges.len() == 1
-                && glyphs.blank_past(line_len(self.buffer, l))
             {
-                let origin = glyphs::display_origin(self.buffer, l, range.start, self.tab_width);
-                let x = area.x.saturating_add(gutter);
-                glyphs.paint_past_end(buf, area, (x, y), origin);
+                let at = (area.x.saturating_add(gutter), y);
+                self.paint_blank_guides(buf, glyphs, (l, range.start), at, guide_limit);
             }
             if clipped_break && area.width > 0 {
                 buf.set_style(
