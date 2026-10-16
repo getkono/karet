@@ -78,5 +78,6 @@ pub use text::selection_text;
 pub use text::word_bounds;
 pub use view::Editor;
 pub use view::LineNumbers;
+pub use view::RenderWhitespace;
 use view::gutter_width;
 pub use visual::cluster_widths;
