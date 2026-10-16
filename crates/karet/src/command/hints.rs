@@ -109,6 +109,7 @@ impl Command {
             Self::ToggleInlineBlame => "blame",
             Self::OpenBlameDetail => "blame detail",
             Self::ShowLoadedConfig => "settings",
+            Self::SelectColorTheme => "theme",
             Self::ManageLanguageServers => "language servers",
             Self::CheckLanguageServerUpdates => "lsp updates",
             Self::ShowLanguageServerLog => "lsp log",

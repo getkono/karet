@@ -57,6 +57,7 @@ mod startup;
 mod state;
 mod syntax_select;
 mod tabs;
+pub(crate) mod theme_picker;
 mod todos;
 mod unsupported;
 mod util;
@@ -348,6 +349,8 @@ pub struct App {
     pub(crate) config_diagnostics: Vec<ConfigDiagnostic>,
     /// The active color theme.
     pub(crate) theme: Theme,
+    /// The Select Color Theme picker's live preview and the session's pick.
+    pub(crate) theme_ui: theme_picker::ThemeUi,
     /// Whether syntax highlighting is enabled.
     pub(crate) syntax: bool,
     /// The icon style for the explorer and activity bar.

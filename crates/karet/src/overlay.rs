@@ -64,6 +64,8 @@ pub enum OverlayEvent {
     AcceptDeleteRemoteBranch { remote: String, branch: String },
     /// Open the Seam view on the chosen start point.
     AcceptSeamRoot(PathBuf),
+    /// Apply the chosen color theme for this session.
+    AcceptTheme(crate::app::theme_picker::ThemeChoice),
     /// Jump to one of several definition locations.
     AcceptLocation {
         /// The defining file.
@@ -636,8 +638,8 @@ impl Overlay {
         }
     }
 
-    /// The per-row right-aligned hints (key chords), aligned with [`rows`](Self::rows).
-    /// Only command rows carry hints.
+    /// The per-row right-aligned hints, aligned with [`rows`](Self::rows): a
+    /// command's key chord, a symbol's detail, a theme's source.
     #[must_use]
     pub fn row_hints(&self) -> Vec<Option<String>> {
         match self {
@@ -650,6 +652,7 @@ impl Overlay {
                         keymap::hint_for(*command, keymap::ChordStyle::Verbose)
                     },
                     OverlayEvent::AcceptSymbol { detail, .. } => Some(detail.clone()),
+                    OverlayEvent::AcceptTheme(choice) => Some(choice.source.label().into()),
                     _ => None,
                 })
                 .collect(),

@@ -493,6 +493,8 @@ pub enum Command {
     OpenBlameDetail,
     /// Open a read-only view of the loaded settings and their provenance.
     ShowLoadedConfig,
+    /// Pick a color theme from a live-previewing list, for this session.
+    SelectColorTheme,
     /// Open the persistent language-server inventory and lifecycle manager.
     ManageLanguageServers,
     /// Explicitly check installed managed language servers for updates.
@@ -986,6 +988,7 @@ impl Command {
             Self::ToggleInlineBlame => "Source Control: Toggle Inline Blame",
             Self::OpenBlameDetail => "Source Control: Open Blame Details",
             Self::ShowLoadedConfig => "Settings: Show Loaded Configuration",
+            Self::SelectColorTheme => "Settings: Select Color Theme…",
             Self::ManageLanguageServers => "Language Servers: Manage",
             Self::CheckLanguageServerUpdates => "Language Servers: Check for Updates…",
             Self::ShowLanguageServerLog => "Language Servers: Show Log",
