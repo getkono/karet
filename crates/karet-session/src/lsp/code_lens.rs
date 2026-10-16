@@ -183,28 +183,48 @@ impl Background for Lenses {
         lines: (u32, u32),
     ) -> Result<Vec<CodeLens>, LspError> {
         let mut lenses = client.code_lenses(&path).await?;
+        let deferred: Vec<(usize, CodeLens)> = lenses
+            .iter()
+            .enumerate()
+            .filter(|(_, lens)| !lens.is_resolved() && (lines.0..=lines.1).contains(&lens.line()))
+            .map(|(index, lens)| (index, lens.clone()))
+            .collect();
         let mut resolves = JoinSet::new();
-        for (index, lens) in lenses.iter().enumerate() {
-            if lens.is_resolved() || !(lines.0..=lines.1).contains(&lens.line()) {
-                continue;
+        for (index, lens) in deferred {
+            // At most `MAX_CONCURRENT_RESOLVES` in flight: a resolve is often
+            // a reference search, and the asked lines can span far more than
+            // a screen (one document in two far-apart panes asks for
+            // everything between them).
+            if resolves.len() >= MAX_CONCURRENT_RESOLVES {
+                adopt_resolve(&mut lenses, resolves.join_next().await);
             }
-            let (client, lens) = (Arc::clone(&client), lens.clone());
+            let client = Arc::clone(&client);
             resolves.spawn(async move { (index, client.resolve_code_lens(&lens).await) });
         }
-        // A lens whose resolve failed stays unresolved, so it is not shown;
-        // the next listing asks again.
         while let Some(joined) = resolves.join_next().await {
-            if let Ok((index, Ok(resolved))) = joined
-                && let Some(lens) = lenses.get_mut(index)
-            {
-                *lens = resolved;
-            }
+            adopt_resolve(&mut lenses, Some(joined));
         }
         Ok(lenses)
     }
 
     fn unanswered(updates: &mpsc::UnboundedSender<LspUpdate>, tag: FlightTag, generation: u64) {
         answer_listed(updates, tag, None, generation);
+    }
+}
+
+/// The most `codeLens/resolve` requests one listing keeps in flight at once.
+pub(super) const MAX_CONCURRENT_RESOLVES: usize = 8;
+
+/// One finished resolve: the lens's index in the listing, and its outcome.
+type Resolved = Result<(usize, Result<CodeLens, LspError>), tokio::task::JoinError>;
+
+/// Put one finished resolve in its lens's place. A lens whose resolve failed
+/// stays unresolved, so it is not shown; the next listing asks again.
+fn adopt_resolve(lenses: &mut [CodeLens], joined: Option<Resolved>) {
+    if let Some(Ok((index, Ok(resolved)))) = joined
+        && let Some(lens) = lenses.get_mut(index)
+    {
+        *lens = resolved;
     }
 }
 
