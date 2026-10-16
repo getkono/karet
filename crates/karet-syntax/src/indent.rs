@@ -8,6 +8,9 @@
 
 use std::collections::BTreeMap;
 
+use karet_core::BytePos;
+use karet_treesitter::SyntaxTree;
+
 /// The longest indentation step, in spaces, counted as a nesting level rather
 /// than a continuation aligned under something on the line above.
 const MAX_SPACE_STEP: usize = 8;
@@ -26,14 +29,31 @@ pub(crate) fn line_indent(text: &str, line_start: usize) -> Option<&str> {
     Some(leading(line.split('\n').next().unwrap_or(line)))
 }
 
+/// Whether the character at `at` is string or comment content rather than code:
+/// it sits inside a comment, or inside a string that opened before it. A line
+/// that opens a string (a Python docstring) is code; one that continues it is not.
+pub(crate) fn in_literal(tree: &SyntaxTree, at: BytePos) -> bool {
+    tree.named_ancestors_at(at).iter().any(|node| {
+        node.kind.contains("comment") || (node.kind.contains("string") && node.span.start < at)
+    })
+}
+
 /// The indentation one level inside the node that starts on the line at
 /// `line_start`, for a break at byte `caret`.
 ///
 /// The shallowest indentation, deeper than the anchor line's, among the
 /// non-blank lines from the one after the anchor through the caret's: the body
-/// the node already has. With none, the anchor line's indentation plus the
-/// file's own step ([`file_unit`]), or plus `unit` when the file shows none.
-pub(crate) fn deeper(text: &str, line_start: usize, caret: usize, unit: &str) -> Option<String> {
+/// the node already has. A line is skipped when `literal` holds for the byte its
+/// first non-blank character sits at, so the inside of a multi-line string or
+/// comment never counts as body. With none, the anchor line's indentation plus
+/// the file's own step ([`file_unit`]), or plus `unit` when the file shows none.
+pub(crate) fn deeper(
+    text: &str,
+    line_start: usize,
+    caret: usize,
+    unit: &str,
+    literal: impl Fn(usize) -> bool,
+) -> Option<String> {
     let base = line_indent(text, line_start)?;
     let mut offset = line_start;
     let mut body: Option<&str> = None;
@@ -43,7 +63,12 @@ pub(crate) fn deeper(text: &str, line_start: usize, caret: usize, unit: &str) ->
         }
         let ws = leading(line);
         let solid = ws.len() < line.trim_end_matches('\r').len();
-        if row > 0 && solid && ws.len() > base.len() && ws.starts_with(base) {
+        if row > 0
+            && solid
+            && ws.len() > base.len()
+            && ws.starts_with(base)
+            && !literal(offset + ws.len())
+        {
             body = Some(body.map_or(ws, |b| if ws.len() < b.len() { ws } else { b }));
         }
         offset += line.len() + 1;
@@ -104,26 +129,56 @@ mod tests {
         assert_eq!(file_unit(""), None);
     }
 
+    /// No byte is inside a string or comment.
+    fn code(_: usize) -> bool {
+        false
+    }
+
     #[test]
     fn deeper_prefers_the_nodes_existing_body() {
         // Tab-indented Go body, with a four-space setting.
         assert_eq!(
-            deeper("func f() {\n\tx()", 0, 15, "    ").as_deref(),
+            deeper("func f() {\n\tx()", 0, 15, "    ", code).as_deref(),
             Some("\t")
         );
         // The shallowest body line, not a continuation aligned deeper.
         let text = "fn f() {\n    g(a,\n      b);";
-        assert_eq!(deeper(text, 0, text.len(), "  ").as_deref(), Some("    "));
+        assert_eq!(
+            deeper(text, 0, text.len(), "  ", code).as_deref(),
+            Some("    ")
+        );
         // Lines after the caret do not count.
         let text = "a {\n  b\n}\nif x {\n\t\ty\n}";
-        assert_eq!(deeper(text, 10, 16, "    ").as_deref(), Some("  "));
+        assert_eq!(deeper(text, 10, 16, "    ", code).as_deref(), Some("  "));
+    }
+
+    #[test]
+    fn deeper_skips_lines_that_start_inside_a_literal() {
+        // The shallower line starts inside a string, so the code line decides.
+        let text = "def f():\n    x = \"\"\"\n  s\n  \"\"\"\n    y";
+        let inside = |at: usize| (21..30).contains(&at);
+        assert_eq!(
+            deeper(text, 0, text.len(), "\t", inside).as_deref(),
+            Some("    ")
+        );
+        // A shallower comment line does not set the body either.
+        assert_eq!(
+            deeper("f {\n   // c\n  g", 0, 18, "\t", |at| at == 7).as_deref(),
+            Some("  ")
+        );
     }
 
     #[test]
     fn deeper_without_a_body_steps_by_the_files_unit_then_the_setting() {
         let text = "def g():\n  pass\n\ndef f():";
-        assert_eq!(deeper(text, 17, text.len(), "    ").as_deref(), Some("  "));
-        assert_eq!(deeper("  if x {", 0, 8, "\t").as_deref(), Some("  \t"));
-        assert_eq!(deeper("x", 9, 9, "\t"), None);
+        assert_eq!(
+            deeper(text, 17, text.len(), "    ", code).as_deref(),
+            Some("  ")
+        );
+        assert_eq!(
+            deeper("  if x {", 0, 8, "\t", code).as_deref(),
+            Some("  \t")
+        );
+        assert_eq!(deeper("x", 9, 9, "\t", code), None);
     }
 }
