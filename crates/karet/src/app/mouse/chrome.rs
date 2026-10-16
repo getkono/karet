@@ -224,7 +224,14 @@ impl App {
         true
     }
 
-    /// Activate a Markdown link only for the explicit Ctrl/Cmd-click gesture.
+    /// Activate a link only for the explicit Ctrl/Cmd-click gesture: one
+    /// rendered in a Markdown preview, or one written in the source of the
+    /// editor under the pointer, focused split or not (a bare URL, or a
+    /// Markdown `[text](target)`).
+    ///
+    /// A source link outranks Go to Definition under the same gesture: the
+    /// link is what the underline promised. Alt or Shift keep the click the
+    /// editor's (multi-caret, extend), as Ctrl+click on a symbol does.
     pub(in crate::app) fn handle_markdown_link_mouse(&mut self, mouse: MouseEvent) -> bool {
         if !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
             || !mouse
@@ -234,11 +241,15 @@ impl App {
             return false;
         }
         let point = (mouse.column, mouse.row);
-        let Some(target) = self
+        let preview = self
             .markdown_link_hits
             .iter()
             .find(|hit| rect_contains(hit.rect, point))
-            .map(|hit| hit.target.clone())
+            .map(|hit| hit.target.clone());
+        let plain = !mouse
+            .modifiers
+            .intersects(KeyModifiers::ALT | KeyModifiers::SHIFT);
+        let Some(target) = preview.or_else(|| self.pane_source_link(point).filter(|_| plain))
         else {
             return false;
         };

@@ -1,4 +1,6 @@
-//! GitHub autolinks in plain text, for the commit-message box.
+//! GitHub autolinks in plain text, for the commit-message box, and the links
+//! a source file spells out, for Ctrl/Cmd+click in the editor
+//! ([`source_links`]).
 //!
 //! GitHub turns bare references in a commit message into links — `#12`, `GH-12`,
 //! `owner/repo#12`, a commit hash, an `@mention`, a URL. This module finds those
@@ -309,6 +311,173 @@ fn link(range: Range<usize>, url: String) -> Option<Autolink> {
     Some(Autolink { range, url })
 }
 
+/// One link written in a line of a file's source, for Ctrl/Cmd+click in the
+/// editor.
+///
+/// Unlike an [`Autolink`], the target is *not* yet validated: a Markdown link
+/// may be a relative file path, which only
+/// [`links::resolve`](crate::links::resolve) can judge against the document it
+/// sits in, so every target is resolved there at activation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SourceLink {
+    /// The link's byte range in the scanned line: the whole `[text](target)`
+    /// for a Markdown link, the URL itself for a bare one.
+    pub(crate) range: Range<usize>,
+    /// The link's destination, as written.
+    pub(crate) target: String,
+}
+
+/// Find the links in one `line` of a file's source.
+///
+/// A bare `http`/`https` URL is a link in any file — a URL in a code comment is
+/// as worth following as one in prose. In Markdown, an inline `[text](target)`
+/// (or `![alt](src)`) link is one too, clickable anywhere from its `[` to its
+/// `)`; a URL inside it belongs to it rather than standing as a second link.
+///
+/// Scanning is per line and blind to code fences and spans: a link written
+/// inside one is still found, which costs nothing worse than a link that opens
+/// when Ctrl+clicked. Reference-style links (`[text][ref]`) are not resolved.
+pub(crate) fn source_links(line: &str, markdown: bool) -> Vec<SourceLink> {
+    let mut links = if markdown {
+        inline_links(line)
+    } else {
+        Vec::new()
+    };
+    let covered: Vec<Range<usize>> = links.iter().map(|link| link.range.clone()).collect();
+    links.extend(
+        scan_urls(line)
+            .into_iter()
+            .filter(|url| {
+                !covered
+                    .iter()
+                    .any(|range| range.start < url.range.end && url.range.start < range.end)
+            })
+            .map(|url| SourceLink {
+                range: url.range,
+                target: url.url,
+            }),
+    );
+    links.sort_by_key(|link| link.range.start);
+    links
+}
+
+/// Find every inline Markdown link, `[text](target "title")`, in `line`.
+///
+/// One forward pass: each unescaped `]` closes the nearest open `[` (so link
+/// text may nest balanced brackets), and only a `]` that closed one and is
+/// followed by `(` has its destination parsed. A link cannot contain a link,
+/// so a found link's end forgets every `[` before it.
+///
+/// This runs on every Ctrl-held pointer event, so its cost is linear in the
+/// line: the destinations that fail to parse share a scan budget of twice
+/// the line's length, and once it is spent the rest of the line's Markdown
+/// links go unfound (its bare URLs are still found by the caller).
+fn inline_links(line: &str) -> Vec<SourceLink> {
+    let mut links = Vec::new();
+    let mut opens: Vec<usize> = Vec::new();
+    let mut budget = line.len().saturating_mul(2);
+    let mut at = 0usize;
+    while let Some(character) = line[at..].chars().next() {
+        let next = at + character.len_utf8();
+        match character {
+            // A backslash escapes the character after it, bracket or not.
+            '\\' => {
+                at = line[next..]
+                    .chars()
+                    .next()
+                    .map_or(next, |escaped| next + escaped.len_utf8());
+                continue;
+            },
+            '[' => opens.push(at),
+            ']' => {
+                if let Some(open) = opens.pop()
+                    && line[next..].starts_with('(')
+                {
+                    let from = next + '('.len_utf8();
+                    let mut limit = from.saturating_add(budget).min(line.len());
+                    while !line.is_char_boundary(limit) {
+                        limit -= 1;
+                    }
+                    match destination(&line[..limit], from) {
+                        Ok((target, end)) if !target.is_empty() => {
+                            links.push(SourceLink {
+                                range: open..end,
+                                target,
+                            });
+                            opens.clear();
+                            at = end;
+                            continue;
+                        },
+                        Ok((_, end)) | Err(end) => {
+                            budget = budget.saturating_sub(end - from);
+                        },
+                    }
+                }
+            },
+            _ => {},
+        }
+        at = next;
+    }
+    links
+}
+
+/// Parse a link destination and optional title starting at byte `from` (just
+/// past the `](`), returning the destination and the byte just past the `)`,
+/// or else the byte the scan stopped at.
+fn destination(line: &str, from: usize) -> Result<(String, usize), usize> {
+    let mut at = skip_blanks(line, from);
+    let target = if line[at..].starts_with('<') {
+        let len = line[at + 1..].find('>').ok_or(line.len())?;
+        let target = &line[at + 1..at + 1 + len];
+        at += len + "<>".len();
+        target
+    } else {
+        // A bare destination keeps balanced parentheses (`Foo_(bar)`) and ends
+        // at a space, which separates it from a title.
+        let mut depth = 0usize;
+        let mut end = line.len();
+        for (offset, character) in line[at..].char_indices() {
+            match character {
+                '(' => depth += 1,
+                ')' if depth == 0 => {
+                    end = at + offset;
+                    break;
+                },
+                ')' => depth -= 1,
+                _ if character.is_whitespace() || character.is_control() => {
+                    end = at + offset;
+                    break;
+                },
+                _ => {},
+            }
+        }
+        let target = &line[at..end];
+        at = end;
+        target
+    };
+    at = skip_blanks(line, at);
+    let closer = match line[at..].chars().next().ok_or(at)? {
+        '"' => Some('"'),
+        '\'' => Some('\''),
+        '(' => Some(')'),
+        _ => None,
+    };
+    if let Some(closer) = closer {
+        let len = line[at + 1..].find(closer).ok_or(line.len())?;
+        at = skip_blanks(line, at + 1 + len + closer.len_utf8());
+    }
+    if line[at..].starts_with(')') {
+        Ok((target.to_string(), at + ')'.len_utf8()))
+    } else {
+        Err(at)
+    }
+}
+
+/// The byte just past the spaces and tabs starting at `from`.
+fn skip_blanks(line: &str, from: usize) -> usize {
+    run_end(line, from, |character| matches!(character, ' ' | '\t'))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -486,5 +655,141 @@ mod tests {
             assert!(text.is_char_boundary(link.range.end), "{link:?}");
         }
         assert_eq!(hits(text, Some(&repo)).len(), 3);
+    }
+
+    /// The linked substrings of a source line and their targets.
+    fn source(line: &str, markdown: bool) -> Vec<(String, String)> {
+        source_links(line, markdown)
+            .into_iter()
+            .map(|link| (line[link.range].to_string(), link.target))
+            .collect()
+    }
+
+    #[test]
+    fn a_bare_url_is_a_source_link_in_any_file() {
+        let line = "// see https://example.com/a.";
+        let expected = vec![(
+            "https://example.com/a".to_string(),
+            "https://example.com/a".to_string(),
+        )];
+        assert_eq!(source(line, false), expected);
+        assert_eq!(source(line, true), expected);
+    }
+
+    #[test]
+    fn a_markdown_link_is_clickable_from_bracket_to_paren() {
+        let pair = |text: &str, target: &str| (text.to_string(), target.to_string());
+        assert_eq!(
+            source("read [the guide](docs/guide.md#start) now", true),
+            [pair(
+                "[the guide](docs/guide.md#start)",
+                "docs/guide.md#start"
+            )]
+        );
+        // An image, a title, an angle-bracketed destination with a space, and a
+        // destination keeping its own balanced parentheses.
+        assert_eq!(
+            source("![logo](img/logo.png \"Logo\")", true),
+            [pair("[logo](img/logo.png \"Logo\")", "img/logo.png")]
+        );
+        assert_eq!(
+            source("[a](<my file.md>)", true),
+            [pair("[a](<my file.md>)", "my file.md")]
+        );
+        assert_eq!(
+            source("[w](https://e.com/Foo_(bar))", true),
+            [pair(
+                "[w](https://e.com/Foo_(bar))",
+                "https://e.com/Foo_(bar)"
+            )]
+        );
+        assert_eq!(
+            source("[a [nested] b](x.md)", true),
+            [pair("[a [nested] b](x.md)", "x.md")]
+        );
+    }
+
+    #[test]
+    fn a_url_inside_a_markdown_link_is_not_a_second_link() {
+        let line = "[site](https://example.com) and https://other.example";
+        assert_eq!(
+            source(line, true),
+            [
+                (
+                    "[site](https://example.com)".to_string(),
+                    "https://example.com".to_string()
+                ),
+                (
+                    "https://other.example".to_string(),
+                    "https://other.example".to_string()
+                ),
+            ]
+        );
+        // Outside Markdown, the bracket syntax means nothing; the URL still links.
+        assert_eq!(
+            source(line, false)
+                .into_iter()
+                .map(|(text, _)| text)
+                .collect::<Vec<_>>(),
+            ["https://example.com", "https://other.example"]
+        );
+    }
+
+    #[test]
+    fn malformed_or_escaped_markdown_links_are_not_links() {
+        for line in [
+            "[text](",
+            "[text](unclosed",
+            "[text]()",
+            "\\[text](x.md)",
+            "[text\\](x.md)",
+            "[text](x.md \"unclosed title)",
+            "[text](x.md trailing)",
+            "](x.md)",
+        ] {
+            assert!(source(line, true).is_empty(), "{line}");
+        }
+    }
+
+    #[test]
+    fn a_link_inside_link_text_wins_over_the_outer_brackets() {
+        // CommonMark: links do not nest, so the inner one is the link and the
+        // outer brackets are text. An inner `](` that is no link leaves the
+        // outer one standing.
+        assert_eq!(
+            source("[a [b](c.md) d](e.md)", true),
+            [("[b](c.md)".to_string(), "c.md".to_string())]
+        );
+        assert_eq!(
+            source("[a [b](c d) e](f.md)", true),
+            [("[a [b](c d) e](f.md)".to_string(), "f.md".to_string())]
+        );
+    }
+
+    #[test]
+    fn a_long_line_of_unfinished_links_is_scanned_in_linear_time() {
+        // Each `](` here once rescanned to the line start and its destination
+        // to the line end: quadratic, which on lines this long would hang the
+        // test rather than fail it.
+        assert!(source(&"](".repeat(100_000), true).is_empty());
+        assert!(source(&"[a](b".repeat(40_000), true).is_empty());
+        // The budget only pays for failed destinations, so short failures
+        // before a link do not cost it the link.
+        let line = format!("{}[ok](x.md)", "[a](b c) ".repeat(1_000));
+        assert_eq!(
+            source(&line, true),
+            [("[ok](x.md)".to_string(), "x.md".to_string())]
+        );
+    }
+
+    #[test]
+    fn source_links_never_split_a_character() {
+        let line = "界[文書](文書.md) 界https://e.com/界";
+        let links = source_links(line, true);
+        assert_eq!(links.len(), 2);
+        for link in links {
+            assert!(line.is_char_boundary(link.range.start), "{link:?}");
+            assert!(line.is_char_boundary(link.range.end), "{link:?}");
+        }
     }
 }
