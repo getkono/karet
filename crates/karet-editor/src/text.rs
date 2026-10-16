@@ -1,7 +1,6 @@
 use unicode_segmentation::UnicodeSegmentation;
 
 use super::hint::LineHints;
-
 use super::*;
 
 /// Whether the cell at line `l`, column `col` lies within any of `selections`.
