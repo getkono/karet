@@ -11,6 +11,7 @@ mod box_select;
 mod brackets;
 mod clipboard;
 mod code_actions;
+mod code_lens;
 mod comment;
 mod commit_file_tree;
 mod commit_graph;

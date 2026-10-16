@@ -250,6 +250,7 @@ async fn event_loop(
         // does: the range worth annotating is only known once a frame has said
         // how much of the document is on screen.
         app.request_inlay_hints();
+        app.request_code_lenses();
         // The lightbulb follows the painted caret the same way.
         app.probe_code_actions(Instant::now());
         // A workspace-symbol query goes out once typing has paused.

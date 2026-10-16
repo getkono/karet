@@ -272,7 +272,7 @@ impl App {
         applied: AppliedWorkspaceEdit,
     ) {
         self.adopt_workspace_edit_tabs(&applied);
-        if self.settle_code_action(id, &applied) {
+        if self.settle_code_action(id, &applied) || self.settle_code_lens_run(id, &applied) {
             return;
         }
         let ours = match (&self.pending_rename, id) {

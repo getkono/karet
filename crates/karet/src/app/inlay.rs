@@ -28,6 +28,7 @@ pub(crate) use pointer::InlayHintHit;
 pub(crate) use pointer::InlayUi;
 pub(crate) use shift::diff_edit;
 pub(crate) use shift::map_position;
+pub(crate) use shift::shift_position;
 
 use super::App;
 use super::Instant;
@@ -71,7 +72,7 @@ pub(crate) struct HintRange {
 
 impl HintRange {
     /// Whether this range already answers everything `wanted` asks for.
-    fn covers(self, wanted: Self) -> bool {
+    pub(crate) fn covers(self, wanted: Self) -> bool {
         self.version == wanted.version && self.first <= wanted.first && self.last >= wanted.last
     }
 }
@@ -158,7 +159,7 @@ impl App {
     /// viewports, because the cache is keyed by document. Taking whichever
     /// pane was seen last instead would make the annotations vanish from the
     /// other pane every time focus moved between them.
-    fn visible_hint_ranges(&self) -> Vec<(DocumentId, HintRange)> {
+    pub(crate) fn visible_hint_ranges(&self) -> Vec<(DocumentId, HintRange)> {
         let mut wanted: Vec<(DocumentId, HintRange)> = Vec::new();
         for range in self.hint_ranges_per_view() {
             match wanted.iter_mut().find(|(doc, _)| *doc == range.0) {
@@ -230,7 +231,7 @@ impl App {
     }
 
     /// The version of `doc`'s buffer as the app currently holds it.
-    fn buffer_version(&self, doc: DocumentId) -> Option<u64> {
+    pub(crate) fn buffer_version(&self, doc: DocumentId) -> Option<u64> {
         self.all_tabs().find_map(|tab| match &tab.kind {
             TabKind::Code {
                 doc: Some(id),

@@ -95,6 +95,7 @@ async fn settle(
         // settled frame that is missing an annotation the real editor shows is
         // not a capture of the same UI.
         app.request_inlay_hints();
+        app.request_code_lenses();
 
         let now = Instant::now();
         let Some(remaining) = deadline.checked_duration_since(now) else {
