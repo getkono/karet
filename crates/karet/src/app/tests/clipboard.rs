@@ -195,6 +195,7 @@ fn line_pieces_for_carets_on_one_line() -> Result<(), crate::clipboard::Clipboar
         rig.app.clipboard.set_copied(crate::clipboard::Copied {
             pieces: pieces.iter().map(|p| (*p).to_string()).collect(),
             whole_lines: true,
+            indents: Vec::new(),
         })?;
         rig.run(&[ctrl('v')]);
         assert_eq!(rig.marked(), expect, "{name}");
