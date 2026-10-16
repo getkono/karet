@@ -144,3 +144,47 @@ fn ctrl_click_on_an_unsafe_source_link_is_blocked_not_opened() {
     );
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[test]
+fn ctrl_click_on_a_source_link_in_an_unfocused_split_opens_it_there() {
+    let root = test_dir("source-link-split");
+    write_file(&root, "README.md", b"[guide](docs/guide.md)\n");
+    write_file(&root, "docs/guide.md", b"guide");
+    let mut app = App::new(root.clone(), Vec::new(), Vec::new(), false);
+    app.open_path(&root.join("README.md"));
+    app.focus = Focus::Editor;
+    let left = app.focus_pane();
+    app.dispatch(Command::SplitRight);
+    assert_ne!(app.focus_pane(), left, "the new split is focused");
+    let buffer = frame(&mut app, 120, 30);
+
+    // The `[` the left split draws on its first text row.
+    let Some(area) = app
+        .pane_frames
+        .iter()
+        .find(|frame| frame.pane == left)
+        .map(|frame| frame.editor_rect)
+    else {
+        panic!("the left split was not drawn");
+    };
+    let Some(column) = (area.left()..area.right()).find(|&x| buffer[(x, area.y)].symbol() == "[")
+    else {
+        panic!("the left split shows no link");
+    };
+
+    // On the link text, while the other split is focused: the link must be
+    // read from the split under the pointer, not from the focused one.
+    app.handle_mouse(pointer(
+        MouseEventKind::Down(MouseButton::Left),
+        column + 2,
+        area.y,
+        KeyModifiers::CONTROL,
+    ));
+    assert_eq!(app.focus_pane(), left, "the link's split is focused");
+    assert_eq!(
+        app.tabs[app.active].path(),
+        Some(root.join("docs/guide.md").as_path()),
+        "the link opened rather than falling through to Go to Definition"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}

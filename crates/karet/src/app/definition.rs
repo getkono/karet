@@ -297,8 +297,9 @@ impl App {
 
     /// The editor viewport of the focused pane, when `point` is inside it.
     ///
-    /// Only the focused pane's tabs are live in `tabs`/`active`, so this is
-    /// where a Ctrl-hover or a source-link click can be read at all.
+    /// The Ctrl-hover underline is drawn only here: it decorates the active
+    /// tab, which is the focused pane's. A source-link click reads any split
+    /// (see [`Self::pane_source_link`]).
     pub(crate) fn focused_editor_area(&self, point: (u16, u16)) -> Option<Rect> {
         let frame = self
             .pane_frames
@@ -319,22 +320,31 @@ impl App {
         area: Rect,
         point: (u16, u16),
     ) -> Option<(Range, String)> {
-        let pos = self.char_under(area, point)?;
-        let TabKind::Code { buffer, path, .. } = &self.tabs.get(self.active)?.kind else {
+        source_link_in(self.tabs.get(self.active)?, area, point)
+    }
+
+    /// The target of the source link under the pointer at `point` in whichever
+    /// split's editor it is over, focused or not.
+    ///
+    /// A click there focuses that split before it does anything else, so the
+    /// link is read from the tab that split shows rather than from the focused
+    /// one: otherwise a Ctrl/Cmd+click on a link in a background split would
+    /// fall through to Go to Definition.
+    pub(crate) fn pane_source_link(&self, point: (u16, u16)) -> Option<String> {
+        let frame = self
+            .pane_frames
+            .iter()
+            .find(|frame| rect_contains(frame.content_rect, point))?;
+        if !rect_contains(frame.editor_rect, point) {
             return None;
+        }
+        let tab = if frame.pane == self.focus_pane() {
+            self.tabs.get(self.active)?
+        } else {
+            let stored = self.stored.get(&frame.pane)?;
+            stored.tabs.get(stored.active)?
         };
-        let line = buffer.line(pos.line as usize)?;
-        let markdown = karet_filetype::file_type_for_path(path).name() == "Markdown";
-        let (byte, _) = line.char_indices().nth(pos.col as usize)?;
-        let link = crate::autolink::source_links(&line, markdown)
-            .into_iter()
-            .find(|link| link.range.contains(&byte))?;
-        let col = |byte: usize| u32::try_from(line[..byte].chars().count()).ok();
-        let range = Range {
-            start: LineCol::new(pos.line, col(link.range.start)?),
-            end: LineCol::new(pos.line, col(link.range.end)?),
-        };
-        Some((range, link.target))
+        source_link_in(tab, frame.editor_rect, point).map(|(_, target)| target)
     }
 
     /// The identifier the pointer at `point` is on in the active code tab, drawn
@@ -359,38 +369,7 @@ impl App {
     /// in the editor viewport `area`, or `None` when the pointer is on no
     /// character: in the gutter, past the end of a line, below the last line.
     pub(crate) fn char_under(&self, area: Rect, point: (u16, u16)) -> Option<LineCol> {
-        let tab = self.tabs.get(self.active)?;
-        let TabKind::Code {
-            buffer,
-            folds,
-            folded,
-            ..
-        } = &tab.kind
-        else {
-            return None;
-        };
-        let fold_lines = resolve_folds(folds, folded);
-        let pos = tab
-            .editor
-            .char_pos_at(area, buffer, &fold_lines, point.0, point.1);
-        // Round-trip guard: `char_pos_at` clamps a point in the gutter, past the end of a
-        // line, or in a reserved scrollbar track onto a real position, which would
-        // name a word the pointer is not actually over. Asking which cells that
-        // character *renders* in — from its own cell up to the next character's —
-        // rejects all of those at once, without this code needing to know the
-        // geometry, and still accepts the right half of a wide character.
-        let cell = tab.editor.screen_cell(area, buffer, &fold_lines, pos)?;
-        let next = LineCol::new(pos.line, pos.col.saturating_add(1));
-        let next = tab.editor.screen_cell(area, buffer, &fold_lines, next);
-        let on_it = point.1 == cell.1
-            && point.0 >= cell.0
-            && next.is_none_or(|next| next.1 != cell.1 || point.0 < next.0);
-        // The cell right after a line's last character maps to the line end,
-        // which is no character.
-        let len = buffer
-            .line(pos.line as usize)
-            .map_or(0, |line| line.chars().count());
-        (on_it && (pos.col as usize) < len).then_some(pos)
+        char_in(self.tabs.get(self.active)?, area, point)
     }
 
     /// The underline decoration for the Ctrl-hovered symbol or source link in
@@ -406,4 +385,62 @@ impl App {
             role: None,
         })
     }
+}
+
+/// The link written in code tab `tab`'s source under the pointer at `point`,
+/// drawn in the editor viewport `area`: its range, in characters, and its
+/// target as written.
+fn source_link_in(tab: &Tab, area: Rect, point: (u16, u16)) -> Option<(Range, String)> {
+    let pos = char_in(tab, area, point)?;
+    let TabKind::Code { buffer, path, .. } = &tab.kind else {
+        return None;
+    };
+    let line = buffer.line(pos.line as usize)?;
+    let markdown = karet_filetype::file_type_for_path(path).name() == "Markdown";
+    let (byte, _) = line.char_indices().nth(pos.col as usize)?;
+    let link = crate::autolink::source_links(&line, markdown)
+        .into_iter()
+        .find(|link| link.range.contains(&byte))?;
+    let col = |byte: usize| u32::try_from(line[..byte].chars().count()).ok();
+    let range = Range {
+        start: LineCol::new(pos.line, col(link.range.start)?),
+        end: LineCol::new(pos.line, col(link.range.end)?),
+    };
+    Some((range, link.target))
+}
+
+/// The character the pointer at `point` is on in code tab `tab`, drawn in the
+/// editor viewport `area` (see [`App::char_under`]).
+fn char_in(tab: &Tab, area: Rect, point: (u16, u16)) -> Option<LineCol> {
+    let TabKind::Code {
+        buffer,
+        folds,
+        folded,
+        ..
+    } = &tab.kind
+    else {
+        return None;
+    };
+    let fold_lines = resolve_folds(folds, folded);
+    let pos = tab
+        .editor
+        .char_pos_at(area, buffer, &fold_lines, point.0, point.1);
+    // Round-trip guard: `char_pos_at` clamps a point in the gutter, past the end of a
+    // line, or in a reserved scrollbar track onto a real position, which would
+    // name a word the pointer is not actually over. Asking which cells that
+    // character *renders* in — from its own cell up to the next character's —
+    // rejects all of those at once, without this code needing to know the
+    // geometry, and still accepts the right half of a wide character.
+    let cell = tab.editor.screen_cell(area, buffer, &fold_lines, pos)?;
+    let next = LineCol::new(pos.line, pos.col.saturating_add(1));
+    let next = tab.editor.screen_cell(area, buffer, &fold_lines, next);
+    let on_it = point.1 == cell.1
+        && point.0 >= cell.0
+        && next.is_none_or(|next| next.1 != cell.1 || point.0 < next.0);
+    // The cell right after a line's last character maps to the line end,
+    // which is no character.
+    let len = buffer
+        .line(pos.line as usize)
+        .map_or(0, |line| line.chars().count());
+    (on_it && (pos.col as usize) < len).then_some(pos)
 }

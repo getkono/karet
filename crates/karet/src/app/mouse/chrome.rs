@@ -226,7 +226,8 @@ impl App {
 
     /// Activate a link only for the explicit Ctrl/Cmd-click gesture: one
     /// rendered in a Markdown preview, or one written in the source of the
-    /// focused editor (a bare URL, or a Markdown `[text](target)`).
+    /// editor under the pointer, focused split or not (a bare URL, or a
+    /// Markdown `[text](target)`).
     ///
     /// A source link outranks Go to Definition under the same gesture: the
     /// link is what the underline promised. Alt or Shift keep the click the
@@ -248,11 +249,8 @@ impl App {
         let plain = !mouse
             .modifiers
             .intersects(KeyModifiers::ALT | KeyModifiers::SHIFT);
-        let Some(target) = preview.or_else(|| {
-            let area = self.focused_editor_area(point).filter(|_| plain)?;
-            self.source_link_under(area, point)
-                .map(|(_, target)| target)
-        }) else {
+        let Some(target) = preview.or_else(|| self.pane_source_link(point).filter(|_| plain))
+        else {
             return false;
         };
         // Every pane's links are live. The link resolves against the file it is
