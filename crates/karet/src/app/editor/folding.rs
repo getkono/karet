@@ -134,8 +134,11 @@ impl App {
 
     /// Collapse every region of the active code tab that `pick` accepts,
     /// given the region and its nesting depth, then lift each caret a
-    /// collapsed region hides onto that region's header. Outer regions come
-    /// first, so a caret lands on the outermost header that stays visible.
+    /// collapsed region hides onto that region's header, until none is
+    /// hidden. Outer regions are lifted out of first, and a header that is
+    /// itself hidden (a region starting on the line a collapsed one ends
+    /// on, like an `else` block) is lifted out of again, so a caret lands
+    /// on the outermost header that stays visible.
     fn collapse_where(&mut self, pick: impl Fn(&FoldRegion, u32) -> bool) {
         let Some(tab) = self.tabs.get_mut(self.active) else {
             return;
@@ -151,10 +154,18 @@ impl App {
         };
         let regions = folds.regions();
         for (region, depth) in regions.iter().zip(depths(regions)) {
-            if !pick(region, depth) {
-                continue;
+            if pick(region, depth) {
+                folded.insert(region.start);
             }
-            folded.insert(region.start);
+        }
+        // Each lift moves a caret strictly up, so this ends.
+        while let Some(region) = regions.iter().find(|r| {
+            folded.contains(&r.start)
+                && tab.editor.cursors().selections.iter().any(|s| {
+                    let line = s.head.line;
+                    r.start < line && line <= r.end
+                })
+        }) {
             tab.editor.lift_carets_onto_header(
                 buffer,
                 karet_editor::Fold {

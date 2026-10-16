@@ -70,6 +70,21 @@ fn fold_all_collapses_every_region_and_lifts_the_caret_to_the_outermost_header()
 }
 
 #[test]
+fn fold_all_lifts_a_caret_out_of_a_region_headed_where_another_ends() {
+    // `if a {…} else {…}` folds as (0, 2) and (2, 4): the `else` header on
+    // line 2 is hidden by the collapsed `if` block, so the caret goes on up.
+    let src = "if a {\n    x\n} else {\n    |y\n}";
+    let mut rig = rig_with(src, vec![FoldRegion::new(0, 2), FoldRegion::new(2, 4)]);
+    rig.run(&chord('0'));
+    assert_eq!(
+        collapsed(&rig),
+        set(&[0, 2]),
+        "both stay collapsed after the frame"
+    );
+    assert_eq!(rig.tab().editor.cursor().line, 0);
+}
+
+#[test]
 fn fold_level_collapses_one_depth_but_not_the_region_holding_a_caret() {
     let mut rig = rig_with(&NESTED.replacen("x", "|x", 1), nested());
     rig.run(&chord('2'));
