@@ -265,6 +265,81 @@ pub(crate) fn unclosed_opener(
     })
 }
 
+/// The nesting depth of each code bracket on the lines a frame paints, for
+/// bracket-pair colourisation.
+///
+/// Lines are asked for in ascending order (sticky headers, then the rows
+/// below them), so one forward scan serves the frame: it starts
+/// [`SCAN_LINES`] above the first line asked for — the bound the pair
+/// matcher scans to as well — and keeps a stack of the open brackets'
+/// kinds. Every kind nests together, so `{ ( [ ] ) }` takes three depths.
+/// A closer pops back to the nearest opener of its own kind, dropping any
+/// unclosed opener above it; a closer with no opener has no depth and keeps
+/// its ordinary colour.
+pub(crate) struct BracketDepths<'a> {
+    buffer: &'a TextBuffer,
+    highlights: Option<&'a Highlights>,
+    /// The next line the scan reads, once it has started.
+    next: Option<usize>,
+    /// The kinds of the brackets still open where the scan stands.
+    stack: Vec<usize>,
+    /// The last line answered and its depths, for the rows of a wrapped line.
+    last: Option<(u32, Vec<Option<usize>>)>,
+}
+
+impl<'a> BracketDepths<'a> {
+    /// A scan over `buffer`, skipping brackets `highlights` marks as text.
+    pub(crate) fn new(buffer: &'a TextBuffer, highlights: Option<&'a Highlights>) -> Self {
+        Self {
+            buffer,
+            highlights,
+            next: None,
+            stack: Vec::new(),
+            last: None,
+        }
+    }
+
+    /// Advance the stack over line `idx`, returning each char's depth.
+    fn step(&mut self, idx: usize) -> Vec<Option<usize>> {
+        let slots = brackets_on(self.buffer, self.highlights, idx).unwrap_or_default();
+        slots
+            .into_iter()
+            .map(|slot| {
+                let bracket = slot?;
+                if bracket.open {
+                    self.stack.push(bracket.kind);
+                    return Some(self.stack.len() - 1);
+                }
+                let depth = self.stack.iter().rposition(|&kind| kind == bracket.kind)?;
+                self.stack.truncate(depth);
+                Some(depth)
+            })
+            .collect()
+    }
+
+    /// The depth of each char of `line` (`None` for anything that is not a
+    /// code bracket with a place in the nesting). Asking for a line above
+    /// the one asked for last restarts the scan.
+    pub(crate) fn line(&mut self, line: u32) -> &[Option<usize>] {
+        let idx = line as usize;
+        if self.last.as_ref().is_none_or(|(at, _)| *at != line) {
+            if self.next.is_none_or(|next| next > idx) {
+                self.next = Some(idx.saturating_sub(SCAN_LINES));
+                self.stack.clear();
+            }
+            let mut next = self.next.unwrap_or(idx);
+            while next < idx {
+                self.step(next);
+                next += 1;
+            }
+            let depths = self.step(idx);
+            self.next = Some(idx + 1);
+            self.last = Some((line, depths));
+        }
+        self.last.as_ref().map_or(&[], |(_, depths)| depths)
+    }
+}
+
 /// The pair a bracket command acts on at `pos`: the one touching it, else the
 /// one enclosing it.
 #[must_use]

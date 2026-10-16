@@ -1,0 +1,276 @@
+//! Structure drawn over the text: indentation guides and the caret's block,
+//! visible whitespace in each `RenderWhitespace` mode, and bracket-pair
+//! colourisation.
+
+use karet_core::BytePos;
+use karet_core::Span;
+use karet_core::StandardToken;
+
+use crate::*;
+
+/// The gutter `LineNumbers::Off` keeps: content starts at this column.
+const X: u16 = 2;
+
+/// The content painted on row `y`, `width` cells from the gutter.
+fn row(target: &Buffer, y: u16, width: u16) -> String {
+    (X..X + width)
+        .map(|x| target[(x, y)].symbol().to_owned())
+        .collect()
+}
+
+fn fg(target: &Buffer, x: u16, y: u16) -> ratatui::style::Color {
+    target[(X + x, y)].fg
+}
+
+fn color(theme: &Theme, role: ThemeRole) -> ratatui::style::Color {
+    theme.role(role).to_ratatui()
+}
+
+/// Render `editor` over `area` with the caret at `caret`.
+fn paint(editor: Editor<'_>, area: Rect, caret: LineCol) -> Buffer {
+    let mut state = EditorState::new();
+    state.place_caret(caret);
+    let mut target = Buffer::empty(area);
+    editor
+        .line_numbers(LineNumbers::Off)
+        .render(area, &mut target, &mut state);
+    target
+}
+
+const NESTED: &str = "{\n    {\n        a\n\n        b\n    }\n}\n";
+
+#[test]
+fn guides_are_off_by_default_and_mark_each_level_of_leading_whitespace() {
+    let buffer = TextBuffer::from_text(NESTED);
+    let area = Rect::new(0, 0, 14, 7);
+    let plain = paint(Editor::new(&buffer), area, LineCol::new(0, 0));
+    assert_eq!(row(&plain, 2, 9), "        a", "off by default");
+
+    let guided = paint(
+        Editor::new(&buffer).indent_guides(true),
+        area,
+        LineCol::new(0, 0),
+    );
+    let rows: Vec<String> = (0..7).map(|y| row(&guided, y, 9)).collect();
+    assert_eq!(
+        rows,
+        [
+            "{        ",
+            "│   {    ",
+            "│   │   a",
+            // A blank line takes the deeper indentation around it, past its
+            // own end.
+            "│   │    ",
+            "│   │   b",
+            "│   }    ",
+            "}        ",
+        ]
+    );
+}
+
+#[test]
+fn the_carets_block_draws_its_guide_in_the_active_colour() {
+    let theme = Theme::dark();
+    let buffer = TextBuffer::from_text(NESTED);
+    let area = Rect::new(0, 0, 14, 7);
+    let guide = color(&theme, ThemeRole::IndentGuide);
+    let active = color(&theme, ThemeRole::LineNumberActive);
+    assert_ne!(guide, active);
+    let editor = || Editor::new(&buffer).theme(&theme).indent_guides(true);
+
+    // Inside the inner block: its guide (column 4) on every line of it,
+    // through the blank line; the outer guide stays plain.
+    let inner = paint(editor(), area, LineCol::new(2, 8));
+    for y in 2..=4 {
+        assert_eq!(fg(&inner, 4, y), active, "row {y}");
+        assert_eq!(fg(&inner, 0, y), guide, "row {y}");
+    }
+    assert_eq!(fg(&inner, 0, 1), guide, "the inner header is outside it");
+
+    // On a header: the block it opens.
+    let header = paint(editor(), area, LineCol::new(0, 0));
+    for y in 1..=5 {
+        assert_eq!(fg(&header, 0, y), active, "row {y}");
+    }
+    assert_eq!(fg(&header, 4, 2), guide);
+
+    // Switched off, or read-only with no caret: every guide is plain.
+    let off = paint(
+        editor().active_indent_guide(false),
+        area,
+        LineCol::new(2, 8),
+    );
+    assert_eq!(fg(&off, 4, 2), guide);
+    let read_only = paint(editor().read_only(true), area, LineCol::new(2, 8));
+    assert_eq!(fg(&read_only, 4, 2), guide);
+}
+
+#[test]
+fn guides_step_by_the_tab_width_and_cross_hard_tabs() {
+    let buffer = TextBuffer::from_text("{\n\t\tx\n  y\n");
+    let area = Rect::new(0, 0, 10, 3);
+    let target = paint(
+        Editor::new(&buffer).tab_width(2).indent_guides(true),
+        area,
+        LineCol::new(0, 0),
+    );
+    assert_eq!(row(&target, 1, 5), "│ │ x");
+    assert_eq!(row(&target, 2, 3), "│ y");
+}
+
+#[test]
+fn guides_follow_horizontal_scroll_on_text_and_blank_lines() {
+    let buffer = TextBuffer::from_text("{\n        a\n\n        b\n");
+    let area = Rect::new(0, 0, 10, 4);
+    let mut state = EditorState::new();
+    state.scroll_col = 2;
+    let mut target = Buffer::empty(area);
+    Editor::new(&buffer)
+        .indent_guides(true)
+        .line_numbers(LineNumbers::Off)
+        .render(area, &mut target, &mut state);
+    // Columns 2.. are on screen: the guide at column 4 sits two cells in.
+    assert_eq!(row(&target, 1, 7), "  │   a");
+    assert_eq!(row(&target, 2, 7), "  │    ");
+}
+
+#[test]
+fn whitespace_modes_mark_the_spaces_and_tabs_they_select() {
+    let theme = Theme::dark();
+    let buffer = TextBuffer::from_text("a b  c\t \n  d \n");
+    let area = Rect::new(0, 0, 14, 2);
+    let render = |mode| {
+        paint(
+            Editor::new(&buffer).theme(&theme).render_whitespace(mode),
+            area,
+            LineCol::new(0, 0),
+        )
+    };
+
+    let none = render(RenderWhitespace::None);
+    assert_eq!(row(&none, 0, 9), "a b  c   ");
+
+    let all = render(RenderWhitespace::All);
+    assert_eq!(row(&all, 0, 9), "a·b··c→ ·");
+    assert_eq!(row(&all, 1, 4), "··d·");
+    assert_eq!(fg(&all, 1, 0), color(&theme, ThemeRole::IndentGuide));
+
+    // A lone space between words stays blank; runs, tabs and line edges show.
+    let boundary = render(RenderWhitespace::Boundary);
+    assert_eq!(row(&boundary, 0, 9), "a b··c→ ·");
+    assert_eq!(row(&boundary, 1, 4), "··d·");
+
+    let trailing = render(RenderWhitespace::Trailing);
+    assert_eq!(row(&trailing, 0, 9), "a b  c→ ·");
+    assert_eq!(row(&trailing, 1, 4), "  d·");
+}
+
+#[test]
+fn selection_mode_marks_only_selected_whitespace() {
+    let buffer = TextBuffer::from_text("a b c d\n");
+    let area = Rect::new(0, 0, 10, 1);
+    let mut state = EditorState::new();
+    state.set_selection(&buffer, LineCol::new(0, 2), LineCol::new(0, 6));
+    let mut target = Buffer::empty(area);
+    Editor::new(&buffer)
+        .render_whitespace(RenderWhitespace::Selection)
+        .line_numbers(LineNumbers::Off)
+        .render(area, &mut target, &mut state);
+    assert_eq!(row(&target, 0, 7), "a b·c·d");
+}
+
+#[test]
+fn a_guide_wins_the_cell_a_whitespace_mark_would_take() {
+    let buffer = TextBuffer::from_text("{\n     x\n");
+    let area = Rect::new(0, 0, 10, 2);
+    let target = paint(
+        Editor::new(&buffer)
+            .indent_guides(true)
+            .render_whitespace(RenderWhitespace::All),
+        area,
+        LineCol::new(0, 0),
+    );
+    assert_eq!(row(&target, 1, 6), "│···│x");
+}
+
+/// Highlights marking each `(start, end)` byte range as a string.
+fn strings(ranges: &[(usize, usize)]) -> Highlights {
+    Highlights::from_sorted_spans(
+        ranges
+            .iter()
+            .map(|&(start, end)| HighlightSpan {
+                span: Span {
+                    start: BytePos(start),
+                    end: BytePos(end),
+                },
+                token: StandardToken::String.id(),
+            })
+            .collect(),
+    )
+}
+
+#[test]
+fn rainbow_brackets_colour_by_depth_and_skip_text_and_strays() {
+    let theme = Theme::dark();
+    let [gold, purple, blue] = theme.bracket_pair_colors().map(Rgba::to_ratatui);
+    let text = "({[(\"(\")]}))\n";
+    let buffer = TextBuffer::from_text(text);
+    let highlights = strings(&[(4, 7)]);
+    let area = Rect::new(0, 0, 16, 1);
+    let editor = || Editor::new(&buffer).theme(&theme).highlights(&highlights);
+
+    let plain = paint(editor(), area, LineCol::new(0, 0));
+    assert_ne!(fg(&plain, 0, 0), gold, "off by default");
+
+    let rainbow = paint(editor().rainbow_brackets(true), area, LineCol::new(0, 0));
+    let expected = [
+        (0, gold),
+        (1, purple),
+        (2, blue),
+        // Depth 3 wraps back to the first colour.
+        (3, gold),
+        (7, gold),
+        (8, blue),
+        (9, purple),
+        (10, gold),
+    ];
+    for (x, want) in expected {
+        assert_eq!(fg(&rainbow, x, 0), want, "column {x}");
+    }
+    let string = theme.color(StandardToken::String.id()).to_ratatui();
+    assert_eq!(fg(&rainbow, 5, 0), string, "a bracket in a string is text");
+    let default = color(&theme, ThemeRole::Foreground);
+    assert_eq!(
+        fg(&rainbow, 11, 0),
+        default,
+        "a stray closer keeps its colour"
+    );
+}
+
+#[test]
+fn rainbow_depth_carries_across_lines_and_pops_to_its_own_kind() {
+    let theme = Theme::dark();
+    let [gold, purple, _] = theme.bracket_pair_colors().map(Rgba::to_ratatui);
+    // The `[` on line 1 is never closed: the `)` pops past it to its `(`.
+    let buffer = TextBuffer::from_text("{\n  ([\n  )\n}\n");
+    let area = Rect::new(0, 0, 8, 4);
+    let target = paint(
+        Editor::new(&buffer).theme(&theme).rainbow_brackets(true),
+        area,
+        LineCol::new(0, 0),
+    );
+    assert_eq!(fg(&target, 0, 0), gold);
+    assert_eq!(fg(&target, 2, 1), purple);
+    assert_eq!(fg(&target, 2, 2), purple, "pairs with the `(`");
+    assert_eq!(fg(&target, 0, 3), gold, "the stray `[` was dropped");
+}
+
+#[test]
+fn bracket_depths_restart_when_asked_for_an_earlier_line() {
+    let buffer = TextBuffer::from_text("(\n(\n))\n");
+    let mut depths = bracket::BracketDepths::new(&buffer, None);
+    assert_eq!(depths.line(2), [Some(1), Some(0)]);
+    assert_eq!(depths.line(2), [Some(1), Some(0)], "a repeated line");
+    assert_eq!(depths.line(1), [Some(1)], "rescanned from the top");
+    assert_eq!(depths.line(0), [Some(0)]);
+}

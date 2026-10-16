@@ -189,6 +189,24 @@ impl Theme {
             .unwrap_or(self.fallback_fg)
     }
 
+    /// The colours bracket-pair colourisation cycles through, outermost pair
+    /// first: the theme's constant, keyword and function colours.
+    ///
+    /// Drawn from the token palette rather than a palette of their own, so
+    /// every theme — a loaded VS Code theme included — colours its brackets
+    /// in hues it already uses, in the gold / purple / blue order VS Code's
+    /// own bracket colours follow.
+    #[must_use]
+    pub fn bracket_pair_colors(&self) -> [Rgba; 3] {
+        use karet_core::StandardToken;
+        [
+            StandardToken::Constant,
+            StandardToken::Keyword,
+            StandardToken::Function,
+        ]
+        .map(|token| self.color(token.id()))
+    }
+
     /// Whether this is a dark theme (background luminance below the midpoint).
     #[must_use]
     pub fn is_dark(&self) -> bool {
@@ -247,6 +265,19 @@ mod tests {
         assert_eq!(
             ThemeError::Unsupported.to_string(),
             "unsupported theme format"
+        );
+    }
+
+    #[test]
+    fn bracket_pair_colors_are_three_distinct_token_hues() {
+        let t = Theme::dark();
+        let colors = t.bracket_pair_colors();
+        assert_eq!(colors[0], t.color(StandardToken::Constant.id()));
+        assert_eq!(colors[1], t.color(StandardToken::Keyword.id()));
+        assert_eq!(colors[2], t.color(StandardToken::Function.id()));
+        assert!(
+            colors[0] != colors[1] && colors[1] != colors[2] && colors[0] != colors[2],
+            "adjacent depths must read apart: {colors:?}"
         );
     }
 

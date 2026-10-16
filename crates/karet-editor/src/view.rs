@@ -14,10 +14,12 @@ use super::visual::*;
 use super::*;
 
 mod display;
+mod glyphs;
 mod virtual_paint;
 
 pub use display::LineNumbers;
 pub(crate) use display::gutter_width;
+pub use glyphs::RenderWhitespace;
 
 /// Chars read past a row's right edge, so the grapheme cluster that straddles
 /// the edge is segmented whole — a flag or a ZWJ emoji sequence is several
@@ -85,6 +87,10 @@ pub struct Editor<'a> {
     rulers: &'a [u16],
     scroll_off: u16,
     undercurl: bool,
+    indent_guides: bool,
+    active_indent_guide: bool,
+    render_whitespace: RenderWhitespace,
+    rainbow_brackets: bool,
 }
 
 impl<'a> Editor<'a> {
@@ -114,6 +120,10 @@ impl<'a> Editor<'a> {
             rulers: &[],
             scroll_off: 0,
             undercurl: false,
+            indent_guides: false,
+            active_indent_guide: true,
+            render_whitespace: RenderWhitespace::None,
+            rainbow_brackets: false,
         }
     }
 
@@ -303,6 +313,7 @@ impl Editor<'_> {
         (range, room): (VisualRange, u32),
         selections: &[Range],
         hints: LineHints<'_>,
+        glyphs: Option<&glyphs::RowGlyphs>,
     ) -> bool {
         let Some(line_span) = self.buffer.line_to_byte_range(l as usize) else {
             return false;
@@ -390,6 +401,9 @@ impl Editor<'_> {
             }
             let width = character_width(ch, cells(col), display_col, self.tab_width);
             let mut style = token_style(line_start + at, hl, theme, default_fg);
+            if let Some(color) = glyphs.and_then(|g| g.bracket(col)) {
+                style = style.fg(color.to_ratatui());
+            }
             // Diagnostics win an overlap: a squiggle carries more information than
             // "this is navigable", and losing it would hide a real problem. Theirs
             // is marked, so the frame's last pass can curl it.
@@ -406,7 +420,8 @@ impl Editor<'_> {
                     .add_modifier(Modifier::UNDERLINED | mark);
             }
             style = style.add_modifier(diagnostic::tag_modifiers(self.diagnostics, l, col));
-            let bg = if in_any(selections, l, col) {
+            let selected = in_any(selections, l, col);
+            let bg = if selected {
                 Some(theme.role(ThemeRole::Selection))
             } else if let Some((swatch_bg, swatch_fg)) = self.swatch_style(l, col) {
                 style = style.fg(swatch_fg.to_ratatui());
@@ -417,22 +432,22 @@ impl Editor<'_> {
             if let Some(bg) = bg {
                 style = style.bg(bg.to_ratatui());
             }
-            if run_style == Some(style) {
-                if ch == '\t' {
-                    run.push_str(&" ".repeat(width as usize));
-                } else {
-                    run.push(ch);
-                }
-            } else {
+            // A guide or whitespace mark takes the blanks the char paints.
+            let glyph =
+                glyphs.and_then(|g| g.whitespace(&chars, (col, display_col, width), selected));
+            if let Some((_, color)) = &glyph {
+                style = style.fg(color.to_ratatui());
+            }
+            if run_style != Some(style) {
                 if let Some(prev) = run_style {
                     spans.push(Span::styled(std::mem::take(&mut run), prev));
                 }
-                if ch == '\t' {
-                    run.push_str(&" ".repeat(width as usize));
-                } else {
-                    run.push(ch);
-                }
                 run_style = Some(style);
+            }
+            match glyph {
+                Some((text, _)) => run.push_str(&text),
+                None if ch == '\t' => run.push_str(&" ".repeat(width as usize)),
+                None => run.push(ch),
             }
             display_col = display_col.saturating_add(width);
             col += 1;
@@ -613,6 +628,7 @@ impl Editor<'_> {
             ),
             selections,
             index.line(line),
+            None,
         );
         if state.scroll_col <= line_len(self.buffer, line) {
             // The multi-line header's `…` takes the last cell.
@@ -808,6 +824,9 @@ impl StatefulWidget for Editor<'_> {
         // couple of comparisons per painted row rather than a second pass.
         let mut last_painted = None;
         let mut widest_visible = 0;
+        let mut glyph_frame = self
+            .draws_glyphs()
+            .then(|| self.glyph_frame(theme, Some(state.cursor())));
         for row in 0..state.last_height {
             if anchor.line >= line_count {
                 break;
@@ -884,6 +903,7 @@ impl StatefulWidget for Editor<'_> {
                 .unwrap_or_else(|| VisualRange::empty(0));
             let mut painted = Vec::new();
             let room = row_room(area, &spans);
+            let glyphs = glyph_frame.as_mut().map(|frame| frame.row(l));
             let selected_break = self.push_content_spans(
                 &mut spans,
                 &mut painted,
@@ -893,6 +913,7 @@ impl StatefulWidget for Editor<'_> {
                 (range, room),
                 &selections,
                 layout.hints_on(l),
+                glyphs.as_ref(),
             );
             // A wrapped last row that exactly fills the content width pushes
             // the break cell one column past the area, where `set_line` clips
@@ -921,6 +942,14 @@ impl StatefulWidget for Editor<'_> {
             }
             record_virtual_text(&mut state.last_virtual_text, area, y, &spans, &painted);
             buf.set_line(area.x, y, &Line::from(spans), area.width);
+            if let Some(glyphs) = &glyphs
+                && ranges.len() == 1
+                && glyphs.blank_past(line_len(self.buffer, l))
+            {
+                let origin = glyphs::display_origin(self.buffer, l, range.start, self.tab_width);
+                let x = area.x.saturating_add(gutter);
+                glyphs.paint_past_end(buf, area, (x, y), origin);
+            }
             if clipped_break && area.width > 0 {
                 buf.set_style(
                     Rect {
