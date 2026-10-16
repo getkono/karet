@@ -5,9 +5,10 @@
 //! owns the [`LspClient`], serializes document sync ahead of requests (a
 //! completion always sees the latest text), debounces `didChange` forwards --
 //! sent as ranges to a server that asked for incremental sync, else as the
-//! full text (see `delta`) -- and reports back to the actor on an [`LspUpdate`] channel — the
-//! session converts positions (LSP UTF-16 ↔ buffer UTF-32) there, where the
-//! buffer lives, and emits the answering [`Event`](crate::api::Event).
+//! full text (see `delta`) -- and reports back to the actor on an [`LspUpdate`]
+//! channel — the session converts positions (LSP UTF-16 ↔ buffer UTF-32)
+//! there, where the buffer lives, and emits the answering
+//! [`Event`](crate::api::Event).
 //!
 //! Failure policy: launch failures and closed connections are reported once per
 //! outage. The task retains authoritative open-document text, reconnects with
