@@ -123,6 +123,11 @@ impl BlockIndex {
         on_line(&self.below, line)
     }
 
+    /// Whether no line has a virtual line on either side.
+    pub(super) fn is_empty(&self) -> bool {
+        self.above.is_empty() && self.below.is_empty()
+    }
+
     /// How many rows sit above `line`.
     pub(super) fn above_count(&self, line: u32) -> u32 {
         u32::try_from(self.above(line).len()).unwrap_or(u32::MAX)

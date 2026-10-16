@@ -319,6 +319,40 @@ fn overflow_row_scrolling_steps_over_a_collapsed_fold_as_one_row() {
 }
 
 #[test]
+fn an_unwrapped_reveal_keeps_scroll_off_in_rows_not_lines() {
+    let text: String = (0..20).map(|n| format!("l{n}\n")).collect();
+    let buffer = TextBuffer::from_text(&text);
+    let lines = [above(11, "a"), above(11, "b")];
+    let area = Rect::new(0, 0, 20, 8);
+    let mut state = EditorState::new();
+    let paint = |state: &mut EditorState| {
+        let mut target = Buffer::empty(area);
+        Editor::new(&buffer)
+            .virtual_lines(&lines)
+            .scroll_off(3)
+            .render(area, &mut target, state);
+        target
+    };
+    state.scroll_line = 10;
+    state.place_caret(LineCol::new(12, 0));
+    paint(&mut state);
+
+    // Line 11's text row is the fourth row: already three rows from the top.
+    state.move_up(&buffer);
+    state.reveal(&buffer, state.cursor());
+    assert_eq!(state.scroll_line, 10, "the estimate must not scroll");
+    let target = paint(&mut state);
+    assert_eq!(state.scroll_line, 10, "nor the render");
+    assert_eq!(row(&target, 3).trim_end(), " 12 l11");
+
+    // One more line up lands on the top row; the render restores the margin.
+    state.move_up(&buffer);
+    state.reveal(&buffer, state.cursor());
+    paint(&mut state);
+    assert_eq!(state.scroll_line, 7);
+}
+
+#[test]
 fn a_caret_hidden_in_a_fold_is_revealed_through_its_header_wrapped_or_not() {
     let buffer = TextBuffer::from_text("l0\nl1\nhead\nin\ntail\nl5\n");
     let folds = [Fold {

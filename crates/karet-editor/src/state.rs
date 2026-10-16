@@ -312,10 +312,10 @@ impl EditorState {
     fn scroll_vertically_to(&mut self, pos: LineCol, last: u32) {
         self.follow_cursor = true;
         let height = u32::from(self.last_height.max(1));
-        // A wrapped line takes several rows, so a margin counted in lines
-        // could scroll further than the rows the margin asks for; the render
-        // keeps it in rows instead.
-        let off = if self.last_word_wrap {
+        // A wrapped line, or a line with virtual lines, takes several rows, so
+        // a margin counted in lines could scroll further than the rows the
+        // margin asks for; the render keeps it in rows instead.
+        let off = if self.last_word_wrap || !self.last_blocks.is_empty() {
             0
         } else {
             self.reveal_margin()
