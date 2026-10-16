@@ -339,6 +339,64 @@ impl VirtualText {
     }
 }
 
+/// Which side of its buffer line a [`VirtualLine`] sits on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
+pub enum VirtualLineSide {
+    /// On its own row immediately above the line's first row (a code lens,
+    /// say).
+    Above,
+    /// On its own row immediately below the line's last row (a multi-line
+    /// inline diagnostic, an inline diff hunk, ghost text continuing a
+    /// completion).
+    Below,
+}
+
+/// A whole row of presentation-neutral text between buffer lines: cells a
+/// renderer paints on a row of their own that no buffer line owns.
+///
+/// It belongs to the buffer line it is anchored to: it scrolls with it, is
+/// hidden with it when a collapsed fold hides that line, and a click on it is
+/// routed to it. Several on one side of one line stack in supply order, so a
+/// multi-line block is one `VirtualLine` per row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct VirtualLine {
+    /// The buffer line it is anchored to.
+    pub line: u32,
+    /// Which side of that line.
+    pub side: VirtualLineSide,
+    /// The text to paint, on one row (a renderer does not wrap it).
+    pub text: String,
+    /// The theme role supplying its color.
+    pub role: ThemeRole,
+}
+
+impl VirtualLine {
+    /// A row above `line` ([`VirtualLineSide::Above`]).
+    #[must_use]
+    pub fn above(line: u32, text: impl Into<String>, role: ThemeRole) -> Self {
+        Self {
+            line,
+            side: VirtualLineSide::Above,
+            text: text.into(),
+            role,
+        }
+    }
+
+    /// A row below `line` ([`VirtualLineSide::Below`]).
+    #[must_use]
+    pub fn below(line: u32, text: impl Into<String>, role: ThemeRole) -> Self {
+        Self {
+            line,
+            side: VirtualLineSide::Below,
+            text: text.into(),
+            role,
+        }
+    }
+}
+
 /// An opaque, application-resolved command identifier.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -504,6 +562,16 @@ mod tests {
     }
 
     #[test]
+    fn virtual_lines_are_built_on_the_side_their_constructor_names() {
+        let above = VirtualLine::above(2, "3 references", ThemeRole::Muted);
+        let below = VirtualLine::below(2, "  ^ expected i32", ThemeRole::DiagnosticError);
+        assert_eq!((above.line, above.side), (2, VirtualLineSide::Above));
+        assert_eq!((below.line, below.side), (2, VirtualLineSide::Below));
+        assert_eq!(below.text, "  ^ expected i32");
+        assert_eq!(below.role, ThemeRole::DiagnosticError);
+    }
+
+    #[test]
     fn diagnostic_constructs_and_clones() {
         let d = Diagnostic {
             range: Range::default(),
@@ -644,6 +712,8 @@ mod tests {
             role: ThemeRole::Muted,
         })?;
         rt(&VirtualText::inline(0, 4, ": i32", ThemeRole::InlayHint))?;
+        rt(&VirtualLine::above(1, "Run test", ThemeRole::Muted))?;
+        rt(&VirtualLine::below(1, "- old", ThemeRole::Muted))?;
         rt(&Symbol {
             name: "f".into(),
             kind: SymbolKind::Function,

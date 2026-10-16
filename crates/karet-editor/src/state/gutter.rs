@@ -43,7 +43,8 @@ impl EditorState {
     /// document's last row, which shows no line. Rows resolve as
     /// [`pos_at`](Self::pos_at) resolves them, so folds, word wrap and sticky
     /// headers agree with the text beside them; a soft-wrap continuation row
-    /// belongs to the line it continues.
+    /// belongs to the line it continues, and a virtual line's row to the line
+    /// it is anchored to.
     #[must_use]
     pub fn gutter_hit_at(
         &self,
@@ -71,7 +72,7 @@ impl EditorState {
         } else {
             GutterLane::LineNumber
         };
-        let mut rel_row = u32::from(row - area.y);
+        let rel_row = u32::from(row - area.y);
         let sticky = u32::from(self.sticky_height);
         let line = if rel_row < sticky {
             self.sticky_rows
@@ -79,19 +80,11 @@ impl EditorState {
                 .copied()
                 .unwrap_or(self.scroll_line)
                 .min(line_count - 1)
-        } else if self.last_word_wrap {
-            rel_row -= sticky;
-            let width = u32::from(area.width.saturating_sub(gutter).max(1));
-            let top = VisualAnchor {
-                line: self.scroll_line,
-                subrow: self.scroll_subrow,
-            };
-            let (anchor, below_end) =
-                visual_anchor_at_row(buffer, folds, self.layout(width), top, rel_row);
-            (!below_end).then_some(anchor.line)?
         } else {
-            self.unwrapped_row_line(line_count, folds, rel_row - sticky)
-                .ok()?
+            let width = u32::from(area.width.saturating_sub(gutter).max(1));
+            let layout = self.row_layout(width, self.last_word_wrap);
+            let (anchor, below_end) = self.row_at(buffer, folds, layout, rel_row - sticky);
+            (!below_end).then_some(anchor.line)?
         };
         Some(GutterHit { lane, line })
     }

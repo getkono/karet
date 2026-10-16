@@ -1,5 +1,6 @@
 use std::ops::RangeInclusive;
 
+use super::hint::BlockIndex;
 use super::hint::EolItem;
 use super::hint::HintIndex;
 use super::hint::LineHints;
@@ -7,11 +8,13 @@ use super::hint::place_eol;
 use super::hint::record_virtual_text;
 use super::hint::row_room;
 use super::hint::text_width;
+use super::hint::truncate;
 use super::text::*;
 use super::visual::*;
 use super::*;
 
 mod display;
+mod virtual_paint;
 
 pub use display::LineNumbers;
 pub(crate) use display::gutter_width;
@@ -28,6 +31,7 @@ pub struct Editor<'a> {
     decorations: &'a [Decoration],
     diagnostics: &'a [Diagnostic],
     virtual_text: &'a [VirtualText],
+    virtual_lines: &'a [VirtualLine],
     folds: &'a [Fold],
     focused: bool,
     cell_caret: bool,
@@ -56,6 +60,7 @@ impl<'a> Editor<'a> {
             decorations: &[],
             diagnostics: &[],
             virtual_text: &[],
+            virtual_lines: &[],
             folds: &[],
             focused: false,
             cell_caret: true,
@@ -239,55 +244,6 @@ impl Editor<'_> {
         None
     }
 
-    /// The style the virtual text at `source` paints in: its role's color over
-    /// the row's own background.
-    fn virtual_style(&self, source: usize, theme: &Theme) -> Style {
-        let role = self
-            .virtual_text
-            .get(source)
-            .map_or(ThemeRole::Muted, |text| text.role);
-        Style::default().fg(theme.role(role).to_ratatui())
-    }
-
-    /// Fit line `l`'s end-of-line virtual text into the `room` cells its last
-    /// row leaves free and append it, noting in `painted` the index and span
-    /// of each text that got any cells.
-    fn push_eol_spans(
-        &self,
-        spans: &mut Vec<Span<'static>>,
-        painted: &mut Vec<(usize, usize)>,
-        index: &HintIndex,
-        l: u32,
-        room: u32,
-        theme: &Theme,
-    ) {
-        let items: Vec<EolItem<'_>> = index
-            .eol_on(l)
-            .filter_map(|source| {
-                let text = self.virtual_text.get(source)?;
-                match text.placement {
-                    VirtualTextPlacement::EndOfLine { align, priority } => Some(EolItem {
-                        source,
-                        text: &text.text,
-                        align,
-                        priority,
-                    }),
-                    _ => None,
-                }
-            })
-            .collect();
-        let mut at = 0_u32;
-        for placed in place_eol(&items, room) {
-            if placed.offset > at {
-                spans.push(Span::raw(" ".repeat((placed.offset - at) as usize)));
-            }
-            at = placed.offset.saturating_add(text_width(&placed.text));
-            painted.push((placed.source, spans.len()));
-            let style = self.virtual_style(placed.source, theme);
-            spans.push(Span::styled(placed.text, style));
-        }
-    }
-
     /// Append the syntax-colored content spans for line `l`, honoring horizontal
     /// scroll, active selections, and text-background decorations.
     ///
@@ -461,39 +417,6 @@ impl Editor<'_> {
         selected_break
     }
 
-    /// Flush the pending run and emit the inline text anchored at `col`,
-    /// noting each one's index and span in `painted`.
-    ///
-    /// Threading the in-progress run through is what keeps inline text from
-    /// splitting a styled run it does not belong to.
-    fn push_hint_spans(
-        &self,
-        spans: &mut Vec<Span<'static>>,
-        painted: &mut Vec<(usize, usize)>,
-        (run, run_style): (&mut String, &mut Option<Style>),
-        hints: LineHints<'_>,
-        col: u32,
-        theme: &Theme,
-    ) {
-        let mut first = true;
-        for index in hints.at(col) {
-            let Some(text) = self.virtual_text.get(index) else {
-                continue;
-            };
-            if first {
-                if let Some(prev) = run_style.take() {
-                    spans.push(Span::styled(std::mem::take(run), prev));
-                }
-                first = false;
-            }
-            painted.push((index, spans.len()));
-            spans.push(Span::styled(
-                text.text.clone(),
-                self.virtual_style(index, theme),
-            ));
-        }
-    }
-
     /// Warning/error diagnostics use a colored underline while preserving syntax
     /// foreground and selection backgrounds. Terminals supporting styled underline
     /// rendering present this as their native diagnostic underline.
@@ -543,7 +466,10 @@ impl Editor<'_> {
         );
     }
 
-    fn sticky_blocks(&self, anchor: VisualAnchor, height: u16) -> Vec<SemanticBlock> {
+    /// The headers that stick above a viewport starting at `anchor`: a
+    /// block's header sticks once the top row is inside the block, past the
+    /// header's own first text row (virtual lines above it are outside).
+    fn sticky_blocks(&self, anchor: VisualAnchor, above: u32, height: u16) -> Vec<SemanticBlock> {
         if !self.sticky_scroll {
             return Vec::new();
         }
@@ -559,7 +485,7 @@ impl Editor<'_> {
             .filter(|block| {
                 block.scope_end >= anchor.line
                     && (block.header_start < anchor.line
-                        || (block.header_start == anchor.line && anchor.subrow > 0))
+                        || (block.header_start == anchor.line && anchor.subrow > above))
             })
             .collect();
         if active.len() > budget {
@@ -647,6 +573,7 @@ impl StatefulWidget for Editor<'_> {
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut EditorState) {
         state.last_virtual_text.clear();
+        state.last_virtual_lines.clear();
         state.last_fold_ellipses.clear();
         if area.width == 0 || area.height == 0 {
             return;
@@ -682,21 +609,22 @@ impl StatefulWidget for Editor<'_> {
         state.scroll_line = state.scroll_line.min(line_count.saturating_sub(1));
         if self.word_wrap {
             state.scroll_col = 0;
-        } else {
-            state.scroll_subrow = 0;
         }
 
         let width = u32::from(content_width);
         // Indexed once per frame and handed to `state` after the row loop, so
-        // a later mouse click resolves against the virtual text this frame
-        // painted. Held locally until then because `layout` borrows it while
-        // the loop is still assigning scroll positions.
+        // a later mouse click resolves against the virtual text and lines
+        // this frame painted. Held locally until then because `layout`
+        // borrows them while the loop is still assigning scroll positions.
         let hint_index = HintIndex::new(self.virtual_text);
+        let block_index = BlockIndex::new(self.virtual_lines);
         let layout = Layout {
             width,
             tab_width: self.tab_width,
             unwrapped_lines: self.unwrapped_lines,
             hints: &hint_index,
+            blocks: &block_index,
+            wrap: self.word_wrap,
         };
         if !self.word_wrap
             && state.follow_cursor
@@ -733,7 +661,7 @@ impl StatefulWidget for Editor<'_> {
             state.upstream.clear();
         }
         let upstream = state.upstream.contains(&state.cursor());
-        let mut sticky = self.sticky_blocks(anchor, area.height);
+        let mut sticky = self.sticky_blocks(anchor, layout.above(anchor.line), area.height);
         let off = state.reveal_margin();
         if state.follow_cursor {
             // Revealing moves the top, the top decides which headers stick,
@@ -745,38 +673,25 @@ impl StatefulWidget for Editor<'_> {
                 let height = area
                     .height
                     .saturating_sub(u16::try_from(sticky.len()).unwrap_or(u16::MAX));
-                let revealed = if self.word_wrap {
-                    reveal_visual_anchor(
-                        self.buffer,
-                        self.folds,
-                        layout,
-                        height,
-                        anchor,
-                        state.cursor(),
-                        upstream,
-                        off,
-                    )
-                } else {
-                    VisualAnchor {
-                        line: reveal_line(
-                            self.folds,
-                            anchor.line,
-                            state.cursor().line,
-                            u32::from(height),
-                            (off, state.last_line),
-                        ),
-                        subrow: 0,
-                    }
-                };
+                let revealed = reveal_visual_anchor(
+                    self.buffer,
+                    self.folds,
+                    layout,
+                    height,
+                    anchor,
+                    state.cursor(),
+                    upstream,
+                    off,
+                );
                 if revealed == anchor {
                     break;
                 }
                 anchor = revealed;
-                sticky = self.sticky_blocks(anchor, area.height);
+                sticky = self.sticky_blocks(anchor, layout.above(anchor.line), area.height);
             }
         }
         state.scroll_line = anchor.line;
-        state.scroll_subrow = if self.word_wrap { anchor.subrow } else { 0 };
+        state.scroll_subrow = anchor.subrow;
         state.follow_cursor = false;
         state.follow_col = None;
         state.last_folds.clear();
@@ -832,6 +747,29 @@ impl StatefulWidget for Editor<'_> {
             }
             let l = anchor.line;
             last_painted = Some(l);
+            let y = area
+                .y
+                .saturating_add(state.sticky_height)
+                .saturating_add(row);
+            let next = next_visual_anchor(self.buffer, self.folds, layout, anchor);
+            let ranges = layout.text_rows(self.buffer, l, state.scroll_col);
+            let (range_index, block) = match layout.kind(l, anchor.subrow, ranges.len() as u32) {
+                RowKind::Text(index) => (index as usize, None),
+                RowKind::Above(n) => (0, Some(block_index.above(l).get(n as usize))),
+                RowKind::Below(n) => (0, Some(block_index.below(l).get(n as usize))),
+            };
+            if let Some(block) = block {
+                if let Some(&(_, source)) = block {
+                    let rects = &mut state.last_virtual_lines;
+                    let col = state.scroll_col;
+                    self.draw_virtual_line(buf, area, y, gutter, source, col, theme, rects);
+                }
+                if next == anchor {
+                    break;
+                }
+                anchor = next;
+                continue;
+            }
             if !self.word_wrap {
                 widest_visible = widest_visible.max(horizontal_extent(
                     &line_chars(self.buffer, l),
@@ -840,10 +778,6 @@ impl StatefulWidget for Editor<'_> {
                     layout.hints_on(l),
                 ));
             }
-            let y = area
-                .y
-                .saturating_add(state.sticky_height)
-                .saturating_add(row);
             // In read-only (pager) mode there is no active cursor line to emphasize.
             let is_cursor = !self.read_only && caret_lines.contains(&l);
             let row_bg = if is_cursor && self.cursor_line {
@@ -861,7 +795,7 @@ impl StatefulWidget for Editor<'_> {
                 Style::default().bg(row_bg.to_ratatui()),
             );
 
-            let first_row = !self.word_wrap || anchor.subrow == 0;
+            let first_row = range_index == 0;
             let fold = self.fold_at(l);
             let number_color = if is_cursor {
                 theme.role(ThemeRole::LineNumberActive)
@@ -875,19 +809,6 @@ impl StatefulWidget for Editor<'_> {
                 theme,
                 (default_fg, number_color),
             );
-            let ranges = if self.word_wrap {
-                visual_ranges(self.buffer, l, layout)
-            } else {
-                vec![VisualRange {
-                    start: state.scroll_col,
-                    end: u32::MAX,
-                }]
-            };
-            let range_index = if self.word_wrap {
-                (anchor.subrow as usize).min(ranges.len().saturating_sub(1))
-            } else {
-                0
-            };
             let range = ranges
                 .get(range_index)
                 .copied()
@@ -942,17 +863,13 @@ impl StatefulWidget for Editor<'_> {
                 );
             }
 
-            let next = if self.word_wrap {
-                next_visual_anchor(self.buffer, self.folds, layout, anchor)
-            } else {
-                next_line_anchor(self.folds, line_count, anchor)
-            };
             if next == anchor {
                 break;
             }
             anchor = next;
         }
         state.last_hints = hint_index;
+        state.last_blocks = block_index;
         state.last_visible_lines =
             last_painted.map_or(0, |last: u32| last.saturating_sub(state.scroll_line) + 1);
         if !self.word_wrap {

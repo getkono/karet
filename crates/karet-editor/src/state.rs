@@ -1,6 +1,7 @@
 use std::cell::Cell;
 use std::ops::RangeInclusive;
 
+use super::hint::BlockIndex;
 use super::hint::HintIndex;
 use super::hint::LineHints;
 use super::text::*;
@@ -107,6 +108,10 @@ pub struct EditorState {
     /// click resolved against hints the frame did not paint would select the
     /// wrong character.
     pub(super) last_hints: HintIndex,
+    /// Virtual lines captured at the last render, for the same reason as
+    /// [`last_hints`](Self::last_hints): the rows a click counts are the rows
+    /// that frame painted.
+    pub(super) last_blocks: BlockIndex,
     /// Whether the next render should reveal a cursor moved by an editor
     /// command rather than preserve a manually-scrolled viewport.
     pub(super) follow_cursor: bool,
@@ -154,6 +159,10 @@ pub struct EditorState {
     /// in the slice given to `Editor::virtual_text` — see
     /// [`virtual_text_rect`](Self::virtual_text_rect).
     pub(super) last_virtual_text: Vec<(usize, Rect)>,
+    /// The row the last render painted each virtual line on, keyed by its
+    /// index in the slice given to `Editor::virtual_lines` — see
+    /// [`virtual_line_at`](Self::virtual_line_at).
+    pub(super) last_virtual_lines: Vec<(usize, Rect)>,
     /// Where the last render painted each collapsed fold header's ` ⋯`,
     /// with that header's line — see
     /// [`fold_ellipsis_at`](Self::fold_ellipsis_at).
@@ -185,6 +194,7 @@ impl Default for EditorState {
             last_tab_width: 4,
             last_unwrapped_lines: Vec::new(),
             last_hints: HintIndex::default(),
+            last_blocks: BlockIndex::default(),
             follow_cursor: false,
             follow_col: None,
             last_folds: Vec::new(),
@@ -196,6 +206,7 @@ impl Default for EditorState {
             goals: None,
             pointer_upstream: Cell::new(None),
             last_virtual_text: Vec::new(),
+            last_virtual_lines: Vec::new(),
             last_fold_ellipses: Vec::new(),
             word_occurrences: None,
             syntax_steps: Vec::new(),
@@ -301,10 +312,10 @@ impl EditorState {
     fn scroll_vertically_to(&mut self, pos: LineCol, last: u32) {
         self.follow_cursor = true;
         let height = u32::from(self.last_height.max(1));
-        // A wrapped line takes several rows, so a margin counted in lines
-        // could scroll further than the rows the margin asks for; the render
-        // keeps it in rows instead.
-        let off = if self.last_word_wrap {
+        // A wrapped line, or a line with virtual lines, takes several rows, so
+        // a margin counted in lines could scroll further than the rows the
+        // margin asks for; the render keeps it in rows instead.
+        let off = if self.last_word_wrap || !self.last_blocks.is_empty() {
             0
         } else {
             self.reveal_margin()
@@ -326,13 +337,16 @@ impl EditorState {
         }
     }
 
-    /// The geometry of the last render, at `width` content columns.
-    pub(super) fn layout(&self, width: u32) -> Layout<'_> {
+    /// The geometry of the last render at `width` content columns, soft
+    /// wrapped when `wrap`, else one text row per line.
+    pub(super) fn row_layout(&self, width: u32, wrap: bool) -> Layout<'_> {
         Layout {
             width,
             tab_width: self.last_tab_width,
             unwrapped_lines: &self.last_unwrapped_lines,
             hints: &self.last_hints,
+            blocks: &self.last_blocks,
+            wrap,
         }
     }
 
@@ -343,8 +357,10 @@ impl EditorState {
 
     /// Scroll the viewport vertically by display rows.
     ///
-    /// In overflow mode a display row is one buffer line. In soft-wrap mode this
-    /// walks continuation rows before advancing to the next visible buffer line.
+    /// In overflow mode a display row is one buffer line or one of its
+    /// virtual lines. In soft-wrap mode this also walks continuation rows
+    /// before advancing to the next visible buffer line. A collapsed fold's
+    /// hidden lines take no rows in either.
     pub fn scroll_rows(
         &mut self,
         buffer: &TextBuffer,
@@ -354,24 +370,22 @@ impl EditorState {
     ) {
         self.follow_cursor = false;
         let width = u32::from(self.last_content_width.max(1));
-        if !word_wrap {
-            let max = i64::from(last_line(buffer));
-            self.scroll_line =
-                (i64::from(self.scroll_line) + i64::from(delta)).clamp(0, max) as u32;
-            self.scroll_subrow = 0;
-            return;
-        }
+        let layout = self.row_layout(width, word_wrap);
         let mut anchor = VisualAnchor {
             line: self.scroll_line.min(last_line(buffer)),
             subrow: self.scroll_subrow,
         };
         let steps = delta.unsigned_abs();
         for _ in 0..steps {
-            anchor = if delta.is_negative() {
-                previous_visual_anchor(buffer, folds, self.layout(width), anchor)
+            let next = if delta.is_negative() {
+                previous_visual_anchor(buffer, folds, layout, anchor)
             } else {
-                next_visual_anchor(buffer, folds, self.layout(width), anchor)
+                next_visual_anchor(buffer, folds, layout, anchor)
             };
+            if next == anchor {
+                break;
+            }
+            anchor = next;
         }
         self.scroll_line = anchor.line;
         self.scroll_subrow = anchor.subrow;
@@ -1029,94 +1043,93 @@ impl EditorState {
             );
         }
         rel_row = rel_row.saturating_sub(u32::from(self.sticky_height));
-        if self.last_word_wrap {
-            let width = u32::from(area.width.saturating_sub(gutter).max(1));
-            let layout = self.layout(width);
-            let (anchor, below_end) = visual_anchor_at_row(
-                buffer,
-                folds,
-                layout,
-                VisualAnchor {
-                    line: self.scroll_line,
-                    subrow: self.scroll_subrow,
-                },
-                rel_row,
-            );
-            if below_end {
-                return LineCol::new(anchor.line, line_len(buffer, anchor.line));
-            }
-            let ranges = visual_ranges(buffer, anchor.line, layout);
-            let range = ranges
-                .get(anchor.subrow as usize)
-                .copied()
-                .unwrap_or_else(|| VisualRange::empty(line_len(buffer, anchor.line)));
-            let chars = line_chars(buffer, anchor.line);
-            let hints = layout.hints_on(anchor.line);
-            let hit = LineCol::new(
-                anchor.line,
-                source_col_at_display_offset(
-                    &chars,
-                    range.start,
-                    range.end,
-                    rel_col,
-                    self.last_tab_width,
-                    hints,
-                    snap,
-                ),
-            );
-            // Past the end of a row the line continues below: the same column
-            // starts the next row, so remember which one was clicked.
-            let continues = (anchor.subrow as usize).saturating_add(1) < ranges.len();
-            if snap == Snap::Nearest {
-                self.pointer_upstream
-                    .set((continues && hit.col == range.end).then_some(hit));
-            }
-            return hit;
+        let width = u32::from(area.width.saturating_sub(gutter).max(1));
+        let layout = self.row_layout(width, self.last_word_wrap);
+        let (anchor, below_end) = self.row_at(buffer, folds, layout, rel_row);
+        // Below the last row: the end of the document, as shown.
+        if below_end {
+            return LineCol::new(anchor.line, line_len(buffer, anchor.line));
         }
-        let line = match self.unwrapped_row_line(line_count, folds, rel_row) {
-            Ok(line) => line,
-            // Below the last row: the end of the document, as shown.
-            Err(line) => return LineCol::new(line, line_len(buffer, line)),
+        let ranges = layout.text_rows(buffer, anchor.line, self.scroll_col);
+        let index = match layout.kind(anchor.line, anchor.subrow, ranges.len() as u32) {
+            RowKind::Text(index) => index as usize,
+            // A virtual line is routed to the line it belongs to: one above
+            // it to the line's start, one below to its end.
+            RowKind::Above(_) => return LineCol::new(anchor.line, 0),
+            RowKind::Below(_) => {
+                return LineCol::new(anchor.line, line_len(buffer, anchor.line));
+            },
         };
-        let chars = line_chars(buffer, line);
-        let hints = self.hints_on(line);
-        LineCol::new(
-            line,
+        let range = ranges
+            .get(index)
+            .copied()
+            .unwrap_or_else(|| VisualRange::empty(line_len(buffer, anchor.line)));
+        let chars = line_chars(buffer, anchor.line);
+        let hit = LineCol::new(
+            anchor.line,
             source_col_at_display_offset(
                 &chars,
-                self.scroll_col,
-                chars.len() as u32,
+                range.start,
+                range.end,
                 rel_col,
                 self.last_tab_width,
-                hints,
+                layout.hints_on(anchor.line),
                 snap,
             ),
-        )
+        );
+        // Past the end of a row the line continues below: the same column
+        // starts the next row, so remember which one was clicked.
+        let continues = index.saturating_add(1) < ranges.len();
+        if snap == Snap::Nearest {
+            self.pointer_upstream
+                .set((continues && hit.col == range.end).then_some(hit));
+        }
+        hit
     }
 
-    /// The buffer line an unwrapped view shows `rel_row` rows below its
-    /// (clamped) viewport top, walking past collapsed folds; `Err` with the
-    /// last line shown when the row lies below the document's last row.
-    fn unwrapped_row_line(
+    /// The visual row `rel_row` rows below the viewport top as `layout`
+    /// lays it out, walking past collapsed folds, and whether `rel_row` lies
+    /// below the document's last row (the anchor is then that last row).
+    pub(super) fn row_at(
         &self,
-        line_count: u32,
+        buffer: &TextBuffer,
         folds: &[Fold],
+        layout: Layout<'_>,
         rel_row: u32,
-    ) -> Result<u32, u32> {
-        let mut line = self.scroll_line;
-        while line < line_count && hidden_in(folds, line) {
-            line += 1;
-        }
-        for _ in 0..rel_row {
-            let mut next = line + 1;
-            while next < line_count && hidden_in(folds, next) {
-                next += 1;
-            }
-            if next >= line_count {
-                return Err(line.min(line_count - 1));
-            }
-            line = next;
-        }
-        Ok(line.min(line_count - 1))
+    ) -> (VisualAnchor, bool) {
+        let top = VisualAnchor {
+            line: self.scroll_line,
+            subrow: self.scroll_subrow,
+        };
+        visual_anchor_at_row(buffer, folds, layout, top, rel_row)
+    }
+
+    /// The [`VirtualLine`](karet_core::VirtualLine) the last render painted
+    /// on the row under the screen cell `(col, row)`, as its index in the
+    /// slice given to [`Editor::virtual_lines`]; `None` off a virtual line,
+    /// and in the gutter beside one.
+    ///
+    /// A click on a virtual line belongs to whoever supplied it (a code
+    /// lens's command, a diff hunk's actions), so check this before
+    /// [`pos_at`](Self::pos_at), which resolves the same cell to the line
+    /// the virtual line is anchored to. Read back from what was painted, so
+    /// it agrees with the screen whatever has changed since.
+    #[must_use]
+    pub fn virtual_line_at(&self, col: u16, row: u16) -> Option<usize> {
+        let at = ratatui::layout::Position { x: col, y: row };
+        self.last_virtual_lines
+            .iter()
+            .find_map(|&(index, rect)| rect.contains(at).then_some(index))
+    }
+
+    /// The row the last render painted the virtual line at `index` of the
+    /// slice given to [`Editor::virtual_lines`] on, from the end of the
+    /// gutter to the editor's right edge; `None` when it was not painted
+    /// (scrolled off, or hidden in a collapsed fold).
+    #[must_use]
+    pub fn virtual_line_rect(&self, index: usize) -> Option<Rect> {
+        self.last_virtual_lines
+            .iter()
+            .find_map(|&(painted, rect)| (painted == index).then_some(rect))
     }
 }

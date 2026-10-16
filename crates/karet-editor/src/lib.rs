@@ -45,6 +45,7 @@ use karet_core::Selection;
 use karet_core::Severity;
 use karet_core::ThemeRole;
 use karet_core::TokenId;
+use karet_core::VirtualLine;
 use karet_core::VirtualText;
 use karet_core::VirtualTextPlacement;
 use karet_syntax::HighlightSpan;

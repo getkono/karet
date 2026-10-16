@@ -2,6 +2,7 @@ use std::ops::RangeInclusive;
 
 use unicode_segmentation::UnicodeSegmentation;
 
+use super::hint::BlockIndex;
 use super::hint::HintIndex;
 use super::hint::LineHints;
 use super::text::*;
@@ -41,6 +42,27 @@ pub(super) struct Layout<'a> {
     pub(super) unwrapped_lines: &'a [RangeInclusive<u32>],
     /// Virtual text occupying cells no buffer column owns.
     pub(super) hints: &'a HintIndex,
+    /// Virtual lines taking whole rows above and below their buffer lines.
+    pub(super) blocks: &'a BlockIndex,
+    /// Whether lines soft-wrap at `width`; unwrapped, every line has one
+    /// text row.
+    pub(super) wrap: bool,
+}
+
+/// What one visual row of a shown line holds.
+///
+/// A line's rows run: its virtual lines above, top first, then its text
+/// rows, then its virtual lines below. A [`VisualAnchor`]'s `subrow` counts
+/// all of them from the first row above, so scrolling, reveal and
+/// hit-testing walk virtual rows exactly as they walk wrapped ones.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum RowKind {
+    /// The `n`th virtual line above the line.
+    Above(u32),
+    /// The line's `n`th text row.
+    Text(u32),
+    /// The `n`th virtual line below the line.
+    Below(u32),
 }
 
 impl<'a> Layout<'a> {
@@ -48,6 +70,53 @@ impl<'a> Layout<'a> {
     pub(super) fn hints_on(&self, line: u32) -> LineHints<'a> {
         self.hints.line(line)
     }
+
+    /// How many virtual rows sit above `line`.
+    pub(super) fn above(&self, line: u32) -> u32 {
+        self.blocks.above_count(line)
+    }
+
+    /// What row `subrow` of `line` holds, when the line has `text` text
+    /// rows; past its last row, its last row.
+    pub(super) fn kind(&self, line: u32, subrow: u32, text: u32) -> RowKind {
+        let above = self.above(line);
+        let text = text.max(1);
+        if subrow < above {
+            RowKind::Above(subrow)
+        } else if subrow - above < text {
+            RowKind::Text(subrow - above)
+        } else {
+            let below = self.blocks.below_count(line);
+            RowKind::Below((subrow - above - text).min(below.saturating_sub(1)))
+        }
+    }
+
+    /// The text rows of `line` as a frame paints them: its soft-wrapped
+    /// rows, or, unwrapped, its one row scrolled to `scroll_col`.
+    pub(super) fn text_rows(
+        &self,
+        buffer: &TextBuffer,
+        line: u32,
+        scroll_col: u32,
+    ) -> Vec<VisualRange> {
+        if self.wrap {
+            visual_ranges(buffer, line, *self)
+        } else {
+            vec![VisualRange {
+                start: scroll_col,
+                end: u32::MAX,
+            }]
+        }
+    }
+}
+
+/// Every row `line` takes: its text rows and its virtual lines.
+fn line_rows(buffer: &TextBuffer, line: u32, layout: Layout<'_>) -> u32 {
+    let text = visual_ranges(buffer, line, layout).len().max(1) as u32;
+    layout
+        .above(line)
+        .saturating_add(text)
+        .saturating_add(layout.blocks.below_count(line))
 }
 
 /// The screen cells `ch` occupies when it starts at `display_col`.
@@ -203,6 +272,19 @@ pub(super) fn visual_ranges(
     line: u32,
     layout: Layout<'_>,
 ) -> Vec<VisualRange> {
+    // Checked before the line is collected: an unwrapped view walks rows
+    // through here once per line.
+    if !layout.wrap
+        || layout
+            .unwrapped_lines
+            .iter()
+            .any(|range| range.contains(&line))
+    {
+        return vec![VisualRange {
+            start: 0,
+            end: line_len(buffer, line),
+        }];
+    }
     let chars: Vec<char> = buffer
         .line(line as usize)
         .unwrap_or_default()
@@ -211,13 +293,6 @@ pub(super) fn visual_ranges(
     let len = chars.len() as u32;
     if len == 0 {
         return vec![VisualRange::empty(0)];
-    }
-    if layout
-        .unwrapped_lines
-        .iter()
-        .any(|range| range.contains(&line))
-    {
-        return vec![VisualRange { start: 0, end: len }];
     }
     let hints = layout.hints_on(line);
     let width = layout.width.max(1);
@@ -282,7 +357,7 @@ pub(super) fn normalize_visual_anchor(
     while line > 0 && hidden_in(folds, line) {
         line -= 1;
     }
-    let rows = visual_ranges(buffer, line, layout).len().max(1) as u32;
+    let rows = line_rows(buffer, line, layout);
     VisualAnchor {
         line,
         subrow: anchor.subrow.min(rows - 1),
@@ -296,7 +371,7 @@ pub(super) fn next_visual_anchor(
     anchor: VisualAnchor,
 ) -> VisualAnchor {
     let anchor = normalize_visual_anchor(buffer, folds, layout, anchor);
-    let rows = visual_ranges(buffer, anchor.line, layout).len() as u32;
+    let rows = line_rows(buffer, anchor.line, layout);
     if anchor.subrow + 1 < rows {
         return VisualAnchor {
             subrow: anchor.subrow + 1,
@@ -332,7 +407,7 @@ pub(super) fn previous_visual_anchor(
     while line > 0 {
         line -= 1;
         if !hidden_in(folds, line) {
-            let rows = visual_ranges(buffer, line, layout).len().max(1) as u32;
+            let rows = line_rows(buffer, line, layout);
             return VisualAnchor {
                 line,
                 subrow: rows - 1,
@@ -340,22 +415,6 @@ pub(super) fn previous_visual_anchor(
         }
     }
     anchor
-}
-
-pub(super) fn next_line_anchor(
-    folds: &[Fold],
-    line_count: u32,
-    anchor: VisualAnchor,
-) -> VisualAnchor {
-    let mut line = anchor.line.saturating_add(1);
-    while line < line_count && hidden_in(folds, line) {
-        line += 1;
-    }
-    if line >= line_count {
-        anchor
-    } else {
-        VisualAnchor { line, subrow: 0 }
-    }
 }
 
 /// The visual row `row` rows below `start`, and whether `row` lies past the
@@ -389,7 +448,7 @@ pub(super) fn row_holds(range: VisualRange, last: bool, col: u32, upstream: bool
 }
 
 /// The visual row a caret at `pos` is drawn on; `upstream` as in
-/// [`row_holds`].
+/// [`row_holds`]. Always a text row: no caret sits on a virtual line.
 pub(super) fn visual_anchor_for_position(
     buffer: &TextBuffer,
     layout: Layout<'_>,
@@ -399,14 +458,17 @@ pub(super) fn visual_anchor_for_position(
     let line = pos.line.min(last_line(buffer));
     let ranges = visual_ranges(buffer, line, layout);
     let last = ranges.len().saturating_sub(1);
-    let subrow = ranges
+    let index = ranges
         .iter()
         .enumerate()
         .find_map(|(index, range)| {
             row_holds(*range, index == last, pos.col, upstream).then_some(index as u32)
         })
         .unwrap_or(last as u32);
-    VisualAnchor { line, subrow }
+    VisualAnchor {
+        line,
+        subrow: layout.above(line).saturating_add(index),
+    }
 }
 
 /// The scroll margin a viewport of `height` rows can honour: `off` rows,
@@ -416,13 +478,19 @@ pub(super) fn scroll_margin(off: u32, height: u32) -> u32 {
     off.min(height.max(1).saturating_sub(1) / 2)
 }
 
-/// The top row that shows the caret at `cursor` in a soft-wrapped viewport of
-/// `height` rows currently starting at `current`, keeping `off` rows (see
+/// The top row that shows the caret at `cursor` in a viewport of `height`
+/// rows currently starting at `current`, keeping `off` rows (see
 /// [`scroll_margin`]) between it and either edge. The margin stops at the
 /// buffer's first and last rows, so it never scrolls past either end.
+///
+/// Rows are visual rows: wrapped rows and virtual lines each count. A caret
+/// on its line's first text row also brings the virtual lines above that
+/// line into view when scrolling up to it, as far as they fit, so a code
+/// lens is not left just out of sight above the line it describes. A caret
+/// a collapsed fold hides is revealed through the header that shows it.
 #[allow(clippy::too_many_arguments)]
-// The wrapped twin of `reveal_line`: the geometry, the viewport and the
-// caret are each needed, and bundling them would add a type used once.
+// The geometry, the viewport and the caret are each needed, and bundling
+// them would add a type used once.
 pub(super) fn reveal_visual_anchor(
     buffer: &TextBuffer,
     folds: &[Fold],
@@ -434,11 +502,29 @@ pub(super) fn reveal_visual_anchor(
     off: u32,
 ) -> VisualAnchor {
     let current = normalize_visual_anchor(buffer, folds, layout, current);
+    let header = shown_line(folds, cursor.line);
+    let cursor = if header == cursor.line {
+        cursor
+    } else {
+        LineCol::new(header, line_len(buffer, header))
+    };
     let caret = visual_anchor_for_position(buffer, layout, cursor, upstream);
     let off = scroll_margin(off, u32::from(height));
+    // The rows above the line, capped so the caret and the margin below it
+    // still fit: otherwise a block taller than the viewport would push the
+    // caret off the bottom.
+    let lead = if caret.subrow == layout.above(caret.line) {
+        caret
+            .subrow
+            .min(u32::from(height.max(1)).saturating_sub(1 + off))
+    } else {
+        0
+    };
     let (mut upper, mut target) = (caret, caret);
-    for _ in 0..off {
+    for _ in 0..off.max(lead) {
         upper = previous_visual_anchor(buffer, folds, layout, upper);
+    }
+    for _ in 0..off {
         target = next_visual_anchor(buffer, folds, layout, target);
     }
     if upper < current {
@@ -633,104 +719,57 @@ pub(super) fn caret_cell(
         return None;
     }
     let content_width = area.right().saturating_sub(content_x);
-
-    if state.last_word_wrap {
-        let layout = state.layout(u32::from(content_width.max(1)));
-        let mut anchor = normalize_visual_anchor(
-            buffer,
-            folds,
-            layout,
-            VisualAnchor {
-                line: state.scroll_line,
-                subrow: state.scroll_subrow,
-            },
-        );
-        for row in 0..content_height {
-            let ranges = visual_ranges(buffer, anchor.line, layout);
-            let index = (anchor.subrow as usize).min(ranges.len().saturating_sub(1));
-            let range = ranges
-                .get(index)
-                .copied()
-                .unwrap_or_else(|| VisualRange::empty(0));
-            let last = index + 1 == ranges.len();
-            if anchor.line == at.line
-                && row_holds(range, last, at.col, state.upstream.contains(&at))
-            {
-                let chars: Vec<char> = buffer
-                    .line(at.line as usize)
-                    .unwrap_or_default()
-                    .chars()
-                    .collect();
-                let rel = offset_within_row(
-                    &chars,
-                    range.start,
-                    at.col,
-                    state.last_tab_width,
-                    layout.hints_on(at.line),
-                );
-                let x = content_x.saturating_add(
-                    u16::try_from(rel.min(u32::from(content_width.saturating_sub(1))))
-                        .unwrap_or(u16::MAX),
-                );
-                return Some((x, content_y.saturating_add(row)));
-            }
-            anchor = next_visual_anchor(buffer, folds, layout, anchor);
-        }
+    let wrap = state.last_word_wrap;
+    let chars = line_chars(buffer, at.line);
+    // Off the buffer, past the line's end, or (unwrapped) scrolled off to
+    // the left: not on screen. Drawing it pinned to an edge would show it
+    // over text it is not on.
+    if at.line >= line_count || at.col > chars.len() as u32 || (!wrap && at.col < state.scroll_col)
+    {
         return None;
     }
-
-    let top = first_visible(
+    let layout = state.row_layout(u32::from(content_width.max(1)), wrap);
+    let target = visual_anchor_for_position(buffer, layout, at, state.upstream.contains(&at));
+    let mut anchor = normalize_visual_anchor(
+        buffer,
         folds,
-        state.scroll_line.min(line_count.saturating_sub(1)),
-        line_count,
+        layout,
+        VisualAnchor {
+            line: state.scroll_line,
+            subrow: state.scroll_subrow,
+        },
     );
-    if at.line < top || hidden_in(folds, at.line) {
-        return None;
-    }
-    let mut vis_row: u16 = 0;
-    let mut ll = top;
-    while ll < at.line {
-        if !hidden_in(folds, ll) {
-            vis_row = vis_row.saturating_add(1);
+    // Walked row by row, virtual lines included: a line hidden in a
+    // collapsed fold is never reached, so its caret is never drawn.
+    for row in 0..content_height {
+        if anchor == target {
+            let ranges = layout.text_rows(buffer, at.line, state.scroll_col);
+            let index = target.subrow.saturating_sub(layout.above(at.line)) as usize;
+            let start = ranges.get(index).map_or(0, |range| range.start);
+            let rel = offset_within_row(
+                &chars,
+                start,
+                at.col,
+                state.last_tab_width,
+                layout.hints_on(at.line),
+            );
+            let rel = if wrap {
+                rel.min(u32::from(content_width.saturating_sub(1)))
+            } else if rel >= u32::from(content_width) {
+                return None;
+            } else {
+                rel
+            };
+            let x = content_x.saturating_add(u16::try_from(rel).unwrap_or(u16::MAX));
+            return Some((x, content_y.saturating_add(row)));
         }
-        ll += 1;
+        let next = next_visual_anchor(buffer, folds, layout, anchor);
+        if next == anchor {
+            break;
+        }
+        anchor = next;
     }
-    if vis_row >= content_height {
-        return None;
-    }
-    let chars: Vec<char> = buffer
-        .line(at.line as usize)
-        .unwrap_or_default()
-        .chars()
-        .collect();
-    if at.col > chars.len() as u32 {
-        return None;
-    }
-    // A caret scrolled off either side is not on screen: drawing it pinned to
-    // the edge would show it over text it is not on.
-    if at.col < state.scroll_col {
-        return None;
-    }
-    let rel = offset_within_row(
-        &chars,
-        state.scroll_col,
-        at.col,
-        state.last_tab_width,
-        state.hints_on(at.line),
-    );
-    if rel >= u32::from(content_width) {
-        return None;
-    }
-    let cx = content_x.saturating_add(u16::try_from(rel).unwrap_or(u16::MAX));
-    let cy = content_y.saturating_add(vis_row);
-    (cy < area.bottom()).then_some((cx, cy))
-}
-
-pub(super) fn first_visible(folds: &[Fold], mut line: u32, line_count: u32) -> u32 {
-    while line < line_count && hidden_in(folds, line) {
-        line += 1;
-    }
-    line
+    None
 }
 
 /// The last line of the collapsed fold interior that hides `line`, when one
@@ -777,9 +816,10 @@ fn next_shown_line(folds: &[Fold], line: u32) -> u32 {
 /// is above, the bottom row when below. A `target` hidden in a collapsed fold
 /// is revealed through the header that shows it.
 ///
-/// Soft-wrapped lines take more than one row, so for a wrapped view this is an
-/// under-estimate that never scrolls further than needed; the render then
-/// completes it against the real wrap.
+/// Soft-wrapped lines and lines with virtual lines take more than one row, so
+/// for them this is an under-estimate that never scrolls further than
+/// needed; the render then completes it against the rows it paints
+/// ([`reveal_visual_anchor`]).
 ///
 /// `off` rows (see [`scroll_margin`]) are kept between `target` and either
 /// edge, counting shown lines and stopping at line 0 and at `last`, so the
