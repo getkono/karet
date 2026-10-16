@@ -93,7 +93,8 @@ impl App {
     /// too, replacing the same text where it sits around that caret (VS Code's
     /// behaviour). Additional edits apply once. When they may still be
     /// deferred -- the item was never resolved and listed none -- they are
-    /// asked for now and follow as their own change.
+    /// asked for now and follow as their own change. A snippet item selects
+    /// its first stop and starts a snippet session.
     fn apply_completion(
         &mut self,
         item: &CompletionItem,
@@ -121,6 +122,7 @@ impl App {
             .edit
             .as_ref()
             .map_or_else(|| item.insert_text.clone(), |edit| edit.new_text.clone());
+        let inserted = text.clone();
         let Some(multi) = self.compose_edit(move |caret, sel, buf, base| {
             let range = caret_range((&before, &after), caret, sel, buf);
             Some(editing::Edit {
@@ -138,7 +140,8 @@ impl App {
         };
         let applied = multi.change.edits.clone();
         let multi = crate::completion::with_additional_edits(multi, &item.additional_edits);
-        self.submit_multi_edit(EditCause::Replace, multi);
+        let snippet = self.snippet_for(item, &inserted, &applied, &multi);
+        self.submit_with_snippet(multi, snippet);
         // Eager additional edits are final (a resolve keeps them, as
         // `CompletionItem::adopt_resolved` does): only an item that listed
         // none may still have some deferred.
@@ -175,7 +178,7 @@ impl App {
     }
 
     /// The active code tab's next document version.
-    fn active_next_version(&self) -> Option<u64> {
+    pub(super) fn active_next_version(&self) -> Option<u64> {
         match self.tabs.get(self.active) {
             Some(Tab {
                 kind: TabKind::Code { next_version, .. },

@@ -27,8 +27,8 @@ impl LspClient {
     /// The list says whether it is incomplete: a consumer narrowing the typed
     /// prefix over an incomplete list asks again with
     /// [`CompletionTrigger::Incomplete`] instead of only filtering it.
-    /// Snippet-format insert text is degraded to plain text -- this client
-    /// does not advertise `snippetSupport`. When the server resolves items,
+    /// Snippet-format insert text is expanded to the text it inserts, its
+    /// stops kept in each item's `tabstops`. When the server resolves items,
     /// each carries the payload [`Self::resolve_completion`] needs.
     ///
     /// # Errors

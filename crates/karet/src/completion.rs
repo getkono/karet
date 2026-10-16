@@ -22,6 +22,10 @@ use karet_session::DocumentId;
 use karet_session::RequestId;
 use karet_widgets::CompletionState;
 
+mod snippet;
+
+pub(crate) use snippet::SnippetSession;
+
 /// The characters that re-request completions before the document's server has
 /// said which of its own do: `.` for member access and the second `:` of a `::`
 /// path -- servers narrow the candidate set at these boundaries. Once a server

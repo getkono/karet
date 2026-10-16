@@ -652,6 +652,9 @@ pub struct App {
     pub(crate) completion_chars: HashMap<DocumentId, karet_core::CompletionOptions>,
     /// An accepted item's additional edits, still on their way.
     pub(crate) completion_follow_up: Option<crate::completion::AcceptFollowUp>,
+    /// The snippet an accepted completion is still being filled in through,
+    /// if any (see [`crate::completion::SnippetSession`]).
+    pub(crate) snippet: Option<crate::completion::SnippetSession>,
     /// The reusable fuzzy matcher backing the completion popup's filtering.
     pub(crate) completion_matcher: karet_fuzzy::Matcher,
     /// The in-flight hover request, if any (see [`crate::hover`]).

@@ -67,6 +67,7 @@ mod seam;
 mod search_completion;
 mod search_panel;
 mod signature;
+mod snippet_session;
 mod source_links;
 mod spellcheck;
 mod spelling_panel;
