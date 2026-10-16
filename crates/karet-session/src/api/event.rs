@@ -402,6 +402,18 @@ pub enum Event {
         /// server had none, and every chain is empty when no server answered.
         chains: Vec<Vec<Range>>,
     },
+    /// Document highlights answering a [`Command::DocumentHighlights`].
+    DocumentHighlights {
+        /// The document the request was made in.
+        doc: DocumentId,
+        /// The document version the request was made against.
+        version: u64,
+        /// The occurrences of the symbol, in the server's order, in buffer
+        /// columns; empty when the server found none. `None` when no server
+        /// answered, or the document changed before the answer arrived, so
+        /// the server's ranges describe text that is no longer there.
+        highlights: Option<Vec<DocumentHighlight>>,
+    },
     /// Definition locations answering a [`Command::Definition`].
     Definitions {
         /// The resolved locations.

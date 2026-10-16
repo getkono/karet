@@ -66,6 +66,31 @@ pub use search::*;
 pub use server_window::*;
 pub use vcs::*;
 
+/// How a [`DocumentHighlight`] uses the symbol it is an occurrence of.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+pub enum HighlightKind {
+    /// A textual occurrence, neither a read nor a write as far as the server
+    /// says.
+    #[default]
+    Text,
+    /// A read of the symbol.
+    Read,
+    /// A write to the symbol, such as an assignment or its declaration.
+    Write,
+}
+
+/// One occurrence of the symbol a [`Command::DocumentHighlights`] asked
+/// about.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DocumentHighlight {
+    /// The occurrence, in buffer columns.
+    pub range: Range,
+    /// How the occurrence uses the symbol.
+    pub kind: HighlightKind,
+}
+
 /// Per-document editing and serialization behavior after application settings and
 /// matching EditorConfig files have been resolved.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -470,6 +495,20 @@ pub enum Command {
         doc: DocumentId,
         /// One position per caret, in buffer columns.
         positions: Vec<LineCol>,
+    },
+    /// Request the language server's document highlights -- the occurrences
+    /// of the symbol at `position`, each a read, a write, or text -- for the
+    /// occurrence highlight. Answered by [`Event::DocumentHighlights`],
+    /// always: with `highlights: None` when no server serves the document, it
+    /// does not offer document highlights, or the request failed, so the
+    /// client can fall back to matching the word as text. A refusal is never
+    /// reported as [`Event::FeatureUnsupported`]: the request is made every
+    /// time the caret rests, never by hand.
+    DocumentHighlights {
+        /// The target document.
+        doc: DocumentId,
+        /// The caret, in buffer columns.
+        position: LineCol,
     },
     /// Resolve the definition of the symbol at a position.
     Definition {

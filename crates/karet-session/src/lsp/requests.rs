@@ -200,6 +200,30 @@ impl LspManager {
         .is_ok()
     }
 
+    /// Forward a document-highlight request (`position` already in UTF-16
+    /// columns); `false` when no server serves `path` or its queue is full,
+    /// so the caller answers it with no highlights.
+    pub(crate) fn document_highlights(
+        &self,
+        language: Option<&str>,
+        (request, doc, version): (RequestId, DocumentId, u64),
+        path: &Path,
+        position: LineCol,
+    ) -> bool {
+        let path = absolute_path(path);
+        let Some(tx) = self.existing_server(language, &path) else {
+            return false;
+        };
+        tx.try_send(ServerCmd::DocumentHighlights {
+            request,
+            doc,
+            version,
+            path,
+            position,
+        })
+        .is_ok()
+    }
+
     /// Forward a definition request, or with a `kind` the navigation request a
     /// [`crate::api::Command::FindLocations`] names.
     #[allow(clippy::too_many_arguments)] // one request's identity, flattened as its siblings are

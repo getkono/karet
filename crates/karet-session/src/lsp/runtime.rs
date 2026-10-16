@@ -616,13 +616,6 @@ pub(super) async fn server_task(task: ServerTask) {
                         symbols,
                     });
                 },
-                cmd @ (ServerCmd::Hover { .. }
-                | ServerCmd::SignatureHelp { .. }
-                | ServerCmd::SelectionRanges { .. }) => {
-                    let health = (&mut dead, &mut tally, &updates, &key, token);
-                    let queue = (generation, &mut pending, &mut documents);
-                    caret_query(active, cmd, queue, health).await;
-                },
                 ServerCmd::Definition {
                     request,
                     doc,
@@ -898,6 +891,15 @@ pub(super) async fn server_task(task: ServerTask) {
                         edits,
                         scope: ask.scope,
                     });
+                },
+                // What is left are the requests about the carets: a hover,
+                // signature help, selection ranges, document highlights.
+                // `caret_query` answers anything else empty, so a command
+                // routed here by mistake is still answered.
+                cmd => {
+                    let health = (&mut dead, &mut tally, &updates, &key, token);
+                    let queue = (generation, &mut pending, &mut documents);
+                    caret_query(active, cmd, queue, health).await;
                 },
             }
         }

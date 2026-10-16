@@ -165,6 +165,7 @@ pub(super) fn draw_pane_content(
                     .chain(search_decos.iter())
                     .chain(conflict_decorations.iter())
                     .chain(ctx.definition_underline.iter())
+                    .chain(ctx.occurrences.iter())
                     .chain(frame_decos.iter())
                     .cloned()
                     .collect();

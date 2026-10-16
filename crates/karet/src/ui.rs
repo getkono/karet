@@ -500,6 +500,8 @@ struct PaneCtx<'a> {
     definition_underline: Option<Decoration>,
     /// The code-action lightbulb on the caret line (focused pane only).
     code_action_bulb: Option<Decoration>,
+    /// The occurrences of the symbol under the caret (focused pane only).
+    occurrences: Vec<Decoration>,
     /// Whether the blame decoration represents an attributed commit.
     blame_clickable: bool,
     /// Mouse position over a link in this pane, used for hover emphasis.

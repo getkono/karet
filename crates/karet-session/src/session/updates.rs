@@ -206,6 +206,7 @@ impl Session {
             LspUpdate::CodeAction { answer, .. } => self.adopt_code_action(answer),
             LspUpdate::CodeLens { answer, .. } => self.adopt_code_lens(answer),
             LspUpdate::SelectionRanges { answer, .. } => self.adopt_selection_ranges(answer),
+            LspUpdate::DocumentHighlights { answer, .. } => self.adopt_document_highlights(answer),
             // A formatting answer either answers a Format command or finishes a
             // deferred save; either way the edits are applied here, never
             // handed to the client. For a save, edits computed against a

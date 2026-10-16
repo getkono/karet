@@ -131,6 +131,7 @@ pub(super) fn draw_panes(
                 blame,
                 definition_underline: app.definition_underline_decoration(),
                 code_action_bulb: app.code_action_bulb_decoration(),
+                occurrences: app.occurrence_decorations(),
                 blame_clickable: app
                     .live_blame
                     .as_ref()
@@ -186,6 +187,7 @@ pub(super) fn draw_panes(
                 blame: None,
                 definition_underline: None,
                 code_action_bulb: None,
+                occurrences: Vec::new(),
                 blame_clickable: false,
                 markdown_link_hover: None,
                 pane_action_hover: app.pane_action_hover,

@@ -49,6 +49,7 @@ mod markdown_edit;
 mod multi_caret;
 mod multi_caret_edit;
 mod multi_click;
+mod occurrences;
 mod overlay_focus;
 mod pointer_routing;
 mod preview;

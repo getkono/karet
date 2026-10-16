@@ -173,6 +173,18 @@ pub(crate) enum ServerCmd {
         /// One per caret, already converted to UTF-16 columns.
         positions: Vec<LineCol>,
     },
+    /// Request the occurrences of the symbol at `position`, for a
+    /// [`crate::api::Command::DocumentHighlights`].
+    DocumentHighlights {
+        /// The originating request, the document asked about and its version
+        /// at request time, all echoed on the answer.
+        request: RequestId,
+        doc: DocumentId,
+        version: u64,
+        path: PathBuf,
+        /// Already converted to UTF-16 columns.
+        position: LineCol,
+    },
     /// Request definition locations, or with a `kind` the locations a
     /// [`crate::api::Command::FindLocations`] asks for.
     Definition {
@@ -308,6 +320,21 @@ pub(crate) struct SelectionRangesAnswer {
     /// One chain per position asked, innermost first, in UTF-16 columns; an
     /// empty chain where the server had none or could not be asked.
     pub(crate) chains: Vec<Vec<Range>>,
+}
+
+/// A server's document highlights, as a [`ServerCmd::DocumentHighlights`]
+/// asked for them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DocumentHighlightsAnswer {
+    /// The originating request.
+    pub(crate) request: RequestId,
+    /// The document asked about.
+    pub(crate) doc: DocumentId,
+    /// The document's version at request time.
+    pub(crate) version: u64,
+    /// The occurrences, in UTF-16 columns; `None` when no server answered
+    /// (none could be asked, it does not offer highlights, or it failed).
+    pub(crate) highlights: Option<Vec<karet_lsp::DocumentHighlight>>,
 }
 
 /// A result flowing from a server task back to the session actor.
@@ -462,6 +489,11 @@ pub(crate) enum LspUpdate {
     SelectionRanges {
         generation: u64,
         answer: SelectionRangesAnswer,
+    },
+    /// The answer to a [`ServerCmd::DocumentHighlights`].
+    DocumentHighlights {
+        generation: u64,
+        answer: DocumentHighlightsAnswer,
     },
     /// Definition (or, with a `kind`, other navigation) response in UTF-16
     /// coordinates.

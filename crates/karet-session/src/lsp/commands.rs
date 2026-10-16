@@ -32,6 +32,7 @@ use super::code_actions::UNAVAILABLE;
 use super::delta::PendingChange;
 use super::delta::lines_agree;
 use super::health::FailureTally;
+use super::message::DocumentHighlightsAnswer;
 use super::message::LspUpdate;
 use super::message::RenameAnswer;
 use super::message::SelectionRangesAnswer;
@@ -187,7 +188,8 @@ pub(super) async fn resolve_item(
 
 /// Serve a request about the carets -- a [`ServerCmd::Hover`] or a
 /// [`ServerCmd::SignatureHelp`], read in a popup, or the
-/// [`ServerCmd::SelectionRanges`] Expand Selection grows through -- and
+/// [`ServerCmd::SelectionRanges`] Expand Selection grows through, or the
+/// [`ServerCmd::DocumentHighlights`] the occurrence highlight paints -- and
 /// answer it: with nothing when the connection is dead or the request fails,
 /// which counts against the connection's health like any other failure.
 /// Flushes first, so the server answers about the latest text.
@@ -196,6 +198,8 @@ pub(super) async fn resolve_item(
 /// signature help only when it was: typing `(` in a file whose server has no
 /// signature help must not raise a notice every time. Selection ranges are
 /// refused silently: the client grows along its own syntax tree instead.
+/// Document highlights are too, answered `None`: they are asked for whenever
+/// the caret rests, and the client falls back to matching the word as text.
 pub(super) async fn caret_query(
     client: &LspClient,
     cmd: ServerCmd,
@@ -285,6 +289,23 @@ pub(super) async fn caret_query(
                 chains,
             };
             let _ = updates.send(LspUpdate::SelectionRanges { generation, answer });
+        },
+        ServerCmd::DocumentHighlights {
+            request,
+            doc,
+            version,
+            path,
+            position,
+        } => {
+            let result = client.document_highlights(&path, position).await;
+            let highlights = settle(result.map(Some), None, generation, health);
+            let answer = DocumentHighlightsAnswer {
+                request,
+                doc,
+                version,
+                highlights,
+            };
+            let _ = updates.send(LspUpdate::DocumentHighlights { generation, answer });
         },
         cmd => answer_empty(updates, cmd, generation),
     }
@@ -482,6 +503,20 @@ pub(super) fn answer_empty(
             };
             let _ = updates.send(LspUpdate::SelectionRanges { generation, answer });
         },
+        ServerCmd::DocumentHighlights {
+            request,
+            doc,
+            version,
+            ..
+        } => {
+            let answer = DocumentHighlightsAnswer {
+                request,
+                doc,
+                version,
+                highlights: None,
+            };
+            let _ = updates.send(LspUpdate::DocumentHighlights { generation, answer });
+        },
         ServerCmd::Definition {
             request,
             doc,
@@ -658,6 +693,7 @@ pub(super) fn remember_document(
         | ServerCmd::Hover { .. }
         | ServerCmd::SignatureHelp { .. }
         | ServerCmd::SelectionRanges { .. }
+        | ServerCmd::DocumentHighlights { .. }
         | ServerCmd::Definition { .. }
         | ServerCmd::WorkspaceSymbols { .. }
         | ServerCmd::Rename { .. }

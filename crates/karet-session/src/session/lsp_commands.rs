@@ -85,6 +85,10 @@ impl Session {
                 self.selection_ranges(id, *doc, positions);
                 return true;
             },
+            Command::DocumentHighlights { doc, position } => {
+                self.document_highlights(id, *doc, *position);
+                return true;
+            },
             Command::CodeLenses { doc, lines } => {
                 self.code_lenses(id, *doc, *lines);
                 return true;
