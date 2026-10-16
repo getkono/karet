@@ -5,6 +5,7 @@ use super::text::*;
 use super::*;
 
 mod brackets;
+mod caret_ops;
 mod carets;
 mod change_lane;
 mod comment;

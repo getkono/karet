@@ -8,6 +8,7 @@ use super::text::*;
 use super::visual::*;
 use super::*;
 
+mod caret_ops;
 mod gutter;
 mod motion;
 mod syntax_select;
@@ -179,6 +180,9 @@ pub struct EditorState {
     /// The Expand Selection presses Shrink Selection can still walk back,
     /// oldest first — see [`expand_selection`](Self::expand_selection).
     pub(super) syntax_steps: Vec<syntax_select::SyntaxStep>,
+    /// The cursor sets caret operations replaced, oldest first — see
+    /// [`undo_caret_operation`](Self::undo_caret_operation).
+    pub(super) caret_history: Vec<caret_ops::CaretSnapshot>,
 }
 
 impl Default for EditorState {
@@ -216,6 +220,7 @@ impl Default for EditorState {
             last_fold_ellipses: Vec::new(),
             word_occurrences: None,
             syntax_steps: Vec::new(),
+            caret_history: Vec::new(),
         }
     }
 }
@@ -895,8 +900,14 @@ impl EditorState {
 
     /// Toggle a caret at `pos` (Alt+click): remove a coincident bare caret unless it is
     /// the only one, otherwise add one as the new primary. A pointer move: it
-    /// scrolls only when `pos` is off screen.
+    /// scrolls only when `pos` is off screen. Undone by
+    /// [`undo_caret_operation`](Self::undo_caret_operation).
     pub fn add_caret(&mut self, buffer: &TextBuffer, pos: LineCol) {
+        self.caret_op(buffer, |state| state.toggle_caret(buffer, pos));
+    }
+
+    /// The toggle behind [`add_caret`](Self::add_caret).
+    fn toggle_caret(&mut self, buffer: &TextBuffer, pos: LineCol) {
         let p = clamp_to_buffer(buffer, pos);
         if let Some(i) = self
             .cursors
@@ -933,42 +944,70 @@ impl EditorState {
     /// wrapping at the end of the buffer and skipping occurrences already selected, so
     /// every occurrence is reached once and a press after the last one is a no-op.
     /// A run started from a bare caret matches whole words only; one started from a
-    /// selection matches the text anywhere, inside words included.
+    /// selection matches the text anywhere, inside words included. Undone by
+    /// [`undo_caret_operation`](Self::undo_caret_operation).
     pub fn add_next_occurrence(&mut self, buffer: &TextBuffer) {
-        let primary = self.cursors.primary();
-        if primary.is_empty() {
-            if let Some((anchor, head)) = word_at(buffer, primary.head) {
-                if let Some(s) = self.cursors.selections.get_mut(self.cursors.primary) {
-                    *s = Selection { anchor, head };
-                }
-                self.normalize();
-                self.word_occurrences = Some(self.cursors.selections.clone());
-                self.reveal(buffer, self.cursor());
+        self.caret_op(buffer, |state| {
+            if state.select_word_at_primary(buffer) {
+                return;
             }
-            return;
+            let (found, whole_word) = state.next_occurrence(buffer);
+            if let Some(found) = found {
+                state.push(Selection {
+                    anchor: found.start,
+                    head: found.end,
+                });
+                state.reveal(buffer, state.cursor());
+            }
+            state.word_occurrences = whole_word.then(|| state.cursors.selections.clone());
+        });
+    }
+
+    /// When the primary is a bare caret, select the word touching it (nothing
+    /// changes off a word) and start a whole-word occurrence run there.
+    /// Returns whether the primary was a bare caret.
+    fn select_word_at_primary(&mut self, buffer: &TextBuffer) -> bool {
+        let primary = self.cursors.primary();
+        if !primary.is_empty() {
+            return false;
         }
-        // Whole-word only while the set is still exactly what the last whole-word
-        // press left: any other change means the user chose this selection.
-        let whole_word = self
-            .word_occurrences
-            .as_ref()
-            .is_some_and(|set| *set == self.cursors.selections);
-        let needle = range_text(buffer, primary.range());
-        let selections = &self.cursors.selections;
+        if let Some((anchor, head)) = word_at(buffer, primary.head) {
+            if let Some(s) = self.cursors.selections.get_mut(self.cursors.primary) {
+                *s = Selection { anchor, head };
+            }
+            self.normalize();
+            self.word_occurrences = Some(self.cursors.selections.clone());
+            self.reveal(buffer, self.cursor());
+        }
+        true
+    }
+
+    /// The next occurrence of the primary selection's text after it, wrapping,
+    /// that no non-empty selection overlaps, and whether the run matches whole
+    /// words only.
+    ///
+    /// Whole-word only while the set is still exactly what the last whole-word
+    /// press left: any other change means the user chose this selection.
+    fn next_occurrence(&self, buffer: &TextBuffer) -> (Option<Range>, bool) {
+        let whole_word = self.whole_word_run();
+        let primary = self.cursors.primary().range();
+        let needle = range_text(buffer, primary);
         let taken = |r: Range| {
-            selections.iter().any(|s| {
+            self.cursors.selections.iter().any(|s| {
                 let s = s.range();
                 s.start != s.end && s.start < r.end && r.start < s.end
             })
         };
-        if let Some(found) = find_next(buffer, &needle, primary.range().end, whole_word, taken) {
-            self.push(Selection {
-                anchor: found.start,
-                head: found.end,
-            });
-            self.reveal(buffer, self.cursor());
-        }
-        self.word_occurrences = whole_word.then(|| self.cursors.selections.clone());
+        let found = find_next(buffer, &needle, primary.end, whole_word, taken);
+        (found, whole_word)
+    }
+
+    /// Whether the selection set is still exactly what the last whole-word
+    /// occurrence press left, so the run goes on matching whole words.
+    fn whole_word_run(&self) -> bool {
+        self.word_occurrences
+            .as_ref()
+            .is_some_and(|set| *set == self.cursors.selections)
     }
 
     /// The buffer position under the screen cell `(col, row)`, given the editor's
