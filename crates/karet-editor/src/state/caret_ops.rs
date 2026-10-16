@@ -95,15 +95,10 @@ impl EditorState {
             }
             let whole_word = bare || state.whole_word_run();
             let primary = state.cursors.primary().range();
-            let mut found = find_all(buffer, &range_text(buffer, primary), whole_word);
-            // A scan left to right can step over the primary itself when an
-            // overlapping occurrence starts before it (`aa` selected at the
-            // end of `aaa`); the primary wins over any match it overlaps.
-            if !found.contains(&primary) {
-                found.retain(|r| !(r.start < primary.end && primary.start < r.end));
-                found.push(primary);
-                found.sort_by_key(|r| (r.start, r.end));
-            }
+            let found = non_overlapping(
+                find_all(buffer, &range_text(buffer, primary), whole_word),
+                primary,
+            );
             let at = found.iter().position(|r| *r == primary).unwrap_or(0);
             let selections = found
                 .into_iter()
@@ -193,4 +188,32 @@ impl EditorState {
             state.reveal(buffer, state.cursor());
         });
     }
+}
+
+/// The occurrences in `found` that Select All Occurrences turns into
+/// selections, sorted: `primary` always, and otherwise each match that
+/// overlaps neither the primary nor a match kept before it, as `Ctrl+D`
+/// passes over a match a selection already overlaps.
+///
+/// A per-line scan cannot see overlaps that cross a line break (`a\na` in
+/// `a\na\na` matches at lines 0 and 1), and a scan left to right can step
+/// over the primary itself (`aa` selected at the end of `aaa`); merging
+/// either pair would leave a selection that is no occurrence.
+fn non_overlapping(found: Vec<Range>, primary: Range) -> Vec<Range> {
+    let overlaps = |a: Range, b: Range| a.start < b.end && b.start < a.end;
+    let mut candidates: Vec<Range> = found
+        .into_iter()
+        .filter(|&r| r != primary && !overlaps(r, primary))
+        .collect();
+    candidates.push(primary);
+    candidates.sort_by_key(|r| (r.start, r.end));
+    let mut kept: Vec<Range> = Vec::with_capacity(candidates.len());
+    for r in candidates {
+        // Every occurrence is the same text, so ends grow with starts and
+        // only the last kept match can overlap the next one.
+        if r == primary || kept.last().is_none_or(|&k| !overlaps(k, r)) {
+            kept.push(r);
+        }
+    }
+    kept
 }

@@ -86,6 +86,34 @@ fn select_all_occurrences_keeps_a_primary_an_earlier_match_overlaps() {
 }
 
 #[test]
+fn select_all_occurrences_drops_multi_line_matches_overlapping_a_kept_one() {
+    // `a\na` matches on every line but the last, each overlapping the next.
+    let buffer = TextBuffer::from_text("a\na\na\na\na");
+    let mut state = state_at(0, 0);
+    state.set_selection(&buffer, LineCol::new(0, 0), LineCol::new(1, 1));
+    state.select_all_occurrences(&buffer);
+    let two_lines = |line: u32| Range {
+        start: LineCol::new(line, 0),
+        end: LineCol::new(line + 1, 1),
+    };
+    // Line 1 overlaps the primary and line 3 the kept line-2 match; none
+    // merges into a selection that is not an occurrence.
+    assert_eq!(state.selection_ranges(), vec![two_lines(0), two_lines(2)]);
+    assert_eq!(state.cursor(), LineCol::new(1, 1));
+}
+
+#[test]
+fn escape_after_select_all_occurrences_keeps_the_primary() {
+    let buffer = TextBuffer::from_text("foo foo foo");
+    let mut state = state_at(0, 5);
+    state.select_all_occurrences(&buffer);
+    assert_eq!(state.cursors().selections.len(), 3);
+    state.collapse_to_original(&buffer);
+    assert_eq!(state.selection_ranges(), vec![span(0, 4, 7)]);
+    assert_eq!(state.cursor(), LineCol::new(0, 7));
+}
+
+#[test]
 fn skip_occurrence_moves_the_last_match_on_and_wraps() {
     let buffer = TextBuffer::from_text("foo foo foo");
     let mut state = state_at(0, 1);
@@ -157,6 +185,55 @@ fn add_cursors_to_line_ends_turns_a_one_line_selection_into_its_end() {
     state.add_cursors_to_line_ends(&buffer);
     assert_eq!(heads(&state), vec![LineCol::new(0, 3)]);
     assert!(state.selection_ranges().is_empty());
+}
+
+#[test]
+fn escape_after_add_cursors_to_line_ends_keeps_the_primary() {
+    let buffer = TextBuffer::from_text("ab\ncde\nfgh");
+    // One selection: Esc keeps its last caret, not the first one placed.
+    let mut state = state_at(0, 0);
+    state.set_selection(&buffer, LineCol::new(0, 1), LineCol::new(2, 1));
+    state.add_cursors_to_line_ends(&buffer);
+    state.collapse_to_original(&buffer);
+    assert_eq!(heads(&state), vec![LineCol::new(2, 1)]);
+
+    // A selection placed first, then a primary caret added after it: Esc
+    // keeps the primary, not the first caret the selection produced.
+    let mut state = state_with_selection_then_caret(&buffer);
+    state.add_cursors_to_line_ends(&buffer);
+    assert_eq!(
+        heads(&state),
+        vec![LineCol::new(0, 2), LineCol::new(1, 1), LineCol::new(2, 2)]
+    );
+    state.collapse_to_original(&buffer);
+    assert_eq!(heads(&state), vec![LineCol::new(2, 2)]);
+}
+
+#[test]
+fn undo_caret_operation_restores_the_caret_escape_keeps() {
+    let buffer = TextBuffer::from_text("ab\ncde\nfgh");
+    let mut state = state_with_selection_then_caret(&buffer);
+    // Shift+Alt+I makes the primary the caret Esc keeps; undoing it hands
+    // that role back to the first-placed selection.
+    state.add_cursors_to_line_ends(&buffer);
+    assert!(state.undo_caret_operation(&buffer));
+    state.collapse_to_original(&buffer);
+    assert_eq!(
+        state.selection_ranges(),
+        vec![Range {
+            start: LineCol::new(0, 1),
+            end: LineCol::new(1, 1),
+        }]
+    );
+}
+
+/// A selection over `(0,1)..(1,1)`, placed first, and a primary caret at
+/// `(2,2)` added after it.
+fn state_with_selection_then_caret(buffer: &TextBuffer) -> EditorState {
+    let mut state = state_at(0, 0);
+    state.set_selection(buffer, LineCol::new(0, 1), LineCol::new(1, 1));
+    state.add_caret(buffer, LineCol::new(2, 2));
+    state
 }
 
 #[test]
