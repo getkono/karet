@@ -546,6 +546,10 @@ pub(crate) enum SearchOption {
     Case,
     /// Match whole words only.
     Word,
+    /// Preserve the replaced text's case in the replacement (find bar only).
+    PreserveCase,
+    /// Search only inside the selection (find bar only).
+    InSelection,
 }
 
 /// The workspace-search panel state.

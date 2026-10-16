@@ -32,6 +32,11 @@ impl App {
     /// clear the active tab's match highlights (cheap to rebuild on reopen).
     pub(super) fn close_find(&mut self) {
         self.find_open = false;
+        // The selection a scope was captured from is gone by the time the bar
+        // reopens, so Search in Selection does not outlive the bar.
+        if let Some(find) = self.active_find_mut() {
+            find.scope = None;
+        }
         if let Some(Tab {
             kind: TabKind::Code { decos, .. },
             ..
@@ -112,7 +117,7 @@ impl App {
     /// Rebuild the active tab's match decorations and point the bar's counter at
     /// the match at or after the caret. With `jump`, also move the caret there.
     fn seek_find(&mut self, jump: bool) {
-        let Some(q) = self.active_find().map(FindState::query_spec) else {
+        let Some((q, scope)) = self.active_find().map(|f| (f.query_spec(), f.scope)) else {
             return;
         };
         let mut count = 0;
@@ -139,6 +144,7 @@ impl App {
                         kind: DecorationKind::TextBackground,
                         role: Some(ThemeRole::SearchMatch),
                     })
+                    .filter(|deco| in_scope(scope, deco.range))
                     .collect();
                 count = decos.len();
                 // Resolved from the caret in both cases, never carried over by
@@ -148,6 +154,7 @@ impl App {
                 // caret therefore always agree on which match is current.
                 let caret = editor.cursors().primary().range().start;
                 current = match_at_or_after(decos, caret);
+                mark_current(decos, current);
                 if jump && let Some(deco) = decos.get(current) {
                     let pos = deco.range.start;
                     editor.goto(buffer, pos);
@@ -191,6 +198,7 @@ impl App {
         let Some(pos) = decos.get(next).map(|deco| deco.range.start) else {
             return;
         };
+        mark_current(decos, next);
         editor.goto(buffer, pos);
         if let Some(find) = self.active_find_mut() {
             find.current = next;
@@ -223,17 +231,39 @@ impl App {
             return;
         }
         let current = find.current;
-        let replacement = find.replace.clone();
-        let range = match self.tabs.get(self.active) {
+        let query = find.query_spec();
+        let (replace, preserve) = (find.replace.clone(), find.preserve_case);
+        let planned = match self.tabs.get(self.active) {
             Some(Tab {
-                kind: TabKind::Code { decos, .. },
+                kind:
+                    TabKind::Code {
+                        decos,
+                        text,
+                        buffer,
+                        ..
+                    },
                 ..
-            }) => decos.get(current).map(|d| d.range),
+            }) => decos.get(current).map(|d| {
+                // The same plan Replace All builds, so `$1` expands and the
+                // case is preserved exactly as it would be there.
+                let text = planned_replacements(text, buffer, &query, &replace, preserve)
+                    .into_iter()
+                    .find(|edit| edit.range == d.range)
+                    .map_or_else(|| replace.clone(), |edit| edit.new_text);
+                (d.range, text)
+            }),
             _ => None,
         };
-        let Some(range) = range else {
+        let Some((range, replacement)) = planned else {
             return;
         };
+        let edit = TextEdit {
+            range,
+            new_text: replacement.clone(),
+        };
+        if let Some(find) = self.active_find_mut() {
+            find.scope = map_scope(find.scope, &[edit]);
+        }
         // One caret, at the match: the edit is built once per caret, and every
         // other caret would replace the same range again.
         if let Some(Tab {
@@ -261,6 +291,7 @@ impl App {
         };
         let query = find.query_spec();
         let replacement = find.replace.clone();
+        let (preserve, scope) = (find.preserve_case, find.scope);
         if query.pattern.is_empty() {
             return;
         }
@@ -276,33 +307,76 @@ impl App {
                 editor,
                 ..
             }) => {
-                let plan =
-                    karet_search::plan_replacements(text, &query, &replacement).unwrap_or_default();
-                if plan.is_empty() {
+                let edits: Vec<TextEdit> =
+                    planned_replacements(text, buffer, &query, &replacement, preserve)
+                        .into_iter()
+                        .filter(|edit| in_scope(scope, edit.range))
+                        .collect();
+                if edits.is_empty() {
                     return;
                 }
-                let edits: Vec<TextEdit> = plan
-                    .into_iter()
-                    .map(|r| TextEdit {
-                        range: Range {
-                            start: buffer.byte_to_line_col(BytePos(r.start)),
-                            end: buffer.byte_to_line_col(BytePos(r.end)),
-                        },
-                        new_text: r.text,
-                    })
-                    .collect();
                 let mut cursors = editor.cursors().clone();
                 for selection in &mut cursors.selections {
                     *selection = editing::map_selection(*selection, &edits);
                 }
-                editing::MultiEdit {
+                let scope = map_scope(scope, &edits);
+                let edit = editing::MultiEdit {
                     change: Change::new(*next_version, edits),
                     cursors,
-                }
+                };
+                (edit, scope)
             },
             _ => return,
         };
+        let (edit, scope) = edit;
         self.submit_multi_edit(EditCause::Replace, edit);
+        if let Some(find) = self.active_find_mut() {
+            find.scope = scope;
+        }
+    }
+
+    /// Alt+Enter in the find bar: in the query field, turn every match into a
+    /// selection (one caret per match, the current match primary) and hand the
+    /// keyboard to the text, so typing edits them all (VS Code's *Select All
+    /// Matches*); in the replace field, replace every match.
+    pub(super) fn find_select_all_matches(&mut self) {
+        if self.active_find().map(|f| f.field) == Some(SearchField::Replace) {
+            self.find_replace_all();
+            return;
+        }
+        self.refresh_find();
+        let Some(current) = self.active_find().map(|f| f.current) else {
+            return;
+        };
+        let Some(Tab {
+            kind: TabKind::Code { buffer, decos, .. },
+            editor,
+            ..
+        }) = self.tabs.get_mut(self.active)
+        else {
+            return;
+        };
+        if decos.is_empty() {
+            return;
+        }
+        let selections = decos
+            .iter()
+            .map(|deco| karet_core::Selection {
+                anchor: deco.range.start,
+                head: deco.range.end,
+            })
+            .collect();
+        editor.set_cursor_state(
+            buffer,
+            karet_core::CursorState {
+                selections,
+                primary: current,
+            },
+        );
+        if let Some(find) = self.active_find_mut() {
+            find.focused = false;
+        }
+        self.focus = Focus::Editor;
     }
 
     /// Show or hide the find bar's replace field (collapsing returns to the query).
@@ -328,16 +402,54 @@ impl App {
         }
     }
 
-    /// Toggle a find-bar match option (regex / case / whole-word) and refresh matches.
+    /// Toggle a find-bar option and refresh matches. Preserve Case changes no
+    /// match, so it leaves the caret alone; the others re-run the search.
     pub(super) fn find_toggle_option(&mut self, option: SearchOption) {
+        let scope = (option == SearchOption::InSelection)
+            .then(|| self.selection_scope())
+            .flatten();
         if let Some(find) = self.active_find_mut() {
             match option {
                 SearchOption::Regex => find.regex = !find.regex,
                 SearchOption::Case => find.case_sensitive = !find.case_sensitive,
                 SearchOption::Word => find.whole_word = !find.whole_word,
+                SearchOption::PreserveCase => {
+                    find.preserve_case = !find.preserve_case;
+                    return;
+                },
+                SearchOption::InSelection => {
+                    find.scope = if find.scope.is_some() { None } else { scope };
+                },
             }
         }
         self.run_find();
+    }
+
+    /// The range Search in Selection scopes to: the primary selection, or the
+    /// caret's whole line (its line break included) when nothing is selected.
+    fn selection_scope(&self) -> Option<Range> {
+        let Some(Tab {
+            kind: TabKind::Code { buffer, .. },
+            editor,
+            ..
+        }) = self.tabs.get(self.active)
+        else {
+            return None;
+        };
+        let range = editor.cursors().primary().range();
+        if !range.is_empty() {
+            return Some(range);
+        }
+        let line = range.start.line;
+        let end = if (line as usize) + 1 < buffer.line_count() {
+            LineCol::new(line + 1, 0)
+        } else {
+            buffer.byte_to_line_col(BytePos(buffer.len_bytes()))
+        };
+        Some(Range {
+            start: LineCol::new(line, 0),
+            end,
+        })
     }
 
     /// Focus the Search panel and (re)start the query input.
@@ -774,4 +886,61 @@ fn match_at_or_after(decos: &[Decoration], caret: LineCol) -> usize {
         .iter()
         .position(|deco| deco.range.start >= caret || deco.range.end > caret)
         .unwrap_or(0)
+}
+
+/// Paint the match at `current` with the current-match role and every other
+/// one with the plain match role, so exactly one match reads as current.
+fn mark_current(decos: &mut [Decoration], current: usize) {
+    for (i, deco) in decos.iter_mut().enumerate() {
+        deco.role = Some(if i == current {
+            ThemeRole::SearchMatchCurrent
+        } else {
+            ThemeRole::SearchMatch
+        });
+    }
+}
+
+/// Whether a match over `range` counts under the Search in Selection `scope`:
+/// every match without one, otherwise only a match wholly inside it.
+fn in_scope(scope: Option<Range>, range: Range) -> bool {
+    scope.is_none_or(|scope| scope.start <= range.start && range.end <= scope.end)
+}
+
+/// `scope` carried through `edits` (sorted, non-overlapping), so a replacement
+/// inside the scope grows or shrinks it rather than leaving it on stale text.
+fn map_scope(scope: Option<Range>, edits: &[TextEdit]) -> Option<Range> {
+    scope.map(|scope| Range {
+        start: editing::map_position(scope.start, edits),
+        end: editing::map_position(scope.end, edits),
+    })
+}
+
+/// One edit per match of `query` in `text`, replacing it with `replacement`:
+/// regex captures (`$1`, `${name}`) expanded for a regex query, then, with
+/// `preserve`, the case of the matched text carried onto the result.
+fn planned_replacements(
+    text: &str,
+    buffer: &karet_text::TextBuffer,
+    query: &SearchQuery,
+    replacement: &str,
+    preserve: bool,
+) -> Vec<TextEdit> {
+    karet_search::plan_replacements(text, query, replacement)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|r| {
+            let new_text = if preserve {
+                karet_search::preserve_case(text.get(r.start..r.end).unwrap_or_default(), &r.text)
+            } else {
+                r.text
+            };
+            TextEdit {
+                range: Range {
+                    start: buffer.byte_to_line_col(BytePos(r.start)),
+                    end: buffer.byte_to_line_col(BytePos(r.end)),
+                },
+                new_text,
+            }
+        })
+        .collect()
 }
