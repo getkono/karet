@@ -27,6 +27,7 @@ pub mod color;
 
 mod blocks;
 mod highlight;
+mod indent;
 mod inline_macro;
 mod map;
 mod outline;
@@ -132,12 +133,18 @@ impl Indenter {
     }
 
     /// The leading whitespace for the line a break over `before..after` (an
-    /// empty range for a bare caret) opens, with `unit` as one indentation level.
+    /// empty range for a bare caret) opens.
     ///
     /// `text` is the source `tree` was parsed from, before the break. The
     /// innermost layer at `before` whose language has an indent query and finds
     /// an enclosing node decides. `None` when none does, so the caller keeps the
     /// copy-the-current-line fallback.
+    ///
+    /// One level inside the enclosing node follows the file, not the setting:
+    /// the node's existing body lines (the shallowest from the line after it
+    /// opens through the caret's), else the opening line plus the file's own
+    /// commonest indentation step. `unit`, the configured level, applies only
+    /// where the file shows no step at all.
     #[must_use]
     pub fn newline_indent(
         &self,
@@ -150,15 +157,11 @@ impl Indenter {
             let query = self.queries.get(&layer.language())?;
             layer.newline_indent(query, text, before, after)
         })?;
-        let mut indent: String = text
-            .get(anchor.line_start.0..)?
-            .chars()
-            .take_while(|c| *c == ' ' || *c == '\t')
-            .collect();
         if anchor.deeper {
-            indent.push_str(unit);
+            indent::deeper(text, anchor.line_start.0, before.0, unit)
+        } else {
+            indent::line_indent(text, anchor.line_start.0).map(str::to_owned)
         }
-        Some(indent)
     }
 }
 
@@ -548,6 +551,35 @@ pub fn add_one() {}
         // No enclosing node, and no indent query at all: the caller copies.
         assert_eq!(enter("rust", "fn f() {}<|>", "  ")?, None);
         assert_eq!(enter("toml", "[a]\nb = 1<|>", "  ")?, None);
+        Ok(())
+    }
+
+    #[test]
+    fn indenter_follows_the_files_indentation_over_the_setting()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // The enclosing node's existing body decides, whatever the setting.
+        assert_eq!(
+            enter("go", "func f() {\n\tx()<|>", "    ")?.as_deref(),
+            Some("\t")
+        );
+        assert_eq!(
+            enter("python", "class A:\n  def f(self):\n    pass<|>", "    ")?.as_deref(),
+            Some("    ")
+        );
+        assert_eq!(
+            enter("yaml", "a:\n  b:\n    c: 1<|>", "    ")?.as_deref(),
+            Some("    ")
+        );
+        assert_eq!(
+            enter("yaml", "a:\n  steps:\n  - x<|>", "    ")?.as_deref(),
+            Some("  ")
+        );
+        // With no body yet, the file's own step; the setting only in a flat file.
+        assert_eq!(
+            enter("python", "def g():\n  pass\n\ndef f():<|>", "    ")?.as_deref(),
+            Some("  ")
+        );
+        assert_eq!(enter("python", "def f():<|>", "\t")?.as_deref(), Some("\t"));
         Ok(())
     }
 
