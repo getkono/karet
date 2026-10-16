@@ -3,9 +3,10 @@
 //! karet targets modern terminals and probes for a handful of features at startup:
 //! the kitty keyboard protocol (a hard requirement), the kitty graphics protocol
 //! (drives image rendering and the optional graphical caret), and OSC 22 mouse
-//! pointer-shape hints. Historically these probes were scattered inline through
-//! `app::run`; this module owns the single implementation so both the app and the
-//! `--doctor` diagnostics consume the same primitive.
+//! pointer-shape hints, and reads the colour depth from the environment.
+//! Historically these probes were scattered inline through `app::run`; this
+//! module owns the single implementation so both the app and the `--doctor`
+//! diagnostics consume the same primitive.
 //!
 //! The env-var graphics heuristic itself lives in [`karet_fileview::image`] (a
 //! published library API); this module reuses it and layers the runtime handshakes
@@ -16,6 +17,8 @@ use std::time::Duration;
 
 use karet_fileview::image::GraphicsProtocol;
 use karet_fileview::image::{self};
+
+use crate::color_depth::ColorDepth;
 
 /// Timeout for a single terminal query/response handshake. A terminal that has not
 /// answered within this window is treated as not supporting the queried feature.
@@ -46,6 +49,8 @@ pub(crate) struct TerminalCapabilities {
     /// Whether the environment names a terminal that draws a curly underline
     /// (see [`probe_undercurl`]).
     pub undercurl: bool,
+    /// How many colours the terminal shows (see [`probe_color_depth`]).
+    pub color_depth: ColorDepth,
 }
 
 impl TerminalCapabilities {
@@ -99,6 +104,7 @@ pub(crate) fn probe_all() -> TerminalCapabilities {
         kitty_graphics: probe_kitty_graphics(PROBE_TIMEOUT),
         osc22_pointer_shape: probe_osc22_pointer_shape(PROBE_TIMEOUT),
         undercurl: probe_undercurl(),
+        color_depth: probe_color_depth(),
     }
 }
 
@@ -137,6 +143,67 @@ pub(crate) fn undercurl_in(var: impl Fn(&str) -> Option<String>) -> bool {
         || var("KITTY_WINDOW_ID").is_some()
         || var("WEZTERM_EXECUTABLE").is_some()
         || var("ALACRITTY_WINDOW_ID").is_some()
+}
+
+/// How many colours the terminal shows: 24-bit when the environment says so,
+/// otherwise the xterm 256-colour palette.
+///
+/// Read from the environment: the query that would report it (`DECRQSS` on an
+/// RGB SGR) is answered inconsistently, and terminfo's `RGB`/`Tc` flags are
+/// absent from most installed databases even where the terminal supports it.
+#[must_use]
+pub(crate) fn probe_color_depth() -> ColorDepth {
+    color_depth_in(|key| std::env::var(key).ok())
+}
+
+/// [`probe_color_depth`], reading the environment through `var`.
+///
+/// `COLORTERM=truecolor` (or `24bit`) is the convention every truecolor
+/// terminal follows, and the one way a user can assert it where nothing else
+/// here can see it, so it wins outright. A `-direct` (or `truecolor`/`24bit`)
+/// `TERM` says the same. Failing both, a terminal named in the environment that
+/// is known to draw 24-bit colour qualifies — except inside tmux or screen,
+/// which pass RGB through only when configured to, which nothing here can see.
+pub(crate) fn color_depth_in(var: impl Fn(&str) -> Option<String>) -> ColorDepth {
+    let colorterm = var("COLORTERM").unwrap_or_default().to_ascii_lowercase();
+    if colorterm == "truecolor" || colorterm == "24bit" {
+        return ColorDepth::TrueColor;
+    }
+    let term = var("TERM").unwrap_or_default().to_ascii_lowercase();
+    if term.ends_with("-direct") || term.contains("truecolor") || term.contains("24bit") {
+        return ColorDepth::TrueColor;
+    }
+    if var("TMUX").is_some() || term.starts_with("tmux") || term.starts_with("screen") {
+        return ColorDepth::Indexed256;
+    }
+    let program = var("TERM_PROGRAM").unwrap_or_default().to_ascii_lowercase();
+    let named = [
+        "kitty",
+        "ghostty",
+        "wezterm",
+        "foot",
+        "alacritty",
+        "contour",
+    ]
+    .iter()
+    .any(|name| term.contains(name))
+        || ["ghostty", "wezterm", "iterm.app", "vscode"].contains(&program.as_str());
+    // VTE has drawn 24-bit colour since 0.36.
+    let vte = var("VTE_VERSION")
+        .and_then(|version| version.trim().parse::<u32>().ok())
+        .is_some_and(|version| version >= 3600);
+    let known = named
+        || vte
+        || var("KITTY_WINDOW_ID").is_some()
+        || var("WEZTERM_EXECUTABLE").is_some()
+        || var("ALACRITTY_WINDOW_ID").is_some()
+        || var("KONSOLE_VERSION").is_some()
+        || var("WT_SESSION").is_some();
+    if known {
+        ColorDepth::TrueColor
+    } else {
+        ColorDepth::Indexed256
+    }
 }
 
 /// Probe whether the terminal speaks the Kitty graphics protocol via a real handshake.
@@ -250,6 +317,70 @@ mod tests {
             kitty_graphics,
             osc22_pointer_shape,
             undercurl: false,
+            color_depth: ColorDepth::TrueColor,
+        }
+    }
+
+    /// [`color_depth_in`] over exactly the `vars` given.
+    fn depth(vars: &[(&str, &str)]) -> ColorDepth {
+        color_depth_in(|key| {
+            vars.iter()
+                .find(|(name, _)| *name == key)
+                .map(|(_, value)| (*value).to_owned())
+        })
+    }
+
+    #[test]
+    fn truecolor_is_detected_from_colorterm_term_and_known_terminals() {
+        for vars in [
+            &[("COLORTERM", "truecolor")][..],
+            &[("COLORTERM", "24bit"), ("TERM", "xterm-256color")],
+            &[("COLORTERM", "TrueColor"), ("TERM", "linux")],
+            // COLORTERM is the user's override, so it holds inside tmux too.
+            &[("COLORTERM", "truecolor"), ("TERM", "tmux-256color")],
+            &[("TERM", "xterm-direct")],
+            &[
+                ("TERM", "konsole-direct"),
+                ("TMUX", "/tmp/tmux-1000/default"),
+            ],
+            &[("TERM", "xterm-kitty")],
+            &[("TERM", "xterm-ghostty")],
+            &[("TERM", "foot")],
+            &[("TERM", "alacritty")],
+            &[("TERM", "xterm-256color"), ("TERM_PROGRAM", "WezTerm")],
+            &[("TERM", "xterm-256color"), ("TERM_PROGRAM", "iTerm.app")],
+            &[("TERM", "xterm-256color"), ("TERM_PROGRAM", "vscode")],
+            &[("TERM", "xterm-256color"), ("KITTY_WINDOW_ID", "1")],
+            &[("TERM", "xterm-256color"), ("VTE_VERSION", "3600")],
+            &[("TERM", "xterm-256color"), ("KONSOLE_VERSION", "230401")],
+            &[("WT_SESSION", "0b5c1e3a")],
+        ] {
+            assert_eq!(depth(vars), ColorDepth::TrueColor, "{vars:?}");
+        }
+    }
+
+    #[test]
+    fn everything_else_falls_back_to_256_colours() {
+        for vars in [
+            &[][..],
+            &[("TERM", "xterm-256color")],
+            &[("TERM", "xterm-256color"), ("COLORTERM", "yes")],
+            &[("TERM", "xterm-256color"), ("VTE_VERSION", "3599")],
+            &[("TERM", "xterm-256color"), ("VTE_VERSION", "not a version")],
+            &[
+                ("TERM", "xterm-256color"),
+                ("TERM_PROGRAM", "Apple_Terminal"),
+            ],
+            // A truecolor terminal behind tmux or screen without COLORTERM:
+            // the multiplexer may not pass RGB through.
+            &[("TERM", "tmux-256color"), ("TERM_PROGRAM", "tmux")],
+            &[("TERM", "screen-256color"), ("KITTY_WINDOW_ID", "1")],
+            &[
+                ("TERM", "xterm-kitty"),
+                ("TMUX", "/tmp/tmux-1000/default,1,0"),
+            ],
+        ] {
+            assert_eq!(depth(vars), ColorDepth::Indexed256, "{vars:?}");
         }
     }
 

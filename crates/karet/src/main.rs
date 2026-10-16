@@ -14,6 +14,7 @@ mod app;
 mod autolink;
 mod cli;
 mod clipboard;
+mod color_depth;
 mod command;
 mod compat;
 mod completion;
