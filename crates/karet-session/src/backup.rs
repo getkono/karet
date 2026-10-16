@@ -15,6 +15,8 @@
 //! history carries a fingerprint of the text it was taken at, so it is restored only
 //! onto a file whose content still matches.
 
+use std::borrow::Cow;
+use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::SystemTime;
@@ -197,17 +199,35 @@ impl SwapStore {
         std::fs::create_dir_all(&self.dir)?;
         let record = UndoRecord {
             schema: UNDO_SCHEMA_VERSION,
-            original: original.to_path_buf(),
-            history: history.clone(),
+            original: Cow::Borrowed(original),
+            history: Cow::Borrowed(history),
         };
-        let bytes = serde_json::to_vec(&record).map_err(std::io::Error::other)?;
-        if bytes.len() > MAX_UNDO_BYTES {
+        // Serialized straight into the temp file through a writer that stops at
+        // the bound, so an oversized history costs at most `MAX_UNDO_BYTES` of
+        // serialization and never a whole in-memory copy.
+        let tmp = tempfile::Builder::new()
+            .prefix(".karet-swap-")
+            .tempfile_in(&self.dir)?;
+        let mut out = BoundedWriter {
+            inner: std::io::BufWriter::new(tmp.as_file()),
+            remaining: MAX_UNDO_BYTES,
+            exceeded: false,
+        };
+        let written = serde_json::to_writer(&mut out, &record)
+            .map_err(std::io::Error::other)
+            .and_then(|()| out.flush());
+        if out.exceeded {
             // Too big to be worth rewriting on every save; an older, smaller
-            // history no longer describes the file, so it goes too.
+            // history no longer describes the file, so it goes too. Dropping
+            // `tmp` deletes the partial write.
             self.remove_undo(original);
             return Ok(());
         }
-        write_atomic(&self.dir, &self.undo_path(original), &bytes)
+        written?;
+        drop(out);
+        tmp.persist(self.undo_path(original))
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
+        Ok(())
     }
 
     /// The persisted undo history of `original`, provided one exists, parses,
@@ -223,7 +243,7 @@ impl SwapStore {
         let bytes = std::fs::read(&path).ok()?;
         match serde_json::from_slice::<UndoRecord>(&bytes) {
             Ok(record) if record.schema == UNDO_SCHEMA_VERSION && record.original == original => {
-                Some(record.history)
+                Some(record.history.into_owned())
             },
             _ => {
                 discard(&path);
@@ -239,12 +259,37 @@ impl SwapStore {
 }
 
 /// The on-disk persisted-undo file: which document it belongs to, and its
-/// history (which carries the fingerprint of the text it applies to).
+/// history (which carries the fingerprint of the text it applies to). Writing
+/// borrows both; reading owns them.
 #[derive(Serialize, Deserialize)]
-struct UndoRecord {
+struct UndoRecord<'a> {
     schema: u32,
-    original: PathBuf,
-    history: HistorySnapshot,
+    original: Cow<'a, Path>,
+    history: Cow<'a, HistorySnapshot>,
+}
+
+/// A writer that refuses any write taking it past `remaining` bytes, setting
+/// `exceeded` so the caller can tell the bound from a real I/O failure.
+struct BoundedWriter<W> {
+    inner: W,
+    remaining: usize,
+    exceeded: bool,
+}
+
+impl<W: Write> Write for BoundedWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if buf.len() > self.remaining {
+            self.exceeded = true;
+            return Err(std::io::Error::other("undo history over the size bound"));
+        }
+        let n = self.inner.write(buf)?;
+        self.remaining -= n;
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
 }
 
 /// Scan `dir` for all recoverable swaps (from any session). Malformed or
@@ -483,6 +528,21 @@ mod tests {
     }
 
     #[test]
+    fn the_bounded_writer_stops_at_its_bound() {
+        let mut sink = Vec::new();
+        let mut out = BoundedWriter {
+            inner: &mut sink,
+            remaining: 4,
+            exceeded: false,
+        };
+        assert!(out.write_all(b"abcd").is_ok());
+        assert!(!out.exceeded, "a write that fits exactly is not over");
+        assert!(out.write_all(b"e").is_err());
+        assert!(out.exceeded);
+        assert_eq!(sink, b"abcd", "nothing past the bound reaches the sink");
+    }
+
+    #[test]
     fn remove_undo_deletes_it() -> TestResult {
         let dir = tempfile::tempdir()?;
         let store = SwapStore::with_dir(dir.path().to_path_buf(), 1);
@@ -507,8 +567,8 @@ mod tests {
         // Well-formed, but recorded for a different path under this name.
         let foreign = UndoRecord {
             schema: UNDO_SCHEMA_VERSION,
-            original: PathBuf::from("/elsewhere.txt"),
-            history: edited_history()?,
+            original: Cow::Borrowed(Path::new("/elsewhere.txt")),
+            history: Cow::Owned(edited_history()?),
         };
         std::fs::write(&path, serde_json::to_vec(&foreign)?)?;
         assert_eq!(store.read_undo(&original), None);
@@ -516,8 +576,8 @@ mod tests {
 
         let future = UndoRecord {
             schema: UNDO_SCHEMA_VERSION + 1,
-            original: original.clone(),
-            history: edited_history()?,
+            original: Cow::Borrowed(original.as_path()),
+            history: Cow::Owned(edited_history()?),
         };
         std::fs::write(&path, serde_json::to_vec(&future)?)?;
         assert_eq!(store.read_undo(&original), None);
