@@ -16,6 +16,13 @@ pub(super) static BINDINGS: &[Binding] = &[
     // F1 is a terminal-safe alternate for the command palette: some emulators
     // capture Ctrl+Shift+P before it reaches the app (see the app README).
     b(Global, false, false, false, F(1),      Command::OpenCommandPalette),
+    // The integrated terminal (VS Code parity): Ctrl+` shows the most recent
+    // terminal (starting one when none is open) or, from a terminal, goes back to
+    // the editor; Ctrl+Shift+` always starts another. A shifted backtick arrives
+    // as `~` on terminals that report the shifted character.
+    b(Global, true,  false, false, Char('`'), Command::ToggleTerminal),
+    b(Global, true,  true,  false, Char('`'), Command::NewTerminal),
+    b(Global, true,  true,  false, Char('~'), Command::NewTerminal),
 
     // Debugger run controls (VS Code parity). Explorer keeps its F5 refresh:
     // its layer outranks Global while the explorer has focus.
@@ -414,6 +421,27 @@ pub(super) static BINDINGS: &[Binding] = &[
     // Enter loads it anyway; Esc is intentionally unbound so repeated Esc never
     // leaves the placeholder view.
     b(Oversize, false, false, false, Enter, Command::OpenAnyway),
+
+    // Integrated terminal. The layer stacks over nothing, so every key it does
+    // not bind goes to the shell; these are the app keys that must survive there.
+    // Ctrl+C copies only while text is selected (otherwise it interrupts), which
+    // the terminal's key handler decides rather than a binding.
+    b(Terminal, true,  false, false, Char('`'), Command::ToggleTerminal),
+    b(Terminal, true,  true,  false, Char('`'), Command::NewTerminal),
+    b(Terminal, true,  true,  false, Char('~'), Command::NewTerminal),
+    b(Terminal, true,  true,  false, Char('c'), Command::TerminalCopy),
+    b(Terminal, true,  true,  false, Char('v'), Command::TerminalPaste),
+    b(Terminal, false, true,  false, PageUp,    Command::TerminalScrollPageUp),
+    b(Terminal, false, true,  false, PageDown,  Command::TerminalScrollPageDown),
+    b(Terminal, true,  true,  false, Home,      Command::TerminalScrollToTop),
+    b(Terminal, true,  true,  false, End,       Command::TerminalScrollToBottom),
+    b(Terminal, true,  true,  false, Char('p'), Command::OpenCommandPalette),
+    b(Terminal, false, false, false, F(1),      Command::OpenCommandPalette),
+    b(Terminal, true,  true,  false, Char('e'), Command::ToggleFocus),
+    b(Terminal, true,  false, false, PageDown,  Command::NextTab),
+    b(Terminal, true,  false, false, PageUp,    Command::PrevTab),
+    b(Terminal, true,  false, false, Tab,       Command::NextTab),
+    b(Terminal, true,  true,  false, Tab,       Command::PrevTab),
 
     // Language-server manager: list navigation plus explicit lifecycle actions.
     b(LanguageServers, false, false, false, Char('j'), Command::LanguageServerDown),

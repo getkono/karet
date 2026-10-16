@@ -101,6 +101,17 @@ previous · `Ctrl+Shift+PageUp`/`PageDown` move left / right · `Alt+1`…`9` go
 (`9` = last) · `Ctrl+W` close · `Ctrl+Shift+T` reopen closed. Close Others / Close
 to the Right / Close All live in the command palette.
 
+**Terminal:** ``Ctrl+` `` shows the most recent terminal tab (starting a shell in
+the workspace root when none is open) and, from a terminal, goes back to the
+editor · ``Ctrl+Shift+` `` starts another. A terminal takes every key except its
+own few: `Ctrl+Shift+C` / `Ctrl+Shift+V` copy and paste (`Ctrl+C` copies while
+text is selected, and interrupts otherwise) · `Shift+PageUp`/`PageDown` and
+`Ctrl+Shift+Home`/`End` scroll the 10,000-line history · `Ctrl+Shift+P` / `F1`
+palette · `Ctrl+Tab` / `Ctrl+PageUp`/`PageDown` switch tabs · `Ctrl+Shift+E`
+switch focus. Drag to select (double-click a word, triple-click a line; hold
+`Shift` over a program that tracks the mouse), wheel to scroll, and `Ctrl`+click
+an OSC 8 hyperlink to open it. The `terminal` feature (on by default) gates it.
+
 **Sidebar:** `j`/`k`+arrows move · `Enter`/`l`/`→` open or expand · `h`/`←`
 collapse · `Space` toggle a directory.
 

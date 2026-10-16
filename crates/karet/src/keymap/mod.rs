@@ -153,6 +153,7 @@ use Layer::SearchInput;
 use Layer::SearchList;
 use Layer::Sidebar;
 use Layer::SourceControl;
+use Layer::Terminal;
 
 /// A complete, merged binding table: the compiled-in defaults with any user and
 /// project keymap files applied over them (see [`user`]). Every query the keymap

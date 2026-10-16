@@ -102,6 +102,23 @@ pub enum Command {
     ReopenClosedTab,
     /// Open the active too-large-file placeholder anyway, bypassing the size guard.
     OpenAnyway,
+    /// Show the most recent integrated terminal (starting one in the workspace
+    /// root when none is open), or, from a terminal, go back to the last editor.
+    ToggleTerminal,
+    /// Start another integrated terminal in the workspace root.
+    NewTerminal,
+    /// Copy the active terminal's selection.
+    TerminalCopy,
+    /// Paste the clipboard into the active terminal.
+    TerminalPaste,
+    /// Scroll the active terminal's history up one page.
+    TerminalScrollPageUp,
+    /// Scroll the active terminal's history down one page.
+    TerminalScrollPageDown,
+    /// Scroll the active terminal to the top of its history.
+    TerminalScrollToTop,
+    /// Scroll the active terminal back to the live screen.
+    TerminalScrollToBottom,
     /// Dismiss the most recent notification.
     DismissNotification,
     /// Dismiss all notifications.
@@ -800,6 +817,14 @@ impl Command {
             Self::CloseAllTabs => "View: Close All Editors",
             Self::ReopenClosedTab => "View: Reopen Closed Editor",
             Self::OpenAnyway => "File: Open Anyway (Ignore Size Limit)",
+            Self::ToggleTerminal => "View: Toggle Terminal",
+            Self::NewTerminal => "Terminal: Create New Terminal",
+            Self::TerminalCopy => "Terminal: Copy Selection",
+            Self::TerminalPaste => "Terminal: Paste into Active Terminal",
+            Self::TerminalScrollPageUp => "Terminal: Scroll Up (Page)",
+            Self::TerminalScrollPageDown => "Terminal: Scroll Down (Page)",
+            Self::TerminalScrollToTop => "Terminal: Scroll to Top",
+            Self::TerminalScrollToBottom => "Terminal: Scroll to Bottom",
             Self::DismissNotification => "Notifications: Dismiss",
             Self::DismissAllNotifications => "Notifications: Dismiss All",
             Self::MarkdownPreviewSide => "Markdown: Toggle Preview to the Side",

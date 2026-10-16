@@ -210,6 +210,27 @@ fn a_sequence_in_a_modal_layer_is_refused() {
 }
 
 #[test]
+fn a_sequence_in_the_terminal_layer_is_refused() {
+    // The terminal hands each unbound chord to the shell at once, so a
+    // sequence's first chord never waits for its second.
+    let (keymap, report) = user(
+        r#"{ "bindings": [{ "key": "ctrl+k ctrl+t", "command": "newTerminal", "when": "terminal" }] }"#,
+    );
+    assert_eq!(
+        messages(&report),
+        [
+            "binding 1: `terminal` sends every key it does not bind to the shell, so it \
+             takes single chords only; a key sequence there can never be typed; skipped"
+        ]
+    );
+    assert_eq!(keymap.bindings.len(), BINDINGS.len());
+    let (_, report) = user(
+        r#"{ "bindings": [{ "key": "ctrl+alt+t", "command": "newTerminal", "when": "terminal" }] }"#,
+    );
+    assert!(report.issues.is_empty(), "{:?}", report.issues);
+}
+
+#[test]
 fn unbinding_removes_only_what_it_names() {
     // Narrowed to a key: Ctrl+Q stops quitting, nothing else changes.
     let (keymap, report) = user(r#"{ "bindings": [{ "key": "ctrl+q", "command": "-quit" }] }"#);

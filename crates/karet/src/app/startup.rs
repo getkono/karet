@@ -141,6 +141,10 @@ impl App {
             clipboard: Clipboard::new(),
             image_area: None,
             preview_images: crate::preview_images::PreviewImages::default(),
+            #[cfg(feature = "terminal")]
+            terminals: crate::terminal::TerminalHost::default(),
+            #[cfg(feature = "terminal")]
+            terminal_frame: super::terminal::TerminalFrame::default(),
             shown_image: None,
             shown_page: 0,
             shown_graphics_caret: None,
@@ -482,6 +486,8 @@ impl App {
             Some(TabKind::LanguageServers(_)) => EditorTab::LanguageServers,
             Some(TabKind::CommitGraph { .. }) => EditorTab::CommitGraph,
             Some(TabKind::Seam(_)) => EditorTab::Seam,
+            #[cfg(feature = "terminal")]
+            Some(TabKind::Terminal(_)) => EditorTab::Terminal,
             Some(TabKind::Placeholder {
                 kind: FileKind::TooLarge { .. },
                 ..

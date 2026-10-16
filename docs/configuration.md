@@ -509,7 +509,8 @@ in turn:
   `global` while it is active. A modal layer (`overlay`, `find`, `searchInput`,
   `searchList`, `problemsFilter`, `commitInput`, `commitConsole`, `revInput`,
   `rename`, `contextMenu`, `confirm`, `explorerEdit`) reads one chord at a time, so it
-  takes single chords only: a sequence bound there is reported and skipped. For the
+  takes single chords only: a sequence bound there is reported and skipped. So does
+  `terminal`, which sends every key it does not bind straight to the shell. For the
   same reason a `global` sequence does not fire while the Search query, Search
   results, or Problems filter has the keyboard, though it does everywhere else.
 

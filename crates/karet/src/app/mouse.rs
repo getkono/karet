@@ -253,6 +253,14 @@ impl App {
             self.editor_drag_mouse(&mouse);
             return;
         }
+        // A terminal selection drag captures motion the same way, until release.
+        #[cfg(feature = "terminal")]
+        if self.view == View::Editor
+            && self.active_terminal().is_some_and(|pane| pane.selecting)
+            && self.terminal_mouse(mouse)
+        {
+            return;
+        }
         if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
             && let Some(divider) = self
                 .pane_dividers
@@ -303,6 +311,12 @@ impl App {
         // view owns its whole surface, and a press that fell through to `handle_editor_click`
         // would arm a text drag in a view that has no text to drag.
         if self.view == View::Editor && self.seam_mouse(mouse) {
+            return;
+        }
+        // Likewise a terminal owns its grid: selection, the wheel, links, and the
+        // reports a mouse-tracking program asked for.
+        #[cfg(feature = "terminal")]
+        if self.view == View::Editor && self.terminal_mouse(mouse) {
             return;
         }
         if self.handle_inlay_hint_mouse(&mouse) || self.handle_code_lens_mouse(&mouse) {

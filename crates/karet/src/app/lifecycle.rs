@@ -670,6 +670,11 @@ impl App {
             self.modal_paste(modal, &normalized);
             return;
         }
+        #[cfg(feature = "terminal")]
+        if self.terminal_owns_keyboard() {
+            self.terminal_paste(&normalized);
+            return;
+        }
         self.paste_into_editor(&normalized);
     }
 }
