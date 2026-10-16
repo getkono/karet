@@ -323,3 +323,107 @@ fn the_replay_set_drops_a_delta_across_a_line_break_lsp_does_not_count() {
     remember_document(&mut documents, &mut clean);
     assert!(kept(&clean));
 }
+
+/// A connected client whose server answered the handshake (asking for
+/// incremental sync) and then stopped reading, so the outbound queue fills
+/// while the connection stays alive. The returned sender releases the server.
+async fn stalled_client()
+-> Result<(LspClient, tokio::sync::oneshot::Sender<()>), Box<dyn std::error::Error>> {
+    use karet_lsp::codec;
+    let (client_end, server_end) = tokio::io::duplex(256);
+    let (client_read, client_write) = tokio::io::split(client_end);
+    let (release, released) = tokio::sync::oneshot::channel::<()>();
+    tokio::spawn(async move {
+        let (server_read, mut server_write) = tokio::io::split(server_end);
+        let mut reader = tokio::io::BufReader::new(server_read);
+        let bytes = codec::read_frame(&mut reader).await.ok()??;
+        let init: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+        let reply = serde_json::json!({"jsonrpc": "2.0", "id": init["id"], "result": {
+            "capabilities": {"textDocumentSync": {"openClose": true, "change": 2}}}});
+        codec::write_frame(&mut server_write, reply.to_string().as_bytes())
+            .await
+            .ok()?;
+        codec::read_frame(&mut reader).await.ok()??; // initialized
+        // Hold the stream open, reading nothing more.
+        let _ = released.await;
+        Some(())
+    });
+    let client = LspClient::connect(client_read, client_write, Path::new("/")).await?;
+    Ok((client, release))
+}
+
+/// Regression: a `didChange` that fails to send without closing the
+/// connection (a full outbound queue) left the server's copy behind while the
+/// replay set had already advanced its version, so the next delta passed the
+/// base-version guard and was applied to stale server text.
+#[tokio::test]
+async fn a_change_that_failed_to_send_forces_the_next_one_whole()
+-> Result<(), Box<dyn std::error::Error>> {
+    use super::super::commands::flush_pending;
+    use super::super::health::FailureTally;
+    use super::super::slot::SlotKey;
+    use super::super::slot::SlotToken;
+
+    let (client, _release) = stalled_client().await?;
+    let mut documents = HashMap::<PathBuf, OpenDocument>::new();
+    let mut open = ServerCmd::DidOpen {
+        path: PathBuf::from("/d"),
+        language: "rust".into(),
+        version: 1,
+        text: String::new(),
+    };
+    remember_document(&mut documents, &mut open);
+    client.did_open(Path::new("/d"), "rust", 1, "").await?;
+    // Fill the queue: the server reads nothing, so it eventually refuses.
+    let mut filled = false;
+    for _ in 0..10_000 {
+        if client.did_change(Path::new("/d"), 1, "").await.is_err() {
+            filled = true;
+            break;
+        }
+    }
+    assert!(filled, "the outbound queue never filled");
+
+    let mut first = change(2, "x", Some(1));
+    remember_document(&mut documents, &mut first);
+    assert!(kept(&first));
+    let ServerCmd::DidChange {
+        path,
+        version,
+        text,
+        delta,
+    } = first
+    else {
+        return Err("not a change".into());
+    };
+    let mut pending = Some(PendingChange::coalesce(None, (path, version, text), delta));
+    let (updates, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let (mut tally, mut dead) = (FailureTally::default(), false);
+    let key = SlotKey::new(crate::api::LanguageServerId::new("rust"), "/");
+    let queue = (&mut pending, &mut documents);
+    flush_pending(
+        &client,
+        queue,
+        &mut dead,
+        &mut tally,
+        &updates,
+        &key,
+        SlotToken::default(),
+    )
+    .await;
+    assert!(!dead, "a full queue is not a dead connection");
+    assert!(pending.is_none());
+
+    // The server never saw version 2, so version 3 must not travel as ranges.
+    let mut next = change(3, "xx", Some(2));
+    remember_document(&mut documents, &mut next);
+    assert!(
+        !kept(&next),
+        "a delta against text the server never received"
+    );
+    // That whole text resynced the server, so deltas resume after it.
+    let mut after = change(4, "xxx", Some(3));
+    remember_document(&mut documents, &mut after);
+    assert!(kept(&after));
+    Ok(())
+}

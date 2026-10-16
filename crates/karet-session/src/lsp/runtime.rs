@@ -345,7 +345,7 @@ pub(super) async fn server_task(task: ServerTask) {
                 };
                 flush_pending(
                     active,
-                    &mut pending,
+                    (&mut pending, &mut documents),
                     &mut dead,
                     &mut tally,
                     &updates,
@@ -413,7 +413,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     if pending.as_ref().is_some_and(|change| change.path != path) {
                         flush_pending(
                             active,
-                            &mut pending,
+                            (&mut pending, &mut documents),
                             &mut dead,
                             &mut tally,
                             &updates,
@@ -439,7 +439,7 @@ pub(super) async fn server_task(task: ServerTask) {
                 } => {
                     flush_pending(
                         active,
-                        &mut pending,
+                        (&mut pending, &mut documents),
                         &mut dead,
                         &mut tally,
                         &updates,
@@ -457,7 +457,7 @@ pub(super) async fn server_task(task: ServerTask) {
                 ServerCmd::DidClose { path } => {
                     flush_pending(
                         active,
-                        &mut pending,
+                        (&mut pending, &mut documents),
                         &mut dead,
                         &mut tally,
                         &updates,
@@ -473,7 +473,7 @@ pub(super) async fn server_task(task: ServerTask) {
                 ServerCmd::DidSave { path, text } => {
                     flush_pending(
                         active,
-                        &mut pending,
+                        (&mut pending, &mut documents),
                         &mut dead,
                         &mut tally,
                         &updates,
@@ -498,7 +498,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     // The server must see the latest text before completing in it.
                     flush_pending(
                         active,
-                        &mut pending,
+                        (&mut pending, &mut documents),
                         &mut dead,
                         &mut tally,
                         &updates,
@@ -570,7 +570,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     // Symbol ranges must describe the same text revision as the request.
                     flush_pending(
                         active,
-                        &mut pending,
+                        (&mut pending, &mut documents),
                         &mut dead,
                         &mut tally,
                         &updates,
@@ -599,7 +599,8 @@ pub(super) async fn server_task(task: ServerTask) {
                 | ServerCmd::SignatureHelp { .. }
                 | ServerCmd::SelectionRanges { .. }) => {
                     let health = (&mut dead, &mut tally, &updates, &key, token);
-                    caret_query(active, cmd, (generation, &mut pending), health).await;
+                    let queue = (generation, &mut pending, &mut documents);
+                    caret_query(active, cmd, queue, health).await;
                 },
                 ServerCmd::Definition {
                     request,
@@ -611,7 +612,7 @@ pub(super) async fn server_task(task: ServerTask) {
                 } => {
                     flush_pending(
                         active,
-                        &mut pending,
+                        (&mut pending, &mut documents),
                         &mut dead,
                         &mut tally,
                         &updates,
@@ -648,7 +649,7 @@ pub(super) async fn server_task(task: ServerTask) {
                 ServerCmd::WorkspaceSymbols { request, query } => {
                     flush_pending(
                         active,
-                        &mut pending,
+                        (&mut pending, &mut documents),
                         &mut dead,
                         &mut tally,
                         &updates,
@@ -689,7 +690,7 @@ pub(super) async fn server_task(task: ServerTask) {
                 } => {
                     flush_pending(
                         active,
-                        &mut pending,
+                        (&mut pending, &mut documents),
                         &mut dead,
                         &mut tally,
                         &updates,
@@ -738,7 +739,7 @@ pub(super) async fn server_task(task: ServerTask) {
                 } => {
                     flush_pending(
                         active,
-                        &mut pending,
+                        (&mut pending, &mut documents),
                         &mut dead,
                         &mut tally,
                         &updates,
@@ -789,7 +790,7 @@ pub(super) async fn server_task(task: ServerTask) {
                     Err(cmd) => {
                         flush_pending(
                             active,
-                            &mut pending,
+                            (&mut pending, &mut documents),
                             &mut dead,
                             &mut tally,
                             &updates,
@@ -822,7 +823,7 @@ pub(super) async fn server_task(task: ServerTask) {
                 } => {
                     flush_pending(
                         active,
-                        &mut pending,
+                        (&mut pending, &mut documents),
                         &mut dead,
                         &mut tally,
                         &updates,
