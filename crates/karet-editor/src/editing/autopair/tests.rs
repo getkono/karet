@@ -304,6 +304,20 @@ fn enter_between_brackets_opens_an_indented_line() -> Result<(), &'static str> {
 }
 
 #[test]
+fn enter_indented_asks_for_the_ordinary_carets_indentation() -> Result<(), &'static str> {
+    let (buffer, cursors) = parse("  f {|}\nx {|\ny|");
+    // The provider answers for the caret on line 1 only; line 2 copies.
+    let indent = |range: Range| (range.start.line == 1).then(|| "\t".to_owned());
+    let edit =
+        newline_indented(&buffer, &cursors, 0, &rules(None), "    ", &indent).ok_or("edit")?;
+    assert_eq!(
+        render(buffer, Some(&edit), &edit.cursors),
+        "  f {\n      |\n  }\nx {\n\t|\ny\n|"
+    );
+    Ok(())
+}
+
+#[test]
 fn enter_between_quotes_or_outside_a_pair_is_ordinary() {
     let (buffer, cursors) = parse("\"|\"");
     assert!(newline(&buffer, &cursors, 0, &rules(None), "    ").is_none());

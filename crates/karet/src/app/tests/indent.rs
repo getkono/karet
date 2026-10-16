@@ -1,4 +1,5 @@
-//! Indentation rows of `docs/editing-behavior.md`: Tab indents and Shift+Tab
+//! Indentation rows of `docs/editing-behavior.md`: Enter indents from the
+//! language's indent query, Tab indents and Shift+Tab
 //! outdents at every caret, keeping the selections, while an open completion
 //! popup and an inline macro take Tab first and focus cycling moves to
 //! Ctrl+Shift+E.
@@ -142,6 +143,42 @@ fn tab_in_the_editor_keeps_focus_and_ctrl_shift_e_toggles_it() {
     // From the sidebar, Tab still returns to the editor.
     rig.step(key(KeyCode::Tab));
     assert_eq!(rig.app.focus, Focus::Editor);
+}
+
+#[test]
+fn enter_indents_from_the_rust_indent_query() {
+    check(vec![
+        case(
+            "after an opener with no closer yet, one level deeper",
+            "fn f() {|",
+            vec![key(KeyCode::Enter)],
+            "fn f() {\n    |",
+        ),
+        case(
+            "inside a block, at the body indentation the block already has",
+            "fn f() {\n  x();|\n}",
+            vec![key(KeyCode::Enter)],
+            "fn f() {\n  x();\n  |\n}",
+        ),
+        case(
+            "after an opener in a tab-indented file, one tab deeper",
+            "fn g() {\n\ty();\n}\nfn f() {|",
+            vec![key(KeyCode::Enter)],
+            "fn g() {\n\ty();\n}\nfn f() {\n\t|",
+        ),
+        case(
+            "before a closer, at the opener's level",
+            "    fn f() {\n        x();|}",
+            vec![key(KeyCode::Enter)],
+            "    fn f() {\n        x();\n    |}",
+        ),
+        case(
+            "past a closed block, a copy of the current line",
+            "    fn f() {}|",
+            vec![key(KeyCode::Enter)],
+            "    fn f() {}\n    |",
+        ),
+    ]);
 }
 
 #[test]

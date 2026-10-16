@@ -136,11 +136,26 @@ pub fn insert(caret: LineCol, selection: Option<Range>, base: u64, text: &str) -
 /// whitespace (auto-indent).
 #[must_use]
 pub fn newline(caret: LineCol, selection: Option<Range>, buffer: &TextBuffer, base: u64) -> Edit {
+    newline_indented(caret, selection, buffer, base, None)
+}
+
+/// Insert a newline, replacing any selection, and start the new line with
+/// `indent` — typically a syntax-aware indentation such as
+/// `karet_syntax::Indenter` computes. `None` falls back to [`newline`]'s copy of
+/// the current line's leading whitespace.
+#[must_use]
+pub fn newline_indented(
+    caret: LineCol,
+    selection: Option<Range>,
+    buffer: &TextBuffer,
+    base: u64,
+    indent: Option<&str>,
+) -> Edit {
     let range = non_empty(selection).unwrap_or(Range {
         start: caret,
         end: caret,
     });
-    let indent = leading_ws(buffer, range.start.line);
+    let indent = indent.map_or_else(|| leading_ws(buffer, range.start.line), str::to_owned);
     let mut text = String::with_capacity(indent.len() + 1);
     text.push('\n');
     text.push_str(&indent);
@@ -328,6 +343,23 @@ mod tests {
         let buffer = TextBuffer::from_text("    code");
         let e = newline(at(0, 8), None, &buffer, 0);
         assert_eq!(e.change.edits[0].new_text, "\n    ");
+        assert_eq!(e.caret, at(1, 4));
+    }
+
+    #[test]
+    fn newline_indented_uses_the_given_indent_over_the_current_line() {
+        let buffer = TextBuffer::from_text("fn f() {");
+        let e = newline_indented(at(0, 8), None, &buffer, 0, Some("\t"));
+        assert_eq!(e.change.edits[0].new_text, "\n\t");
+        assert_eq!(e.caret, at(1, 1));
+        // An empty indent is an answer, not a fallback.
+        let buffer = TextBuffer::from_text("    }");
+        let e = newline_indented(at(0, 4), None, &buffer, 0, Some(""));
+        assert_eq!(e.change.edits[0].new_text, "\n");
+        // `None` copies the current line, replacing any selection.
+        let e = newline_indented(at(0, 5), sel((0, 4), (0, 5)), &buffer, 0, None);
+        assert_eq!(e.change.edits[0].new_text, "\n    ");
+        assert_eq!(e.change.edits[0].range.start, at(0, 4));
         assert_eq!(e.caret, at(1, 4));
     }
 

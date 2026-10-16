@@ -267,6 +267,22 @@ pub fn newline(
     rules: &AutoPairs<'_>,
     indentation: &str,
 ) -> Option<MultiEdit> {
+    newline_indented(buffer, cursors, base, rules, indentation, &|_| None)
+}
+
+/// [`newline`], with `indent` choosing the indentation of every selection's
+/// ordinary newline (the ones not between a bracket pair) from the range the
+/// break replaces, as [`super::newline_indented`] takes it; `None` from it
+/// copies the current line.
+#[must_use]
+pub fn newline_indented(
+    buffer: &TextBuffer,
+    cursors: &CursorState,
+    base: u64,
+    rules: &AutoPairs<'_>,
+    indentation: &str,
+    indent: &dyn Fn(Range) -> Option<String>,
+) -> Option<MultiEdit> {
     let between = |selection: &Selection| {
         let (prev, next) = around(buffer, selection.head);
         selection.is_empty()
@@ -296,11 +312,12 @@ pub fn newline(
                     caret: landed,
                 }
             } else {
-                super::newline(
+                super::newline_indented(
                     selection.head,
                     (!range.is_empty()).then_some(range),
                     buffer,
                     base,
+                    indent(range).as_deref(),
                 )
             };
             (*selection, Some(edit))
