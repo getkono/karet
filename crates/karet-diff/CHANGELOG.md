@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0](https://github.com/getkono/karet/compare/karet-diff-v0.7.1...karet-diff-v0.8.0) - 2026-10-17
+
+### Added
+
+- *(editor)* a change-marker click lands the diff on the clicked hunk ([#455](https://github.com/getkono/karet/pull/455))
+
 ## [0.6.0](https://github.com/getkono/karet/compare/karet-diff-v0.5.0...karet-diff-v0.6.0) - 2026-08-29
 
 ### Added

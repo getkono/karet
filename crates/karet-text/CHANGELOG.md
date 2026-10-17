@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0](https://github.com/getkono/karet/compare/karet-text-v0.7.1...karet-text-v0.8.0) - 2026-10-17
+
+### Added
+
+- cap undo history and persist it across restarts ([#467](https://github.com/getkono/karet/pull/467))
+
+### Fixed
+
+- map carets through external edits; undo/redo restore the full selection set in the issuing view ([#430](https://github.com/getkono/karet/pull/430))
+
+### Other
+
+- run in-file find and search highlights over the rope ([#435](https://github.com/getkono/karet/pull/435))
+- remove whole-document copies per keystroke ([#419](https://github.com/getkono/karet/pull/419))
+
 ## [0.7.1](https://github.com/getkono/karet/compare/karet-text-v0.7.0...karet-text-v0.7.1) - 2026-10-01
 
 ### Fixed

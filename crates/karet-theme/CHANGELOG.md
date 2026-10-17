@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0](https://github.com/getkono/karet/compare/karet-theme-v0.7.1...karet-theme-v0.8.0) - 2026-10-17
+
+### Added
+
+- indentation guides, whitespace rendering, opt-in rainbow brackets ([#485](https://github.com/getkono/karet/pull/485))
+- render LSP code lens ([#483](https://github.com/getkono/karet/pull/483))
+- find bar current-match style, search in selection, matches to carets, preserve case ([#465](https://github.com/getkono/karet/pull/465))
+- richer inlay hints — per-kind styling, label parts, resolve, toggle ([#429](https://github.com/getkono/karet/pull/429))
+
 ## [0.7.1](https://github.com/getkono/karet/compare/karet-theme-v0.7.0...karet-theme-v0.7.1) - 2026-10-01
 
 ### Added
