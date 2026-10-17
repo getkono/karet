@@ -371,6 +371,41 @@ fn focusing_another_pane_tiles_a_maximised_layout_again() {
 }
 
 #[test]
+fn keyboard_resize_leaves_the_hidden_layout_alone_while_maximised() {
+    let mut app = app();
+    app.open_path(std::path::Path::new("Cargo.toml"));
+    let _ = screen(&mut app, 100, 12);
+    app.dispatch(Command::SplitRight);
+    let _ = screen(&mut app, 100, 12);
+    let widths = |app: &App| {
+        app.pane_frames
+            .iter()
+            .map(|frame| (frame.pane, frame.tabstrip_rect.width))
+            .collect::<Vec<_>>()
+    };
+    let tiled = widths(&app);
+
+    app.dispatch(Command::ToggleMaximizePane);
+    app.dispatch(Command::ResizePaneLeft);
+    app.dispatch(Command::ResizePaneUp);
+    app.dispatch(Command::ResizePaneRight);
+    app.dispatch(Command::ResizePaneRight);
+    assert!(
+        app.maximized_pane().is_some(),
+        "resizing keeps the maximise"
+    );
+
+    app.dispatch(Command::ToggleMaximizePane);
+    let _ = screen(&mut app, 100, 12);
+    assert_eq!(widths(&app), tiled, "the split ratios are unchanged");
+
+    // Tiled again, the same command does resize.
+    app.dispatch(Command::ResizePaneLeft);
+    let _ = screen(&mut app, 100, 12);
+    assert_ne!(widths(&app), tiled);
+}
+
+#[test]
 fn a_lone_pane_has_nothing_to_maximise() {
     let mut app = app();
     app.dispatch(Command::ToggleMaximizePane);
