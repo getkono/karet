@@ -2,8 +2,15 @@ use super::*;
 
 impl App {
     /// Grow the focused pane toward `dir` by the keyboard resize step.
+    ///
+    /// A no-op while a pane is maximised: the tiled layout is hidden, so a
+    /// resize would change nothing visible yet leave altered split ratios
+    /// behind for when the layout tiles again.
     pub(super) fn resize_focused_pane(&mut self, dir: SplitDir) {
         const STEP: u16 = 2;
+        if self.maximized_pane().is_some() {
+            return;
+        }
         self.layout
             .resize_pane(self.focus_pane(), dir, STEP, self.main_rect);
     }

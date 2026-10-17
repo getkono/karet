@@ -140,6 +140,8 @@ command_ids! {
     SidebarCollapse => "sidebarCollapse",
     SidebarToggleExpand => "sidebarToggleExpand",
     ToggleOutline => "toggleOutline",
+    ToggleZenMode => "toggleZenMode",
+    ToggleMaximizePane => "toggleMaximizePane",
     OutlineUp => "outlineUp",
     OutlineDown => "outlineDown",
     OutlineActivate => "outlineActivate",

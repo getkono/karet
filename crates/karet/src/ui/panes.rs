@@ -29,6 +29,16 @@ pub(super) fn draw_panes(
 ) {
     clear_pane_render_state(app);
     let focused = app.focus_pane();
+    // A maximised pane takes the whole area alone, with no dividers to drag. One
+    // that lost focus since it was maximised is dropped here, so returning focus
+    // to it later does not maximise it again.
+    app.modes.maximized = app.maximized_pane();
+    let maximized = app.modes.maximized.is_some();
+    let tiles = if maximized {
+        vec![(focused, area)]
+    } else {
+        app.layout.layout(area)
+    };
     // Borrowed straight off the settings field so the reference stays disjoint
     // from the mutable tab borrows below.
     #[cfg(feature = "mermaid")]
@@ -54,11 +64,9 @@ pub(super) fn draw_panes(
     // `app.stored` is mutably borrowed -- a lookup inside the loop would not
     // compile. Each pane badges its own active tab, so a background pane reports
     // its file's condition rather than inheriting the focused pane's.
-    let lsp_badges: HashMap<karet_widgets::PaneId, Option<LanguageServerBadgeSummary>> = app
-        .layout
-        .layout(area)
-        .into_iter()
-        .map(|(pane, _)| {
+    let lsp_badges: HashMap<karet_widgets::PaneId, Option<LanguageServerBadgeSummary>> = tiles
+        .iter()
+        .map(|&(pane, _)| {
             let tab = if pane == focused {
                 app.tabs.get(app.active)
             } else {
@@ -69,7 +77,7 @@ pub(super) fn draw_panes(
             (pane, tab.and_then(|tab| app.language_server_badge_for(tab)))
         })
         .collect();
-    for (pane, rect) in app.layout.layout(area) {
+    for (pane, rect) in tiles {
         let is_focused = pane == focused;
         let stored_tab_width = (!is_focused)
             .then(|| app.stored.get(&pane))
@@ -231,7 +239,11 @@ pub(super) fn draw_panes(
             select_regions: rendered.select_regions,
         });
     }
-    app.pane_dividers = app.layout.dividers(area);
+    app.pane_dividers = if maximized {
+        Vec::new()
+    } else {
+        app.layout.dividers(area)
+    };
     for divider in app.pane_dividers.iter().copied() {
         let emphasized = app.pane_divider_hover == Some(divider)
             || app.pane_resize.is_some_and(|resize| {
