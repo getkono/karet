@@ -48,6 +48,18 @@ async fn asked_for_tokens(observed: &mut mpsc::UnboundedReceiver<Value>) -> bool
     false
 }
 
+/// The next snapshot of `doc`, reduced to whether it carries the double's
+/// `macro` token.
+async fn next_overlaid(snaps: &mut crate::local::SnapshotRx, doc: DocumentId) -> Option<bool> {
+    let mac = TokenId::semantic(T::Macro, M::NONE);
+    loop {
+        let (id, snap) = snaps.recv().await?;
+        if id == doc {
+            return Some(snap.highlights.all().iter().any(|s| s.token == mac));
+        }
+    }
+}
+
 fn token(col: u32, token: TokenId) -> SemanticToken {
     SemanticToken {
         start: LineCol::new(0, col),
@@ -146,6 +158,31 @@ async fn the_setting_starts_and_stops_fetching_without_a_restart() -> TestResult
     Ok(())
 }
 
+/// Switching off and straight back on, faster than the task looks, still
+/// asks again: the session dropped every overlay when it went off, and the
+/// task only ever sees "on". Falsified by keeping the asked versions on a
+/// toggle that ends on.
+#[tokio::test]
+async fn off_and_on_again_asks_for_the_tokens_again() -> TestResult {
+    let path = crate::lsp::absolute_path(Path::new("/tmp/flicked.rs"));
+    let (mut manager, mut updates) = LspManager::new(LspSettings::default(), None, None, None);
+    manager.set_connector(test_connector(
+        Behavior::SemanticTokens,
+        None,
+        Arc::new(AtomicUsize::new(0)),
+    ));
+    let _ = manager.document_opened(Some("rust"), Some("rust"), &path, 1, || "ab!();\n".into());
+    let (_, first, _) = next_tokens(&mut updates).await.ok_or("never fetched")?;
+    manager.set_semantic_highlighting(false);
+    manager.set_semantic_highlighting(true);
+    let (_, again, tokens) = next_tokens(&mut updates)
+        .await
+        .ok_or("not asked again after switching back on")?;
+    assert_eq!(again, first);
+    assert_eq!(tokens.len(), 1);
+    Ok(())
+}
+
 /// `lsp.languages.<id>.semanticTokens` naming another provider takes the
 /// tokens away from the primary server.
 #[tokio::test]
@@ -209,5 +246,61 @@ async fn a_snapshot_carries_the_overlay_in_buffer_bytes() -> TestResult {
         false
     };
     assert!(tokio::time::timeout(Duration::from_secs(10), laid).await?);
+    Ok(())
+}
+
+/// Restarting the owner takes its overlay down with the retired slot, and
+/// the replacement lays it again. Falsified by leaving the retired slot's
+/// overlay on the document (no snapshot without the token would follow).
+#[tokio::test]
+async fn a_restart_drops_the_overlay_until_the_replacement_answers() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let path = rust_file(&dir, "main.rs", "\u{1F600}ab = ab;\n").ok_or("write failed")?;
+    let (mut session, mut events, mut snaps) = Session::new(SessionConfig::default());
+    session.set_lsp_connector(test_connector(
+        Behavior::SemanticTokens,
+        None,
+        Arc::new(AtomicUsize::new(0)),
+    ));
+    let backend = local_session(session, None);
+    backend.send(
+        backend.next_id(),
+        Command::OpenDocument {
+            path,
+            language: None,
+        },
+    )?;
+    let (doc, _) = await_opened(&mut events).await.ok_or("no Opened")?;
+    let bound = Duration::from_secs(10);
+    let laid = tokio::time::timeout(bound, async {
+        while let Some(carries) = next_overlaid(&mut snaps, doc).await {
+            if carries {
+                return true;
+            }
+        }
+        false
+    })
+    .await?;
+    assert!(laid, "the overlay never arrived");
+
+    backend.send(
+        backend.next_id(),
+        Command::RestartLanguageServer {
+            server: crate::api::LanguageServerId::RustAnalyzer,
+        },
+    )?;
+    let (dropped, relaid) = tokio::time::timeout(bound, async {
+        let mut dropped = false;
+        while let Some(carries) = next_overlaid(&mut snaps, doc).await {
+            dropped |= !carries;
+            if dropped && carries {
+                return (true, true);
+            }
+        }
+        (dropped, false)
+    })
+    .await?;
+    assert!(dropped, "the retired slot's overlay stayed on the document");
+    assert!(relaid, "the replacement never laid the overlay again");
     Ok(())
 }

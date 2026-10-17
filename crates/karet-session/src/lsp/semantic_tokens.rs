@@ -186,6 +186,10 @@ impl SemanticFetches {
             };
             match look {
                 Look::Toggled => {
+                    // Off then on again before this task looked shows only
+                    // as "on", yet the session dropped every overlay when it
+                    // went off: so turning on asks every document afresh.
+                    self.asked.clear();
                     if !*self.enabled.borrow_and_update() {
                         self.tasks.abort_all();
                         self.forget();
