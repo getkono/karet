@@ -74,11 +74,7 @@ fn role_for(kind: HighlightKind) -> ThemeRole {
 }
 
 fn decoration(range: Range, kind: HighlightKind) -> Decoration {
-    Decoration {
-        range,
-        kind: DecorationKind::TextBackground,
-        role: Some(role_for(kind)),
-    }
+    Decoration::new(range, DecorationKind::TextBackground, Some(role_for(kind)))
 }
 
 /// The word (alphanumeric and `_`) the caret touches: the one it is on, else
