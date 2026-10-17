@@ -126,7 +126,9 @@ pub struct LspLanguage {
     pub servers: Vec<String>,
     /// Explicit formatting owner, when repository defaults should be overridden.
     pub formatter: Option<String>,
-    /// Explicit semantic-token owner.
+    /// The provider whose semantic tokens are laid over this language's syntax
+    /// colours (`editor.semanticHighlighting`). Unset, the primary server
+    /// owns them; a provider not serving the language leaves it without.
     pub semantic_tokens: Option<String>,
     /// Additional providers whose diagnostics should be merged.
     pub diagnostics: Vec<String>,

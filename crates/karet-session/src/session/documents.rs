@@ -6,6 +6,22 @@ const SAVE_CANCELLED_CLOSED: &str = "save cancelled: document closed";
 /// Answer to a save abandoned by a [`Command::Cancel`] naming it.
 const SAVE_CANCELLED_REQUESTED: &str = "save cancelled";
 
+impl Document {
+    /// Reconcile the backup bookkeeping with the buffer's dirty state after an edit:
+    /// arm `dirty_since` on the clean→dirty transition, and disarm (dropping any
+    /// pending backup) once the buffer is clean again (e.g. undone to the save point).
+    pub(super) fn sync_dirty_since(&mut self, tick: u64) {
+        if self.buffer.is_dirty() {
+            if self.dirty_since.is_none() {
+                self.dirty_since = Some(tick);
+            }
+        } else {
+            self.dirty_since = None;
+            self.backed_up_version = None;
+        }
+    }
+}
+
 /// Test-only read view of a document's buffer state. Production consumers render
 /// from the [`DocSnapshot`](crate::local::DocSnapshot) stream instead.
 #[cfg(test)]
@@ -135,6 +151,7 @@ impl Session {
             spell_diagnostics: Vec::new(),
             lint_diagnostics: Vec::new(),
             lsp_diagnostics: HashMap::new(),
+            semantic_tokens: None,
             decorations: Vec::new(),
             refs: 1,
             dirty_since: None,

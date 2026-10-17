@@ -40,6 +40,7 @@ mod notify_text;
 mod persistence;
 mod retirement;
 mod search;
+mod semantic_tokens;
 mod spelling;
 mod updates;
 mod vcs;
@@ -251,6 +252,9 @@ struct Document {
     /// so a server that both publishes and answers pulls never has one set
     /// erase the other.
     lsp_diagnostics: HashMap<crate::lsp::DiagnosticLayer, Vec<karet_core::Diagnostic>>,
+    /// The semantic-token owner's last overlay, translated across edits like
+    /// [`highlights`](Self::highlights) (see [`semantic_tokens`]).
+    semantic_tokens: Option<semantic_tokens::SemanticLayer>,
     decorations: Vec<Decoration>,
     /// Open reference count (a path opened in N views shares one document).
     refs: u32,
@@ -269,22 +273,6 @@ struct Document {
     /// The buffer version a save's formatter edit left behind, so the same
     /// save's whitespace cleanup joins its undo step instead of adding one.
     formatted_version: Option<u64>,
-}
-
-impl Document {
-    /// Reconcile the backup bookkeeping with the buffer's dirty state after an edit:
-    /// arm `dirty_since` on the clean→dirty transition, and disarm (dropping any
-    /// pending backup) once the buffer is clean again (e.g. undone to the save point).
-    fn sync_dirty_since(&mut self, tick: u64) {
-        if self.buffer.is_dirty() {
-            if self.dirty_since.is_none() {
-                self.dirty_since = Some(tick);
-            }
-        } else {
-            self.dirty_since = None;
-            self.backed_up_version = None;
-        }
-    }
 }
 
 /// The set of open documents, indexed by id and by path (for de-duplication).
@@ -881,6 +869,7 @@ fn update_syntax(
     doc: &mut Document,
     edits: Option<&[AppliedEdit]>,
 ) -> bool {
+    doc.translate_semantic_tokens(edits);
     let Some(lang) = doc.lang_id else {
         // Plaintext: nothing to parse, and no worker round-trip to wait for.
         doc.highlights = Arc::new(Highlights::default());
