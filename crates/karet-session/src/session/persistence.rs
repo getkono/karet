@@ -370,7 +370,7 @@ impl Session {
             let snapshot = Arc::new(DocSnapshot {
                 version: doc.buffer.version(),
                 buffer: doc.buffer.content_snapshot(),
-                highlights: doc.highlights.clone(),
+                highlights: doc.display_highlights(),
                 folds: doc.folds.clone(),
                 semantic_blocks: doc.semantic_blocks.clone(),
                 decorations: Arc::new(doc.decorations.clone()),

@@ -15,6 +15,38 @@ use std::path::Path;
 use crate::LspError;
 use crate::uri;
 
+/// What `LspClient::semantic_tokens` asks for and can read: whole-document
+/// requests with deltas, in the relative format, naming every type and
+/// modifier `karet_core`'s vocabulary carries -- the names a token is decoded
+/// by, so a server that tailors its legend to the client's list loses
+/// nothing. Overlapping and multi-line tokens are declined: the overlay is a
+/// flat, line-local layer. `augmentsSyntaxTokens` says the tokens are laid
+/// over a syntax highlighter's, so a server may leave out what syntax shows.
+/// Without dynamic registration, whose options carry the legend the gate
+/// drops.
+fn semantic_token_capabilities() -> lsp_types::SemanticTokensClientCapabilities {
+    lsp_types::SemanticTokensClientCapabilities {
+        dynamic_registration: None,
+        requests: lsp_types::SemanticTokensClientCapabilitiesRequests {
+            range: Some(false),
+            full: Some(lsp_types::SemanticTokensFullOptions::Delta { delta: Some(true) }),
+        },
+        token_types: karet_core::SemanticTokenType::ALL
+            .into_iter()
+            .map(|ty| lsp_types::SemanticTokenType::new(ty.name()))
+            .collect(),
+        token_modifiers: karet_core::SemanticTokenModifiers::ALL
+            .into_iter()
+            .map(|(name, _)| lsp_types::SemanticTokenModifier::new(name))
+            .collect(),
+        formats: vec![lsp_types::TokenFormat::RELATIVE],
+        overlapping_token_support: Some(false),
+        multiline_token_support: Some(false),
+        server_cancel_support: Some(true),
+        augments_syntax_tokens: Some(true),
+    }
+}
+
 /// What this client does with code actions: literals of every kind it groups
 /// by, preferred and disabled flags, and edits deferred to
 /// `codeAction/resolve` (whose `data` it hands back untouched).
@@ -185,6 +217,7 @@ pub(crate) fn initialize_params(root: &Path) -> Result<lsp_types::InitializePara
             // `workspace.codeLens.refreshSupport`: lenses are re-asked as the
             // text changes instead.
             code_lens: Some(lsp_types::CodeLensClientCapabilities::default()),
+            semantic_tokens: Some(semantic_token_capabilities()),
             ..lsp_types::TextDocumentClientCapabilities::default()
         }),
         workspace: Some(lsp_types::WorkspaceClientCapabilities {
@@ -194,6 +227,11 @@ pub(crate) fn initialize_params(root: &Path) -> Result<lsp_types::InitializePara
             }),
             // Answered, and relayed through `LspClient::refreshes`.
             inlay_hint: Some(lsp_types::InlayHintWorkspaceClientCapabilities {
+                refresh_support: Some(true),
+            }),
+            // Answered, and relayed through `LspClient::refreshes` as
+            // `ServerRefresh::SemanticTokens`.
+            semantic_tokens: Some(lsp_types::SemanticTokensWorkspaceClientCapabilities {
                 refresh_support: Some(true),
             }),
             // Relayed through `LspClient::apply_edit_requests`.

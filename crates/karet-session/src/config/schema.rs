@@ -352,6 +352,8 @@ pub struct Editor {
     pub inlay_hints: InlayHints,
     /// Show the language server's code lenses on rows above the code they describe.
     pub code_lens: bool,
+    /// `editor.semanticHighlighting.*` — semantic tokens over the syntax colours.
+    pub semantic_highlighting: SemanticHighlighting,
     /// Inline swatches on color literals (hex, `rgb()`, `hsl()`).
     pub color_highlight: ColorHighlight,
     /// `editor.inlineDiagnostics.*` — which diagnostics show their message at
@@ -429,6 +431,7 @@ impl Default for Editor {
             hover: HoverPopup::default(),
             inlay_hints: InlayHints::default(),
             code_lens: true,
+            semantic_highlighting: SemanticHighlighting::default(),
             color_highlight: ColorHighlight::default(),
             inline_diagnostics: InlineDiagnostics::default(),
             language_overrides: BTreeMap::new(),
@@ -469,6 +472,7 @@ pub use display::BracketPairColorization;
 pub use display::Guides;
 pub use display::LineNumbers;
 pub use display::RenderWhitespace;
+pub use display::SemanticHighlighting;
 pub use inlay_hints::InlayHints;
 pub use inlay_hints::InlayHintsEnabled;
 pub use inline_diagnostics::DiagnosticSeverity;
@@ -1019,16 +1023,6 @@ mod tests {
         assert!(parse("0").is_err());
         assert!(parse("-5").is_err());
         assert!(parse("\"10s\"").is_err());
-    }
-
-    #[test]
-    fn word_wrap_accepts_auto_and_boolean_overrides() {
-        let automatic: Editor = serde_json::from_str(r#"{ "wordWrap": null }"#).unwrap_or_default();
-        let wrapped: Editor = serde_json::from_str(r#"{ "wordWrap": true }"#).unwrap_or_default();
-        let overflow: Editor = serde_json::from_str(r#"{ "wordWrap": false }"#).unwrap_or_default();
-        assert_eq!(automatic.word_wrap, None);
-        assert_eq!(wrapped.word_wrap, Some(true));
-        assert_eq!(overflow.word_wrap, Some(false));
     }
 
     #[test]

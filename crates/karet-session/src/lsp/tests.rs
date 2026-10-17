@@ -582,5 +582,6 @@ mod retirement_tests;
 mod roundtrip_tests;
 mod routing_tests;
 mod selection_range_tests;
+mod semantic_token_tests;
 mod server_double;
 mod window_tests;

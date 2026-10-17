@@ -33,6 +33,7 @@ mod provider;
 mod pull;
 mod requests;
 mod runtime;
+mod semantic_tokens;
 mod slot;
 #[cfg(test)]
 mod tests;
@@ -157,6 +158,9 @@ pub(crate) struct LspManager {
     next_token: SlotToken,
     /// Each provider's log and the questions servers are waiting on.
     pub(crate) window: WindowState,
+    /// `editor.semanticHighlighting.enabled`, handed to every slot that owns
+    /// semantic tokens (see [`Self::set_semantic_highlighting`]).
+    semantic_highlighting: bool,
 }
 
 /// What the user's `lsp.servers` table says about one provider id.
@@ -194,6 +198,8 @@ impl LspManager {
                 connector: spawn_connector(supervisor, registry_root),
                 next_token: SlotToken::FIRST,
                 window: WindowState::default(),
+                // The setting's default; the session applies its own value.
+                semantic_highlighting: true,
             },
             rx,
         )
@@ -280,6 +286,9 @@ impl LspManager {
                 token, server: key, ..
             }
             | LspUpdate::DiagnosticsCleared {
+                token, server: key, ..
+            }
+            | LspUpdate::SemanticTokens {
                 token, server: key, ..
             }
             | LspUpdate::SpawnFailed { token, key, .. }
@@ -556,8 +565,9 @@ impl LspManager {
         }
         // Built-in JavaScript and TypeScript share one provider process, so the
         // key names the *provider*, not the language that selected it.
+        let owner = self.owns_semantic_tokens(&language, &provider, true);
         let key = SlotKey::new(provider, root.clone());
-        self.spawn_slot(&key, &spec, true, settings_key)?;
+        self.spawn_slot(&key, &spec, true, settings_key, owner)?;
         self.servers.get(&key).map(|slot| (&slot.tx, key))
     }
 
@@ -587,8 +597,9 @@ impl LspManager {
         // A companion reads only its own entry: the language's belongs to
         // the language's primary.
         let settings_key = self.configure(&mut spec, &provider, None);
+        let owner = self.owns_semantic_tokens(language, &provider, false);
         let key = SlotKey::new(provider, root);
-        self.spawn_slot(&key, &spec, false, settings_key)?;
+        self.spawn_slot(&key, &spec, false, settings_key, owner)?;
         self.servers.get(&key).map(|slot| (slot.tx.clone(), key))
     }
 

@@ -109,6 +109,11 @@ pub(super) enum Behavior {
     /// (`client/registerCapability`) once a document is opened, then answer
     /// pulls like [`Behavior::Pulls`].
     RegistersPulls,
+    /// Serve normally, and offer semantic tokens with deltas: a whole answer
+    /// classifies UTF-16 columns 2..4 of line 0 as a `macro`, and a delta
+    /// rewrites that token to a `variable.mutable`. Each result id names the
+    /// version the double last saw.
+    SemanticTokens,
 }
 
 /// What the scripted server advertises at the handshake.
@@ -162,6 +167,12 @@ fn advertised_capabilities(behavior: Behavior) -> Value {
     if matches!(behavior, Behavior::Pulls | Behavior::PushesAndPulls) {
         capabilities["diagnosticProvider"] =
             json!({"interFileDependencies": false, "workspaceDiagnostics": false});
+    }
+    if matches!(behavior, Behavior::SemanticTokens) {
+        capabilities["semanticTokensProvider"] = json!({
+            "legend": {"tokenTypes": ["variable", "macro"], "tokenModifiers": ["mutable"]},
+            "full": {"delta": true}
+        });
     }
     capabilities
 }
@@ -542,6 +553,26 @@ pub(super) fn test_connector(
                                         "end": {"line": 0, "character": 4}
                                     }
                                 }]}),
+                            )
+                            .await;
+                        },
+                        Some("textDocument/semanticTokens/full") => {
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": {
+                                    "resultId": format!("v{last_version}"),
+                                    "data": [0, 2, 2, 1, 0]
+                                }}),
+                            )
+                            .await;
+                        },
+                        Some("textDocument/semanticTokens/full/delta") => {
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": {
+                                    "resultId": format!("v{last_version}"),
+                                    "edits": [{"start": 3, "deleteCount": 2, "data": [0, 1]}]
+                                }}),
                             )
                             .await;
                         },
