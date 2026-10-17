@@ -53,7 +53,7 @@ impl Command {
 }
 
 command_ids! {
-    unbindable: [Command::InsertChar(_), Command::GoToTab(_)];
+    unbindable: [Command::InsertChar(_), Command::GoToTab(_), Command::FoldLevel(_)];
     Quit => "quit",
     ToggleSidebar => "toggleSidebar",
     ToggleFocus => "toggleFocus",
@@ -193,6 +193,19 @@ command_ids! {
     Bottom => "bottom",
     ToggleDiffLayout => "toggleDiffLayout",
     ToggleFold => "toggleFold",
+    FoldAll => "foldAll",
+    UnfoldAll => "unfoldAll",
+    FoldLevel(1) => "foldLevel.1",
+    FoldLevel(2) => "foldLevel.2",
+    FoldLevel(3) => "foldLevel.3",
+    FoldLevel(4) => "foldLevel.4",
+    FoldLevel(5) => "foldLevel.5",
+    FoldLevel(6) => "foldLevel.6",
+    FoldLevel(7) => "foldLevel.7",
+    FoldRecursively => "foldRecursively",
+    UnfoldRecursively => "unfoldRecursively",
+    FoldAllComments => "foldAllComments",
+    FoldAllImports => "foldAllImports",
     NextChangedFile => "nextChangedFile",
     PrevChangedFile => "prevChangedFile",
     OpenDiffFile => "openDiffFile",

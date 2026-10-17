@@ -206,7 +206,7 @@ fn folded_rig(marked: &str, start: u32, end: u32) -> Rig {
     let mut rig = Rig::new(marked);
     let active = rig.app.active;
     if let TabKind::Code { folds, folded, .. } = &mut rig.app.tabs[active].kind {
-        *folds = FoldRegions::from_sorted_regions(vec![FoldRegion { start, end }]);
+        *folds = FoldRegions::from_sorted_regions(vec![FoldRegion::new(start, end)]);
         folded.insert(start);
     }
     rig.render();
@@ -247,7 +247,7 @@ fn collapsing_a_fold_lifts_every_caret_inside_onto_its_header() {
     let mut rig = Rig::new("fn #a() {\n  |  x\n|}\ntail");
     let active = rig.app.active;
     if let TabKind::Code { folds, .. } = &mut rig.app.tabs[active].kind {
-        *folds = FoldRegions::from_sorted_regions(vec![FoldRegion { start: 0, end: 2 }]);
+        *folds = FoldRegions::from_sorted_regions(vec![FoldRegion::new(0, 2)]);
     }
     rig.render();
     rig.run(&[Step::Cmd(Command::ToggleFold)]);

@@ -873,7 +873,7 @@ fn update_syntax(
     let Some(lang) = doc.lang_id else {
         // Plaintext: nothing to parse, and no worker round-trip to wait for.
         doc.highlights = Arc::new(Highlights::default());
-        doc.folds = Arc::new(FoldRegions::default());
+        doc.folds = crate::highlight::indent_folds(settings, doc.language_selector, &doc.buffer);
         doc.semantic_blocks = Arc::new(SemanticBlocks::default());
         doc.syntax_symbols = Arc::default();
         // No worker result will replace these, so ranges from a previous grammar

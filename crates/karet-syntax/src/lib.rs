@@ -10,22 +10,23 @@
 //! is coloured as the language it names and a Rust doc comment as the markdown it is.
 //! [`mark_semantic_comments`] is an optional post-pass that retints codetag comment
 //! blocks (`TODO: …` and friends) so they stand out from ordinary comments.
-//! [`fold`] computes fold regions; [`SemanticBlocker`] extracts sticky-scroll
+//! [`Folder`] computes fold regions from per-language fold queries, with
+//! [`fold`] (any grammar) and [`fold_by_indent`] (no grammar) as fallbacks;
+//! [`SemanticBlocker`] extracts sticky-scroll
 //! blocks; [`OutlineExtractor`] builds symbol outlines from declaration queries;
 //! [`Indenter`] computes a new line's indentation from indent queries.
 
-use std::collections::BTreeMap;
 use std::collections::HashMap;
 
 use karet_core::BytePos;
 use karet_treesitter::LanguageId;
 use karet_treesitter::LayeredTree;
 use karet_treesitter::Query;
-use karet_treesitter::SyntaxTree;
 
 pub mod color;
 
 mod blocks;
+mod folding;
 mod highlight;
 mod indent;
 mod inline_macro;
@@ -36,6 +37,9 @@ mod semantic;
 pub use blocks::SemanticBlock;
 pub use blocks::SemanticBlocker;
 pub use blocks::SemanticBlocks;
+pub use folding::Folder;
+pub use folding::fold;
+pub use folding::fold_by_indent;
 pub use highlight::Highlighter;
 pub use highlight::LayeredHighlighter;
 pub use inline_macro::InlineMacroEngine;
@@ -62,46 +66,11 @@ pub enum SyntaxError {
 // The highlight/fold *data* shapes live in `karet-core` (so renderers can name
 // them without pulling this crate's tree-sitter stack); this crate is the engine
 // that computes them. Re-exported here so existing imports keep working.
+pub use karet_core::FoldKind;
 pub use karet_core::FoldRegion;
 pub use karet_core::FoldRegions;
 pub use karet_core::HighlightSpan;
 pub use karet_core::Highlights;
-
-/// Compute fold regions from a parsed tree.
-///
-/// The algorithm is deliberately **language-agnostic**: it folds every named node
-/// that spans more than one line, keeping the outermost node per start line so a
-/// construct and its wrapper (or two constructs sharing a line, like `} else {`)
-/// don't stack duplicate folds. This works on any tree-sitter grammar with no
-/// per-language configuration.
-///
-/// The trade-off is granularity: because it folds *any* multi-line node, it also
-/// creates folds for coarse nodes a human might not (e.g. a multi-line call
-/// argument list). Polished, per-construct folding — fold a function's body but not
-/// its signature line, skip trivial expressions — is inherently **not**
-/// language-agnostic: it requires per-grammar `folds.scm` queries (a `@fold`
-/// capture per language). That refinement is deferred; this baseline gives usable
-/// folds everywhere today.
-#[must_use]
-pub fn fold(tree: &SyntaxTree) -> FoldRegions {
-    // One fold per start line — the outermost node beginning there, i.e. the one that
-    // ends on the latest line.
-    let mut by_start: BTreeMap<u32, u32> = BTreeMap::new();
-    for node in tree.multiline_named_spans() {
-        by_start
-            .entry(node.start_row)
-            .and_modify(|end| *end = (*end).max(node.end_row))
-            .or_insert(node.end_row);
-    }
-    // BTreeMap iterates by ascending start line, i.e. document order (outermost
-    // first), which is exactly the contract of `FoldRegions::regions`.
-    FoldRegions::from_sorted_regions(
-        by_start
-            .into_iter()
-            .map(|(start, end)| FoldRegion { start, end })
-            .collect(),
-    )
-}
 
 /// Computes the indentation a new line takes from the grammars' indent queries
 /// (see [`karet_treesitter::indents_query`]), across every layer of a
@@ -288,67 +257,6 @@ mod tests {
         );
         // `spans_in` relies on that invariant, so it must still find the shifted span.
         assert_eq!(out.spans_in(span(7, 11)).len(), 1);
-    }
-
-    #[test]
-    fn fold_finds_multiline_regions() -> Result<(), Box<dyn std::error::Error>> {
-        use std::path::Path;
-
-        use karet_treesitter::ParserPool;
-        use karet_treesitter::SyntaxTree;
-        use karet_treesitter::language_id_from_path;
-
-        let Some(lang) = language_id_from_path(Path::new("x.rs")) else {
-            return Ok(()); // rust grammar not compiled in; nothing to test
-        };
-        // A function whose body spans several lines: the fn item (and its block) are
-        // multi-line and must yield a fold; the one-line `let` inside must not.
-        let src = "fn main() {\n    let x = 42;\n    let y = x + 1;\n}\n";
-        let mut pool = ParserPool::new();
-        let tree = SyntaxTree::parse(&mut pool, lang, src)?;
-        let folds = fold(&tree);
-        let regions = folds.regions();
-        assert!(!regions.is_empty(), "expected at least one fold region");
-        // Every region spans more than one line, and the function's body (starting on
-        // line 0) folds down to (at least) the closing brace on line 3.
-        for r in regions {
-            assert!(r.end > r.start, "region {r:?} does not span multiple lines");
-        }
-        assert!(
-            regions.iter().any(|r| r.start == 0 && r.end >= 3),
-            "expected a fold covering the whole function body"
-        );
-        // Regions are unique per start line (outermost kept) and in document order.
-        let starts: Vec<u32> = regions.iter().map(|r| r.start).collect();
-        let mut sorted = starts.clone();
-        sorted.sort_unstable();
-        assert_eq!(starts, sorted, "regions must be in ascending start order");
-        assert_eq!(
-            starts.len(),
-            sorted
-                .iter()
-                .collect::<std::collections::BTreeSet<_>>()
-                .len(),
-            "at most one region per start line"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn fold_is_empty_for_single_line_source() -> Result<(), Box<dyn std::error::Error>> {
-        use std::path::Path;
-
-        use karet_treesitter::ParserPool;
-        use karet_treesitter::SyntaxTree;
-        use karet_treesitter::language_id_from_path;
-
-        let Some(lang) = language_id_from_path(Path::new("x.rs")) else {
-            return Ok(());
-        };
-        let mut pool = ParserPool::new();
-        let tree = SyntaxTree::parse(&mut pool, lang, "let x = 1;")?;
-        assert!(fold(&tree).regions().is_empty());
-        Ok(())
     }
 
     /// The token covering `needle`'s first byte in `text`, per `highlights`.

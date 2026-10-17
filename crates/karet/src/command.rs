@@ -295,6 +295,21 @@ pub enum Command {
     ToggleDiffLayout,
     /// Fold or unfold the code region at the cursor.
     ToggleFold,
+    /// Collapse every fold region in the active file.
+    FoldAll,
+    /// Expand every collapsed fold in the active file.
+    UnfoldAll,
+    /// Collapse every region at the given nesting depth (1 is outermost) that
+    /// holds no caret.
+    FoldLevel(u8),
+    /// Collapse the region at the cursor and every region inside it.
+    FoldRecursively,
+    /// Expand the region at the cursor and every region inside it.
+    UnfoldRecursively,
+    /// Collapse every comment block in the active file.
+    FoldAllComments,
+    /// Collapse every import block in the active file.
+    FoldAllImports,
     /// Move to the next changed file (diff tab).
     NextChangedFile,
     /// Move to the previous changed file (diff tab).
@@ -919,6 +934,20 @@ impl Command {
             Self::Bottom => "Go to Bottom",
             Self::ToggleDiffLayout => "Diff: Toggle Inline / Side-by-Side",
             Self::ToggleFold => "Fold: Toggle at Cursor",
+            Self::FoldAll => "Fold: Fold All",
+            Self::UnfoldAll => "Fold: Unfold All",
+            Self::FoldLevel(1) => "Fold: Fold Level 1",
+            Self::FoldLevel(2) => "Fold: Fold Level 2",
+            Self::FoldLevel(3) => "Fold: Fold Level 3",
+            Self::FoldLevel(4) => "Fold: Fold Level 4",
+            Self::FoldLevel(5) => "Fold: Fold Level 5",
+            Self::FoldLevel(6) => "Fold: Fold Level 6",
+            Self::FoldLevel(7) => "Fold: Fold Level 7",
+            Self::FoldLevel(_) => "Fold: Fold Level",
+            Self::FoldRecursively => "Fold: Fold Recursively",
+            Self::UnfoldRecursively => "Fold: Unfold Recursively",
+            Self::FoldAllComments => "Fold: Fold All Comments",
+            Self::FoldAllImports => "Fold: Fold All Imports",
             Self::NextChangedFile => "Diff: Next Changed File",
             Self::PrevChangedFile => "Diff: Previous Changed File",
             Self::OpenDiffFile => "Diff: Open File",

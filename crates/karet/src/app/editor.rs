@@ -1,4 +1,5 @@
 pub(super) mod column;
+mod folding;
 mod gutter;
 mod render;
 
@@ -273,27 +274,8 @@ impl App {
     /// cursor line, else the innermost fold containing it. Collapsing a region the
     /// cursor sits inside relocates the caret to the (visible) header line.
     pub(super) fn toggle_fold(&mut self) {
-        let Some(tab) = self.tabs.get(self.active) else {
-            return;
-        };
-        let line = tab.editor.cursor().line;
-        let TabKind::Code { folds, .. } = &tab.kind else {
-            return;
-        };
-        let target = folds
-            .regions()
-            .iter()
-            .find(|r| r.start == line)
-            .or_else(|| {
-                folds
-                    .regions()
-                    .iter()
-                    .filter(|r| r.start <= line && line <= r.end)
-                    .min_by_key(|r| r.end - r.start)
-            })
-            .map(|region| region.start);
-        if let Some(start) = target {
-            self.toggle_fold_at(start);
+        if let Some(region) = self.region_at_cursor() {
+            self.toggle_fold_at(region.start);
         }
     }
 

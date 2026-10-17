@@ -147,7 +147,7 @@ fn folding_rig(marked: &str, end: u32) -> Rig {
     let mut rig = Rig::new(marked);
     let active = rig.app.active;
     if let TabKind::Code { folds, .. } = &mut rig.app.tabs[active].kind {
-        *folds = FoldRegions::from_sorted_regions(vec![FoldRegion { start: 0, end }]);
+        *folds = FoldRegions::from_sorted_regions(vec![FoldRegion::new(0, end)]);
     }
     rig.render();
     rig
