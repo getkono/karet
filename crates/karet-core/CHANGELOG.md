@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0](https://github.com/getkono/karet/compare/karet-core-v0.7.1...karet-core-v0.8.0) - 2026-10-17
+
+### Added
+
+- fold commands and per-language fold queries ([#505](https://github.com/getkono/karet/pull/505))
+- *(core)* decoration foreground/modifier styles, priority, interval index ([#504](https://github.com/getkono/karet/pull/504))
+- LSP snippets with tabstop and placeholder sessions ([#500](https://github.com/getkono/karet/pull/500))
+- pull diagnostics, related information and codeDescription links ([#494](https://github.com/getkono/karet/pull/494))
+- render LSP code lens ([#483](https://github.com/getkono/karet/pull/483))
+- find bar current-match style, search in selection, matches to carets, preserve case ([#465](https://github.com/getkono/karet/pull/465))
+- *(editor)* virtual lines above and below buffer lines ([#466](https://github.com/getkono/karet/pull/466))
+- *(editor)* a change-marker lane of its own in the gutter ([#452](https://github.com/getkono/karet/pull/452))
+- go to symbol in workspace through quick-open's # mode and Ctrl+T ([#447](https://github.com/getkono/karet/pull/447))
+- completion overhaul — textEdit ranges, auto-import, resolve + docs, trigger/commit chars, incomplete lists ([#436](https://github.com/getkono/karet/pull/436))
+- richer inlay hints — per-kind styling, label parts, resolve, toggle ([#429](https://github.com/getkono/karet/pull/429))
+- *(editor)* [**breaking**] unified column-anchored virtual text in layout and hit-testing ([#415](https://github.com/getkono/karet/pull/415))
+- code actions and quick fix menu with a gutter lightbulb ([#413](https://github.com/getkono/karet/pull/413))
+- rename symbol (F2) and a session-level workspace-edit apply path ([#402](https://github.com/getkono/karet/pull/402))
+
+### Fixed
+
+- *(editor)* grapheme-cluster-aware motions, deletes and widths ([#457](https://github.com/getkono/karet/pull/457))
+- *(core,editor)* multi-caret motion collapses before moving and keeps every caret ([#414](https://github.com/getkono/karet/pull/414))
+
 ## [0.7.1](https://github.com/getkono/karet/compare/karet-core-v0.7.0...karet-core-v0.7.1) - 2026-10-01
 
 ### Added
