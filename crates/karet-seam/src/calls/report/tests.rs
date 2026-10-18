@@ -221,7 +221,7 @@ fn including_tests_is_said_in_the_configuration_and_empties_test_only() -> TestR
         &small(),
     );
     assert!(
-        report.configuration.ends_with(" + tests"),
+        report.configuration.ends_with(" + test"),
         "{}",
         report.configuration
     );
