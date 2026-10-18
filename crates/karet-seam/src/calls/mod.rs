@@ -44,20 +44,28 @@ pub mod extract;
 pub mod graph;
 pub mod lines;
 mod metrics;
+pub mod report;
 pub mod resolve;
 mod scope;
 pub mod site;
 pub mod table;
+pub mod tree;
 
 pub use graph::Bound;
 pub use graph::CallGraph;
 pub use graph::FunctionMetrics;
 pub use graph::GraphOptions;
 use rayon::prelude::*;
+pub use report::CallReport;
+pub use report::ReportOptions;
+pub use report::report;
 pub use resolve::CallResolver;
 pub use resolve::NameResolver;
 pub use resolve::Resolved;
 pub use table::CallTable;
+pub use tree::CallTree;
+pub use tree::TreeLimits;
+pub use tree::call_tree;
 
 use crate::edge::Edge;
 use crate::edge::EdgeKind;

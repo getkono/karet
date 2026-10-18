@@ -56,6 +56,7 @@ terminal = ["dep:portable-pty", "dep:alacritty_terminal", "dep:filedescriptor"]
 karet-core.workspace = true
 karet-filetype.workspace = true       # icon-style choice (`--icons`) shared with the widgets
 karet-seam = { workspace = true, features = [
+    "serde",                          # --seam-report / --seam-call-tree --seam-format json
     "lang-rust",
     "lang-python",
     "lang-typescript",

@@ -37,33 +37,10 @@ pub(crate) fn run(
     root: &Path,
     query: &str,
     configuration: Option<&str>,
+    include_tests: bool,
 ) -> Result<String, QueryFailure> {
-    let mut index =
-        karet_seam::index_workspace(root, IndexOptions::default()).map_err(|error| {
-            QueryFailure {
-                message: format!("--seam-query: {error}"),
-                code: 2,
-            }
-        })?;
-
-    // A named configuration changes what the tree even contains, so it is applied
-    // before the query rather than filtered afterwards.
-    let active = configuration.map_or_else(karet_seam::Configuration::unconfigured, |name| {
-        karet_seam::Configuration::named(name, Vec::new())
-    });
-    karet_seam::config::apply(&mut index, &active);
-
-    let parsed = karet_seam::query::parse(query).map_err(|error| QueryFailure {
-        // Positioned, so a caller can point at the offending term rather than
-        // guessing which one this crate disliked.
-        message: format!(
-            "--seam-query: {} (at byte {}..{})",
-            error.describe(),
-            error.span.start,
-            error.span.end
-        ),
-        code: 2,
-    })?;
+    let (index, active) = prepare(root, "--seam-query", configuration, include_tests)?;
+    let parsed = parse_query("--seam-query", query)?;
 
     let result = karet_seam::query::evaluate(&parsed, &index);
     // Measured under the same configuration the tree is shown under, so a function the
@@ -76,6 +53,54 @@ pub(crate) fn run(
         },
     );
     Ok(render(&index, &graph, &result.nodes, query, &active.name))
+}
+
+/// Index everything under `root` and apply the configuration asked for.
+///
+/// Shared by every seam surface on the command line, so they all read the same tree
+/// under the same rules. `flag` names the surface in failure messages.
+///
+/// # Errors
+/// The root holds nothing indexable.
+pub(crate) fn prepare(
+    root: &Path,
+    flag: &str,
+    configuration: Option<&str>,
+    include_tests: bool,
+) -> Result<(SeamIndex, karet_seam::Configuration), QueryFailure> {
+    let mut index =
+        karet_seam::index_workspace(root, IndexOptions::default()).map_err(|error| {
+            QueryFailure {
+                message: format!("{flag}: {error}"),
+                code: 2,
+            }
+        })?;
+    // A named configuration changes what the tree even contains, so it is applied
+    // before any query rather than filtered afterwards.
+    let mut active = configuration.map_or_else(karet_seam::Configuration::unconfigured, |name| {
+        karet_seam::Configuration::named(name, Vec::new())
+    });
+    if include_tests {
+        active = active.for_target("test");
+    }
+    karet_seam::config::apply(&mut index, &active);
+    Ok((index, active))
+}
+
+/// Parse a query, failing with its position so a caller can point at the bad term.
+///
+/// # Errors
+/// The query does not parse.
+pub(crate) fn parse_query(flag: &str, query: &str) -> Result<karet_seam::Query, QueryFailure> {
+    karet_seam::query::parse(query).map_err(|error| QueryFailure {
+        message: format!(
+            "{flag}: {} (at byte {}..{})",
+            error.describe(),
+            error.span.start,
+            error.span.end
+        ),
+        code: 2,
+    })
 }
 
 /// Render a result set as JSON.
@@ -285,7 +310,7 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("src"))?;
         std::fs::write(dir.path().join("src/lib.rs"), "pub fn f() {}\n")?;
 
-        let Err(failure) = run(dir.path(), "lens:hazrd", None) else {
+        let Err(failure) = run(dir.path(), "lens:hazrd", None, false) else {
             return Err("expected the query to be rejected".into());
         };
         assert!(
@@ -304,7 +329,7 @@ mod tests {
         let dir = tempfile::tempdir()?;
         // Empty output would read as "this package has no seams", which is not the
         // answer — there is no package here.
-        let Err(failure) = run(dir.path(), "lens:api", None) else {
+        let Err(failure) = run(dir.path(), "lens:api", None, false) else {
             return Err("expected indexing to fail".into());
         };
         assert_eq!(failure.code, 2);
@@ -328,7 +353,7 @@ mod tests {
             "pub unsafe fn danger() {}\npub fn quiet() {}\n",
         )?;
 
-        let json = run(dir.path(), "lens:hazard", None)?;
+        let json = run(dir.path(), "lens:hazard", None, false)?;
         assert!(json.contains("\"q::danger\""), "{json}");
         assert!(!json.contains("\"q::quiet\""), "{json}");
         // Enough to cite it and to navigate back to it.
@@ -359,7 +384,7 @@ mod tests {
             "pub fn outer() {\n    inner();\n    inner();\n}\nfn inner() {}\npub struct Plain;\n",
         )?;
 
-        let json = run(dir.path(), "outer", None)?;
+        let json = run(dir.path(), "outer", None, false)?;
         assert!(
             json.contains("\"loc\": {\"code\": 4, \"span\": 4, \"inclusive\": 5,"),
             "{json}"
@@ -372,7 +397,7 @@ mod tests {
             "{json}"
         );
         // A type has no lines of its own to report.
-        let json = run(dir.path(), "kind:type", None)?;
+        let json = run(dir.path(), "kind:type", None, false)?;
         assert!(json.contains("\"loc\": null, \"calls\": []"), "{json}");
         Ok(())
     }
@@ -391,7 +416,7 @@ mod tests {
             module.join("src/main/java/Cart.java"),
             "public class Cart {\n    int size() { return 1; }\n}\n",
         )?;
-        let json = run(dir.path(), "kind:member", None)?;
+        let json = run(dir.path(), "kind:member", None, false)?;
         assert!(
             json.contains(
                 "\"rollups\": {\"api\": 1, \"substitution\": null, \"variation\": null, \
@@ -418,7 +443,7 @@ mod tests {
         std::fs::write(dir.path().join("src/lib.rs"), "pub fn quiet() {}\n")?;
 
         // Distinct from a failure: the question was understood, and the answer is none.
-        let json = run(dir.path(), "lens:hazard", None)?;
+        let json = run(dir.path(), "lens:hazard", None, false)?;
         assert!(json.contains("\"matched\": 0"), "{json}");
         Ok(())
     }

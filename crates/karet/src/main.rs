@@ -30,6 +30,7 @@ mod overlay;
 mod preview_images;
 mod remote;
 mod render;
+mod seam_calls;
 mod seam_query;
 mod tab;
 mod term_caps;
@@ -98,10 +99,37 @@ fn main() -> color_eyre::Result<()> {
 
     // `--seam-query` acts like a subcommand: answer one question about the package and
     // exit, without a session, an event loop, or the alternate screen.
-    if let Some(query) = cli.seam_query.clone() {
-        match seam_query::run(&root, &query, cli.seam_config.as_deref()) {
-            Ok(json) => {
-                println!("{json}");
+    // `--seam-report` and `--seam-call-tree` likewise, as documents.
+    let seam = if let Some(query) = cli.seam_query.clone() {
+        Some(seam_query::run(
+            &root,
+            &query,
+            cli.seam_config.as_deref(),
+            cli.include_tests,
+        ))
+    } else if let Some(query) = cli.seam_report.clone() {
+        Some(seam_calls::run_report(
+            &root,
+            &query,
+            cli.seam_config.as_deref(),
+            cli.include_tests,
+            cli.seam_format,
+        ))
+    } else {
+        cli.seam_call_tree.clone().map(|function| {
+            seam_calls::run_call_tree(
+                &root,
+                &function,
+                cli.seam_config.as_deref(),
+                cli.include_tests,
+                cli.seam_format,
+            )
+        })
+    };
+    if let Some(answer) = seam {
+        match answer {
+            Ok(text) => {
+                println!("{text}");
                 std::process::exit(0);
             },
             Err(failure) => {
