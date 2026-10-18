@@ -92,6 +92,42 @@ pub struct SeamEdgeView {
     pub resolvable: bool,
     /// Where the relation is written.
     pub site: Option<Range>,
+    /// How a call was resolved — `exact`, `dispatch`, `ambiguous`, … — for `calls` edges.
+    #[serde(default)]
+    pub resolution: Option<String>,
+    /// How many call sites this one row stands for; `calls` edges are aggregated per
+    /// target, so a function calling another five times reads as one row of five.
+    #[serde(default)]
+    pub count: u32,
+}
+
+/// One function's call measures, for the facet pane.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SeamCallMetricsView {
+    /// Its own code lines.
+    pub code_lines: u32,
+    /// Physical lines spanned.
+    pub span_lines: u32,
+    /// Distinct lines reached through established calls, itself included.
+    pub inclusive: u64,
+    /// The same through every plausible call.
+    pub inclusive_upper: u64,
+    /// Lines per call site, established calls only.
+    pub tree_weighted: u64,
+    /// Whether the tree weight hit the numeric ceiling.
+    pub saturated: bool,
+    /// Distinct established callers.
+    pub fan_in: u32,
+    /// Distinct established callees.
+    pub fan_out: u32,
+    /// Distinct callees outside the indexed code.
+    pub external_apis: u32,
+    /// The longest established call chain below it.
+    pub depth: u32,
+    /// How many functions share its call cycle; 1 when it is in none.
+    pub scc_size: u32,
+    /// Whether it can reach itself.
+    pub recursive: bool,
 }
 
 /// The source behind one seam node: the lines that define it, and the lines around it.

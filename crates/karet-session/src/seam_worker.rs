@@ -14,7 +14,9 @@ use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
 
+use karet_seam::CallGraph;
 use karet_seam::Configuration;
+use karet_seam::GraphOptions;
 use karet_seam::IndexOptions;
 use karet_seam::SeamIndex;
 use karet_seam::SeamPath;
@@ -32,6 +34,7 @@ mod project;
 mod sync;
 
 pub(crate) use project::edges_of;
+use project::metrics_of;
 pub(crate) use project::node_view;
 pub(crate) use project::summary_of;
 
@@ -106,6 +109,11 @@ struct Worker {
     pool: ParserPool,
     /// The one file kept in memory for source previews.
     preview: Option<preview::PreviewSource>,
+    /// The call graph under the active configuration, built on first need.
+    ///
+    /// Lazily, because most of a session's node requests are for types and modules, and
+    /// a large workspace's graph is worth building once rather than on every edit.
+    calls: Option<CallGraph>,
 }
 
 fn run(
@@ -199,6 +207,8 @@ impl Worker {
 
         self.available = project::configurations_for(root);
         self.configuration = self.available.first().cloned();
+        // Measured under the configuration just replaced, whatever the walk returns.
+        self.calls = None;
 
         let observer = sync::Observer::new(id, &cache, self.configuration.clone(), events);
         let built = karet_seam::index_workspace_with(root, options, &observer);
@@ -277,9 +287,12 @@ impl Worker {
         // Adopted rather than dropped: `Reindex` carries the caller's text, which may be
         // an unsaved buffer, and the pane must quote what the index actually read.
         self.preview = Some(preview::PreviewSource::adopt(path, text));
+        // Dropped before, not after: a re-index that fails has already removed the file's
+        // old nodes, and a graph built over them would describe functions that are gone.
+        self.calls = None;
         if karet_seam::reindex_file(index, &mut self.pool, path, text).is_err() {
-            // A file that will not parse leaves the previous tree standing rather than
-            // emptying the view mid-edit.
+            // A file that will not parse is not re-sent; the view keeps the last tree it
+            // was given rather than emptying mid-edit.
             return;
         }
         self.apply_configuration();
@@ -356,6 +369,36 @@ impl Worker {
         path: &str,
         events: &tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
     ) {
+        // Only a node with calls to show needs the graph: a type or a module answers
+        // without one, so selecting them never pays for a build.
+        let involves_calls = |index: &SeamIndex| {
+            path.parse::<SeamPath>()
+                .ok()
+                .and_then(|parsed| index.resolve(&parsed))
+                .is_some_and(|node| {
+                    index.calls().callable(node).is_some()
+                        || index
+                            .edges()
+                            .to_of_kind(node, karet_seam::EdgeKind::Calls)
+                            .next()
+                            .is_some()
+                })
+        };
+        if self.calls.is_none()
+            && let Some(index) = self.index.as_ref()
+            && involves_calls(index)
+        {
+            self.calls = Some(CallGraph::build(
+                index,
+                &GraphOptions {
+                    configuration: self
+                        .configuration
+                        .clone()
+                        .unwrap_or_else(Configuration::unconfigured),
+                    ..GraphOptions::default()
+                },
+            ));
+        }
         let Some(index) = self.index.as_ref() else {
             // Empty rather than silent, matching what an unknown node already answers.
             let _ = events.send((
@@ -363,6 +406,7 @@ impl Worker {
                 Event::SeamNodeDetail {
                     node: path.to_owned(),
                     edges: Vec::new(),
+                    metrics: None,
                     preview: Err(preview::no_index()),
                 },
             ));
@@ -377,7 +421,13 @@ impl Worker {
                 .file_path(node.location.file)
                 .map(|file| (file.to_path_buf(), node.location))
         });
-        let edges = target.map(|node| edges_of(index, node)).unwrap_or_default();
+        let graph = self.calls.as_ref();
+        let edges = target
+            .map(|node| edges_of(index, graph, node))
+            .unwrap_or_default();
+        let metrics = target
+            .zip(graph)
+            .and_then(|(node, graph)| metrics_of(graph, node));
         let preview = match located {
             Some((file, at)) => preview::preview_for(&mut self.preview, &file, at.range, at.header),
             None => Err(preview::no_index()),
@@ -387,6 +437,7 @@ impl Worker {
             Event::SeamNodeDetail {
                 node: path.to_owned(),
                 edges,
+                metrics,
                 preview,
             },
         ));
@@ -412,7 +463,12 @@ impl Worker {
     }
 
     /// Re-evaluate membership and rollups under the active configuration.
+    ///
+    /// Every change to the index or the configuration comes through here, so this is
+    /// also where the call graph measured from them is dropped, to be rebuilt on the
+    /// next node request that needs it.
     fn apply_configuration(&mut self) {
+        self.calls = None;
         let (Some(index), Some(configuration)) = (self.index.as_mut(), self.configuration.as_ref())
         else {
             return;

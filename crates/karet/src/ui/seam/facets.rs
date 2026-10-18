@@ -124,6 +124,23 @@ pub(super) fn draw(
         lines.push(Line::from(spans));
     }
 
+    if let Some(metrics) = &state.metrics {
+        // The full line when it fits, the numbers alone when it would be cut — a cut
+        // line loses whatever came last, and that is never the least important part.
+        let room = usize::from(area.width).saturating_sub(lens_column + 3);
+        let full = calls_summary(metrics, compact);
+        let summary = if full.chars().count() > room {
+            calls_summary(metrics, true)
+        } else {
+            full
+        };
+        // Sized to the lens labels, so the numbers start where every lens's facets do.
+        let label = if compact { "call" } else { "calls" };
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {label:<lens_column$} "), muted),
+            Span::styled(summary, theme.style(ThemeRole::Foreground)),
+        ]));
+    }
     lines.push(edges_line(theme, state, lens_column));
 
     // Measured from what has been pushed so far rather than from a constant, so adding a
@@ -133,7 +150,19 @@ pub(super) fn draw(
         .saturating_add(u16::try_from(lines.len()).unwrap_or(u16::MAX));
     let mut hits = Vec::new();
     let focused = state.focus == SeamFocus::Facets;
-    for (index, edge) in state.edges.iter().enumerate() {
+    // A function with a hundred callers has more edges than the pane has rows. The list
+    // scrolls with the selection, and a last row says how many are out of sight, so the
+    // selected edge is never one the reader cannot see.
+    let room = usize::from(area.height).saturating_sub(lines.len());
+    let total = state.edges.len();
+    let (start, shown) = if total <= room {
+        (0, total)
+    } else {
+        let shown = room.saturating_sub(1).max(1);
+        let start = state.facet_row.saturating_sub(shown - 1).min(total - shown);
+        (start, shown)
+    };
+    for (index, edge) in state.edges.iter().enumerate().skip(start).take(shown) {
         let arrow = if edge.outgoing { "→" } else { "←" };
         let target = edge
             .target
@@ -151,7 +180,7 @@ pub(super) fn draw(
         } else {
             theme.style(ThemeRole::Foreground)
         };
-        let y = first_edge.saturating_add(u16::try_from(index).unwrap_or(u16::MAX));
+        let y = first_edge.saturating_add(u16::try_from(index - start).unwrap_or(u16::MAX));
         if y < area.y.saturating_add(area.height) {
             hits.push((Rect::new(area.x, y, area.width, 1), index));
         }
@@ -165,12 +194,84 @@ pub(super) fn draw(
                 muted,
             ),
             Span::styled(target, style),
-            Span::styled(format!("   ({})", edge.state), muted),
+            Span::styled(format!("   ({})", edge_note(edge)), muted),
         ]));
+    }
+    if shown < total {
+        lines.push(Line::from(Span::styled(
+            format!("  … {} more", total - shown),
+            muted,
+        )));
     }
 
     state.hits.edges = hits;
     f.render_widget(Paragraph::new(lines), area);
+}
+
+/// What follows an edge's target: how a call was resolved and how many sites it stands
+/// for, or the endpoint's state for every other relation.
+fn edge_note(edge: &karet_session::api::SeamEdgeView) -> String {
+    match &edge.resolution {
+        Some(resolution) if edge.count > 1 => format!("{resolution} ×{}", edge.count),
+        Some(resolution) => resolution.clone(),
+        None => edge.state.clone(),
+    }
+}
+
+/// A function's call measures on one line: its own size, what it reaches, and its shape.
+///
+/// The upper bound appears only where it differs, since an equal one says nothing a
+/// reader needs; the compact form drops the words and keeps the numbers.
+fn calls_summary(m: &karet_session::api::SeamCallMetricsView, compact: bool) -> String {
+    let reach = if m.inclusive_upper > m.inclusive {
+        format!("{} (≤{})", m.inclusive, m.inclusive_upper)
+    } else {
+        m.inclusive.to_string()
+    };
+    let tree = format!(
+        "{}{}",
+        if m.saturated { "≥" } else { "" },
+        abbreviate(m.tree_weighted)
+    );
+    let mut parts = if compact {
+        vec![
+            format!("{} own", m.code_lines),
+            format!("{reach} reach"),
+            format!("in {} out {}", m.fan_in, m.fan_out),
+        ]
+    } else {
+        vec![
+            format!("{} own", m.code_lines),
+            format!("{reach} reach"),
+            format!("tree {tree}"),
+            format!("in {}", m.fan_in),
+            format!("out {}", m.fan_out),
+            format!("depth {}", m.depth),
+        ]
+    };
+    if m.external_apis > 0 && !compact {
+        parts.push(format!("ext {}", m.external_apis));
+    }
+    if m.scc_size > 1 {
+        parts.push(format!("cycle of {}", m.scc_size));
+    } else if m.recursive {
+        parts.push("recursive".to_owned());
+    }
+    parts.join(" · ")
+}
+
+/// A count in at most four characters: `950`, `1.2k`, `34k`, `5.6M`.
+fn abbreviate(value: u64) -> String {
+    // The boundaries are where rounding would carry into the next unit, so 9 960 reads
+    // `10k` rather than `10.0k`.
+    match value {
+        0..1_000 => value.to_string(),
+        1_000..9_950 => format!("{:.1}k", value as f64 / 1_000.0),
+        9_950..999_500 => format!("{}k", (value + 500) / 1_000),
+        999_500..9_950_000 => format!("{:.1}M", value as f64 / 1_000_000.0),
+        // Saturating: a tree weight that hit the ceiling is `u64::MAX`.
+        _ => format!("{}M", value.saturating_add(500_000) / 1_000_000),
+    }
 }
 
 /// The lens's name, abbreviated where the pane is too narrow for it.
@@ -192,14 +293,17 @@ fn edges_line<'a>(theme: &Theme, state: &SeamViewState, lens_column: usize) -> L
     let width = lens_column + 2;
     let muted = theme.style(ThemeRole::Muted);
     if state.edges.is_empty() {
+        // A function's calls have been looked for, so for one, empty means none. Its other
+        // relations, like every node's, still wait on a semantic tier — saying "none"
+        // there would assert an absence the index has not established.
+        let note = if state.metrics.is_some() {
+            format!("{ABSENT} no calls or callers · {PENDING} other relations not resolved")
+        } else {
+            format!("{PENDING} not resolved — structural relations only")
+        };
         return Line::from(vec![
             Span::styled(format!("{:<width$}", "  edges"), muted),
-            // Without a semantic tier nothing has looked, so saying "none" would assert
-            // an absence the index has not established.
-            Span::styled(
-                format!("{PENDING} not resolved — structural relations only"),
-                muted,
-            ),
+            Span::styled(note, muted),
         ]);
     }
     Line::from(vec![
@@ -209,4 +313,28 @@ fn edges_line<'a>(theme: &Theme, state: &SeamViewState, lens_column: usize) -> L
             theme.style(ThemeRole::DiagnosticInfo),
         ),
     ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::abbreviate;
+
+    #[test]
+    fn a_count_fits_four_characters_across_every_boundary() {
+        for (value, shown) in [
+            (999, "999"),
+            (1_000, "1.0k"),
+            (9_949, "9.9k"),
+            (9_950, "10k"),
+            (999_499, "999k"),
+            (999_500, "1.0M"),
+            (9_949_999, "9.9M"),
+            (9_950_000, "10M"),
+        ] {
+            assert_eq!(abbreviate(value), shown, "{value}");
+            assert!(abbreviate(value).chars().count() <= 4, "{value}");
+        }
+        // A saturated tree weight is the ceiling itself, and must not overflow.
+        assert_eq!(abbreviate(u64::MAX), "18446744073709M");
+    }
 }

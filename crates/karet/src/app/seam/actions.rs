@@ -9,6 +9,7 @@ use std::collections::HashSet;
 use karet_core::NotificationKind;
 use karet_session::api::Command as SessionCommand;
 use karet_session::api::RequestId;
+use karet_session::api::SeamCallMetricsView;
 use karet_session::api::SeamEdgeView;
 use karet_session::api::SeamNodeView;
 use karet_session::api::SeamPreview;
@@ -354,10 +355,12 @@ impl App {
         // content the moment the tree arrives.
         if state.selection.is_empty() {
             state.move_row(0);
-            // Ask for what the reader just landed on. Without this the detail pane stays
-            // empty until they press a key, which reads as a view that failed to load.
-            self.request_seam_node();
         }
+        // Ask for what the reader is on: what they just landed on, or the node they were
+        // already reading — a save or a configuration switch changes its calls and
+        // measures under it. The answer replaces the detail in place, since it is the same
+        // node's, rather than blanking the pane on every save.
+        self.request_seam_node();
     }
 
     /// Merge one package that has finished indexing.
@@ -412,6 +415,10 @@ impl App {
         // report about what changed, and announcing "0 of 524 files" on open would be
         // noise about work nobody requested.
         if syncing {
+            // A sync re-reads files and resets the configuration, so the node the reader
+            // has open may have different calls and measures now. A first index asked for
+            // its landing node already, when the first package arrived.
+            self.request_seam_node();
             self.notify_tagged(
                 Report::Outcome,
                 NotificationKind::System,
@@ -485,6 +492,7 @@ impl App {
         id: Option<RequestId>,
         node: String,
         edges: Vec<SeamEdgeView>,
+        metrics: Option<SeamCallMetricsView>,
         preview: Result<SeamPreview, String>,
     ) {
         if id.is_none() || id != self.seam_node_req {
@@ -499,9 +507,12 @@ impl App {
             return;
         }
         state.edges = edges;
+        state.metrics = metrics;
         state.preview = Some(preview);
         state.detail_since = None;
-        state.facet_row = 0;
+        // A new selection already started at the top; a refresh of the same node — after
+        // a save or a configuration switch — keeps the reader's place in its edges.
+        state.facet_row = state.facet_row.min(state.edges.len().saturating_sub(1));
     }
 
     /// Ask the backend for the selected node's edges and source.
@@ -695,7 +706,11 @@ impl App {
             self.notify(
                 Report::Refusal,
                 NotificationKind::System,
-                format!("seam: {} points outside this package", edge.kind),
+                if edge.state == "unresolved" {
+                    format!("seam: this {} edge was not resolved to a node", edge.kind)
+                } else {
+                    format!("seam: {} points outside this package", edge.kind)
+                },
             );
             return;
         };

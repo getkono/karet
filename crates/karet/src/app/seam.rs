@@ -20,6 +20,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
+use karet_session::api::SeamCallMetricsView;
 use karet_session::api::SeamEdgeView;
 use karet_session::api::SeamNodeView;
 use karet_session::api::SeamPreview;
@@ -131,6 +132,8 @@ pub(crate) struct SeamViewState {
     pub(crate) focus: SeamFocus,
     /// The selected node's edges, once fetched.
     pub(crate) edges: Vec<SeamEdgeView>,
+    /// The selected function's call measures, once fetched; `None` for anything else.
+    pub(crate) metrics: Option<SeamCallMetricsView>,
     /// The selected node's source, once fetched, or the reason there is none.
     ///
     /// Dropped the moment the selection moves, so the pane can never show one node's
@@ -190,6 +193,7 @@ impl SeamViewState {
             query_matches: None,
             focus: SeamFocus::default(),
             edges: Vec::new(),
+            metrics: None,
             preview: None,
             detail_since: None,
             facet_row: 0,
@@ -481,6 +485,7 @@ impl SeamViewState {
     /// answer, where an empty pane reads as a question still being asked.
     fn forget_detail(&mut self) {
         self.edges.clear();
+        self.metrics = None;
         self.preview = None;
         self.facet_row = 0;
     }

@@ -287,6 +287,7 @@ fn settled(app: &mut App) {
         detail,
         "core::thing".to_owned(),
         Vec::new(),
+        None,
         Ok(preview("/repo/a.rs")),
     );
 }
@@ -326,6 +327,7 @@ fn a_preview_for_a_node_the_reader_left_is_ignored() {
         detail,
         "core::somewhere_else".to_owned(),
         Vec::new(),
+        None,
         Ok(preview("/repo/b.rs")),
     );
     let Some(state) = app.active_seam() else {
@@ -626,4 +628,168 @@ fn a_right_press_falls_through_so_the_pane_menu_still_opens() {
         modifiers: KeyModifiers::NONE,
     });
     assert!(!handled);
+}
+
+/// A call edge as the session sends it: aggregated, with its resolution.
+fn call_edge(
+    target: Option<&str>,
+    display: Option<&str>,
+    count: u32,
+) -> karet_session::api::SeamEdgeView {
+    let resolved = target.is_some();
+    karet_session::api::SeamEdgeView {
+        kind: "calls".to_owned(),
+        outgoing: true,
+        target: target.map(str::to_owned),
+        display: display.map(str::to_owned),
+        state: if resolved { "resolved" } else { "external" }.to_owned(),
+        resolvable: true,
+        site: None,
+        resolution: Some(if resolved { "exact" } else { "external" }.to_owned()),
+        count,
+    }
+}
+
+/// A view on two functions, the first one's detail carrying a call and its measures.
+fn calling_app() -> (Arc<RecordingBackend>, App) {
+    let (backend, mut app) = seam_app("/repo");
+    let id = app.seam_index_req;
+    app.on_seam_indexed(
+        id,
+        summary("repo", 1),
+        vec![
+            node("core::thing", "/repo/a.rs"),
+            node("core::callee", "/repo/a.rs"),
+        ],
+    );
+    let detail = app.seam_node_req;
+    app.on_seam_node_detail(
+        detail,
+        "core::thing".to_owned(),
+        vec![
+            call_edge(Some("core::callee"), None, 3),
+            call_edge(None, Some("std::fs::read"), 1),
+        ],
+        Some(karet_session::api::SeamCallMetricsView {
+            code_lines: 12,
+            span_lines: 14,
+            inclusive: 340,
+            inclusive_upper: 410,
+            tree_weighted: 1_200,
+            saturated: false,
+            fan_in: 3,
+            fan_out: 7,
+            external_apis: 1,
+            depth: 4,
+            scc_size: 1,
+            recursive: false,
+        }),
+        Ok(preview("/repo/a.rs")),
+    );
+    (backend, app)
+}
+
+#[test]
+fn a_re_answered_index_asks_again_for_the_node_being_read() {
+    // A configuration switch or a save re-answers the whole tree. The node under the
+    // reader survives it, but its calls and measures may not: they must be asked for.
+    let (backend, mut app) = calling_app();
+    let asked = node_requests(&backend).len();
+    app.seam_index_req = app.send(SessionCommand::SetSeamConfiguration {
+        name: "tests".to_owned(),
+    });
+    let id = app.seam_index_req;
+    app.on_seam_indexed(
+        id,
+        summary("repo", 1),
+        vec![
+            node("core::thing", "/repo/a.rs"),
+            node("core::callee", "/repo/a.rs"),
+        ],
+    );
+    let requests = node_requests(&backend);
+    assert_eq!(requests.len(), asked + 1);
+    assert_eq!(requests.last().map(String::as_str), Some("core::thing"));
+    let Some(state) = app.active_seam() else {
+        panic!("no seam view");
+    };
+    // Replaced in place when the answer lands, rather than blanked while it is on its way.
+    assert!(state.metrics.is_some());
+}
+
+#[test]
+fn a_finished_sync_asks_again_for_the_node_being_read_and_keeps_its_place() {
+    let (backend, mut app) = calling_app();
+    if let Some(state) = app.active_seam() {
+        state.facet_row = 1;
+    }
+    app.seam_sync();
+    let asked = node_requests(&backend).len();
+    let id = app.seam_index_req;
+    // The package re-arrives with the node still in it, as a sync delivers it.
+    app.on_seam_package_indexed(
+        id,
+        0,
+        "core::thing",
+        vec![
+            node("core::thing", "/repo/a.rs"),
+            node("core::callee", "/repo/a.rs"),
+        ],
+        Vec::new(),
+    );
+    app.on_seam_index_finished(id, summary("repo", 1), 0, 1);
+    let requests = node_requests(&backend);
+    assert_eq!(requests.len(), asked + 1);
+    assert_eq!(requests.last().map(String::as_str), Some("core::thing"));
+
+    // The refreshed answer is the same node's: the reader stays on the edge they chose.
+    let detail = app.seam_node_req;
+    app.on_seam_node_detail(
+        detail,
+        "core::thing".to_owned(),
+        vec![
+            call_edge(Some("core::callee"), None, 3),
+            call_edge(None, Some("std::fs::read"), 1),
+        ],
+        None,
+        Ok(preview("/repo/a.rs")),
+    );
+    let Some(state) = app.active_seam() else {
+        panic!("no seam view");
+    };
+    assert_eq!(state.facet_row, 1);
+}
+
+#[test]
+fn enter_on_a_call_follows_it_and_an_external_one_is_refused() {
+    let (backend, mut app) = calling_app();
+    let Some(state) = app.active_seam() else {
+        panic!("no seam view");
+    };
+    assert_eq!(state.metrics.as_ref().map(|m| m.inclusive), Some(340));
+    state.facet_row = 0;
+    app.pivot_seam_edge();
+    let Some(state) = app.active_seam() else {
+        panic!("no seam view");
+    };
+    assert_eq!(state.as_query(), "pivot:calls:core::thing");
+    // The pivot moved the selection, so the old measures are gone and new ones asked for.
+    assert!(state.metrics.is_none());
+    assert_eq!(
+        node_requests(&backend).last().map(String::as_str),
+        Some("core::callee")
+    );
+
+    let (_backend, mut app) = calling_app();
+    let Some(state) = app.active_seam() else {
+        panic!("no seam view");
+    };
+    state.facet_row = 1;
+    let before = state.as_query();
+    app.pivot_seam_edge();
+    let Some(state) = app.active_seam() else {
+        panic!("no seam view");
+    };
+    // An external callee has nothing in this tree to reroot on.
+    assert_eq!(state.as_query(), before);
 }
