@@ -256,6 +256,28 @@ pub trait SeamLanguage {
         None
     }
 
+    /// The tree-sitter query marking this language's calls, bodies, comments and imports,
+    /// for the grammar `language` — or `None`, and the language has no call tier.
+    ///
+    /// This is the whole of a language's part in the call tier: the captures it may use
+    /// are listed in [`crate::calls::site::CAPTURES`], and everything after the query —
+    /// attribution, line counting, resolution, measuring — is language-neutral. A
+    /// mapping serving several grammars receives the one being read, since node names can
+    /// differ between them.
+    fn call_query(&self, language: LanguageId) -> Option<&'static str> {
+        let _ = language;
+        None
+    }
+
+    /// Whether a bare name inside a method may mean a member of the enclosing type.
+    ///
+    /// Kotlin, Swift, Java and C++ let `size()` mean `this.size()`; Rust, Python and
+    /// JavaScript do not — there a bare name is a free function, and reading it as a
+    /// member would turn `fn parse() { parse() }` delegation into false recursion.
+    fn implicit_receiver(&self) -> bool {
+        false
+    }
+
     /// The edge kinds this language's semantic tier can resolve. May be empty.
     fn semantic_capabilities(&self) -> &'static [EdgeKind];
 

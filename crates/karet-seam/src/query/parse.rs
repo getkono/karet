@@ -153,6 +153,18 @@ fn parse_term(body: &str, span: &Range<usize>) -> Result<TermKind, QueryError> {
             }),
         "cfg" => Ok(TermKind::Cfg(value.to_owned())),
         "pivot" => parse_pivot(value, span),
+        "reach" | "callers" => value
+            .parse::<SeamPath>()
+            .map(|path| match prefix {
+                "reach" => TermKind::Reach(path),
+                _ => TermKind::Callers(path),
+            })
+            .map_err(|error| {
+                QueryError::new(
+                    format!("`{prefix}:` needs a node path ({error})"),
+                    span.clone(),
+                )
+            }),
         // `<lens>:<subtype>` — the lens name doubles as a prefix.
         other => match Lens::from_name(other) {
             Some(lens) => {
@@ -206,10 +218,12 @@ fn parse_pivot(value: &str, span: &Range<usize>) -> Result<TermKind, QueryError>
 
 /// Every prefix a term may start with, for suggestions.
 fn known_prefixes() -> impl Iterator<Item = String> {
-    ["lens", "vis", "kind", "in", "cfg", "config", "pivot"]
-        .into_iter()
-        .map(str::to_owned)
-        .chain(LENSES.iter().map(|lens| lens.name().to_owned()))
+    [
+        "lens", "vis", "kind", "in", "cfg", "config", "pivot", "reach", "callers",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .chain(LENSES.iter().map(|lens| lens.name().to_owned()))
 }
 
 /// An "unrecognized X" failure carrying the nearest valid names.

@@ -140,7 +140,9 @@ pub fn extract_file(
         outcome: ExtractOutcome::default(),
     };
     tree.walk(|node| extractor.visit(node));
-    Ok(extractor.outcome)
+    let outcome = extractor.outcome;
+    crate::calls::extract::annotate(index, &tree, mapping, language, text, file, &outcome.added);
+    Ok(outcome)
 }
 
 /// Walk state: the containment stack, pending attributes, and sibling ordinals.

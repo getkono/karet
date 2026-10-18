@@ -109,6 +109,10 @@ impl SeamLanguage for TypeScript {
         )
     }
 
+    fn call_query(&self, _: LanguageId) -> Option<&'static str> {
+        Some(include_str!("../../../queries/calls/typescript.scm"))
+    }
+
     fn semantic_capabilities(&self) -> &'static [EdgeKind] {
         SEMANTIC
     }

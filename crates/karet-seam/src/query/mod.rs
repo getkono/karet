@@ -24,6 +24,8 @@
 //! | `cfg:<text>` | gated by a matching variation predicate |
 //! | `config:<name>` | evaluate under a named configuration |
 //! | `pivot:<edge>:<node>` | the result set of following an edge |
+//! | `reach:<node>` | everything the node transitively calls, through established calls |
+//! | `callers:<node>` | everything that transitively calls the node |
 //!
 //! # Errors are positioned, never silent
 //!
@@ -78,6 +80,10 @@ pub enum TermKind {
         /// The node to follow it from, as a path.
         target: SeamPath,
     },
+    /// Everything a function transitively calls, through established calls.
+    Reach(SeamPath),
+    /// Everything that transitively calls a function, through established calls.
+    Callers(SeamPath),
     /// A fuzzy match on the node name.
     Name(String),
     /// A literal substring of the node name.
@@ -94,6 +100,8 @@ impl fmt::Display for TermKind {
             Self::In(path) => write!(f, "in:{path}"),
             Self::Cfg(text) => write!(f, "cfg:{text}"),
             Self::Pivot { edge, target } => write!(f, "pivot:{}:{target}", edge.name()),
+            Self::Reach(path) => write!(f, "reach:{path}"),
+            Self::Callers(path) => write!(f, "callers:{path}"),
             Self::Name(name) => f.write_str(name),
             Self::Phrase(phrase) => write!(f, "\"{phrase}\""),
         }

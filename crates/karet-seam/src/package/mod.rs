@@ -132,6 +132,7 @@ pub fn index_package(root: &Path, options: IndexOptions) -> Result<SeamIndex, Pa
         &mut ownership,
     );
     crate::regroup::apply(&mut index, ownership);
+    crate::calls::link(&mut index);
     index.recompute_rollups();
     Ok(index)
 }
@@ -351,6 +352,9 @@ pub fn reindex_file(
     index.remove_nodes_in_file(file_id, root);
     let outcome = extract_file(index, pool, parent, file_id, language, text)?;
     crate::regroup::apply(index, outcome.ownership);
+    // The whole index, not the file: calls elsewhere may have pointed at what this file
+    // used to declare, and calls here may now reach something new.
+    crate::calls::link(index);
     // From the package root for the same reason: the rebuilt nodes may not have landed
     // in the subtree the edit appeared to touch.
     index.recompute_rollups_from(root);

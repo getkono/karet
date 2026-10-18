@@ -33,7 +33,9 @@ use karet_seam::FileStamp;
 use rayon::prelude::*;
 
 /// Bumped whenever the stored shape changes in a way an older reader would misread.
-const SCHEMA: u32 = 1;
+///
+/// 2: each file also stores its callables' lines and call sites, and its imports.
+const SCHEMA: u32 = 2;
 
 /// The language mappings this build can read, which decide what a file extracts to.
 ///
@@ -91,6 +93,8 @@ struct Header {
     schema: u32,
     engine: String,
     languages: Vec<u16>,
+    /// The call queries the stored call sites were found with.
+    calls: u64,
     root: PathBuf,
 }
 
@@ -100,6 +104,7 @@ impl Header {
             schema: SCHEMA,
             engine: env!("CARGO_PKG_VERSION").to_owned(),
             languages: languages(),
+            calls: karet_seam::calls::extract::fingerprint(),
             root: root.to_path_buf(),
         }
     }
@@ -109,6 +114,7 @@ impl Header {
         self.schema == SCHEMA
             && self.engine == env!("CARGO_PKG_VERSION")
             && self.languages == languages()
+            && self.calls == karet_seam::calls::extract::fingerprint()
             && self.root == root
     }
 }
@@ -306,6 +312,32 @@ mod tests {
             external_modules: Vec::new(),
             ownership: Vec::new(),
             unresolved: Vec::new(),
+            callables: vec![karet_seam::CachedCallable {
+                node: 0,
+                callable: karet_seam::calls::site::Callable {
+                    code_lines: 3,
+                    span_lines: 4,
+                    has_body: true,
+                    sites: vec![karet_seam::calls::site::CallSite {
+                        name: Some("helper".to_owned()),
+                        qualifier: Some("util".to_owned()),
+                        receiver: Some(karet_seam::calls::site::Receiver::SelfRef),
+                        construct: false,
+                        external: false,
+                        weak: true,
+                        range: karet_core::Range::default(),
+                    }],
+                },
+            }],
+            file_calls: karet_seam::calls::site::FileCalls {
+                imports: vec![karet_seam::calls::site::Import {
+                    segments: vec!["std".to_owned(), "fmt".to_owned()],
+                    alias: Some("f".to_owned()),
+                    glob: false,
+                    binds_head: true,
+                }],
+                loose_sites: 1,
+            },
         }
     }
 
@@ -317,15 +349,17 @@ mod tests {
         SeamCache::save(Some(root), root, vec![contribution(&file)]);
         let read = SeamCache::load(Some(root), root);
         assert_eq!(read.len(), 1);
-        assert!(
+        // Whole, call sites and imports included: a field the encoding dropped would
+        // replay as a function that calls nothing.
+        assert_eq!(
             read.get(
                 &file,
                 FileStamp {
                     modified_nanos: 42,
                     len: 7
                 }
-            )
-            .is_some()
+            ),
+            Some(contribution(&file))
         );
         Ok(())
     }
@@ -347,6 +381,11 @@ mod tests {
         let mut wrong_languages = Header::current(root);
         wrong_languages.languages.push(u16::MAX);
         assert!(!wrong_languages.usable_for(root));
+
+        // Call sites found by a different query would replay as calls this build misses.
+        let mut wrong_calls = Header::current(root);
+        wrong_calls.calls = wrong_calls.calls.wrapping_add(1);
+        assert!(!wrong_calls.usable_for(root));
 
         // A digest collision must resolve to a miss, not to another workspace's tree.
         let elsewhere = tempfile::tempdir()?;

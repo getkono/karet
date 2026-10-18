@@ -27,8 +27,10 @@
 //! - **Effective visibility.** It belongs to the semantic tier, which resolves re-export
 //!   chains across the whole index. It is not a fact about one file, and it carries a
 //!   `SeamId` that would not survive the trip.
-//! - **Edges.** Nothing populates the edge store during structural indexing yet. Caching
-//!   an empty thing would be an invitation to cache a wrong one later.
+//! - **Edges.** A call edge says which function a call *reaches*, which depends on every
+//!   other file — a function added elsewhere can change the answer. So the raw call sites
+//!   and imports are stored, being facts about this file alone, and the edges are
+//!   re-derived from them by [`crate::calls::link`] on every build.
 //! - **The grammar.** A [`LanguageId`](karet_treesitter::LanguageId) is an index into the
 //!   parse host's registry, which shifts with the compiled-in grammar set. It is
 //!   re-derived from the file's own path at replay, which is where it came from anyway.
@@ -38,6 +40,8 @@ use std::path::PathBuf;
 use karet_core::Range;
 use karet_core::Span;
 
+use crate::calls::site::Callable;
+use crate::calls::site::FileCalls;
 use crate::id::SeamPath;
 use crate::id::SeamSegment;
 use crate::lang::Owner;
@@ -134,6 +138,16 @@ pub struct CachedModule {
     pub path_attribute: Option<String>,
 }
 
+/// What a callable node said about calls, addressed by position like every node here.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct CachedCallable {
+    /// The index, within the same contribution, of the callable node.
+    pub node: u32,
+    /// Its lines and its unresolved call sites.
+    pub callable: Callable,
+}
+
 /// Everything one file said, keyed by what it said it about.
 ///
 /// Replaying this into an index is equivalent to re-reading the file, provided the file
@@ -168,6 +182,10 @@ pub struct FileContribution {
     pub ownership: Vec<(u32, Vec<Owner>)>,
     /// Modules whose body could not be found, with the paths that were tried.
     pub unresolved: Vec<(u32, Vec<PathBuf>)>,
+    /// Every callable's lines and call sites, as written — never what they resolve to.
+    pub callables: Vec<CachedCallable>,
+    /// The file's imports and the calls made outside any callable.
+    pub file_calls: FileCalls,
 }
 
 impl FileContribution {

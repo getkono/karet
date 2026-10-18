@@ -197,6 +197,10 @@ impl SeamLanguage for Rust {
         node.child_text("name", ctx.text).map(str::to_owned)
     }
 
+    fn call_query(&self, _: LanguageId) -> Option<&'static str> {
+        Some(include_str!("../../../queries/calls/rust.scm"))
+    }
+
     fn semantic_capabilities(&self) -> &'static [EdgeKind] {
         SEMANTIC
     }

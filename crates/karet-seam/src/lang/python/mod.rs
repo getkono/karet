@@ -107,6 +107,10 @@ impl SeamLanguage for Python {
         })
     }
 
+    fn call_query(&self, _: LanguageId) -> Option<&'static str> {
+        Some(include_str!("../../../queries/calls/python.scm"))
+    }
+
     fn semantic_capabilities(&self) -> &'static [EdgeKind] {
         SEMANTIC
     }

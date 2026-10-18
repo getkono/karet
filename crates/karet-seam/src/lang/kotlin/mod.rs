@@ -97,6 +97,14 @@ impl SeamLanguage for Kotlin {
         )
     }
 
+    fn call_query(&self, _: LanguageId) -> Option<&'static str> {
+        Some(include_str!("../../../queries/calls/kotlin.scm"))
+    }
+
+    fn implicit_receiver(&self) -> bool {
+        true
+    }
+
     fn semantic_capabilities(&self) -> &'static [EdgeKind] {
         SEMANTIC
     }
