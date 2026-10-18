@@ -63,6 +63,7 @@ fn node(id: &str, file: &str) -> SeamNodeView {
         visibility: None,
         membership: "active".to_owned(),
         provisional: false,
+        unread_lenses: Vec::new(),
     }
 }
 

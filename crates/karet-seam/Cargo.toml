@@ -35,6 +35,10 @@ lang-javascript = ["karet-treesitter/lang-javascript"]
 lang-typescript = ["lang-javascript", "karet-treesitter/lang-typescript"]
 lang-swift      = ["karet-treesitter/lang-swift"]
 lang-kotlin     = ["karet-treesitter/lang-kotlin"]
+# C and C++ share one mapping, so either compiles it; each still parses with its own grammar.
+lang-c          = ["karet-treesitter/lang-c"]
+lang-cpp        = ["karet-treesitter/lang-cpp"]
+lang-java       = ["karet-treesitter/lang-java"]
 
 [dependencies]
 karet-core.workspace       = true

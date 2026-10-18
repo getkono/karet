@@ -48,6 +48,21 @@ pub struct FileModule {
 /// each one needs its parent to exist already.
 #[must_use]
 pub fn walk(directory: &Path, extensions: &[&str], index_names: &[&str]) -> Vec<FileModule> {
+    walk_skipping(directory, extensions, index_names, &[])
+}
+
+/// [`walk`], also never descending into directories named in `skip`.
+///
+/// Skipped during the walk rather than filtered after it, because a directory with no
+/// file of its own points at the first source beneath it — and a stand-in inside a
+/// skipped directory would leave that directory's module with nothing to point at.
+#[must_use]
+pub fn walk_skipping(
+    directory: &Path,
+    extensions: &[&str],
+    index_names: &[&str],
+    skip: &[&str],
+) -> Vec<FileModule> {
     let mut out = Vec::new();
     if let Some(index) = index_file(directory, extensions, index_names) {
         out.push(FileModule {
@@ -56,8 +71,20 @@ pub fn walk(directory: &Path, extensions: &[&str], index_names: &[&str]) -> Vec<
             extract: true,
         });
     }
-    descend(directory, &[], 0, extensions, index_names, &mut out);
+    let rules = Rules {
+        extensions,
+        index_names,
+        skip,
+    };
+    descend(directory, &[], 0, &rules, &mut out);
     out
+}
+
+/// What a walk reads and what it leaves out.
+struct Rules<'a> {
+    extensions: &'a [&'a str],
+    index_names: &'a [&'a str],
+    skip: &'a [&'a str],
 }
 
 /// Collect the modules inside one directory, then recurse into its subdirectories.
@@ -65,10 +92,10 @@ fn descend(
     directory: &Path,
     segments: &[String],
     depth: usize,
-    extensions: &[&str],
-    index_names: &[&str],
+    rules: &Rules<'_>,
     out: &mut Vec<FileModule>,
 ) {
+    let (extensions, index_names) = (rules.extensions, rules.index_names);
     if depth >= MAX_DEPTH {
         return;
     }
@@ -89,13 +116,13 @@ fn descend(
         });
     }
 
-    for child in subdirectories(directory) {
+    for child in subdirectories(directory, rules.skip) {
         let Some(name) = child.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
         // A directory holding no source anywhere beneath it is not a namespace. Emitting
         // one would put an empty row in the spine for every `assets/` in the tree.
-        let Some(anchor) = first_source(&child, extensions, depth) else {
+        let Some(anchor) = first_source(&child, extensions, rules.skip, depth) else {
             continue;
         };
         let mut path = segments.to_vec();
@@ -112,7 +139,7 @@ fn descend(
                 extract: false,
             }),
         }
-        descend(&child, &path, depth + 1, extensions, index_names, out);
+        descend(&child, &path, depth + 1, rules, out);
     }
 }
 
@@ -141,30 +168,42 @@ fn sources_in(directory: &Path, extensions: &[&str]) -> Vec<PathBuf> {
 }
 
 /// The subdirectories worth descending into, sorted.
-fn subdirectories(directory: &Path) -> Vec<PathBuf> {
+fn subdirectories(directory: &Path, skip: &[&str]) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(directory) else {
         return Vec::new();
     };
     let mut out: Vec<PathBuf> = entries
         .flatten()
         .map(|entry| entry.path())
-        .filter(|path| path.is_dir() && !skipped(path))
+        .filter(|path| {
+            path.is_dir()
+                && !skipped(path)
+                && !path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| skip.contains(&name))
+        })
         .collect();
     out.sort();
     out
 }
 
 /// The first source file at or beneath `directory`, if it holds any.
-fn first_source(directory: &Path, extensions: &[&str], depth: usize) -> Option<PathBuf> {
+fn first_source(
+    directory: &Path,
+    extensions: &[&str],
+    skip: &[&str],
+    depth: usize,
+) -> Option<PathBuf> {
     if depth >= MAX_DEPTH {
         return None;
     }
     if let Some(file) = sources_in(directory, extensions).into_iter().next() {
         return Some(file);
     }
-    subdirectories(directory)
+    subdirectories(directory, skip)
         .into_iter()
-        .find_map(|child| first_source(&child, extensions, depth + 1))
+        .find_map(|child| first_source(&child, extensions, skip, depth + 1))
 }
 
 /// Whether a path carries one of the extensions, compared case-insensitively.

@@ -61,6 +61,9 @@ karet-seam = { workspace = true, features = [
     "lang-typescript",
     "lang-swift",
     "lang-kotlin",
+    "lang-c",
+    "lang-cpp",
+    "lang-java",
 ] } # the --seam-query surface answers without a session
 karet-session.workspace = true
 karet-supervisor.workspace = true     # hidden process-mode entry points (broker / supervisor)

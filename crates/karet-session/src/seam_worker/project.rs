@@ -44,6 +44,11 @@ pub(crate) fn node_view(index: &SeamIndex, node: &Node) -> Option<SeamNodeView> 
         visibility: node.effective_visibility().map(|v| v.name().to_owned()),
         membership: node.membership.name().to_owned(),
         provisional: node.provisional,
+        unread_lenses: index
+            .unread_lenses(node.id)
+            .iter()
+            .map(|lens| lens.name().to_owned())
+            .collect(),
     })
 }
 
@@ -291,6 +296,41 @@ mod tests {
     fn edges_of_an_unknown_node_are_empty_rather_than_a_failure() {
         let index = SeamIndex::new();
         assert!(edges_of(&index, SeamId(0)).is_empty());
+    }
+
+    #[test]
+    fn a_node_carries_the_lenses_its_language_does_not_read()
+    -> Result<(), Box<dyn std::error::Error>> {
+        if karet_seam::lang::java::language_id().is_none() {
+            return Ok(());
+        }
+        let dir = tempfile::tempdir()?;
+        let module = dir.path().join("shop");
+        std::fs::create_dir_all(module.join("src/main/java"))?;
+        std::fs::write(module.join("pom.xml"), "<project></project>\n")?;
+        std::fs::write(module.join("src/main/java/Cart.java"), "class Cart {}\n")?;
+        let index = karet_seam::index_workspace(dir.path(), karet_seam::IndexOptions::default())?;
+        let cart = index
+            .nodes()
+            .find(|node| node.name == "Cart" && node.kind == karet_seam::NodeKind::Type)
+            .ok_or("no Cart")?;
+        let view = node_view(&index, cart).ok_or("no view")?;
+        assert_eq!(
+            view.unread_lenses,
+            ["substitution", "variation", "boundary", "hazard"]
+        );
+        let package = index
+            .roots()
+            .first()
+            .and_then(|id| index.node(*id))
+            .ok_or("no root")?;
+        assert!(
+            node_view(&index, package)
+                .ok_or("no view")?
+                .unread_lenses
+                .is_empty()
+        );
+        Ok(())
     }
 
     #[test]

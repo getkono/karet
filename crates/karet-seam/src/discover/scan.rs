@@ -36,6 +36,8 @@ pub(crate) fn skipped(path: &Path) -> bool {
     name.starts_with('.')
         || name.ends_with(".egg-info")
         || SKIPPED.contains(&name)
+        // CLion and friends name each build directory after its configuration.
+        || name.starts_with("cmake-build-")
         // Whatever a virtual environment is named, this file is what makes it one.
         || path.join("pyvenv.cfg").is_file()
 }

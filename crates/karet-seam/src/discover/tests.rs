@@ -557,4 +557,89 @@ fn an_ecosystems_extensions_and_index_names_match_its_conventions() {
     // Cargo declares its tree and Python has a walk of its own.
     assert!(PackageKind::Cargo.extensions().is_empty());
     assert!(PackageKind::Python.extensions().is_empty());
+    // Java sits beside Kotlin in a Gradle source set, and alone in a Maven one.
+    assert!(PackageKind::Gradle.extensions().contains(&"java"));
+    assert_eq!(PackageKind::Maven.extensions(), ["java"]);
+    assert!(PackageKind::CFamily.extensions().contains(&"h"));
+    assert!(PackageKind::CFamily.extensions().contains(&"cpp"));
+}
+
+// --- C, C++ and Maven ----------------------------------------------------------
+
+#[test]
+fn the_outermost_cmake_project_claims_the_tree_below_it() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    write(
+        dir.path(),
+        "engine/CMakeLists.txt",
+        "add_subdirectory(core)\n",
+    )?;
+    write(
+        dir.path(),
+        "engine/core/CMakeLists.txt",
+        "add_library(core a.c)\n",
+    )?;
+    write(dir.path(), "engine/core/a.c", "")?;
+    write(dir.path(), "tools/meson.build", "project('tools', 'c')\n")?;
+    let found = found(dir.path());
+    // `core` is the engine's subdirectory, not a project of its own.
+    assert_eq!(
+        found,
+        [
+            ("engine".to_owned(), "engine".to_owned()),
+            ("tools".to_owned(), "tools".to_owned())
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn a_makefile_marks_a_c_project_only_when_c_sources_sit_beside_it() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    // Every kind of project has a Makefile; this one has no C in it.
+    write(dir.path(), "Makefile", "test:\n\tnpm test\n")?;
+    write(dir.path(), "native/Makefile", "all:\n\tcc src/x.c\n")?;
+    write(dir.path(), "native/src/x.c", "")?;
+    let found = found(dir.path());
+    // The root's Makefile is not a C project, so it does not hide the one below it.
+    assert_eq!(found, [("native".to_owned(), "native".to_owned())]);
+    Ok(())
+}
+
+#[test]
+fn only_c_projects_treat_subprojects_as_vendored() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    // A Gradle build keeps its own modules under `subprojects/`.
+    write(dir.path(), "app/build.gradle.kts", "")?;
+    write(dir.path(), "app/subprojects/core/build.gradle.kts", "")?;
+    write(dir.path(), "app/subprojects/core/src/main/kotlin/A.kt", "")?;
+    // A meson project vendors its dependencies there.
+    write(dir.path(), "native/subprojects/zlib/meson.build", "")?;
+    let names = names(dir.path());
+    assert!(names.contains(&"core".to_owned()), "{names:?}");
+    assert!(!names.contains(&"zlib".to_owned()), "{names:?}");
+    Ok(())
+}
+
+#[test]
+fn a_maven_aggregator_yields_each_module_and_its_source_sets() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    write(
+        dir.path(),
+        "pom.xml",
+        "<project><modules><module>api</module></modules></project>\n",
+    )?;
+    write(dir.path(), "api/pom.xml", "<project></project>\n")?;
+    write(dir.path(), "api/src/main/java/a/A.java", "")?;
+    write(dir.path(), "api/src/test/java/a/ATest.java", "")?;
+    let mut found = found(dir.path());
+    found.sort();
+    assert_eq!(
+        found,
+        [
+            ("api".to_owned(), "api/src/main/java".to_owned()),
+            ("api".to_owned(), "api/src/test/java".to_owned())
+        ]
+    );
+    Ok(())
 }

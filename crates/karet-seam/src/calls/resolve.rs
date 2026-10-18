@@ -213,8 +213,44 @@ impl Lookup<'_, '_> {
             {
                 Resolved::one(Endpoint::Resolved(*only), Resolution::Exact)
             },
+            // One contract declaring the name and the rest implementing it: a call through
+            // the contract, whose implementations dispatch then lists.
+            _ if !chained => match self.contract_among(&found) {
+                Some(contract) => Resolved::one(Endpoint::Resolved(contract), Resolution::Exact),
+                None => self.ambiguous(found),
+            },
             _ => self.ambiguous(found),
         }
+    }
+
+    /// The single contract declaration among same-named candidates, when every other
+    /// candidate implements that contract.
+    ///
+    /// Any candidate that does not — an unrelated type's method of the same name — means
+    /// the call may be to it instead, and then nothing is established.
+    fn contract_among(&self, found: &[SeamId]) -> Option<SeamId> {
+        let in_contract = |id: &SeamId| {
+            self.tables
+                .scopes
+                .get(id)
+                .is_some_and(|scope| scope.in_contract)
+        };
+        let mut contracts = found.iter().copied().filter(in_contract);
+        let contract = contracts.next()?;
+        if contracts.next().is_some() {
+            return None;
+        }
+        let index = self.tables.index;
+        let name = index
+            .node(contract)
+            .and_then(|node| node.parent)
+            .and_then(|parent| index.node(parent))
+            .map(|parent| parent.name.as_str())?;
+        found
+            .iter()
+            .filter(|id| **id != contract)
+            .all(|id| self.mentions(*id, name))
+            .then_some(contract)
     }
 
     /// Whether a receiver is written as a container rather than as a value.
@@ -575,6 +611,9 @@ impl Lookup<'_, '_> {
         index.ancestors(id).iter().take(2).any(|up| {
             index.node(*up).is_some_and(|node| {
                 (node.kind == NodeKind::Implementation && node.name.contains(contract))
+                    // A type that records what it derives from, as Java and C++ do.
+                    || (node.kind == NodeKind::Type
+                        && node.detail.as_deref().is_some_and(|d| d.contains(contract)))
                     || node
                         .facets_for(Lens::Substitution)
                         .filter_map(|facet| facet.detail.as_deref())

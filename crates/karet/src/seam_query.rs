@@ -139,15 +139,25 @@ fn node_json(
 
     // Rollups travel with every node so seam density is readable without walking
     // the subtree, which is what makes "where is the risk concentrated" a cheap question.
+    // A lens the node's language never reads has no count to give: `null`, not zero.
+    let unread = index.unread_lenses(id);
     let rollups: Vec<String> = LENSES
         .iter()
-        .map(|lens| format!("{}: {}", quote(lens.name()), node.rollups.get(*lens)))
+        .map(|lens| {
+            let count = if unread.contains(lens) {
+                "null".to_owned()
+            } else {
+                node.rollups.get(*lens).to_string()
+            };
+            format!("{}: {count}", quote(lens.name()))
+        })
         .collect();
+    let unread: Vec<String> = unread.iter().map(|lens| quote(lens.name())).collect();
 
     Some(format!(
         "    {{\"id\": {}, \"name\": {}, \"kind\": {}, \"file\": {}, \"line\": {}, \
          \"visibility\": {}, \"membership\": {}, \"facets\": [{}], \"rollups\": {{{}}}, \
-         \"loc\": {}, \"calls\": [{}]}}",
+         \"unread_lenses\": [{}], \"loc\": {}, \"calls\": [{}]}}",
         quote(&path),
         quote(&node.name),
         quote(node.kind.name()),
@@ -158,6 +168,7 @@ fn node_json(
         quote(node.membership.name()),
         facets.join(", "),
         rollups.join(", "),
+        unread.join(", "),
         loc_json(index, graph, id),
         calls_json(index, id).join(", ")
     ))
@@ -363,6 +374,32 @@ mod tests {
         // A type has no lines of its own to report.
         let json = run(dir.path(), "kind:type", None)?;
         assert!(json.contains("\"loc\": null, \"calls\": []"), "{json}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_lens_a_language_does_not_read_reports_null_rather_than_zero()
+    -> Result<(), Box<dyn std::error::Error>> {
+        if karet_seam::lang::java::language_id().is_none() {
+            return Ok(());
+        }
+        let dir = tempfile::tempdir()?;
+        let module = dir.path().join("shop");
+        std::fs::create_dir_all(module.join("src/main/java"))?;
+        std::fs::write(module.join("pom.xml"), "<project></project>\n")?;
+        std::fs::write(
+            module.join("src/main/java/Cart.java"),
+            "public class Cart {\n    int size() { return 1; }\n}\n",
+        )?;
+        let json = run(dir.path(), "kind:member", None)?;
+        assert!(
+            json.contains(
+                "\"rollups\": {\"api\": 1, \"substitution\": null, \"variation\": null, \
+                 \"boundary\": null, \"hazard\": null}, \"unread_lenses\": [\"substitution\", \
+                 \"variation\", \"boundary\", \"hazard\"]"
+            ),
+            "{json}"
+        );
         Ok(())
     }
 

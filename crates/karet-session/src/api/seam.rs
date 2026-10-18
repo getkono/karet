@@ -52,6 +52,12 @@ pub struct SeamNodeView {
     pub membership: String,
     /// Whether the node came from a subtree that failed to parse cleanly.
     pub provisional: bool,
+    /// Lenses the node's language mapping does not read, by name.
+    ///
+    /// For these an empty facet list means "not looked at", not "none found", and the
+    /// view says so.
+    #[serde(default)]
+    pub unread_lenses: Vec<String>,
 }
 
 /// One facet, flattened.

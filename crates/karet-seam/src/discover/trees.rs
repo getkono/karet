@@ -1,8 +1,13 @@
-//! Finding Node, Swift, and Gradle packages.
+//! Finding Node, Swift, Gradle, Maven and C/C++ packages.
 //!
-//! All three are the same shape: a manifest file marks a directory as a package, and its
+//! All of them are the same shape: a manifest file marks a directory as a package, and its
 //! sources live in a conventional subdirectory. Only the manifest names and the source
-//! layouts differ, so one walk serves all three and each ecosystem contributes a table.
+//! layouts differ, so one walk serves them all and each ecosystem contributes a table.
+//!
+//! C and C++ have no manifest, so the build file stands in for one: `CMakeLists.txt`,
+//! `meson.build` or a `Makefile`. A CMake project routinely puts one in every directory,
+//! each `add_subdirectory`'d from the one above, so the outermost build file claims the
+//! tree and the ones below it are not packages of their own.
 //!
 //! **The name comes from the directory, not the manifest.** `package.json` carries a
 //! *distribution* name, which may be scoped (`@acme/widgets`) and need not match anything
@@ -32,6 +37,8 @@ struct Ecosystem {
     kind: PackageKind,
     /// Source roots, resolved against the package directory.
     roots: fn(&Path) -> Vec<PathBuf>,
+    /// Whether a package of this kind may contain further packages of the same kind.
+    nests: bool,
 }
 
 /// Every ecosystem this walk knows, in the order their packages are listed.
@@ -40,20 +47,37 @@ const ECOSYSTEMS: &[Ecosystem] = &[
         manifests: &["package.json"],
         kind: PackageKind::Node,
         roots: node_roots,
+        nests: true,
     },
     Ecosystem {
         manifests: &["Package.swift"],
         kind: PackageKind::Swift,
         roots: swift_roots,
+        nests: true,
     },
     Ecosystem {
         manifests: &["build.gradle.kts", "build.gradle"],
         kind: PackageKind::Gradle,
         roots: gradle_roots,
+        nests: true,
+    },
+    // A parent `pom.xml` lists its modules in subdirectories, so a walk that keeps
+    // descending finds each of them as the package it is.
+    Ecosystem {
+        manifests: &["pom.xml"],
+        kind: PackageKind::Maven,
+        roots: maven_roots,
+        nests: true,
+    },
+    Ecosystem {
+        manifests: &["CMakeLists.txt", "meson.build", "Makefile", "GNUmakefile"],
+        kind: PackageKind::CFamily,
+        roots: c_family_roots,
+        nests: false,
     },
 ];
 
-/// Every Node, Swift, and Gradle package under `root`.
+/// Every Node, Swift, Gradle, Maven and C/C++ package under `root`.
 pub(super) fn discover(root: &Path, options: DiscoveryOptions) -> Vec<Discovered> {
     let mut out = Vec::new();
     for ecosystem in ECOSYSTEMS {
@@ -61,10 +85,20 @@ pub(super) fn discover(root: &Path, options: DiscoveryOptions) -> Vec<Discovered
             if out.len() >= options.max_packages {
                 return scan::Visit::Prune;
             }
+            // A vendored copy carries its own build file and is still not this repository's.
+            if dir
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| ecosystem.kind.vendored_directories().contains(&name))
+            {
+                return scan::Visit::Prune;
+            }
             let Some(anchor) = manifest(dir, ecosystem.manifests) else {
                 return scan::Visit::Descend;
             };
-            out.extend((ecosystem.roots)(dir).into_iter().map(|source| Discovered {
+            let roots = (ecosystem.roots)(dir);
+            let found = !roots.is_empty();
+            out.extend(roots.into_iter().map(|source| Discovered {
                 name: name_of(&source, dir),
                 root: source,
                 anchor: anchor.clone(),
@@ -72,8 +106,14 @@ pub(super) fn discover(root: &Path, options: DiscoveryOptions) -> Vec<Discovered
             }));
             // A Gradle build is routinely a tree of them, and a monorepo nests Node
             // packages, so descending stays on for everything but the package's own
-            // source directories — which hold modules, not further packages.
-            scan::Visit::Descend
+            // source directories — which hold modules, not further packages. A C build
+            // file's subdirectories are its own, so there the outermost one that really
+            // is a C project wins.
+            if ecosystem.nests || !found {
+                scan::Visit::Descend
+            } else {
+                scan::Visit::Prune
+            }
         });
     }
     out
@@ -149,6 +189,49 @@ fn gradle_roots(package: &Path) -> Vec<PathBuf> {
         .collect();
     out.sort();
     out
+}
+
+/// A Maven module's source sets: `src/<set>/java`.
+fn maven_roots(package: &Path) -> Vec<PathBuf> {
+    let src = package.join("src");
+    let mut out: Vec<PathBuf> = children(&src)
+        .into_iter()
+        .map(|set| set.join("java"))
+        .filter(|path| path.is_dir())
+        .collect();
+    out.sort();
+    out
+}
+
+/// A C or C++ project's sources: the project directory itself.
+///
+/// One root rather than `src` and `include` separately, because a header and its
+/// definition are one module's two halves and splitting them would make two packages of
+/// one library. A bare `Makefile` is the build file of every kind of project, so it marks
+/// a C project only when C or C++ sources sit beside it or in its `src`.
+fn c_family_roots(package: &Path) -> Vec<PathBuf> {
+    let declared = ["CMakeLists.txt", "meson.build"]
+        .iter()
+        .any(|name| package.join(name).is_file());
+    if declared || has_c_sources(package) || has_c_sources(&package.join("src")) {
+        vec![package.to_path_buf()]
+    } else {
+        Vec::new()
+    }
+}
+
+/// Whether `directory` directly holds a C or C++ source or header.
+fn has_c_sources(directory: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        entry
+            .path()
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| PackageKind::CFamily.extensions().contains(&extension))
+    })
 }
 
 /// A directory's subdirectories, sorted, skipping the ones never worth walking.

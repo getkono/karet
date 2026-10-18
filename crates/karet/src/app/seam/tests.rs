@@ -21,6 +21,7 @@ fn node(id: &str, parent: Option<&str>, children: &[&str], rollups: [u32; 5]) ->
         visibility: Some("public".to_owned()),
         membership: "active".to_owned(),
         provisional: false,
+        unread_lenses: Vec::new(),
     }
 }
 

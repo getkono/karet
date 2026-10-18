@@ -76,6 +76,10 @@ impl SeamLanguage for TypeScript {
             .unwrap_or(LanguageId(u16::MAX))
     }
 
+    fn language_ids(&self) -> Vec<LanguageId> {
+        language_ids()
+    }
+
     fn classify(&self, node: &WalkNode<'_>, ctx: &FacetContext<'_>) -> Option<Classified> {
         classify_node(node, ctx)
     }

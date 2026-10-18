@@ -22,6 +22,10 @@ use crate::model::NodeKind;
 use crate::model::Visibility;
 use crate::text::LineIndex;
 
+#[cfg(any(feature = "lang-c", feature = "lang-cpp"))]
+pub mod cfamily;
+#[cfg(feature = "lang-java")]
+pub mod java;
 #[cfg(feature = "lang-kotlin")]
 pub mod kotlin;
 pub mod python;
@@ -176,6 +180,14 @@ pub trait SeamLanguage {
     /// Which grammar this maps.
     fn language(&self) -> LanguageId;
 
+    /// Every grammar this maps, [`Self::language`] first.
+    ///
+    /// One for most languages. A mapping serving several grammars — TypeScript and
+    /// JavaScript, C and C++ — lists them all, since each reads with its own call query.
+    fn language_ids(&self) -> Vec<LanguageId> {
+        vec![self.language()]
+    }
+
     /// Map one syntax node onto a universal kind, or `None` if it is not a node at all.
     ///
     /// Returning `None` is the common case — most syntax nodes are not addressable
@@ -278,6 +290,16 @@ pub trait SeamLanguage {
         false
     }
 
+    /// The lenses this mapping does not read at all.
+    ///
+    /// A lens with no facets on a node normally means the index looked and found nothing.
+    /// A mapping that never looks — a language mapped for containment and visibility
+    /// only — names those lenses here, so the view can say "not read" (`?`) rather than
+    /// "none" (`—`). Empty, the default, means every lens is read.
+    fn unread_lenses(&self) -> &'static [Lens] {
+        &[]
+    }
+
     /// The edge kinds this language's semantic tier can resolve. May be empty.
     fn semantic_capabilities(&self) -> &'static [EdgeKind];
 
@@ -349,6 +371,10 @@ pub fn registered() -> Vec<&'static dyn SeamLanguage> {
     out.push(swift::mapping());
     #[cfg(feature = "lang-kotlin")]
     out.push(kotlin::mapping());
+    #[cfg(any(feature = "lang-c", feature = "lang-cpp"))]
+    out.push(cfamily::mapping());
+    #[cfg(feature = "lang-java")]
+    out.push(java::mapping());
     out
 }
 
@@ -400,6 +426,16 @@ pub fn for_language(language: LanguageId) -> Option<&'static dyn SeamLanguage> {
         && kotlin == language
     {
         return Some(kotlin::mapping());
+    }
+    #[cfg(any(feature = "lang-c", feature = "lang-cpp"))]
+    if cfamily::language_ids().contains(&language) {
+        return Some(cfamily::mapping());
+    }
+    #[cfg(feature = "lang-java")]
+    if let Some(java) = java::language_id()
+        && java == language
+    {
+        return Some(java::mapping());
     }
     let _ = language;
     None

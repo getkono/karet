@@ -104,6 +104,27 @@ impl SeamIndex {
         self.attribution.get(&file).copied()
     }
 
+    /// The lenses the mapping that produced `id` does not read.
+    ///
+    /// Empty for a node no single language produced — a package sits in its manifest —
+    /// and for every node of a language that reads all five.
+    #[must_use]
+    pub fn unread_lenses(&self, id: SeamId) -> &'static [crate::model::Lens] {
+        let Some(node) = self.nodes.get(&id) else {
+            return &[];
+        };
+        if node.kind == crate::model::NodeKind::Package {
+            return &[];
+        }
+        self.file_attribution(node.location.file)
+            .map(|(_, language)| language)
+            .or_else(|| {
+                karet_treesitter::language_id_from_path(self.file_path(node.location.file)?)
+            })
+            .and_then(crate::lang::for_language)
+            .map_or(&[], |mapping| mapping.unread_lenses())
+    }
+
     /// The path behind a file handle.
     #[must_use]
     pub fn file_path(&self, file: FileId) -> Option<&Path> {

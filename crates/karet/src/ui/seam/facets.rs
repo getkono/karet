@@ -86,7 +86,13 @@ pub(super) fn draw(
                 muted,
             ),
         ];
-        if facets.is_empty() {
+        if facets.is_empty() && node.unread_lenses.iter().any(|unread| unread == lens) {
+            // Not looked at, which is a different answer from looked and found nothing.
+            spans.push(Span::styled(
+                format!("{UNRESOLVABLE} not read for this language"),
+                muted,
+            ));
+        } else if facets.is_empty() {
             spans.push(Span::styled(ABSENT, muted));
         } else {
             let described: Vec<String> = facets
