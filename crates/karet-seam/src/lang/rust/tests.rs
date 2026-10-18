@@ -550,6 +550,38 @@ fn attribute_arguments_split_across_all_three_written_shapes() {
 }
 
 #[test]
+fn a_compound_test_gate_keeps_its_inner_brackets_and_still_excludes() {
+    let Some(mut index) = index(
+        "#[cfg(all(test, unix))]\nmod unix_tests { fn t() {} }\n\
+         #[cfg(not(test))]\nmod live { fn l() {} }\npub fn f() {}",
+    ) else {
+        return;
+    };
+    let gate = |index: &SeamIndex, path: &str| -> Option<String> {
+        at(index, path)?
+            .facets_for(Lens::Variation)
+            .find(|facet| facet.subtype.name() == "cfg")
+            .and_then(|facet| facet.detail.clone())
+    };
+    // The whole predicate, not one with its closing bracket eaten.
+    assert_eq!(
+        gate(&index, "pkg::unix_tests").as_deref(),
+        Some("all(test, unix)")
+    );
+    assert_eq!(gate(&index, "pkg::live").as_deref(), Some("not(test)"));
+
+    crate::config::apply(&mut index, &crate::config::Configuration::unconfigured());
+    assert_eq!(
+        at(&index, "pkg::unix_tests").map(|node| node.membership),
+        Some(crate::model::ConfigMembership::Inactive)
+    );
+    assert_eq!(
+        at(&index, "pkg::live").map(|node| node.membership),
+        Some(crate::model::ConfigMembership::Active)
+    );
+}
+
+#[test]
 fn the_mapping_declares_what_its_semantic_tier_can_resolve() {
     use crate::lang::SeamLanguage;
     let capabilities = super::Rust.semantic_capabilities();
