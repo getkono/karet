@@ -136,7 +136,9 @@ files, and `s` / `u` stage and unstage the hunk under the caret.
 A few flags exist for automation and view capture rather than for hands:
 `--goto PATH[:LINE[:COL]]`, `--diff OLD NEW`, `--split PATH`, `--command NAME` (runs a
 palette command by title or slug), `--seam-query QUERY` (prints JSON and exits without
-entering the TUI), and `--capture` (renders one frame to stdout as truecolor ANSI).
+entering the TUI), `--seam-report` and `--seam-call-tree FUNCTION` (a call-structure
+report, or one function's call tree, as Markdown or JSON), and `--capture` (renders one
+frame to stdout as truecolor ANSI).
 Each is an **unstable automation surface**: the behaviour and output shape may change
 between major versions without notice.
 
@@ -178,7 +180,10 @@ compile, what crosses the package line, and where that is dangerous. A Cargo
 workspace, its nested crates, and Python packages beside them become a single tree
 with a root per package. The same query language drives both the filter box and
 `--seam-query`, so a narrowing you reach by pressing keys and one a script asks for
-are the same string. See [`docs/seam.md`](docs/seam.md).
+are the same string. The index also resolves who calls what, measures each function by
+the code it pulls in, and writes that up as a structural report — cycles, hubs, heavy
+entry points, dead code, module coupling, each with evidence — to read or hand to a
+language model. See [`docs/seam.md`](docs/seam.md).
 
 **Documents and media.** Markdown preview to the side, re-rendering as you type with
 the two panes scroll-synced, mermaid diagrams drawn inline, and a curated HTML subset
