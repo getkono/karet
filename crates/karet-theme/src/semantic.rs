@@ -7,8 +7,10 @@
 //! token whose type it names (any type, for `*`) and whose modifiers include
 //! all of its own. Each style property -- the foreground and each emphasis
 //! flag -- is taken separately from the most specific matching rule that sets
-//! it: naming the type outweighs any number of modifiers, and among rules
-//! naming the same thing, more modifiers win, then the later rule. A property
+//! it, scored as VS Code's `tokenClassificationRegistry` scores a selector:
+//! 100 for naming the type and 100 for each modifier, so `*.readonly` ties
+//! `variable` and `*.readonly.static` beats it, and the later rule wins a
+//! tie. A property
 //! no rule sets comes from the fallback class, so a theme without
 //! `semanticTokenColors` still colours a semantic token in its own palette.
 
@@ -93,12 +95,13 @@ impl SemanticRule {
     }
 
     /// How specifically this rule matches a token of `ty` with `modifiers`,
-    /// or `None` when it does not match.
+    /// or `None` when it does not match: 100 for a named type plus 100 per
+    /// modifier, VS Code's own weights.
     fn score(&self, ty: SemanticTokenType, modifiers: SemanticTokenModifiers) -> Option<u32> {
         if self.ty.is_some_and(|own| own != ty) || !modifiers.contains(self.modifiers) {
             return None;
         }
-        Some(u32::from(self.ty.is_some()) * 100 + self.modifiers.len())
+        Some((u32::from(self.ty.is_some()) + self.modifiers.len()) * 100)
     }
 }
 
@@ -184,6 +187,11 @@ pub(crate) fn fallback(ty: SemanticTokenType, modifiers: SemanticTokenModifiers)
         T::Operator => StandardToken::Operator,
         T::Decorator | T::Attribute => StandardToken::Attribute,
         T::Lifetime | T::Label => StandardToken::Label,
+        // A readonly variable is the constant a grammar paints `@constant`
+        // (VS Code falls `variable.readonly` back to `variable.other.constant`).
+        T::Variable if modifiers.contains(SemanticTokenModifiers::READONLY) => {
+            StandardToken::Constant
+        },
         // An unknown variant (the enum is non-exhaustive) reads as plain
         // code, as does a reference nobody could resolve.
         _ => StandardToken::Variable,
@@ -226,14 +234,16 @@ mod tests {
         Ok(())
     }
 
-    /// Naming the type outweighs any number of modifiers; among equals, more
-    /// modifiers win; a rule whose modifiers the token lacks never applies.
+    /// VS Code's weights: a named type and each modifier count 100 apiece, so
+    /// `*.readonly.static` (200) beats `variable` (100) and ties
+    /// `variable.readonly`, which wins as the later rule; a rule whose
+    /// modifiers the token lacks never applies.
     #[test]
     fn the_most_specific_matching_rule_sets_each_property() -> Result<(), String> {
         let rules = [
             rule("variable", SemanticStyle::fg(RED))?,
-            rule("*.readonly.static", SemanticStyle::fg(GREEN))?,
             rule("variable.readonly", SemanticStyle::fg(BLUE))?,
+            rule("*.readonly.static", SemanticStyle::fg(GREEN))?,
             rule(
                 "*.mutable",
                 SemanticStyle {
@@ -244,7 +254,13 @@ mod tests {
         ];
         let readonly_static = SemanticTokenModifiers::READONLY | SemanticTokenModifiers::STATIC;
         let style = resolve(&rules, SemanticTokenType::Variable, readonly_static);
-        assert_eq!(style.fg, Some(BLUE));
+        assert_eq!(style.fg, Some(GREEN));
+        let readonly = resolve(
+            &rules,
+            SemanticTokenType::Variable,
+            SemanticTokenModifiers::READONLY,
+        );
+        assert_eq!(readonly.fg, Some(BLUE));
         assert_eq!(style.underline, None);
         let plain = resolve(
             &rules,
@@ -262,6 +278,31 @@ mod tests {
                 SemanticTokenModifiers::NONE
             ),
             SemanticStyle::default()
+        );
+        Ok(())
+    }
+
+    /// A wildcard with one modifier ties a bare type name, so the later of
+    /// the two wins whichever it is. Falsified by weighting the type above
+    /// modifiers (the type would win in both orders).
+    #[test]
+    fn a_wildcard_modifier_ties_a_bare_type() -> Result<(), String> {
+        let readonly = SemanticTokenModifiers::READONLY;
+        let type_first = [
+            rule("variable", SemanticStyle::fg(RED))?,
+            rule("*.readonly", SemanticStyle::fg(GREEN))?,
+        ];
+        assert_eq!(
+            resolve(&type_first, SemanticTokenType::Variable, readonly).fg,
+            Some(GREEN)
+        );
+        let wildcard_first = [
+            rule("*.readonly", SemanticStyle::fg(GREEN))?,
+            rule("variable", SemanticStyle::fg(RED))?,
+        ];
+        assert_eq!(
+            resolve(&wildcard_first, SemanticTokenType::Variable, readonly).fg,
+            Some(RED)
         );
         Ok(())
     }
@@ -314,6 +355,19 @@ mod tests {
         assert_eq!(
             fallback(SemanticTokenType::Lifetime, none),
             StandardToken::Label
+        );
+        // A readonly variable keeps the `@constant` colour a grammar gives
+        // an all-caps constant; a plain one stays a variable.
+        assert_eq!(
+            fallback(
+                SemanticTokenType::Variable,
+                SemanticTokenModifiers::READONLY
+            ),
+            StandardToken::Constant
+        );
+        assert_eq!(
+            fallback(SemanticTokenType::Variable, none),
+            StandardToken::Variable
         );
     }
 }
