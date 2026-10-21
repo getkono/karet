@@ -23,7 +23,42 @@ struct Root {
     /// Selector → a colour string, or a style object. Kept as raw values so
     /// one malformed entry is skipped rather than failing the whole theme.
     #[serde(default, rename = "semanticTokenColors")]
-    semantic_token_colors: serde_json::Map<String, serde_json::Value>,
+    semantic_token_colors: InFileOrder,
+}
+
+/// A JSON object's entries in the order the file wrote them.
+///
+/// The later of two equally specific `semanticTokenColors` rules wins, so the
+/// order is part of the theme. `serde_json::Map` keeps it only when some crate
+/// in the build turns on `serde_json/preserve_order`, and is sorted otherwise:
+/// reading the entries through a visitor keeps file order whatever features
+/// the build unified.
+#[derive(Default)]
+struct InFileOrder(Vec<(String, serde_json::Value)>);
+
+impl<'de> Deserialize<'de> for InFileOrder {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Entries;
+        impl<'de> serde::de::Visitor<'de> for Entries {
+            type Value = InFileOrder;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("an object of semantic token selectors")
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut entries = Vec::with_capacity(map.size_hint().unwrap_or(0));
+                while let Some(entry) = map.next_entry()? {
+                    entries.push(entry);
+                }
+                Ok(InFileOrder(entries))
+            }
+        }
+        deserializer.deserialize_map(Entries)
+    }
 }
 
 #[derive(Deserialize)]
@@ -168,6 +203,7 @@ pub(crate) fn load(json: &str) -> Result<Theme, ThemeError> {
     theme.semantic = crate::default::portable_semantic_rules();
     theme.semantic.extend(
         root.semantic_token_colors
+            .0
             .iter()
             .filter_map(|(selector, value)| SemanticRule::parse(selector, semantic_style(value)?)),
     );
@@ -562,6 +598,23 @@ mod tests {
         let function = TokenId::semantic(T::Function, M::STATIC);
         assert_eq!(t.color(function), Rgba::rgb(0, 0, 255));
         assert_eq!(t.emphasis(function), Emphasis::UNDERLINE);
+        Ok(())
+    }
+
+    /// Of two equally specific rules the one later in the file wins, whatever
+    /// order the selectors sort in. Falsified by reading the entries through
+    /// a sorted map (`*.readonly` would sort first and lose to `*.static`),
+    /// as `serde_json::Map` is without `preserve_order`.
+    #[test]
+    fn a_tie_goes_to_the_rule_later_in_the_file() -> Result<(), ThemeError> {
+        use karet_core::SemanticTokenModifiers as M;
+        use karet_core::SemanticTokenType as T;
+        use karet_core::TokenId;
+
+        let json = r##"{"semanticTokenColors": {"*.static": "#ff0000", "*.readonly": "#00ff00"}}"##;
+        let t = Theme::load_vscode(json)?;
+        let both = TokenId::semantic(T::Variable, M::READONLY | M::STATIC);
+        assert_eq!(t.color(both), Rgba::rgb(0, 255, 0));
         Ok(())
     }
 
