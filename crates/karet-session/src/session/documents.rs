@@ -780,7 +780,14 @@ impl Session {
         doc.lang_id = language_id_from_path(&path);
         doc.language = language_name_for_path(&path);
         doc.language_selector = language_selector_for_path(&path);
+        let old_lsp_language = doc.lsp_language_id;
         doc.lsp_language_id = lsp_language_id_for_path(&path);
+        // A new language is served by another server, or none: the old one's
+        // overlay does not describe it, and the version did not move, so
+        // `update_syntax` would keep it.
+        if doc.language_selector != old_language || doc.lsp_language_id != old_lsp_language {
+            doc.semantic_tokens = None;
+        }
         // The language may have changed with the extension; re-highlight from scratch.
         let spell_without_syntax =
             update_syntax(&self.config.settings, &self.highlight_tx, doc_id, doc, None);

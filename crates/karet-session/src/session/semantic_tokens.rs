@@ -199,4 +199,152 @@ mod tests {
             .collect();
         assert_eq!(bytes, [(4, 8), (11, 12), (14, 15)]);
     }
+
+    /// A session with `name` (holding `text`) open, and the document's id.
+    fn opened(
+        dir: &tempfile::TempDir,
+        name: &str,
+        text: &str,
+    ) -> Option<(Session, DocumentId, PathBuf)> {
+        let path = dir.path().join(name);
+        std::fs::write(&path, text).ok()?;
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
+        session.handle(
+            RequestId(1),
+            Command::OpenDocument {
+                path: path.clone(),
+                language: None,
+            },
+        );
+        let mut doc = None;
+        while let Some((_, event)) = events.try_recv() {
+            if let Event::Opened { doc: id, .. } = event {
+                doc = Some(id);
+            }
+        }
+        Some((session, doc?, path))
+    }
+
+    const MACRO: TokenId = TokenId::semantic(T::Macro, M::NONE);
+
+    /// Lay a one-token overlay over bytes `start..end` of `doc`, at its
+    /// current version, as an adopted answer would.
+    fn lay(session: &mut Session, doc: DocumentId, start: usize, end: usize) -> Option<()> {
+        let document = session.store.docs.get_mut(&doc)?;
+        document.semantic_tokens = Some(SemanticLayer {
+            server: SlotKey::new(crate::api::LanguageServerId::RustAnalyzer, "/"),
+            version: document.buffer.version(),
+            spans: Arc::new(Highlights::from_sorted_spans(vec![HighlightSpan {
+                span: Span {
+                    start: BytePos(start),
+                    end: BytePos(end),
+                },
+                token: MACRO,
+            }])),
+        });
+        Some(())
+    }
+
+    /// The overlay's spans on `doc`, or `None` when it has none.
+    fn laid(session: &Session, doc: DocumentId) -> Option<Vec<(usize, usize)>> {
+        let layer = session.store.docs.get(&doc)?.semantic_tokens.as_ref()?;
+        Some(
+            layer
+                .spans
+                .all()
+                .iter()
+                .map(|s| (s.span.start.0, s.span.end.0))
+                .collect(),
+        )
+    }
+
+    /// An edit before a token moves it with the text, and the snapshot
+    /// paints it at its new bytes until the server answers again. Falsified
+    /// by not translating the layer (it would stay at 3..5, over `xa`).
+    #[test]
+    fn an_edit_shifts_the_overlay_with_the_text() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let (mut session, doc, _) = opened(&dir, "shift.txt", "ab cd\n").ok_or("open failed")?;
+        lay(&mut session, doc, 3, 5).ok_or("no document")?;
+        let change = karet_core::Change::new(
+            0,
+            vec![karet_core::TextEdit {
+                range: karet_core::Range {
+                    start: LineCol::new(0, 0),
+                    end: LineCol::new(0, 0),
+                },
+                new_text: "xx".to_owned(),
+            }],
+        );
+        session.handle(
+            RequestId(2),
+            Command::ApplyChange {
+                doc,
+                change,
+                cause: EditCause::Replace,
+            },
+        );
+        assert_eq!(laid(&session, doc), Some(vec![(5, 7)]));
+        let document = session.store.docs.get(&doc).ok_or("no document")?;
+        let painted = document.display_highlights();
+        assert!(
+            painted
+                .all()
+                .iter()
+                .any(|s| s.token == MACRO && (s.span.start.0, s.span.end.0) == (5, 7))
+        );
+        Ok(())
+    }
+
+    /// A reload replaces the text with no edits to map the spans through, so
+    /// the overlay is dropped rather than painted over text it never
+    /// described. Falsified by keeping a layer whose version is stale.
+    #[test]
+    fn a_reload_drops_the_overlay() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let (mut session, doc, path) =
+            opened(&dir, "reload.txt", "ab cd\n").ok_or("open failed")?;
+        lay(&mut session, doc, 3, 5).ok_or("no document")?;
+        std::fs::write(&path, "something else entirely\n")?;
+        session.handle_fs_event(karet_watch::FsEvent {
+            kind: karet_watch::FsEventKind::Modified,
+            paths: vec![path],
+        });
+        let reloaded = session
+            .document(doc)
+            .is_some_and(|view| view.buffer().text() == "something else entirely\n");
+        assert!(reloaded, "the clean buffer did not reload");
+        assert_eq!(laid(&session, doc), None);
+        Ok(())
+    }
+
+    /// Renaming a file to another language drops the old server's overlay,
+    /// though the text and its version are unchanged; a rename within the
+    /// language keeps it for the same server to re-answer. Falsified by
+    /// leaving the layer to `update_syntax`, which keeps it at an unchanged
+    /// version.
+    #[test]
+    fn retargeting_to_another_language_drops_the_overlay() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let dir = tempfile::tempdir()?;
+        let (mut session, doc, _) = opened(&dir, "a.rs", "ab cd\n").ok_or("open failed")?;
+        lay(&mut session, doc, 3, 5).ok_or("no document")?;
+        session.handle(
+            RequestId(2),
+            Command::RetargetDocument {
+                doc,
+                path: dir.path().join("b.rs"),
+            },
+        );
+        assert_eq!(laid(&session, doc), Some(vec![(3, 5)]));
+        session.handle(
+            RequestId(3),
+            Command::RetargetDocument {
+                doc,
+                path: dir.path().join("b.txt"),
+            },
+        );
+        assert_eq!(laid(&session, doc), None);
+        Ok(())
+    }
 }
