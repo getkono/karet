@@ -16,7 +16,9 @@
 //!
 //! Each document's last answer is kept, so the next request can be a delta
 //! against it. A delta that does not fit (the server forgot the result, or
-//! its edits do not apply) is retried once as a whole-document request.
+//! its edits do not apply) is retried once as a whole-document request, and a
+//! request the server cancels (`ServerCancelled`) is asked again, a bounded
+//! number of times, as the advertised `serverCancelSupport` promises.
 //! `workspace/semanticTokens/refresh` forgets which versions were asked, so
 //! every open document is fetched again.
 
@@ -287,11 +289,12 @@ async fn fetch(
         .lock()
         .ok()
         .and_then(|previous| previous.get(&path).cloned());
-    let answer = match client.semantic_tokens(&path, last.as_ref()).await {
+    let answer = ask(&client, &path, last.as_ref()).await;
+    let answer = match answer {
         // The delta did not fit what is kept, or the server no longer knows
         // the result it was against: ask for the whole document once.
         Err(LspError::Protocol(_) | LspError::Server(_)) if last.is_some() => {
-            client.semantic_tokens(&path, None).await
+            ask(&client, &path, None).await
         },
         answer => answer,
     };
@@ -316,4 +319,39 @@ async fn fetch(
         version,
         tokens,
     });
+}
+
+/// How many times a request the server cancels is asked again before the
+/// document waits for its next version or a refresh.
+const CANCELLED_RETRIES: usize = 3;
+
+/// Ask for `path`'s tokens, asking again when the server cancels.
+///
+/// The client advertises `serverCancelSupport`, which promises the server
+/// that a request it cancels (`ServerCancelled`, `-32802`) is re-triggered;
+/// without this a cancelled first request would leave the document with no
+/// overlay until its next edit. Bounded, so a server that cancels every
+/// request cannot keep the fetch spinning.
+async fn ask(
+    client: &LspClient,
+    path: &Path,
+    last: Option<&SemanticTokens>,
+) -> Result<SemanticTokens, LspError> {
+    let mut answer = client.semantic_tokens(path, last).await;
+    for _ in 0..CANCELLED_RETRIES {
+        match &answer {
+            Err(error) if is_server_cancelled(error) => {
+                answer = client.semantic_tokens(path, last).await;
+            },
+            _ => break,
+        }
+    }
+    answer
+}
+
+/// Whether `error` is LSP's `ServerCancelled` (`-32802`): the server gave up
+/// on the request and expects the client to ask again. The code survives only
+/// in the message `karet-lsp` formats for a peer error.
+fn is_server_cancelled(error: &LspError) -> bool {
+    matches!(error, LspError::Server(message) if message.contains("code -32802"))
 }

@@ -183,6 +183,28 @@ async fn off_and_on_again_asks_for_the_tokens_again() -> TestResult {
     Ok(())
 }
 
+/// A first request the server cancels (`ServerCancelled`) is asked again,
+/// with no edit or refresh to prompt it, as `serverCancelSupport` promises.
+/// Falsified by giving up on a cancelled request that had no previous result
+/// to fall back from: no answer would ever arrive for the opened version.
+#[tokio::test]
+async fn a_request_the_server_cancels_is_asked_again() -> TestResult {
+    let path = crate::lsp::absolute_path(Path::new("/tmp/cancelled.rs"));
+    let (mut manager, mut updates) = LspManager::new(LspSettings::default(), None, None, None);
+    manager.set_connector(test_connector(
+        Behavior::CancelsSemanticTokensOnce,
+        None,
+        Arc::new(AtomicUsize::new(0)),
+    ));
+    let _ = manager.document_opened(Some("rust"), Some("rust"), &path, 1, || "ab!();\n".into());
+    let (own, version, tokens) = next_tokens(&mut updates)
+        .await
+        .ok_or("the cancelled request was never asked again")?;
+    assert_eq!((own, version), (path, 1));
+    assert_eq!(tokens, [token(2, TokenId::semantic(T::Macro, M::NONE))]);
+    Ok(())
+}
+
 /// `lsp.languages.<id>.semanticTokens` naming another provider takes the
 /// tokens away from the primary server.
 #[tokio::test]
