@@ -417,9 +417,12 @@ index does not hold means an external callee — a Cargo package is named as cod
 it, `karet_core` for `karet-core`; a method on a named value is exact when the only
 member of that name in the language is in the caller's package, and otherwise every
 candidate is ambiguous; a method on a call's result (`xs.iter().filter(…)`) is never
-exact, since its type is unknown; a free call means — in Kotlin and Swift only, where a
-bare name can reach one — a member of the caller's type, then its module, its file, its
-imports, a type of that name (a constructor), and its package. A free name found only in
+exact, since its type is unknown; a free call means, in Rust, Python and TypeScript, the
+caller's module, then its file, its imports, a type of that name (a constructor), and its
+package. Kotlin and Swift first check a member of the caller's type, since a bare name can
+reach one there, and then check the file before the module, since a module there spans
+files and a file-private helper beats its namesake elsewhere; the imports, constructor and
+package follow as before. A free name found only in
 another package is ambiguous, since nothing imported it. Candidates are always in the
 caller's language family, the ones the host build has win over gated-out twins, and a
 definition wins over its bare declaration.
