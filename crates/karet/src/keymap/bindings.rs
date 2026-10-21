@@ -70,6 +70,11 @@ pub(super) static BINDINGS: &[Binding] = &[
     seq(Global, chord(true, false, false, Char('k')), &[chord(false, false, false, Char('2'))], Command::SelectView(View::GitHub)),
     // #211: seq(Global, chord(true, false, false, Char('k')), &[chord(false, false, false, Char('3'))], Command::SelectView(View::Agents)),
     seq(Global, chord(true, false, false, Char('k')), &[chord(false, false, false, Char('o'))], Command::ToggleOutline),
+    // Screen-reclaiming modes for small terminals. `Ctrl+K Z` is VS Code's Zen
+    // Mode; its maximise chord, `Ctrl+K Ctrl+M`, is the editor's Show Diagnostic
+    // here, so the pane maximises on the plain-letter `Ctrl+K M`.
+    seq(Global, chord(true, false, false, Char('k')), &[chord(false, false, false, Char('z'))], Command::ToggleZenMode),
+    seq(Global, chord(true, false, false, Char('k')), &[chord(false, false, false, Char('m'))], Command::ToggleMaximizePane),
 
     // Tab navigation & reordering (global).
     b(Global, true,  false, false, Tab,       Command::NextTab),

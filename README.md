@@ -121,6 +121,7 @@ VS Code where VS Code has an answer.
 | `F8` / `Shift+F8` | Next / previous problem in the file |
 | `Ctrl+F` / `Ctrl+Shift+F` | Find in file / search the workspace |
 | `Ctrl+\` / `Ctrl+K Ctrl+\` | Split right / split down |
+| `Ctrl+K Z` / `Ctrl+K M` | Zen Mode (hide the sidebar, outline, view switcher, and status bar) / maximise the focused pane |
 | `Ctrl+Tab` / `Ctrl+W` | Next tab / close tab |
 | `Ctrl+K 1/2/3` | Switch top-level view |
 | `Ctrl+K S` / `Ctrl+K V` | Seam view / Markdown preview to the side |

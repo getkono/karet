@@ -262,3 +262,152 @@ fn the_sidebar_survives_a_round_trip_through_another_view() {
     assert!(app.sidebar_visible);
     assert!(app.sidebar_rect.width > 0);
 }
+
+#[test]
+fn zen_mode_gives_the_whole_screen_to_the_panes_and_restores_the_chrome() {
+    let mut app = app();
+    app.open_path(std::path::Path::new("Cargo.toml"));
+    app.outline.visible = true;
+    app.focus = Focus::Outline;
+    let _ = screen(&mut app, 100, 12);
+    let tiled = app.main_rect;
+
+    app.dispatch(Command::ToggleZenMode);
+    let rows = screen(&mut app, 100, 12);
+    assert_eq!(
+        app.main_rect,
+        Rect::new(0, 0, 100, 12),
+        "every row and column"
+    );
+    assert!(!app.sidebar_visible);
+    assert!(!app.outline.visible);
+    assert_eq!(app.outline.rect, Rect::default());
+    // Focus sat on the outline that vanished, so it moves where keys can land.
+    assert_eq!(app.focus, Focus::Editor);
+    assert!(
+        !rows[11].contains("EDITOR"),
+        "no status bar: {:?}",
+        rows[11]
+    );
+    // Nothing drawn, so nothing may keep claiming clicks.
+    assert_eq!(app.status_rect, Rect::default());
+    assert!(app.status_hits.is_empty());
+    assert_eq!(app.view_chrome_rect, Rect::default());
+    assert!(app.view_hits.is_empty());
+
+    app.dispatch(Command::ToggleZenMode);
+    let rows = screen(&mut app, 100, 12);
+    assert!(app.sidebar_visible);
+    assert!(app.outline.visible);
+    assert_eq!(app.main_rect, tiled);
+    assert!(rows[11].contains("EDITOR"), "{:?}", rows[11]);
+    assert_ne!(app.view_chrome_rect, Rect::default());
+}
+
+#[test]
+fn a_panel_opened_in_zen_mode_shows_and_stays_open_after_it() {
+    let mut app = app();
+    app.sidebar_visible = false;
+    app.dispatch(Command::ToggleZenMode);
+    // Opening a panel must not strand focus on a sidebar that is not drawn.
+    app.dispatch(Command::SelectPanel(SidebarPanel::Search));
+    let _ = screen(&mut app, 100, 12);
+    assert!(app.sidebar_rect.width > 0);
+    assert_eq!(app.status_rect, Rect::default(), "still in Zen Mode");
+
+    app.dispatch(Command::ToggleZenMode);
+    assert!(app.sidebar_visible, "what was opened meanwhile stays");
+    assert!(!app.outline.visible, "the outline was never shown");
+}
+
+#[test]
+fn maximise_draws_only_the_focused_pane_until_toggled_back() {
+    let mut app = app();
+    app.open_path(std::path::Path::new("Cargo.toml"));
+    let _ = screen(&mut app, 100, 12);
+    app.dispatch(Command::SplitRight);
+    let _ = screen(&mut app, 100, 12);
+    assert_eq!(app.pane_frames.len(), 2);
+    assert!(!app.pane_dividers.is_empty());
+    let focused = app.focus_pane();
+
+    app.dispatch(Command::ToggleMaximizePane);
+    let _ = screen(&mut app, 100, 12);
+    assert_eq!(app.pane_frames.len(), 1);
+    assert_eq!(app.pane_frames[0].pane, focused);
+    assert_eq!(app.pane_frames[0].tabstrip_rect.x, app.main_rect.x);
+    assert_eq!(
+        app.pane_frames[0].tabstrip_rect.width, app.main_rect.width,
+        "the pane spans the whole content area"
+    );
+    assert!(app.pane_dividers.is_empty(), "no divider to drag");
+    // The other pane is hidden, not closed.
+    assert_eq!(app.layout.pane_count(), 2);
+
+    app.dispatch(Command::ToggleMaximizePane);
+    let _ = screen(&mut app, 100, 12);
+    assert_eq!(app.pane_frames.len(), 2);
+    assert!(!app.pane_dividers.is_empty());
+}
+
+#[test]
+fn focusing_another_pane_tiles_a_maximised_layout_again() {
+    let mut app = app();
+    app.open_path(std::path::Path::new("Cargo.toml"));
+    let _ = screen(&mut app, 100, 12);
+    app.dispatch(Command::SplitRight);
+    app.dispatch(Command::ToggleMaximizePane);
+    let _ = screen(&mut app, 100, 12);
+    assert_eq!(app.pane_frames.len(), 1);
+
+    app.dispatch(Command::FocusNextPane);
+    let _ = screen(&mut app, 100, 12);
+    assert_eq!(app.pane_frames.len(), 2);
+    // Returning focus does not maximise it again: the mode ended.
+    app.dispatch(Command::FocusNextPane);
+    let _ = screen(&mut app, 100, 12);
+    assert_eq!(app.pane_frames.len(), 2);
+    assert_eq!(app.maximized_pane(), None);
+}
+
+#[test]
+fn keyboard_resize_leaves_the_hidden_layout_alone_while_maximised() {
+    let mut app = app();
+    app.open_path(std::path::Path::new("Cargo.toml"));
+    let _ = screen(&mut app, 100, 12);
+    app.dispatch(Command::SplitRight);
+    let _ = screen(&mut app, 100, 12);
+    let widths = |app: &App| {
+        app.pane_frames
+            .iter()
+            .map(|frame| (frame.pane, frame.tabstrip_rect.width))
+            .collect::<Vec<_>>()
+    };
+    let tiled = widths(&app);
+
+    app.dispatch(Command::ToggleMaximizePane);
+    app.dispatch(Command::ResizePaneLeft);
+    app.dispatch(Command::ResizePaneUp);
+    app.dispatch(Command::ResizePaneRight);
+    app.dispatch(Command::ResizePaneRight);
+    assert!(
+        app.maximized_pane().is_some(),
+        "resizing keeps the maximise"
+    );
+
+    app.dispatch(Command::ToggleMaximizePane);
+    let _ = screen(&mut app, 100, 12);
+    assert_eq!(widths(&app), tiled, "the split ratios are unchanged");
+
+    // Tiled again, the same command does resize.
+    app.dispatch(Command::ResizePaneLeft);
+    let _ = screen(&mut app, 100, 12);
+    assert_ne!(widths(&app), tiled);
+}
+
+#[test]
+fn a_lone_pane_has_nothing_to_maximise() {
+    let mut app = app();
+    app.dispatch(Command::ToggleMaximizePane);
+    assert_eq!(app.modes.maximized, None);
+}
