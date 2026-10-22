@@ -103,6 +103,26 @@ pub struct Owner {
     /// for Widget` reads as `impl Display` under `Widget`, and as `impl for Widget` under
     /// `Display`. Naming is therefore per candidate rather than per construct.
     pub rename: Option<(String, String)>,
+    /// What the construct becomes when this candidate resolves to a module rather than a
+    /// type, or `None` to stay what it is.
+    ///
+    /// C++ writes `void ns::f() {}` and `void Widget::f() {}` alike, and only the owner
+    /// that resolves says which was meant: a member whose access its class declared, or
+    /// a free function with linkage of its own.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub in_module: Option<ModuleForm>,
+}
+
+/// What a construct nested under a module is, in place of what it was extracted as.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ModuleForm {
+    /// The kind it takes on.
+    pub kind: NodeKind,
+    /// The visibility it takes on.
+    pub visibility: Option<Visibility>,
+    /// The facets it takes on, replacing the ones it was extracted with.
+    pub facets: Vec<Facet>,
 }
 
 impl Owner {
@@ -113,6 +133,7 @@ impl Owner {
             name: name.into(),
             dissolve: false,
             rename: None,
+            in_module: None,
         }
     }
 
@@ -123,7 +144,15 @@ impl Owner {
             name: name.into(),
             dissolve: true,
             rename: None,
+            in_module: None,
         }
+    }
+
+    /// Become `form` if this candidate resolves to a module.
+    #[must_use]
+    pub fn in_module(mut self, form: ModuleForm) -> Self {
+        self.in_module = Some(form);
+        self
     }
 
     /// Rename the construct to `name`, addressed by `segment`, if this candidate wins.
@@ -496,6 +525,7 @@ mod tests {
                 name: "Widget".to_owned(),
                 dissolve: false,
                 rename: None,
+                in_module: None,
             }
         );
         let dissolved = Owner::dissolved("Widget");

@@ -20,6 +20,7 @@ use karet_treesitter::language_id_from_injection_name;
 
 use super::Classified;
 use super::FacetContext;
+use super::ModuleForm;
 use super::Owner;
 use super::SeamLanguage;
 use crate::edge::EdgeKind;
@@ -139,9 +140,15 @@ impl SeamLanguage for CFamily {
         if node.kind() != "function_definition" {
             return Vec::new();
         }
+        // Under a namespace it is a free function, with the linkage a namespace gives.
+        let free = ModuleForm {
+            kind: NodeKind::Function,
+            visibility: Some(Visibility::Public),
+            facets: vec![Facet::new(Lens::Api, EXTERN)],
+        };
         declared_name(node, ctx)
             .and_then(|(_, owner)| owner)
-            .map(|owner| vec![Owner::nested(owner)])
+            .map(|owner| vec![Owner::nested(owner).in_module(free)])
             .unwrap_or_default()
     }
 
@@ -183,6 +190,8 @@ fn classify_node(node: &WalkNode<'_>, ctx: &FacetContext<'_>) -> Option<Classifi
             if owner.is_some() {
                 // Defined outside its class: the access was declared in the class, which
                 // this definition does not repeat, so it claims none rather than a guess.
+                // An owner that resolves to a namespace makes it a free function instead
+                // (see `ownership`); one that resolves to nothing leaves it as this.
                 let mut out = classified(node, ctx, NodeKind::Member, name);
                 out.visibility = None;
                 return Some(out);

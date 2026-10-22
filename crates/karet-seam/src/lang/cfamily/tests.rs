@@ -385,6 +385,33 @@ fn only_a_function_carries_linkage_outside_a_class() -> TestResult {
 }
 
 #[test]
+fn a_qualified_definition_in_a_namespace_is_a_free_function() -> TestResult {
+    let Some(index) = index(&[
+        CMAKE,
+        (
+            "lib/geo.hpp",
+            "namespace geo {\nint scale(int x);\nclass Box { public: int area(); };\n}\n",
+        ),
+        (
+            "lib/geo.cpp",
+            "#include \"geo.hpp\"\nint geo::scale(int x) { return x * 2; }\nint geo::Box::area() { return geo::scale(2); }\n",
+        ),
+    ])?
+    else {
+        return Ok(());
+    };
+    let scale = node(&index, "lib::geo.hpp::geo::scale#2")?;
+    assert_eq!(scale.kind, NodeKind::Function);
+    assert_eq!(scale.visibility, Some(Visibility::Public));
+    assert_eq!(api(&index, "lib::geo.hpp::geo::scale#2")?, ["extern"]);
+    // Owned by a class, the same shape stays a member that claims no access.
+    let area = node(&index, "lib::geo.hpp::geo::Box::area#2")?;
+    assert_eq!(area.kind, NodeKind::Member);
+    assert_eq!(area.visibility, None);
+    Ok(())
+}
+
+#[test]
 fn a_struct_template_keeps_struct_access_whatever_its_parameters_say() -> TestResult {
     let Some(index) = index(&[
         CMAKE,

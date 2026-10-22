@@ -195,7 +195,9 @@ pane, its rollup is `null` in `--seam-query`, and the node lists it under
 C or C++ file is a module named by its whole file name — `widget.h` and `widget.c` are
 two modules, since a header and its source share a stem. A C++ method defined outside its
 class (`void Widget::draw() {…}`) is regrouped under the class beside its declaration, as
-a Rust `impl` is, and claims no access of its own.
+a Rust `impl` is, and claims no access of its own. The same shape with a namespace as its
+owner (`int geo::scale() {…}`) is regrouped under that namespace as a free function with
+`extern` linkage.
 
 One known limit: a `.h` file is always read with the C grammar, as its extension says. A
 C++ class declared in a `.h` therefore parses as damaged C (its nodes are marked
