@@ -329,6 +329,62 @@ fn a_cpp_method_defined_outside_its_class_is_regrouped_and_reached() -> TestResu
 }
 
 #[test]
+fn a_function_in_an_anonymous_namespace_has_internal_linkage() -> TestResult {
+    let Some(index) = index(&[
+        CMAKE,
+        (
+            "lib/a.cpp",
+            "namespace {\nint hidden() { return 1; }\nnamespace detail {\nint deeper() { return 2; }\n}\n}\nnamespace ui {\nint shown() { return hidden(); }\n}\n",
+        ),
+    ])?
+    else {
+        return Ok(());
+    };
+    let hidden = node(&index, "lib::a.cpp::{anonymous}::hidden")?;
+    assert_eq!(hidden.visibility, Some(Visibility::Private));
+    assert_eq!(api(&index, "lib::a.cpp::{anonymous}::hidden")?, ["static"]);
+    // However deep, the anonymous namespace around it decides.
+    assert_eq!(
+        api(&index, "lib::a.cpp::{anonymous}::detail::deeper")?,
+        ["static"]
+    );
+    assert_eq!(api(&index, "lib::a.cpp::ui::shown")?, ["extern"]);
+    assert_eq!(
+        node(&index, "lib::a.cpp::ui::shown")?.visibility,
+        Some(Visibility::Public)
+    );
+    Ok(())
+}
+
+#[test]
+fn only_a_function_carries_linkage_outside_a_class() -> TestResult {
+    let Some(index) = index(&[
+        CMAKE,
+        (
+            "lib/shape.hpp",
+            "namespace geo {\nstruct Size { int w; };\nclass Box { public: int area(); };\nenum Unit { Px };\ntypedef int length;\nint measure(Size s);\n}\n",
+        ),
+    ])?
+    else {
+        return Ok(());
+    };
+    for path in [
+        "lib::shape.hpp::geo",
+        "lib::shape.hpp::geo::Size",
+        "lib::shape.hpp::geo::Box",
+        "lib::shape.hpp::geo::Unit",
+        "lib::shape.hpp::geo::length",
+    ] {
+        assert!(api(&index, path)?.is_empty(), "{path}");
+    }
+    assert_eq!(api(&index, "lib::shape.hpp::geo::measure")?, ["extern"]);
+    // Inside a class, access still applies to what it holds.
+    assert_eq!(api(&index, "lib::shape.hpp::geo::Size::w")?, ["public"]);
+    assert_eq!(api(&index, "lib::shape.hpp::geo::Box::area")?, ["public"]);
+    Ok(())
+}
+
+#[test]
 fn a_struct_template_keeps_struct_access_whatever_its_parameters_say() -> TestResult {
     let Some(index) = index(&[
         CMAKE,

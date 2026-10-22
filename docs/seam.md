@@ -186,7 +186,7 @@ C, C++ and Java are mapped for **containment and the `api` lens only**:
 
 | Lens | C / C++ | Java |
 |---|---|---|
-| `api` | `static` and `extern` linkage; C++ `public:`/`protected:`/`private:` sections | `public`, `protected`, `private`, package-private |
+| `api` | `static` and `extern` linkage of functions (inside an anonymous namespace, `static`); C++ `public:`/`protected:`/`private:` sections | `public`, `protected`, `private`, package-private |
 | `substitution` · `variation` · `boundary` · `hazard` | `?` — not read | `?` — not read |
 
 A lens a language does not read shows `?` and "not read for this language" in the facet

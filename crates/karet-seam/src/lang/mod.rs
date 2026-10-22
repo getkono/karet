@@ -147,6 +147,11 @@ pub struct FacetContext<'a> {
     /// This is what separates a method in a trait (a substitutable default) from the
     /// same syntax in an inherent implementation (not one).
     pub container: Option<NodeKind>,
+    /// The names of the modules written in this file around this node, outermost first.
+    ///
+    /// Not only the nearest container: a C++ function two namespaces inside an anonymous
+    /// one still has internal linkage.
+    pub modules: &'a [String],
     /// Type parameter names in scope on the enclosing declaration.
     ///
     /// A blanket implementation is one whose self type *is* one of these, and that is
@@ -474,6 +479,7 @@ mod tests {
             lines: &lines,
             attributes: &attributes,
             container: None,
+            modules: &[],
             type_parameters: &[],
         };
         assert_eq!(ctx.attribute("cfg").map(Attribute::args), Some("unix"));
