@@ -63,7 +63,8 @@ pub struct Uncertain {
 pub struct PrecisionLedger {
     /// Per language, in name order.
     pub languages: Vec<LanguageLedger>,
-    /// The functions with the most uncertain sites, most first.
+    /// The functions with the most uncertain sites, most first, then by path; at most
+    /// [`ReportOptions::least_certain_n`](super::ReportOptions::least_certain_n) of them.
     pub least_certain: Vec<Uncertain>,
     /// Calls made outside any function — at module level, in initializers — which no
     /// function's numbers include. Counted over the whole index, whatever the scope.
@@ -82,7 +83,11 @@ enum Outcome {
 }
 
 /// The ledger over the functions in scope.
-pub(super) fn account(index: &SeamIndex, measured: &[&FunctionMetrics]) -> PrecisionLedger {
+pub(super) fn account(
+    index: &SeamIndex,
+    measured: &[&FunctionMetrics],
+    least_certain_n: usize,
+) -> PrecisionLedger {
     let mut languages: BTreeMap<String, LanguageLedger> = BTreeMap::new();
     let mut least_certain = Vec::new();
     for function in measured {
@@ -137,7 +142,7 @@ pub(super) fn account(index: &SeamIndex, measured: &[&FunctionMetrics]) -> Preci
             .cmp(&(a.ambiguous + a.unresolved))
             .then_with(|| a.path.cmp(&b.path))
     });
-    least_certain.truncate(50);
+    least_certain.truncate(least_certain_n);
     PrecisionLedger {
         languages: languages.into_values().collect(),
         least_certain,

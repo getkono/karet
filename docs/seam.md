@@ -434,7 +434,11 @@ actionable; the cut-offs are a percentile of the whole index (95th by default) w
 floors — fan-in 5, 50 own lines, 200 reached lines at twice the function's size — so a
 small codebase's ordinary functions are not called hotspots. Cycles, hubs, heavy entry
 points and large leaves show the top 20 each; the unreachable and test-only lists are
-complete, since a partial list of dead code is the less useful kind.
+complete, since a partial list of dead code is the less useful kind. The precision
+ledger's least-certain list shows the 50 functions with the most ambiguous and
+unresolved sites (`ReportOptions::least_certain_n`), ties broken by path. When the
+configuration builds tests, test-gated functions (`cfg(test)`, or a test path outside
+Rust) are entry points a test runner calls, so they are never listed as unreachable.
 
 `--seam-call-tree` prints one function's tree: own and inclusive lines per row, call-site
 counts, and each function expanded once with later appearances marked. Both take

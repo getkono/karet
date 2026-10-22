@@ -226,7 +226,78 @@ fn including_tests_is_said_in_the_configuration_and_empties_test_only() -> TestR
         report.configuration
     );
     assert!(report.hotspots.test_only.is_empty());
-    assert!(!names(&report.hotspots.unreachable).contains(&"k::only_tested"));
+    // A test function has no caller in code — its runner calls it — so it is not dead.
+    assert_eq!(names(&report.hotspots.unreachable), ["k::dead", "k::spin"]);
+    assert!(
+        report
+            .functions
+            .iter()
+            .any(|row| row.path == "k::tests::check"),
+        "tests are measured under a test configuration"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_least_certain_list_ranks_by_uncertain_sites_then_path_and_is_capped() -> TestResult {
+    if crate::lang::rust::language_id().is_none() {
+        return Ok(());
+    }
+    // `parse` has two candidates (ambiguous) and `nowhere` none (unresolved).
+    let lib = "\
+mod a { pub fn parse() -> u32 { 1 } }
+mod b { pub fn parse() -> u32 { 2 } }
+pub fn both() -> u32 { parse() + nowhere() }
+pub fn guess() -> u32 { parse() }
+pub fn lost() -> u32 { nowhere() }
+pub fn sure() -> u32 { a::parse() }
+";
+    let dir = tempfile::tempdir()?;
+    std::fs::write(
+        dir.path().join("Cargo.toml"),
+        "[package]\nname = \"k\"\nversion = \"0.1.0\"\n",
+    )?;
+    std::fs::create_dir_all(dir.path().join("src"))?;
+    std::fs::write(dir.path().join("src/lib.rs"), lib)?;
+    let index = crate::package::index_workspace(dir.path(), IndexOptions::default())?;
+
+    let whole = report(&index, &GraphOptions::default(), &[], &small());
+    let listed: Vec<(&str, usize, usize, usize)> = whole
+        .ledger
+        .least_certain
+        .iter()
+        .map(|u| (u.path.as_str(), u.sites, u.ambiguous, u.unresolved))
+        .collect();
+    // Most uncertain sites first, ties by path; a function with none is not listed.
+    assert_eq!(
+        listed,
+        [
+            ("k::both", 2, 1, 1),
+            ("k::guess", 1, 1, 0),
+            ("k::lost", 1, 0, 1)
+        ]
+    );
+    let rust = whole.ledger.languages.first().ok_or("no language")?;
+    assert_eq!((rust.ambiguous, rust.unresolved), (2, 2), "{rust:?}");
+    assert!(whole.markdown().contains("(at most 50)"));
+
+    let capped = report(
+        &index,
+        &GraphOptions::default(),
+        &[],
+        &ReportOptions {
+            least_certain_n: 2,
+            ..ReportOptions::default()
+        },
+    );
+    let kept: Vec<&str> = capped
+        .ledger
+        .least_certain
+        .iter()
+        .map(|u| u.path.as_str())
+        .collect();
+    assert_eq!(kept, ["k::both", "k::guess"]);
+    assert_eq!(capped.thresholds.least_certain_n, 2);
     Ok(())
 }
 

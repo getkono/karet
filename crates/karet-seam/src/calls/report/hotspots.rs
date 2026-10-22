@@ -81,6 +81,7 @@ pub(super) fn find(
     context: &Context<'_>,
     measured: &[&FunctionMetrics],
     testing: &CallGraph,
+    test_gated: &HashSet<SeamId>,
 ) -> Hotspots {
     let top = context.options.top_n;
     let thresholds = context.thresholds;
@@ -124,8 +125,10 @@ pub(super) fn find(
             .node(m.id)
             .is_some_and(|node| ENTRY_NAMES.contains(&node.name.as_str()));
         let hidden = visibility(context, m.id).is_some_and(|v| v < Visibility::Public);
+        // A test is called by its runner, not by code, so silence proves nothing there.
         if named_entry
             || !hidden
+            || test_gated.contains(&m.id)
             || through_contract(context, &contracts, m.id)
             || called(context.graph, m.id)
         {

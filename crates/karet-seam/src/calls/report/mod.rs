@@ -41,6 +41,7 @@ use super::graph::FunctionMetrics;
 use super::graph::GraphOptions;
 use crate::id::SeamId;
 use crate::index::SeamIndex;
+use crate::model::ConfigMembership;
 use crate::model::NodeKind;
 
 /// How much a report shows, and where its cut-offs fall.
@@ -54,6 +55,8 @@ pub struct ReportOptions {
     pub excerpt_depth: usize,
     /// Callees shown per level of an excerpt.
     pub excerpt_width: usize,
+    /// At most this many entries in the precision ledger's least-certain list.
+    pub least_certain_n: usize,
 }
 
 impl Default for ReportOptions {
@@ -63,6 +66,7 @@ impl Default for ReportOptions {
             percentile: 0.95,
             excerpt_depth: 3,
             excerpt_width: 8,
+            least_certain_n: 50,
         }
     }
 }
@@ -73,6 +77,8 @@ impl Default for ReportOptions {
 pub struct Thresholds {
     /// At most this many entries per hotspot list.
     pub top_n: usize,
+    /// At most this many entries in the precision ledger's least-certain list.
+    pub least_certain_n: usize,
     /// The percentile used, as a fraction.
     pub percentile: f64,
     /// Fan-in at or above which a function is a hub.
@@ -246,6 +252,22 @@ pub fn report(
         );
         &built_with_tests
     };
+    // When tests are built, test code is in the graph, and a test function is called by
+    // the test runner rather than by code: a function gated out without tests is an entry
+    // point, never "unreachable". Without tests no such function is measured at all.
+    let test_gated: HashSet<SeamId> = if tests_included {
+        let mut production = configuration.clone();
+        production.env.flags.remove("test");
+        let membership = crate::config::evaluate(index, &production);
+        graph
+            .all()
+            .iter()
+            .map(|m| m.id)
+            .filter(|id| membership.get(id) == Some(&ConfigMembership::Inactive))
+            .collect()
+    } else {
+        HashSet::new()
+    };
 
     CallReport {
         configuration: if tests_included {
@@ -254,9 +276,9 @@ pub fn report(
             configuration.name.clone()
         },
         summary: summary(index, &measured),
-        hotspots: hotspots::find(&context, &measured, testing),
+        hotspots: hotspots::find(&context, &measured, testing, &test_gated),
         coupling: coupling::measure(index, &graph, &measured),
-        ledger: ledger::account(index, &measured),
+        ledger: ledger::account(index, &measured, options.least_certain_n),
         functions: measured.iter().map(|m| row(index, m)).collect(),
         thresholds,
     }
@@ -370,6 +392,7 @@ fn thresholds(measured: &[&FunctionMetrics], options: &ReportOptions) -> Thresho
     );
     Thresholds {
         top_n: options.top_n,
+        least_certain_n: options.least_certain_n,
         percentile: p,
         hub_fan_in: (fan_in.ceil() as u32).max(5),
         heavy_ratio: ratio.max(2.0),

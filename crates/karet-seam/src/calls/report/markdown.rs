@@ -57,13 +57,15 @@ impl CallReport {
              thresholds used: hubs have fan-in ≥ {}, heavy entry points reach ≥ {} lines at ≥ \
              {:.1}× their own size, large leaves have ≥ {} own lines (percentile {:.0}%, never \
              below those floors). Cycles, hubs, heavy entry points and large leaves show at \
-             most {} each; the unreachable and test-only lists are complete.\n",
+             most {} each; the unreachable and test-only lists are complete. The precision \
+             ledger's least-certain list shows at most {}.\n",
             t.hub_fan_in,
             t.heavy_inclusive,
             t.heavy_ratio,
             t.large_leaf_lines,
             t.percentile * 100.0,
-            t.top_n
+            t.top_n,
+            t.least_certain_n
         );
     }
 
@@ -200,10 +202,11 @@ impl CallReport {
             out,
             "## Precision ledger\n\n\
              Call sites by how they resolved. Only exact and dispatch sites are in the lower \
-             bound; ambiguous ones are in the upper; too-ambiguous (more than 16 candidates), \
+             bound; ambiguous ones are in the upper; too-ambiguous (more than {} candidates), \
              external and unresolved ones are in neither.\n\n\
              | language | functions | sites | exact | dispatch | ambiguous | too ambiguous | external | unresolved | tests told apart by |\n\
-             |---|---:|---:|---:|---:|---:|---:|---:|---:|---|"
+             |---|---:|---:|---:|---:|---:|---:|---:|---:|---|",
+            crate::calls::resolve::MAX_CANDIDATES
         );
         for g in &l.languages {
             let _ = writeln!(
@@ -230,7 +233,8 @@ impl CallReport {
         if !l.least_certain.is_empty() {
             let _ = writeln!(
                 out,
-                "Functions whose numbers rest most on guesswork:\n\n| function | sites | ambiguous | unresolved |\n|---|---:|---:|---:|"
+                "Functions whose numbers rest most on guesswork (at most {}):\n\n| function | sites | ambiguous | unresolved |\n|---|---:|---:|---:|",
+                self.thresholds.least_certain_n
             );
             for u in &l.least_certain {
                 let _ = writeln!(
