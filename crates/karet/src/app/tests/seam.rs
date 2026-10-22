@@ -790,6 +790,53 @@ fn enter_on_a_call_follows_it_and_an_external_one_is_refused() {
     let Some(state) = app.active_seam() else {
         panic!("no seam view");
     };
-    // An external callee has nothing in this tree to reroot on.
+    // An external callee has nothing in this tree to reroot on, and the refusal says why.
     assert_eq!(state.as_query(), before);
+    assert!(
+        app.notifications
+            .active()
+            .iter()
+            .any(|note| note.title == "seam: calls points outside this package"),
+        "{:?}",
+        app.notifications
+            .active()
+            .iter()
+            .map(|note| &note.title)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn enter_on_an_unresolved_call_is_refused_as_unresolved() {
+    let (_backend, mut app) = calling_app();
+    let Some(state) = app.active_seam() else {
+        panic!("no seam view");
+    };
+    if let Some(edge) = state.edges.get_mut(1) {
+        edge.state = "unresolved".to_owned();
+        edge.resolution = Some("unresolved".to_owned());
+    }
+    state.facet_row = 1;
+    let before = state.as_query();
+    app.pivot_seam_edge();
+    let Some(state) = app.active_seam() else {
+        panic!("no seam view");
+    };
+    // Not "outside this package": the callee may well be here, the resolver just could
+    // not tell which node it is.
+    assert_eq!(state.as_query(), before);
+    let titles: Vec<&str> = app
+        .notifications
+        .active()
+        .iter()
+        .map(|note| note.title.as_str())
+        .collect();
+    assert!(
+        titles.contains(&"seam: this calls edge was not resolved to a node"),
+        "{titles:?}"
+    );
+    assert!(
+        !titles.iter().any(|title| title.contains("outside")),
+        "{titles:?}"
+    );
 }
