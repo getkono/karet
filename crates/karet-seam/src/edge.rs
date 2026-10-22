@@ -35,6 +35,12 @@ pub enum EdgeKind {
     GatedBy,
     /// A macro invocation and what it expands into.
     ExpandsTo,
+    /// A function calls another, at a site in its body.
+    ///
+    /// Carries a [`Resolution`] saying how sure the structural tier is of the callee,
+    /// because a call resolved by name is a different kind of fact from one resolved by
+    /// type, and a reader summing call trees needs to know which numbers are bounds.
+    Calls,
 }
 
 impl EdgeKind {
@@ -48,6 +54,7 @@ impl EdgeKind {
             Self::ReExports => "re-exports",
             Self::GatedBy => "gated-by",
             Self::ExpandsTo => "expands-to",
+            Self::Calls => "calls",
         }
     }
 
@@ -61,6 +68,7 @@ impl EdgeKind {
             Self::ReExports,
             Self::GatedBy,
             Self::ExpandsTo,
+            Self::Calls,
         ]
     }
 
@@ -68,6 +76,75 @@ impl EdgeKind {
     #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
         Self::all().iter().copied().find(|kind| kind.name() == name)
+    }
+}
+
+/// How a [`EdgeKind::Calls`] edge was resolved, and so which bound it counts towards.
+///
+/// The structural tier resolves calls by *name*, which is sometimes certain and often
+/// not. Rather than guess, every call edge says how it was reached, and the call graph
+/// reads two bounds off that: the **lower** bound takes only what is established, the
+/// **upper** bound everything that might be. The gap between them is the honest measure
+/// of how much a number is guesswork.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "kebab-case"))]
+#[non_exhaustive]
+pub enum Resolution {
+    /// Exactly one candidate survived every scope rule.
+    Exact,
+    /// A call through a contract, pointing at the declaration (and its default body).
+    Dispatch,
+    /// One implementation a [`Self::Dispatch`] call may reach at run time.
+    DispatchImpl,
+    /// One of several equally plausible candidates for the same site.
+    Ambiguous,
+    /// Something outside the indexed code: a standard library, a dependency, a builtin.
+    External,
+    /// Nothing plausible was found, or the callee is computed rather than named.
+    Unresolved,
+}
+
+impl Resolution {
+    /// The stable name, for serialized output and the facet pane.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Exact => "exact",
+            Self::Dispatch => "dispatch",
+            Self::DispatchImpl => "dispatch-impl",
+            Self::Ambiguous => "ambiguous",
+            Self::External => "external",
+            Self::Unresolved => "unresolved",
+        }
+    }
+
+    /// Every resolution, in display order.
+    #[must_use]
+    pub fn all() -> &'static [Self] {
+        &[
+            Self::Exact,
+            Self::Dispatch,
+            Self::DispatchImpl,
+            Self::Ambiguous,
+            Self::External,
+            Self::Unresolved,
+        ]
+    }
+
+    /// Whether an edge resolved this way counts towards the lower bound.
+    #[must_use]
+    pub fn in_lower(self) -> bool {
+        matches!(self, Self::Exact | Self::Dispatch)
+    }
+
+    /// Whether an edge resolved this way counts towards the upper bound.
+    #[must_use]
+    pub fn in_upper(self) -> bool {
+        matches!(
+            self,
+            Self::Exact | Self::Dispatch | Self::DispatchImpl | Self::Ambiguous
+        )
     }
 }
 
@@ -140,6 +217,14 @@ pub struct Edge {
     pub to: Endpoint,
     /// Where in `from`'s source the relation is written, when it is a specific site.
     pub site: Option<Range>,
+    /// How the target was resolved, for the kinds that resolve by name.
+    ///
+    /// Set on every [`EdgeKind::Calls`] edge and on nothing else.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub resolution: Option<Resolution>,
 }
 
 /// Edges indexed for lookup from either end.
@@ -229,6 +314,25 @@ impl EdgeStore {
         self.reindex();
     }
 
+    /// Drop every edge of one kind.
+    ///
+    /// Call edges are derived across the whole index, so relinking replaces them all
+    /// rather than patching: a removed function can strand calls from any file.
+    pub fn remove_kind(&mut self, kind: EdgeKind) {
+        let before = self.edges.len();
+        self.edges.retain(|edge| edge.kind != kind);
+        if self.edges.len() != before {
+            self.reindex();
+        }
+    }
+
+    /// Record many edges at once, indexing each from both ends.
+    pub fn insert_all(&mut self, edges: impl IntoIterator<Item = Edge>) {
+        for edge in edges {
+            self.insert(edge);
+        }
+    }
+
     /// Point every endpoint at wherever its node moved to.
     ///
     /// Regrouping changes ids, and an edge left naming the old one would point at a node
@@ -286,6 +390,7 @@ mod tests {
             from: SeamId(from),
             to,
             site: None,
+            resolution: None,
         }
     }
 
@@ -294,7 +399,60 @@ mod tests {
         for kind in EdgeKind::all() {
             assert_eq!(EdgeKind::from_name(kind.name()), Some(*kind));
         }
-        assert_eq!(EdgeKind::from_name("calls"), None);
+        assert_eq!(EdgeKind::from_name("calls"), Some(EdgeKind::Calls));
+        assert_eq!(EdgeKind::from_name("called-by"), None);
+    }
+
+    #[test]
+    fn the_lower_bound_takes_only_what_is_established() {
+        let lower: Vec<Resolution> = Resolution::all()
+            .iter()
+            .copied()
+            .filter(|resolution| resolution.in_lower())
+            .collect();
+        assert_eq!(lower, [Resolution::Exact, Resolution::Dispatch]);
+        let upper: Vec<Resolution> = Resolution::all()
+            .iter()
+            .copied()
+            .filter(|resolution| resolution.in_upper())
+            .collect();
+        assert_eq!(
+            upper,
+            [
+                Resolution::Exact,
+                Resolution::Dispatch,
+                Resolution::DispatchImpl,
+                Resolution::Ambiguous
+            ]
+        );
+        // Neither bound counts what was never found: it has no lines to add.
+        for outside in [Resolution::External, Resolution::Unresolved] {
+            assert!(!outside.in_lower() && !outside.in_upper());
+        }
+        let mut names: Vec<&str> = Resolution::all().iter().map(|r| r.name()).collect();
+        names.dedup();
+        assert_eq!(names.len(), Resolution::all().len());
+    }
+
+    #[test]
+    fn removing_a_kind_keeps_every_other_edge_findable() {
+        let mut store = EdgeStore::new();
+        store.insert(edge(EdgeKind::Calls, 1, Endpoint::Resolved(SeamId(2))));
+        store.insert(edge(EdgeKind::Implements, 1, Endpoint::Resolved(SeamId(9))));
+        store.insert_all([
+            edge(EdgeKind::Calls, 3, Endpoint::Resolved(SeamId(9))),
+            edge(EdgeKind::ReExports, 3, Endpoint::Resolved(SeamId(8))),
+        ]);
+
+        store.remove_kind(EdgeKind::Calls);
+
+        assert_eq!(store.len(), 2);
+        assert_eq!(store.from_of_kind(SeamId(1), EdgeKind::Calls).count(), 0);
+        assert_eq!(store.to(SeamId(2)).count(), 0);
+        // Positions shifted; a stale side index would hand back the wrong edge.
+        assert_eq!(store.to_of_kind(SeamId(9), EdgeKind::Implements).count(), 1);
+        assert_eq!(store.to(SeamId(9)).count(), 1);
+        assert_eq!(store.from(SeamId(3)).count(), 1);
     }
 
     #[test]

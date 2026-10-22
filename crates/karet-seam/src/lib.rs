@@ -36,7 +36,16 @@
 //! invalid buffer. The **semantic** tier resolves edges and effective visibility
 //! asynchronously and never gates rendering. The **manifest** tier supplies the
 //! configuration set. Nothing structural ever waits on anything semantic.
+//!
+//! # Calls
+//!
+//! The [call tier](calls) records every call written in a function, resolves it by name
+//! into a [`EdgeKind::Calls`] edge tagged with how sure the resolution is, and measures
+//! each function by the code it pulls in. Unlike facets these are *numbers*, but they are
+//! measurements rather than a ranking: each comes with a lower and an upper bound, and
+//! nothing here decides which functions matter.
 
+pub mod calls;
 pub mod config;
 pub mod contribution;
 pub mod discover;
@@ -54,10 +63,16 @@ pub mod regroup;
 pub mod rollup;
 pub mod text;
 
+pub use calls::Bound;
+pub use calls::CallGraph;
+pub use calls::CallResolver;
+pub use calls::FunctionMetrics;
+pub use calls::GraphOptions;
 pub use config::CfgEnv;
 pub use config::CfgPredicate;
 pub use config::Configuration;
 pub use config::Truth;
+pub use contribution::CachedCallable;
 pub use contribution::CachedModule;
 pub use contribution::CachedNode;
 pub use contribution::FileContribution;
@@ -70,6 +85,7 @@ pub use edge::Edge;
 pub use edge::EdgeKind;
 pub use edge::EdgeStore;
 pub use edge::Endpoint;
+pub use edge::Resolution;
 pub use extract::ExternalModule;
 pub use extract::ExtractError;
 pub use extract::ExtractOutcome;

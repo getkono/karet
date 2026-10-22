@@ -261,7 +261,24 @@ fn pivot_needs_an_edge_kind_and_a_path() -> TestResult {
     assert_eq!(target.to_string(), "pkg::provider::SymbolProvider");
 
     assert!(parse("pivot:implements").is_err());
-    assert!(parse("pivot:calls:pkg::x").is_err());
+    assert!(parse("pivot:called-by:pkg::x").is_err());
+    assert!(parse("pivot:calls:pkg::x").is_ok());
+    Ok(())
+}
+
+#[test]
+fn reach_and_callers_need_a_path_and_print_back_as_written() -> TestResult {
+    for text in ["reach:pkg::run", "callers:pkg::a::b", "!reach:pkg::run"] {
+        assert_eq!(parse(text)?.to_string(), text);
+    }
+    let Err(error) = parse("lens:api reach:") else {
+        return Err("an empty path should be refused".into());
+    };
+    assert_eq!(error.span, 9..15);
+    let Err(error) = parse("reachh:pkg") else {
+        return Err("a misspelt prefix should be refused".into());
+    };
+    assert!(error.suggestions.contains(&"reach".to_owned()), "{error:?}");
     Ok(())
 }
 
@@ -396,6 +413,7 @@ fn a_pivot_follows_an_edge_in_both_directions() -> TestResult {
         from: impl_id,
         to: Endpoint::Resolved(trait_id),
         site: None,
+        resolution: None,
     });
 
     // From the trait, the pivot reaches its implementor even though the edge points the

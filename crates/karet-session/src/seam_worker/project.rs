@@ -69,7 +69,11 @@ fn facet_view(facet: &karet_seam::Facet) -> SeamFacetView {
 #[must_use]
 pub(crate) fn edges_of(index: &SeamIndex, node: SeamId) -> Vec<SeamEdgeView> {
     let resolve = |id: SeamId| index.path(id).map(ToString::to_string);
-    let outgoing = index.edges().from(node).map(|edge| {
+    // Calls are one edge per call site, so a busy function would bury its structural
+    // relations under hundreds of rows. They stay out of the pane until it can show them
+    // aggregated per target.
+    let structural = |edge: &&karet_seam::Edge| edge.kind != karet_seam::EdgeKind::Calls;
+    let outgoing = index.edges().from(node).filter(structural).map(|edge| {
         let (state, resolvable) = endpoint_state(&edge.to);
         SeamEdgeView {
             kind: edge.kind.name().to_owned(),
@@ -81,15 +85,19 @@ pub(crate) fn edges_of(index: &SeamIndex, node: SeamId) -> Vec<SeamEdgeView> {
             site: edge.site,
         }
     });
-    let incoming = index.edges().to(node).map(|edge| SeamEdgeView {
-        kind: edge.kind.name().to_owned(),
-        outgoing: false,
-        target: resolve(edge.from),
-        display: None,
-        state: "resolved".to_owned(),
-        resolvable: true,
-        site: edge.site,
-    });
+    let incoming = index
+        .edges()
+        .to(node)
+        .filter(structural)
+        .map(|edge| SeamEdgeView {
+            kind: edge.kind.name().to_owned(),
+            outgoing: false,
+            target: resolve(edge.from),
+            display: None,
+            state: "resolved".to_owned(),
+            resolvable: true,
+            site: edge.site,
+        });
     outgoing.chain(incoming).collect()
 }
 
@@ -283,5 +291,25 @@ mod tests {
     fn edges_of_an_unknown_node_are_empty_rather_than_a_failure() {
         let index = SeamIndex::new();
         assert!(edges_of(&index, SeamId(0)).is_empty());
+    }
+
+    #[test]
+    fn call_edges_stay_out_of_the_facet_pane() {
+        let mut index = SeamIndex::new();
+        let edge = |kind, from, to| karet_seam::Edge {
+            kind,
+            from: SeamId(from),
+            to: karet_seam::Endpoint::Resolved(SeamId(to)),
+            site: None,
+            resolution: None,
+        };
+        index.edges_mut().insert_all([
+            edge(karet_seam::EdgeKind::Calls, 1, 2),
+            edge(karet_seam::EdgeKind::Calls, 3, 1),
+            edge(karet_seam::EdgeKind::Implements, 1, 4),
+        ]);
+        let edges = edges_of(&index, SeamId(1));
+        assert_eq!(edges.len(), 1);
+        assert!(edges.iter().all(|edge| edge.kind == "implements"));
     }
 }

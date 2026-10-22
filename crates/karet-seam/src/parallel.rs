@@ -52,6 +52,7 @@ use karet_treesitter::LanguageId;
 use karet_treesitter::ParserPool;
 use rayon::prelude::*;
 
+use crate::contribution::CachedCallable;
 use crate::contribution::CachedModule;
 use crate::contribution::CachedNode;
 use crate::contribution::FileContribution;
@@ -192,6 +193,9 @@ pub fn index_workspace_with(
     for indexed in finished {
         index.merge(indexed.index);
     }
+    // After the merge, not per package: a call in one package may name a function in
+    // another, and only the whole index can say which.
+    crate::calls::link(&mut index);
     Ok(index)
 }
 
@@ -537,6 +541,18 @@ fn extract_isolated(
         })
         .collect();
 
+    let callables = outcome
+        .added
+        .iter()
+        .filter_map(|id| {
+            Some(CachedCallable {
+                node: position.get(id).copied()?,
+                callable: scratch.calls().callable(*id)?.clone(),
+            })
+        })
+        .collect();
+    let file_calls = scratch.calls().file(file).cloned().unwrap_or_default();
+
     Some(FileContribution {
         file: unit.file.clone(),
         stamp,
@@ -547,6 +563,8 @@ fn extract_isolated(
         external_modules,
         ownership,
         unresolved,
+        callables,
+        file_calls,
     })
 }
 

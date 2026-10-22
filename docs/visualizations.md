@@ -15,7 +15,7 @@ function usage, plus an orthogonal history lens:
 |---|---|---|---|---|
 | **Workspace dependency map** | package / crate | `dependable-core` (offline, from `Cargo.lock`) | "how do the packages depend on each other?" | ✅ shipped |
 | **Reverse-dependency / impact** | package / crate | `dependable` inverted, rooted at a package | "what breaks if I change this package?" | 🧭 designed |
-| **Symbol usage / call graph** | function / symbol | tree-sitter `tags`, resolved across the workspace | "who calls this / what does this call, downstream?" | 🧭 designed |
+| **Symbol usage / call graph** | function / symbol | `karet-seam`'s per-language call queries, resolved across the workspace | "who calls this / what does this call, downstream?" | 🟡 partial — edges and measures shipped, graph view designed |
 | **Commit-history DAG** | commit / branch | `gix` (parents → lanes) | "how did the branches and merges actually flow?" | ✅ shipped |
 
 `GraphView` already carries the vocabulary for all four — `GraphNodeKind::{Package,
@@ -79,19 +79,19 @@ This is language-agnostic by design: `dependable` supports ~10 ecosystems, and t
 `GraphView` container is ecosystem-neutral. Only the offline *builder* is Rust-specific
 today (see the upstream requests below).
 
-## Symbol usage / call graph (designed)
+## Symbol usage / call graph (partial)
 
 Given a function, this lens shows every function/site that uses it downstream — a
-semantically-aware, language-agnostic view backed by tree-sitter `tags` queries (each
-grammar's `TAGS_QUERY`, which most karet grammars ship). Definitions and references are
-extracted per file and resolved across the workspace into a `GraphView` of
-`GraphNodeKind::Symbol` nodes and `GraphEdgeKind::Call` edges, rendered through the same
-rail/tree renderer rooted at the focused symbol.
+language-agnostic view over the calls [`karet-seam`](seam.md#calls) records. Each
+language contributes one tree-sitter call query; calls are resolved across the workspace
+into `calls` edges tagged with how sure the resolution is, and every function is measured
+by the code it reaches. That half has shipped, with `reach:`/`callers:` query terms and
+per-function measures on the `--seam-query` surface.
 
-The neutral model and the `GraphKind::Usage` seam are in place; landing this lens needs
-a match-grouped tree-sitter query pass in `karet-treesitter` (to pair each `@name`
-capture with its `@definition.*` / `@reference.*`) plus the workspace tags walk — a
-self-contained follow-up on top of this backbone.
+What remains is the drawing: projecting those edges into a `GraphView` of
+`GraphNodeKind::Symbol` nodes and `GraphEdgeKind::Call` edges behind the existing
+`GraphKind::Usage` seam, rendered through the same rail/tree renderer rooted at the
+focused symbol.
 
 ## Upstream `dependable` requests
 

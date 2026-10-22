@@ -182,6 +182,56 @@ fn reindexing_a_real_file_leaves_the_tree_consistent() {
     );
 }
 
+#[test]
+fn real_calls_link_from_callables_and_measure_consistently() {
+    use karet_seam::CallGraph;
+    use karet_seam::EdgeKind;
+    use karet_seam::GraphOptions;
+    use karet_seam::Resolution;
+
+    for name in CRATES {
+        let Some(index) = index(name) else { continue };
+        let calls: Vec<&karet_seam::Edge> = index
+            .edges()
+            .all()
+            .iter()
+            .filter(|edge| edge.kind == EdgeKind::Calls)
+            .collect();
+        assert!(!calls.is_empty(), "{name} makes no calls");
+        // Every call leaves a callable, and every one says how it was resolved.
+        for edge in &calls {
+            assert!(
+                index.calls().callable(edge.from).is_some(),
+                "{name}: a call leaves a non-callable"
+            );
+            assert!(edge.resolution.is_some(), "{name}: an untagged call");
+        }
+        assert!(
+            calls
+                .iter()
+                .any(|edge| edge.resolution == Some(Resolution::Exact)),
+            "{name}: nothing resolved exactly"
+        );
+
+        let graph = CallGraph::build(&index, &GraphOptions::default());
+        assert!(!graph.is_empty(), "{name}: an empty graph");
+        for metrics in graph.all() {
+            assert!(
+                metrics.inclusive_lower >= u64::from(metrics.code_lines),
+                "{name}: a function reaches less than itself"
+            );
+            assert!(
+                metrics.inclusive_upper >= metrics.inclusive_lower,
+                "{name}: the upper bound fell below the lower"
+            );
+            assert!(
+                metrics.tree_weighted >= metrics.inclusive_lower || metrics.recursive,
+                "{name}: the tree weighs less than the code it reaches"
+            );
+        }
+    }
+}
+
 /// The repository root, when the layout is the one these tests expect.
 ///
 /// Integration tests run with the crate directory as the working directory, so the
@@ -304,4 +354,25 @@ fn bench_cold_index_of_this_repository() {
     let nodes = index.as_ref().map(karet_seam::SeamIndex::len).unwrap_or(0);
     let files = index.as_ref().map(|i| i.files().len()).unwrap_or(0);
     println!("COLD {elapsed:?} — {nodes} nodes across {files} files");
+
+    // Relinking is what every save pays, so it is timed on its own.
+    let Ok(mut index) = index else {
+        return;
+    };
+    let start = std::time::Instant::now();
+    karet_seam::calls::link(&mut index);
+    let linked = start.elapsed();
+    let start = std::time::Instant::now();
+    let graph = karet_seam::CallGraph::build(&index, &karet_seam::GraphOptions::default());
+    let measured = start.elapsed();
+    println!(
+        "LINK {linked:?} — {} call edges; MEASURE {measured:?} — {} functions",
+        index
+            .edges()
+            .all()
+            .iter()
+            .filter(|edge| edge.kind == karet_seam::EdgeKind::Calls)
+            .count(),
+        graph.len()
+    );
 }

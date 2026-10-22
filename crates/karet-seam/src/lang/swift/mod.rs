@@ -97,6 +97,14 @@ impl SeamLanguage for Swift {
         )
     }
 
+    fn call_query(&self, _: LanguageId) -> Option<&'static str> {
+        Some(include_str!("../../../queries/calls/swift.scm"))
+    }
+
+    fn implicit_receiver(&self) -> bool {
+        true
+    }
+
     fn semantic_capabilities(&self) -> &'static [EdgeKind] {
         SEMANTIC
     }

@@ -291,6 +291,14 @@ So exactly one **named** configuration is active at a time and the header always
 which. Nodes the configuration excludes are dimmed, not hidden; hiding is opt-in via
 `seam.hideInactive`. Test-only code is a configuration, not a special case.
 
+Rust says what is test code with `cfg(test)`. The other languages say it by convention,
+and the convention is read as a gate of the same kind: a file under `tests/`, `test/`,
+`Tests/` or `__tests__/`, or one named `test_*.py`, `*_test.*`, `*.spec.ts`,
+`*.test.ts`, `conftest.py`, or — in Java, Kotlin, Swift and Scala, where a class names
+its file — `*Test` or `*Tests`, is inactive unless the
+configuration builds tests. The path is read from the package root, so a checkout
+that happens to sit under a directory called `test` is not test code.
+
 `cfg` evaluation is three-valued. `target_os = "redox"` on a Linux host is false; an
 unrecognized vendor key is *neither*, and collapsing that into false would quietly delete
 code from the view while the header still claimed completeness. Unknown propagates through
@@ -322,6 +330,8 @@ deliberately no `or` and no grouping.
 | `cfg:<text>` | gated by a matching variation predicate |
 | `config:<name>` | evaluate under a named configuration |
 | `pivot:<edge>:<node>` | the result set of following an edge |
+| `reach:<node>` | everything the node transitively calls, through established calls |
+| `callers:<node>` | everything that transitively calls the node |
 
 An unknown term is a positioned parse error with the closest valid names, never silently
 ignored — ignoring one hands back a different node set than you asked for with no
@@ -342,12 +352,107 @@ Prints JSON and exits, without entering the TUI. Each node carries its identity,
 facets, and per-lens rollup counts — enough to cite a finding, navigate back to it, and
 judge where seam density is concentrated without materializing a subtree.
 
+A function also carries `loc` — its own code lines, its physical lines, and the
+[call-graph measures](#calls) under the active configuration — and `calls`, one entry
+per target and resolution with a site count and the first site's line. `loc` is `null`
+for anything that is not a function, and its graph measures are `null` for a function the
+configuration leaves out, which is a different answer from zero.
+
 An unreadable query and a path that is not a package both fail with a non-zero exit rather
 than printing an empty result, since either would otherwise read as "no such seams here".
 A query that is understood and matches nothing is a success reporting zero.
 
 > This is an unstable automation surface: the output shape may change between major
 > versions without notice.
+
+## Calls
+
+The index also records who calls what, and measures each function by the code it
+pulls in. The question it answers: *if I call this, how much code am I depending on?*
+
+### What is measured
+
+| Measure | Meaning |
+|---|---|
+| own lines | lines of the function whose first code byte is its own: not blank, not comment-only, not inside a nested named function |
+| span | physical lines from the first to the last, everything included |
+| inclusive | own lines of every *distinct* function it reaches, itself included |
+| tree weight | own lines plus each callee's tree weight *per call site* |
+| fan-in, fan-out | distinct functions calling it, and that it calls |
+| external APIs | distinct callees outside the indexed code |
+| depth | the longest chain of calls below it |
+
+Inclusive is the answer to the question above: a helper reached along three paths counts
+once. Tree weight counts it three times, which is what makes the ratio between the two a
+measure of how much a function leans on shared code. A summed call tree would count a
+diamond twice and never finish a cycle, so recursion is condensed first: functions that
+call one another are one unit, and every member reports the unit's values.
+
+A closure is not a node: its lines and its calls are its enclosing function's. A nested
+named function owns its own lines, so summing every function's own lines never counts a
+line twice.
+
+### Two bounds, never a guess
+
+Calls are resolved by name and scope, not by type, so every call edge says how it was
+reached:
+
+| Resolution | Meaning | Lower | Upper |
+|---|---|---|---|
+| `exact` | one candidate survived every scope rule | ✓ | ✓ |
+| `dispatch` | a call through a contract, to its declaration and default body | ✓ | ✓ |
+| `dispatch-impl` | an implementation that call may reach | | ✓ |
+| `ambiguous` | one of several equally plausible candidates | | ✓ |
+| `external` | outside the indexed code — a library, a builtin | | |
+| `unresolved` | nothing plausible, or a computed callee | | |
+
+Every measure is computed over the **lower** bound, and inclusive also over the **upper**.
+The gap between them is how much of a number is guesswork. A site with more than 16
+candidates — `x.get()` in a large codebase — counts in neither bound, since linking it to
+every `get` would say nothing.
+
+The scope rules, first match wins: a `self`/`this` receiver means the caller's own type;
+a qualifier (`net::send`, `Widget.create`) means the container it names, and one the
+index does not hold means an external callee — a Cargo package is named as code writes
+it, `karet_core` for `karet-core`; a method on a named value is exact when the only
+member of that name in the language is in the caller's package, and otherwise every
+candidate is ambiguous; a method on a call's result (`xs.iter().filter(…)`) is never
+exact, since its type is unknown; a free call means, in Rust, Python and TypeScript, the
+caller's module, then its file, its imports, a type of that name (a constructor), and its
+package. Kotlin and Swift first check a member of the caller's type, since a bare name can
+reach one there, and then check the file before the module, since a module there spans
+files and a file-private helper beats its namesake elsewhere; the imports, constructor and
+package follow as before. A free name found only in
+another package is ambiguous, since nothing imported it. Candidates are always in the
+caller's language family, the ones the host build has win over gated-out twins, and a
+definition wins over its bare declaration.
+
+What this does not see: a function passed as a value, a call through a pointer, and
+anything reflection reaches. A Rust macro's arguments are tokens rather than syntax, so a
+call written inside one is counted in the upper bound only.
+
+### Tests are left out
+
+Measured under the active configuration, which by default excludes test code. A test
+calls everything; counting it would make every helper look shared and every function look
+reachable. A configuration that builds tests measures with them included.
+
+`reach:` and `callers:` are the exception: they follow the call edges as recorded, test
+callers included, because they answer "what is connected" rather than "how much is
+there". Combine them with other terms to narrow the result.
+
+### Adding a language
+
+A language's whole part in this is one tree-sitter query in
+[`crates/karet-seam/queries/calls`](../crates/karet-seam/queries/calls), returned from
+`SeamLanguage::call_query`. It marks `@call` with `@call.name`, and optionally
+`@call.qualifier`, `@call.receiver`, `@call.self`, `@call.super`, `@call.new`,
+`@call.external` and `@call.weak`; `@body` on callable bodies; `@comment`; and
+`@import.path`, `@import.prefix`, `@import.alias`, `@import.glob` and `@import.head`
+(an import binding its first segment, as Python's `import a.b` does). A language whose
+bare names can reach a member of the enclosing type — Kotlin, Swift — also says so with
+`SeamLanguage::implicit_receiver`. Attribution, line counting, resolution and measuring
+are language-neutral.
 
 ## What is shown when something is unknown
 
@@ -414,5 +519,7 @@ See [`configuration.md`](configuration.md#seam) for the `seam.*` keys.
 | Rust + Python mappings | ✅ shipped |
 | Workspace / multi-package / nested-crate discovery | ✅ shipped |
 | Choosing a start point | ✅ shipped |
+| Call edges, own/inclusive/tree-weighted lines, `reach:`/`callers:` | ✅ shipped |
+| Calls and measures in the facet pane | 🧭 designed |
 | Manifest-derived feature/target configurations | 🧭 designed — needs `dependable-core` 0.2.0 |
 | Semantic-tier edge resolution via rust-analyzer | 🧭 designed — `karet-lsp` requests are in place |

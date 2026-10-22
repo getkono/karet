@@ -11,6 +11,7 @@ use std::path::PathBuf;
 
 use karet_treesitter::LanguageId;
 
+use crate::calls::CallTable;
 use crate::edge::EdgeStore;
 use crate::edge::Endpoint;
 use crate::id::SeamId;
@@ -32,6 +33,7 @@ pub struct SeamIndex {
     file_ids: HashMap<PathBuf, FileId>,
     attribution: HashMap<FileId, (SeamId, LanguageId)>,
     edges: EdgeStore,
+    calls: CallTable,
     unresolved: Vec<(SeamId, Vec<PathBuf>)>,
     truncated: Option<usize>,
 }
@@ -221,6 +223,19 @@ impl SeamIndex {
         &mut self.edges
     }
 
+    // --- calls ----------------------------------------------------------------
+
+    /// What each callable and file says about calls, before resolution.
+    #[must_use]
+    pub fn calls(&self) -> &CallTable {
+        &self.calls
+    }
+
+    /// Mutable access to the call facts, for extraction and replay.
+    pub(crate) fn calls_mut(&mut self) -> &mut CallTable {
+        &mut self.calls
+    }
+
     // --- unresolved modules ---------------------------------------------------
 
     /// Record that a module's body could not be found, keeping what was tried.
@@ -269,8 +284,10 @@ impl SeamIndex {
             .collect();
         for id in &doomed {
             self.edges.remove_from(*id);
+            self.calls.remove(*id);
             self.nodes.remove(id);
         }
+        self.calls.remove_file(file);
         let removed: std::collections::HashSet<SeamId> = doomed.into_iter().collect();
         for node in self.nodes.values_mut() {
             node.children.retain(|child| !removed.contains(child));
@@ -404,6 +421,7 @@ impl SeamIndex {
     pub(crate) fn discard(&mut self, id: SeamId) {
         for doomed in self.subtree(id) {
             self.edges.remove_from(doomed);
+            self.calls.remove(doomed);
             self.nodes.remove(&doomed);
         }
         if let Some(parent) = self.nodes.values_mut().find(|n| n.children.contains(&id)) {
@@ -456,6 +474,7 @@ impl SeamIndex {
             swap(id);
         }
         self.edges.remap(remap);
+        self.calls.remap(remap);
     }
 
     // --- replay and merge -----------------------------------------------------
@@ -520,6 +539,16 @@ impl SeamIndex {
             resolved.push(path);
         }
 
+        for cached in &contribution.callables {
+            if let Some(id) = resolved
+                .get(cached.node as usize)
+                .and_then(|path| self.resolve(path))
+            {
+                self.calls.insert(id, cached.callable.clone());
+            }
+        }
+        self.calls.set_file(file, contribution.file_calls.clone());
+
         for (index, candidates) in &contribution.unresolved {
             if let Some(id) = resolved
                 .get(*index as usize)
@@ -558,6 +587,7 @@ impl SeamIndex {
             files,
             attribution,
             edges,
+            calls,
             unresolved,
             truncated,
             ..
@@ -628,6 +658,7 @@ impl SeamIndex {
                 self.mark_module_unresolved(*id, candidates);
             }
         }
+        self.calls.absorb(calls, &remap, &file_remap);
         for mut edge in edges.into_all() {
             let Some(from) = remap.get(&edge.from).copied() else {
                 continue;
