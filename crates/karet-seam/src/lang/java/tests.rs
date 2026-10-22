@@ -181,3 +181,43 @@ fn calls_resolve_through_this_implicit_receivers_and_interfaces() -> TestResult 
     );
     Ok(())
 }
+
+#[test]
+fn a_base_whose_name_merely_contains_the_contract_implements_nothing() -> TestResult {
+    let Some(index) = index(&[
+        (
+            "Node.java",
+            "package shop;\npublic interface Node {\n    void visit();\n}\n",
+        ),
+        (
+            "Leaf.java",
+            "package shop;\npublic class Leaf implements Node {\n    public void visit() {}\n}\n",
+        ),
+        (
+            "TreeNodeBase.java",
+            "package shop;\npublic abstract class TreeNodeBase {}\n",
+        ),
+        (
+            "Branch.java",
+            "package shop;\npublic class Branch extends TreeNodeBase {\n    public void visit() {}\n}\n",
+        ),
+        (
+            "Walk.java",
+            "package shop;\npublic class Walk {\n    void go(Node n) {\n        n.visit();\n    }\n}\n",
+        ),
+    ])?
+    else {
+        return Ok(());
+    };
+    let go = calls(&index, "Walk::Walk::go")?;
+    // `Branch.visit` implements no `Node`, so the call may be to it: nothing is established.
+    assert!(
+        go.iter().all(|(_, r)| *r == Resolution::Ambiguous),
+        "{go:?}"
+    );
+    assert!(
+        go.iter().any(|(t, _)| t.ends_with("Branch::visit")),
+        "{go:?}"
+    );
+    Ok(())
+}

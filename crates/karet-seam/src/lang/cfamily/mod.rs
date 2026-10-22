@@ -20,6 +20,7 @@ use karet_treesitter::language_id_from_injection_name;
 
 use super::Classified;
 use super::FacetContext;
+use super::ModuleForm;
 use super::Owner;
 use super::SeamLanguage;
 use crate::edge::EdgeKind;
@@ -71,6 +72,9 @@ const SUBTYPES: &[(Lens, FacetSubtype)] = &[
     (Lens::Api, PRIVATE),
 ];
 
+/// The name an unnamed `namespace { … }` is indexed under.
+const ANONYMOUS: &str = "{anonymous}";
+
 /// The lenses this mapping does not read.
 const UNREAD: &[Lens] = &[
     Lens::Substitution,
@@ -102,6 +106,11 @@ impl SeamLanguage for CFamily {
         {
             return Vec::new();
         }
+        // Outside a class only a function has linkage to speak of: a type or a namespace
+        // is neither `static` nor `extern`.
+        if !in_class(ctx) && !matches!(node.kind(), "function_definition" | "declaration") {
+            return Vec::new();
+        }
         let subtype = match access(node, ctx) {
             Visibility::Public if in_class(ctx) => PUBLIC,
             Visibility::Super => PROTECTED,
@@ -131,9 +140,15 @@ impl SeamLanguage for CFamily {
         if node.kind() != "function_definition" {
             return Vec::new();
         }
+        // Under a namespace it is a free function, with the linkage a namespace gives.
+        let free = ModuleForm {
+            kind: NodeKind::Function,
+            visibility: Some(Visibility::Public),
+            facets: vec![Facet::new(Lens::Api, EXTERN)],
+        };
         declared_name(node, ctx)
             .and_then(|(_, owner)| owner)
-            .map(|owner| vec![Owner::nested(owner)])
+            .map(|owner| vec![Owner::nested(owner).in_module(free)])
             .unwrap_or_default()
     }
 
@@ -175,6 +190,8 @@ fn classify_node(node: &WalkNode<'_>, ctx: &FacetContext<'_>) -> Option<Classifi
             if owner.is_some() {
                 // Defined outside its class: the access was declared in the class, which
                 // this definition does not repeat, so it claims none rather than a guess.
+                // An owner that resolves to a namespace makes it a free function instead
+                // (see `ownership`); one that resolves to nothing leaves it as this.
                 let mut out = classified(node, ctx, NodeKind::Member, name);
                 out.visibility = None;
                 return Some(out);
@@ -224,7 +241,7 @@ fn classify_node(node: &WalkNode<'_>, ctx: &FacetContext<'_>) -> Option<Classifi
             // `namespace a::b {` is one construct with a two-part name; `::` would read
             // back as two segments of a path, so the name keeps its parts with dots.
             let name = node.child_text("name", ctx.text).map_or_else(
-                || "{anonymous}".to_owned(),
+                || ANONYMOUS.to_owned(),
                 |name| name.trim().replace("::", "."),
             );
             Some(classified(node, ctx, NodeKind::Module, name))
@@ -353,7 +370,9 @@ fn access(node: &WalkNode<'_>, ctx: &FacetContext<'_>) -> Visibility {
     let is_static = node.children().any(|child| {
         child.kind() == "storage_class_specifier" && child.text(ctx.text) == Some("static")
     });
-    if is_static {
+    // Everything inside an anonymous namespace has internal linkage, as `static` gives.
+    let anonymous = ctx.modules.iter().any(|name| name == ANONYMOUS);
+    if is_static || anonymous {
         Visibility::Private
     } else {
         Visibility::Public

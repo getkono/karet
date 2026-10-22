@@ -186,16 +186,22 @@ C, C++ and Java are mapped for **containment and the `api` lens only**:
 
 | Lens | C / C++ | Java |
 |---|---|---|
-| `api` | `static` and `extern` linkage; C++ `public:`/`protected:`/`private:` sections | `public`, `protected`, `private`, package-private |
+| `api` | `static` and `extern` linkage of functions (inside an anonymous namespace, `static`); C++ `public:`/`protected:`/`private:` sections | `public`, `protected`, `private`, package-private |
 | `substitution` · `variation` · `boundary` · `hazard` | `?` — not read | `?` — not read |
 
 A lens a language does not read shows `?` and "not read for this language" in the facet
 pane, its rollup is `null` in `--seam-query`, and the node lists it under
-`unread_lenses`, because showing `—` would claim the index looked and found nothing. A
+`unread_lenses`, because showing `—` would claim the index looked and found nothing.
+Those three surfaces are the only ones that carry the distinction: the spine's lens
+filter and the query language stay two-valued, matching what carries a facet of the lens,
+so `!lens:hazard` includes a node whose `hazard` is unread, and the filter counts and
+dims it as having none. A
 C or C++ file is a module named by its whole file name — `widget.h` and `widget.c` are
 two modules, since a header and its source share a stem. A C++ method defined outside its
 class (`void Widget::draw() {…}`) is regrouped under the class beside its declaration, as
-a Rust `impl` is, and claims no access of its own.
+a Rust `impl` is, and claims no access of its own. The same shape with a namespace as its
+owner (`int geo::scale() {…}`) is regrouped under that namespace as a free function with
+`extern` linkage.
 
 One known limit: a `.h` file is always read with the C grammar, as its extension says. A
 C++ class declared in a `.h` therefore parses as damaged C (its nodes are marked
@@ -500,10 +506,13 @@ it, `karet_core` for `karet-core`; a method on a named value is exact when the o
 member of that name in the language is in the caller's package, a dispatch when one of
 the candidates is a contract's declaration and every other names that contract as what it
 implements, and otherwise every candidate is ambiguous; a method on a call's result
-(`xs.iter().filter(…)`) is never exact, since its type is unknown; a free call means — in
-Kotlin, Swift, Java and C++, where a bare name can reach one — a member of the caller's
-type, then its module, its file, its imports, a type of that name (a constructor), and
-its package. A free name found only in
+(`xs.iter().filter(…)`) is never exact, since its type is unknown; a free call means, in
+Rust, Python and TypeScript, the caller's module, then its file, its imports, a type of
+that name (a constructor), and its package. Kotlin, Swift, Java and the C family first
+check a member of the caller's type, since a bare name can reach one there (C has no
+members, so the check finds nothing), and then check the file before the module, since a
+module there spans files and a file-private helper beats its namesake elsewhere; the
+imports, constructor and package follow as before. A free name found only in
 another package is ambiguous, since nothing imported it. Candidates are always in the
 caller's language family, the ones the host build has win over gated-out twins, and a
 definition wins over its bare declaration.
