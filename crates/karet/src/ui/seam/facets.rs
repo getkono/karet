@@ -221,7 +221,9 @@ fn edge_note(edge: &karet_session::api::SeamEdgeView) -> String {
 /// A function's call measures on one line: its own size, what it reaches, and its shape.
 ///
 /// The upper bound appears only where it differs, since an equal one says nothing a
-/// reader needs; the compact form drops the words and keeps the numbers.
+/// reader needs. The compact form keeps the headline measures — own size, reach, fan-in
+/// and fan-out, and any cycle or recursion — and drops the tree weight, the depth and the
+/// external-API count, which a narrow pane has no room for.
 fn calls_summary(m: &karet_session::api::SeamCallMetricsView, compact: bool) -> String {
     let reach = if m.inclusive_upper > m.inclusive {
         format!("{} (≤{})", m.inclusive, m.inclusive_upper)
@@ -260,18 +262,28 @@ fn calls_summary(m: &karet_session::api::SeamCallMetricsView, compact: bool) -> 
     parts.join(" · ")
 }
 
-/// A count in at most four characters: `950`, `1.2k`, `34k`, `5.6M`.
+/// A count in at most four characters: `950`, `1.2k`, `34k`, `5.6M`, up to `18E` for
+/// `u64::MAX` (the ceiling a saturated tree weight sits at).
 fn abbreviate(value: u64) -> String {
-    // The boundaries are where rounding would carry into the next unit, so 9 960 reads
-    // `10k` rather than `10.0k`.
-    match value {
-        0..1_000 => value.to_string(),
-        1_000..9_950 => format!("{:.1}k", value as f64 / 1_000.0),
-        9_950..999_500 => format!("{}k", (value + 500) / 1_000),
-        999_500..9_950_000 => format!("{:.1}M", value as f64 / 1_000_000.0),
-        // Saturating: a tree weight that hit the ceiling is `u64::MAX`.
-        _ => format!("{}M", value.saturating_add(500_000) / 1_000_000),
+    if value < 1_000 {
+        return value.to_string();
     }
+    // The boundaries are where rounding would carry into the next unit, so 9 960 reads
+    // `10k` rather than `10.0k`. Six units cover the whole of `u64`, whose ceiling is
+    // 18.4 × 10¹⁸, so the last unit never needs to carry.
+    let mut scale: u64 = 1_000;
+    for unit in ["k", "M", "G", "T", "P", "E"] {
+        let next = scale.checked_mul(1_000);
+        if value < scale * 10 - scale / 20 {
+            return format!("{:.1}{unit}", value as f64 / scale as f64);
+        }
+        if next.is_none_or(|next| value < next - scale / 2) {
+            let rounded = value / scale + u64::from(value % scale >= scale / 2);
+            return format!("{rounded}{unit}");
+        }
+        scale = next.unwrap_or(u64::MAX);
+    }
+    format!("{}E", value / 1_000_000_000_000_000_000)
 }
 
 /// The lens's name, abbreviated where the pane is too narrow for it.
@@ -330,11 +342,14 @@ mod tests {
             (999_500, "1.0M"),
             (9_949_999, "9.9M"),
             (9_950_000, "10M"),
+            (999_499_999, "999M"),
+            (999_500_000, "1.0G"),
+            (9_950_000_000_000_000_000, "10E"),
+            // A saturated tree weight is the ceiling itself: capped, not overflowed.
+            (u64::MAX, "18E"),
         ] {
             assert_eq!(abbreviate(value), shown, "{value}");
             assert!(abbreviate(value).chars().count() <= 4, "{value}");
         }
-        // A saturated tree weight is the ceiling itself, and must not overflow.
-        assert_eq!(abbreviate(u64::MAX), "18446744073709M");
     }
 }

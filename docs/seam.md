@@ -244,11 +244,15 @@ among the edges:
 ```
 
 One row per callee and resolution, however many sites call it, with the callees reaching
-the most code first and the callers last. Enter on a call pivots to its other end, like
+the most code first and the callers last, in path order — a caller's reach measures the
+caller rather than what it asks of this function, and path order keeps one module's
+callers together. Enter on a call pivots to its other end, like
 any edge; an external or unresolved callee has nothing here to pivot to, and says so. The
 measures and the call rows follow the active configuration, so cycling to the test
 configuration lists and counts test callers too, and saving a file refreshes both. Where
-the line would not fit, it keeps the numbers and drops the words; where the edges outnumber
+the line would not fit, it keeps the headline measures (own size, reach, fan-in and
+fan-out, and any cycle or recursion) and drops the tree weight, the depth and the
+external-API count; where the edges outnumber
 the pane's rows, the list scrolls with the selection and says how many are out of sight.
 
 | Key | |

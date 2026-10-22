@@ -171,6 +171,9 @@ pub(crate) fn edges_of(
     callees.sort_by_key(|(reach, _)| std::cmp::Reverse(*reach));
     out.extend(callees.into_iter().map(|(_, view)| view));
 
+    // Callers are listed in path order (then resolution), not by reach: a caller's reach
+    // measures the caller, not what it asks of this function, and path order keeps the
+    // callers from one module together and stable as their bodies change.
     let mut callers: BTreeMap<(Option<String>, &str), SeamEdgeView> = BTreeMap::new();
     for edge in index
         .edges()
