@@ -356,7 +356,8 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("src"))?;
         std::fs::write(
             dir.path().join("src/lib.rs"),
-            "pub fn outer() {\n    inner();\n    inner();\n}\nfn inner() {}\npub struct Plain;\n",
+            "pub fn outer() {\n    inner();\n    inner();\n}\nfn inner() {}\npub struct Plain;\n\
+             pub fn afar() {\n    elsewhere::send();\n}\n",
         )?;
 
         let json = run(dir.path(), "outer", None)?;
@@ -368,6 +369,15 @@ mod tests {
         assert!(
             json.contains(
                 "{\"to\": \"q::inner\", \"resolution\": \"exact\", \"count\": 2, \"line\": 2}"
+            ),
+            "{json}"
+        );
+        // A callee outside the index has no path, so it is named by its display text.
+        let json = run(dir.path(), "afar", None)?;
+        assert!(
+            json.contains(
+                "{\"display\": \"elsewhere::send\", \"resolution\": \"external\", \"count\": 1, \
+                 \"line\": 8}"
             ),
             "{json}"
         );
