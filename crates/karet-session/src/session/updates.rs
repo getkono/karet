@@ -316,9 +316,13 @@ impl Session {
                 document.lsp_diagnostics.insert(layer, diagnostics);
                 self.publish_document_diagnostics(doc_id);
             },
+            // The connection has been gone past the grace window: its
+            // markers and its overlay both describe a server that is down.
             LspUpdate::DiagnosticsCleared { server, .. } => {
                 self.clear_lsp_diagnostic_layer(&server);
+                self.clear_semantic_tokens_of(&server);
             },
+            update @ LspUpdate::SemanticTokens { .. } => self.adopt_semantic_tokens(update),
             LspUpdate::SyncFailed { server, reason, .. } => self.emit(
                 None,
                 Event::Notification {
@@ -803,6 +807,7 @@ impl Session {
     pub(super) fn apply_config_report(&mut self, report: crate::config::LoadedConfig) {
         self.debug.reconfigure(report.settings.debug.clone());
         let lsp_retired = self.lsp.reconfigure(report.settings.lsp.clone());
+        self.set_semantic_highlighting(report.settings.editor.semantic_highlighting.enabled);
         let ai_commit_changed = self.config.settings.git.ai_commit != report.settings.git.ai_commit;
         self.config.settings = report.settings.clone();
         self.config.loaded_config = report.clone();

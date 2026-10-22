@@ -9,6 +9,8 @@ use crate::Rgba;
 use crate::TOKEN_COUNT;
 use crate::Theme;
 use crate::is_dark_color;
+use crate::semantic::SemanticRule;
+use crate::semantic::SemanticStyle;
 
 const fn rgb(r: u8, g: u8, b: u8) -> Rgba {
     Rgba { r, g, b, a: 255 }
@@ -142,5 +144,47 @@ pub(crate) fn dark() -> Theme {
         fallback_fg: fg,
         roles,
         dark: is_dark_color(bg),
+        semantic: semantic_rules(),
     }
+}
+
+/// The built-in `semanticTokenColors`: only what a semantic token tells
+/// apart that tree-sitter cannot. Every other semantic token takes its
+/// fallback class's palette colour, so turning semantic highlighting on
+/// refines the colours rather than repainting them.
+///
+/// The two style-only rules (no colour) are also kept under a loaded VS Code
+/// theme -- see [`portable_semantic_rules`] -- since they fit any palette.
+fn semantic_rules() -> Vec<SemanticRule> {
+    let mut rules = portable_semantic_rules();
+    // A macro reads apart from the function calls tree-sitter colours it
+    // like: a pale cyan beside the function blue.
+    rules.extend(SemanticRule::parse(
+        "macro",
+        SemanticStyle::fg(rgb(0xb4, 0xf9, 0xf8)),
+    ));
+    // A name the server could not resolve is very likely a typo: the error
+    // red, ahead of the diagnostic that will follow.
+    rules.extend(SemanticRule::parse(
+        "unresolvedReference",
+        SemanticStyle::fg(rgb(0xf7, 0x76, 0x8e)),
+    ));
+    rules
+}
+
+/// The colourless built-in rules: struck-through deprecated names, and
+/// underlined mutable bindings (rust-analyzer's own default).
+pub(crate) fn portable_semantic_rules() -> Vec<SemanticRule> {
+    let deprecated = SemanticStyle {
+        strikethrough: Some(true),
+        ..SemanticStyle::default()
+    };
+    let mutable = SemanticStyle {
+        underline: Some(true),
+        ..SemanticStyle::default()
+    };
+    [("*.deprecated", deprecated), ("*.mutable", mutable)]
+        .into_iter()
+        .filter_map(|(selector, style)| SemanticRule::parse(selector, style))
+        .collect()
 }

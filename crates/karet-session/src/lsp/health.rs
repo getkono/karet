@@ -35,7 +35,7 @@ use super::hint_flight::Flights;
 use super::hint_flight::HintAnswer;
 use super::message::LspUpdate;
 use super::message::ServerCmd;
-use super::pull::Pulls;
+use super::semantic_tokens::DocumentFetches;
 use super::slot::SlotKey;
 use super::slot::SlotToken;
 use crate::api::LanguageServerRuntimeState;
@@ -90,8 +90,10 @@ pub(super) enum Wake {
     Probe(Answer<Vec<karet_core::CodeAction>>),
     /// A launched code-lens listing finished.
     Lens(Answer<Vec<karet_core::CodeLens>>),
-    /// The server registered or withdrew a capability: a document skipped
-    /// for want of one may now be pulled.
+    /// The server registered or withdrew a capability -- a document skipped
+    /// for want of one may now be pulled -- or semantic highlighting was
+    /// turned on or off for this slot, or the server asked for its semantic
+    /// tokens again.
     Registered,
 }
 
@@ -108,7 +110,7 @@ pub(super) async fn next_wake(
     client: Option<&LspClient>,
     flush_at: Option<Instant>,
     flights: &mut Flights,
-    pulls: &mut Pulls,
+    fetches: &mut DocumentFetches,
 ) -> Wake {
     let Some(client) = client else {
         return Wake::Command(rx.recv().await);
@@ -133,7 +135,7 @@ pub(super) async fn next_wake(
             Some(answer) = hints.next(), if busy => Wake::Hint(answer),
             Some(answer) = probes.next(), if probing => Wake::Probe(answer),
             Some(answer) = lenses.next(), if listing => Wake::Lens(answer),
-            () = pulls.registered() => Wake::Registered,
+            () = fetches.woken() => Wake::Registered,
             cmd = rx.recv() => Wake::Command(cmd),
         }
     } else {
@@ -143,7 +145,7 @@ pub(super) async fn next_wake(
             Some(answer) = hints.next(), if busy => Wake::Hint(answer),
             Some(answer) = probes.next(), if probing => Wake::Probe(answer),
             Some(answer) = lenses.next(), if listing => Wake::Lens(answer),
-            () = pulls.registered() => Wake::Registered,
+            () = fetches.woken() => Wake::Registered,
             cmd = rx.recv() => Wake::Command(cmd),
         }
     }

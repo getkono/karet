@@ -583,6 +583,13 @@
             ]
           }
         },
+        "semanticHighlighting": {
+          "description": "`editor.semanticHighlighting.*` — semantic tokens over the syntax colours.",
+          "$ref": "#/$defs/SemanticHighlighting",
+          "default": {
+            "enabled": true
+          }
+        },
         "stickyScroll": {
           "description": "Keep the active semantic block hierarchy pinned above scrolled text.",
           "type": "boolean",
@@ -1189,7 +1196,7 @@
           "default": null
         },
         "semanticTokens": {
-          "description": "Explicit semantic-token owner.",
+          "description": "The provider whose semantic tokens are laid over this language's syntax\ncolours (`editor.semanticHighlighting`). Unset, the primary server\nowns them; a provider not serving the language leaves it without.",
           "type": [
             "string",
             "null"
@@ -1568,6 +1575,18 @@
           "items": {
             "type": "string"
           }
+        }
+      },
+      "additionalProperties": false
+    },
+    "SemanticHighlighting": {
+      "description": "`editor.semanticHighlighting.*` — the language server's semantic tokens\nlaid over the tree-sitter highlighting.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Ask the language's semantic-token server (its primary, unless\n`lsp.languages.<id>.semanticTokens` names another) for semantic tokens\nand recolour what it classifies -- macros, mutable bindings,\nunresolved names -- through the theme's `semanticTokenColors`.\nTree-sitter stays the base layer: comments and strings keep its\ncolours, and a server that offers no semantic tokens changes nothing.",
+          "type": "boolean",
+          "default": true
         }
       },
       "additionalProperties": false

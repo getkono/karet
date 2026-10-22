@@ -517,6 +517,8 @@ pub struct App {
     pub(crate) view_hits: Vec<(u16, u16, View)>,
     /// The right-side outline panel.
     pub(crate) outline: OutlinePanel,
+    /// Zen Mode and the maximised pane.
+    pub(crate) modes: ScreenModes,
     /// The explorer header toolbar-button cells `(start, end, command)` from the last
     /// frame (new file / new folder / refresh / collapse all).
     pub(crate) header_action_hits: Vec<(u16, u16, Command)>,

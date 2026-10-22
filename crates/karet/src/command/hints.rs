@@ -42,6 +42,8 @@ impl Command {
             Self::Quit => "quit",
             Self::ToggleSidebar => "sidebar",
             Self::ToggleOutline => "outline",
+            Self::ToggleZenMode => "zen",
+            Self::ToggleMaximizePane => "maximize",
             Self::ToggleFocus => "focus",
             Self::SelectView(View::Editor) => "editor",
             Self::SelectView(View::GitHub) => "github",

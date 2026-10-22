@@ -90,6 +90,27 @@ pub(crate) struct OutlinePanel {
     pub(crate) scroll: usize,
 }
 
+/// The screen-reclaiming modes for small terminals: Zen Mode and a maximised
+/// pane. Both are toggles that hide chrome without forgetting it.
+#[derive(Default)]
+pub(crate) struct ScreenModes {
+    /// While Zen Mode is on, the panels it hid, so ending it restores them.
+    /// `None` when Zen Mode is off.
+    pub(crate) zen: Option<ZenRestore>,
+    /// The pane drawn alone across the whole content area, or `None` when every
+    /// pane is tiled. Cleared when focus moves to another pane.
+    pub(crate) maximized: Option<PaneId>,
+}
+
+/// What Zen Mode hid when it began.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ZenRestore {
+    /// Whether the sidebar was shown.
+    pub(crate) sidebar: bool,
+    /// Whether the outline was shown.
+    pub(crate) outline: bool,
+}
+
 impl Default for OutlinePanel {
     fn default() -> Self {
         Self {

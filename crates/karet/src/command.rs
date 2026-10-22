@@ -183,6 +183,12 @@ pub enum Command {
     SidebarToggleExpand,
     /// Show or hide the right-side outline panel (and focus it when shown).
     ToggleOutline,
+    /// Enter or leave Zen Mode: hide the sidebar, outline, view switcher, and
+    /// status bar, restoring what was shown on the way out.
+    ToggleZenMode,
+    /// Draw only the focused pane across the content area, or tile every pane
+    /// again.
+    ToggleMaximizePane,
     /// Move the outline selection up.
     OutlineUp,
     /// Move the outline selection down.
@@ -881,6 +887,8 @@ impl Command {
             Self::SidebarCollapse => "Sidebar: Collapse",
             Self::SidebarToggleExpand => "Sidebar: Toggle Expand",
             Self::ToggleOutline => "View: Toggle Outline",
+            Self::ToggleZenMode => "View: Toggle Zen Mode",
+            Self::ToggleMaximizePane => "View: Toggle Maximized Pane",
             Self::OutlineUp => "Outline: Select Previous",
             Self::OutlineDown => "Outline: Select Next",
             Self::OutlineActivate => "Outline: Go to Selected",

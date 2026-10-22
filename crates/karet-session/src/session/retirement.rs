@@ -38,6 +38,7 @@ impl Session {
         }
         for key in keys {
             self.clear_lsp_diagnostic_layer(&key);
+            self.clear_semantic_tokens_of(&key);
             self.emit(
                 None,
                 Event::LanguageServerRuntimeChanged {

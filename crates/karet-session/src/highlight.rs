@@ -36,6 +36,9 @@ use tokio::sync::mpsc as tokio_mpsc;
 
 use crate::api::DocumentId;
 
+mod overlay;
+pub(crate) use overlay::overlay_semantic;
+
 /// A unit of work for the highlight worker.
 pub(crate) enum HighlightJob {
     /// (Re)highlight a document.
