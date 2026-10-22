@@ -398,7 +398,7 @@ mod tests {
             "{json}"
         );
         // A callee outside the index has no path, so it is named by its display text.
-        let json = run(dir.path(), "afar", None)?;
+        let json = run(dir.path(), "afar", None, false)?;
         assert!(
             json.contains(
                 "{\"display\": \"elsewhere::send\", \"resolution\": \"external\", \"count\": 1, \
