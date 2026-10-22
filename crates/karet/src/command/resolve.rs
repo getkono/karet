@@ -27,6 +27,8 @@ static PALETTE: &[Command] = &[
     Command::ProblemsCycleSeverity,
     Command::ToggleSidebar,
     Command::ToggleOutline,
+    Command::ToggleZenMode,
+    Command::ToggleMaximizePane,
     Command::ToggleFocus,
     Command::ToggleTerminal,
     Command::NewTerminal,

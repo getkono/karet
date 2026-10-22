@@ -178,13 +178,24 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
     // Top level: a one-row view switcher, the body (sidebar + panes) it sits above,
     // and a one-row status bar. Tab strips and breadcrumbs live *inside* each pane.
+    // Zen Mode gives both rows to the body.
+    let zen = app.modes.zen.is_some();
+    let chrome_height = u16::from(!zen);
     let rows = Layout::vertical([
-        Constraint::Length(1),
+        Constraint::Length(chrome_height),
         Constraint::Min(0),
-        Constraint::Length(1),
+        Constraint::Length(chrome_height),
     ])
     .split(area);
-    draw_view_chrome(f, app, &theme, rows[0]);
+    if zen {
+        // Neither row is drawn, so neither may keep claiming clicks.
+        app.view_chrome_rect = Rect::default();
+        app.view_hits.clear();
+        app.status_rect = Rect::default();
+        app.status_hits.clear();
+    } else {
+        draw_view_chrome(f, app, &theme, rows[0]);
+    }
     let body = rows[1];
 
     let sidebar = if app.sidebar_visible && app.view.shows_sidebar() {
@@ -268,7 +279,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         draw_outline(f, app, &theme, area, &mut hits);
     }
     draw_drop_preview(f, app, &theme);
-    draw_status(f, app, &theme, rows[2]);
+    if !zen {
+        draw_status(f, app, &theme, rows[2]);
+    }
 
     // The signature popup sits above the caret, under the completion popup
     // that may open below it (and over it, where the editor is too short).
