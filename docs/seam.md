@@ -191,7 +191,11 @@ C, C++ and Java are mapped for **containment and the `api` lens only**:
 
 A lens a language does not read shows `?` and "not read for this language" in the facet
 pane, its rollup is `null` in `--seam-query`, and the node lists it under
-`unread_lenses`, because showing `—` would claim the index looked and found nothing. A
+`unread_lenses`, because showing `—` would claim the index looked and found nothing.
+Those three surfaces are the only ones that carry the distinction: the spine's lens
+filter and the query language stay two-valued, matching what carries a facet of the lens,
+so `!lens:hazard` includes a node whose `hazard` is unread, and the filter counts and
+dims it as having none. A
 C or C++ file is a module named by its whole file name — `widget.h` and `widget.c` are
 two modules, since a header and its source share a stem. A C++ method defined outside its
 class (`void Widget::draw() {…}`) is regrouped under the class beside its declaration, as
