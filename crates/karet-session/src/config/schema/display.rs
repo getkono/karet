@@ -72,6 +72,28 @@ pub struct BracketPairColorization {
     pub enabled: bool,
 }
 
+/// `editor.semanticHighlighting.*` — the language server's semantic tokens
+/// laid over the tree-sitter highlighting.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct SemanticHighlighting {
+    /// Ask the language's semantic-token server (its primary, unless
+    /// `lsp.languages.<id>.semanticTokens` names another) for semantic tokens
+    /// and recolour what it classifies -- macros, mutable bindings,
+    /// unresolved names -- through the theme's `semanticTokenColors`.
+    /// Tree-sitter stays the base layer: comments and strings keep its
+    /// colours, and a server that offers no semantic tokens changes nothing.
+    pub enabled: bool,
+}
+
+impl Default for SemanticHighlighting {
+    /// On, as VS Code's built-in themes have it.
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -110,5 +132,31 @@ mod tests {
         }
         let unknown: Result<Guides, _> = serde_json::from_str(r#"{ "bracketPairs": true }"#);
         assert!(unknown.is_err(), "unknown keys are rejected");
+    }
+
+    #[test]
+    fn word_wrap_accepts_auto_and_boolean_overrides() {
+        use crate::config::schema::Editor;
+        let automatic: Editor = serde_json::from_str(r#"{ "wordWrap": null }"#).unwrap_or_default();
+        let wrapped: Editor = serde_json::from_str(r#"{ "wordWrap": true }"#).unwrap_or_default();
+        let overflow: Editor = serde_json::from_str(r#"{ "wordWrap": false }"#).unwrap_or_default();
+        assert_eq!(automatic.word_wrap, None);
+        assert_eq!(wrapped.word_wrap, Some(true));
+        assert_eq!(overflow.word_wrap, Some(false));
+    }
+
+    /// On unless switched off, and a running session reads the switch live
+    /// (see `Session::apply_config_report`).
+    #[test]
+    fn semantic_highlighting_defaults_on_and_parses_vs_code_spelling() {
+        use crate::config::schema::Editor;
+        assert!(Editor::default().semantic_highlighting.enabled);
+        let off: Editor =
+            serde_json::from_str(r#"{ "semanticHighlighting": { "enabled": false } }"#)
+                .unwrap_or_default();
+        assert!(!off.semantic_highlighting.enabled);
+        let unknown: Result<SemanticHighlighting, _> =
+            serde_json::from_str(r#"{ "enabled": "configuredByTheme" }"#);
+        assert!(unknown.is_err(), "only a boolean is accepted");
     }
 }

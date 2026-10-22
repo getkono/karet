@@ -29,6 +29,8 @@
 //! - Server capabilities: [`Capabilities`], [`ServerFeature`], [`PositionEncoding`].
 //! - Interop traits: [`SymbolProvider`], [`DiagnosticFormatter`].
 //! - Theme vocabulary: [`TokenId`], [`StandardToken`], [`ThemeRole`], [`Emphasis`].
+//! - Semantic tokens: [`SemanticToken`], [`SemanticTokenType`],
+//!   [`SemanticTokenModifiers`], carried as a semantic [`TokenId`].
 //! - Notifications: [`Notification`], [`NotificationKind`], [`severity_role`].
 
 mod blame;
@@ -41,6 +43,7 @@ mod highlight;
 mod model;
 mod notify;
 mod provider;
+mod semantic_token;
 mod token;
 mod word;
 
@@ -128,6 +131,9 @@ pub use notify::severity_role;
 pub use provider::DiagnosticFormatter;
 pub use provider::FormattedDiagnostic;
 pub use provider::SymbolProvider;
+pub use semantic_token::SemanticToken;
+pub use semantic_token::SemanticTokenModifiers;
+pub use semantic_token::SemanticTokenType;
 pub use token::Emphasis;
 pub use token::StandardToken;
 pub use token::ThemeRole;

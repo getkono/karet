@@ -591,6 +591,20 @@ pub(crate) enum LspUpdate {
         /// Diagnostics in UTF-16 coordinates.
         diagnostics: Vec<Diagnostic>,
     },
+    /// A document's complete semantic tokens from the language's semantic
+    /// token owner, replacing whatever overlay it had.
+    SemanticTokens {
+        /// The incarnation of the slot that answered.
+        token: SlotToken,
+        /// The slot whose server answered.
+        server: SlotKey,
+        /// The document they classify.
+        path: PathBuf,
+        /// The document version they were asked at.
+        version: i32,
+        /// The tokens, in UTF-16 columns.
+        tokens: Vec<karet_core::SemanticToken>,
+    },
     /// The server binary could not be started (reported once per language).
     SpawnFailed {
         /// The incarnation of the slot that failed to start.

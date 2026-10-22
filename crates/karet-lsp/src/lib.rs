@@ -16,8 +16,8 @@
 //! server→client requests a headless client must not leave hanging
 //! (`workspace/configuration` from the consumer's [`ConnectOptions::settings`],
 //! `client/registerCapability`, `window/workDoneProgress/create`,
-//! `workspace/inlayHint/refresh` -- the last also surfaced through
-//! [`LspClient::refreshes`]). The server requests that must wait on the
+//! `workspace/inlayHint/refresh`, `workspace/semanticTokens/refresh` -- the
+//! last two also surfaced through [`LspClient::refreshes`]). The server requests that must wait on the
 //! editor, `workspace/applyEdit` and `window/showMessageRequest`, are handed
 //! out through [`LspClient::apply_edit_requests`] and
 //! [`LspClient::message_requests`] instead. File watchers a server registers
@@ -48,7 +48,8 @@
 //!
 //! Transport, lifecycle, document sync, diagnostics (pushed, and pulled through
 //! [`LspClient::pull_diagnostics`]), completion, navigation,
-//! symbols, document highlights, inlay hints, rename, signature help, code actions (with
+//! symbols, document highlights, inlay hints, semantic tokens (whole and delta,
+//! see [`LspClient::semantic_tokens`]), rename, signature help, code actions (with
 //! `codeAction/resolve` and `workspace/executeCommand`), and document/range
 //! formatting are implemented as typed, non-panicking operations.
 
@@ -67,6 +68,7 @@ pub use launch::ExitReport;
 pub use launch::LaunchCause;
 pub use launch::LaunchFailure;
 pub use pull::PulledDiagnostics;
+pub use semantic_tokens::SemanticTokens;
 pub use watch::FileChange;
 pub use watch::FileChangeKind;
 pub use window::MessageLevel;
@@ -94,6 +96,7 @@ mod navigation;
 mod pull;
 mod selection;
 mod selector;
+mod semantic_tokens;
 mod snippet;
 mod uri;
 mod watch;
@@ -314,6 +317,11 @@ pub enum ServerRefresh {
     /// answer -- editing a function's return type in one file changes the
     /// hints shown at its call sites in every other.
     InlayHints,
+    /// `workspace/semanticTokens/refresh`: every document's semantic tokens
+    /// from this server may now be stale -- a project-wide change (an index
+    /// that finished loading, a dependency that resolved) reclassified names
+    /// in files nobody edited.
+    SemanticTokens,
 }
 
 /// An async client for a single language server.

@@ -109,6 +109,14 @@ pub(super) enum Behavior {
     /// (`client/registerCapability`) once a document is opened, then answer
     /// pulls like [`Behavior::Pulls`].
     RegistersPulls,
+    /// Serve normally, and offer semantic tokens with deltas: a whole answer
+    /// classifies UTF-16 columns 2..4 of line 0 as a `macro`, and a delta
+    /// rewrites that token to a `variable.mutable`. Each result id names the
+    /// version the double last saw.
+    SemanticTokens,
+    /// Offer semantic tokens like [`Behavior::SemanticTokens`], but cancel
+    /// the first request (`ServerCancelled`, `-32802`) and answer the rest.
+    CancelsSemanticTokensOnce,
 }
 
 /// What the scripted server advertises at the handshake.
@@ -162,6 +170,15 @@ fn advertised_capabilities(behavior: Behavior) -> Value {
     if matches!(behavior, Behavior::Pulls | Behavior::PushesAndPulls) {
         capabilities["diagnosticProvider"] =
             json!({"interFileDependencies": false, "workspaceDiagnostics": false});
+    }
+    if matches!(
+        behavior,
+        Behavior::SemanticTokens | Behavior::CancelsSemanticTokensOnce
+    ) {
+        capabilities["semanticTokensProvider"] = json!({
+            "legend": {"tokenTypes": ["variable", "macro"], "tokenModifiers": ["mutable"]},
+            "full": {"delta": true}
+        });
     }
     capabilities
 }
@@ -362,6 +379,7 @@ pub(super) fn test_connector(
                 let mut last_hint_uri = Value::Null;
                 // The version the last `didOpen` or `didChange` carried.
                 let mut last_version = Value::Null;
+                let mut cancel_tokens = matches!(behavior, Behavior::CancelsSemanticTokensOnce);
                 while let Some(msg) = read_msg(&mut reader).await {
                     if let Some(tx) = &observed {
                         let _ = tx.send(msg.clone());
@@ -542,6 +560,37 @@ pub(super) fn test_connector(
                                         "end": {"line": 0, "character": 4}
                                     }
                                 }]}),
+                            )
+                            .await;
+                        },
+                        Some("textDocument/semanticTokens/full") if cancel_tokens => {
+                            cancel_tokens = false;
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "error": {
+                                    "code": -32802,
+                                    "message": "cancelled by the server"
+                                }}),
+                            )
+                            .await;
+                        },
+                        Some("textDocument/semanticTokens/full") => {
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": {
+                                    "resultId": format!("v{last_version}"),
+                                    "data": [0, 2, 2, 1, 0]
+                                }}),
+                            )
+                            .await;
+                        },
+                        Some("textDocument/semanticTokens/full/delta") => {
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": {
+                                    "resultId": format!("v{last_version}"),
+                                    "edits": [{"start": 3, "deleteCount": 2, "data": [0, 1]}]
+                                }}),
                             )
                             .await;
                         },

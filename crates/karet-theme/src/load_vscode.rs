@@ -11,6 +11,8 @@ use crate::Rgba;
 use crate::Theme;
 use crate::ThemeError;
 use crate::is_dark_color;
+use crate::semantic::SemanticRule;
+use crate::semantic::SemanticStyle;
 
 #[derive(Deserialize)]
 struct Root {
@@ -18,6 +20,45 @@ struct Root {
     colors: HashMap<String, String>,
     #[serde(default, rename = "tokenColors")]
     token_colors: Vec<TokenColorEntry>,
+    /// Selector → a colour string, or a style object. Kept as raw values so
+    /// one malformed entry is skipped rather than failing the whole theme.
+    #[serde(default, rename = "semanticTokenColors")]
+    semantic_token_colors: InFileOrder,
+}
+
+/// A JSON object's entries in the order the file wrote them.
+///
+/// The later of two equally specific `semanticTokenColors` rules wins, so the
+/// order is part of the theme. `serde_json::Map` keeps it only when some crate
+/// in the build turns on `serde_json/preserve_order`, and is sorted otherwise:
+/// reading the entries through a visitor keeps file order whatever features
+/// the build unified.
+#[derive(Default)]
+struct InFileOrder(Vec<(String, serde_json::Value)>);
+
+impl<'de> Deserialize<'de> for InFileOrder {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Entries;
+        impl<'de> serde::de::Visitor<'de> for Entries {
+            type Value = InFileOrder;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("an object of semantic token selectors")
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut entries = Vec::with_capacity(map.size_hint().unwrap_or(0));
+                while let Some(entry) = map.next_entry()? {
+                    entries.push(entry);
+                }
+                Ok(InFileOrder(entries))
+            }
+        }
+        deserializer.deserialize_map(Entries)
+    }
 }
 
 #[derive(Deserialize)]
@@ -156,6 +197,17 @@ pub(crate) fn load(json: &str) -> Result<Theme, ThemeError> {
         }
     }
 
+    // The built-in colour rules belong to the built-in palette; only the
+    // colourless ones carry over, ahead of the theme's own so it can override
+    // them.
+    theme.semantic = crate::default::portable_semantic_rules();
+    theme.semantic.extend(
+        root.semantic_token_colors
+            .0
+            .iter()
+            .filter_map(|(selector, value)| SemanticRule::parse(selector, semantic_style(value)?)),
+    );
+
     // Foreground/dark are derived from the (possibly overridden) editor colors.
     theme.fallback_fg = theme.role(ThemeRole::Foreground);
     theme.dark = is_dark_color(theme.role(ThemeRole::Background));
@@ -194,6 +246,37 @@ fn parse_font_style(s: &str) -> Emphasis {
         underline: s.split_whitespace().any(|w| w == "underline"),
         strikethrough: s.split_whitespace().any(|w| w == "strikethrough"),
     }
+}
+
+/// One `semanticTokenColors` value: a colour string, or an object with any of
+/// `foreground`, `fontStyle`, `bold`, `italic`, `underline` and
+/// `strikethrough`. A `fontStyle` sets all four flags (`""` clears them); an
+/// explicit flag overrides it. `None` for a value that sets nothing usable.
+fn semantic_style(value: &serde_json::Value) -> Option<SemanticStyle> {
+    if let Some(color) = value.as_str() {
+        return Rgba::from_hex(color).map(SemanticStyle::fg);
+    }
+    let object = value.as_object()?;
+    let mut style = SemanticStyle {
+        fg: object
+            .get("foreground")
+            .and_then(serde_json::Value::as_str)
+            .and_then(Rgba::from_hex),
+        ..SemanticStyle::default()
+    };
+    if let Some(font) = object.get("fontStyle").and_then(serde_json::Value::as_str) {
+        let em = parse_font_style(font);
+        style.bold = Some(em.bold);
+        style.italic = Some(em.italic);
+        style.underline = Some(em.underline);
+        style.strikethrough = Some(em.strikethrough);
+    }
+    let flag = |key: &str| object.get(key).and_then(serde_json::Value::as_bool);
+    style.bold = flag("bold").or(style.bold);
+    style.italic = flag("italic").or(style.italic);
+    style.underline = flag("underline").or(style.underline);
+    style.strikethrough = flag("strikethrough").or(style.strikethrough);
+    (!style.is_empty()).then_some(style)
 }
 
 /// Map a TextMate scope selector to a [`StandardToken`], most-specific first.
@@ -481,6 +564,79 @@ mod tests {
             Theme::dark().color(StandardToken::MarkupQuote.id())
         );
         assert!(t.emphasis(StandardToken::MarkupQuote.id()).bold);
+        Ok(())
+    }
+
+    /// A colour string, a style object, and a `fontStyle` whose explicit flag
+    /// overrides it, all resolve; a selector outside the vocabulary or a value
+    /// setting nothing is skipped without failing the theme.
+    #[test]
+    fn semantic_token_colors_overlay_semantic_tokens() -> Result<(), ThemeError> {
+        use karet_core::SemanticTokenModifiers as M;
+        use karet_core::SemanticTokenType as T;
+        use karet_core::TokenId;
+
+        let json = r##"{
+            "tokenColors": [
+                { "scope": "entity.name.function", "settings": { "foreground": "#0000ff" } }
+            ],
+            "semanticTokenColors": {
+                "variable.readonly": "#ff0000",
+                "parameter": { "foreground": "#00ff00", "fontStyle": "italic bold", "bold": false },
+                "*.static": { "fontStyle": "underline" },
+                "widget": "#123456",
+                "function": { "fontStyle": 42 }
+            }
+        }"##;
+        let t = Theme::load_vscode(json)?;
+        let readonly = TokenId::semantic(T::Variable, M::READONLY);
+        assert_eq!(t.color(readonly), Rgba::rgb(255, 0, 0));
+        let parameter = TokenId::semantic(T::Parameter, M::NONE);
+        assert_eq!(t.color(parameter), Rgba::rgb(0, 255, 0));
+        assert_eq!(t.emphasis(parameter), Emphasis::ITALIC);
+        // No rule colours a function: it takes the theme's own function colour.
+        let function = TokenId::semantic(T::Function, M::STATIC);
+        assert_eq!(t.color(function), Rgba::rgb(0, 0, 255));
+        assert_eq!(t.emphasis(function), Emphasis::UNDERLINE);
+        Ok(())
+    }
+
+    /// Of two equally specific rules the one later in the file wins, whatever
+    /// order the selectors sort in. Falsified by reading the entries through
+    /// a sorted map (`*.readonly` would sort first and lose to `*.static`),
+    /// as `serde_json::Map` is without `preserve_order`.
+    #[test]
+    fn a_tie_goes_to_the_rule_later_in_the_file() -> Result<(), ThemeError> {
+        use karet_core::SemanticTokenModifiers as M;
+        use karet_core::SemanticTokenType as T;
+        use karet_core::TokenId;
+
+        let json = r##"{"semanticTokenColors": {"*.static": "#ff0000", "*.readonly": "#00ff00"}}"##;
+        let t = Theme::load_vscode(json)?;
+        let both = TokenId::semantic(T::Variable, M::READONLY | M::STATIC);
+        assert_eq!(t.color(both), Rgba::rgb(0, 255, 0));
+        Ok(())
+    }
+
+    /// The built-in palette's semantic colours do not leak into a loaded
+    /// theme, while its colourless rules carry over and can be overridden.
+    #[test]
+    fn a_loaded_theme_keeps_only_the_colourless_built_in_rules() -> Result<(), ThemeError> {
+        use karet_core::SemanticTokenModifiers as M;
+        use karet_core::SemanticTokenType as T;
+        use karet_core::TokenId;
+
+        let plain = Theme::load_vscode("{}")?;
+        let mac = TokenId::semantic(T::Macro, M::NONE);
+        assert_eq!(plain.color(mac), plain.color(StandardToken::Function.id()));
+        assert_ne!(Theme::dark().color(mac), plain.color(mac));
+        let deprecated = TokenId::semantic(T::Function, M::DEPRECATED);
+        assert!(plain.emphasis(deprecated).strikethrough);
+
+        let cleared = Theme::load_vscode(
+            r#"{"semanticTokenColors":{"*.deprecated":{"strikethrough":false}}}"#,
+        )?;
+        assert!(!cleared.emphasis(deprecated).strikethrough);
         Ok(())
     }
 

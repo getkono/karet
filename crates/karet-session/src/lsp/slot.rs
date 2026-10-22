@@ -166,6 +166,12 @@ pub(super) struct ServerSlot {
     /// The `lsp.servers` entry those settings are read from: the provider's
     /// own, or the one keyed by the language that started it.
     pub(super) settings_key: String,
+    /// Whether this slot owns semantic tokens for the language that started
+    /// it (see [`super::semantic_tokens`]).
+    pub(super) semantic_owner: bool,
+    /// Whether the task fetches semantic tokens: it owns them and the setting
+    /// is on. The task holds the receiving half.
+    pub(super) semantic: tokio::sync::watch::Sender<bool>,
 }
 
 /// A slot's current server settings, read by each connection it makes.
@@ -188,6 +194,8 @@ impl ServerSlot {
             error: None,
             settings,
             settings_key: String::new(),
+            semantic_owner: false,
+            semantic: tokio::sync::watch::Sender::new(false),
         }
     }
 }

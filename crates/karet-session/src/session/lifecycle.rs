@@ -77,12 +77,13 @@ impl Session {
             config.process_supervisor.clone(),
             events.clone(),
         );
-        let (lsp, lsp_rx) = LspManager::new(
+        let (mut lsp, lsp_rx) = LspManager::new(
             config.settings.lsp.clone(),
             config.roots.first().cloned(),
             config.process_supervisor.clone(),
             config.lsp_registry_dir.clone(),
         );
+        lsp.set_semantic_highlighting(config.settings.editor.semantic_highlighting.enabled);
         let (lsp_registry, lsp_registry_rx) = crate::lsp_registry::spawn(
             config.lsp_registry_dir.clone(),
             config.process_supervisor.clone(),
