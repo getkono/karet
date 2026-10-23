@@ -580,6 +580,63 @@ mod tests {
         );
     }
 
+    /// A fresh git root (a `.git` directory) holding `files`, each empty; a name
+    /// ending in `/` is created as a directory instead.
+    fn repo_with(files: &[&str]) -> std::io::Result<tempfile::TempDir> {
+        let dir = tempfile::tempdir()?;
+        std::fs::create_dir(dir.path().join(".git"))?;
+        for name in files {
+            match name.strip_suffix('/') {
+                Some(dir_name) => std::fs::create_dir(dir.path().join(dir_name))?,
+                None => std::fs::write(dir.path().join(name), "")?,
+            }
+        }
+        Ok(dir)
+    }
+
+    #[test]
+    fn startup_readme_prefers_the_named_readmes_in_order() -> std::io::Result<()> {
+        let rows: [(&[&str], &str); 5] = [
+            (&["README.txt", "README.md", "README"], "README.md"),
+            (&["README.txt", "README.markdown"], "README.markdown"),
+            (&["README", "README.txt"], "README.txt"),
+            (&["README", "notes.md"], "README"),
+            (&["README.md/", "README.txt"], "README.txt"),
+        ];
+        for (files, expect) in rows {
+            let dir = repo_with(files)?;
+            assert_eq!(
+                startup_readme(dir.path()),
+                Some(dir.path().join(expect)),
+                "{files:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn startup_readme_falls_back_to_any_readme_extension() -> std::io::Result<()> {
+        let dir = repo_with(&["Readme.Rst", "main.rs"])?;
+        assert_eq!(
+            startup_readme(dir.path()),
+            Some(dir.path().join("Readme.Rst"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn startup_readme_needs_a_git_root_and_a_readme_file() -> std::io::Result<()> {
+        let plain = tempfile::tempdir()?;
+        std::fs::write(plain.path().join("README.md"), "")?;
+        assert_eq!(startup_readme(plain.path()), None, "not a git root");
+
+        for files in [&[][..], &["readme/"], &["READMEFIRST", "notes.md"]] {
+            let dir = repo_with(files)?;
+            assert_eq!(startup_readme(dir.path()), None, "{files:?}");
+        }
+        Ok(())
+    }
+
     #[test]
     fn trailing_separator_keeps_a_missing_path_as_a_workspace() {
         let raw = format!("missing{}", std::path::MAIN_SEPARATOR);

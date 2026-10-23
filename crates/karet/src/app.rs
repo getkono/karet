@@ -772,3 +772,75 @@ impl App {
         }
     }
 }
+
+/// [`App::apply_keymap`]'s side effects. Each test installs the compiled-in
+/// defaults, so the process-wide keymap every other test reads never changes.
+#[cfg(test)]
+mod keymap_reload_tests {
+    use super::tests::support::app;
+    use super::*;
+    use crate::keymap::KeyChord;
+    use crate::keymap::user::Issue;
+    use crate::keymap::user::KeymapReport;
+
+    /// The active notifications' severities and titles, oldest first.
+    fn notes(app: &App) -> Vec<(Severity, String)> {
+        let mut notes: Vec<_> = app
+            .notifications
+            .active()
+            .into_iter()
+            .map(|note| (note.severity, note.title.clone()))
+            .collect();
+        notes.reverse();
+        notes
+    }
+
+    /// A Ctrl+K press, the prefix of the two-key chords.
+    fn ctrl_k() -> KeyChord {
+        KeyChord::from_event(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL))
+    }
+
+    /// A clean reload drops a half-typed chord and says it reloaded.
+    #[test]
+    fn a_clean_reload_clears_the_pending_chord_and_reports_success() {
+        let mut app = app();
+        app.pending.push(ctrl_k());
+        app.apply_keymap(keymap::Keymap::defaults(), &KeymapReport::default());
+        assert!(app.pending.is_empty());
+        assert_eq!(
+            notes(&app),
+            vec![(Severity::Hint, "keymap reloaded".into())]
+        );
+    }
+
+    /// A reload with problems reports each one as a `config:` warning, located
+    /// at its file, and never also claims a clean reload.
+    #[test]
+    fn a_reload_with_problems_reports_each_and_not_success() {
+        let mut app = app();
+        app.pending.push(ctrl_k());
+        let issue = |message: &str| Issue {
+            path: PathBuf::from("/k/keymap.jsonc"),
+            message: message.to_owned(),
+        };
+        let report = KeymapReport {
+            files: Vec::new(),
+            issues: vec![issue("1:2: unknown command"), issue("3:4: bad key")],
+        };
+        app.apply_keymap(keymap::Keymap::defaults(), &report);
+        assert!(app.pending.is_empty());
+        assert_eq!(
+            notes(&app),
+            vec![
+                (
+                    Severity::Warning,
+                    "config: /k/keymap.jsonc: 1:2: unknown command".into()
+                ),
+                (
+                    Severity::Warning,
+                    "config: /k/keymap.jsonc: 3:4: bad key".into()
+                ),
+            ]
+        );
+    }
+}
