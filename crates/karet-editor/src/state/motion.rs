@@ -159,7 +159,9 @@ impl Rows<'_> {
         ))
     }
 
-    /// The display cell of `pos` within its row: the goal column it sets.
+    /// The display cell of `pos` within its row, counting a continuation
+    /// row's indent: the goal column it sets, so a vertical move keeps the
+    /// screen column it is drawn at.
     fn cell(&self, pos: LineCol, upstream: bool) -> u32 {
         let row = self.row_of(pos, upstream);
         offset_within_row(
@@ -169,6 +171,7 @@ impl Rows<'_> {
             self.layout.tab_width,
             LineHints::default(),
         )
+        .saturating_add(row.range.indent)
     }
 
     /// The text row `rows` text rows below (`down`) or above `from`, and
@@ -212,13 +215,14 @@ impl Rows<'_> {
 
     /// The column of the row `anchor` nearest the display cell `goal`, and
     /// whether it is that row's end where the next row of the line starts.
+    /// A goal inside a continuation row's indent lands on the row's start.
     fn place(&self, anchor: VisualAnchor, goal: u32) -> (LineCol, bool) {
         let row = self.row(anchor);
         let col = source_col_at_display_offset(
             &line_chars(self.buffer, anchor.line),
             row.range.start,
             row.range.end,
-            goal,
+            goal.saturating_sub(row.range.indent),
             self.layout.tab_width,
             LineHints::default(),
             Snap::Nearest,
