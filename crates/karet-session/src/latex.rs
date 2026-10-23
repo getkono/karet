@@ -489,23 +489,35 @@ mod tests {
         let root = dir.path().join("main.tex");
         let output_dir = dir.path().join("out");
         std::fs::write(&root, "\\documentclass{article}\n")?;
+        // The compiler marks that it is running, then outlives any test: a build
+        // that returns at all was stopped, and one that was not would also have
+        // to outlast the default timeout, which reports itself differently.
+        let started = output_dir.join("started");
         let settings = Latex {
-            command: "sleep".to_owned(),
-            args: vec!["5".to_owned()],
+            command: "sh".to_owned(),
+            args: vec![
+                "-c".to_owned(),
+                "touch \"$1\"; exec sleep 600".to_owned(),
+                "karet-test".to_owned(),
+                started.to_string_lossy().into_owned(),
+            ],
             ..Latex::default()
         };
         let hub = crate::cancellation::CancellationHub::default();
         let token = hub.register(RequestId(9));
-        let started = Instant::now();
         let error = std::thread::scope(|scope| {
             let build = scope.spawn(|| compile(&root, &output_dir, &settings, &token, None));
-            std::thread::sleep(Duration::from_millis(50));
+            // Cancel the compiler while it runs, not before it was spawned.
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !started.exists() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(5));
+            }
             hub.cancel(RequestId(9));
             build.join().ok().and_then(Result::err)
         });
 
+        assert!(started.exists(), "the compiler never started");
         assert!(error.is_some_and(|error| error.contains("cancelled")));
-        assert!(started.elapsed() < Duration::from_secs(2));
         Ok(())
     }
 
