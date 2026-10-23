@@ -90,9 +90,12 @@ impl NotebookKernels {
             .is_some_and(|active| active.path == path && !active.jobs.is_closed());
         if !alive {
             self.active = None;
-            let Ok(connection) = kernel::local_connection() else {
-                self.notify("no loopback port for a kernel connection");
-                return None;
+            let connection = match kernel::local_connection() {
+                Ok(connection) => connection,
+                Err(error) => {
+                    self.notify(&format!("could not set up a kernel connection: {error}"));
+                    return None;
+                },
             };
             let (jobs_tx, jobs_rx) = mpsc::unbounded_channel();
             let task = KernelTask {
@@ -232,7 +235,9 @@ async fn kernel_task(ctx: KernelTask, mut jobs: mpsc::UnboundedReceiver<Job>) {
     };
 
     status(Severity::Information, &format!("starting {}", spec.name));
-    let Some((mut client, _child, connection_file)) =
+    // `_child` and `_connection_file` are held, not discarded: dropping the
+    // child kills the kernel, and dropping the guard deletes its key file.
+    let Some((mut client, mut _child, mut _connection_file)) =
         boot(&ctx, spec, &ctx.connection, &notify).await
     else {
         status(Severity::Error, "kernel failed to start");
@@ -259,13 +264,25 @@ async fn kernel_task(ctx: KernelTask, mut jobs: mpsc::UnboundedReceiver<Job>) {
                     return;
                 };
                 client = fresh;
-                let _ = (child, file);
+                // Replacing them drops the old kernel's child and deletes its
+                // connection file; the new ones live until the next restart.
+                _child = child;
+                _connection_file = file;
                 status(Severity::Information, "ready");
             },
         }
     }
     let _ = client.shutdown().await;
-    let _ = std::fs::remove_file(connection_file);
+}
+
+/// A written connection file, deleted when dropped: it holds the kernel's
+/// signing key, so every path out of a boot or restart removes it.
+struct ConnectionFile(PathBuf);
+
+impl Drop for ConnectionFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
 }
 
 /// Spawn the kernel process (through the supervisor when available) and wait
@@ -275,9 +292,14 @@ async fn boot(
     spec: &kernel::KernelSpec,
     connection: &kernel::ConnectionInfo,
     notify: &impl Fn(String),
-) -> Option<(KernelClient<ZmqTransport>, tokio::process::Child, PathBuf)> {
+) -> Option<(
+    KernelClient<ZmqTransport>,
+    tokio::process::Child,
+    ConnectionFile,
+)> {
+    // Guarded from here on, so a failed boot below deletes the file too.
     let connection_file = match kernel::write_connection_file(connection) {
-        Ok(path) => path,
+        Ok(path) => ConnectionFile(path),
         Err(error) => {
             notify(format!(
                 "notebook: could not write the connection file: {error}"
@@ -285,7 +307,7 @@ async fn boot(
             return None;
         },
     };
-    let argv = kernel::substitute_argv(&spec.argv, &connection_file.to_string_lossy());
+    let argv = kernel::substitute_argv(&spec.argv, &connection_file.0.to_string_lossy());
     let (program, args) = argv.split_first()?;
     let mut command = match &ctx.supervisor {
         Some(supervisor) => {
@@ -625,6 +647,23 @@ mod tests {
             }
         };
         assert!(message.contains("notebook:"), "{message}");
+    }
+
+    #[test]
+    fn a_dropped_connection_file_guard_deletes_the_key_file() -> std::io::Result<()> {
+        // A restart swaps the guard and a failed boot drops it, so this drop
+        // is what keeps key-bearing files from piling up in the temp dir.
+        let info = kernel::local_connection()?;
+        let path = kernel::write_connection_file(&info)?;
+        let mut held = ConnectionFile(path.clone());
+        assert!(held.0.exists());
+        let next = kernel::write_connection_file(&info)?;
+        held = ConnectionFile(next.clone());
+        assert!(!path.exists(), "the replaced file outlived its restart");
+        assert!(next.exists(), "the live kernel's file was deleted");
+        drop(held);
+        assert!(!next.exists(), "the last file outlived the task");
+        Ok(())
     }
 
     #[tokio::test]
