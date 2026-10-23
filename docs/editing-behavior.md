@@ -53,7 +53,7 @@ today. Each fix then adds its own failing reproductions.
   punctuation and a run of whitespace are each one unit of their own for word
   motion and double-click.
 - Columns are counted in grapheme clusters wherever a user can see them:
-  motion, deletion, hit-testing and display width (#342).
+  motion, deletion, hit-testing and display width.
 
 ## Motion
 
@@ -111,7 +111,7 @@ too, not word selection.
 |---|---|---|
 | Ctrl+Alt+Down / Ctrl+Alt+Up | Add a caret on the line below / above, at the goal column. The new caret is primary. | harness |
 | Alt+click | Add a caret at the click, which becomes primary. Alt+click on an existing caret removes it, and the primary stays the same caret. | harness |
-| Ctrl+D | With an empty caret, select the word under it. Then add the next occurrence after the most recently added one, wrapping and skipping ranges already selected. Matching is whole-word when the sequence began from an empty caret, and plain substring when it began from a selection. | #341 |
+| Ctrl+D | With an empty caret, select the word under it. Then add the next occurrence after the most recently added one, wrapping and skipping ranges already selected. Matching is whole-word when the sequence began from an empty caret, and plain substring when it began from a selection. | harness |
 | Ctrl+Shift+L | Replace every selection with one over each occurrence of the primary selection's text, the primary staying on the occurrence it was on. From an empty caret, take the word under it and match whole words; from a selection, match plain substrings, unless it is still the set a whole-word Ctrl+D run left. Nothing happens off a word. | harness |
 | Ctrl+K Ctrl+D | Move the primary selection (the most recently added occurrence) to the next occurrence after it, wrapping and passing over ranges already selected, so the occurrence it was on is skipped. From an empty caret, select the word under it, as Ctrl+D does. With no further occurrence nothing changes. | harness |
 | Shift+Alt+I | Replace each selection with a caret at the end of every line it spans; on its last line the caret goes where the selection ends, and a selection ending at the start of a line puts none there. A one-line selection becomes a caret at its end. The primary is the last caret the primary selection produced. | harness |
@@ -200,14 +200,14 @@ kind closes is `editor.autoClosingBrackets` / `editor.autoClosingQuotes`
 ## Click
 
 Clicks land on the character boundary nearest to the pointer: the right half
-of a wide character or of a tab's cells resolves to after it (#337).
+of a wide character or of a tab's cells resolves to after it.
 
 | Input | Behaviour | Status |
 |---|---|---|
-| Click on text | Place the caret there and drop every other caret. A click on visible text never scrolls. | harness (horizontal scroll read from the rig in `editor_drag.rs`; folds and sticky headers in `karet-editor`'s `tests/pointer.rs`) |
+| Click on text | Place the caret there and drop every other caret. A click on visible text never scrolls. | harness (horizontal scroll read from the rig in `editor_drag.rs`; folds and sticky headers in `karet-editor`'s `src/tests/pointer.rs`) |
 | Click past the end of a line | Caret at the line end. | harness |
-| Click below the last line | Caret at the end of the document. | #337 |
-| Click at a wrap boundary | The caret stays on the visual row that was clicked. | #337 |
+| Click below the last line | Caret at the end of the document. | harness |
+| Click at a wrap boundary | The caret stays on the visual row that was clicked. | harness (`vertical_motion.rs`) |
 | Shift+click | Extend the primary selection from its anchor to the click; drop the other carets. | harness (forward and backward) |
 | Ctrl+click (Super+click where the terminal reports it) | Go to the definition of the identifier under the pointer. On anything else (whitespace, past the line end, the gutter) nothing happens. | — (needs a language server); non-identifiers by a recording backend in `tests/definition.rs` |
 | Ctrl+click on a link written in the source | Open the link instead of going to a definition: a bare `http`/`https` URL in any file, and in Markdown an inline `[text](target)` (or `![alt](src)`) link anywhere from its `[` to its `)`. A URL opens with the desktop's opener; a relative file target opens in karet, and one that resolves outside the workspace asks first; any other target is refused with a notice. Holding Ctrl (or Super) over a link underlines it, whether or not a language server is running; the underline shows in the focused split only, but a Ctrl+click on a link in an unfocused split focuses that split and opens the link. Ctrl+Alt and Ctrl+Shift keep their editor meanings. | `tests/source_links.rs`; scanning in `autolink.rs` |

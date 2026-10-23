@@ -156,6 +156,47 @@ fn esc_keeps_the_original_caret_then_clears_its_selection() {
     ]);
 }
 
+/// Ctrl+D: the word under an empty caret, then each next occurrence, wrapping
+/// and skipping what is already selected; whole words from a caret, plain
+/// substrings from a selection.
+#[test]
+fn ctrl_d_adds_the_next_occurrence() {
+    use KeyCode::*;
+    let ctrl_d = Step::Key(Char('d'), CTRL);
+    check(vec![
+        case(
+            "Ctrl+D on an empty caret selects the word under it",
+            "f|oo foo",
+            vec![ctrl_d],
+            "[foo|] foo",
+        ),
+        case(
+            "from a caret the next occurrence is a whole word",
+            "f|oo food foo",
+            vec![ctrl_d, ctrl_d],
+            "[foo|] food [foo#]",
+        ),
+        case(
+            "the search wraps past the end of the document",
+            "foo f|oo",
+            vec![ctrl_d, ctrl_d],
+            "[foo#] [foo|]",
+        ),
+        case(
+            "occurrences already selected are skipped",
+            "f|oo bar foo",
+            vec![ctrl_d, ctrl_d, ctrl_d],
+            "[foo|] bar [foo#]",
+        ),
+        case(
+            "from a selection the next occurrence is a plain substring",
+            "[foo|] food",
+            vec![ctrl_d],
+            "[foo|] [foo#]d",
+        ),
+    ]);
+}
+
 /// Ctrl+Shift+L, Ctrl+K Ctrl+D, Shift+Alt+I and Ctrl+U, through the keymap.
 #[test]
 fn occurrence_line_end_and_caret_undo_chords() {

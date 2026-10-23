@@ -568,7 +568,7 @@ The JSON Schema is emitted from the `Settings` type; regenerate it after changin
 schema with:
 
 ```sh
-cargo run -p karet-session --example settings-schema > settings.schema.json
+cargo run -p karet-session --features schema --example settings-schema > settings.schema.json
 ```
 
 A test (`karet-session`'s `config::tests::checked_in_schema_is_current`) fails if the

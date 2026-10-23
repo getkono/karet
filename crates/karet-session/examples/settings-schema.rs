@@ -3,7 +3,7 @@
 //! Regenerate the checked-in schema with:
 //!
 //! ```sh
-//! cargo run -p karet-session --example settings-schema > settings.schema.json
+//! cargo run -p karet-session --features schema --example settings-schema > settings.schema.json
 //! ```
 //!
 //! A test in `karet-session` (`config::tests::checked_in_schema_is_current`) fails if
