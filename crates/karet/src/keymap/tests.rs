@@ -29,6 +29,35 @@ fn bindings_are_authored_in_canonical_form() {
 }
 
 #[test]
+fn default_binding_hints_parse_back_to_their_chords() {
+    // A hint is what a user copies into keymap.jsonc, so the verbose rendering of
+    // every default binding must name the same keys through the user-file parser.
+    // The one known lossy case is a bare letter, which renders upper-cased (`g`
+    // and `G` both show as `G`); fold its case on both sides.
+    let fold = |c: KeyChord| match c.code {
+        KeyCode::Char(ch) if !c.mods.ctrl && !c.mods.alt => KeyChord {
+            code: KeyCode::Char(ch.to_ascii_lowercase()),
+            ..c
+        },
+        _ => c,
+    };
+    for bind in BINDINGS {
+        let hint = bind.hint(ChordStyle::Verbose);
+        let parsed = user::parse_sequence(&hint);
+        assert!(
+            parsed.is_ok(),
+            "hint `{hint}` for {:?} does not parse: {parsed:?}",
+            bind.command
+        );
+        let parsed: Vec<KeyChord> = parsed.unwrap_or_default().into_iter().map(fold).collect();
+        let expected: Vec<KeyChord> = (0..bind.seq_len())
+            .map(|i| fold(bind.chord_at(i)))
+            .collect();
+        assert_eq!(parsed, expected, "hint `{hint}` for {:?}", bind.command);
+    }
+}
+
+#[test]
 fn comment_toggles_bind_in_the_editor_under_both_terminal_encodings() {
     let editor = |code, mods| res(Focus::Editor, false, key(code, mods));
     // Kitty-protocol terminals report Ctrl+/; legacy ones send 0x1F, read as Ctrl+7.
