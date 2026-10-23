@@ -224,6 +224,92 @@ mod tests {
     }
 
     #[test]
+    fn ragged_rows_pad_to_the_widest_row() {
+        // The header is the narrow row; the wide row sets the column count.
+        let doc = Document {
+            blocks: vec![Block::Table {
+                rows: vec![
+                    vec![vec![Span::text("H")]],
+                    vec![
+                        vec![Span::text("a")],
+                        vec![Span::text("b")],
+                        vec![Span::text("c")],
+                    ],
+                    Vec::new(),
+                ],
+            }],
+        };
+        assert_eq!(
+            to_markdown(&doc),
+            "| H |  |  |\n| --- | --- | --- |\n| a | b | c |\n|  |  |  |"
+        );
+    }
+
+    #[test]
+    fn single_row_table_is_header_only() {
+        let doc = Document {
+            blocks: vec![Block::Table {
+                rows: vec![vec![vec![Span::text("only")]]],
+            }],
+        };
+        assert_eq!(to_markdown(&doc), "| only |\n| --- |");
+    }
+
+    #[test]
+    fn table_with_no_cells_renders_nothing() {
+        for rows in [Vec::new(), vec![Vec::new(), Vec::new()]] {
+            let doc = Document {
+                blocks: vec![Block::Table { rows }],
+            };
+            assert_eq!(to_markdown(&doc), "");
+        }
+        // Between paragraphs it still contributes its separator, leaving an extra
+        // blank line rather than merging the neighbours.
+        let doc = Document {
+            blocks: vec![
+                para(ParaStyle::Normal, vec![Span::text("a")]),
+                Block::Table { rows: Vec::new() },
+                para(ParaStyle::Normal, vec![Span::text("b")]),
+            ],
+        };
+        assert_eq!(to_markdown(&doc), "a\n\n\n\nb");
+    }
+
+    #[test]
+    fn cell_newlines_flatten_and_styled_cells_keep_markers() {
+        let doc = Document {
+            blocks: vec![Block::Table {
+                rows: vec![vec![
+                    vec![Span::text("one"), Span::text("\n"), Span::text("two")],
+                    vec![Span {
+                        text: "x|y".into(),
+                        bold: true,
+                        ..Span::default()
+                    }],
+                ]],
+            }],
+        };
+        assert_eq!(to_markdown(&doc), "| one two | **x\\|y** |\n| --- | --- |");
+    }
+
+    #[test]
+    fn heading_zero_clamps_up_and_empty_paragraphs_stay_blank() {
+        let doc = Document {
+            blocks: vec![
+                para(ParaStyle::Heading(0), vec![Span::text("h")]),
+                para(ParaStyle::Normal, Vec::new()),
+                para(ParaStyle::Normal, vec![Span::text("end")]),
+            ],
+        };
+        assert_eq!(to_markdown(&doc), "# h\n\n\n\nend");
+    }
+
+    #[test]
+    fn empty_document_is_empty_markdown() {
+        assert_eq!(to_markdown(&Document::default()), "");
+    }
+
+    #[test]
     fn blocks_are_blank_line_separated() {
         let doc = Document {
             blocks: vec![

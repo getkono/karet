@@ -133,4 +133,46 @@ mod tests {
             Err(CborError::IntegerRange(_))
         ));
     }
+
+    #[test]
+    fn integer_range_is_exactly_minus_two_pow_64_to_two_pow_64_minus_one() {
+        let max = i128::from(u64::MAX);
+        let min = -max - 1;
+        for i in [min, min + 1, -1, 0, 1, max - 1, max] {
+            let back = CborValue::Integer(i)
+                .into_ciborium()
+                .ok()
+                .and_then(|c| CborValue::from_ciborium(c).ok());
+            assert_eq!(back, Some(CborValue::Integer(i)), "{i} should be in range");
+        }
+        for i in [i128::MIN, min - 1, max + 1, i128::MAX] {
+            assert!(
+                matches!(
+                    CborValue::Integer(i).into_ciborium(),
+                    Err(CborError::IntegerRange(got)) if got == i
+                ),
+                "{i} should be out of range"
+            );
+        }
+    }
+
+    #[test]
+    fn out_of_range_integer_nested_in_containers_is_rejected() {
+        let too_big = || CborValue::Integer(i128::from(u64::MAX) + 1);
+        let nested = [
+            CborValue::Array(vec![CborValue::Null, too_big()]),
+            CborValue::Map(vec![(too_big(), CborValue::Null)]),
+            CborValue::Map(vec![(CborValue::Null, too_big())]),
+            CborValue::Tag(1, Box::new(too_big())),
+        ];
+        for value in nested {
+            assert!(
+                matches!(
+                    value.clone().into_ciborium(),
+                    Err(CborError::IntegerRange(_))
+                ),
+                "{value:?} should be rejected"
+            );
+        }
+    }
 }

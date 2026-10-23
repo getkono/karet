@@ -171,6 +171,72 @@ mod tests {
     }
 
     #[test]
+    fn escapes_every_named_escape_and_low_control_as_u_escape() {
+        let text = "\\ \r \t \u{0} \u{1} \u{8} \u{c} \u{1b} \u{1f}".to_string();
+        assert_eq!(
+            to_diagnostic(&CborValue::Text(text)),
+            "\"\\\\ \\r \\t \\u0000 \\u0001 \\u0008 \\u000c \\u001b \\u001f\""
+        );
+    }
+
+    #[test]
+    fn leaves_space_del_and_non_ascii_unescaped() {
+        // 0x20 is the first character past the control range; DEL (0x7f) and
+        // non-ASCII text are written verbatim.
+        let text = " \u{7f}é☕😀".to_string();
+        assert_eq!(to_diagnostic(&CborValue::Text(text)), "\" \u{7f}é☕😀\"");
+    }
+
+    #[test]
+    fn float_formatting_keeps_a_float_marker() {
+        assert_eq!(to_diagnostic(&CborValue::Float(0.0)), "0.0");
+        assert_eq!(to_diagnostic(&CborValue::Float(-0.0)), "-0.0");
+        assert_eq!(to_diagnostic(&CborValue::Float(-3.0)), "-3.0");
+        assert_eq!(to_diagnostic(&CborValue::Float(0.1)), "0.1");
+        assert_eq!(
+            to_diagnostic(&CborValue::Float(1e300)),
+            format!("{}.0", 1e300)
+        );
+    }
+
+    #[test]
+    fn integer_extremes_render_in_full() {
+        let max = i128::from(u64::MAX);
+        assert_eq!(
+            to_diagnostic(&CborValue::Integer(max)),
+            "18446744073709551615"
+        );
+        assert_eq!(
+            to_diagnostic(&CborValue::Integer(-max - 1)),
+            "-18446744073709551616"
+        );
+    }
+
+    #[test]
+    fn empty_text_and_bytes() {
+        assert_eq!(to_diagnostic(&CborValue::Text(String::new())), "\"\"");
+        assert_eq!(to_diagnostic(&CborValue::Bytes(vec![])), "h''");
+    }
+
+    #[test]
+    fn nested_containers_indent_per_depth_and_tags_inherit_depth() {
+        let value = CborValue::Map(vec![(
+            CborValue::Text("k".to_string()),
+            CborValue::Tag(
+                7,
+                Box::new(CborValue::Array(vec![
+                    CborValue::Array(vec![]),
+                    CborValue::Map(vec![(CborValue::Integer(1), CborValue::Null)]),
+                ])),
+            ),
+        )]);
+        assert_eq!(
+            to_diagnostic(&value),
+            "{\n  \"k\": 7([\n    [],\n    {\n      1: null\n    }\n  ])\n}"
+        );
+    }
+
+    #[test]
     fn tag() {
         let value = CborValue::Tag(0, Box::new(CborValue::Text("x".to_string())));
         assert_eq!(to_diagnostic(&value), "0(\"x\")");
