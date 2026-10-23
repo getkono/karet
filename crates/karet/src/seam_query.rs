@@ -52,7 +52,14 @@ pub(crate) fn run(
             ..karet_seam::GraphOptions::default()
         },
     );
-    Ok(render(&index, &graph, &result.nodes, query, &active.name))
+    // Named as `--seam-report` names it, so the two surfaces never disagree on what a
+    // configuration with tests built is called.
+    let configuration = if include_tests {
+        format!("{} + tests", active.name)
+    } else {
+        active.name.clone()
+    };
+    Ok(render(&index, &graph, &result.nodes, query, &configuration))
 }
 
 /// Index everything under `root` and apply the configuration asked for.
@@ -455,6 +462,47 @@ mod tests {
         // Distinct from a failure: the question was understood, and the answer is none.
         let json = run(dir.path(), "lens:hazard", None, false)?;
         assert!(json.contains("\"matched\": 0"), "{json}");
+        Ok(())
+    }
+
+    #[test]
+    fn test_code_is_queried_and_named_only_with_include_tests()
+    -> Result<(), Box<dyn std::error::Error>> {
+        if karet_seam::lang::rust::language_id().is_none() {
+            return Ok(());
+        }
+        let dir = tempfile::tempdir()?;
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"q\"\nversion = \"0.1.0\"\n",
+        )?;
+        std::fs::create_dir_all(dir.path().join("src"))?;
+        std::fs::write(
+            dir.path().join("src/lib.rs"),
+            "pub fn shipped() {}\n#[cfg(test)]\nmod tests {\n    fn check() {}\n}\n",
+        )?;
+
+        // The tree keeps a gated-out node, marked inactive and left unmeasured.
+        let check = |json: &str| {
+            json.lines()
+                .find(|line| line.contains("\"id\": \"q::tests::check\""))
+                .map(str::to_owned)
+                .unwrap_or_default()
+        };
+        let without = run(dir.path(), "kind:function", None, false)?;
+        let gated = check(&without);
+        assert!(gated.contains("\"membership\": \"inactive\""), "{without}");
+        assert!(gated.contains("\"inclusive\": null"), "{without}");
+        assert!(!without.contains(" + tests"), "{without}");
+
+        let with = run(dir.path(), "kind:function", None, true)?;
+        let built = check(&with);
+        assert!(built.contains("\"membership\": \"active\""), "{with}");
+        assert!(built.contains("\"inclusive\": 1"), "{with}");
+        assert!(
+            with.contains("\"configuration\": \"") && with.contains(" + tests\""),
+            "{with}"
+        );
         Ok(())
     }
 }

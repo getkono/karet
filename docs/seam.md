@@ -394,6 +394,10 @@ per target and resolution with a site count and the first site's line. `loc` is 
 for anything that is not a function, and its graph measures are `null` for a function the
 configuration leaves out, which is a different answer from zero.
 
+`--include-tests` applies the test configuration before the query runs, so `cfg(test)`
+functions are `active` and measured rather than `inactive` with `null` graph measures, and
+the result's `configuration` is then named `… + tests`, as the report names it.
+
 An unreadable query and a path that is not a package both fail with a non-zero exit rather
 than printing an empty result, since either would otherwise read as "no such seams here".
 A query that is understood and matches nothing is a success reporting zero.
@@ -419,7 +423,10 @@ language model deciding where structure and encapsulation could improve. In orde
    calling nothing here), unreachable non-public functions, and functions only tests call.
    "Unreachable" leaves out anything a contract may dispatch to — a trait
    implementation, an override, a method sharing its name with a contract's — since
-   `Display::fmt` is called by `format!`, which no call edge records.
+   `Display::fmt` is called by `format!`, which no call edge records — and any function
+   whose name is written at a call site with too many candidates to resolve, since that
+   site counts in neither bound but may well be calling it. A method a trait or
+   interface declares is as visible as its contract, here and in the coupling section.
 4. **Module coupling** — afferent and efferent coupling and instability per module, the
    module-to-module call matrix, calls into another module's non-public items, and
    functions that call one other module more than their own.
