@@ -584,6 +584,99 @@ mod tests {
         assert_eq!(CursorState::default().normalize_tracking(3), 0);
     }
 
+    /// Whether `inner`'s range lies within `outer`'s.
+    fn covers(outer: Selection, inner: Selection) -> bool {
+        let (o, i) = (outer.range(), inner.range());
+        o.start <= i.start && i.end <= o.end
+    }
+
+    /// Whether `a` and `b` would merge under normalize's collision rule, stated
+    /// independently of the implementation's sorted-pair `collides`.
+    fn overlap(a: Selection, b: Selection) -> bool {
+        let (ra, rb) = (a.range(), b.range());
+        if a.is_empty() || b.is_empty() {
+            ra.start <= rb.end && rb.start <= ra.end
+        } else {
+            ra.start < rb.end && rb.start < ra.end
+        }
+    }
+
+    /// Seeded generator over a small grid, so collisions of every shape are
+    /// common: coincident carets, carets on edges, touching and nested ranges,
+    /// both directions.
+    #[test]
+    fn normalize_holds_its_invariants_on_generated_cursor_sets() {
+        let mut seed: u64 = 0x5eed_c0de;
+        let mut next = |bound: u32| {
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            u32::try_from((seed >> 33) % u64::from(bound)).unwrap_or(0)
+        };
+        for _ in 0..2000 {
+            let count = next(6) as usize + 1;
+            let mut point = || LineCol::new(next(3), next(5));
+            let input: Vec<Selection> = (0..count)
+                .map(|_| Selection {
+                    anchor: point(),
+                    head: point(),
+                })
+                .collect();
+            let primary = next(u32::try_from(count).unwrap_or(1)) as usize;
+            let followed = next(u32::try_from(count).unwrap_or(1)) as usize;
+            let mut cs = CursorState {
+                selections: input.clone(),
+                primary,
+            };
+            let slot = cs.normalize_tracking(followed);
+            let out = &cs.selections;
+            let context = format!("input {input:?} primary {primary} -> {out:?}");
+
+            // Non-empty stays non-empty, and merging only ever shrinks the set.
+            assert!(!out.is_empty() && out.len() <= input.len(), "{context}");
+            // Document order, with no two survivors still colliding.
+            for pair in out.windows(2) {
+                assert!(pair[0].range().start <= pair[1].range().start, "{context}");
+                assert!(!overlap(pair[0], pair[1]), "{context}");
+            }
+            // The primary and the followed selection land where they went.
+            assert!(cs.primary < out.len(), "{context}");
+            assert!(covers(out[cs.primary], input[primary]), "{context}");
+            assert!(
+                slot < out.len() && covers(out[slot], input[followed]),
+                "{context}"
+            );
+            // Every input is inside a survivor, and every survivor is the union of
+            // inputs: its ends are input ends, never invented positions.
+            for s in &input {
+                assert!(out.iter().any(|o| covers(*o, *s)), "{context}");
+            }
+            for o in out {
+                let r = o.range();
+                assert!(
+                    input.iter().any(|s| s.range().start == r.start),
+                    "{context}"
+                );
+                assert!(input.iter().any(|s| s.range().end == r.end), "{context}");
+            }
+            // An input that collides with no other survives verbatim, direction
+            // included.
+            for (i, s) in input.iter().enumerate() {
+                let alone = input
+                    .iter()
+                    .enumerate()
+                    .all(|(j, t)| i == j || !overlap(*s, *t));
+                if alone {
+                    assert!(out.contains(s), "{context}");
+                }
+            }
+            // Normalizing again changes nothing.
+            let mut again = cs.clone();
+            again.normalize();
+            assert_eq!(again, cs, "{context}");
+        }
+    }
+
     #[test]
     fn workspace_edit_is_empty_only_without_edits_or_steps() {
         assert!(WorkspaceEdit::default().is_empty());
@@ -618,6 +711,71 @@ mod tests {
         assert!(!failed.applied);
         assert_eq!(failed.failure_reason.as_deref(), Some("stale"));
         assert_eq!(failed.failed_change, Some(2));
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn edits_and_cursors_round_trip_through_serde() -> Result<(), serde_json::Error> {
+        fn rt<T: serde::Serialize + serde::de::DeserializeOwned + PartialEq + std::fmt::Debug>(
+            value: &T,
+        ) -> Result<(), serde_json::Error> {
+            let json = serde_json::to_string(value)?;
+            assert_eq!(&serde_json::from_str::<T>(&json)?, value);
+            Ok(())
+        }
+        let edit = TextEdit {
+            range: Range {
+                start: LineCol::new(0, 1),
+                end: LineCol::new(2, 0),
+            },
+            new_text: "x\n".to_owned(),
+        };
+        let overwrite = FileOptions {
+            overwrite: true,
+            ignore_if_exists: false,
+        };
+        rt(&WorkspaceEdit {
+            changes: vec![(PathBuf::from("a.rs"), vec![edit.clone()])],
+            document_changes: vec![
+                DocumentChange::Edit(DocumentEdit {
+                    path: PathBuf::from("b.rs"),
+                    version: Some(3),
+                    edits: vec![edit.clone()],
+                }),
+                DocumentChange::Create {
+                    path: PathBuf::from("c.rs"),
+                    options: overwrite,
+                },
+                DocumentChange::Rename {
+                    from: PathBuf::from("c.rs"),
+                    to: PathBuf::from("d.rs"),
+                    options: FileOptions::default(),
+                },
+                DocumentChange::Delete {
+                    path: PathBuf::from("dir"),
+                    options: DeleteOptions {
+                        recursive: true,
+                        ignore_if_not_exists: true,
+                    },
+                },
+            ],
+        })?;
+        rt(&Change::new(9, vec![edit]))?;
+        rt(&ApplyWorkspaceEditResult::failed("stale", Some(1)))?;
+        rt(&CursorState {
+            selections: vec![sel(0, 0), sel(9, 4)],
+            primary: 1,
+        })?;
+
+        // A payload from before `document_changes` existed still decodes.
+        let old = serde_json::from_str::<WorkspaceEdit>(r#"{"changes":[]}"#)?;
+        assert_eq!(old, WorkspaceEdit::default());
+        // A newer peer's cause decodes to `Unknown` instead of failing.
+        assert_eq!(
+            serde_json::from_str::<EditCause>("\"Dictation\"")?,
+            EditCause::Unknown
+        );
+        Ok(())
     }
 
     #[test]

@@ -379,4 +379,41 @@ mod tests {
         assert!(capabilities.accepts_command("rust-analyzer.runSingle"));
         assert!(!capabilities.accepts_command("gopls.tidy"));
     }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn capabilities_round_trip_and_degrade_to_what_was_said() -> Result<(), serde_json::Error> {
+        let mut capabilities = Capabilities {
+            position_encoding: PositionEncoding::Utf8,
+            text_sync: TextSyncKind::Incremental,
+            save_includes_text: true,
+            completion: CompletionOptions {
+                trigger_characters: vec!['.'],
+                commit_characters: vec!['('],
+            },
+            code_action_kinds: vec!["quickfix".to_owned()],
+            execute_commands: vec!["run".to_owned()],
+            on_type_formatting: Some(OnTypeFormattingOptions {
+                first_trigger_character: '}',
+                more_trigger_characters: vec![';'],
+            }),
+            ..Capabilities::default()
+        };
+        capabilities.enable(ServerFeature::Hover);
+        capabilities.enable(ServerFeature::ExecuteCommand);
+        let json = serde_json::to_string(&capabilities)?;
+        assert_eq!(serde_json::from_str::<Capabilities>(&json)?, capabilities);
+
+        // A newer peer's feature decodes to `Unknown` beside the known ones, and
+        // every field it left out takes the "advertised nothing" default.
+        let newer = serde_json::from_str::<Capabilities>(r#"{"features":["Hover","Telepathy"]}"#)?;
+        assert_eq!(
+            newer.iter().collect::<Vec<_>>(),
+            vec![ServerFeature::Hover, ServerFeature::Unknown]
+        );
+        assert_eq!(newer.position_encoding, PositionEncoding::Utf16);
+        assert_eq!(newer.text_sync, TextSyncKind::Full);
+        assert!(!newer.supports(ServerFeature::Rename));
+        Ok(())
+    }
 }
