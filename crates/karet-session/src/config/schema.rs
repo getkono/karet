@@ -339,6 +339,10 @@ pub struct Editor {
     #[serde(deserialize_with = "format_on_save_timeout")]
     #[cfg_attr(feature = "schema", schemars(range(min = 1, max = FORMAT_ON_SAVE_TIMEOUT_MAX_MS)))]
     pub format_on_save_timeout: u64,
+    /// Apply the language server's on-type formatting
+    /// (`textDocument/onTypeFormatting`) after typing one of its trigger
+    /// characters. Off by default, as in VS Code.
+    pub format_on_type: bool,
     /// Distinct highlighting of codetag comment blocks (`TODO:`, `FIXME:`, …).
     pub semantic_comments: SemanticComments,
     /// Re-render TypeScript diagnostics as markdown (quoted types lifted into
@@ -425,6 +429,7 @@ impl Default for Editor {
             insert_final_newline: true,
             format_on_save: true,
             format_on_save_timeout: FORMAT_ON_SAVE_TIMEOUT_DEFAULT_MS,
+            format_on_type: false,
             semantic_comments: SemanticComments::default(),
             pretty_errors: true,
             completion: Completion::default(),

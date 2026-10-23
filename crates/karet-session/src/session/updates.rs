@@ -226,33 +226,11 @@ impl Session {
                 doc,
                 version,
                 formatted,
-                mut edits,
+                edits,
+                scope,
                 ..
-            } => {
-                let stale = self
-                    .store
-                    .docs
-                    .get(&doc)
-                    .is_none_or(|document| document.buffer.version() != version);
-                if stale {
-                    let _ = self.finish_format_on_save(request, doc, version, Vec::new());
-                    return;
-                }
-                if formatted {
-                    if let Some(document) = self.store.docs.get(&doc) {
-                        for edit in &mut edits {
-                            edit.range = utf16_range_to_buffer(&document.buffer, edit.range);
-                        }
-                    }
-                } else {
-                    // No language server formatted this file -- it never offered
-                    // the method, was not reachable, or failed the request. That
-                    // is exactly the case the built-in formatter exists for, and
-                    // it produces buffer coordinates already.
-                    edits = self.builtin_format_edits(doc).unwrap_or_default();
-                }
-                let _ = self.finish_format_on_save(request, doc, version, edits);
-            },
+            } => self.adopt_save_format(request, (doc, version), (formatted, edits), &scope),
+            LspUpdate::Editing { answer, .. } => self.adopt_editing(answer),
             LspUpdate::Unsupported {
                 request,
                 server,

@@ -334,56 +334,10 @@ impl Session {
     }
 
     pub(super) fn save(&mut self, id: RequestId, doc_id: DocumentId, cause: SaveCause) {
-        if cause.may_format() && self.begin_format_on_save(id, doc_id) {
+        if cause.may_format() && self.begin_format_on_save(id, doc_id, cause) {
             return;
         }
         self.commit_save(id, doc_id);
-    }
-
-    /// Request LSP formatting (or apply the built-in TOML formatter) before the
-    /// disk write. `true` means the save is waiting on an async formatting reply.
-    fn begin_format_on_save(&mut self, id: RequestId, doc_id: DocumentId) -> bool {
-        let Some(doc) = self.store.docs.get(&doc_id) else {
-            return false;
-        };
-        let editor = self
-            .config
-            .settings
-            .editor
-            .for_language(doc.language_selector);
-        if !editor.format_on_save() {
-            return false;
-        }
-        let version = doc.buffer.version();
-        let selector = doc.language_selector;
-        let path = doc.path.clone();
-        let ask = self.formatting_ask(doc, crate::lsp::FormattingScope::Save);
-        if self
-            .lsp
-            .formatting(selector, id, doc_id, version, &path, ask)
-        {
-            let issued_ms = self.elapsed_ms();
-            self.pending_format_saves.insert(
-                id,
-                PendingFormatSave {
-                    doc: doc_id,
-                    issued_ms,
-                },
-            );
-            // The user asked for this buffer to be on disk and it is not going
-            // to be for a while: the write waits on a formatter that has up to
-            // `editor.formatOnSaveTimeout` to answer. Until then the swap is the
-            // only other copy there is, and the backup interval alone would not
-            // have written one — a buffer edited in the last thirty seconds, or
-            // edited since its last swap, has none. Write it now, so what the
-            // force-quit path promises the user is recoverable actually is.
-            self.back_up_document(doc_id);
-            return true;
-        }
-        if let Some(edits) = self.builtin_format_edits(doc_id) {
-            let _ = self.apply_format_edits(doc_id, edits, true);
-        }
-        false
     }
 
     /// What a formatting request for `doc` asks of its server beyond `scope`.
@@ -413,6 +367,7 @@ impl Session {
         FormattingAsk {
             scope,
             indentation,
+            will_save: None,
             save_timeout: std::time::Duration::from_millis(
                 self.config.settings.editor.format_on_save_timeout,
             ),

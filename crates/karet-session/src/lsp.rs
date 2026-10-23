@@ -21,6 +21,7 @@ mod code_lens;
 mod commands;
 mod connector;
 mod delta;
+mod editing;
 mod format;
 mod forward;
 mod health;
@@ -63,6 +64,9 @@ use karet_lsp::LspError;
 use karet_lsp::LspSpec;
 pub(crate) use message::DiagnosticLayer;
 pub(crate) use message::DocumentHighlightsAnswer;
+pub(crate) use message::EditingAnswer;
+pub(crate) use message::EditingAsk;
+pub(crate) use message::EditingReply;
 pub(crate) use message::FormattingAsk;
 pub(crate) use message::FormattingScope;
 pub(crate) use message::LspUpdate;
@@ -307,6 +311,7 @@ impl LspManager {
             | LspUpdate::SignatureHelp { generation, .. }
             | LspUpdate::SelectionRanges { generation, .. }
             | LspUpdate::DocumentHighlights { generation, .. }
+            | LspUpdate::Editing { generation, .. }
             | LspUpdate::Unsupported { generation, .. }
             | LspUpdate::Definitions { generation, .. }
             | LspUpdate::WorkspaceSymbols { generation, .. }
