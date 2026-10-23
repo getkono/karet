@@ -689,43 +689,29 @@ mod tests {
             case_sensitive: true,
             ..Default::default()
         };
-        // The key property is that iterating zero-width matches terminates.
+        // Iterating zero-width matches terminates, yielding one empty match at
+        // every char boundary (the regex crate's documented semantics).
         let m = search_in_file("abc", &q).unwrap_or_default();
-        assert!(!m.is_empty());
+        let spans: Vec<(usize, usize)> = m.iter().map(|m| (m.start, m.end)).collect();
+        assert_eq!(spans, [(0, 0), (1, 1), (2, 2), (3, 3)]);
     }
 
-    use std::sync::atomic::AtomicUsize;
-    use std::sync::atomic::Ordering;
+    use tempfile::TempDir;
 
-    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-    /// A temp directory removed on drop (mirrors the karet-vcs test pattern; no
-    /// `tempfile` dev-dependency).
-    struct TempDir {
-        path: PathBuf,
-    }
-
-    impl Drop for TempDir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.path);
-        }
-    }
-
-    /// Create a fresh temp directory.
-    fn temp_dir() -> TempDir {
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("karet-search-{}-{}", std::process::id(), n));
-        let _ = std::fs::create_dir_all(&path);
-        TempDir { path }
+    /// Create a fresh temp directory, removed on drop.
+    fn temp_dir() -> std::io::Result<TempDir> {
+        TempDir::new()
     }
 
     /// Write `contents` to `dir/rel`, creating parent directories.
-    fn write(dir: &Path, rel: &str, contents: &[u8]) {
+    fn write(dir: &Path, rel: &str, contents: &[u8]) -> std::io::Result<()> {
         let path = dir.join(rel);
         if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            std::fs::create_dir_all(parent)?;
         }
-        let _ = std::fs::write(path, contents);
+        std::fs::write(path, contents)
     }
 
     /// Collect every hit from a workspace search into a path-sorted vector.
@@ -737,60 +723,64 @@ mod tests {
     }
 
     #[test]
-    fn workspace_search_finds_matching_files() {
-        let dir = temp_dir();
-        write(&dir.path, "a.txt", b"needle here\nand again needle\n");
-        write(&dir.path, "sub/b.txt", b"needle in subdir\n");
-        write(&dir.path, "c.txt", b"nothing of interest\n");
+    fn workspace_search_finds_matching_files() -> TestResult {
+        let dir = temp_dir()?;
+        write(dir.path(), "a.txt", b"needle here\nand again needle\n")?;
+        write(dir.path(), "sub/b.txt", b"needle in subdir\n")?;
+        write(dir.path(), "c.txt", b"nothing of interest\n")?;
 
-        let hits = collect(&dir.path, &literal("needle"));
+        let hits = collect(dir.path(), &literal("needle"));
         assert_eq!(hits.len(), 2);
         // a.txt has two matches; the subdir file one.
         let total: usize = hits.iter().map(|h| h.matches.len()).sum();
         assert_eq!(total, 3);
+        Ok(())
     }
 
     #[test]
-    fn workspace_search_respects_gitignore() {
-        let dir = temp_dir();
-        write(&dir.path, ".gitignore", b"ignored.txt\n");
-        write(&dir.path, "kept.txt", b"needle\n");
-        write(&dir.path, "ignored.txt", b"needle\n");
+    fn workspace_search_respects_gitignore() -> TestResult {
+        let dir = temp_dir()?;
+        write(dir.path(), ".gitignore", b"ignored.txt\n")?;
+        write(dir.path(), "kept.txt", b"needle\n")?;
+        write(dir.path(), "ignored.txt", b"needle\n")?;
 
-        let hits = collect(&dir.path, &literal("needle"));
+        let hits = collect(dir.path(), &literal("needle"));
         assert_eq!(hits.len(), 1);
         assert!(hits[0].path.ends_with("kept.txt"));
+        Ok(())
     }
 
     #[test]
-    fn workspace_search_prunes_ignored_dirs_without_a_gitignore() {
-        let dir = temp_dir();
-        write(&dir.path, "kept.txt", b"needle\n");
+    fn workspace_search_prunes_ignored_dirs_without_a_gitignore() -> TestResult {
+        let dir = temp_dir()?;
+        write(dir.path(), "kept.txt", b"needle\n")?;
         // No .gitignore anywhere: pruning must come from IGNORED_DIRS itself.
-        write(&dir.path, "target/debug/build.log", b"needle\n");
-        write(&dir.path, "node_modules/pkg/index.js", b"needle\n");
+        write(dir.path(), "target/debug/build.log", b"needle\n")?;
+        write(dir.path(), "node_modules/pkg/index.js", b"needle\n")?;
 
-        let hits = collect(&dir.path, &literal("needle"));
+        let hits = collect(dir.path(), &literal("needle"));
         assert_eq!(hits.len(), 1);
         assert!(hits[0].path.ends_with("kept.txt"));
+        Ok(())
     }
 
     #[test]
-    fn workspace_search_skips_binary_files() {
-        let dir = temp_dir();
-        write(&dir.path, "text.txt", b"needle\n");
-        write(&dir.path, "blob.bin", b"needle\x00\x01needle");
+    fn workspace_search_skips_binary_files() -> TestResult {
+        let dir = temp_dir()?;
+        write(dir.path(), "text.txt", b"needle\n")?;
+        write(dir.path(), "blob.bin", b"needle\x00\x01needle")?;
 
-        let hits = collect(&dir.path, &literal("needle"));
+        let hits = collect(dir.path(), &literal("needle"));
         assert_eq!(hits.len(), 1);
         assert!(hits[0].path.ends_with("text.txt"));
+        Ok(())
     }
 
     #[test]
-    fn workspace_search_applies_include_globs() {
-        let dir = temp_dir();
-        write(&dir.path, "keep.rs", b"needle\n");
-        write(&dir.path, "skip.md", b"needle\n");
+    fn workspace_search_applies_include_globs() -> TestResult {
+        let dir = temp_dir()?;
+        write(dir.path(), "keep.rs", b"needle\n")?;
+        write(dir.path(), "skip.md", b"needle\n")?;
 
         let query = SearchQuery {
             pattern: "needle".into(),
@@ -798,9 +788,10 @@ mod tests {
             includes: vec!["*.rs".into()],
             ..Default::default()
         };
-        let hits = collect(&dir.path, &query);
+        let hits = collect(dir.path(), &query);
         assert_eq!(hits.len(), 1);
         assert!(hits[0].path.ends_with("keep.rs"));
+        Ok(())
     }
 
     #[test]
@@ -845,6 +836,40 @@ mod tests {
         assert_eq!(apply_replacements(text, &plan), "wide bb wide");
     }
 
+    fn rep(start: usize, end: usize, text: &str) -> Replacement {
+        Replacement {
+            start,
+            end,
+            text: text.to_owned(),
+        }
+    }
+
+    #[test]
+    fn apply_is_independent_of_the_input_order() {
+        // A caller may hand spans in any order; they are applied right-to-left
+        // against the original offsets either way.
+        let forward = [rep(0, 1, "XYZ"), rep(4, 5, "")];
+        let backward = [rep(4, 5, ""), rep(0, 1, "XYZ")];
+        assert_eq!(apply_replacements("a b c", &forward), "XYZ b ");
+        assert_eq!(apply_replacements("a b c", &backward), "XYZ b ");
+    }
+
+    #[test]
+    fn apply_skips_invalid_spans_and_keeps_valid_ones() {
+        // "héllo": `é` occupies bytes 1..3, so byte 2 is not a char boundary.
+        let text = "héllo";
+        let plan = [
+            rep(2, 3, "!"),   // splits `é`: skipped
+            rep(10, 12, "!"), // past the end: skipped
+            rep(3, 1, "!"),   // inverted: skipped
+            rep(5, 9, "!"),   // end past the end: skipped
+            rep(0, 0, "<"),   // empty span: a pure insertion
+            rep(5, 6, "O"),   // valid
+        ];
+        assert_eq!(apply_replacements(text, &plan), "<héllO");
+        assert_eq!(apply_replacements(text, &[]), text);
+    }
+
     #[test]
     fn empty_pattern_plans_nothing() {
         assert!(
@@ -855,27 +880,26 @@ mod tests {
     }
 
     #[test]
-    fn workspace_replace_writes_matching_files_only() {
-        let dir = temp_dir();
-        write(&dir.path, "a.txt", b"needle and needle\n");
-        write(&dir.path, "b.txt", b"nothing\n");
-        write(&dir.path, ".gitignore", b"ignored.txt\n");
-        write(&dir.path, "ignored.txt", b"needle\n");
+    fn workspace_replace_writes_matching_files_only() -> TestResult {
+        let dir = temp_dir()?;
+        write(dir.path(), "a.txt", b"needle and needle\n")?;
+        write(dir.path(), "b.txt", b"nothing\n")?;
+        write(dir.path(), ".gitignore", b"ignored.txt\n")?;
+        write(dir.path(), "ignored.txt", b"needle\n")?;
 
-        let summary = WorkspaceSearch::new()
-            .replace(&dir.path, &literal("needle"), "pin")
-            .unwrap_or_default();
+        let summary = WorkspaceSearch::new().replace(dir.path(), &literal("needle"), "pin")?;
         assert_eq!(summary.files_changed, 1);
         assert_eq!(summary.replacements, 2);
         assert_eq!(
-            std::fs::read_to_string(dir.path.join("a.txt")).unwrap_or_default(),
+            std::fs::read_to_string(dir.path().join("a.txt"))?,
             "pin and pin\n"
         );
         // The gitignored file is untouched.
         assert_eq!(
-            std::fs::read_to_string(dir.path.join("ignored.txt")).unwrap_or_default(),
+            std::fs::read_to_string(dir.path().join("ignored.txt"))?,
             "needle\n"
         );
+        Ok(())
     }
 
     /// Collect every file the walk visits, as root-relative path + contents.
@@ -895,14 +919,14 @@ mod tests {
     }
 
     #[test]
-    fn walk_visits_text_files_and_honors_gitignore() {
-        let dir = temp_dir();
-        write(&dir.path, "a.txt", b"alpha\n");
-        write(&dir.path, "sub/b.txt", b"beta\n");
-        write(&dir.path, ".gitignore", b"ignored.txt\n");
-        write(&dir.path, "ignored.txt", b"gamma\n");
+    fn walk_visits_text_files_and_honors_gitignore() -> TestResult {
+        let dir = temp_dir()?;
+        write(dir.path(), "a.txt", b"alpha\n")?;
+        write(dir.path(), "sub/b.txt", b"beta\n")?;
+        write(dir.path(), ".gitignore", b"ignored.txt\n")?;
+        write(dir.path(), "ignored.txt", b"gamma\n")?;
 
-        let files = walked(&dir.path, &[], &[]);
+        let files = walked(dir.path(), &[], &[]);
         let names: Vec<&str> = files.iter().map(|(rel, _)| rel.as_str()).collect();
         assert!(names.contains(&"a.txt"), "{names:?}");
         assert!(names.contains(&"sub/b.txt"), "{names:?}");
@@ -912,47 +936,84 @@ mod tests {
             Some(&"alpha\n".to_owned()),
             "the walk hands the sink the full file contents"
         );
+        Ok(())
     }
 
     #[test]
-    fn walk_prunes_heavyweight_dirs_and_binary_files() {
-        let dir = temp_dir();
-        write(&dir.path, "keep.txt", b"text\n");
+    fn walk_prunes_heavyweight_dirs_and_binary_files() -> TestResult {
+        let dir = temp_dir()?;
+        write(dir.path(), "keep.txt", b"text\n")?;
         // Pruned by IGNORED_DIRS even with no .gitignore mentioning them.
-        write(&dir.path, "target/built.txt", b"artifact\n");
-        write(&dir.path, "node_modules/dep.txt", b"vendored\n");
+        write(dir.path(), "target/built.txt", b"artifact\n")?;
+        write(dir.path(), "node_modules/dep.txt", b"vendored\n")?;
         // A NUL byte in the head marks the file binary.
-        write(&dir.path, "blob.bin", b"pre\0post\n");
+        write(dir.path(), "blob.bin", b"pre\0post\n")?;
 
-        let names: Vec<String> = walked(&dir.path, &[], &[])
+        assert_eq!(walked_names(dir.path()), ["keep.txt"]);
+        Ok(())
+    }
+
+    /// The root-relative names the unfiltered walk visits.
+    fn walked_names(root: &Path) -> Vec<String> {
+        walked(root, &[], &[])
             .into_iter()
             .map(|(rel, _)| rel)
-            .collect();
-        assert_eq!(names, vec!["keep.txt".to_owned()]);
+            .collect()
     }
 
     #[test]
-    fn walk_applies_include_and_exclude_globs() {
-        let dir = temp_dir();
-        write(&dir.path, "a.rs", b"rust\n");
-        write(&dir.path, "b.md", b"markdown\n");
-        write(&dir.path, "skip.rs", b"rust\n");
+    fn walk_skips_non_utf8_files_without_a_nul() -> TestResult {
+        let dir = temp_dir()?;
+        write(dir.path(), "keep.txt", b"text\n")?;
+        // Latin-1 `é` (0xE9) is invalid UTF-8 but carries no NUL byte, so only
+        // the UTF-8 decode rejects it.
+        write(dir.path(), "latin1.txt", b"caf\xe9\n")?;
+        assert_eq!(walked_names(dir.path()), ["keep.txt"]);
+        Ok(())
+    }
 
-        let names: Vec<String> = walked(&dir.path, &["*.rs".to_owned()], &["skip.rs".to_owned()])
+    #[test]
+    fn walk_reads_a_file_at_the_size_cap_and_skips_one_past_it() -> TestResult {
+        let dir = temp_dir()?;
+        // Text up front (so the binary sniff passes), then sparse NUL padding
+        // past the sniff window: NUL is valid UTF-8, so size is the only skip.
+        for (name, len) in [
+            ("at_cap.txt", MAX_FILE_BYTES),
+            ("over_cap.txt", MAX_FILE_BYTES + 1),
+        ] {
+            write(dir.path(), name, &[b'a'; BINARY_SNIFF_BYTES])?;
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(dir.path().join(name))?
+                .set_len(len)?;
+        }
+        assert_eq!(walked_names(dir.path()), ["at_cap.txt"]);
+        Ok(())
+    }
+
+    #[test]
+    fn walk_applies_include_and_exclude_globs() -> TestResult {
+        let dir = temp_dir()?;
+        write(dir.path(), "a.rs", b"rust\n")?;
+        write(dir.path(), "b.md", b"markdown\n")?;
+        write(dir.path(), "skip.rs", b"rust\n")?;
+
+        let names: Vec<String> = walked(dir.path(), &["*.rs".to_owned()], &["skip.rs".to_owned()])
             .into_iter()
             .map(|(rel, _)| rel)
             .collect();
         assert_eq!(names, vec!["a.rs".to_owned()]);
+        Ok(())
     }
 
     #[test]
-    fn walk_stops_early_on_break() {
-        let dir = temp_dir();
+    fn walk_stops_early_on_break() -> TestResult {
+        let dir = temp_dir()?;
         for i in 0..5 {
-            write(&dir.path, &format!("f{i}.txt"), b"x\n");
+            write(dir.path(), &format!("f{i}.txt"), b"x\n")?;
         }
         let mut seen = 0_usize;
-        let _ = walk_text_files(&dir.path, &[], &[], |_, _| {
+        walk_text_files(dir.path(), &[], &[], |_, _| {
             seen += 1;
             // A result cap / cancelled request stops the walk mid-tree.
             if seen == 2 {
@@ -960,30 +1021,33 @@ mod tests {
             } else {
                 ControlFlow::Continue(())
             }
-        });
+        })?;
         assert_eq!(seen, 2);
+        Ok(())
     }
 
     #[test]
-    fn walk_surfaces_an_invalid_glob() {
-        let dir = temp_dir();
-        write(&dir.path, "a.txt", b"x\n");
-        let result = walk_text_files(&dir.path, &["[".to_owned()], &[], |_, _| {
+    fn walk_surfaces_an_invalid_glob() -> TestResult {
+        let dir = temp_dir()?;
+        write(dir.path(), "a.txt", b"x\n")?;
+        let result = walk_text_files(dir.path(), &["[".to_owned()], &[], |_, _| {
             ControlFlow::Continue(())
         });
         assert_eq!(result, Err(SearchError::InvalidPattern));
+        Ok(())
     }
 
     #[test]
-    fn workspace_search_surfaces_invalid_pattern() {
-        let dir = temp_dir();
-        write(&dir.path, "a.txt", b"x\n");
+    fn workspace_search_surfaces_invalid_pattern() -> TestResult {
+        let dir = temp_dir()?;
+        write(dir.path(), "a.txt", b"x\n")?;
         let query = SearchQuery {
             pattern: "(".into(),
             regex: true,
             ..Default::default()
         };
-        let result = WorkspaceSearch::new().run(&dir.path, &query, |_| {});
+        let result = WorkspaceSearch::new().run(dir.path(), &query, |_| {});
         assert_eq!(result, Err(SearchError::InvalidPattern));
+        Ok(())
     }
 }
