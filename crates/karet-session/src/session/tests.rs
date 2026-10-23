@@ -3,6 +3,7 @@ include!("tests/formats.rs");
 include!("tests/missing_documents.rs");
 include!("tests/latex.rs");
 include!("tests/vcs.rs");
+include!("tests/vcs_contract.rs");
 #[cfg(feature = "aicommit")]
 include!("tests/aicommit.rs");
 include!("tests/persistence.rs");
