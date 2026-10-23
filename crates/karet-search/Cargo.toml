@@ -25,5 +25,8 @@ regex-syntax.workspace = true
 memchr.workspace = true
 thiserror.workspace = true
 
+[dev-dependencies]
+tempfile.workspace = true             # scratch trees for the workspace walk tests
+
 [lints]
 workspace = true
