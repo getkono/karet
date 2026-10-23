@@ -27,10 +27,8 @@
     }
 
     #[test]
-    fn scan_finishes_immediately_when_spellcheck_is_disabled() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
+    fn scan_finishes_immediately_when_spellcheck_is_disabled() -> TestResult {
+        let dir = tempfile::tempdir()?;
         // The default settings have `spellcheck.enabled` off.
         let (mut session, mut events, _snaps) = Session::new(SessionConfig {
             roots: vec![dir.path().to_path_buf()],
@@ -54,13 +52,12 @@
             ),
             "a disabled scan must still finish so the client leaves its loading state: {finished:?}"
         );
+        Ok(())
     }
 
     #[test]
-    fn scan_finishes_immediately_for_an_unsupported_spelling_locale() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
+    fn scan_finishes_immediately_for_an_unsupported_spelling_locale() -> TestResult {
+        let dir = tempfile::tempdir()?;
         let mut settings = spellcheck_settings();
         settings.spellcheck.language = "fr_FR".to_owned();
         let (mut session, mut events, _snaps) = Session::new(SessionConfig {
@@ -78,17 +75,14 @@
                 ..
             })
         ));
+        Ok(())
     }
 
     #[test]
-    fn scan_answers_open_documents_from_their_live_buffers() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
+    fn scan_answers_open_documents_from_their_live_buffers() -> TestResult {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("notes.md");
-        if std::fs::write(&path, "hello world\n").is_err() {
-            return;
-        }
+        std::fs::write(&path, "hello world\n")?;
         let (mut session, mut events, _snaps) = Session::new(SessionConfig {
             roots: vec![dir.path().to_path_buf()],
             settings: spellcheck_settings(),
@@ -101,12 +95,11 @@
                 language: None,
             },
         );
-        let Some(doc) = opened_doc(&mut events) else {
-            return;
-        };
-        let Some(version) = session.document(doc).map(|view| view.version()) else {
-            return;
-        };
+        let doc = opened_doc(&mut events).ok_or("no Opened event")?;
+        let version = session
+            .document(doc)
+            .map(|view| view.version())
+            .ok_or("opened document is not registered")?;
         // Stand in for the debounce worker: the buffer's *live* spell layer, which
         // an unsaved edit would put out of step with the file on disk.
         session.apply_spell_result(SpellResult {
@@ -122,7 +115,7 @@
         // The seed batch is emitted synchronously, before the worker even starts.
         let seeded = events.try_recv();
         let Some((Some(RequestId(9)), Event::SpellingScanProgress { hits, .. })) = seeded else {
-            unreachable!("expected a seeded progress batch, got {seeded:?}")
+            return Err(format!("expected a seeded progress batch, got {seeded:?}").into());
         };
         assert_eq!(hits.len(), 1, "{hits:?}");
         assert_eq!(hits[0].path, path);
@@ -131,17 +124,14 @@
             hits[0].line_text, "hello world",
             "the hit carries its line as list context"
         );
+        Ok(())
     }
 
     #[test]
-    fn a_changed_spell_layer_publishes_the_documents_hits() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
+    fn a_changed_spell_layer_publishes_the_documents_hits() -> TestResult {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("notes.md");
-        if std::fs::write(&path, "hello world\nthe wrld ends\n").is_err() {
-            return;
-        }
+        std::fs::write(&path, "hello world\nthe wrld ends\n")?;
         let (mut session, mut events, _snaps) = Session::new(SessionConfig {
             roots: vec![dir.path().to_path_buf()],
             settings: spellcheck_settings(),
@@ -154,12 +144,11 @@
                 language: None,
             },
         );
-        let Some(doc) = opened_doc(&mut events) else {
-            return;
-        };
-        let Some(version) = session.document(doc).map(|view| view.version()) else {
-            return;
-        };
+        let doc = opened_doc(&mut events).ok_or("no Opened event")?;
+        let version = session
+            .document(doc)
+            .map(|view| view.version())
+            .ok_or("opened document is not registered")?;
         while events.try_recv().is_some() {}
 
         session.apply_spell_result(SpellResult {
@@ -176,9 +165,7 @@
                 published = Some((path, hits));
             }
         }
-        let Some((updated_path, hits)) = published else {
-            unreachable!("expected a SpellingUpdated event")
-        };
+        let (updated_path, hits) = published.ok_or("expected a SpellingUpdated event")?;
         assert_eq!(updated_path, path);
         assert_eq!(hits.len(), 1, "{hits:?}");
         assert_eq!(hits[0].word, "wrld");
@@ -199,17 +186,14 @@
             }
         }
         assert_eq!(cleared, Some(Vec::new()));
+        Ok(())
     }
 
     #[test]
-    fn seeded_open_document_hits_spend_the_same_budget_as_the_walk() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
+    fn seeded_open_document_hits_spend_the_same_budget_as_the_walk() -> TestResult {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("notes.md");
-        if std::fs::write(&path, "the wrld ends here\n").is_err() {
-            return;
-        }
+        std::fs::write(&path, "the wrld ends here\n")?;
         let (mut session, mut events, _snaps) = Session::new(SessionConfig {
             roots: vec![dir.path().to_path_buf()],
             settings: spellcheck_settings(),
@@ -222,12 +206,11 @@
                 language: None,
             },
         );
-        let Some(doc) = opened_doc(&mut events) else {
-            return;
-        };
-        let Some(version) = session.document(doc).map(|view| view.version()) else {
-            return;
-        };
+        let doc = opened_doc(&mut events).ok_or("no Opened event")?;
+        let version = session
+            .document(doc)
+            .map(|view| view.version())
+            .ok_or("opened document is not registered")?;
         session.apply_spell_result(SpellResult {
             doc,
             version,
@@ -257,24 +240,18 @@
             "a list cut off at the cap must say so rather than inviting the walk \
              to add another `limit` hits on top"
         );
+        Ok(())
     }
 
     #[test]
-    fn adding_a_dictionary_word_re_runs_the_spell_layer_of_every_open_document() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
+    fn adding_a_dictionary_word_re_runs_the_spell_layer_of_every_open_document() -> TestResult {
+        let dir = tempfile::tempdir()?;
         // A project write needs a git root with an existing settings file.
-        if std::fs::create_dir(dir.path().join(".git")).is_err()
-            || std::fs::create_dir(dir.path().join(".karet")).is_err()
-            || std::fs::write(dir.path().join(".karet/setting.jsonc"), "{}\n").is_err()
-        {
-            return;
-        }
+        std::fs::create_dir(dir.path().join(".git"))?;
+        std::fs::create_dir(dir.path().join(".karet"))?;
+        std::fs::write(dir.path().join(".karet/setting.jsonc"), "{}\n")?;
         let path = dir.path().join("notes.md");
-        if std::fs::write(&path, "the wrod ends\n").is_err() {
-            return;
-        }
+        std::fs::write(&path, "the wrod ends\n")?;
         // Spell-checking is off, so the re-run resolves no dictionary and the
         // stale layer is dropped — the observable proof that the document was
         // rescheduled without any filesystem event arriving.
@@ -289,12 +266,11 @@
                 language: None,
             },
         );
-        let Some(doc) = opened_doc(&mut events) else {
-            return;
-        };
-        let Some(version) = session.document(doc).map(|view| view.version()) else {
-            return;
-        };
+        let doc = opened_doc(&mut events).ok_or("no Opened event")?;
+        let version = session
+            .document(doc)
+            .map(|view| view.version())
+            .ok_or("opened document is not registered")?;
         session.apply_spell_result(SpellResult {
             doc,
             version,
@@ -347,4 +323,5 @@
                 .any(|word| word == "wrod"),
             "the word is live for the next check"
         );
+        Ok(())
     }
