@@ -59,13 +59,19 @@ pub fn format_tables(source: &str) -> String {
     formatted
 }
 
+/// One source line split from its terminator.
 #[derive(Clone, Copy)]
-struct SourceLine<'a> {
-    content: &'a str,
-    ending: &'a str,
+pub(crate) struct SourceLine<'a> {
+    /// The line without its terminator.
+    pub(crate) content: &'a str,
+    /// The line's own terminator: `"\r\n"`, `"\n"`, or `""` for an
+    /// unterminated final line.
+    pub(crate) ending: &'a str,
 }
 
-fn source_lines(source: &str) -> Vec<SourceLine<'_>> {
+/// Split `source` exactly as `str::lines` does (so line indices match), but
+/// keep each line's terminator alongside its content.
+pub(crate) fn source_lines(source: &str) -> Vec<SourceLine<'_>> {
     source
         .split_inclusive('\n')
         .map(|line| {
