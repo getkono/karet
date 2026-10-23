@@ -5,7 +5,7 @@
 use std::sync::Arc;
 use std::sync::Mutex;
 
-use karet_lsp::codec;
+use karet_jsonrpc::framing::content_length as codec;
 use serde_json::Value;
 use serde_json::json;
 use tokio::io::AsyncRead;
