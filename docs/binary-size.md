@@ -35,8 +35,8 @@ Cargo features so a build can drop their dependency trees (issue #23):
 All are **on by default**, so the shipped binary is unchanged. A
 `--no-default-features` build compiles them all out; a disabled file type falls
 through to the existing placeholder ("Image preview unavailable" / "PDF
-document" / "DOCX rendering is not available yet"). See `mise run build-lean`
-and the CI "Lean build" step.
+document" / "DOCX rendering is not available yet"). See `mise run build-lean`,
+which `mise run verify` runs.
 
 ## The `mermaid` feature
 
@@ -62,9 +62,12 @@ cargo bloat --release -p karet --crates
 cargo bloat --release -p karet --no-default-features --crates
 ```
 
-## Measurements
+## Historical measurements (pre-Gamut)
 
-Measured on macOS (aarch64-apple-darwin), release profile, `karet` at 0.2.1.
+Measured on macOS (aarch64-apple-darwin), release profile, `karet` at 0.2.1,
+when only the image and PDF renderers were gated and before the Gamut migration.
+They are kept as a record of that change, not as current figures; reproduce the
+commands above for the current numbers.
 
 ### Compiled binary size
 
@@ -89,7 +92,7 @@ media crates: `image` (~506 KiB), `hayro_interpret` (~514 KiB), `hayro_syntax`
 `vello_common`, `vello_cpu`, `skrifa`, `read-fonts`, `font-types`, `kurbo`,
 `peniko`, `moxcms`, `pxfm`…) and the image codec closure. These historical
 measurements predate the Gamut migration; reproduce the commands above for the
-current exact dependency delta. `karet-pdf` itself is gone.
+current exact dependency delta.
 
 ### Runtime load
 
@@ -107,9 +110,9 @@ data those crates would otherwise map in on first use.
 
 ## Conclusion
 
-Gating the two media renderers removes 87 transitive crates and ~16 % of the
-stripped binary at zero cost to the default experience — a clear win for a
-regularly-launched TUI. The numbers do **not** yet justify the daemon split the
+Gating the optional features lets a lean build drop their dependency trees at
+zero cost to the default experience — a clear win for a regularly-launched TUI.
+The historical measurements do **not** justify the daemon split the
 issue floats as a fallback: the remaining footprint is dominated by unavoidable
 core deps (`std`, `gix`, `rustls`/`reqwest`, `regex`), not by anything a
 process boundary would shed. Reassess if additional heavy, optional subsystems

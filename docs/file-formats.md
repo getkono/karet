@@ -162,8 +162,8 @@ not advertised yet because the published Gamut versions do not currently provide
 the pure-Rust decode path karet needs (and no C `*-sys` dependency is permitted).
 
 The **Image** and **PDF** renderers are optional, default-on Cargo features
-(`images` and `pdf` on the `karet` app; `raster`/`images`/`pdf` on
-`karet-fileview`). Building the app with `--no-default-features` drops their heavy
+(`images` and `pdf` on the `karet` app; `raster`/`images` on `karet-fileview`,
+which has no `pdf` feature). Building the app with `--no-default-features` drops their heavy
 dependency trees (Gamut, `hayro`) and routes those kinds to the
 placeholder branch instead — see [binary-size.md](binary-size.md). Classification
 (`FileKind`) is unaffected; only rendering degrades.
