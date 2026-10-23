@@ -240,6 +240,7 @@ impl GitHubClient {
         query: &str,
         page: u32,
     ) -> Result<Page<IssueSummary>, GitHubError> {
+        let page = page.max(1);
         let scoped = scoped_query(repository, SearchKind::Issue, query)?;
         let response: SearchResponse<IssueSummary> = self
             .get_json(
@@ -247,13 +248,13 @@ impl GitHubClient {
                 &[
                     ("q", scoped),
                     ("per_page", PER_PAGE.to_string()),
-                    ("page", page.max(1).to_string()),
+                    ("page", page.to_string()),
                 ],
             )
             .await?;
         Ok(Page {
             items: response.items,
-            page: page.max(1),
+            page,
             next_page: next_page(page, response.total_count),
             total_count: Some(response.total_count),
             rate_limit: response.rate_limit,
@@ -270,6 +271,7 @@ impl GitHubClient {
         query: &str,
         page: u32,
     ) -> Result<Page<PullRequestSummary>, GitHubError> {
+        let page = page.max(1);
         let scoped = scoped_query(repository, SearchKind::PullRequest, query)?;
         let response: SearchResponse<IssueSummary> = self
             .get_json(
@@ -277,7 +279,7 @@ impl GitHubClient {
                 &[
                     ("q", scoped),
                     ("per_page", PER_PAGE.to_string()),
-                    ("page", page.max(1).to_string()),
+                    ("page", page.to_string()),
                 ],
             )
             .await?;
@@ -311,7 +313,7 @@ impl GitHubClient {
             .collect();
         Ok(Page {
             items,
-            page: page.max(1),
+            page,
             next_page: next_page(page, response.total_count),
             total_count: Some(response.total_count),
             rate_limit: response.rate_limit,

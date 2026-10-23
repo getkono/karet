@@ -372,3 +372,46 @@ async fn loopback_round_trips_a_read_a_write_and_error_statuses() -> Result<(), 
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn search_page_zero_is_page_one_and_points_at_page_two() -> Result<(), GitHubError> {
+    let (base, server) = serve(vec![
+        (
+            "200 OK",
+            vec![],
+            r#"{"total_count":51,"items":[]}"#.to_string(),
+        ),
+        (
+            "200 OK",
+            vec![],
+            r#"{"total_count":51,"items":[]}"#.to_string(),
+        ),
+    ])
+    .map_err(io_error)?;
+    let client = GitHubClient::with_auth_at(None, AuthSource::Explicit, &base)?;
+    let repository = repository();
+
+    // Page 0 fetches page 1, so following `next_page` must not fetch it again.
+    let issues = client.search_issues(&repository, "", 0).await?;
+    assert_eq!(issues.page, 1);
+    assert_eq!(issues.next_page, Some(2));
+    let pulls = client.search_pull_requests(&repository, "", 0).await?;
+    assert_eq!(pulls.page, 1);
+    assert_eq!(pulls.next_page, Some(2));
+
+    let received = server
+        .join()
+        .map_err(|_| GitHubError::Transport("loopback server panicked".to_string()))?
+        .map_err(io_error)?;
+    assert_eq!(received.len(), 2);
+    for request in &received {
+        assert!(
+            request
+                .request_line
+                .contains("&per_page=50&page=1 HTTP/1.1"),
+            "{}",
+            request.request_line
+        );
+    }
+    Ok(())
+}
