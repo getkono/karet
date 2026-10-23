@@ -660,20 +660,20 @@ mod tests {
                 assert!(input.iter().any(|s| s.range().end == r.end), "{context}");
             }
             // A merged selection points the way its leader does: the primary when
-            // it is a non-empty member, else some non-empty member.
+            // it is a non-empty member, else the first non-empty member in document
+            // order (by `(start, end)`, ties kept in input order).
             let backward = |s: &Selection| s.head < s.anchor;
             for (k, o) in out.iter().enumerate() {
-                let directed: Vec<&Selection> = input
+                let first_directed = input
                     .iter()
-                    .filter(|s| !s.is_empty() && covers(*o, **s))
-                    .collect();
+                    .enumerate()
+                    .filter(|(_, s)| !s.is_empty() && covers(*o, **s))
+                    .min_by_key(|(i, s)| (s.range().start, s.range().end, *i))
+                    .map(|(_, s)| s);
                 if k == cs.primary && !input[primary].is_empty() {
                     assert_eq!(backward(o), backward(&input[primary]), "{context}");
-                } else if !directed.is_empty() {
-                    assert!(
-                        directed.iter().any(|s| backward(s) == backward(o)),
-                        "{context}"
-                    );
+                } else if let Some(leader) = first_directed {
+                    assert_eq!(backward(o), backward(leader), "{context}");
                 }
             }
             // An input that collides with no other survives verbatim, direction
