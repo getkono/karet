@@ -298,55 +298,17 @@ fn remove_untracked(path: &Path) -> Result<(), VcsError> {
 mod tests {
     use std::path::Path;
     use std::path::PathBuf;
-    use std::process::Command;
-    use std::sync::atomic::AtomicU32;
-    use std::sync::atomic::Ordering;
 
     use crate::Repository;
     use crate::Selection;
     use crate::StatusKind;
     use crate::VcsError;
+    use crate::test_support::TestRepo;
+    use crate::test_support::git;
+    use crate::test_support::write;
 
-    static COUNTER: AtomicU32 = AtomicU32::new(0);
-
-    /// A temp repository removed on drop.
-    struct TempRepo(PathBuf);
-
-    impl Drop for TempRepo {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-
-    fn git(dir: &Path, args: &[&str]) -> Result<(), VcsError> {
-        let ok = Command::new("git")
-            .args(args)
-            .current_dir(dir)
-            .status()
-            .map_err(|e| VcsError::Git(e.to_string()))?
-            .success();
-        ok.then_some(())
-            .ok_or_else(|| VcsError::Git(format!("git {args:?} failed")))
-    }
-
-    fn init_repo() -> Result<TempRepo, VcsError> {
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("karet-vcs-write-{}-{n}", std::process::id()));
-        std::fs::create_dir_all(&path).map_err(|e| VcsError::Git(e.to_string()))?;
-        let repo = TempRepo(path);
-        git(&repo.0, &["init", "-q"])?;
-        git(&repo.0, &["config", "user.email", "test@example.com"])?;
-        git(&repo.0, &["config", "user.name", "karet test"])?;
-        git(&repo.0, &["config", "commit.gpgsign", "false"])?;
-        Ok(repo)
-    }
-
-    fn write(dir: &Path, rel: &str, contents: &[u8]) -> Result<(), VcsError> {
-        let p = dir.join(rel);
-        if let Some(parent) = p.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| VcsError::Git(e.to_string()))?;
-        }
-        std::fs::write(&p, contents).map_err(|e| VcsError::Git(e.to_string()))
+    fn init_repo() -> Result<TestRepo, VcsError> {
+        crate::test_support::init("write")
     }
 
     #[test]
@@ -436,8 +398,62 @@ mod tests {
         r.apply_index_patch(patch, true)?;
         let staged = r.staged_diff()?;
         assert!(staged.patch.is_empty(), "reverse apply un-staged it");
-        // A garbage patch is a clean error, not a panic.
-        assert!(r.apply_index_patch("not a patch", false).is_err());
+        // A garbage patch is a clean error carrying git's stderr, not a panic.
+        assert!(matches!(
+            r.apply_index_patch("not a patch", false),
+            Err(VcsError::Git(message)) if !message.is_empty() && !message.starts_with("git exited with")
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn git_errors_carry_stderr_or_a_status_fallback() -> Result<(), VcsError> {
+        let repo = init_repo()?;
+        let r = Repository::discover(&repo.0)?;
+        // A failing command with stderr surfaces that stderr verbatim (trimmed).
+        match r.git_checked(["rev-parse", "--verify", "no-such-rev"]) {
+            Err(VcsError::Git(message)) => {
+                assert!(message.starts_with("fatal:"), "stderr was {message:?}");
+                assert_eq!(message, message.trim());
+            },
+            other => {
+                return Err(VcsError::Git(format!(
+                    "expected a git error, got {other:?}"
+                )));
+            },
+        }
+        // A failure that writes nothing to stderr falls back to the exit status.
+        match r.git_checked(["rev-parse", "--verify", "--quiet", "no-such-rev"]) {
+            Err(VcsError::Git(message)) => {
+                assert!(message.starts_with("git exited with"), "{message:?}");
+            },
+            other => {
+                return Err(VcsError::Git(format!(
+                    "expected a git error, got {other:?}"
+                )));
+            },
+        }
+        // The env-overriding variant maps failures the same way.
+        assert!(matches!(
+            r.git_checked_with_env(["rev-parse", "--verify", "--quiet", "no-such-rev"], &[]),
+            Err(VcsError::Git(message)) if message.starts_with("git exited with")
+        ));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_missing_git_binary_is_git_unavailable() -> Result<(), VcsError> {
+        let repo = init_repo()?;
+        let r = Repository::discover(&repo.0)?;
+        // An overridden child `PATH` is what the program lookup searches, so an
+        // empty directory makes `git` unspawnable without touching this process.
+        let empty = crate::test_support::scratch_dir("no-git")?;
+        let path = empty.0.to_string_lossy().into_owned();
+        assert!(matches!(
+            r.git_checked_with_env(["status"], &[("PATH", path.as_str())]),
+            Err(VcsError::GitUnavailable(_))
+        ));
         Ok(())
     }
 

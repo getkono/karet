@@ -207,50 +207,22 @@ impl Repository {
 
 #[cfg(test)]
 mod tests {
-    use std::process::Command;
-    use std::sync::atomic::AtomicU32;
-    use std::sync::atomic::Ordering;
-
     use crate::Repository;
     use crate::VcsError;
-
-    static COUNTER: AtomicU32 = AtomicU32::new(0);
-
-    struct TempDir(std::path::PathBuf);
-
-    impl Drop for TempDir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-
-    fn git(dir: &std::path::Path, args: &[&str]) {
-        let ok = Command::new("git")
-            .args(args)
-            .current_dir(dir)
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        assert!(ok, "git {args:?} failed");
-    }
+    use crate::test_support::TestRepo;
+    use crate::test_support::git;
 
     fn io(e: std::io::Error) -> VcsError {
         VcsError::Git(e.to_string())
     }
 
-    fn repo_with_commits(n: usize) -> Result<(TempDir, Repository), VcsError> {
-        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("karet-vcs-log-{}-{id}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).map_err(io)?;
-        let guard = TempDir(dir.clone());
-        git(&dir, &["init", "-q"]);
-        git(&dir, &["config", "user.name", "Tester"]);
-        git(&dir, &["config", "user.email", "t@example.com"]);
+    fn repo_with_commits(n: usize) -> Result<(TestRepo, Repository), VcsError> {
+        let guard = crate::test_support::init("log")?;
+        let dir = guard.0.clone();
         for i in 0..n {
             std::fs::write(dir.join("f.txt"), format!("v{i}\n")).map_err(io)?;
-            git(&dir, &["add", "."]);
-            git(&dir, &["commit", "-q", "-m", &format!("commit {i}")]);
+            git(&dir, &["add", "."])?;
+            git(&dir, &["commit", "-q", "-m", &format!("commit {i}")])?;
         }
         let repo = Repository::discover(&dir)?;
         Ok((guard, repo))
@@ -263,7 +235,7 @@ mod tests {
         assert_eq!(log.len(), 3);
         assert_eq!(log[0].summary, "commit 2");
         assert_eq!(log[2].summary, "commit 0");
-        assert_eq!(log[0].author, "Tester");
+        assert_eq!(log[0].author, "karet test");
         assert_eq!(log[0].short_hash.len(), 7);
         assert!(log[0].hash.starts_with(&log[0].short_hash));
         Ok(())
@@ -309,9 +281,9 @@ mod tests {
         assert!(repo.commits_since(tip.as_deref(), 25)?.is_empty());
         // Add two commits; commits_since(old tip) returns exactly those two, newest first.
         std::fs::write(g.0.join("f.txt"), "new1\n").map_err(io)?;
-        git(&g.0, &["commit", "-qam", "commit 3"]);
+        git(&g.0, &["commit", "-qam", "commit 3"])?;
         std::fs::write(g.0.join("f.txt"), "new2\n").map_err(io)?;
-        git(&g.0, &["commit", "-qam", "commit 4"]);
+        git(&g.0, &["commit", "-qam", "commit 4"])?;
         let fresh = repo.commits_since(tip.as_deref(), 25)?;
         assert_eq!(fresh.len(), 2);
         assert_eq!(fresh[0].summary, "commit 4");
@@ -342,24 +314,18 @@ mod tests {
 
     #[test]
     fn file_history_lists_only_commits_touching_the_path() -> Result<(), VcsError> {
-        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("karet-vcs-hist-{}-{id}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).map_err(io)?;
-        let _guard = TempDir(dir.clone());
-        git(&dir, &["init", "-q"]);
-        git(&dir, &["config", "user.name", "Tester"]);
-        git(&dir, &["config", "user.email", "t@example.com"]);
+        let guard = crate::test_support::init("hist")?;
+        let dir = guard.0.clone();
         // c0 creates a.txt; c1 touches only b.txt; c2 modifies a.txt again.
         std::fs::write(dir.join("a.txt"), "a0\n").map_err(io)?;
-        git(&dir, &["add", "."]);
-        git(&dir, &["commit", "-q", "-m", "c0 add a"]);
+        git(&dir, &["add", "."])?;
+        git(&dir, &["commit", "-q", "-m", "c0 add a"])?;
         std::fs::write(dir.join("b.txt"), "b0\n").map_err(io)?;
-        git(&dir, &["add", "."]);
-        git(&dir, &["commit", "-q", "-m", "c1 add b"]);
+        git(&dir, &["add", "."])?;
+        git(&dir, &["commit", "-q", "-m", "c1 add b"])?;
         std::fs::write(dir.join("a.txt"), "a1\n").map_err(io)?;
-        git(&dir, &["add", "."]);
-        git(&dir, &["commit", "-q", "-m", "c2 modify a"]);
+        git(&dir, &["add", "."])?;
+        git(&dir, &["commit", "-q", "-m", "c2 modify a"])?;
 
         let repo = Repository::discover(&dir)?;
         let hist = repo.file_history(&dir.join("a.txt"), 0, 10)?;
@@ -374,31 +340,25 @@ mod tests {
 
     #[test]
     fn merge_commit_records_two_parents() -> Result<(), VcsError> {
-        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("karet-vcs-merge-{}-{id}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).map_err(io)?;
-        let _guard = TempDir(dir.clone());
-        git(&dir, &["init", "-q"]);
-        git(&dir, &["config", "user.name", "Tester"]);
-        git(&dir, &["config", "user.email", "t@example.com"]);
+        let guard = crate::test_support::init("merge")?;
+        let dir = guard.0.clone();
         std::fs::write(dir.join("f.txt"), "base\n").map_err(io)?;
-        git(&dir, &["add", "."]);
-        git(&dir, &["commit", "-q", "-m", "base"]);
+        git(&dir, &["add", "."])?;
+        git(&dir, &["commit", "-q", "-m", "base"])?;
         // A side branch with its own commit.
-        git(&dir, &["checkout", "-q", "-b", "side"]);
+        git(&dir, &["checkout", "-q", "-b", "side"])?;
         std::fs::write(dir.join("s.txt"), "side\n").map_err(io)?;
-        git(&dir, &["add", "."]);
-        git(&dir, &["commit", "-q", "-m", "side commit"]);
+        git(&dir, &["add", "."])?;
+        git(&dir, &["commit", "-q", "-m", "side commit"])?;
         // Back to the original branch, diverge, then merge (no fast-forward).
-        git(&dir, &["checkout", "-q", "-"]);
+        git(&dir, &["checkout", "-q", "-"])?;
         std::fs::write(dir.join("m.txt"), "main\n").map_err(io)?;
-        git(&dir, &["add", "."]);
-        git(&dir, &["commit", "-q", "-m", "main commit"]);
+        git(&dir, &["add", "."])?;
+        git(&dir, &["commit", "-q", "-m", "main commit"])?;
         git(
             &dir,
             &["merge", "--no-ff", "-q", "-m", "merge side", "side"],
-        );
+        )?;
 
         let repo = Repository::discover(&dir)?;
         let log = repo.log(0, 10)?;
