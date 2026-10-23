@@ -257,7 +257,7 @@ mod tests {
         assert_eq!(idx.line_col(text, BytePos(8)), LineCol::new(2, 0));
         // An offset inside 'é' (bytes 5..7) or past the end is not a position in
         // `text`; it keeps its row and falls back to column 0 rather than
-        // panicking on the slice.
+        // panicking on the slice. Whether it should clamp instead is #641.
         assert_eq!(idx.point_at(BytePos(6)), (1, 3));
         assert_eq!(idx.line_col(text, BytePos(6)), LineCol::new(1, 0));
         assert_eq!(idx.line_col(text, BytePos(999)), LineCol::new(3, 0));
