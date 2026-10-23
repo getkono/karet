@@ -149,8 +149,14 @@ pub fn discover(root: &Path, options: DiscoveryOptions) -> Vec<Discovered> {
     found.extend(python::discover(root, options));
     found.extend(trees::discover(root, options));
 
-    let mut seen: HashSet<PathBuf> = HashSet::new();
-    found.retain(|package| seen.insert(package.root.clone()));
+    // One package per root, so two ecosystems reading the same files do not index them
+    // twice — except C/C++, whose extensions no other ecosystem reads: a Cargo crate or a
+    // Node addon with a `CMakeLists.txt` beside its manifest has C sources nothing else
+    // would index, and the C walk has already pruned the nested projects below them.
+    let mut seen: HashSet<(PathBuf, bool)> = HashSet::new();
+    found.retain(|package| {
+        seen.insert((package.root.clone(), package.kind == PackageKind::CFamily))
+    });
     found.truncate(options.max_packages);
     found
 }

@@ -594,6 +594,42 @@ fn the_outermost_cmake_project_claims_the_tree_below_it() -> TestResult {
 }
 
 #[test]
+fn a_c_project_sharing_a_root_with_another_ecosystem_is_kept() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    // A Rust crate building C beside it, with a nested C project the outer one claims.
+    write(dir.path(), "native/Cargo.toml", &package_manifest("native"))?;
+    write(dir.path(), "native/src/lib.rs", "")?;
+    write(
+        dir.path(),
+        "native/CMakeLists.txt",
+        "add_library(a lib/a.c)\n",
+    )?;
+    write(dir.path(), "native/lib/a.c", "")?;
+    write(dir.path(), "native/lib/sub/CMakeLists.txt", "")?;
+    // A Node addon whose binding is C.
+    write(dir.path(), "addon/package.json", "{}")?;
+    write(
+        dir.path(),
+        "addon/CMakeLists.txt",
+        "add_library(addon addon.c)\n",
+    )?;
+    write(dir.path(), "addon/addon.c", "")?;
+    let discovered = discover(dir.path(), DiscoveryOptions::default());
+    let at = |root: &str| -> Vec<PackageKind> {
+        discovered
+            .iter()
+            .filter(|p| p.root == dir.path().join(root))
+            .map(|p| p.kind)
+            .collect()
+    };
+    assert_eq!(at("native"), [PackageKind::Cargo, PackageKind::CFamily]);
+    assert_eq!(at("addon"), [PackageKind::Node, PackageKind::CFamily]);
+    // Still one C project per tree: the nested one stays claimed by the outer.
+    assert!(at("native/lib/sub").is_empty(), "{discovered:?}");
+    Ok(())
+}
+
+#[test]
 fn a_makefile_marks_a_c_project_only_when_c_sources_sit_beside_it() -> TestResult {
     let dir = tempfile::tempdir()?;
     // Every kind of project has a Makefile; this one has no C in it.

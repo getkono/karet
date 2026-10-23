@@ -65,7 +65,10 @@ with only part of it would be a quieter kind of wrong than failing.
 C and C++ have no manifest, so the build file stands in for one. A CMake project usually
 has one in every directory, so the outermost claims the tree beneath it. A bare `Makefile`
 is every kind of project's build file, so it marks a C project only when C or C++ sources
-sit beside it or in its `src`.
+sit beside it or in its `src`. A directory is one package even when two manifests mark
+it, except that a C/C++ project is kept beside whatever else roots there: a Rust crate or
+Node addon with a `CMakeLists.txt` next to its manifest is two packages, since no other
+ecosystem reads C or C++ sources.
 
 Four Cargo shapes are read: a package, a virtual `[workspace]` root, a root that is both,
 and a root with no manifest whose crates sit a level or two down (`rust/api/`,
