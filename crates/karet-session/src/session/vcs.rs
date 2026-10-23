@@ -97,8 +97,16 @@ impl Session {
         }
         match repo.commits_since(prev.as_deref(), LOG_RECONCILE_CAP) {
             // A clean, bounded set of new commits anchored on a known tip → prepend.
+            // The walk stops at the old tip only when it is still an ancestor; after
+            // an amend, rebase, or reset it walks the rewritten history instead, so
+            // a batch that never reached the old tip must not be prepended.
             Ok(commits)
-                if prev.is_some() && !commits.is_empty() && commits.len() < LOG_RECONCILE_CAP =>
+                if commits.len() < LOG_RECONCILE_CAP
+                    && prev.as_deref().is_some_and(|prev| {
+                        commits
+                            .iter()
+                            .any(|commit| commit.parents.iter().any(|parent| parent == prev))
+                    }) =>
             {
                 self.emit(None, Event::VcsCommitsPrepended { commits });
             },

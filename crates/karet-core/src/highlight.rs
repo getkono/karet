@@ -196,6 +196,19 @@ mod tests {
         assert_eq!(h.spans_in(span(4, 10)), &[hs(4, 8, 2)]);
         assert_eq!(h.spans_in(span(2, 11)).len(), 3);
         assert!(h.spans_in(span(8, 10)).is_empty());
+        // A window strictly inside one span returns just that span.
+        assert_eq!(h.spans_in(span(5, 7)), &[hs(4, 8, 2)]);
+    }
+
+    #[test]
+    fn translate_on_a_pure_deletion_shifts_later_spans_left() {
+        let h = Highlights::from_sorted_spans(vec![hs(0, 3, 1), hs(10, 14, 2)]);
+        // Delete [5,8): the span before is untouched, the one after slides left by 3.
+        let t = h.translate(BytePos(5), BytePos(8), BytePos(5));
+        assert_eq!(t.all(), &[hs(0, 3, 1), hs(7, 11, 2)]);
+        // Deleting up to a span's start moves it to the deletion point.
+        let t = h.translate(BytePos(4), BytePos(10), BytePos(4));
+        assert_eq!(t.all(), &[hs(0, 3, 1), hs(4, 8, 2)]);
     }
 
     #[test]
@@ -204,6 +217,50 @@ mod tests {
         // Replace bytes [4,8) with 2 bytes: the middle span is cut, the last shifts.
         let t = h.translate(BytePos(4), BytePos(8), BytePos(6));
         assert_eq!(t.all(), &[hs(0, 4, 1), hs(8, 10, 3)]);
+    }
+
+    #[test]
+    fn translate_on_a_pure_insertion_shifts_spans_at_or_after_it() {
+        let h = Highlights::from_sorted_spans(vec![hs(0, 4, 1), hs(4, 8, 2), hs(10, 12, 3)]);
+        // Insert 3 bytes at byte 4: the span ending there is kept, the span
+        // starting there moves with the text it covers.
+        let t = h.translate(BytePos(4), BytePos(4), BytePos(7));
+        assert_eq!(t.all(), &[hs(0, 4, 1), hs(7, 11, 2), hs(13, 15, 3)]);
+        // Inserting strictly inside a span cuts it.
+        let t = h.translate(BytePos(6), BytePos(6), BytePos(9));
+        assert_eq!(t.all(), &[hs(0, 4, 1), hs(13, 15, 3)]);
+    }
+
+    #[test]
+    fn translate_on_a_growing_replacement_shifts_by_the_net_growth() {
+        let h = Highlights::from_sorted_spans(vec![hs(0, 4, 1), hs(10, 12, 3)]);
+        // Replace [5,8) with 7 bytes: everything after grows by 4.
+        let t = h.translate(BytePos(5), BytePos(8), BytePos(12));
+        assert_eq!(t.all(), &[hs(0, 4, 1), hs(14, 16, 3)]);
+        // A no-op edit translates to the same spans.
+        assert_eq!(
+            h.translate(BytePos(8), BytePos(8), BytePos(8)).all(),
+            h.all()
+        );
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn highlights_and_folds_round_trip_through_serde() -> Result<(), serde_json::Error> {
+        let h = Highlights::from_sorted_spans(vec![hs(0, 4, 1), hs(10, 12, 31)]);
+        let back = serde_json::from_str::<Highlights>(&serde_json::to_string(&h)?)?;
+        assert_eq!(back.all(), h.all());
+
+        let f = FoldRegions::from_sorted_regions(vec![
+            FoldRegion::new(0, 9),
+            FoldRegion::new(1, 3).with_kind(FoldKind::Imports),
+        ]);
+        let back = serde_json::from_str::<FoldRegions>(&serde_json::to_string(&f)?)?;
+        assert_eq!(back.regions(), f.regions());
+        // A region from before `kind` existed decodes as code.
+        let old = serde_json::from_str::<FoldRegion>(r#"{"start":2,"end":5}"#)?;
+        assert_eq!(old, FoldRegion::new(2, 5));
+        Ok(())
     }
 
     #[test]

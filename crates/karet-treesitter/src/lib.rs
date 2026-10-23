@@ -918,3 +918,58 @@ impl LayeredTree {
         out
     }
 }
+
+/// The error variants and the injection-layer cap, pinned exactly. Kept here rather
+/// than in `tests.rs`, which sits near the file-line ceiling.
+#[cfg(test)]
+mod contract_tests {
+    use super::*;
+
+    /// A language id no grammar is registered under.
+    const UNREGISTERED: LanguageId = LanguageId(60000);
+
+    #[test]
+    fn parsing_an_unregistered_language_is_unknown_language() {
+        let mut pool = ParserPool::new();
+        let plain = SyntaxTree::parse(&mut pool, UNREGISTERED, "x");
+        assert!(matches!(plain, Err(TsError::UnknownLanguage)));
+        let layered = LayeredParser::new().parse(UNREGISTERED, "x");
+        assert!(matches!(layered, Err(TsError::UnknownLanguage)));
+    }
+
+    #[test]
+    fn compiling_for_an_unregistered_language_is_unknown_language() {
+        let query = Query::compile(UNREGISTERED, "(identifier) @name");
+        assert!(matches!(query, Err(TsError::UnknownLanguage)));
+    }
+
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn a_malformed_query_is_invalid_query() -> Result<(), TsError> {
+        let rust = language_id_from_injection_name("rust").ok_or(TsError::UnknownLanguage)?;
+        // A node type the grammar does not have, then an unbalanced pattern.
+        for source in ["(no_such_node) @x", "((identifier) @x"] {
+            let err = Query::compile(rust, source);
+            assert!(
+                matches!(&err, Err(TsError::InvalidQuery(message)) if !message.is_empty()),
+                "{source:?} must be rejected as an invalid query"
+            );
+        }
+        Ok(())
+    }
+
+    #[cfg(all(feature = "lang-markdown", feature = "lang-rust"))]
+    #[test]
+    fn layers_past_the_cap_are_truncated_to_exactly_the_cap() -> Result<(), TsError> {
+        let md = language_id_from_injection_name("markdown").ok_or(TsError::UnknownLanguage)?;
+        let rust = language_id_from_injection_name("rust").ok_or(TsError::UnknownLanguage)?;
+        // One more fence than the cap admits: every fence is its own rust layer at
+        // depth 1, so that level alone overflows and is cut to the cap.
+        let src = "```rust\nfn f() {}\n```\n".repeat(MAX_INJECTION_LAYERS + 1);
+        let tree = LayeredParser::new().parse(md, &src)?;
+        assert_eq!(tree.children().len(), MAX_INJECTION_LAYERS);
+        // Every admitted layer is one of the fences.
+        assert!(tree.children().iter().all(|layer| layer.language() == rust));
+        Ok(())
+    }
+}

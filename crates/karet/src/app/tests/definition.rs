@@ -456,7 +456,7 @@ fn an_edit_in_one_split_leaves_a_far_click_in_the_other_a_step_back() {
     rig.app.observe_navigation();
     // The session's echo brings the second split's copy of the text up to date.
     let buffer = match &rig.app.tabs[rig.app.active].kind {
-        TabKind::Code { buffer, .. } => buffer.clone(),
+        TabKind::Code { buffer, .. } => (**buffer).clone(),
         _ => karet_text::TextBuffer::from_text(""),
     };
     let snap = DocSnapshot {

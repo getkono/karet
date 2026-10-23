@@ -197,6 +197,52 @@ mod tests {
     }
 
     #[test]
+    fn successors_and_predecessors_follow_only_the_requested_edge_kind() {
+        let mut view = GraphView::new();
+        // `m` contains `a` and `b`; `a` calls `b`; `b` contains nothing.
+        view.edges
+            .push(GraphEdge::new("m", "a", GraphEdgeKind::Contains));
+        view.edges
+            .push(GraphEdge::new("m", "b", GraphEdgeKind::Contains));
+        view.edges
+            .push(GraphEdge::new("a", "b", GraphEdgeKind::Call));
+
+        assert_eq!(
+            view.successors("m", GraphEdgeKind::Contains),
+            vec!["a", "b"]
+        );
+        assert!(view.successors("m", GraphEdgeKind::Call).is_empty());
+        assert_eq!(view.successors("a", GraphEdgeKind::Call), vec!["b"]);
+        assert!(view.successors("a", GraphEdgeKind::Contains).is_empty());
+        assert_eq!(view.predecessors("b", GraphEdgeKind::Contains), vec!["m"]);
+        assert_eq!(view.predecessors("b", GraphEdgeKind::Call), vec!["a"]);
+        assert!(view.predecessors("m", GraphEdgeKind::Contains).is_empty());
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn views_round_trip_and_unknown_kinds_degrade() -> Result<(), serde_json::Error> {
+        let view = GraphView {
+            nodes: vec![
+                GraphNode::new("p", "serde", GraphNodeKind::Package).with_badge("1.0"),
+                GraphNode::new("x", "ext", GraphNodeKind::External),
+            ],
+            edges: vec![GraphEdge::new("p", "x", GraphEdgeKind::Dependency)],
+            roots: vec!["p".to_owned()],
+        };
+        let json = serde_json::to_string(&view)?;
+        assert_eq!(serde_json::from_str::<GraphView>(&json)?, view);
+
+        // A newer peer's kinds decode to `Unknown` instead of failing the view.
+        let newer = r#"{"nodes":[{"id":"a","label":"A","kind":"Trait","badge":null}],
+            "edges":[{"from":"a","to":"a","kind":"Implements"}],"roots":[]}"#;
+        let decoded = serde_json::from_str::<GraphView>(newer)?;
+        assert_eq!(decoded.nodes[0].kind, GraphNodeKind::Unknown);
+        assert_eq!(decoded.edges[0].kind, GraphEdgeKind::Unknown);
+        Ok(())
+    }
+
+    #[test]
     fn badge_builder_sets_the_annotation() {
         let node = GraphNode::new("p", "serde", GraphNodeKind::Package).with_badge("1.0.228");
         assert_eq!(node.badge.as_deref(), Some("1.0.228"));

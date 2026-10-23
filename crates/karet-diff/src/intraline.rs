@@ -215,11 +215,27 @@ mod tests {
 
     #[test]
     fn pairs_just_under_the_cap_still_diff_normally() {
-        // 500 tokens a side is ~251k cells: well inside the cap, so the shared
-        // prefix must still be recognized as unchanged.
+        // 499 word + space pairs plus the last word is 999 tokens a side, so the
+        // table is exactly 1000 * 1000 = MAX_LCS_CELLS — the largest size the
+        // strict `>` still admits, so the shared prefix must still be
+        // recognized as unchanged.
         let common: String = (0..499).map(|i| format!("t{i} ")).collect();
+        assert_eq!(tokenize(&format!("{common}old")).len(), 999);
         let p = compute_highlights(&format!("{common}old"), &format!("{common}new"));
         assert_eq!(changed_text(&p.old_segments), "old");
         assert_eq!(changed_text(&p.new_segments), "new");
+    }
+
+    #[test]
+    fn pairs_one_token_over_the_cap_degrade() {
+        // One more token on the old side makes the table 1001 * 1000 cells, past
+        // MAX_LCS_CELLS: the same shared prefix is now reported changed too.
+        let common: String = (0..499).map(|i| format!("t{i} ")).collect();
+        let old = format!("{common}old ");
+        let new = format!("{common}new");
+        assert_eq!(tokenize(&old).len(), 1000);
+        let p = compute_highlights(&old, &new);
+        assert_eq!(p.old_segments, vec![seg(&old, true)]);
+        assert_eq!(p.new_segments, vec![seg(&new, true)]);
     }
 }

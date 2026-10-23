@@ -699,3 +699,39 @@ fn drain_view_requests<T>(
         cancelled.push(request);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::app::tests::harness::*;
+    use crate::app::*;
+
+    /// A line copy that comes back with CRLF endings (as a Windows or terminal
+    /// clipboard hands it over) is still recognised as karet's own copy, so it
+    /// pastes above the caret's line rather than at the caret.
+    #[test]
+    fn a_crlf_line_copy_still_pastes_as_a_line() {
+        let mut rig = Rig::new("a|b\ncd");
+        rig.step(Step::Key(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        rig.step(key(KeyCode::Down));
+        rig.app.handle_paste("ab\r\n".to_owned());
+        assert_eq!(rig.marked(), "ab\nab\nc|d");
+    }
+
+    /// Every CRLF and lone CR becomes LF before the text lands; text that
+    /// normalises to nothing changes nothing.
+    #[test]
+    fn pasted_line_endings_become_lf() {
+        let rows = [
+            ("a lone CR", "a\rb", "a\nb|"),
+            ("a CRLF", "a\r\nb", "a\nb|"),
+            ("mixed endings", "a\r\nb\rc\nd", "a\nb\nc\nd|"),
+            ("CR CR stays two breaks", "a\r\rb", "a\n\nb|"),
+            ("nothing", "", "|"),
+        ];
+        for (name, pasted, expect) in rows {
+            let mut rig = Rig::new("|");
+            rig.app.handle_paste(pasted.to_owned());
+            assert_eq!(rig.marked(), expect, "{name}");
+        }
+    }
+}

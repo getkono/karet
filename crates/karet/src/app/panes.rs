@@ -208,7 +208,8 @@ impl App {
                             language,
                             doc: *doc,
                             next_version: *next_version,
-                            buffer: buffer.clone(),
+                            // The same buffer, not a copy of it.
+                            buffer: std::sync::Arc::clone(buffer),
                             text: text.clone(),
                             highlights: highlights.clone(),
                             semantic_blocks: semantic_blocks.clone(),

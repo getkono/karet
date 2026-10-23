@@ -561,6 +561,87 @@ mod tests {
         assert_eq!(parsed.tabstops[0], stop(1, &[(1, 2)]));
     }
 
+    /// A deterministic pseudo-random stream (an LCG), so a failure replays.
+    struct Rng(u64);
+
+    impl Rng {
+        fn below(&mut self, bound: usize) -> usize {
+            self.0 = self
+                .0
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            usize::try_from(self.0 >> 33).unwrap_or_default() % bound
+        }
+
+        /// A string of up to `max` characters drawn from `alphabet`.
+        fn string(&mut self, alphabet: &[char], max: usize) -> String {
+            let len = self.below(max + 1);
+            (0..len)
+                .map(|_| alphabet[self.below(alphabet.len())])
+                .collect()
+        }
+    }
+
+    /// Falsified by a panic, a span outside the inserted text or reversed,
+    /// unsorted or duplicated spans, or stops out of visiting order.
+    #[test]
+    fn generated_snippets_keep_every_span_inside_the_text() {
+        const SYNTAX: &[char] = &[
+            '$', '$', '{', '}', '0', '1', '2', ':', '|', ',', '\\', '/', 'a', '_', 'é', '😀', ' ',
+        ];
+        let mut rng = Rng(0x5eed);
+        for _ in 0..4000 {
+            let input = rng.string(SYNTAX, 24);
+            let parsed = parse_snippet(&input);
+            let len = u32::try_from(parsed.text.chars().count()).unwrap_or(u32::MAX);
+            for stop in &parsed.tabstops {
+                for &(start, end) in &stop.spans {
+                    assert!(
+                        start <= end && end <= len,
+                        "{input:?}: span {start}..{end} of {len}"
+                    );
+                }
+                assert!(
+                    stop.spans.windows(2).all(|pair| pair[0] < pair[1]),
+                    "{input:?}: spans not sorted and distinct"
+                );
+            }
+            let order: Vec<u32> = parsed.tabstops.iter().map(|stop| stop.index).collect();
+            if let Some((last, numbered)) = order.split_last() {
+                assert_eq!(*last, 0, "{input:?}: the final stop is not last");
+                assert!(
+                    numbered.windows(2).all(|pair| pair[0] < pair[1]) && !numbered.contains(&0),
+                    "{input:?}: stops visited as {order:?}"
+                );
+            }
+        }
+    }
+
+    /// Falsified by snippet-free text being altered, or a construct the
+    /// grammar rejects losing or rewriting any of what follows it.
+    #[test]
+    fn generated_malformed_snippets_are_left_verbatim() {
+        // No `$` and no `\`: nothing here can start a construct or an escape.
+        const PLAIN: &[char] = &['{', '}', '0', '1', ':', '|', ',', '/', 'a', '_', 'é', ' '];
+        let mut rng = Rng(0xbad5);
+        for _ in 0..2000 {
+            let rest = rng.string(PLAIN, 16);
+            assert_eq!(
+                parse_snippet(&rest),
+                Snippet {
+                    text: rest.clone(),
+                    tabstops: Vec::new()
+                }
+            );
+            for opener in ["${?", "${}", "${-", "${1x", "${ 1"] {
+                let input = format!("{opener}{rest}");
+                let parsed = parse_snippet(&input);
+                assert_eq!(parsed.text, input, "rewritten");
+                assert!(parsed.tabstops.is_empty(), "{input:?}: grew a stop");
+            }
+        }
+    }
+
     #[test]
     fn realistic_server_snippets() {
         // rust-analyzer method call

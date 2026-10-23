@@ -34,6 +34,9 @@ impl App {
         // the contiguous text (find, a Markdown scan, the edit recovery above)
         // builds it once for all of them.
         let snap_text = snap.buffer.text_snapshot();
+        // Likewise one buffer for all of them: each view that catches up holds
+        // a clone of this `Arc`, not a copy of the buffer.
+        let snap_buffer = std::sync::Arc::new(snap.buffer.clone());
         // An undo/redo's selection set belongs to the view that asked for it;
         // failing a record of one, to the focused view when it shows this
         // document. Every other view keeps its own carets.
@@ -92,7 +95,7 @@ impl App {
                     if want_carried && snap.version > old_version {
                         carried = Some((old_version, change.clone()));
                     }
-                    *buffer = snap.buffer.clone();
+                    *buffer = std::sync::Arc::clone(&snap_buffer);
                     *text = snap_text.clone();
                     match restore {
                         Some(cursor) => tab.editor.set_cursor_state(buffer, cursor.clone()),

@@ -230,6 +230,7 @@ mod tests {
 
     use jupyter_protocol::messaging::ExecuteReply;
     use jupyter_protocol::messaging::InterruptReply;
+    use jupyter_protocol::messaging::ShutdownReply;
     use jupyter_protocol::messaging::Status;
     use jupyter_protocol::messaging::StreamContent;
     use serde_json::json;
@@ -245,6 +246,22 @@ mod tests {
         drop_probes: usize,
         /// Send an unrelated broadcast before real answers once.
         noise: bool,
+        /// The execution counter every `execute_reply` carries.
+        count: usize,
+        /// Extra iopub broadcasts a cell emits after its stdout echo.
+        broadcasts: Vec<JupyterMessageContent>,
+        /// Withhold the shell `execute_reply`.
+        withhold_reply: bool,
+        /// Withhold the iopub `status: idle`.
+        withhold_idle: bool,
+        /// Broadcast idle *before* sending the reply.
+        idle_first: bool,
+        /// Never answer control requests.
+        mute_control: bool,
+        /// Answer control requests on iopub instead of control.
+        control_on_iopub: bool,
+        /// Every request the client sent, in order.
+        sent: Vec<(KernelChannel, String)>,
     }
 
     impl KernelTransport for FakeTransport {
@@ -264,6 +281,8 @@ mod tests {
                 );
                 self.inbound.push_back((KernelChannel::Iopub, stranger));
             }
+            self.sent
+                .push((channel, message.content.message_type().to_owned()));
             match &message.content {
                 JupyterMessageContent::KernelInfoRequest(_) => {
                     if self.drop_probes > 0 {
@@ -306,19 +325,50 @@ mod tests {
                             JupyterMessage::new(error, Some(&message)),
                         ));
                     }
-                    let reply = JupyterMessage::new(ExecuteReply::default(), Some(&message));
-                    self.inbound.push_back((KernelChannel::Shell, reply));
+                    for content in self.broadcasts.clone() {
+                        self.inbound.push_back((
+                            KernelChannel::Iopub,
+                            JupyterMessage::new(content, Some(&message)),
+                        ));
+                    }
+                    let reply = JupyterMessage::new(
+                        ExecuteReply {
+                            execution_count: self.count.into(),
+                            ..ExecuteReply::default()
+                        },
+                        Some(&message),
+                    );
                     let idle = JupyterMessage::new(
                         Status {
                             execution_state: ExecutionState::Idle,
                         },
                         Some(&message),
                     );
-                    self.inbound.push_back((KernelChannel::Iopub, idle));
+                    let reply = (!self.withhold_reply).then_some((KernelChannel::Shell, reply));
+                    let idle = (!self.withhold_idle).then_some((KernelChannel::Iopub, idle));
+                    let ordered = if self.idle_first {
+                        [idle, reply]
+                    } else {
+                        [reply, idle]
+                    };
+                    self.inbound.extend(ordered.into_iter().flatten());
                 },
-                JupyterMessageContent::InterruptRequest(_) => {
-                    let reply = JupyterMessage::new(InterruptReply::default(), Some(&message));
-                    self.inbound.push_back((KernelChannel::Control, reply));
+                JupyterMessageContent::InterruptRequest(_)
+                | JupyterMessageContent::ShutdownRequest(_)
+                    if !self.mute_control =>
+                {
+                    let reply = match &message.content {
+                        JupyterMessageContent::ShutdownRequest(_) => {
+                            JupyterMessage::new(ShutdownReply::default(), Some(&message))
+                        },
+                        _ => JupyterMessage::new(InterruptReply::default(), Some(&message)),
+                    };
+                    let on = if self.control_on_iopub {
+                        KernelChannel::Iopub
+                    } else {
+                        KernelChannel::Control
+                    };
+                    self.inbound.push_back((on, reply));
                 },
                 _ => {},
             }
@@ -386,5 +436,206 @@ mod tests {
     async fn interrupt_round_trips_on_the_control_channel() -> Result<(), KernelError> {
         let mut client = KernelClient::new(FakeTransport::default());
         client.interrupt().await
+    }
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    /// An iopub content built from its wire type and JSON body.
+    fn content(msg_type: &str, body: Value) -> serde_json::Result<JupyterMessageContent> {
+        JupyterMessageContent::from_type_and_content(msg_type, body)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn execute_reports_the_reply_counter_and_sends_on_shell() -> Result<(), KernelError> {
+        let mut client = KernelClient::new(FakeTransport {
+            count: 12,
+            ..FakeTransport::default()
+        });
+        let outcome = client.execute("x").await?;
+        assert_eq!(outcome.execution_count, Some(12));
+        assert_eq!(
+            client.transport.sent,
+            vec![(KernelChannel::Shell, "execute_request".to_owned())]
+        );
+        Ok(())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn execute_maps_every_output_kind_in_iopub_order() -> TestResult {
+        let mut client = KernelClient::new(FakeTransport {
+            count: 3,
+            broadcasts: vec![
+                content("stream", json!({"name": "stderr", "text": "warn\n"}))?,
+                // Not outputs: the input echo and a busy status are skipped.
+                content("execute_input", json!({"code": "x", "execution_count": 3}))?,
+                content("status", json!({"execution_state": "busy"}))?,
+                content(
+                    "execute_result",
+                    json!({"execution_count": 3, "data": {"text/plain": "3"},
+                           "metadata": {"m": 1}}),
+                )?,
+                content(
+                    "display_data",
+                    json!({"data": {"text/html": "<b>"}, "metadata": {"kept": false}}),
+                )?,
+            ],
+            ..FakeTransport::default()
+        });
+        let outcome = client.execute("x").await?;
+        let map = |value: Value| match value {
+            Value::Object(map) => map,
+            _ => Map::new(),
+        };
+        assert_eq!(
+            outcome,
+            CellOutcome {
+                execution_count: Some(3),
+                errored: false,
+                outputs: vec![
+                    Output::Stream {
+                        name: "stdout".to_owned(),
+                        text: Source::Joined("ran: x\n".to_owned()),
+                        extra: Map::new(),
+                    },
+                    Output::Stream {
+                        name: "stderr".to_owned(),
+                        text: Source::Joined("warn\n".to_owned()),
+                        extra: Map::new(),
+                    },
+                    Output::ExecuteResult {
+                        execution_count: Some(3),
+                        data: map(json!({"text/plain": "3"})),
+                        metadata: map(json!({"m": 1})),
+                        extra: Map::new(),
+                    },
+                    // Display metadata is not carried over (pinned as-is).
+                    Output::DisplayData {
+                        data: map(json!({"text/html": "<b>"})),
+                        metadata: Map::new(),
+                        extra: Map::new(),
+                    },
+                ],
+            }
+        );
+        Ok(())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn idle_before_the_reply_still_completes_the_cell() -> Result<(), KernelError> {
+        let mut client = KernelClient::new(FakeTransport {
+            idle_first: true,
+            count: 4,
+            ..FakeTransport::default()
+        });
+        let outcome = client.execute("x").await?;
+        assert_eq!(outcome.execution_count, Some(4));
+        assert_eq!(outcome.outputs.len(), 1);
+        Ok(())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn execute_times_out_after_its_deadline_without_both_signals() {
+        for (withhold_reply, withhold_idle) in [(true, true), (true, false), (false, true)] {
+            let mut client = KernelClient::new(FakeTransport {
+                withhold_reply,
+                withhold_idle,
+                ..FakeTransport::default()
+            });
+            let started = tokio::time::Instant::now();
+            let result = client.execute("x").await;
+            assert!(matches!(result, Err(KernelError::Timeout)), "{result:?}");
+            assert_eq!(started.elapsed(), EXECUTE_TIMEOUT);
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn readiness_gives_up_exactly_at_the_deadline() {
+        let mut dead = KernelClient::new(FakeTransport {
+            drop_probes: usize::MAX,
+            ..FakeTransport::default()
+        });
+        let started = tokio::time::Instant::now();
+        let never = dead.wait_ready(Duration::from_secs(2)).await;
+        assert!(matches!(never, Err(KernelError::Timeout)), "{never:?}");
+        assert_eq!(started.elapsed(), Duration::from_secs(2));
+        // One probe per interval: at 0, 300, …, 1800ms.
+        assert_eq!(dead.transport.sent.len(), 7);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn shutdown_round_trips_on_the_control_channel() -> Result<(), KernelError> {
+        let mut client = KernelClient::new(FakeTransport::default());
+        client.shutdown().await?;
+        assert_eq!(
+            client.transport.sent,
+            vec![(KernelChannel::Control, "shutdown_request".to_owned())]
+        );
+        Ok(())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn unanswered_control_requests_time_out_after_the_control_deadline() {
+        for transport in [
+            FakeTransport {
+                mute_control: true,
+                ..FakeTransport::default()
+            },
+            // A reply broadcast on iopub is not a reply.
+            FakeTransport {
+                control_on_iopub: true,
+                ..FakeTransport::default()
+            },
+        ] {
+            let mut client = KernelClient::new(transport);
+            let started = tokio::time::Instant::now();
+            let shutdown = client.shutdown().await;
+            assert!(
+                matches!(shutdown, Err(KernelError::Timeout)),
+                "{shutdown:?}"
+            );
+            assert_eq!(started.elapsed(), CONTROL_TIMEOUT);
+            let started = tokio::time::Instant::now();
+            let interrupt = client.interrupt().await;
+            assert!(
+                matches!(interrupt, Err(KernelError::Timeout)),
+                "{interrupt:?}"
+            );
+            assert_eq!(started.elapsed(), CONTROL_TIMEOUT);
+        }
+    }
+
+    #[test]
+    fn output_mapping_drops_non_outputs_and_unrepresentable_counters() -> TestResult {
+        assert_eq!(
+            output_from(&content("status", json!({"execution_state": "idle"}))?),
+            None
+        );
+        assert_eq!(
+            output_from(&content("clear_output", json!({"wait": false}))?),
+            None
+        );
+        // A counter past i64::MAX cannot be represented: it maps to `None`
+        // rather than wrapping.
+        let huge =
+            JupyterMessageContent::ExecuteResult(jupyter_protocol::messaging::ExecuteResult {
+                execution_count: usize::MAX.into(),
+                ..Default::default()
+            });
+        assert!(matches!(
+            output_from(&huge),
+            Some(Output::ExecuteResult {
+                execution_count: None,
+                ..
+            })
+        ));
+        assert!(matches!(
+            output_from(&content(
+                "error",
+                json!({"ename": "E", "evalue": "v", "traceback": ["a", "b"]})
+            )?),
+            Some(Output::Error { ename, evalue, traceback, .. })
+                if ename == "E" && evalue == "v" && traceback == ["a", "b"]
+        ));
+        Ok(())
     }
 }

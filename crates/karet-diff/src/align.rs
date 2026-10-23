@@ -158,6 +158,65 @@ mod tests {
         assert!(rows[0].left.is_none() && rows[0].right.is_some());
     }
 
+    /// A cell as `(lineno, content, kind, hunk_line_idx)`, for exact comparison.
+    fn facts(cell: Option<&Cell>) -> Option<(u32, &str, LineKind, usize)> {
+        cell.map(|c| (c.lineno, c.content.as_str(), c.kind, c.hunk_line_idx))
+    }
+
+    #[test]
+    fn cells_carry_their_side_lineno_and_hunk_index() {
+        // ctx, 2 removes, 1 add, ctx — the second remove row is ragged.
+        let rows = align_hunk(&[
+            ctx(10, 20, "c"),
+            rem(11, "r1"),
+            rem(12, "r2"),
+            add(21, "a1"),
+            ctx(13, 22, "d"),
+        ]);
+        let got: Vec<_> = rows
+            .iter()
+            .map(|r| (facts(r.left.as_ref()), facts(r.right.as_ref())))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (
+                    Some((10, "c", LineKind::Context, 0)),
+                    Some((20, "c", LineKind::Context, 0))
+                ),
+                (
+                    Some((11, "r1", LineKind::Remove, 1)),
+                    Some((21, "a1", LineKind::Add, 3))
+                ),
+                (Some((12, "r2", LineKind::Remove, 2)), None),
+                (
+                    Some((13, "d", LineKind::Context, 4)),
+                    Some((22, "d", LineKind::Context, 4))
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_missing_lineno_reads_as_zero() {
+        let unnumbered = [
+            DiffLine::new(LineKind::Context, None, None, "c"),
+            DiffLine::new(LineKind::Remove, None, None, "r"),
+            DiffLine::new(LineKind::Add, None, None, "a"),
+        ];
+        let rows = align_hunk(&unnumbered);
+        let linenos: Vec<_> = rows
+            .iter()
+            .map(|r| {
+                (
+                    r.left.as_ref().map(|c| c.lineno),
+                    r.right.as_ref().map(|c| c.lineno),
+                )
+            })
+            .collect();
+        assert_eq!(linenos, vec![(Some(0), Some(0)), (Some(0), Some(0))]);
+    }
+
     #[test]
     fn mixed_context_and_changes() {
         let rows = align_hunk(&[

@@ -151,3 +151,168 @@ mod tests {
         assert_eq!(byte_to_line(&starts, 8), 3);
     }
 }
+
+/// One case per bundled query, for every grammar this build compiled in: a
+/// line inside a function body narrows to that function's whole range, and a
+/// line between functions narrows to nothing. Each path's extension resolves
+/// through the same alias table the query does (`.jsx`/`.tsx`, `.cs`), which
+/// is where narrowing silently broke before.
+#[cfg(all(test, feature = "treesitter"))]
+mod language_tests {
+    use super::*;
+
+    /// `(path, source, 0-based body line, expected 1-based function range,
+    /// 0-based line outside every function)`.
+    type Case = (&'static str, &'static str, u32, LineRange, u32);
+
+    const fn range(start: u32, end: u32) -> LineRange {
+        LineRange { start, end }
+    }
+
+    #[allow(clippy::vec_init_then_push)] // each push is gated on its grammar's feature
+    fn cases() -> Vec<Case> {
+        let mut cases: Vec<Case> = Vec::new();
+        #[cfg(feature = "lang-rust")]
+        cases.push(("a.rs", "use x;\nfn f() {\n    1;\n}\n", 2, range(2, 4), 0));
+        #[cfg(feature = "lang-python")]
+        cases.push((
+            "a.py",
+            "import x\ndef f():\n    return 1\n",
+            2,
+            range(2, 3),
+            0,
+        ));
+        #[cfg(feature = "lang-javascript")]
+        cases.push((
+            "a.js",
+            "let x;\nfunction f() {\n  return 1;\n}\n",
+            2,
+            range(2, 4),
+            0,
+        ));
+        #[cfg(feature = "lang-javascript")]
+        cases.push((
+            "a.jsx",
+            "let x;\nconst f = () => {\n  return <a/>;\n};\n",
+            2,
+            range(2, 4),
+            0,
+        ));
+        #[cfg(feature = "lang-typescript")]
+        cases.push((
+            "a.ts",
+            "let x: number;\nfunction f(): number {\n  return 1;\n}\n",
+            2,
+            range(2, 4),
+            0,
+        ));
+        #[cfg(feature = "lang-typescript")]
+        cases.push((
+            "a.tsx",
+            "let x;\nconst f = function () {\n  return <a/>;\n};\n",
+            2,
+            range(2, 4),
+            0,
+        ));
+        #[cfg(feature = "lang-go")]
+        cases.push((
+            "a.go",
+            "package m\nfunc f() int {\n\treturn 1\n}\n",
+            2,
+            range(2, 4),
+            0,
+        ));
+        #[cfg(feature = "lang-c")]
+        cases.push((
+            "a.c",
+            "int x;\nint f(void) {\n  return 1;\n}\n",
+            2,
+            range(2, 4),
+            0,
+        ));
+        #[cfg(feature = "lang-cpp")]
+        cases.push((
+            "a.cpp",
+            "int x;\nint f() {\n  return 1;\n}\n",
+            2,
+            range(2, 4),
+            0,
+        ));
+        #[cfg(feature = "lang-java")]
+        cases.push((
+            "A.java",
+            "class A {\n  int f() {\n    return 1;\n  }\n}\n",
+            2,
+            range(2, 4),
+            0,
+        ));
+        #[cfg(feature = "lang-ruby")]
+        cases.push(("a.rb", "x = 1\ndef f\n  1\nend\n", 2, range(2, 4), 0));
+        #[cfg(feature = "lang-csharp")]
+        cases.push((
+            "A.cs",
+            "class A {\n  int F() {\n    return 1;\n  }\n}\n",
+            2,
+            range(2, 4),
+            0,
+        ));
+        #[cfg(feature = "lang-php")]
+        cases.push((
+            "a.php",
+            "<?php\nfunction f() {\n  return 1;\n}\n",
+            2,
+            range(2, 4),
+            0,
+        ));
+        #[cfg(feature = "lang-bash")]
+        cases.push(("a.sh", "x=1\nf() {\n  echo 1\n}\n", 2, range(2, 4), 0));
+        if zsh_compiled_in() {
+            cases.push(("a.zsh", "x=1\nf() {\n  echo 1\n}\n", 2, range(2, 4), 0));
+        }
+        cases
+    }
+
+    /// blameline has no `lang-zsh` feature of its own: the Zsh grammar is
+    /// compiled in only when workspace feature unification turns on
+    /// `karet-treesitter/lang-zsh`, so its case is gated on the grammar
+    /// resolving at run time rather than on a feature.
+    fn zsh_compiled_in() -> bool {
+        language_id_from_path(Path::new("a.zsh")).is_some()
+    }
+
+    #[test]
+    fn every_bundled_query_narrows_to_the_enclosing_function() {
+        for (path, source, inside, want, outside) in cases() {
+            assert_eq!(
+                enclosing_function_range(source, Path::new(path), inside),
+                Some(want),
+                "{path}: line {inside}"
+            );
+            assert_eq!(
+                enclosing_function_range(source, Path::new(path), outside),
+                None,
+                "{path}: line {outside}"
+            );
+        }
+    }
+
+    /// The table covers every narrowing grammar `all-narrowing-languages`
+    /// turns on, plus Zsh whenever unification compiled it in, so a new query
+    /// cannot land untested under `--all-features`.
+    #[cfg(feature = "all-narrowing-languages")]
+    #[test]
+    fn the_table_covers_every_narrowing_language() {
+        assert_eq!(cases().len(), 14 + usize::from(zsh_compiled_in()));
+    }
+
+    /// A line past the end of the source has no start offset, so it narrows
+    /// to nothing rather than to the last function.
+    #[cfg(feature = "lang-rust")]
+    #[test]
+    fn a_line_past_the_end_is_none() {
+        assert_eq!(
+            enclosing_function_range("fn f() {\n}\n", Path::new("a.rs"), 9),
+            None
+        );
+    }
+}

@@ -70,7 +70,7 @@ fn type_text(app: &mut App, text: &str) {
 /// A snapshot republishing the active tab's buffer exactly as it is.
 fn snapshot_of(app: &App) -> DocSnapshot {
     let buffer = match &app.tabs[app.active].kind {
-        TabKind::Code { buffer, .. } => buffer.clone(),
+        TabKind::Code { buffer, .. } => (**buffer).clone(),
         _ => karet_text::TextBuffer::from_text(""),
     };
     DocSnapshot {
@@ -457,7 +457,7 @@ fn deleting_the_text_around_a_hint_drops_it() {
     // Select the whole first line and delete it.
     let active = app.active;
     let buffer = match &app.tabs[active].kind {
-        TabKind::Code { buffer, .. } => buffer.clone(),
+        TabKind::Code { buffer, .. } => (**buffer).clone(),
         _ => unreachable!("a code tab"),
     };
     app.tabs[active]

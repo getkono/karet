@@ -146,10 +146,112 @@ fn strip_ansi(text: &str) -> String {
 mod tests {
     use super::*;
 
+    type TestResult = Result<(), crate::NotebookError>;
+
     #[test]
     fn strip_ansi_removes_styling_and_keeps_text() {
         assert_eq!(strip_ansi("\u{1b}[31mred\u{1b}[0m plain"), "red plain");
         assert_eq!(strip_ansi("no escapes"), "no escapes");
         assert_eq!(strip_ansi("\u{1b}]0;title\u{7}body"), "body");
+    }
+
+    #[test]
+    fn strip_ansi_handles_every_escape_shape() {
+        // Multi-parameter CSI ends at its final byte, whatever the params.
+        assert_eq!(strip_ansi("\u{1b}[1;38;5;196mhot\u{1b}[0m"), "hot");
+        // A CSI cut off at end of input swallows the tail, not the text before.
+        assert_eq!(strip_ansi("kept\u{1b}[31"), "kept");
+        // OSC terminated by ST (ESC \) rather than BEL.
+        assert_eq!(strip_ansi("\u{1b}]8;;http://x\u{1b}\\link"), "link");
+        // An unterminated OSC drops everything after it.
+        assert_eq!(strip_ansi("a\u{1b}]0;never closed"), "a");
+        // A non-CSI/OSC escape drops exactly the one byte after ESC.
+        assert_eq!(strip_ansi("\u{1b}(Bx"), "Bx");
+        assert_eq!(strip_ansi("\u{1b}7saved"), "saved");
+        // A lone ESC at end of input vanishes.
+        assert_eq!(strip_ansi("end\u{1b}"), "end");
+        // Non-ASCII text around escapes survives intact.
+        assert_eq!(strip_ansi("\u{1b}[32mé✓\u{1b}[0m日本"), "é✓日本");
+    }
+
+    #[test]
+    fn to_markdown_renders_every_cell_and_output_shape_exactly() -> TestResult {
+        let notebook = crate::parse(
+            r##"{
+              "nbformat": 4, "nbformat_minor": 5,
+              "metadata": {"kernelspec": {"language": "julia"}},
+              "cells": [
+                {"cell_type": "markdown", "metadata": {}, "source": ["# Head\n", "\n"]},
+                {"cell_type": "raw", "metadata": {}, "source": "raw\n\n"},
+                {"cell_type": "code", "metadata": {}, "execution_count": 7, "source": "x\n",
+                 "outputs": [
+                   {"output_type": "stream", "name": "stderr", "text": "warn\u001b[0m\n"},
+                   {"output_type": "stream", "name": "stdout", "text": ""},
+                   {"output_type": "execute_result", "execution_count": 7,
+                    "data": {"text/plain": "\u001b[1m5\u001b[0m"}, "metadata": {}},
+                   {"output_type": "display_data",
+                    "data": {"application/json": {"a": 1}}, "metadata": {}},
+                   {"output_type": "display_data",
+                    "data": {"text/markdown": "**b**\n"}, "metadata": {}},
+                   {"output_type": "error", "ename": "E", "evalue": "v",
+                    "traceback": ["l1", "\u001b[31ml2\u001b[0m"]}
+                 ]},
+                {"cell_type": "code", "metadata": {}, "source": ""}
+              ]
+            }"##,
+        )?;
+        let expected = concat!(
+            "# Head\n\n",
+            "```\nraw\n```\n\n",
+            "_In [7]:_\n\n```julia\nx\n```\n\n",
+            "```stderr\nwarn\n```\n\n",
+            "```text\n\n```\n\n",
+            "```text\n5\n```\n\n",
+            "*\\[unrenderable output\\]*\n\n",
+            "**b**\n\n",
+            "**E**: v\n\n```text\nl1\nl2\n```\n\n",
+            "_In [ ]:_\n\n```julia\n\n```\n",
+        );
+        assert_eq!(to_markdown(&notebook), expected);
+        Ok(())
+    }
+
+    #[test]
+    fn an_empty_notebook_renders_nothing_and_language_defaults_to_python() -> TestResult {
+        let empty = crate::parse(r#"{"nbformat": 4, "nbformat_minor": 5}"#)?;
+        assert_eq!(to_markdown(&empty), "");
+
+        let bare = crate::parse(
+            r#"{"nbformat": 4, "nbformat_minor": 5, "metadata": {},
+                "cells": [{"cell_type": "code", "metadata": {}, "execution_count": null,
+                           "source": "1", "outputs": []}]}"#,
+        )?;
+        assert_eq!(to_markdown(&bare), "_In [ ]:_\n\n```python\n1\n```\n");
+        Ok(())
+    }
+
+    #[test]
+    fn an_image_beats_markdown_and_unparseable_text_renders_empty() -> TestResult {
+        let notebook = crate::parse(
+            r#"{"nbformat": 4, "nbformat_minor": 5, "metadata": {},
+                "cells": [{"cell_type": "code", "metadata": {}, "execution_count": 1,
+                  "source": "x", "outputs": [
+                    {"output_type": "display_data", "metadata": {},
+                     "data": {"text/markdown": "md", "image/svg+xml": "<svg/>"}},
+                    {"output_type": "display_data", "metadata": {},
+                     "data": {"text/plain": 42}}
+                  ]}]}"#,
+        )?;
+        assert_eq!(
+            to_markdown(&notebook),
+            concat!(
+                "_In [1]:_\n\n```python\nx\n```\n\n",
+                "*\\[image output\\]*\n\n",
+                // A text/plain value that is neither a string nor a list of
+                // strings still fences, empty.
+                "```text\n\n```\n",
+            )
+        );
+        Ok(())
     }
 }

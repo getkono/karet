@@ -435,4 +435,245 @@ trailer<</Size 6/Root 1 0 R>>\n%%EOF";
         );
         assert!(has_white, "expected the page margin to stay white");
     }
+
+    /// Assemble a xref-less PDF (hayro's brute-force fallback locates the objects)
+    /// from `(object number, body)` pairs, with `trailer` as the trailer dictionary.
+    fn pdf_from_objects(objects: &[(usize, String)], trailer: &str) -> Vec<u8> {
+        let mut pdf = String::from("%PDF-1.4\n");
+        for (num, body) in objects {
+            pdf.push_str(&format!("{num} 0 obj{body}endobj\n"));
+        }
+        pdf.push_str(&format!("trailer{trailer}\n%%EOF"));
+        pdf.into_bytes()
+    }
+
+    /// A two-page document (pages `3 0 R` and `4 0 R`) whose `/Outlines` root
+    /// (`5 0 R`) has `/First 6 0 R`; `entries` supplies objects 6 onward.
+    fn outline_doc(entries: &[(usize, String)]) -> Vec<OutlineItem> {
+        let mut objects = vec![
+            (1, "<</Type/Catalog/Pages 2 0 R/Outlines 5 0 R>>".to_owned()),
+            (2, "<</Type/Pages/Kids[3 0 R 4 0 R]/Count 2>>".to_owned()),
+            (
+                3,
+                "<</Type/Page/Parent 2 0 R/MediaBox[0 0 10 10]>>".to_owned(),
+            ),
+            (
+                4,
+                "<</Type/Page/Parent 2 0 R/MediaBox[0 0 10 10]>>".to_owned(),
+            ),
+            (5, "<</Type/Outlines/First 6 0 R>>".to_owned()),
+        ];
+        objects.extend(entries.iter().cloned());
+        let size = objects.len() + 1;
+        Document::load(pdf_from_objects(
+            &objects,
+            &format!("<</Size {size}/Root 1 0 R>>"),
+        ))
+        .map(|doc| doc.outline())
+        .unwrap_or_default()
+    }
+
+    /// Flatten an outline into `(depth, title, page)` rows in document order.
+    fn flatten(items: &[OutlineItem], depth: usize, out: &mut Vec<(usize, String, Option<usize>)>) {
+        for item in items {
+            out.push((depth, item.title.clone(), item.page));
+            flatten(&item.children, depth + 1, out);
+        }
+    }
+
+    fn rows(items: &[OutlineItem]) -> Vec<(usize, String, Option<usize>)> {
+        let mut out = Vec::new();
+        flatten(items, 0, &mut out);
+        out
+    }
+
+    #[test]
+    fn outline_walks_siblings_children_and_goto_actions() {
+        let items = outline_doc(&[
+            (
+                6,
+                "<</Title(One)/Dest[3 0 R/Fit]/First 8 0 R/Next 7 0 R>>".to_owned(),
+            ),
+            (
+                7,
+                "<</Title(Two)/A<</S/GoTo/D[4 0 R/XYZ 0 0 0]>>>>".to_owned(),
+            ),
+            (8, "<</Title(One.a)/Next 9 0 R>>".to_owned()),
+            (9, "<</Title(One.b)/A<</S/GoTo/D[4 0 R/Fit]>>>>".to_owned()),
+        ]);
+        assert_eq!(
+            rows(&items),
+            vec![
+                (0, "One".to_owned(), Some(0)),
+                (1, "One.a".to_owned(), None),
+                (1, "One.b".to_owned(), Some(1)),
+                (0, "Two".to_owned(), Some(1)),
+            ]
+        );
+    }
+
+    /// Only `GoTo` actions resolve; a URI action, a named `/Dest`, and a `/Dest`
+    /// whose page reference is not a page keep their title with `page = None`.
+    #[test]
+    fn outline_leaves_unresolvable_destinations_unpaged() {
+        let items = outline_doc(&[
+            (
+                6,
+                "<</Title(Uri)/A<</S/URI/URI(http://x)/D[3 0 R/Fit]>>/Next 7 0 R>>".to_owned(),
+            ),
+            (7, "<</Title(Named)/Dest/chap1/Next 8 0 R>>".to_owned()),
+            (
+                8,
+                "<</Title(NotAPage)/Dest[5 0 R/Fit]/Next 9 0 R>>".to_owned(),
+            ),
+            (9, "<</Next 10 0 R>>".to_owned()),
+            // An explicit /Dest that fails to resolve falls through to the action.
+            (
+                10,
+                "<</Title(Fallback)/Dest[5 0 R/Fit]/A<</S/GoTo/D[4 0 R/Fit]>>>>".to_owned(),
+            ),
+        ]);
+        assert_eq!(
+            rows(&items),
+            vec![
+                (0, "Uri".to_owned(), None),
+                (0, "Named".to_owned(), None),
+                (0, "NotAPage".to_owned(), None),
+                (0, String::new(), None),
+                (0, "Fallback".to_owned(), Some(1)),
+            ]
+        );
+    }
+
+    /// A node whose `/Next` points at itself is emitted once, not forever.
+    #[test]
+    fn outline_self_next_cycle_terminates() {
+        let items = outline_doc(&[(6, "<</Title(Loop)/Dest[3 0 R/Fit]/Next 6 0 R>>".to_owned())]);
+        assert_eq!(rows(&items), vec![(0, "Loop".to_owned(), Some(0))]);
+    }
+
+    /// A `/Next` back to an earlier sibling and a `/First` back to an ancestor are
+    /// both cut at the first revisit.
+    #[test]
+    fn outline_back_edges_to_seen_nodes_are_cut() {
+        let items = outline_doc(&[
+            (6, "<</Title(A)/First 8 0 R/Next 7 0 R>>".to_owned()),
+            (7, "<</Title(B)/Next 6 0 R>>".to_owned()),
+            (8, "<</Title(A.child)/First 6 0 R>>".to_owned()),
+        ]);
+        assert_eq!(
+            rows(&items),
+            vec![
+                (0, "A".to_owned(), None),
+                (1, "A.child".to_owned(), None),
+                (0, "B".to_owned(), None),
+            ]
+        );
+    }
+
+    /// A `/First` chain deeper than `MAX_OUTLINE_DEPTH` is truncated: entries at
+    /// depths `0..=MAX_OUTLINE_DEPTH` are kept and nothing below them.
+    #[test]
+    fn outline_depth_is_capped() {
+        let total = MAX_OUTLINE_DEPTH + 10;
+        let entries: Vec<(usize, String)> = (0..total)
+            .map(|level| {
+                let num = 6 + level;
+                let child = if level + 1 < total {
+                    format!("/First {} 0 R", num + 1)
+                } else {
+                    String::new()
+                };
+                (num, format!("<</Title(L{level}){child}>>"))
+            })
+            .collect();
+        let flat = rows(&outline_doc(&entries));
+        assert_eq!(flat.len(), MAX_OUTLINE_DEPTH + 1);
+        assert_eq!(
+            flat.last(),
+            Some(&(MAX_OUTLINE_DEPTH, format!("L{MAX_OUTLINE_DEPTH}"), None))
+        );
+    }
+
+    /// An `/Outlines` dictionary without `/First` yields no entries.
+    #[test]
+    fn outline_without_first_is_empty() {
+        let objects = vec![
+            (1, "<</Type/Catalog/Pages 2 0 R/Outlines 4 0 R>>".to_owned()),
+            (2, "<</Type/Pages/Kids[3 0 R]/Count 1>>".to_owned()),
+            (
+                3,
+                "<</Type/Page/Parent 2 0 R/MediaBox[0 0 10 10]>>".to_owned(),
+            ),
+            (4, "<</Type/Outlines/Count 0>>".to_owned()),
+        ];
+        let items = Document::load(pdf_from_objects(&objects, "<</Size 5/Root 1 0 R>>"))
+            .map(|doc| doc.outline());
+        assert!(items.is_ok_and(|items| items.is_empty()));
+    }
+
+    /// Assemble a PDF with a byte-accurate xref table for objects `1..=n` given
+    /// in order, appending `trailer_extra` to the trailer dictionary. hayro only
+    /// reports encryption through a real xref (its brute-force fallback swallows
+    /// a decryption failure as "invalid").
+    fn pdf_with_xref(bodies: &[&str], trailer_extra: &str) -> Vec<u8> {
+        let mut pdf = String::from("%PDF-1.4\n");
+        let mut offsets = Vec::new();
+        for (index, body) in bodies.iter().enumerate() {
+            offsets.push(pdf.len());
+            pdf.push_str(&format!("{} 0 obj{body}endobj\n", index + 1));
+        }
+        let xref_at = pdf.len();
+        let size = bodies.len() + 1;
+        pdf.push_str(&format!("xref\n0 {size}\n0000000000 65535 f \n"));
+        for offset in offsets {
+            pdf.push_str(&format!("{offset:010} 00000 n \n"));
+        }
+        pdf.push_str(&format!(
+            "trailer<</Size {size}/Root 1 0 R{trailer_extra}>>\nstartxref\n{xref_at}\n%%EOF"
+        ));
+        pdf.into_bytes()
+    }
+
+    const PAGE_TREE: [&str; 3] = [
+        "<</Type/Catalog/Pages 2 0 R>>",
+        "<</Type/Pages/Kids[3 0 R]/Count 1>>",
+        "<</Type/Page/Parent 2 0 R/MediaBox[0 0 10 10]>>",
+    ];
+
+    /// The xref helper itself yields a loadable document, so the encrypted case
+    /// below fails because of `/Encrypt` and not because of the scaffolding.
+    #[test]
+    fn xref_built_document_loads() {
+        let count = Document::load(pdf_with_xref(&PAGE_TREE, "")).map(|doc| doc.page_count());
+        assert!(matches!(count, Ok(1)));
+    }
+
+    /// A trailer `/Encrypt` dictionary hayro cannot decrypt surfaces as
+    /// `Encrypted`, not as a generic parse failure.
+    #[test]
+    fn encrypted_document_reports_encrypted() {
+        let mut bodies = PAGE_TREE.to_vec();
+        bodies.push("<</Filter/Unknown/V 1/R 2>>");
+        let result = Document::load(pdf_with_xref(&bodies, "/Encrypt 4 0 R"));
+        assert!(matches!(result, Err(PdfError::Encrypted)));
+    }
+
+    /// Zero, negative and NaN scales degrade to an empty raster rather than
+    /// panicking; a fractional scale floors each dimension.
+    #[test]
+    fn degenerate_scales_render_empty_pages() -> Result<(), PdfError> {
+        let doc = Document::load(RECT_PDF.to_vec())?;
+        for scale in [0.0, -0.0, -1.0, f32::NAN, f32::NEG_INFINITY, 0.001] {
+            let page = doc.render_page(0, scale);
+            assert!(
+                page.as_ref()
+                    .is_ok_and(|p| (p.width(), p.height()) == (0, 0) && p.rgba().is_empty()),
+                "scale {scale}: {page:?}"
+            );
+        }
+        let dims = doc.render_page(0, 0.255).map(|p| (p.width(), p.height()));
+        assert!(matches!(dims, Ok((25, 25))));
+        Ok(())
+    }
 }

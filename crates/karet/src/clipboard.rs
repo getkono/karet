@@ -246,6 +246,8 @@ mod tests {
         assert_eq!(clipboard.get()?, "line\n");
         assert_eq!(clipboard.copied("line\n"), Some(&copied));
         assert_eq!(clipboard.copied("other"), None);
+        // The match is exact: normalising CRLF first is the paste path's job.
+        assert_eq!(clipboard.copied("line\r\n"), None);
         clipboard.set("line\n")?;
         assert_eq!(clipboard.copied("line\n"), None);
         Ok(())

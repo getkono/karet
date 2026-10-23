@@ -100,31 +100,26 @@ mod tests {
         assert_eq!(severity_role(Severity::Hint), ThemeRole::DiagnosticHint);
     }
 
-    #[test]
-    fn notification_builds_with_literal_syntax() {
-        let note = Notification {
-            id: NotificationId(0),
-            severity: Severity::Error,
-            kind: NotificationKind::Io,
-            title: "save failed".to_string(),
-            body: Some("permission denied".to_string()),
-            tag: None,
-            timeout: None,
-            dismissable: true,
-        };
-        assert_eq!(note.id, NotificationId(0));
-        assert!(note.timeout.is_none());
-        assert_eq!(note.kind, NotificationKind::Io);
-    }
-
     #[cfg(feature = "serde")]
     #[test]
-    fn notification_types_derive_serde() {
-        // Compile-time proof the model carries the wire derives under `serde`,
-        // without pulling a serialization backend into this dependency-light crate.
-        fn assert_serde<T: serde::Serialize + serde::de::DeserializeOwned>() {}
-        assert_serde::<Notification>();
-        assert_serde::<NotificationId>();
-        assert_serde::<NotificationKind>();
+    fn notifications_round_trip_and_unknown_kinds_degrade() -> Result<(), serde_json::Error> {
+        let note = Notification {
+            id: NotificationId(7),
+            severity: Severity::Warning,
+            kind: NotificationKind::Vcs,
+            title: "push rejected".to_owned(),
+            body: Some("fetch first".to_owned()),
+            tag: Some("vcs.push".to_owned()),
+            timeout: Some(Duration::from_millis(2500)),
+            dismissable: false,
+        };
+        let json = serde_json::to_string(&note)?;
+        assert_eq!(serde_json::from_str::<Notification>(&json)?, note);
+
+        assert_eq!(
+            serde_json::from_str::<NotificationKind>("\"Telemetry\"")?,
+            NotificationKind::Unknown
+        );
+        Ok(())
     }
 }

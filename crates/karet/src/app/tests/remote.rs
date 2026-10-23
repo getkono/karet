@@ -303,7 +303,7 @@ fn code_tab_with_text(path: &Path, text: &str) -> Tab {
             language: "Rust",
             doc: None,
             next_version: 0,
-            buffer: TextBuffer::from_text(text),
+            buffer: TextBuffer::from_text(text).into(),
             text: text.into(),
             highlights: Highlights::default(),
             semantic_blocks: karet_syntax::SemanticBlocks::default(),
