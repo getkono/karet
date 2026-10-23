@@ -22,18 +22,20 @@ use crate::model::Lens;
 use crate::model::NodeKind;
 use crate::model::Visibility;
 
+// Each language's mapping is reached through [`registered`] and [`for_language`]; the
+// modules themselves, and the tree-walk helpers inside them, are implementation.
 #[cfg(any(feature = "lang-c", feature = "lang-cpp"))]
-pub mod cfamily;
+pub(crate) mod cfamily;
 #[cfg(feature = "lang-java")]
-pub mod java;
+pub(crate) mod java;
 #[cfg(feature = "lang-kotlin")]
-pub mod kotlin;
-pub mod python;
-pub mod rust;
+pub(crate) mod kotlin;
+pub(crate) mod python;
+pub(crate) mod rust;
 #[cfg(feature = "lang-swift")]
-pub mod swift;
+pub(crate) mod swift;
 #[cfg(feature = "lang-javascript")]
-pub mod typescript;
+pub(crate) mod typescript;
 
 /// What a language made of one syntax node.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -353,7 +355,7 @@ pub trait SeamLanguage {
 /// signature plus a stolen line of code. So a body that opens its own line — nothing but
 /// whitespace before it — cuts at the end of the line above instead.
 #[must_use]
-pub fn header_before_body(node: &WalkNode<'_>, ctx: &FacetContext<'_>) -> Range {
+pub(crate) fn header_before_body(node: &WalkNode<'_>, ctx: &FacetContext<'_>) -> Range {
     let span = node.span();
     // A body that starts at or before the construct does is not a body we can cut at;
     // the whole extent is the honest answer rather than an inverted range.

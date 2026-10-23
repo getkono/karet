@@ -37,7 +37,8 @@ mod variation;
 #[cfg(test)]
 mod tests;
 
-pub use api::REEXPORT;
+#[cfg(test)]
+use api::REEXPORT;
 
 /// The Rust language mapping.
 #[derive(Debug, Default, Clone, Copy)]

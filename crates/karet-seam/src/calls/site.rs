@@ -10,6 +10,8 @@ use karet_core::Range;
 ///
 /// A query naming anything else fails the per-language test rather than being silently
 /// ignored, since a misspelt capture would quietly drop every call it was meant to mark.
+/// Only those tests read it, so it compiles only with them.
+#[cfg(test)]
 pub const CAPTURES: &[&str] = &[
     CALL,
     CALL_NAME,
