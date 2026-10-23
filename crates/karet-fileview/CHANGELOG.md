@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0](https://github.com/getkono/karet/compare/karet-fileview-v0.7.1...karet-fileview-v0.8.0) - 2026-10-23
+
+### Other
+
+- render-test karet-editor, karet-widgets and karet-fileview gaps ([#625](https://github.com/getkono/karet/pull/625))
+
 ## [0.7.1](https://github.com/getkono/karet/compare/karet-fileview-v0.7.0...karet-fileview-v0.7.1) - 2026-10-01
 
 ### Added

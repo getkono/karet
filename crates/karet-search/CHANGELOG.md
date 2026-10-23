@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0](https://github.com/getkono/karet/compare/karet-search-v0.7.1...karet-search-v0.8.0) - 2026-10-23
+
+### Added
+
+- find bar current-match style, search in selection, matches to carets, preserve case ([#465](https://github.com/getkono/karet/pull/465))
+
+### Other
+
+- pin karet-search, karet-watch and karet-fuzzy behaviours ([#639](https://github.com/getkono/karet/pull/639))
+- run in-file find and search highlights over the rope ([#435](https://github.com/getkono/karet/pull/435))
+
 ## [0.6.0](https://github.com/getkono/karet/compare/karet-search-v0.5.0...karet-search-v0.6.0) - 2026-08-29
 
 ### Added

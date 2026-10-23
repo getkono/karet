@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0](https://github.com/getkono/karet/compare/karet-syntax-v0.7.1...karet-syntax-v0.8.0) - 2026-10-23
+
+### Added
+
+- fold commands and per-language fold queries ([#505](https://github.com/getkono/karet/pull/505))
+- auto-indent from tree-sitter indent queries ([#469](https://github.com/getkono/karet/pull/469))
+
+### Fixed
+
+- *(syntax)* leave comment lines out of the file indent step ([#491](https://github.com/getkono/karet/pull/491))
+- *(syntax)* ignore string and comment lines when finding a block's body indent ([#482](https://github.com/getkono/karet/pull/482))
+
+### Other
+
+- *(editor)* drop the karet-syntax dependency by moving SemanticBlock(s) into karet-core ([#662](https://github.com/getkono/karet/pull/662))
+- tighten karet-treesitter and karet-syntax assertions ([#653](https://github.com/getkono/karet/pull/653))
+- incremental highlighting via changed_ranges ([#490](https://github.com/getkono/karet/pull/490))
+
 ## [0.6.0](https://github.com/getkono/karet/compare/karet-syntax-v0.5.0...karet-syntax-v0.6.0) - 2026-08-29
 
 ### Added

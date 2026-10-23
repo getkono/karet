@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0](https://github.com/getkono/karet/compare/karet-filetype-v0.7.1...karet-filetype-v0.8.0) - 2026-10-23
+
+### Added
+
+- auto-close brackets and quotes with type-over, pair delete, wrap and smart Enter ([#439](https://github.com/getkono/karet/pull/439))
+- toggle line and block comments ([#398](https://github.com/getkono/karet/pull/398))
+
+### Other
+
+- *(filetype)* pin icon-style parsing, classify edges and CRLF banners ([#640](https://github.com/getkono/karet/pull/640))
+
 ## [0.6.0](https://github.com/getkono/karet/compare/karet-filetype-v0.5.0...karet-filetype-v0.6.0) - 2026-08-29
 
 ### Added
