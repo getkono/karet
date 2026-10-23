@@ -21,6 +21,8 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use unicode_width::UnicodeWidthStr;
 
+use crate::text::fit_end;
+
 /// The narrowest column that is still worth drawing.
 ///
 /// Below this a label truncates to a few characters and the column stops carrying
@@ -339,7 +341,7 @@ impl<'a> Columns<'a> {
         let label_room = width.saturating_sub(reserved + markers_width + 1);
 
         let mut x = rect.x;
-        let label = truncate(&row.label, label_room);
+        let label = fit_end(&row.label, label_room);
         buf.set_stringn(x, rect.y, &label, label_room, style);
         x = x.saturating_add(u16::try_from(label.width()).unwrap_or(0));
 
@@ -381,31 +383,6 @@ impl<'a> Columns<'a> {
             }
         }
     }
-}
-
-/// Shorten `text` to `room` display columns, marking the cut with an ellipsis.
-fn truncate(text: &str, room: usize) -> String {
-    if room == 0 {
-        return String::new();
-    }
-    if text.width() <= room {
-        return text.to_owned();
-    }
-    if room == 1 {
-        return "…".to_owned();
-    }
-    let mut out = String::new();
-    let mut used = 0usize;
-    for ch in text.chars() {
-        let ch_width = ch.to_string().width();
-        if used + ch_width > room - 1 {
-            break;
-        }
-        out.push(ch);
-        used += ch_width;
-    }
-    out.push('…');
-    out
 }
 
 #[cfg(test)]
@@ -699,13 +676,5 @@ mod tests {
         let columns = [Column::new(rows(&["a"]))];
         let _ = render(&columns, 0, Rect::new(0, 0, 0, 0));
         let _ = render(&[], 0, Rect::new(0, 0, 20, 3));
-    }
-
-    #[test]
-    fn truncation_respects_display_width() {
-        assert_eq!(truncate("abc", 10), "abc");
-        assert_eq!(truncate("abcdef", 4), "abc…");
-        assert_eq!(truncate("abc", 1), "…");
-        assert_eq!(truncate("abc", 0), "");
     }
 }

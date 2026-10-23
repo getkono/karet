@@ -115,13 +115,6 @@ impl FileTreeState {
         Self::default()
     }
 
-    /// Whether to show hidden (dot) files. Note the `.git` directory is always
-    /// excluded regardless.
-    pub fn set_show_hidden(&mut self, show: bool) {
-        self.show_hidden = show;
-        self.needs_rebuild = true;
-    }
-
     /// The currently-visible rows.
     #[must_use]
     pub fn rows(&self) -> &[FileTreeRow] {
