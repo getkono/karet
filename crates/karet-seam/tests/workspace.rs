@@ -35,7 +35,7 @@ const CRATES: &[&str] = &[
 /// The sibling crate directory, or `None` when the layout differs or the Rust grammar
 /// is not compiled in — without it there is nothing to index and nothing to assert.
 fn crate_dir(name: &str) -> Option<PathBuf> {
-    karet_seam::lang::rust::language_id()?;
+    karet_treesitter::language_id_from_injection_name("rust")?;
     let path = Path::new("..").join(name);
     path.join("Cargo.toml").is_file().then_some(path)
 }
@@ -106,7 +106,7 @@ fn rollups_at_the_root_account_for_the_whole_package() -> TestResult {
             .map(|facet| u32::try_from(facet.occurrences()).unwrap_or(u32::MAX))
             .fold(0, u32::saturating_add);
         assert_eq!(
-            root.rollups.get(lens),
+            root.rollups().get(lens),
             direct,
             "{} rollup at the root must equal the sum over every node",
             lens.name()
@@ -278,7 +278,7 @@ fn the_repository_root_discovers_every_member_crate() {
 fn the_repository_root_indexes_as_one_tree_with_a_root_per_package() -> TestResult {
     // The case that was a hard error: this repository's root manifest is virtual, so the
     // only entry point the editor could reach always failed on it.
-    if karet_seam::lang::rust::language_id().is_none() {
+    if karet_treesitter::language_id_from_injection_name("rust").is_none() {
         return Ok(());
     }
     let Some(root) = repository_root() else {
@@ -316,7 +316,7 @@ fn the_repository_root_indexes_as_one_tree_with_a_root_per_package() -> TestResu
 fn every_module_across_the_whole_workspace_resolves_to_a_file() -> TestResult {
     // The sibling of the per-crate check, over every crate at once — which is where a
     // resolution bug in a crate nobody listed would otherwise hide.
-    if karet_seam::lang::rust::language_id().is_none() {
+    if karet_treesitter::language_id_from_injection_name("rust").is_none() {
         return Ok(());
     }
     let Some(root) = repository_root() else {
@@ -362,7 +362,7 @@ fn bench_cold_index_of_this_repository() {
         return;
     };
     let start = std::time::Instant::now();
-    karet_seam::calls::link(&mut index);
+    karet_seam::link_calls(&mut index);
     let linked = start.elapsed();
     let start = std::time::Instant::now();
     let graph = karet_seam::CallGraph::build(&index, &karet_seam::GraphOptions::default());

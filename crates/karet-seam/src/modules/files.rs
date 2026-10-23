@@ -45,7 +45,9 @@ pub struct FileModule {
 /// Every module under `directory`, parents strictly before children.
 ///
 /// The ordering is a contract, not an accident: the caller creates a node per module and
-/// each one needs its parent to exist already.
+/// each one needs its parent to exist already. Every caller skips directories, so only
+/// the tests walk without [`walk_skipping`]'s list.
+#[cfg(test)]
 #[must_use]
 pub fn walk(directory: &Path, extensions: &[&str], index_names: &[&str]) -> Vec<FileModule> {
     walk_skipping(directory, extensions, index_names, &[])

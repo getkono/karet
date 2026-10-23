@@ -104,7 +104,7 @@ impl Header {
             schema: SCHEMA,
             engine: env!("CARGO_PKG_VERSION").to_owned(),
             languages: languages(),
-            calls: karet_seam::calls::extract::fingerprint(),
+            calls: karet_seam::call_query_fingerprint(),
             root: root.to_path_buf(),
         }
     }
@@ -114,7 +114,7 @@ impl Header {
         self.schema == SCHEMA
             && self.engine == env!("CARGO_PKG_VERSION")
             && self.languages == languages()
-            && self.calls == karet_seam::calls::extract::fingerprint()
+            && self.calls == karet_seam::call_query_fingerprint()
             && self.root == root
     }
 }
@@ -314,14 +314,14 @@ mod tests {
             unresolved: Vec::new(),
             callables: vec![karet_seam::CachedCallable {
                 node: 0,
-                callable: karet_seam::calls::site::Callable {
+                callable: karet_seam::Callable {
                     code_lines: 3,
                     span_lines: 4,
                     has_body: true,
-                    sites: vec![karet_seam::calls::site::CallSite {
+                    sites: vec![karet_seam::CallSite {
                         name: Some("helper".to_owned()),
                         qualifier: Some("util".to_owned()),
-                        receiver: Some(karet_seam::calls::site::Receiver::SelfRef),
+                        receiver: Some(karet_seam::Receiver::SelfRef),
                         construct: false,
                         external: false,
                         weak: true,
@@ -329,8 +329,8 @@ mod tests {
                     }],
                 },
             }],
-            file_calls: karet_seam::calls::site::FileCalls {
-                imports: vec![karet_seam::calls::site::Import {
+            file_calls: karet_seam::FileCalls {
+                imports: vec![karet_seam::Import {
                     segments: vec!["std".to_owned(), "fmt".to_owned()],
                     alias: Some("f".to_owned()),
                     glob: false,
