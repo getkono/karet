@@ -24,6 +24,15 @@ pub use diag::to_diagnostic;
 pub use error::CborError;
 pub use value::CborValue;
 
+/// The deepest nesting of arrays, maps, and tags this crate reads, from bytes
+/// or from diagnostic text.
+///
+/// [`decode`] and [`from_diagnostic`] enforce the same limit, so any text that
+/// parses also encodes to bytes that decode again: a save never writes a file
+/// that cannot be reopened. Each array, map, or tag counts one level; the
+/// scalars inside the innermost container do not.
+pub const MAX_DEPTH: usize = 256;
+
 /// Decode CBOR `bytes` and render them as pretty diagnostic-notation text.
 ///
 /// The seam for opening a `.cbor` file as an editable text document.
