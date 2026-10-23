@@ -20,15 +20,9 @@
     type TempRepo = (tempfile::TempDir, PathBuf, PathBuf);
 
     /// Initialize a temp git repository with one untracked `a.txt`, returning the
-    /// temp dir, its root path, and the repo-relative file path. `None` if `git`
-    /// isn't available or the fixture could not be built; see [`init_git_repo`] to
-    /// tell those apart.
-    fn init_temp_repo() -> Option<TempRepo> {
-        init_git_repo().ok().flatten()
-    }
-
-    /// [`init_temp_repo`], but `Ok(None)` only if `git` isn't available: any fixture
-    /// failure past that is an error, so a test cannot pass on a repo it never built.
+    /// temp dir, its root path, and the repo-relative file path. `Ok(None)` only if
+    /// `git` isn't available: any fixture failure past that is an error, so a test
+    /// cannot pass on a repo it never built.
     fn init_git_repo() -> Result<Option<TempRepo>, Box<dyn std::error::Error>> {
         if !git_on_path() {
             return Ok(None);
