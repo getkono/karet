@@ -36,24 +36,13 @@
         Ok(Some((dir, root, PathBuf::from("a.txt"))))
     }
 
-    /// Poll the event stream until `pick` yields, or a 5s deadline passes. The
+    /// [`await_event`] for a `pick` that ignores which request an event answers. The
     /// VCS answers come from the worker thread, so tests must wait, not `try_recv`.
     fn wait_for<T>(
         events: &mut EventRx,
         mut pick: impl FnMut(Event) -> Option<T>,
     ) -> Option<T> {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        loop {
-            while let Some((_, ev)) = events.try_recv() {
-                if let Some(value) = pick(ev) {
-                    return Some(value);
-                }
-            }
-            if std::time::Instant::now() > deadline {
-                return None;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
+        await_event(events, EVENT_DEADLINE, |_, ev| pick(ev))
     }
 
     /// Wait for the next [`Event::VcsStatus`].
@@ -326,23 +315,16 @@
     fn drain_commit(events: &mut EventRx) -> Vec<Event> {
         let mut seen = Vec::new();
         let mut committed = false;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while std::time::Instant::now() < deadline {
-            while let Some((_, ev)) = events.try_recv() {
-                let done = match &ev {
-                    Event::Notification { .. } => true,
-                    Event::VcsStatus { .. } => committed,
-                    _ => false,
-                };
-                committed |=
-                    matches!(ev, Event::Committed { .. } | Event::CommitCancelled);
-                seen.push(ev);
-                if done {
-                    return seen;
-                }
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
+        let _settled = wait_for(events, |ev| {
+            let done = match &ev {
+                Event::Notification { .. } => true,
+                Event::VcsStatus { .. } => committed,
+                _ => false,
+            };
+            committed |= matches!(ev, Event::Committed { .. } | Event::CommitCancelled);
+            seen.push(ev);
+            done.then_some(())
+        });
         seen
     }
 
@@ -447,20 +429,35 @@
             // Skip: `git` is not on PATH.
             return Ok(());
         };
-        hook(&root, "echo working\nsleep 30")?;
+        // A full batch of output (the worker sends 32 lines at once), so the hook
+        // announces itself on the event stream before it settles into its sleep.
+        hook(
+            &root,
+            "i=0\nwhile [ $i -lt 32 ]; do echo working; i=$((i + 1)); done\nsleep 30",
+        )?;
         let (mut session, mut events) = staged_session(&root, file)?;
 
         session.handle(RequestId(2), Command::Commit {
             message: "subject".to_string(),
         });
-        // The worker is blocked inside git by now; the actor is not, which is the
-        // whole point of routing cancellation through the token's hook.
-        std::thread::sleep(std::time::Duration::from_millis(700));
+        // Cancel only once the hook's output arrives: the worker is then blocked
+        // inside git, running the hook, rather than still holding the job queued
+        // (which `a_cancel_arriving_before_the_job_starts_is_still_honoured` covers).
+        // The actor is not blocked, which is the whole point of routing
+        // cancellation through the token's hook.
+        let mut seen = Vec::new();
+        wait_for(&mut events, |ev| {
+            let running = matches!(&ev, Event::CommitOutput { lines }
+                if lines.iter().any(|line| line.text.contains("working")));
+            seen.push(ev);
+            running.then_some(())
+        })
+        .ok_or("the hook never started")?;
         session.handle(RequestId(3), Command::Cancel {
             request: RequestId(2),
         });
 
-        let seen = drain_commit(&mut events);
+        seen.extend(drain_commit(&mut events));
         assert!(
             seen.iter().any(|ev| matches!(ev, Event::CommitCancelled)),
             "the seam reported the cancellation: {seen:?}"

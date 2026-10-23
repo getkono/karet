@@ -42,17 +42,11 @@
                 .is_ok_and(|contents| contents.contains("saved before compilation")),
             "an explicit build must safely persist the current buffer first"
         );
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        let mut failure = None;
-        while std::time::Instant::now() < deadline {
-            if let Some((id, Event::LatexBuildFinished { error, .. })) = events.try_recv()
-                && id == Some(RequestId(3))
-            {
-                failure = error;
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
+        let failure = await_event(&mut events, EVENT_DEADLINE, |id, event| match event {
+            Event::LatexBuildFinished { error, .. } if id == Some(RequestId(3)) => Some(error),
+            _ => None,
+        })
+        .ok_or("the build never finished")?;
         assert!(failure.is_some_and(|error| error.contains("could not start")));
         Ok(())
     }

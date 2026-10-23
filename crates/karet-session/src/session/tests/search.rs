@@ -6,17 +6,16 @@
     ///
     /// The walk runs on its own thread, so a bare `try_recv` would race it.
     fn drain_search(events: &mut EventRx) -> (Vec<crate::api::SearchHit>, Option<Event>) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let mut hits = Vec::new();
-        while std::time::Instant::now() < deadline {
-            match events.try_recv() {
-                Some((_, Event::SearchProgress { hits: batch, .. })) => hits.extend(batch),
-                Some((_, finished @ Event::SearchFinished { .. })) => return (hits, Some(finished)),
-                Some(_) => {},
-                None => std::thread::sleep(std::time::Duration::from_millis(5)),
-            }
-        }
-        (hits, None)
+        let finished = await_event(events, EVENT_DEADLINE, |_, event| match event {
+            Event::SearchProgress { hits: batch, .. } => {
+                hits.extend(batch);
+                None
+            },
+            finished @ Event::SearchFinished { .. } => Some(finished),
+            _ => None,
+        });
+        (hits, finished)
     }
 
     fn search_session(dir: &std::path::Path) -> (Session, EventRx, SnapshotRx) {
