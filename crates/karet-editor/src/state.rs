@@ -98,6 +98,10 @@ pub struct EditorState {
     pub(super) last_line: u32,
     /// Whether the last render used soft wrapping.
     pub(super) last_word_wrap: bool,
+    /// The wrap column the last render capped soft wrapping at.
+    pub(super) last_wrap_column: Option<u32>,
+    /// How the last render indented soft-wrapped continuation rows.
+    pub(super) last_wrapping_indent: WrappingIndent,
     /// Hard-tab width captured at the last render.
     pub(super) last_tab_width: u16,
     /// Logical-line ranges exempted from soft wrapping at the last render.
@@ -200,6 +204,8 @@ impl Default for EditorState {
             last_scroll_off: 0,
             last_line: u32::MAX,
             last_word_wrap: false,
+            last_wrap_column: None,
+            last_wrapping_indent: WrappingIndent::None,
             last_tab_width: 4,
             last_unwrapped_lines: Vec::new(),
             last_hints: HintIndex::default(),
@@ -349,7 +355,8 @@ impl EditorState {
     }
 
     /// The geometry of the last render at `width` content columns, soft
-    /// wrapped when `wrap`, else one text row per line.
+    /// wrapped when `wrap` (at the last render's wrap column and with its
+    /// continuation indent), else one text row per line.
     pub(super) fn row_layout(&self, width: u32, wrap: bool) -> Layout<'_> {
         Layout {
             width,
@@ -358,6 +365,8 @@ impl EditorState {
             hints: &self.last_hints,
             blocks: &self.last_blocks,
             wrap,
+            wrap_column: self.last_wrap_column,
+            wrapping_indent: self.last_wrapping_indent,
         }
     }
 
@@ -1112,13 +1121,14 @@ impl EditorState {
             .copied()
             .unwrap_or_else(|| VisualRange::empty(line_len(buffer, anchor.line)));
         let chars = line_chars(buffer, anchor.line);
+        // A cell in a continuation row's indent resolves to the row's start.
         let hit = LineCol::new(
             anchor.line,
             source_col_at_display_offset(
                 &chars,
                 range.start,
                 range.end,
-                rel_col,
+                rel_col.saturating_sub(range.indent),
                 self.last_tab_width,
                 layout.hints_on(anchor.line),
                 snap,

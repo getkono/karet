@@ -1,5 +1,6 @@
 //! The `editor.*` display settings — `lineNumbers`, `cursorLine`, `rulers`,
-//! `guides`, `renderWhitespace`, `bracketPairColorization`, `scrollOff`,
+//! `guides`, `renderWhitespace`, `bracketPairColorization`, the wrap column
+//! (`wordWrap` + `wordWrapColumn`), `wrappingIndent`, `scrollOff`,
 //! `stickyScroll` and `inlineDiagnostics` — resolved for one
 //! pane and handed to its editor widget, with whether the terminal curls a
 //! diagnostic's underline.
@@ -12,6 +13,7 @@ use karet_editor::Editor;
 use karet_editor::InlineDiagnostics;
 use karet_editor::LineNumbers;
 use karet_editor::RenderWhitespace;
+use karet_editor::WrappingIndent;
 use karet_session::config::schema;
 use karet_session::config::schema::ResolvedEditor;
 
@@ -25,6 +27,9 @@ pub(super) struct EditorDisplay<'a> {
     indent_guides: (bool, bool),
     render_whitespace: RenderWhitespace,
     rainbow_brackets: bool,
+    /// The column soft wrapping is capped at, when the mode asks for one.
+    wrap_column: Option<u16>,
+    wrapping_indent: WrappingIndent,
     scroll_off: u16,
     sticky_scroll: bool,
     /// Which lines show their diagnostics' messages, and the least severe
@@ -58,6 +63,12 @@ impl<'a> EditorDisplay<'a> {
                 schema::RenderWhitespace::All => RenderWhitespace::All,
             },
             rainbow_brackets: resolved.bracket_pair_colorization(),
+            wrap_column: resolved.wrap_column(),
+            wrapping_indent: match resolved.wrapping_indent() {
+                schema::WrappingIndent::None => WrappingIndent::None,
+                schema::WrappingIndent::Same => WrappingIndent::Same,
+                schema::WrappingIndent::Indent => WrappingIndent::Indent,
+            },
             scroll_off: resolved.scroll_off(),
             sticky_scroll: resolved.sticky_scroll(),
             inline_diagnostics: {
@@ -98,6 +109,8 @@ impl<'a> EditorDisplay<'a> {
             .active_indent_guide(self.indent_guides.1)
             .render_whitespace(self.render_whitespace)
             .rainbow_brackets(self.rainbow_brackets)
+            .wrap_column(self.wrap_column)
+            .wrapping_indent(self.wrapping_indent)
             .scroll_off(self.scroll_off)
             .sticky_scroll(self.sticky_scroll)
             .undercurl(self.undercurl)
@@ -123,6 +136,8 @@ impl<'a> EditorDisplay<'a> {
             .indent_guides(self.indent_guides.0)
             .render_whitespace(self.render_whitespace)
             .rainbow_brackets(self.rainbow_brackets)
+            .wrap_column(self.wrap_column)
+            .wrapping_indent(self.wrapping_indent)
     }
 }
 
@@ -144,6 +159,9 @@ mod tests {
         };
         settings.editor.render_whitespace = schema::RenderWhitespace::Boundary;
         settings.editor.bracket_pair_colorization.enabled = true;
+        settings.editor.word_wrap = Some(schema::WordWrap::Bounded);
+        settings.editor.word_wrap_column = 72;
+        settings.editor.wrapping_indent = schema::WrappingIndent::Indent;
         settings.editor.scroll_off = 5;
         settings.editor.sticky_scroll = false;
         settings.editor.inline_diagnostics = schema::InlineDiagnostics {
@@ -160,6 +178,8 @@ mod tests {
                 indent_guides: (false, false),
                 render_whitespace: RenderWhitespace::Boundary,
                 rainbow_brackets: true,
+                wrap_column: Some(72),
+                wrapping_indent: WrappingIndent::Indent,
                 scroll_off: 5,
                 sticky_scroll: false,
                 inline_diagnostics: (InlineDiagnostics::All, Severity::Warning),
@@ -177,6 +197,8 @@ mod tests {
         assert_eq!(defaults.indent_guides, (true, true));
         assert_eq!(defaults.render_whitespace, RenderWhitespace::None);
         assert!(!defaults.rainbow_brackets);
+        assert_eq!(defaults.wrap_column, None, "wrapping follows the viewport");
+        assert_eq!(defaults.wrapping_indent, WrappingIndent::Same);
         assert_eq!(
             defaults.inline_diagnostics(),
             (InlineDiagnostics::CurrentLine, Severity::Hint)

@@ -614,12 +614,29 @@
           "default": true
         },
         "wordWrap": {
-          "description": "Override file-type wrapping: `null` uses the file default, `true` wraps,\nand `false` uses horizontal overflow.",
-          "type": [
-            "boolean",
-            "null"
+          "description": "Override file-type wrapping: `null` uses the file default, `true` or\n`\"on\"` wraps at the viewport, `false` or `\"off\"` uses horizontal\noverflow, and `\"wordWrapColumn\"` or `\"bounded\"` wrap at\n`wordWrapColumn` (or the viewport, when it is narrower).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WordWrap"
+            },
+            {
+              "type": "null"
+            }
           ],
           "default": null
+        },
+        "wordWrapColumn": {
+          "description": "The column `\"wordWrapColumn\"` and `\"bounded\"` wrapping break at; `0`\nwraps at the viewport.",
+          "type": "integer",
+          "format": "uint16",
+          "default": 80,
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "wrappingIndent": {
+          "description": "How the continuation rows of a soft-wrapped line are indented.",
+          "$ref": "#/$defs/WrappingIndent",
+          "default": "same"
         }
       },
       "additionalProperties": false,
@@ -806,10 +823,37 @@
         },
         "wordWrap": {
           "description": "Override wrapping; explicit `null` restores the file-type default.",
-          "type": [
-            "boolean",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WordWrap"
+            },
+            {
+              "type": "null"
+            }
           ]
+        },
+        "wordWrapColumn": {
+          "description": "Override the column `\"wordWrapColumn\"` and `\"bounded\"` wrap at.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "default": null,
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "wrappingIndent": {
+          "description": "Override how wrapped continuation rows are indented.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WrappingIndent"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "additionalProperties": false
@@ -1710,6 +1754,23 @@
       },
       "additionalProperties": false
     },
+    "WordWrap": {
+      "description": "How long lines are laid out: `off` scrolls horizontally, `on` wraps at the viewport, `wordWrapColumn` and `bounded` wrap at `wordWrapColumn` (or the viewport, when narrower). `true` and `false` mean `on` and `off`.",
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "string",
+          "enum": [
+            "off",
+            "on",
+            "wordWrapColumn",
+            "bounded"
+          ]
+        }
+      ]
+    },
     "Workbench": {
       "description": "`workbench.*` — UI shell appearance.",
       "type": "object",
@@ -1731,6 +1792,26 @@
         }
       },
       "additionalProperties": false
+    },
+    "WrappingIndent": {
+      "description": "How the continuation rows of a soft-wrapped line are indented\n(`editor.wrappingIndent`). Capped at half the wrap width, so a deeply\nindented line in a narrow pane keeps room for its text.",
+      "oneOf": [
+        {
+          "description": "Continuation rows start at the left edge of the text.",
+          "type": "string",
+          "const": "none"
+        },
+        {
+          "description": "Continuation rows line up with the line's own indentation, as in\nVS Code.",
+          "type": "string",
+          "const": "same"
+        },
+        {
+          "description": "Continuation rows sit one indent level (`tabSize`) deeper than the\nline.",
+          "type": "string",
+          "const": "indent"
+        }
+      ]
     }
   }
 }

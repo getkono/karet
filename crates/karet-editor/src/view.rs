@@ -41,6 +41,8 @@ pub struct Editor<'a> {
     cell_caret: bool,
     read_only: bool,
     word_wrap: bool,
+    wrap_column: Option<u16>,
+    wrapping_indent: WrappingIndent,
     tab_width: u16,
     unwrapped_lines: &'a [RangeInclusive<u32>],
     semantic_blocks: Option<&'a SemanticBlocks>,
@@ -75,6 +77,8 @@ impl<'a> Editor<'a> {
             cell_caret: true,
             read_only: false,
             word_wrap: false,
+            wrap_column: None,
+            wrapping_indent: WrappingIndent::None,
             tab_width: 4,
             unwrapped_lines: &[],
             semantic_blocks: None,
@@ -123,6 +127,26 @@ impl<'a> Editor<'a> {
     #[must_use]
     pub fn word_wrap(mut self, word_wrap: bool) -> Self {
         self.word_wrap = word_wrap;
+        self
+    }
+
+    /// Soft-wrap at `column` cells when the content area is wider (`None`,
+    /// the default, or `Some(0)` wraps at the content width).
+    ///
+    /// A soft-wrapped view has no horizontal scroll, so a content area
+    /// narrower than `column` still wraps at its own width. Only takes
+    /// effect with [`word_wrap`](Self::word_wrap) on.
+    #[must_use]
+    pub fn wrap_column(mut self, column: Option<u16>) -> Self {
+        self.wrap_column = column;
+        self
+    }
+
+    /// Indent the continuation rows of a soft-wrapped line (none by
+    /// default). Only takes effect with [`word_wrap`](Self::word_wrap) on.
+    #[must_use]
+    pub fn wrapping_indent(mut self, indent: WrappingIndent) -> Self {
+        self.wrapping_indent = indent;
         self
     }
 
@@ -538,13 +562,7 @@ impl Editor<'_> {
             line,
             theme,
             default_fg,
-            (
-                VisualRange {
-                    start: state.scroll_col,
-                    end: u32::MAX,
-                },
-                room,
-            ),
+            (VisualRange::new(state.scroll_col, u32::MAX), room),
             selections,
             index.line(line),
             None,
@@ -606,6 +624,8 @@ impl StatefulWidget for Editor<'_> {
         state.last_scroll_off = self.scroll_off;
         state.last_line = line_count.saturating_sub(1);
         state.last_word_wrap = self.word_wrap;
+        state.last_wrap_column = self.wrap_column.map(u32::from);
+        state.last_wrapping_indent = self.wrapping_indent;
         state.last_tab_width = self.tab_width;
         state.last_unwrapped_lines = self.unwrapped_lines.to_vec();
         state.scroll_line = state.scroll_line.min(line_count.saturating_sub(1));
@@ -627,6 +647,8 @@ impl StatefulWidget for Editor<'_> {
             hints: &hint_index,
             blocks: &block_index,
             wrap: self.word_wrap,
+            wrap_column: state.last_wrap_column,
+            wrapping_indent: self.wrapping_indent,
         };
         if !self.word_wrap
             && state.follow_cursor
@@ -820,6 +842,11 @@ impl StatefulWidget for Editor<'_> {
                 .get(range_index)
                 .copied()
                 .unwrap_or_else(|| VisualRange::empty(0));
+            // A continuation row's indent: blank cells on the row background,
+            // ahead of the text, so every later cell keeps its hit-test column.
+            if range.indent > 0 {
+                spans.push(Span::raw(" ".repeat(range.indent as usize)));
+            }
             let mut painted = Vec::new();
             let room = row_room(area, &spans);
             let (selected_break, glyphs) = self.push_content_spans(
