@@ -8,6 +8,7 @@ use std::collections::BTreeSet;
 
 use super::module_of;
 use super::path_of;
+use super::visibility_of;
 use crate::calls::graph::Bound;
 use crate::calls::graph::CallGraph;
 use crate::calls::graph::FunctionMetrics;
@@ -138,10 +139,8 @@ pub(super) fn measure(
             if !in_scope {
                 continue;
             }
-            if let Some(visibility) = index
-                .node(callee)
-                .and_then(crate::model::Node::effective_visibility)
-                .filter(|visibility| *visibility < Visibility::Public)
+            if let Some(visibility) =
+                visibility_of(index, callee).filter(|visibility| *visibility < Visibility::Public)
             {
                 internal_reach.push(InternalReach {
                     caller: path_of(index, function.id),

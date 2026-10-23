@@ -575,3 +575,93 @@ fn a_percentile_is_nearest_rank_and_safe_on_nothing() {
     assert!((percentile(values.clone(), 1.0) - 20.0).abs() < f64::EPSILON);
     assert!((percentile(values, 0.0) - 1.0).abs() < f64::EPSILON);
 }
+
+/// Index a one-file crate `k` with `lib` as its root.
+fn index_lib(lib: &str) -> Result<crate::index::SeamIndex, Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    std::fs::write(
+        dir.path().join("Cargo.toml"),
+        "[package]\nname = \"k\"\nversion = \"0.1.0\"\n",
+    )?;
+    std::fs::create_dir_all(dir.path().join("src"))?;
+    std::fs::write(dir.path().join("src/lib.rs"), lib)?;
+    Ok(crate::package::index_workspace(
+        dir.path(),
+        IndexOptions::default(),
+    )?)
+}
+
+#[test]
+fn a_name_written_at_a_too_ambiguous_site_is_not_called_dead() -> TestResult {
+    if crate::lang::rust::language_id().is_none() {
+        return Ok(());
+    }
+    // One more `render` than the resolver weighs, so the call counts in neither bound.
+    let mut lib = String::new();
+    for module in 0..=crate::calls::resolve::MAX_CANDIDATES {
+        lib.push_str(&format!("mod m{module} {{ fn render() -> u32 {{ 1 }} }}\n"));
+    }
+    lib.push_str("pub fn draw() -> u32 { render() }\nfn lonely() -> u32 { 0 }\n");
+    let index = index_lib(&lib)?;
+    let report = report(&index, &GraphOptions::default(), &[], &small());
+
+    let rust = report.ledger.languages.first().ok_or("no language")?;
+    assert_eq!(rust.too_ambiguous, 1, "{rust:?}");
+    // Every `render` is plausibly that site's target; `lonely` is still silent.
+    assert_eq!(names(&report.hotspots.unreachable), ["k::lonely"]);
+    assert!(report.hotspots.test_only.is_empty());
+    Ok(())
+}
+
+#[test]
+fn a_method_a_contract_declares_is_as_visible_as_the_contract() -> TestResult {
+    if crate::lang::rust::language_id().is_none() {
+        return Ok(());
+    }
+    let lib = "\
+mod api {
+    pub trait Framing {
+        fn read_frame(&self) -> u32;
+        fn write_frame(&self) -> u32 { 0 }
+    }
+    trait Hidden {
+        fn secret(&self) -> u32;
+    }
+}
+mod user {
+    pub fn send(framing: &dyn crate::api::Framing) -> u32 {
+        crate::api::Framing::write_frame(framing)
+    }
+}
+";
+    let index = index_lib(lib)?;
+    let report = report(&index, &GraphOptions::default(), &[], &small());
+
+    // A public trait's methods are its API, called or not; a private trait's are not.
+    assert_eq!(
+        names(&report.hotspots.unreachable),
+        ["k::api::Hidden::secret"]
+    );
+    let read = report
+        .functions
+        .iter()
+        .find(|row| row.path == "k::api::Framing::read_frame")
+        .ok_or("no read_frame row")?;
+    assert_eq!(read.visibility.as_deref(), Some("public"));
+    // Calling a public trait's method from another module is no reach into internals.
+    assert!(
+        report
+            .coupling
+            .edges
+            .iter()
+            .any(|e| e.from == "k::user" && e.to == "k::api"),
+        "{:?}",
+        report.coupling.edges
+    );
+    assert!(
+        report.coupling.internal_reach.is_empty(),
+        "{:?}",
+        report.coupling.internal_reach
+    );
+    Ok(())
+}

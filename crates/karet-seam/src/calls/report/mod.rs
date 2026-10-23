@@ -43,6 +43,7 @@ use crate::id::SeamId;
 use crate::index::SeamIndex;
 use crate::model::ConfigMembership;
 use crate::model::NodeKind;
+use crate::model::Visibility;
 
 /// How much a report shows, and where its cut-offs fall.
 #[derive(Clone, Debug, PartialEq)]
@@ -297,6 +298,20 @@ pub(crate) fn path_of(index: &SeamIndex, id: SeamId) -> String {
     index.path(id).map(ToString::to_string).unwrap_or_default()
 }
 
+/// How far a function reaches, for the report's purposes.
+///
+/// A method a contract declares is as reachable as the contract: a Rust trait method
+/// carries no visibility of its own, so read alone it would look private, and every
+/// unimplemented-here method of a public trait would read as dead.
+pub(crate) fn visibility_of(index: &SeamIndex, id: SeamId) -> Option<Visibility> {
+    let node = index.node(id)?;
+    node.parent
+        .and_then(|parent| index.node(parent))
+        .filter(|parent| parent.kind == NodeKind::Interface)
+        .and_then(crate::model::Node::effective_visibility)
+        .or_else(|| node.effective_visibility())
+}
+
 /// The nearest module or package around a node.
 pub(crate) fn module_of(index: &SeamIndex, id: SeamId) -> Option<SeamId> {
     index.ancestors(id).into_iter().find(|up| {
@@ -321,9 +336,7 @@ fn row(index: &SeamIndex, metrics: &FunctionMetrics) -> FunctionRow {
             .map(str::to_owned),
         file,
         line: node.map_or(0, |node| node.location.range.start.line.saturating_add(1)),
-        visibility: node
-            .and_then(crate::model::Node::effective_visibility)
-            .map(|v| v.name().to_owned()),
+        visibility: visibility_of(index, metrics.id).map(|v| v.name().to_owned()),
         metrics: RowMetrics::from(metrics),
     }
 }
