@@ -1,7 +1,11 @@
 //! `karet-supervisor` — karet's hidden process modes.
 //!
-//! Two alternate `main()` entry points of the karet executable live here, out of
-//! the headless `karet-session` library so embedders never compile them:
+//! Two alternate `main()` entry points of the karet executable live here. The
+//! app's composition root dispatches to them, and the headless `karet-session`
+//! backend depends on this crate for process ownership: it spawns language
+//! servers, debug adapters, notebook kernels and LaTeX builds through
+//! [`supervisor::command`] / [`supervisor::blocking_command`] and connects to
+//! the shared [`broker`].
 //!
 //! - [`supervisor`] — crash-safe ownership for long-running external process
 //!   trees. A hidden copy of the executable owns the real process group and
