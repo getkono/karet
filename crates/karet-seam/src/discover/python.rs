@@ -98,7 +98,7 @@ pub(crate) fn importable_roots(project: &Path) -> Vec<PathBuf> {
     }
     // A flat project with no package directory at all: the modules sit loose beside the
     // manifest, and the project directory is what holds them.
-    if holds_modules(project) {
+    if holds_py_files(project) {
         vec![project.to_path_buf()]
     } else {
         Vec::new()
@@ -107,17 +107,8 @@ pub(crate) fn importable_roots(project: &Path) -> Vec<PathBuf> {
 
 /// Subdirectories of `base` that are importable packages, sorted.
 fn package_dirs(base: &Path, filter_support: bool) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(base) else {
-        return Vec::new();
-    };
-    let mut out: Vec<PathBuf> = entries
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.is_dir() && !scan::skipped(path))
-        .filter(|path| !filter_support || !is_support(path))
-        .filter(|path| path.join("__init__.py").is_file())
-        .collect();
-    out.sort();
+    let mut out = scan::subdirs(base, scan::skipped);
+    out.retain(|path| (!filter_support || !is_support(path)) && path.join("__init__.py").is_file());
     out
 }
 
@@ -128,8 +119,11 @@ fn is_support(path: &Path) -> bool {
         .is_some_and(|name| NOT_PACKAGES.contains(&name))
 }
 
-/// Whether a directory directly holds at least one importable module.
-fn holds_modules(dir: &Path) -> bool {
+/// Whether a directory directly holds at least one `.py` file.
+///
+/// Narrower than the module walk's `holds_modules`, which also counts a package
+/// subdirectory: a flat project is only one whose modules sit loose beside its manifest.
+fn holds_py_files(dir: &Path) -> bool {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return false;
     };
