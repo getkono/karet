@@ -71,7 +71,21 @@ pub(crate) fn query_source(_lang: LanguageId) -> Option<&'static str> {
     None
 }
 
-#[cfg(test)]
+// Needs every grammar it names: without one, the lookup has nothing to find.
+#[cfg(all(
+    test,
+    feature = "lang-rust",
+    feature = "lang-python",
+    feature = "lang-javascript",
+    feature = "lang-typescript",
+    feature = "lang-json",
+    feature = "lang-go",
+    feature = "lang-c",
+    feature = "lang-cpp",
+    feature = "lang-yaml",
+    feature = "lang-lua",
+    feature = "lang-toml"
+))]
 mod tests {
     use super::*;
     use crate::Query;

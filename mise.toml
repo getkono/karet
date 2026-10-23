@@ -99,6 +99,36 @@ run = [
   # `DialogBody::Markdown` one — are checked explicitly.
   "cargo check -p karet-widgets --no-default-features",
   "cargo check -p karet-widgets --features markdown",
+  # The builds above compile no `#[cfg(test)]` code, so the lean app's own
+  # `cfg(not(feature = …))` arms (e.g. a `.pdf` opening as a placeholder) are
+  # run here as tests rather than only compiled.
+  "cargo test -p karet --no-default-features",
+]
+
+[tasks.feature-subsets]
+description = "Test the feature subsets `--all-features` never builds (grammar-less, single-grammar, headless)"
+# `test` runs `--all-features`, which turns every `lang-*` grammar and every
+# `view` renderer on at once: grammar-absent tests pass vacuously there, and a
+# `cfg(not(feature = …))` arm is never compiled. These run as `cargo test`, not
+# `cargo check`, because `check` skips `#[cfg(test)]` code entirely. Each
+# command builds one package alone, so no other workspace member's features
+# unify in.
+run = [
+  # The parse host with no grammars, with exactly one, the syntax pass-through
+  # bundle, and markdown's curated fence bundle.
+  "cargo test -p karet-treesitter --no-default-features",
+  "cargo test -p karet-treesitter --no-default-features --features lang-rust",
+  "cargo test -p karet-syntax --features all-languages",
+  "cargo test -p karet-markdown --features lang-common",
+  # The theme loader without `vscode` (its `ThemeError::Unsupported` arm), and
+  # blameline's default build — gix-only, with `blame_function` degrading to
+  # whole-file blame, which is the configuration karet-session ships.
+  "cargo test -p karet-theme --no-default-features",
+  "cargo test -p blameline",
+  # Headless by default: each engine builds with no ratatui when `view` is off.
+  "cargo check -p karet-diff --no-default-features",
+  "cargo check -p karet-graph --no-default-features",
+  "cargo check -p karet-theme --no-default-features",
 ]
 
 [tasks.coverage]

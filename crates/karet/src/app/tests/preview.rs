@@ -449,6 +449,7 @@ fn closing_a_converting_docx_preview_cancels_the_conversion() {
     );
 }
 
+#[cfg(feature = "docx")]
 #[test]
 fn reopening_the_same_docx_focuses_the_existing_tab() {
     let dir = test_dir("docx-dedup");
