@@ -546,30 +546,76 @@ mod tests {
             ("fn a", "/* fn a"),
             ("/* ", ""),
         ] {
-            let start = text.find(needle).unwrap_or_default();
-            let end = start + needle.len();
-            let old = text.clone();
-            text.replace_range(start..end, with);
-            let point = |s: &str, byte: usize| {
-                let before = s.get(..byte).unwrap_or("");
-                let row = before.matches('\n').count();
-                let col = before.rfind('\n').map_or(byte, |i| byte - i - 1);
-                karet_core::BytePoint::new(row, col)
-            };
-            let edit = Edit {
-                start_byte: start,
-                old_end_byte: end,
-                new_end_byte: start + with.len(),
-                start_point: point(&old, start),
-                old_end_point: point(&old, end),
-                new_end_point: point(&text, start + with.len()),
-                replaced: needle.to_owned(),
-            };
+            let edit = replace(&mut text, needle, with);
             let incremental = compute_spans(&mut trees, rust, &text, Some(vec![edit]));
             let cold = compute_spans(&mut HashMap::new(), rust, &text, None);
             assert!(incremental.is_some());
             assert_eq!(incremental, cold, "after replacing {needle:?} in {text:?}");
         }
+    }
+
+    /// Replace the first `needle` in `text` with `with`, returning the edit that
+    /// describes the change in the frame of the text before it.
+    fn replace(text: &mut String, needle: &str, with: &str) -> Edit {
+        let start = text.find(needle).unwrap_or_default();
+        let end = start + needle.len();
+        let old = text.clone();
+        text.replace_range(start..end, with);
+        let point = |s: &str, byte: usize| {
+            let before = s.get(..byte).unwrap_or("");
+            let row = before.matches('\n').count();
+            let col = before.rfind('\n').map_or(byte, |i| byte - i - 1);
+            karet_core::BytePoint::new(row, col)
+        };
+        Edit {
+            start_byte: start,
+            old_end_byte: end,
+            new_end_byte: start + with.len(),
+            start_point: point(&old, start),
+            old_end_point: point(&old, end),
+            new_end_point: point(text, start + with.len()),
+            replaced: needle.to_owned(),
+        }
+    }
+
+    #[test]
+    fn two_merged_edits_publish_what_a_cold_highlight_would() {
+        let Some(rust) = karet_treesitter::language_id_from_injection_name("rust") else {
+            return; // rust grammar not compiled in; nothing to test
+        };
+        let mut text = String::from("fn a() {}\n\nfn b() { let x = 1; }\n");
+        let mut trees = HashMap::new();
+        assert!(compute_spans(&mut trees, rust, &text, None).is_some());
+        // Two queued versions, the second's coordinates in the frame the first
+        // left behind; the worker merges them and walks the tree through both.
+        // The second edit opens a string the first edit's text precedes, so
+        // applying only one of them, or both in the wrong frame, changes spans.
+        let first = replace(&mut text, "fn a() {}", "// TODO: a\nfn a() {}");
+        let v1 = HighlightRequest {
+            lang: rust,
+            ..request(1, &text, Some(vec![first]))
+        };
+        let second = replace(&mut text, "1;", "\"open");
+        let v2 = HighlightRequest {
+            lang: rust,
+            ..request(2, &text, Some(vec![second]))
+        };
+        let merged = merge(v1, v2);
+        assert_eq!(merged.text.as_str(), text, "the newer text wins");
+        let edits = merged.edits.unwrap_or_default();
+        assert_eq!(
+            edits.len(),
+            2,
+            "same-language incremental requests stay incremental and keep both edits"
+        );
+
+        let incremental = compute_spans(&mut trees, rust, &text, Some(edits));
+        let cold = compute_spans(&mut HashMap::new(), rust, &text, None);
+        assert!(incremental.is_some());
+        assert_eq!(
+            incremental, cold,
+            "merged edits must match a cold parse of {text:?}"
+        );
     }
 
     #[test]
