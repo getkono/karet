@@ -126,9 +126,9 @@ fn the_servers_occurrences_are_painted_writes_apart_from_reads() {
     assert_eq!(
         painted(&app),
         vec![
-            (span(0, 4, 9), Some(ThemeRole::MatchingBracket)),
-            (span(1, 0, 5), Some(ThemeRole::HoverHighlight)),
-            (span(2, 6, 11), Some(ThemeRole::HoverHighlight)),
+            (span(0, 4, 9), Some(ThemeRole::WordHighlightStrong)),
+            (span(1, 0, 5), Some(ThemeRole::WordHighlight)),
+            (span(2, 6, 11), Some(ThemeRole::WordHighlight)),
         ]
     );
 }
@@ -141,7 +141,7 @@ fn with_no_server_answer_the_word_is_matched_as_text() {
     settle(&mut app, Instant::now());
     let (id, _) = asks(&backend)[0];
     answer(&mut app, id, None);
-    let role = Some(ThemeRole::HoverHighlight);
+    let role = Some(ThemeRole::WordHighlight);
     assert_eq!(
         painted(&app),
         vec![
@@ -255,7 +255,7 @@ fn an_answer_for_a_caret_that_moved_on_is_dropped() {
     answer(&mut app, id, None);
     assert_eq!(
         painted(&app),
-        vec![(span(2, 0, 5), Some(ThemeRole::HoverHighlight))]
+        vec![(span(2, 0, 5), Some(ThemeRole::WordHighlight))]
     );
 }
 
@@ -271,7 +271,7 @@ fn the_occurrences_are_drawn_behind_the_text() {
     answer(&mut app, id, Some(found));
 
     let buffer = frame(&mut app, 80, 20);
-    let want = app.theme.role(ThemeRole::MatchingBracket).to_ratatui();
+    let want = app.theme.role(ThemeRole::WordHighlightStrong).to_ratatui();
     // The cell where `let value` is drawn, found cell by cell: the gutter's
     // glyphs make byte offsets in a joined row useless as columns.
     let spells = |x: u16, y: u16| {
