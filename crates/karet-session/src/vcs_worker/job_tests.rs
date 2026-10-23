@@ -90,7 +90,7 @@ fn log_pages_through_history_and_reports_whether_more_remains() {
         "newest first, one page, more beyond it"
     );
     let last = dispatch(
-        Some(root),
+        Some(root.clone()),
         VcsJob::Log {
             id: RequestId(2),
             skip: 2,
@@ -101,6 +101,20 @@ fn log_pages_through_history_and_reports_whether_more_remains() {
     assert_eq!(
         log_page(&last),
         Some((2, vec!["commit 1".to_owned()], false))
+    );
+    // A page that ends exactly at the root commit has nothing beyond it.
+    let exact = dispatch(
+        Some(root),
+        VcsJob::Log {
+            id: RequestId(3),
+            skip: 1,
+            limit: 2,
+            cancel: hub.register(RequestId(3)),
+        },
+    );
+    assert_eq!(
+        log_page(&exact),
+        Some((1, vec!["commit 2".to_owned(), "commit 1".to_owned()], false))
     );
 }
 
