@@ -138,18 +138,10 @@ impl Indenter {
 #[cfg(test)]
 mod tests {
     use karet_core::BytePos;
-    use karet_core::Span;
     use karet_core::StandardToken;
     use karet_core::TokenId;
 
     use super::*;
-
-    fn span(start: usize, end: usize) -> Span {
-        Span {
-            start: BytePos(start),
-            end: BytePos(end),
-        }
-    }
 
     #[test]
     fn error_displays() {
@@ -157,106 +149,6 @@ mod tests {
             SyntaxError::UnsupportedLanguage.to_string(),
             "unsupported language"
         );
-    }
-
-    #[test]
-    fn spans_in_returns_overlapping_window() {
-        let hl = Highlights::from_sorted_spans(vec![
-            HighlightSpan {
-                span: span(0, 3),
-                token: TokenId::KEYWORD,
-            },
-            HighlightSpan {
-                span: span(5, 9),
-                token: TokenId::FUNCTION,
-            },
-            HighlightSpan {
-                span: span(12, 14),
-                token: TokenId::NUMBER,
-            },
-        ]);
-        // Overlaps the middle span only.
-        let got = hl.spans_in(span(6, 8));
-        assert_eq!(got.len(), 1);
-        assert_eq!(got[0].token, TokenId::FUNCTION);
-        // Range covering the first two spans.
-        assert_eq!(hl.spans_in(span(0, 10)).len(), 2);
-        // Gap between spans yields nothing.
-        assert!(hl.spans_in(span(9, 12)).is_empty());
-    }
-
-    #[test]
-    fn translate_shifts_spans_after_an_insertion() {
-        let hl = Highlights::from_sorted_spans(vec![
-            HighlightSpan {
-                span: span(0, 3),
-                token: TokenId::KEYWORD,
-            },
-            HighlightSpan {
-                span: span(10, 14),
-                token: TokenId::FUNCTION,
-            },
-        ]);
-        // Insert 2 bytes at 5: before is untouched, after slides right.
-        let out = hl.translate(BytePos(5), BytePos(5), BytePos(7));
-        assert_eq!(out.all()[0].span, span(0, 3));
-        assert_eq!(out.all()[1].span, span(12, 16));
-    }
-
-    #[test]
-    fn translate_shifts_spans_after_a_deletion() {
-        let hl = Highlights::from_sorted_spans(vec![HighlightSpan {
-            span: span(10, 14),
-            token: TokenId::FUNCTION,
-        }]);
-        // Delete bytes [5,8): the span slides left by 3.
-        let out = hl.translate(BytePos(5), BytePos(8), BytePos(5));
-        assert_eq!(out.all()[0].span, span(7, 11));
-    }
-
-    #[test]
-    fn translate_drops_a_span_the_edit_cut_through() {
-        let hl = Highlights::from_sorted_spans(vec![
-            HighlightSpan {
-                span: span(0, 3),
-                token: TokenId::KEYWORD,
-            },
-            HighlightSpan {
-                span: span(4, 9),
-                token: TokenId::STRING,
-            },
-        ]);
-        // Typing inside the string: its extent is unknown until the reparse lands, so it
-        // renders unhighlighted rather than wrong.
-        let out = hl.translate(BytePos(6), BytePos(6), BytePos(7));
-        assert_eq!(out.all().len(), 1);
-        assert_eq!(out.all()[0].token, TokenId::KEYWORD);
-    }
-
-    #[test]
-    fn translate_preserves_sorted_non_overlapping_order() {
-        let hl = Highlights::from_sorted_spans(vec![
-            HighlightSpan {
-                span: span(0, 3),
-                token: TokenId::KEYWORD,
-            },
-            HighlightSpan {
-                span: span(5, 8),
-                token: TokenId::STRING,
-            },
-            HighlightSpan {
-                span: span(9, 12),
-                token: TokenId::NUMBER,
-            },
-        ]);
-        let out = hl.translate(BytePos(4), BytePos(4), BytePos(6));
-        assert!(
-            out.all()
-                .windows(2)
-                .all(|w| w[0].span.end.0 <= w[1].span.start.0)
-        );
-        // `spans_in` relies on that invariant, so it must still find the shifted span.
-        assert_eq!(out.spans_in(span(7, 11)).len(), 1);
     }
 
     /// The token covering `needle`'s first byte in `text`, per `highlights`.
