@@ -312,9 +312,16 @@ pub struct Editor {
     pub render_whitespace: RenderWhitespace,
     /// `editor.bracketPairColorization.*` — brackets coloured by nesting depth.
     pub bracket_pair_colorization: BracketPairColorization,
-    /// Override file-type wrapping: `null` uses the file default, `true` wraps,
-    /// and `false` uses horizontal overflow.
-    pub word_wrap: Option<bool>,
+    /// Override file-type wrapping: `null` uses the file default, `true` or
+    /// `"on"` wraps at the viewport, `false` or `"off"` uses horizontal
+    /// overflow, and `"wordWrapColumn"` or `"bounded"` wrap at
+    /// `wordWrapColumn` (or the viewport, when it is narrower).
+    pub word_wrap: Option<WordWrap>,
+    /// The column `"wordWrapColumn"` and `"bounded"` wrapping break at; `0`
+    /// wraps at the viewport.
+    pub word_wrap_column: u16,
+    /// How the continuation rows of a soft-wrapped line are indented.
+    pub wrapping_indent: WrappingIndent,
     /// Keep the active semantic block hierarchy pinned above scrolled text.
     pub sticky_scroll: bool,
     /// Paste the primary selection at a middle click in the text: `null` turns
@@ -417,6 +424,8 @@ impl Default for Editor {
             render_whitespace: RenderWhitespace::None,
             bracket_pair_colorization: BracketPairColorization::default(),
             word_wrap: None,
+            word_wrap_column: 80,
+            wrapping_indent: WrappingIndent::Same,
             sticky_scroll: true,
             middle_click_paste: None,
             auto_closing_brackets: AutoClosing::LanguageDefined,
@@ -473,6 +482,8 @@ pub use display::Guides;
 pub use display::LineNumbers;
 pub use display::RenderWhitespace;
 pub use display::SemanticHighlighting;
+pub use display::WordWrap;
+pub use display::WrappingIndent;
 pub use inlay_hints::InlayHints;
 pub use inlay_hints::InlayHintsEnabled;
 pub use inline_diagnostics::DiagnosticSeverity;

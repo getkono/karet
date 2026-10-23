@@ -27,6 +27,8 @@ use super::InlineDiagnosticsMode;
 use super::LineNumbers;
 use super::RenderWhitespace;
 use super::SemanticComments;
+use super::WordWrap;
+use super::WrappingIndent;
 
 /// A normalized `[language]` key used by [`Editor::language_overrides`].
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -122,8 +124,12 @@ pub struct EditorOverride {
     pub rulers: Option<Vec<u16>>,
     /// Override wrapping; explicit `null` restores the file-type default.
     #[serde(default, skip_serializing_if = "NullableOverride::is_unset")]
-    #[cfg_attr(feature = "schema", schemars(with = "Option<bool>"))]
-    pub word_wrap: NullableOverride<bool>,
+    #[cfg_attr(feature = "schema", schemars(with = "Option<WordWrap>"))]
+    pub word_wrap: NullableOverride<WordWrap>,
+    /// Override the column `"wordWrapColumn"` and `"bounded"` wrap at.
+    pub word_wrap_column: Option<u16>,
+    /// Override how wrapped continuation rows are indented.
+    pub wrapping_indent: Option<WrappingIndent>,
     /// Override semantic sticky-scroll rendering.
     pub sticky_scroll: Option<bool>,
     /// Override when brackets auto-close.
@@ -320,13 +326,41 @@ impl<'a> ResolvedEditor<'a> {
         self.base.bracket_pair_colorization.enabled
     }
 
-    /// Final wrapping override.
+    /// Final wrapping override as on or off; `None` defers to the file type.
     #[must_use]
     pub fn word_wrap(self) -> Option<bool> {
+        self.word_wrap_mode().map(WordWrap::wraps)
+    }
+
+    /// Final wrapping mode; `None` defers to the file type.
+    #[must_use]
+    pub fn word_wrap_mode(self) -> Option<WordWrap> {
         match self.override_.map(|o| &o.word_wrap) {
             Some(NullableOverride::Set(value)) => *value,
             _ => self.base.word_wrap,
         }
+    }
+
+    /// The column soft wrapping is capped at: the final `wordWrapColumn`
+    /// when the mode is `"wordWrapColumn"` or `"bounded"`, else `None` (the
+    /// viewport decides).
+    #[must_use]
+    pub fn wrap_column(self) -> Option<u16> {
+        self.word_wrap_mode()
+            .is_some_and(WordWrap::uses_column)
+            .then(|| {
+                self.override_
+                    .and_then(|o| o.word_wrap_column)
+                    .unwrap_or(self.base.word_wrap_column)
+            })
+    }
+
+    /// Final continuation-row indentation for soft-wrapped lines.
+    #[must_use]
+    pub fn wrapping_indent(self) -> WrappingIndent {
+        self.override_
+            .and_then(|o| o.wrapping_indent)
+            .unwrap_or(self.base.wrapping_indent)
     }
 
     /// Final semantic sticky-scroll setting.
