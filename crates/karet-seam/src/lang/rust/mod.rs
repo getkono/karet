@@ -169,7 +169,7 @@ impl SeamLanguage for Rust {
         let mut arguments = attribute
             .child_text("arguments", ctx.text)
             .or_else(|| attribute.child_text("value", ctx.text))
-            .map(|raw| raw.trim_matches(['(', ')', ' ']).to_owned());
+            .map(|raw| unwrap_delimiters(raw).to_owned());
 
         // The edition-2024 `#[unsafe(no_mangle)]` wrapper is unwrapped to the attribute
         // it carries, so callers match on `no_mangle` whichever spelling was used.
@@ -394,6 +394,21 @@ pub(crate) fn type_parameter_names(node: &WalkNode<'_>, text: &str) -> Vec<Strin
                 .map(str::to_owned)
         })
         .collect()
+}
+
+/// An attribute's arguments without the one pair of delimiters around them.
+///
+/// Exactly one pair: `(all(test, unix))` is `all(test, unix)`. Trimming every bracket at
+/// both ends would also eat the inner predicate's closing one, leaving text the `cfg`
+/// parser cannot read — and an unreadable gate is an unknown one, so test-only code would
+/// stop being excluded.
+fn unwrap_delimiters(raw: &str) -> &str {
+    let trimmed = raw.trim();
+    trimmed
+        .strip_prefix('(')
+        .and_then(|inner| inner.strip_suffix(')'))
+        .unwrap_or(trimmed)
+        .trim()
 }
 
 /// Split `no_mangle` / `link_name = "x"` / `link(name = "z")` into name and arguments.

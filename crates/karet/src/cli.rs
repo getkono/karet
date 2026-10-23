@@ -46,6 +46,11 @@ pub const VERSION_LINE: &str = concat!(
 /// git repository's changes appear in the Source Control panel.
 #[derive(Debug, Parser)]
 #[command(name = "karet", version = LONG_VERSION, about)]
+#[command(group(
+    clap::ArgGroup::new("seam_surface")
+        .args(["seam_query", "seam_report", "seam_call_tree"])
+        .multiple(false)
+))]
 pub struct Cli {
     /// File or directory to open (defaults to the current directory).
     pub path: Option<PathBuf>,
@@ -137,12 +142,62 @@ pub struct Cli {
     #[arg(long, value_name = "QUERY")]
     pub seam_query: Option<String>,
 
-    /// Evaluate `--seam-query` under a named configuration rather than the default.
+    /// Evaluate `--seam-query`, `--seam-report` or `--seam-call-tree` under a named
+    /// configuration rather than the default.
     ///
     /// Unstable automation surface: intended for scripting and analysis, this flag's
     /// behaviour may change between major versions without notice.
-    #[arg(long, value_name = "NAME", requires = "seam_query")]
+    #[arg(long, value_name = "NAME", requires = "seam_surface")]
     pub seam_config: Option<String>,
+
+    /// Write a call-structure report for the package at PATH to stdout, and exit.
+    ///
+    /// Measures every function by the code it pulls in through its calls, then ranks
+    /// where structure most likely needs attention — call cycles, hubs, heavy entry
+    /// points, large leaves, unreachable code, module coupling — each with its evidence,
+    /// and a ledger of how certain the numbers are. Written to be read by a person or
+    /// handed whole to a language model. An optional QUERY, in the seam query language
+    /// and written `--seam-report='QUERY'`, narrows which functions are listed;
+    /// everything is still measured. The `=` is required so that `--seam-report .`
+    /// reports on `.` rather than reading it as a query.
+    ///
+    /// Unstable automation surface: the report's shape may change between major
+    /// versions without notice.
+    #[arg(
+        long,
+        value_name = "QUERY",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = ""
+    )]
+    pub seam_report: Option<String>,
+
+    /// Print the call tree of the function at the seam path FUNCTION, and exit.
+    ///
+    /// Each row gives the function's own and inclusive lines; each function is
+    /// expanded once, and later appearances are marked. FUNCTION is a seam path such
+    /// as `my-crate::net::Client::send`, as `--seam-query` reports it.
+    ///
+    /// Unstable automation surface: the output shape may change between major versions
+    /// without notice.
+    #[arg(long, value_name = "FUNCTION")]
+    pub seam_call_tree: Option<String>,
+
+    /// Output format for `--seam-report` and `--seam-call-tree`.
+    #[arg(
+        long,
+        value_enum,
+        value_name = "FORMAT",
+        default_value_t = SeamFormat::Markdown,
+        requires = "seam_surface",
+        conflicts_with = "seam_query"
+    )]
+    pub seam_format: SeamFormat,
+
+    /// Read and measure with test code included, rather than leaving it out — for
+    /// `--seam-query`, `--seam-report` and `--seam-call-tree` alike.
+    #[arg(long, requires = "seam_surface")]
+    pub include_tests: bool,
 
     /// Render the shell into an off-screen grid and write it to stdout as truecolor
     /// ANSI, then exit — never enter the alternate screen and never read the
@@ -350,6 +405,16 @@ pub fn parse_capture_size(spec: &str) -> Result<(u16, u16), String> {
     ))
 }
 
+/// The `--seam-format` choices.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum SeamFormat {
+    /// One Markdown document, for reading.
+    #[value(name = "md")]
+    Markdown,
+    /// JSON, for programs.
+    Json,
+}
+
 /// The `--icons` choices, mirroring [`IconStyle`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum IconChoice {
@@ -468,6 +533,7 @@ mod tests {
     use clap::Parser;
 
     use super::Cli;
+    use super::SeamFormat;
 
     #[test]
     fn cli_definition_is_valid() {
@@ -525,6 +591,56 @@ mod tests {
     fn desktop_flags_conflict() {
         let error = Cli::try_parse_from(["karet", "--install-desktop", "--uninstall-desktop"]);
         assert!(error.is_err(), "the two desktop flags must be exclusive");
+    }
+
+    #[test]
+    fn the_seam_surfaces_are_one_at_a_time() -> Result<(), clap::Error> {
+        // A bare `--seam-report` is the whole report; a query narrows it.
+        let bare = Cli::try_parse_from(["karet", "--seam-report"])?;
+        assert_eq!(bare.seam_report.as_deref(), Some(""));
+        assert_eq!(bare.seam_format, SeamFormat::Markdown);
+        let narrowed = Cli::try_parse_from([
+            "karet",
+            "--seam-report=in:k::net",
+            "--seam-format",
+            "json",
+            "--include-tests",
+        ])?;
+        assert_eq!(narrowed.seam_report.as_deref(), Some("in:k::net"));
+        assert_eq!(narrowed.seam_format, SeamFormat::Json);
+        assert!(narrowed.include_tests);
+        // A word after a bare `--seam-report` is the path to report on, never a query.
+        let pathed = Cli::try_parse_from(["karet", "--seam-report", "crates/core"])?;
+        assert_eq!(pathed.seam_report.as_deref(), Some(""));
+        assert_eq!(pathed.path, Some(PathBuf::from("crates/core")));
+        let tree =
+            Cli::try_parse_from(["karet", "--seam-call-tree", "k::run", "--seam-config", "x"])?;
+        assert_eq!(tree.seam_call_tree.as_deref(), Some("k::run"));
+
+        for clash in [
+            &["karet", "--seam-query", "lens:api", "--seam-report"][..],
+            &["karet", "--seam-report", "--seam-call-tree", "k::run"][..],
+            &["karet", "--seam-query", "x", "--seam-call-tree", "k::run"][..],
+        ] {
+            assert!(Cli::try_parse_from(clash).is_err(), "{clash:?}");
+        }
+        // The modifiers mean nothing without a surface to modify.
+        for orphan in [
+            &["karet", "--include-tests"][..],
+            &["karet", "--seam-format", "json"][..],
+            &["karet", "--seam-config", "x"][..],
+        ] {
+            assert!(Cli::try_parse_from(orphan).is_err(), "{orphan:?}");
+        }
+        assert!(Cli::try_parse_from(["karet", "--seam-report", "--seam-format", "yaml"]).is_err());
+        // A query always answers in JSON, so a format there would be silently ignored.
+        assert!(
+            Cli::try_parse_from(["karet", "--seam-query", "x", "--seam-format", "md"]).is_err()
+        );
+        assert!(
+            Cli::try_parse_from(["karet", "--seam-query", "x", "--include-tests"])?.include_tests
+        );
+        Ok(())
     }
 
     #[test]
