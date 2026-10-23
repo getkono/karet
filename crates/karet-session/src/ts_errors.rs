@@ -329,6 +329,83 @@ mod tests {
         open.is_none()
     }
 
+    /// How many `{`/`(`/`[` stay open under strict nesting (surplus closers
+    /// ignored), the measure `repair_balance` drives to zero.
+    fn unclosed(text: &str) -> usize {
+        let mut stack = Vec::new();
+        for ch in text.chars() {
+            match ch {
+                '{' => stack.push('}'),
+                '(' => stack.push(')'),
+                '[' => stack.push(']'),
+                '}' | ')' | ']' if stack.last() == Some(&ch) => {
+                    stack.pop();
+                },
+                _ => {},
+            }
+        }
+        stack.len()
+    }
+
+    /// Seeded quoted-type fragments over the characters the formatter treats
+    /// specially: brackets, backtick runs, member separators, arrows.
+    fn adversarial_types() -> Vec<String> {
+        const ALPHABET: &[char] = &[
+            '{', '}', '(', ')', '[', ']', '`', '`', ';', ' ', 'a', ':', '=', '>', '|', '"', '.',
+        ];
+        let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut roll = move |bound: usize| {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            usize::try_from(state >> 33).unwrap_or_default() % bound
+        };
+        (0..400)
+            .map(|_| {
+                let len = roll(60);
+                (0..len).map(|_| ALPHABET[roll(ALPHABET.len())]).collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn repair_closes_every_opener_and_keeps_the_original_text() {
+        for quoted in adversarial_types() {
+            let repaired = repair_balance(&quoted);
+            assert!(repaired.starts_with(&quoted), "{quoted:?} -> {repaired:?}");
+            assert_eq!(unclosed(&repaired), 0, "{quoted:?} -> {repaired:?}");
+            assert_eq!(
+                repaired.len() - quoted.len(),
+                unclosed(&quoted),
+                "exactly one closer per opener left open: {quoted:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_fence_closes_and_every_fenced_type_is_balanced() {
+        let types = adversarial_types();
+        // Pairs of types per message, so a fence can follow another quote; the
+        // prose between them keeps every line that is not a fence from opening
+        // with a backtick run.
+        for pair in types.chunks(2) {
+            let message = match pair {
+                [one, two] => format!("Type '{one}' is not assignable to type '{two}'."),
+                [one] => format!("Type '{one}' is wrong."),
+                _ => continue,
+            };
+            let got = prettify(&message);
+            assert!(fences_balanced(&got), "{message:?} rendered as:\n{got}");
+            for quoted in pair {
+                if quoted.contains('{') || quoted.contains("=>") || quoted.len() > FENCE_LENGTH {
+                    let body = pretty_type(&repair_balance(quoted));
+                    assert!(got.contains(&body), "{quoted:?} lost from:\n{got}");
+                    assert_eq!(unclosed(&body), 0, "{quoted:?} fenced unbalanced:\n{body}");
+                }
+            }
+        }
+    }
+
     #[test]
     fn repair_is_order_aware_and_ignores_surplus_closers() {
         assert_eq!(repair_balance("{ ( ["), "{ ( [])}");
