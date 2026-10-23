@@ -431,4 +431,292 @@ mod tests {
         let both = staging.staged_patch(&file);
         assert!(both.contains("+A\n") && both.contains("+M\n"));
     }
+
+    #[test]
+    fn staging_unstage_toggle_off_and_out_of_range() {
+        let file = one_hunk_file("f.txt", None, FileStatus::Modified);
+        let mut staging = Staging::new();
+
+        staging.stage(0);
+        staging.unstage(0);
+        assert!(!staging.is_staged(0) && staging.is_empty());
+        // Unstaging something never staged is a no-op, not an error.
+        staging.unstage(7);
+        assert!(staging.is_empty());
+
+        staging.toggle(0);
+        assert!(staging.is_staged(0));
+        staging.toggle(0);
+        assert!(!staging.is_staged(0) && staging.is_empty());
+
+        // An index past the file's hunks is remembered but contributes nothing:
+        // with only it staged there is no patch at all, not a header-only one.
+        staging.stage(5);
+        assert!(!staging.is_empty());
+        assert_eq!(staging.staged_patch(&file), "");
+        staging.stage(0);
+        assert_eq!(
+            staging.staged_patch(&file),
+            format_hunk_patch(&file, &file.hunks[0])
+        );
+    }
+
+    /// A tiny deterministic generator (64-bit LCG), so a failing case reproduces
+    /// from its seed alone.
+    struct Lcg(u64);
+
+    impl Lcg {
+        fn next(&mut self) -> u64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            self.0 >> 33
+        }
+
+        /// A value in `0..n`.
+        fn below(&mut self, n: u64) -> u64 {
+            self.next() % n
+        }
+    }
+
+    /// Line contents chosen to look like patch syntax once prefixed: a removed
+    /// `-- x` reads `--- x`, an added `++ y` reads `+++ y`, and so on.
+    const CONTENTS: [&str; 9] = ["a", "b", "c", "", " lead", "-- x", "++ y", "@@ z", "\\ w"];
+
+    /// A text of up to 8 lines drawn from [`CONTENTS`], each ending `\n` or
+    /// `\r\n`, and the last one sometimes unterminated.
+    fn gen_lines(rng: &mut Lcg) -> Vec<String> {
+        let count = rng.below(9);
+        (0..count)
+            .map(|_| CONTENTS[rng.below(CONTENTS.len() as u64) as usize].to_string())
+            .collect()
+    }
+
+    fn render(rng: &mut Lcg, lines: &[String]) -> String {
+        let mut out = String::new();
+        for (i, line) in lines.iter().enumerate() {
+            out.push_str(line);
+            let last = i + 1 == lines.len();
+            // An unterminated empty last line is no line at all, so keep it.
+            match rng.below(3) {
+                0 if last && !line.is_empty() => {},
+                1 => out.push_str("\r\n"),
+                _ => out.push('\n'),
+            }
+        }
+        out
+    }
+
+    /// `lines` with seeded deletions, replacements and insertions.
+    fn mutate(rng: &mut Lcg, lines: &[String]) -> Vec<String> {
+        let pick = |rng: &mut Lcg| CONTENTS[rng.below(CONTENTS.len() as u64) as usize].to_string();
+        let mut out = Vec::new();
+        for line in lines {
+            match rng.below(10) {
+                0 => {},
+                1 => out.push(pick(rng)),
+                2 => {
+                    out.push(pick(rng));
+                    out.push(line.clone());
+                },
+                _ => out.push(line.clone()),
+            }
+        }
+        if rng.below(4) == 0 {
+            out.push(pick(rng));
+        }
+        out
+    }
+
+    /// One seeded `(old, new, context)` case.
+    fn gen_case(seed: u64) -> (String, String, usize) {
+        let mut rng = Lcg(seed);
+        let old_lines = gen_lines(&mut rng);
+        let new_lines = mutate(&mut rng, &old_lines);
+        let old = render(&mut rng, &old_lines);
+        let new = render(&mut rng, &new_lines);
+        (old, new, rng.below(4) as usize)
+    }
+
+    /// Apply `hunks` to `old` the way `patch` would, checking every context and
+    /// removed line against the text it claims to replace. `None` on a mismatch.
+    fn apply_hunks(old: &str, hunks: &[Hunk]) -> Option<String> {
+        let old_lines: Vec<&str> = old.split_inclusive('\n').collect();
+        let mut out = String::new();
+        let mut next = 0usize;
+        for hunk in hunks {
+            let start = if hunk.old_count == 0 {
+                hunk.old_start
+            } else {
+                hunk.old_start.checked_sub(1)?
+            } as usize;
+            out.extend(old_lines.get(next..start)?.iter().copied());
+            next = start;
+            let (mut old_seen, mut new_seen) = (0, 0);
+            for line in &hunk.lines {
+                let raw = format!("{}{}", line.content, line.terminator());
+                if line.kind != LineKind::Add {
+                    (*old_lines.get(next)? == raw).then_some(())?;
+                    next += 1;
+                    old_seen += 1;
+                }
+                if line.kind != LineKind::Remove {
+                    out.push_str(&raw);
+                    new_seen += 1;
+                }
+            }
+            (old_seen == hunk.old_count && new_seen == hunk.new_count).then_some(())?;
+        }
+        out.extend(old_lines.get(next..)?.iter().copied());
+        Some(out)
+    }
+
+    /// Which shapes the cases in `seeds` reach, so a generator change that stops
+    /// producing one fails loudly instead of quietly testing less:
+    /// `[crlf, no_newline, added, removed, ctx 0, multi-hunk]`.
+    fn shapes_reached(seeds: std::ops::Range<u64>) -> [bool; 6] {
+        let mut seen = [false; 6];
+        for seed in seeds {
+            let (old, new, context) = gen_case(seed);
+            let file = diff_text(&old, &new, &opts(context));
+            let lines = || file.hunks.iter().flat_map(|h| &h.lines);
+            seen[0] |= lines().any(|l| l.crlf);
+            seen[1] |= lines().any(|l| l.no_newline);
+            seen[2] |= file.status == FileStatus::Added;
+            seen[3] |= file.status == FileStatus::Removed;
+            seen[4] |= context == 0 && !file.hunks.is_empty();
+            seen[5] |= file.hunks.len() > 1;
+        }
+        seen
+    }
+
+    fn opts(context: usize) -> DiffOptions {
+        DiffOptions {
+            path_hint: Some("f.txt".into()),
+            context_lines: context,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn seeded_hunks_apply_and_round_trip_through_parse() -> Result<(), crate::DiffError> {
+        assert_eq!(shapes_reached(0..2_000), [true; 6]);
+        for seed in 0..2_000 {
+            let (old, new, context) = gen_case(seed);
+            let file = diff_text(&old, &new, &opts(context));
+            assert_eq!(
+                apply_hunks(&old, &file.hunks).as_deref(),
+                Some(new.as_str()),
+                "seed {seed}: {old:?} -> {new:?} at ctx {context}"
+            );
+            for hunk in &file.hunks {
+                let reparsed = crate::parse(&format_hunk_patch(&file, hunk))?;
+                let hunks: Vec<&Hunk> = reparsed.files.iter().flat_map(|f| &f.hunks).collect();
+                assert_eq!(hunks, [hunk], "seed {seed}: single-hunk patch");
+            }
+            let mut staging = Staging::new();
+            (0..file.hunks.len()).for_each(|i| staging.stage(i));
+            let reparsed = crate::parse(&staging.staged_patch(&file))?;
+            let hunks: Vec<Hunk> = reparsed.files.into_iter().flat_map(|f| f.hunks).collect();
+            assert_eq!(hunks, file.hunks, "seed {seed}: combined patch");
+        }
+        Ok(())
+    }
+
+    /// Run `git` in `dir` with `stdin` piped in, returning stdout, or the exit
+    /// status and stderr as an error.
+    fn git(dir: &std::path::Path, args: &[&str], stdin: &str) -> Result<Vec<u8>, String> {
+        use std::io::Write as _;
+        use std::process::Command;
+        use std::process::Stdio;
+
+        let mut child = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        if let Some(mut pipe) = child.stdin.take() {
+            pipe.write_all(stdin.as_bytes())
+                .map_err(|e| e.to_string())?;
+        }
+        let output = child.wait_with_output().map_err(|e| e.to_string())?;
+        if output.status.success() {
+            Ok(output.stdout)
+        } else {
+            Err(format!(
+                "git {args:?}: {}: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            ))
+        }
+    }
+
+    /// What `format_hunk_patch` promises — "suitable for `git apply --cached`" —
+    /// checked against git itself for in-place modifications. Skipped where no
+    /// `git` is on `PATH`.
+    ///
+    /// Added and removed files are left out: without a known mode the patch
+    /// carries no `new file mode` / `deleted file mode` line, and git reads the
+    /// `/dev/null` side as a path, which is a defect tracked on its own.
+    #[test]
+    fn git_accepts_every_generated_modification_patch() -> Result<(), String> {
+        if std::process::Command::new("git")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!("skipped: no git on PATH");
+            return Ok(());
+        }
+        // `[crlf, no_newline, ctx 0, multi-hunk]` among the cases this runs.
+        let mut seen = [false; 4];
+        for seed in 0..80 {
+            let (old, new, context) = gen_case(seed);
+            let file = diff_text(&old, &new, &opts(context));
+            if file.status != FileStatus::Modified || file.hunks.is_empty() {
+                continue;
+            }
+            let lines = || file.hunks.iter().flat_map(|h| &h.lines);
+            seen[0] |= lines().any(|l| l.crlf);
+            seen[1] |= lines().any(|l| l.no_newline);
+            seen[2] |= context == 0;
+            seen[3] |= file.hunks.len() > 1;
+
+            let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+            let dir = dir.path();
+            git(dir, &["init", "-q"], "")?;
+            std::fs::write(dir.join("f.txt"), &old).map_err(|e| e.to_string())?;
+            git(dir, &["add", "f.txt"], "")?;
+            // The flags `Repository::apply_index_patch` passes. git refuses a
+            // context-free hunk unless told it is one, since nothing anchors it.
+            let mut apply = vec!["apply", "--cached", "--whitespace=nowarn"];
+            if context == 0 {
+                apply.push("--unidiff-zero");
+            }
+            let check = [apply.as_slice(), &["--check", "-"]].concat();
+            for hunk in &file.hunks {
+                let patch = format_hunk_patch(&file, hunk);
+                git(dir, &check, &patch).map_err(|e| format!("seed {seed}: {e}\n{patch}"))?;
+            }
+            let mut staging = Staging::new();
+            (0..file.hunks.len()).for_each(|i| staging.stage(i));
+            let patch = staging.staged_patch(&file);
+            apply.push("-");
+            git(dir, &apply, &patch).map_err(|e| format!("seed {seed}: {e}\n{patch}"))?;
+            let staged = git(dir, &["show", ":f.txt"], "")?;
+            assert_eq!(
+                String::from_utf8_lossy(&staged),
+                new,
+                "seed {seed}: the index holds the new text byte for byte"
+            );
+        }
+        assert_eq!(seen, [true; 4], "the seeds reach every shape");
+        Ok(())
+    }
 }
