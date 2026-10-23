@@ -40,7 +40,8 @@ pub struct PreparedDiff {
     /// Per new-side line (0-based), the syntax token runs. Empty for plaintext.
     pub new_tokens: Vec<Vec<TokenSpan>>,
     /// Intra-line pairs indexed by hunk and diff-line row. Computing these uses an
-    /// LCS, so they are prepared once here rather than on every frame.
+    /// LCS, so they are prepared once here rather than on every frame; both the
+    /// unified and the side-by-side painters read them from here.
     pub intraline: Vec<Vec<Option<HighlightedPair>>>,
 }
 
