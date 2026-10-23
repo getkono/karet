@@ -297,6 +297,15 @@ mod tests {
         );
     }
 
+    #[cfg(not(feature = "vscode"))]
+    #[test]
+    fn load_vscode_without_the_feature_is_unsupported() {
+        assert!(matches!(
+            Theme::load_vscode("{}"),
+            Err(ThemeError::Unsupported)
+        ));
+    }
+
     #[test]
     fn bracket_pair_colors_are_three_distinct_token_hues() {
         let t = Theme::dark();
