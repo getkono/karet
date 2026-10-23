@@ -59,6 +59,9 @@ workspace = true
 
 [dev-dependencies]
 tempfile.workspace         = true
-# The workspace integration suite indexes this repo's own crates, which needs the
-# grammar and the parser pool the library only takes as an argument.
-karet-treesitter.workspace = true
+
+# The workspace integration suite indexes this repo's own Rust crates, so it needs the
+# Rust grammar; its parser pool comes from the ordinary `karet-treesitter` dependency.
+[[test]]
+name              = "workspace"
+required-features = ["lang-rust"]

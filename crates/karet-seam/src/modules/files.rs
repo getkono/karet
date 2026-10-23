@@ -18,6 +18,7 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use crate::discover::skipped;
+use crate::discover::subdirs;
 
 /// How deep a source tree may nest before the walk gives up.
 ///
@@ -171,23 +172,13 @@ fn sources_in(directory: &Path, extensions: &[&str]) -> Vec<PathBuf> {
 
 /// The subdirectories worth descending into, sorted.
 fn subdirectories(directory: &Path, skip: &[&str]) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(directory) else {
-        return Vec::new();
-    };
-    let mut out: Vec<PathBuf> = entries
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.is_dir()
-                && !skipped(path)
-                && !path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| skip.contains(&name))
-        })
-        .collect();
-    out.sort();
-    out
+    subdirs(directory, |path| {
+        skipped(path)
+            || path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| skip.contains(&name))
+    })
 }
 
 /// The first source file at or beneath `directory`, if it holds any.
