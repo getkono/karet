@@ -130,11 +130,13 @@ where
 /// `body` must not contain a raw newline; compact `serde_json` output never
 /// does, which is what makes this framing safe for JSON-RPC payloads.
 ///
-/// Two newline-free bodies do not round-trip through [`read_frame`] either,
-/// because it reads a line the way a padded or CRLF peer writes one: an
-/// **empty** body is skipped as a blank line, and a body **ending in `\r`**
-/// comes back without that byte. Neither is a JSON document, so a JSON-RPC
-/// payload never meets them.
+/// Two newline-free bodies do not round-trip byte for byte through
+/// [`read_frame`] either, because it reads a line the way a padded or CRLF
+/// peer writes one: a body **ending in `\r`** comes back without that one
+/// byte, and a body that is **empty, or just `\r`**, is skipped as a blank
+/// line. A trailing `\r` is JSON whitespace, so stripping it keeps a JSON
+/// document's meaning, and neither skipped body is a JSON document, so a
+/// JSON-RPC payload always reads back with its meaning intact.
 ///
 /// # Errors
 ///
@@ -244,7 +246,8 @@ mod tests {
     }
 
     /// Falsified by a body coming back altered other than as `write_frame`
-    /// documents: an empty body skipped, one trailing `\r` dropped.
+    /// documents: one trailing `\r` dropped, and a body left empty by that
+    /// (or empty to begin with) skipped.
     #[tokio::test]
     async fn roundtrips_generated_bodies_except_the_documented_two() -> TestResult {
         let bodies = generated_bodies(0x5eed, 300);
