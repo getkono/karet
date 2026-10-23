@@ -290,7 +290,16 @@ mod tests {
     fn accepts_consistent_custom_marker_width() {
         let decorations =
             conflict_decorations("<<<<<<<<< ours\na\n=========\nb\n>>>>>>>>> theirs\n");
-        assert!(!decorations.is_empty());
+        assert_eq!(
+            backgrounds(&decorations),
+            vec![
+                (0, 0, ThemeRole::DiffModified),
+                (1, 1, ThemeRole::DiffModified),
+                (2, 2, ThemeRole::DiffModified),
+                (3, 3, ThemeRole::DiffAdded),
+                (4, 4, ThemeRole::DiffModified),
+            ]
+        );
     }
 
     #[test]

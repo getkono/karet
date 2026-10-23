@@ -119,6 +119,19 @@ fn from_rgba_pads_short_buffers_to_declared_size() {
 
 #[cfg(feature = "raster")]
 #[test]
+fn a_halfblock_paints_the_top_pixel_as_fg_and_the_bottom_as_bg() {
+    let red_over_blue = Image::from_rgba(vec![255, 0, 0, 255, 0, 0, 255, 255], 1, 2);
+    let area = Rect::new(0, 0, 1, 1);
+    let mut buf = Buffer::empty(area);
+    red_over_blue.render_halfblocks(area, &mut buf);
+    let cell = &buf[(0, 0)];
+    assert_eq!(cell.symbol(), "▀");
+    assert_eq!(cell.fg, Color::Rgb(255, 0, 0));
+    assert_eq!(cell.bg, Color::Rgb(0, 0, 255));
+}
+
+#[cfg(feature = "raster")]
+#[test]
 fn built_in_resampler_bilinearly_blends_pixel_centers() {
     let pixel = |value: u8| [value, value, value, 255];
     let rgba = [pixel(0), pixel(100), pixel(200), pixel(255)].concat();
@@ -509,10 +522,28 @@ fn fit_rect_preserves_aspect_and_centers() {
 }
 
 #[test]
-fn detect_protocol_returns_a_variant() {
-    assert!(matches!(
-        detect_protocol(),
-        GraphicsProtocol::Kitty | GraphicsProtocol::Halfblocks
-    ));
+fn protocol_detection_reads_each_variable_for_its_own_terminals() {
+    use GraphicsProtocol::Halfblocks;
+    use GraphicsProtocol::Kitty;
+    let cases: [(&[(&str, &str)], GraphicsProtocol); 9] = [
+        (&[], Halfblocks),
+        (&[("KITTY_WINDOW_ID", "")], Kitty),
+        (&[("TERM", "xterm-kitty")], Kitty),
+        (&[("TERM", "xterm-GHOSTTY")], Kitty),
+        (&[("TERM_PROGRAM", "WezTerm")], Kitty),
+        (&[("TERM_PROGRAM", "ghostty")], Kitty),
+        (&[("TERM", "xterm-256color")], Halfblocks),
+        // Each variable has its own needles: neither name matches the other's.
+        (&[("TERM", "wezterm")], Halfblocks),
+        (&[("TERM_PROGRAM", "kitty")], Halfblocks),
+    ];
+    for (env, expected) in cases {
+        let lookup = |key: &str| {
+            env.iter()
+                .find(|(name, _)| *name == key)
+                .map(|(_, value)| std::ffi::OsString::from(value))
+        };
+        assert_eq!(protocol_from_env(lookup), expected, "{env:?}");
+    }
     assert_eq!(kitty_delete_all(), "\x1b_Ga=d\x1b\\");
 }

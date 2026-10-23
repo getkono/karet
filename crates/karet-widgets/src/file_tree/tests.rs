@@ -560,6 +560,35 @@ fn select_visible_maps_viewport_rows_via_offset() {
 }
 
 #[test]
+fn extend_visible_maps_viewport_rows_via_offset() {
+    let dir = temp_dir();
+    for name in ["a.txt", "b.txt", "c.txt", "d.txt"] {
+        write(&dir.path, name, b"x");
+    }
+    let mut state = FileTreeState::new();
+    state.ensure_built(&dir.path);
+    state.select_index(1);
+    state.offset = 1;
+    state.extend_visible(2); // viewport row 2 is absolute row 3
+    let paths = ["b.txt", "c.txt", "d.txt"].map(|name| dir.path.join(name));
+    assert_eq!(state.selected_paths(), paths);
+    assert_eq!(state.selected_path(), Some(paths[2].as_path()));
+}
+
+#[test]
+fn hiding_dotfiles_drops_them_from_the_next_build() {
+    let dir = temp_dir();
+    write(&dir.path, ".env", b"x");
+    write(&dir.path, "a.txt", b"a");
+    let mut state = FileTreeState::new();
+    state.ensure_built(&dir.path);
+    assert_eq!(names(&state), [".env", "a.txt"]);
+    state.set_show_hidden(false);
+    state.ensure_built(&dir.path);
+    assert_eq!(names(&state), ["a.txt"]);
+}
+
+#[test]
 fn active_file_row_is_bold() {
     let dir = temp_dir();
     write(&dir.path, "a.txt", b"a");

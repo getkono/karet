@@ -167,10 +167,40 @@ fn merge_conflict_decorations_render_section_backgrounds() {
 }
 
 #[test]
-fn editor_builder_collects_layers() {
+fn editor_builder_paints_both_the_diagnostic_and_decoration_layers() {
     let buffer = TextBuffer::from_text("fn main() {}");
-    let _editor = Editor::new(&buffer).diagnostics(&[]).decorations(&[]);
-    assert_eq!(EditorState::new().scroll_line, 0);
+    let range = |first, last| Range {
+        start: LineCol::new(0, first),
+        end: LineCol::new(0, last),
+    };
+    let diagnostic = Diagnostic {
+        range: range(1, 3),
+        severity: Severity::Error,
+        message: "e".to_owned(),
+        source: None,
+        code: None,
+        code_href: None,
+        tags: Vec::new(),
+        related: Vec::new(),
+    };
+    let search = ThemeRole::SearchMatch;
+    let decoration = Decoration::new(range(5, 8), DecorationKind::TextBackground, Some(search));
+    let theme = Theme::dark();
+    let area = Rect::new(0, 0, 16, 1);
+    let mut target = Buffer::empty(area);
+    Editor::new(&buffer)
+        .theme(&theme)
+        .focused(false)
+        .line_numbers(LineNumbers::Off)
+        .diagnostics(&[diagnostic])
+        .decorations(&[decoration])
+        .render(area, &mut target, &mut EditorState::new());
+    // Text column `c` paints at x = 2 + c, after the marker and fold columns.
+    let (underlined, highlighted) = (&target[(3, 0)], &target[(7, 0)]);
+    assert!(underlined.modifier.contains(Modifier::UNDERLINED));
+    assert_ne!(underlined.bg, theme.role(search).to_ratatui());
+    assert!(!highlighted.modifier.contains(Modifier::UNDERLINED));
+    assert_eq!(highlighted.bg, theme.role(search).to_ratatui());
 }
 
 #[test]
