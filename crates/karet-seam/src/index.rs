@@ -113,7 +113,7 @@ impl SeamIndex {
 
     /// The handle already assigned to `path`, without assigning one.
     ///
-    /// Re-indexing asks this rather than [`Self::intern_file`]: a path the index never
+    /// Re-indexing asks this rather than registering the path: a path the index never
     /// held has nothing to rebuild, and registering it would inflate the file count the
     /// header reports for work that never happened.
     #[must_use]

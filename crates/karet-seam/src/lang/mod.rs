@@ -85,7 +85,7 @@ impl Attribute {
 /// A candidate is a *name*, not a node: a language mapping sees one syntax node at a time
 /// and never the index, so it cannot know whether `Widget` exists, let alone where. It
 /// says what it is looking for and what to become if that is found; resolving the name is
-/// [`crate::regroup`]'s job, and a name that resolves to nothing leaves the node exactly
+/// the regroup pass's job, and a name that resolves to nothing leaves the node exactly
 /// where it was written.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -277,7 +277,7 @@ pub trait SeamLanguage {
     ///
     /// Returning candidates rather than a decision keeps the contract narrow: the
     /// language still sees one node and never the index, and it is the neutral
-    /// [`crate::regroup`] pass that decides whether a name resolves. Empty — the default
+    /// regroup pass that decides whether a name resolves. Empty — the default
     /// — means the construct is already written where it belongs, which is the common
     /// case and the whole of Python.
     fn ownership(&self, node: &WalkNode<'_>, ctx: &FacetContext<'_>) -> Vec<Owner> {
@@ -308,7 +308,8 @@ pub trait SeamLanguage {
     /// for the grammar `language` — or `None`, and the language has no call tier.
     ///
     /// This is the whole of a language's part in the call tier: the captures it may use
-    /// are listed in [`crate::calls::site::CAPTURES`], and everything after the query —
+    /// are the `@call…`, `@body`, `@comment` and `@import…` names the call tier's own
+    /// tests check every query against, and everything after the query —
     /// attribution, line counting, resolution, measuring — is language-neutral. A
     /// mapping serving several grammars receives the one being read, since node names can
     /// differ between them.

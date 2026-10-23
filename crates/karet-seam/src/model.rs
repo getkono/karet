@@ -409,8 +409,8 @@ pub struct SeamLocation {
 /// One node in the containment tree.
 ///
 /// Containment is a tree and everything else is an edge; a node therefore has exactly
-/// one parent and never points sideways. Relations that are not containment live in
-/// [`crate::edge`].
+/// one parent and never points sideways. Relations that are not containment are
+/// [`Edge`](crate::Edge)s.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Node {
