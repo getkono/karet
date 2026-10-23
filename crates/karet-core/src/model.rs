@@ -733,18 +733,7 @@ mod tests {
     }
 
     #[test]
-    fn diagnostic_constructs_and_clones() {
-        let d = Diagnostic {
-            range: Range::default(),
-            severity: Severity::Error,
-            message: "boom".to_owned(),
-            source: Some("rustc".to_owned()),
-            code: None,
-            code_href: None,
-            tags: vec![DiagnosticTag::Deprecated],
-            related: Vec::new(),
-        };
-        assert_eq!(d.clone(), d);
+    fn severity_orders_most_severe_first() {
         assert!(Severity::Error < Severity::Hint);
     }
 
@@ -861,23 +850,6 @@ mod tests {
                 assert!(!a.contains(*b), "{a:?} overlaps {b:?}");
             }
         }
-    }
-
-    #[test]
-    fn symbol_kinds_cover_structural_and_value_symbols() {
-        let kinds = [
-            SymbolKind::String,
-            SymbolKind::Number,
-            SymbolKind::Boolean,
-            SymbolKind::Array,
-            SymbolKind::Object,
-            SymbolKind::Key,
-            SymbolKind::Null,
-            SymbolKind::Event,
-            SymbolKind::Operator,
-        ];
-        assert_eq!(kinds.len(), 9);
-        assert!(kinds.contains(&SymbolKind::Object));
     }
 
     /// The wire payloads the backend seam actually carries must round-trip; this
@@ -1001,6 +973,25 @@ mod tests {
             serde_json::from_str::<CompletionKind>("\"Novel\"")?,
             CompletionKind::Unknown
         );
+        assert_eq!(
+            serde_json::from_str::<DiagnosticTag>("\"Experimental\"")?,
+            DiagnosticTag::Unknown
+        );
+        assert_eq!(
+            serde_json::from_str::<MarkupKind>("\"AsciiDoc\"")?,
+            MarkupKind::Unknown
+        );
+        // The fallback absorbs one field, not the payload around it.
+        let diagnostic = r#"{"range":{"start":{"line":0,"col":0},"end":{"line":0,"col":0}},
+            "severity":"Fatal","message":"m","source":null,"code":null,"code_href":null,
+            "tags":["Unnecessary","Experimental"],"related":[]}"#;
+        let diagnostic = serde_json::from_str::<Diagnostic>(diagnostic)?;
+        assert_eq!(diagnostic.severity, Severity::Unknown);
+        assert_eq!(
+            diagnostic.tags,
+            vec![DiagnosticTag::Unnecessary, DiagnosticTag::Unknown]
+        );
+        assert_eq!(diagnostic.message, "m");
         Ok(())
     }
 }

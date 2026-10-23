@@ -375,30 +375,68 @@ mod tests {
         assert_eq!(TokenId::new(7).0, 7);
     }
 
+    /// Every standard class, in discriminant order.
+    const ALL: [StandardToken; 32] = [
+        StandardToken::Keyword,
+        StandardToken::KeywordControl,
+        StandardToken::Function,
+        StandardToken::FunctionBuiltin,
+        StandardToken::Method,
+        StandardToken::Type,
+        StandardToken::TypeBuiltin,
+        StandardToken::Variable,
+        StandardToken::Parameter,
+        StandardToken::Property,
+        StandardToken::Constant,
+        StandardToken::String,
+        StandardToken::StringEscape,
+        StandardToken::Comment,
+        StandardToken::Number,
+        StandardToken::Boolean,
+        StandardToken::Operator,
+        StandardToken::Punctuation,
+        StandardToken::Tag,
+        StandardToken::Attribute,
+        StandardToken::Namespace,
+        StandardToken::Label,
+        StandardToken::CommentDoc,
+        StandardToken::MarkupHeading,
+        StandardToken::MarkupBold,
+        StandardToken::MarkupItalic,
+        StandardToken::MarkupLink,
+        StandardToken::MarkupRaw,
+        StandardToken::MarkupQuote,
+        StandardToken::MarkupListMarker,
+        StandardToken::MarkupStrikethrough,
+        StandardToken::CommentMark,
+    ];
+
     #[test]
-    fn capture_name_round_trips() {
-        for tok in [
-            StandardToken::Keyword,
-            StandardToken::FunctionBuiltin,
-            StandardToken::Comment,
-            StandardToken::Label,
-            StandardToken::CommentDoc,
-            StandardToken::MarkupHeading,
-            StandardToken::MarkupBold,
-            StandardToken::MarkupItalic,
-            StandardToken::MarkupLink,
-            StandardToken::MarkupRaw,
-            StandardToken::MarkupQuote,
-            StandardToken::MarkupListMarker,
-            StandardToken::MarkupStrikethrough,
-            StandardToken::CommentMark,
-        ] {
+    fn every_class_has_a_dense_id_and_a_unique_round_tripping_capture_name() {
+        // The ids are exactly 0..=31 in declaration order: karet-theme indexes its
+        // palette by them, so a gap or a renumbering shifts every later colour.
+        for (i, tok) in ALL.iter().enumerate() {
+            assert_eq!(usize::from(tok.id().0), i, "{tok:?}");
             assert_eq!(
                 StandardToken::from_capture_name(tok.capture_name()),
-                Some(tok)
+                Some(*tok)
+            );
+            // No two classes share a capture name, or one would be unreachable.
+            assert!(
+                ALL[i + 1..]
+                    .iter()
+                    .all(|other| other.capture_name() != tok.capture_name()),
+                "{tok:?} shares its capture name"
             );
         }
         assert_eq!(StandardToken::from_capture_name("not.a.capture"), None);
+        // Names match exactly: no `@` prefix, no prefix match, no case folding.
+        assert_eq!(StandardToken::from_capture_name("@keyword"), None);
+        assert_eq!(
+            StandardToken::from_capture_name("keyword.control.flow"),
+            None
+        );
+        assert_eq!(StandardToken::from_capture_name("Keyword"), None);
     }
 
     #[test]
