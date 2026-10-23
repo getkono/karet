@@ -16,6 +16,8 @@ use karet_core::CompletionOptions;
 use karet_core::CompletionTrigger;
 use karet_core::CursorState;
 use karet_core::Diagnostic;
+use karet_core::HierarchyDirection;
+use karet_core::HierarchyItem;
 use karet_core::Hover;
 use karet_core::InlayHint;
 use karet_core::LineCol;
@@ -557,6 +559,30 @@ pub enum Command {
         position: LineCol,
         /// What to find.
         kind: LocationKind,
+    },
+    /// Find the symbol at a position a call or type hierarchy grows from:
+    /// the roots of the tree. Answered by [`Event::Hierarchy`], always; a
+    /// server that does not offer the hierarchy is reported first as
+    /// [`Event::FeatureUnsupported`].
+    PrepareHierarchy {
+        /// The target document.
+        doc: DocumentId,
+        /// The position to resolve.
+        position: LineCol,
+        /// Which way the hierarchy will grow, which decides whether calls or
+        /// types are asked about.
+        direction: HierarchyDirection,
+    },
+    /// Grow a hierarchy one level from `item`: its callers, callees,
+    /// supertypes or subtypes. Answered by [`Event::Hierarchy`], always.
+    ExpandHierarchy {
+        /// The document the hierarchy was asked from, whose server produced
+        /// `item` and is asked again.
+        doc: DocumentId,
+        /// An item an earlier [`Event::Hierarchy`] carried, unchanged.
+        item: Box<HierarchyItem>,
+        /// Which way to grow.
+        direction: HierarchyDirection,
     },
     /// Request the document's symbols.
     DocumentSymbols {
