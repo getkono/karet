@@ -92,36 +92,14 @@ impl Repository {
 
 #[cfg(test)]
 mod tests {
-    use std::process::Command;
-    use std::sync::atomic::AtomicU32;
-    use std::sync::atomic::Ordering;
-
     use crate::Repository;
     use crate::VcsError;
-
-    static COUNTER: AtomicU32 = AtomicU32::new(0);
-
-    /// A temp directory removed on drop.
-    struct TempDir(std::path::PathBuf);
-
-    impl Drop for TempDir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
+    use crate::test_support;
 
     #[test]
     fn metadata_dirs_is_single_git_dir_for_normal_repo() -> Result<(), VcsError> {
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("karet-vcs-meta-{}-{n}", std::process::id()));
-        std::fs::create_dir_all(&dir).map_err(|e| VcsError::Git(e.to_string()))?;
-        let _guard = TempDir(dir.clone());
-        let status = Command::new("git")
-            .args(["init", "-q"])
-            .current_dir(&dir)
-            .status()
-            .map_err(|e| VcsError::Git(e.to_string()))?;
-        assert!(status.success());
+        let guard = test_support::init("meta")?;
+        let dir = guard.0.clone();
 
         let repo = Repository::discover(&dir)?;
         let dirs = repo.metadata_dirs();
@@ -134,17 +112,9 @@ mod tests {
 
     #[test]
     fn path_in_worktree_maps_inside_and_rejects_outside() -> Result<(), VcsError> {
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("karet-vcs-rel-{}-{n}", std::process::id()));
-        std::fs::create_dir_all(dir.join("sub")).map_err(|e| VcsError::Git(e.to_string()))?;
-        let _guard = TempDir(dir.clone());
-        let status = Command::new("git")
-            .args(["init", "-q"])
-            .current_dir(&dir)
-            .status()
-            .map_err(|e| VcsError::Git(e.to_string()))?;
-        assert!(status.success());
-        std::fs::write(dir.join("sub/a.txt"), "x\n").map_err(|e| VcsError::Git(e.to_string()))?;
+        let guard = test_support::init("rel")?;
+        let dir = guard.0.clone();
+        test_support::write(&dir, "sub/a.txt", b"x\n")?;
 
         let repo = Repository::discover(&dir)?;
         assert_eq!(
@@ -157,19 +127,9 @@ mod tests {
 
     #[test]
     fn worktree_root_is_canonical_repository_root() -> Result<(), VcsError> {
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!(
-            "karet-vcs-worktree-root-{}-{n}",
-            std::process::id()
-        ));
+        let guard = test_support::init("worktree-root")?;
+        let dir = guard.0.clone();
         std::fs::create_dir_all(dir.join("nested")).map_err(|e| VcsError::Git(e.to_string()))?;
-        let _guard = TempDir(dir.clone());
-        let status = Command::new("git")
-            .args(["init", "-q"])
-            .current_dir(&dir)
-            .status()
-            .map_err(|e| VcsError::Git(e.to_string()))?;
-        assert!(status.success());
 
         let repo = Repository::discover(&dir.join("nested"))?;
         let expected = std::fs::canonicalize(&dir).map_err(|e| VcsError::Git(e.to_string()))?;
