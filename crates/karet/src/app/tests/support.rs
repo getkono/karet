@@ -283,36 +283,83 @@ impl Drop for TempRepo {
     }
 }
 
-/// Run `git` in `dir`, returning whether it succeeded.
-pub(crate) fn git(dir: &Path, args: &[&str]) -> bool {
-    std::process::Command::new("git")
+/// A `git` command in `dir` that sees none of the developer's own setup.
+///
+/// The global and system config files are hidden, so a signing key, a hooks
+/// directory or a default-branch preference on the machine running the tests
+/// cannot change what a fixture builds, and the overrides pin the two settings
+/// that would otherwise make a fixture commit fail or prompt.
+fn isolated_git(dir: &Path, args: &[&str]) -> std::process::Command {
+    let mut cmd = std::process::Command::new("git");
+    cmd.env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .args([
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "core.hooksPath=/dev/null",
+        ])
         .args(args)
-        .current_dir(dir)
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+        .current_dir(dir);
+    cmd
+}
+
+/// Whether a `git` binary can be run at all.
+fn git_available() -> bool {
+    std::process::Command::new("git")
+        .arg("--version")
+        .output()
+        .is_ok_and(|out| out.status.success())
+}
+
+/// Run an isolated `git` in `dir`, panicking with its stderr when it fails.
+///
+/// Fixtures call this only once [`init_test_repo`] has found `git`, so a
+/// failure here is a broken fixture, never a missing tool: it must fail the
+/// test rather than let it return early and pass.
+pub(crate) fn git(dir: &Path, args: &[&str]) {
+    let out = isolated_git(dir, args)
+        .output()
+        .unwrap_or_else(|e| panic!("git {args:?} could not start: {e}"));
+    assert!(
+        out.status.success(),
+        "git {args:?} failed in {}: {}",
+        dir.display(),
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 /// A git repo in a fresh temp dir holding a single untracked file, or `None`
 /// when `git` is unavailable (so the test skips rather than fails).
+///
+/// With `git` present every setup step must succeed, or the test panics. The
+/// repository's own config also pins signing and hooks off, so the git the
+/// backend runs for its writes is as isolated as the fixture's.
 pub(crate) fn init_test_repo() -> Option<TempRepo> {
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
     static N: AtomicUsize = AtomicUsize::new(0);
+    if !git_available() {
+        return None;
+    }
     let path = std::env::temp_dir().join(format!(
         "karet-scm-{}-{}",
         std::process::id(),
         N.fetch_add(1, Ordering::Relaxed)
     ));
-    std::fs::create_dir_all(&path).ok()?;
+    std::fs::create_dir_all(&path).expect("create the temp repo dir");
     let repo = TempRepo { path };
-    if !git(&repo.path, &["init", "-q"])
-        || !git(&repo.path, &["config", "user.email", "test@example.com"])
-        || !git(&repo.path, &["config", "user.name", "karet test"])
-    {
-        return None;
+    git(&repo.path, &["init", "-q"]);
+    for (key, value) in [
+        ("user.email", "test@example.com"),
+        ("user.name", "karet test"),
+        ("commit.gpgsign", "false"),
+        ("tag.gpgsign", "false"),
+        ("core.hooksPath", "/dev/null"),
+    ] {
+        git(&repo.path, &["config", key, value]);
     }
-    std::fs::write(repo.path.join("new.rs"), "fn main() {}\n").ok()?;
+    std::fs::write(repo.path.join("new.rs"), "fn main() {}\n").expect("write the untracked file");
     Some(repo)
 }
 
@@ -448,31 +495,64 @@ pub(crate) fn commit(hash: &str, summary: &str) -> Commit {
     }
 }
 
-/// Drain backend events into `app`, waiting briefly for the spawned actor.
-pub(crate) async fn pump(app: &mut App, events: &mut EventRx) {
-    while let Ok(Some((id, ev))) =
-        tokio::time::timeout(std::time::Duration::from_millis(500), events.recv()).await
-    {
-        app.on_backend_event(id, ev);
-    }
-}
-
-/// Drain backend events into `app` until `ready` holds, or five seconds pass.
+/// Drain backend events into `app` until `ready` holds, panicking if it still
+/// does not after ten seconds or once the backend has hung up.
 ///
-/// [`pump`] stops after a 500 ms gap, which is a guess at "nothing more is
-/// coming" — under a loaded parallel test run the answer a test is waiting for
-/// can miss that window, and the assertion then runs against a half-filled
-/// app. Waiting on the state the test actually needs removes the race without
-/// making every other `pump` call sit through a longer timeout.
+/// Waiting on the state the test actually needs, rather than stopping after a
+/// quiet gap, is what keeps a loaded parallel run from asserting against a
+/// half-filled app. The deadline only bounds a broken test; a passing one
+/// returns as soon as its answer lands. Panicking there, instead of returning,
+/// keeps a condition that never comes true from reaching an assertion that
+/// happens to hold on the unfilled app.
 pub(crate) async fn pump_until(app: &mut App, events: &mut EventRx, ready: impl Fn(&App) -> bool) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while !ready(app) && std::time::Instant::now() < deadline {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !ready(app) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the awaited state never arrived within 10s"
+        );
         match tokio::time::timeout(std::time::Duration::from_millis(250), events.recv()).await {
             Ok(Some((id, ev))) => app.on_backend_event(id, ev),
-            Ok(None) => break,
+            Ok(None) => panic!("the backend closed its event stream before the awaited state"),
             Err(_) => {},
         }
     }
+}
+
+/// [`pump_until`] over both of a local backend's streams: events and the
+/// document snapshots that carry state such as the dirty flag.
+pub(crate) async fn pump_with_snapshots_until(
+    app: &mut App,
+    events: &mut EventRx,
+    snaps: &mut karet_session::SnapshotRx,
+    ready: impl Fn(&App) -> bool,
+) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !ready(app) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the awaited state never arrived within 10s"
+        );
+        tokio::select! {
+            event = events.recv() => {
+                let (id, ev) = event.expect("the backend closed its event stream");
+                app.on_backend_event(id, ev);
+            },
+            snap = snaps.recv() => {
+                let (doc, snap) = snap.expect("the backend closed its snapshot stream");
+                app.on_snapshot(doc, &snap);
+            },
+            () = tokio::time::sleep(std::time::Duration::from_millis(250)) => {},
+        }
+    }
+}
+
+/// Whether the active tab is a code tab the backend has opened a document for.
+pub(crate) fn active_doc_open(app: &App) -> bool {
+    matches!(
+        app.tabs.get(app.active).map(|tab| &tab.kind),
+        Some(TabKind::Code { doc: Some(_), .. })
+    )
 }
 
 /// Answer the manager tab's outstanding inventory request, the way the session

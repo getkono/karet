@@ -265,18 +265,17 @@ async fn editing_a_preview_tab_promotes_it_permanently() {
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
     app.backend = Some(backend);
     app.open_path_preview(&path, true);
-    pump(&mut app, &mut events).await;
+    pump_until(&mut app, &mut events, active_doc_open).await;
     assert!(app.tabs[app.active].is_preview);
 
     app.dispatch(Command::InsertChar('x'));
-    pump(&mut app, &mut events).await;
     // The dirty flag (and thus the promote-on-edit hook) is only ever set from
-    // a document snapshot, not from the optimistic local apply in submit_edit.
-    while let Ok(Some((doc, snap))) =
-        tokio::time::timeout(std::time::Duration::from_millis(500), snaps.recv()).await
-    {
-        app.on_snapshot(doc, &snap);
-    }
+    // a document snapshot, not from the optimistic local apply in submit_edit,
+    // so wait for the snapshot that marks the tab dirty.
+    pump_with_snapshots_until(&mut app, &mut events, &mut snaps, |app| {
+        app.tabs[app.active].dirty
+    })
+    .await;
     assert!(
         !app.tabs[app.active].is_preview,
         "the first edit must permanently promote the preview tab"
@@ -307,24 +306,27 @@ async fn a_dirty_preview_is_not_silently_replaced_by_the_next_preview() {
     app.backend = Some(backend);
 
     app.open_path_preview(&a, true);
-    pump(&mut app, &mut events).await;
+    pump_until(&mut app, &mut events, active_doc_open).await;
     assert!(app.tabs[app.active].is_preview);
 
     // Edit a.txt so a snapshot marks it dirty (and thus permanent).
     app.dispatch(Command::InsertChar('x'));
-    pump(&mut app, &mut events).await;
-    while let Ok(Some((doc, snap))) =
-        tokio::time::timeout(std::time::Duration::from_millis(500), snaps.recv()).await
-    {
-        app.on_snapshot(doc, &snap);
-    }
+    pump_with_snapshots_until(&mut app, &mut events, &mut snaps, |app| {
+        app.tabs[app.active].dirty
+    })
+    .await;
     assert!(!app.tabs[app.active].is_preview, "the edit promoted a.txt");
     assert!(app.tabs[app.active].dirty, "a.txt has unsaved changes");
 
     // Now preview b.txt. The dirty a.txt tab must NOT be replaced — it has no
     // preview flag — so b.txt opens as a second tab and a.txt is kept safe.
     app.open_path_preview(&b, true);
-    pump(&mut app, &mut events).await;
+    pump_until(&mut app, &mut events, active_doc_open).await;
+    assert_eq!(
+        app.tabs[app.active].path().map(canonical),
+        Some(canonical(&b)),
+        "b.txt is the active preview"
+    );
     assert_eq!(app.tabs.len(), 2, "the dirty tab is kept, not replaced");
     let a_tab = app
         .tabs
@@ -540,7 +542,7 @@ async fn global_search_collects_matching_files() {
     app.backend = Some(backend);
     app.search.query = "needle".to_string();
     app.run_global_search();
-    pump(&mut app, &mut events).await;
+    pump_until(&mut app, &mut events, |app| app.search.searched).await;
     assert_eq!(app.search.hits.len(), 1);
     assert!(app.search.hits[0].path.ends_with("a.txt"));
 
@@ -864,11 +866,11 @@ async fn global_search_highlights_matches_in_an_already_open_tab() {
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
     app.backend = Some(backend);
     app.open_path(&file);
-    pump(&mut app, &mut events).await;
+    pump_until(&mut app, &mut events, active_doc_open).await;
 
     app.search.query = "needle".to_string();
     app.run_global_search();
-    pump(&mut app, &mut events).await;
+    pump_until(&mut app, &mut events, |app| app.search.searched).await;
     assert_eq!(app.search.hits.len(), 1);
     match &app.tabs[app.active].kind {
         TabKind::Code { search_decos, .. } => assert_eq!(search_decos.len(), 1),
@@ -906,15 +908,19 @@ async fn fs_changed_event_reruns_a_live_global_search() {
     app.backend = Some(backend);
     app.search.query = "needle".to_string();
     app.run_global_search();
-    pump(&mut app, &mut events).await;
+    pump_until(&mut app, &mut events, |app| app.search.searched).await;
     assert_eq!(app.search.hits.len(), 0, "no matching file exists yet");
 
     // A file matching the live query appears on disk...
     let file = dir.join("new.txt");
-    let _ = std::fs::write(&file, "needle here\n");
+    std::fs::write(&file, "needle here\n").expect("write the new match");
     // ...and the watcher's debounced event is what tells the app to look again.
     app.on_backend_event(None, SessionEvent::FsChanged { paths: vec![file] });
-    pump(&mut app, &mut events).await;
+    assert!(
+        app.search.searching.is_some(),
+        "FsChanged starts a fresh search run"
+    );
+    pump_until(&mut app, &mut events, |app| app.search.searched).await;
     assert_eq!(
         app.search.hits.len(),
         1,

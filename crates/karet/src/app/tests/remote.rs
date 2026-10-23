@@ -2,16 +2,17 @@ use super::support::*;
 use crate::app::*;
 
 /// A committed git repo (one tracked `new.rs`) with `origin` set to `remote_url`,
-/// or `None` when `git` is unavailable (the test then skips).
+/// or `None` when `git` is unavailable (the test then skips). With `git`
+/// present a failing setup step panics.
 fn repo_with_remote(remote_url: &str) -> Option<TempRepo> {
-    let repo = init_test_repo()?;
-    if !git(&repo.path, &["add", "."])
-        || !git(&repo.path, &["commit", "-q", "-m", "init"])
-        || !git(&repo.path, &["remote", "add", "origin", remote_url])
-    {
-        return None;
-    }
+    let repo = committed_repo()?;
+    git(&repo.path, &["remote", "add", "origin", remote_url]);
     Some(repo)
+}
+
+/// Whether the backend has answered the remote-facts request for `path`.
+fn facts_cached(app: &App, path: &Path) -> bool {
+    app.remote_facts.contains_key(path)
 }
 
 #[tokio::test]
@@ -23,7 +24,8 @@ async fn pane_context_menu_lists_file_actions_and_disables_links_outside_a_repo(
 
     // The first open fires the facts request; the answer feeds the reopen.
     app.open_pane_context_menu(3, 3, true);
-    pump(&mut app, &mut events).await;
+    let file = dir.join("a.rs");
+    pump_until(&mut app, &mut events, |app| facts_cached(app, &file)).await;
     app.context_menu = None;
     app.open_pane_context_menu(3, 3, true);
 
@@ -171,9 +173,10 @@ async fn pane_menu_enables_github_links_for_a_tracked_file_on_github() {
     };
     let (mut app, mut events) = facts_app(repo.path.clone());
     // The first build fires the async facts request; the second reads the cache.
-    let _ = app.pane_context_entries(&repo.path.join("new.rs"));
-    pump(&mut app, &mut events).await;
-    let entries = app.pane_context_entries(&repo.path.join("new.rs"));
+    let path = repo.path.join("new.rs");
+    let _ = app.pane_context_entries(&path);
+    pump_until(&mut app, &mut events, |app| facts_cached(app, &path)).await;
+    let entries = app.pane_context_entries(&path);
     assert!(
         entries.iter().all(|e| e.enabled),
         "github + tracked enables every row: {entries:?}"
@@ -186,9 +189,10 @@ async fn pane_menu_disables_github_links_for_a_gitlab_remote_with_a_note() {
         return;
     };
     let (mut app, mut events) = facts_app(repo.path.clone());
-    let _ = app.pane_context_entries(&repo.path.join("new.rs"));
-    pump(&mut app, &mut events).await;
-    let entries = app.pane_context_entries(&repo.path.join("new.rs"));
+    let path = repo.path.join("new.rs");
+    let _ = app.pane_context_entries(&path);
+    pump_until(&mut app, &mut events, |app| facts_cached(app, &path)).await;
+    let entries = app.pane_context_entries(&path);
     let by_cmd = |cmd: Command| entries.iter().find(|e| e.command() == Some(cmd));
     // The generic remote URL still works on GitLab…
     assert!(by_cmd(Command::CopyRemoteFileUrl).is_some_and(|e| e.enabled));
@@ -211,11 +215,12 @@ async fn pane_menu_disables_links_for_an_untracked_file() {
     let Some(repo) = repo_with_remote("git@github.com:owner/repo.git") else {
         return;
     };
-    std::fs::write(repo.path.join("untracked.rs"), "y\n").unwrap_or_default();
+    let path = repo.path.join("untracked.rs");
+    std::fs::write(&path, "y\n").expect("write the untracked file");
     let (mut app, mut events) = facts_app(repo.path.clone());
-    let _ = app.pane_context_entries(&repo.path.join("untracked.rs"));
-    pump(&mut app, &mut events).await;
-    let entries = app.pane_context_entries(&repo.path.join("untracked.rs"));
+    let _ = app.pane_context_entries(&path);
+    pump_until(&mut app, &mut events, |app| facts_cached(app, &path)).await;
+    let entries = app.pane_context_entries(&path);
     for cmd in [
         Command::CopyRemoteFileUrl,
         Command::CopyGithubPermalink,
@@ -247,7 +252,7 @@ async fn remote_facts_resolve_through_the_backend() {
     let (mut app, mut events) = facts_app(repo.path.clone());
     let path = repo.path.join("new.rs");
     assert!(app.cached_remote_facts(&path).is_none(), "cold cache");
-    pump(&mut app, &mut events).await;
+    pump_until(&mut app, &mut events, |app| facts_cached(app, &path)).await;
     let Some(Ok(facts)) = app.cached_remote_facts(&path) else {
         panic!("facts resolve inside a repo with an origin");
     };
@@ -264,14 +269,13 @@ async fn copy_github_permalink_reports_success_on_a_github_repo() {
         return;
     };
     let (mut app, mut events) = facts_app(repo.path.clone());
-    app.push_tab(code_tab(
-        repo.path.join("new.rs").to_string_lossy().as_ref(),
-    ));
+    let path = repo.path.join("new.rs");
+    app.push_tab(code_tab(path.to_string_lossy().as_ref()));
     // The first dispatch parks the copy on the facts request; the answer
     // completes it without another keystroke (unrelated status events may
     // land afterwards, so the assertion below re-runs on the warm cache).
     app.dispatch(Command::CopyGithubPermalink);
-    pump(&mut app, &mut events).await;
+    pump_until(&mut app, &mut events, |app| facts_cached(app, &path)).await;
     app.dispatch(Command::CopyGithubPermalink);
     assert_eq!(
         last_message(&app).as_deref(),
@@ -283,10 +287,17 @@ async fn copy_github_permalink_reports_success_on_a_github_repo() {
 /// is unavailable (the test then skips).
 fn committed_repo() -> Option<TempRepo> {
     let repo = init_test_repo()?;
-    if !git(&repo.path, &["add", "."]) || !git(&repo.path, &["commit", "-q", "-m", "init"]) {
-        return None;
-    }
+    git(&repo.path, &["add", "."]);
+    git(&repo.path, &["commit", "-q", "-m", "init"]);
     Some(repo)
+}
+
+/// Whether the newest tab is a diff tab the backend has filled.
+fn filled_diff_tab(app: &App) -> bool {
+    matches!(
+        app.tabs.last().map(|tab| &tab.kind),
+        Some(TabKind::Diff { file: Some(_), .. })
+    )
 }
 
 /// A code tab over `path` whose live buffer holds `text`.
@@ -328,15 +339,7 @@ async fn open_changes_with_previous_diffs_head_against_the_live_buffer() {
     app.push_tab(code_tab_with_text(&path, "fn main() { edited }\n"));
 
     app.dispatch(Command::OpenChangesWithPrevious);
-    // Wait for the filled diff tab rather than a fixed quiet window: under a
-    // loaded parallel run the backend's answer can arrive after `pump` gives up.
-    pump_until(&mut app, &mut events, |app| {
-        matches!(
-            app.tabs.last().map(|tab| &tab.kind),
-            Some(TabKind::Diff { file: Some(_), .. })
-        )
-    })
-    .await;
+    pump_until(&mut app, &mut events, filled_diff_tab).await;
 
     let Some(Tab {
         title,
@@ -361,15 +364,13 @@ async fn open_changes_with_revision_picks_from_the_file_history() {
     };
     let path = repo.path.join("new.rs");
     // A second commit changes the file, so its history has two entries.
-    std::fs::write(&path, "fn main() { v1 }\n").unwrap_or_default();
-    if !git(&repo.path, &["commit", "-qam", "v1"]) {
-        return;
-    }
+    std::fs::write(&path, "fn main() { v1 }\n").expect("rewrite new.rs");
+    git(&repo.path, &["commit", "-qam", "v1"]);
     let (mut app, mut events) = facts_app(repo.path.clone());
     app.push_tab(code_tab_with_text(&path, "working\n"));
 
     app.dispatch(Command::OpenChangesWithRevision);
-    pump(&mut app, &mut events).await;
+    pump_until(&mut app, &mut events, |app| app.overlay.is_some()).await;
     let Some(overlay) = app.overlay.as_ref() else {
         panic!("the revision picker opens");
     };
@@ -381,15 +382,7 @@ async fn open_changes_with_revision_picks_from_the_file_history() {
     // Choose the older commit (the initial content).
     app.dispatch(Command::OverlayDown);
     app.dispatch(Command::OverlayAccept);
-    // Wait for the filled diff tab rather than a fixed quiet window: under a
-    // loaded parallel run the backend's answer can arrive after `pump` gives up.
-    pump_until(&mut app, &mut events, |app| {
-        matches!(
-            app.tabs.last().map(|tab| &tab.kind),
-            Some(TabKind::Diff { file: Some(_), .. })
-        )
-    })
-    .await;
+    pump_until(&mut app, &mut events, filled_diff_tab).await;
 
     assert!(app.overlay.is_none(), "accept closes the picker");
     let Some(Tab {
@@ -421,22 +414,17 @@ async fn open_changes_with_branch_diffs_against_the_branch_tip() {
     };
     let path = repo.path.join("new.rs");
     // A `feature` branch changes the file; we come back to the default branch.
-    if !git(&repo.path, &["checkout", "-q", "-b", "feature"]) {
-        return;
-    }
-    std::fs::write(&path, "fn main() { feature }\n").unwrap_or_default();
-    if !git(&repo.path, &["commit", "-qam", "feature change"])
-        || !git(&repo.path, &["checkout", "-q", "-"])
-    {
-        return;
-    }
+    git(&repo.path, &["checkout", "-q", "-b", "feature"]);
+    std::fs::write(&path, "fn main() { feature }\n").expect("rewrite new.rs");
+    git(&repo.path, &["commit", "-qam", "feature change"]);
+    git(&repo.path, &["checkout", "-q", "-"]);
     let (mut app, mut events) = facts_app(repo.path.clone());
     app.push_tab(code_tab_with_text(&path, "working\n"));
 
     // The first invocation requests the repository snapshot; once it lands,
     // the picker opens from that snapshot.
     app.dispatch(Command::OpenChangesWithBranch);
-    pump(&mut app, &mut events).await;
+    pump_until(&mut app, &mut events, |app| app.scm.repository.is_some()).await;
     app.dispatch(Command::OpenChangesWithBranch);
     let Some(overlay) = app.overlay.as_ref() else {
         panic!("the branch picker opens");
@@ -451,7 +439,7 @@ async fn open_changes_with_branch_diffs_against_the_branch_tip() {
     // the default branch is `main` or `master`.
     assert_eq!(rows[0], "feature");
     app.dispatch(Command::OverlayAccept);
-    pump(&mut app, &mut events).await;
+    pump_until(&mut app, &mut events, filled_diff_tab).await;
 
     let Some(Tab {
         title,
@@ -479,22 +467,29 @@ async fn open_changes_reports_a_file_absent_at_the_revision() {
     };
     // `other.rs` only exists in the second commit, so HEAD~1 has no blob for it.
     let path = repo.path.join("other.rs");
-    std::fs::write(&path, "x\n").unwrap_or_default();
-    if !git(&repo.path, &["add", "."]) || !git(&repo.path, &["commit", "-qm", "add other"]) {
-        return;
-    }
+    std::fs::write(&path, "x\n").expect("write other.rs");
+    git(&repo.path, &["add", "."]);
+    git(&repo.path, &["commit", "-qm", "add other"]);
     let (mut app, mut events) = facts_app(repo.path.clone());
     app.push_tab(code_tab_with_text(&path, "x\n"));
+    // The diff request is answered once it leaves the pending map; only then
+    // has the reserved tab been either filled or closed.
+    let answered = |app: &App| app.pending_prepared_diffs.is_empty();
 
     let before = app.tabs.len();
     app.open_changes_with("HEAD~1", "HEAD~1");
-    pump(&mut app, &mut events).await;
+    assert_eq!(
+        app.tabs.len(),
+        before + 1,
+        "the diff tab is reserved at once"
+    );
+    pump_until(&mut app, &mut events, answered).await;
     assert_eq!(app.tabs.len(), before, "no diff tab is opened");
 
     // Unrelated startup events may have overwritten the status; a second
     // round on the settled backend re-asserts the refusal deterministically.
     app.open_changes_with("HEAD~1", "HEAD~1");
-    pump(&mut app, &mut events).await;
+    pump_until(&mut app, &mut events, answered).await;
     assert_eq!(app.tabs.len(), before, "no diff tab is opened");
     assert!(
         last_message(&app)
