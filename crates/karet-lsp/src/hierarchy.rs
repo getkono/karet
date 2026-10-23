@@ -80,7 +80,8 @@ impl LspClient {
     ///
     /// # Errors
     /// Returns [`LspError::Unsupported`] **without issuing a request** when the
-    /// server did not advertise the hierarchy, [`LspError::Protocol`] when
+    /// server neither advertised nor registered the hierarchy for any
+    /// document, [`LspError::Protocol`] when
     /// `item`'s payload is not an item's wire form, else [`LspError::Server`]
     /// or [`LspError::Timeout`].
     pub async fn hierarchy_children(
@@ -89,7 +90,10 @@ impl LspClient {
         item: &HierarchyItem,
     ) -> Result<Vec<HierarchyItem>, LspError> {
         let (method, field) = children_method(direction);
-        self.require_for(direction.feature(), method, &item.location.path)?;
+        // Gated on the feature alone, not on `item`'s document: a follow-up
+        // carries no text document, and the item's file is often one never
+        // opened, whose language a selector-scoped registration cannot match.
+        self.require(direction.feature(), method)?;
         let wire: Value = serde_json::from_str(&item.payload)
             .map_err(|error| LspError::Protocol(format!("hierarchy item payload: {error}")))?;
         let entries: Option<Vec<Value>> =

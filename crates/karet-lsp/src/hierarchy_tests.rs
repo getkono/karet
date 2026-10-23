@@ -178,6 +178,65 @@ async fn a_corrupt_payload_is_refused_without_a_request() -> TestResult {
     Ok(())
 }
 
+/// A follow-up carries no text document, so a hierarchy registered for one
+/// language only still expands an item whose file was never opened -- its
+/// language is unknown, and a per-document gate would refuse it as
+/// unsupported. Refused without a request before any registration, sent once
+/// one exists.
+#[tokio::test]
+async fn a_selector_scoped_registration_expands_items_in_unopened_files() -> TestResult {
+    let ((read, write), mut server) = wire();
+    let server_task = tokio::spawn(async move {
+        server.handshake_with(json!({})).await;
+        server
+    });
+    let client = LspClient::connect(read, write, Path::new("/tmp/ws")).await?;
+    let mut server = server_task.await?;
+    let item = HierarchyItem {
+        name: "caller".into(),
+        kind: karet_core::SymbolKind::Function,
+        detail: None,
+        location: Location {
+            path: "/tmp/ws/unopened.rs".into(),
+            range: Range::default(),
+        },
+        payload: call_item("caller", 9).to_string(),
+    };
+    let refused = client
+        .hierarchy_children(HierarchyDirection::IncomingCalls, &item)
+        .await;
+    assert!(
+        matches!(refused, Err(LspError::Unsupported { .. })),
+        "{refused:?}"
+    );
+
+    server
+        .send(&json!({
+            "jsonrpc": "2.0", "id": "reg-1", "method": "client/registerCapability",
+            "params": {"registrations": [{
+                "id": "r1", "method": "textDocument/prepareCallHierarchy",
+                "registerOptions": {"documentSelector": [{"language": "rust"}]}
+            }]}
+        }))
+        .await;
+    let ack = server.recv().await;
+    assert_eq!(ack["id"], json!("reg-1"));
+
+    let server_task = tokio::spawn(async move {
+        let incoming = server.recv().await;
+        assert_eq!(incoming["method"], "callHierarchy/incomingCalls");
+        let from = json!([{"from": call_item("outer", 30), "fromRanges": []}]);
+        server.respond(&incoming["id"], from).await;
+    });
+    let callers = client
+        .hierarchy_children(HierarchyDirection::IncomingCalls, &item)
+        .await?;
+    assert_eq!(callers.len(), 1);
+    assert_eq!(callers[0].name, "outer");
+    server_task.await?;
+    Ok(())
+}
+
 #[tokio::test]
 async fn a_server_that_declines_type_hierarchy_yields_no_supertypes() -> TestResult {
     // Not supporting the request is not a failure — the caller degrades to its
