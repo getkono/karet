@@ -285,20 +285,11 @@ pub fn lint(text: &str, config: &Config) -> Vec<Issue> {
 /// document's first ending, so fixing a CRLF document leaves it CRLF.
 #[must_use]
 pub fn apply_fixes(text: &str, issues: &[Issue]) -> String {
-    // Split exactly as `str::lines` does (so `Issue::line` coordinates match),
-    // but keep each line's terminator alongside its content.
-    let mut lines: Vec<(String, &str)> = text
-        .split_inclusive('\n')
-        .map(|line| {
-            let (content, ending) = if let Some(c) = line.strip_suffix("\r\n") {
-                (c, "\r\n")
-            } else if let Some(c) = line.strip_suffix('\n') {
-                (c, "\n")
-            } else {
-                (line, "")
-            };
-            (content.to_owned(), ending)
-        })
+    // `source_lines` splits as `str::lines` does, so `Issue::line`
+    // coordinates match, and keeps each line's terminator.
+    let mut lines: Vec<(String, &str)> = crate::table::source_lines(text)
+        .into_iter()
+        .map(|line| (line.content.to_owned(), line.ending))
         .collect();
     let eol = lines
         .iter()
