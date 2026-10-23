@@ -137,6 +137,24 @@ const BLENDED_ROLE_KEYS: &[(&str, ThemeRole)] = &[
     ),
 ];
 
+/// Word-highlight keys a theme may leave unset, each with the key whose role
+/// colors that occurrence kind instead: the list-hover color for reads and
+/// textual mentions, the matching-bracket color for writes.
+const WORD_HIGHLIGHT_FALLBACKS: &[(&str, ThemeRole, &str, ThemeRole)] = &[
+    (
+        "editor.wordHighlightBackground",
+        ThemeRole::WordHighlight,
+        "list.hoverBackground",
+        ThemeRole::HoverHighlight,
+    ),
+    (
+        "editor.wordHighlightStrongBackground",
+        ThemeRole::WordHighlightStrong,
+        "editorBracketMatch.background",
+        ThemeRole::MatchingBracket,
+    ),
+];
+
 /// VS Code's per-kind inlay-hint color keys, each inheriting
 /// `editorInlayHint.foreground` when the theme leaves it unset.
 const INLAY_KIND_KEYS: &[(&str, ThemeRole)] = &[
@@ -163,6 +181,19 @@ pub(crate) fn load(json: &str) -> Result<Theme, ThemeError> {
     for (key, role) in BLENDED_ROLE_KEYS {
         if let Some(color) = root.colors.get(*key).and_then(|h| Rgba::from_hex(h)) {
             theme.roles[*role as usize] = composite_over(color, backdrop);
+        }
+    }
+    // A theme without its own word-highlight color keeps the theme-derived
+    // color occurrences painted in before they had roles, rather than the
+    // built-in dark default under (say) a light theme's dark text.
+    for (key, role, fallback_key, fallback_role) in WORD_HIGHLIGHT_FALLBACKS {
+        let own = root.colors.get(*key).and_then(|h| Rgba::from_hex(h));
+        let fallback = root
+            .colors
+            .get(*fallback_key)
+            .and_then(|h| Rgba::from_hex(h));
+        if own.is_none() && fallback.is_some() {
+            theme.roles[*role as usize] = theme.role(*fallback_role);
         }
     }
     // VS Code falls back from a per-kind hint color to the general one, so a
@@ -471,6 +502,53 @@ mod tests {
         let t = Theme::load_vscode(json)?;
         assert_eq!(t.role(ThemeRole::WordHighlight), Rgba::rgb(71, 71, 71));
         assert_eq!(t.role(ThemeRole::WordHighlightStrong), Rgba::rgb(8, 61, 91));
+        Ok(())
+    }
+
+    #[test]
+    fn missing_word_highlight_keys_fall_back_to_the_themes_hover_and_bracket_colors()
+    -> Result<(), ThemeError> {
+        // A light theme that sets neither word-highlight key: occurrences take
+        // its own list-hover and bracket-match colors, not the dark defaults.
+        let json = r##"{
+            "colors": {
+                "editor.background": "#ffffff",
+                "list.hoverBackground": "#e8e8e8",
+                "editorBracketMatch.background": "#c0e0c0"
+            }
+        }"##;
+        let t = Theme::load_vscode(json)?;
+        assert_eq!(
+            t.role(ThemeRole::WordHighlight),
+            Rgba::rgb(0xe8, 0xe8, 0xe8)
+        );
+        assert_eq!(
+            t.role(ThemeRole::WordHighlightStrong),
+            Rgba::rgb(0xc0, 0xe0, 0xc0)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_word_highlight_key_wins_over_its_fallback_key() -> Result<(), ThemeError> {
+        // Each key is resolved on its own: the theme's read color wins over
+        // list hover, while the unset write key still takes the bracket color.
+        let json = r##"{
+            "colors": {
+                "editor.wordHighlightBackground": "#102030",
+                "list.hoverBackground": "#e8e8e8",
+                "editorBracketMatch.background": "#c0e0c0"
+            }
+        }"##;
+        let t = Theme::load_vscode(json)?;
+        assert_eq!(
+            t.role(ThemeRole::WordHighlight),
+            Rgba::rgb(0x10, 0x20, 0x30)
+        );
+        assert_eq!(
+            t.role(ThemeRole::WordHighlightStrong),
+            Rgba::rgb(0xc0, 0xe0, 0xc0)
+        );
         Ok(())
     }
 
