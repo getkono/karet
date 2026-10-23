@@ -11,6 +11,7 @@ use std::collections::BTreeSet;
 use std::ops::RangeInclusive;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Instant;
 
 use karet_core::Decoration;
@@ -190,8 +191,12 @@ pub enum TabKind {
         /// The base version for the next edit (predicted ahead of snapshot echoes so
         /// rapid typing isn't rejected as stale).
         next_version: u64,
-        /// The latest snapshot's buffer (a cheap rope-sharing clone).
-        buffer: TextBuffer,
+        /// The latest snapshot's buffer, shared by every split view of this
+        /// document: a snapshot hands each view a clone of one `Arc`, and a new
+        /// split takes another, so a view costs no copy of the buffer. A view's
+        /// local edit copies it on write ([`Arc::make_mut`]) and the next
+        /// snapshot reunites the views.
+        buffer: Arc<TextBuffer>,
         /// The source text as one contiguous string, for the readers that need
         /// one (in-file search, Markdown table and merge-conflict scans). Kept in
         /// sync with `buffer` as a lazily materialized snapshot: refreshing it on
@@ -881,7 +886,7 @@ mod tests {
                 language: "Rust",
                 doc: None,
                 next_version: 0,
-                buffer: TextBuffer::from_text("fn main() {}"),
+                buffer: TextBuffer::from_text("fn main() {}").into(),
                 text: "fn main() {}".into(),
                 highlights: Highlights::default(),
                 semantic_blocks: SemanticBlocks::default(),
@@ -906,7 +911,7 @@ mod tests {
                 language: "Rust",
                 doc: None,
                 next_version: 0,
-                buffer,
+                buffer: buffer.into(),
                 text: "a\nb\n".into(),
                 highlights: Highlights::default(),
                 semantic_blocks: SemanticBlocks::default(),

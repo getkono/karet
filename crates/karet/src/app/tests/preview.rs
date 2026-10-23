@@ -616,7 +616,7 @@ fn editing_the_source_re_renders_the_preview_on_the_next_draw() {
     assert!(edited.version() > 0, "the edit must move the version");
 
     if let TabKind::Code { buffer, text, .. } = &mut app.tabs[app.active].kind {
-        *buffer = edited.content_snapshot();
+        *buffer = edited.content_snapshot().into();
         *text = edited.text_snapshot();
     }
 

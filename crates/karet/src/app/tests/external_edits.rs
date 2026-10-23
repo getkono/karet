@@ -51,7 +51,7 @@ fn place(rig: &mut Rig, cursors: CursorState) {
 /// were applied on top of it, carrying `cursor`.
 fn snapshot(rig: &Rig, edits: Vec<TextEdit>, cursor: Option<CursorState>) -> DocSnapshot {
     let mut buffer = match &rig.tab().kind {
-        TabKind::Code { buffer, .. } => buffer.clone(),
+        TabKind::Code { buffer, .. } => (**buffer).clone(),
         _ => karet_text::TextBuffer::from_text(""),
     };
     if !edits.is_empty() {
