@@ -65,7 +65,7 @@ pub(super) fn parse_file_block(lines: &[&str]) -> Result<Option<FileDiff>, DiffE
     let Some(rest) = first.strip_prefix(GIT_HEADER) else {
         return Ok(None);
     };
-    let (_header_old, header_new) = split_ab_paths(rest);
+    let (_header_old, header_new) = split_ab_paths(rest)?;
 
     let mut h = Header::default();
     let hunk_start_idx = scan_header(lines, &mut h);
