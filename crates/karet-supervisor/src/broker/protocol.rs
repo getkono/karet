@@ -9,9 +9,9 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
+use karet_jsonrpc::Framing;
 use serde_json::Value;
 
-use crate::broker::framing::Framing;
 use crate::broker::serve::Core;
 
 /// Identifier the skeleton assigns to each connected client.
