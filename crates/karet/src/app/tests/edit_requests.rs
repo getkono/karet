@@ -168,15 +168,54 @@ fn on_type_app(text: &str, caret: LineCol) -> (Arc<RecordingBackend>, App) {
 }
 
 fn answer_on_type(app: &mut App, id: RequestId, version: u64, edits: Vec<TextEdit>) {
+    answer_triggers(app, id, version, (edits, Some(vec![';', '\n'])));
+}
+
+fn answer_triggers(
+    app: &mut App,
+    id: RequestId,
+    version: u64,
+    (edits, triggers): (Vec<TextEdit>, Option<Vec<char>>),
+) {
     app.on_backend_event(
         Some(id),
         SessionEvent::OnTypeFormatting {
             doc: DOC,
             version,
             edits,
-            triggers: vec![';', '\n'],
+            triggers,
         },
     );
+}
+
+/// A server that formats on nothing is offered nothing more. Falsifier: an
+/// empty list left unremembered sends every keystroke, and each one flushes
+/// the debounced `didChange` ahead of its request.
+#[test]
+fn a_server_with_no_triggers_is_offered_nothing_more() {
+    let (backend, mut app) = on_type_app("a\n", LineCol::new(0, 1));
+    app.dispatch(Command::InsertChar('b'));
+    let (id, _, _) = on_type_asks(&backend)[0];
+    let version = version(&app);
+    answer_triggers(&mut app, id, version, (Vec::new(), Some(Vec::new())));
+
+    app.dispatch(Command::InsertChar(';'));
+    app.dispatch(Command::InsertNewline);
+    assert_eq!(on_type_asks(&backend).len(), 1, "nothing is a trigger");
+}
+
+/// An answer no server gave says nothing about the triggers, so the next
+/// character is still offered: a server may yet start serving the file.
+#[test]
+fn an_unknown_trigger_list_keeps_offering() {
+    let (backend, mut app) = on_type_app("a\n", LineCol::new(0, 1));
+    app.dispatch(Command::InsertChar('b'));
+    let (id, _, _) = on_type_asks(&backend)[0];
+    let version = version(&app);
+    answer_triggers(&mut app, id, version, (Vec::new(), None));
+
+    app.dispatch(Command::InsertChar('c'));
+    assert_eq!(on_type_asks(&backend).len(), 2);
 }
 
 #[test]

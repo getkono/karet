@@ -167,3 +167,17 @@
             "[package]\nname=\"x\"\n"
         );
     }
+
+    /// Each save cause is told to the server as its own reason; an
+    /// unrecognised cause is a manual save. The wire-level check is
+    /// `a_save_tells_the_server_why_it_saves` in the LSP seam tests.
+    #[test]
+    fn a_save_cause_maps_to_its_will_save_reason() {
+        use crate::api::SaveCause;
+        use karet_lsp::SaveReason;
+        let reason = super::edit_requests::save_reason;
+        assert_eq!(reason(SaveCause::FocusChange), SaveReason::FocusOut);
+        assert_eq!(reason(SaveCause::AutoDelay), SaveReason::AfterDelay);
+        assert_eq!(reason(SaveCause::Manual), SaveReason::Manual);
+        assert_eq!(reason(SaveCause::Unknown), SaveReason::Manual);
+    }

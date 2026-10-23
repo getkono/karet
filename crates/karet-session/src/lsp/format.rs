@@ -9,7 +9,10 @@
 //! A save first asks for the server's will-save edits
 //! (`textDocument/willSaveWaitUntil`) where the session says why it saves.
 //! Those that come back are the answer on their own: the server formats the
-//! text it was last sent, and the session has yet to apply them to it.
+//! text it was last sent, and the session has yet to apply them to it. Both
+//! requests share the one [`formatting_deadline`] the save was handed, so a
+//! server that stalls on the first leaves no time for the second, and the
+//! task is given back once, not twice, past the point the save went to disk.
 
 use std::path::Path;
 
@@ -18,6 +21,7 @@ use karet_core::TextEdit;
 use karet_lsp::LspClient;
 use karet_lsp::LspError;
 use karet_lsp::SaveReason;
+use tokio::time::Instant;
 
 use super::code_actions::StepContext;
 use super::commands::report_unsupported;
@@ -41,12 +45,13 @@ pub(super) async fn answer(
     ask: FormattingAsk,
     context: &mut StepContext<'_>,
 ) {
+    let deadline = Instant::now() + formatting_deadline(ask.save_timeout);
     let saving = matches!(
         ask.scope,
         FormattingScope::Save | FormattingScope::SaveUnformatted
     );
     let will_save = match ask.will_save {
-        Some(reason) if saving => will_save(client, path, reason, &ask, context).await,
+        Some(reason) if saving => will_save(client, path, reason, deadline, context).await,
         _ => Vec::new(),
     };
     let then_format = ask.scope == FormattingScope::Save;
@@ -67,7 +72,7 @@ pub(super) async fn answer(
             .send(LspUpdate::Editing { generation, answer });
         return;
     }
-    let (formatted, edits) = serve(client, path, &ask, request, context).await;
+    let (formatted, edits) = serve(client, path, &ask, (request, deadline), context).await;
     let _ = context.updates.send(LspUpdate::Formatting {
         generation: context.generation,
         request,
@@ -80,21 +85,20 @@ pub(super) async fn answer(
 }
 
 /// The server's will-save edits for `path`, empty when it asked for none,
-/// failed, or took longer than the save waits. A refusal stays silent, as a
+/// failed, or was still working at `deadline`. A refusal stays silent, as a
 /// save's formatting does, and a failure is charged to the connection.
 async fn will_save(
     client: &LspClient,
     path: &Path,
     reason: SaveReason,
-    ask: &FormattingAsk,
+    deadline: Instant,
     context: &mut StepContext<'_>,
 ) -> Vec<TextEdit> {
     if *context.dead {
         return Vec::new();
     }
     let request = client.will_save_wait_until(path, reason);
-    let Ok(answer) = tokio::time::timeout(formatting_deadline(ask.save_timeout), request).await
-    else {
+    let Ok(answer) = tokio::time::timeout_at(deadline, request).await else {
         tracing::warn!(
             language = %context.key,
             "will-save edits outlasted the time allowed for them; saving without them"
@@ -127,15 +131,24 @@ async fn will_save(
 /// The wait is bounded here as well as by the save, because the two waits cost
 /// different things: the save's deadline gives up on the answer, while this
 /// one gives the *task* back. Every command for this server -- diagnostics,
-/// completions, a `didChange` flush -- queues behind this `await`.
+/// completions, a `didChange` flush -- queues behind this `await`. A
+/// `deadline` the will-save request already spent sends nothing at all: the
+/// save it would format has been written without it.
 async fn serve(
     client: &LspClient,
     path: &Path,
     ask: &FormattingAsk,
-    request: RequestId,
+    (request, deadline): (RequestId, Instant),
     context: &mut StepContext<'_>,
 ) -> (bool, Vec<TextEdit>) {
     if *context.dead {
+        return (false, Vec::new());
+    }
+    if Instant::now() >= deadline {
+        tracing::warn!(
+            language = %context.key,
+            "will-save edits spent the time allowed for formatting; leaving the file unformatted"
+        );
         return (false, Vec::new());
     }
     // No capability check of its own: a server that never advertised the
@@ -160,7 +173,7 @@ async fn serve(
             },
         }
     };
-    match tokio::time::timeout(formatting_deadline(ask.save_timeout), requests).await {
+    match tokio::time::timeout_at(deadline, requests).await {
         Ok(answer) => {
             let feature = match ask.scope {
                 FormattingScope::Save | FormattingScope::SaveUnformatted => None,

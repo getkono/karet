@@ -14,13 +14,13 @@ use super::message::EditingAsk;
 use super::message::EditingReply;
 
 /// What `ask` is answered with when no server can be asked: no linked
-/// ranges, or no edits and no trigger characters.
+/// ranges, or no edits and trigger characters nobody knows yet.
 pub(super) fn unanswered(ask: &EditingAsk) -> EditingReply {
     match ask {
         EditingAsk::Linked { .. } => EditingReply::Linked(None),
         EditingAsk::OnType { .. } => EditingReply::OnType {
             edits: Vec::new(),
-            triggers: Vec::new(),
+            triggers: None,
         },
     }
 }
@@ -36,7 +36,10 @@ pub(super) fn reported(ask: &EditingAsk) -> Option<ServerFeature> {
 }
 
 /// Ask `client` what `ask` asks about `path`; a refusal or a failure is the
-/// error, for the caller to report and charge.
+/// error, for the caller to report and charge -- except an on-type refusal,
+/// which is the answer "no edits, and no trigger characters": the server
+/// does not format on type, and the client is told so once rather than
+/// asked after every keystroke.
 pub(super) async fn ask(
     client: &LspClient,
     path: &Path,
@@ -52,12 +55,16 @@ pub(super) async fn ask(
             ch,
             indentation,
         } => {
-            let edits = client
+            let edits = match client
                 .on_type_formatting(path, position, ch, indentation)
-                .await?;
+                .await
+            {
+                Err(LspError::Unsupported { .. }) => Vec::new(),
+                answer => answer?,
+            };
             Ok(EditingReply::OnType {
                 edits,
-                triggers: triggers(client),
+                triggers: Some(triggers(client)),
             })
         },
     }

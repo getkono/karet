@@ -138,7 +138,7 @@ impl Session {
                 doc: doc_id,
                 version,
                 edits: Vec::new(),
-                triggers: Vec::new(),
+                triggers: None,
             };
             self.emit(Some(id), answer);
         }
@@ -197,7 +197,7 @@ impl Session {
             EditingReply::Linked(_) => EditingReply::Linked(None),
             EditingReply::OnType { .. } => EditingReply::OnType {
                 edits: Vec::new(),
-                triggers: Vec::new(),
+                triggers: None,
             },
             EditingReply::WillSave { .. } => {
                 let _ = self.finish_format_on_save(
@@ -249,8 +249,17 @@ impl Session {
             return;
         }
         // The same request, still parked under the same deadline, asks again
-        // against the text the edits produced.
-        let ask = self.formatting_ask(document, FormattingScope::Save);
+        // against the text the edits produced -- with only the time that
+        // deadline has left, so the server task is not held for a second
+        // full `formatOnSaveTimeout` past the point the save goes to disk.
+        let mut ask = self.formatting_ask(document, FormattingScope::Save);
+        let spent = self
+            .pending_format_saves
+            .get(&request)
+            .map_or(0, |save| self.elapsed_ms().saturating_sub(save.issued_ms));
+        ask.save_timeout = ask
+            .save_timeout
+            .saturating_sub(std::time::Duration::from_millis(spent));
         let (selector, path) = (document.language_selector, document.path.clone());
         if self
             .lsp

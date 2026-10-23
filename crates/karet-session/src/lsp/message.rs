@@ -350,12 +350,14 @@ pub(crate) enum EditingReply {
     /// offer them, failed, or could not be asked.
     Linked(Option<Vec<Range>>),
     /// The edits a typed character triggered, and every character the server
-    /// formats on (empty when it formats on none, or could not be asked).
+    /// formats on.
     OnType {
         /// The server's edits; empty for a character it does not format on.
         edits: Vec<TextEdit>,
-        /// The server's trigger characters, first one first.
-        triggers: Vec<char>,
+        /// The server's trigger characters, first one first: empty when it
+        /// formats on none, and `None` when no server could be asked, so
+        /// nothing is known about them yet.
+        triggers: Option<Vec<char>>,
     },
     /// A save's will-save edits, sent in place of its
     /// [`LspUpdate::Formatting`] when there are any or the save does not

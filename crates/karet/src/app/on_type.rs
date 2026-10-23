@@ -25,9 +25,10 @@ use super::*;
 pub(crate) struct OnTypeState {
     /// The request in flight, if any; a newer one supersedes it.
     pending: Option<PendingOnType>,
-    /// The trigger characters each document's server answered with; dropped
-    /// when the document closes. A document without an entry is offered
-    /// every typed character until its server says which it formats on.
+    /// The trigger characters each document's server answered with, empty
+    /// for a server that formats on none; dropped when the document closes.
+    /// A document without an entry is offered every typed character until
+    /// its server says which it formats on.
     pub(crate) triggers: HashMap<DocumentId, Vec<char>>,
     /// Whether Toggle Format on Type has flipped `editor.formatOnType`.
     flipped: bool,
@@ -129,9 +130,12 @@ impl App {
         id: Option<RequestId>,
         (doc, version): (DocumentId, u64),
         edits: Vec<TextEdit>,
-        triggers: Vec<char>,
+        triggers: Option<Vec<char>>,
     ) {
-        if !triggers.is_empty() {
+        // An empty list is remembered too: a server that formats on nothing
+        // is offered nothing more, rather than every keystroke (each of which
+        // would flush the debounced `didChange` ahead of its request).
+        if let Some(triggers) = triggers {
             self.on_type.triggers.insert(doc, triggers);
         }
         let Some(pending) = self

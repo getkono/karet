@@ -438,8 +438,10 @@ pub enum Event {
         /// document changed before the answer arrived.
         edits: Vec<karet_core::TextEdit>,
         /// Every character the server formats on, so the client need offer
-        /// only those; empty when it formats on none or could not be asked.
-        triggers: Vec<char>,
+        /// only those: empty when it formats on none (does not offer on-type
+        /// formatting), so the client need offer nothing more, and `None`
+        /// when no server could be asked, so nothing is known yet.
+        triggers: Option<Vec<char>>,
     },
     /// Definition locations answering a [`Command::Definition`].
     Definitions {

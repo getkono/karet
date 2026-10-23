@@ -83,6 +83,10 @@ pub(super) enum Behavior {
     /// (`textDocument/willSaveWaitUntil`), answering each with `// saved\n`
     /// inserted at the start of line 1, where formatting does not reach.
     WillSaves,
+    /// Ask for will-save edits like [`Behavior::WillSaves`], then never answer
+    /// `textDocument/willSaveWaitUntil`, while formatting and serving
+    /// everything else.
+    WillSavesNever,
     /// Advertise `textDocument/formatting` and then never answer it, while
     /// staying perfectly alive and serving everything else. A formatter wedged
     /// on one request is not a dead server, and must not be treated as one.
@@ -172,11 +176,11 @@ fn advertised_capabilities(behavior: Behavior) -> Value {
     });
     if matches!(
         behavior,
-        Behavior::Formats | Behavior::FormatsNever | Behavior::WillSaves
+        Behavior::Formats | Behavior::FormatsNever | Behavior::WillSaves | Behavior::WillSavesNever
     ) {
         capabilities["documentFormattingProvider"] = json!(true);
     }
-    if matches!(behavior, Behavior::WillSaves) {
+    if matches!(behavior, Behavior::WillSaves | Behavior::WillSavesNever) {
         capabilities["textDocumentSync"] =
             json!({"openClose": true, "change": 1, "willSaveWaitUntil": true});
     }
@@ -580,6 +584,9 @@ pub(super) fn test_connector(
                             )
                             .await;
                         },
+                        // Swallowed whole, as `FormatsNever` swallows formatting.
+                        Some("textDocument/willSaveWaitUntil")
+                            if matches!(behavior, Behavior::WillSavesNever) => {},
                         Some("textDocument/willSaveWaitUntil") => {
                             let line_1 = json!({"line": 1, "character": 0});
                             write_msg(

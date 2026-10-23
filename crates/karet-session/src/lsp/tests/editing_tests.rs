@@ -77,7 +77,7 @@ async fn linked_answer(
 async fn on_type_answer(
     events: &mut EventRx,
     request: RequestId,
-) -> Result<(Vec<TextEdit>, Vec<char>, bool), Failure> {
+) -> Result<(Vec<TextEdit>, Option<Vec<char>>, bool), Failure> {
     let mut noticed = false;
     loop {
         let (id, event) = next_event(events).await.ok_or("no OnTypeFormatting")?;
@@ -187,7 +187,7 @@ async fn a_trigger_character_answers_the_servers_edits_and_triggers() -> TestRes
             new_text: "!".to_owned(),
         }]
     );
-    assert_eq!(triggers, vec![';', '}']);
+    assert_eq!(triggers, Some(vec![';', '}']));
     assert!(!noticed);
     Ok(())
 }
@@ -219,10 +219,13 @@ async fn a_character_the_server_does_not_format_on_answers_only_the_triggers() -
     let (edits, triggers, _) = on_type_answer(&mut events, request).await?;
 
     assert!(edits.is_empty());
-    assert_eq!(triggers, vec![';', '}']);
+    assert_eq!(triggers, Some(vec![';', '}']));
     Ok(())
 }
 
+/// A server without on-type formatting answers with a known, empty trigger
+/// list, so the client stops offering keystrokes. Falsifier: answered `None`
+/// ("not asked"), the client would offer every keystroke for the session.
 #[tokio::test]
 async fn on_type_formatting_a_server_does_not_offer_is_answered_silently() -> TestResult {
     let dir = tempfile::tempdir()?;
@@ -232,8 +235,25 @@ async fn on_type_formatting_a_server_does_not_offer_is_answered_silently() -> Te
     let request = ask_on_type(&backend, doc, ';')?;
     let (edits, triggers, noticed) = on_type_answer(&mut events, request).await?;
 
-    assert!(edits.is_empty() && triggers.is_empty());
+    assert!(edits.is_empty());
+    assert_eq!(triggers, Some(Vec::new()), "the server formats on none");
     assert!(!noticed, "typing must never raise a notice");
+    Ok(())
+}
+
+/// With no server to ask, nothing is known about the triggers: `None`, so
+/// the client asks again once a server may be serving the document.
+#[tokio::test]
+async fn on_type_formatting_with_no_server_knows_no_triggers() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let (backend, mut events, doc, _, _) =
+        opened(&dir, ("notes.txt", TEXT), (Behavior::Normal, None), false).await?;
+
+    let request = ask_on_type(&backend, doc, ';')?;
+    let (edits, triggers, _) = on_type_answer(&mut events, request).await?;
+
+    assert!(edits.is_empty());
+    assert_eq!(triggers, None);
     Ok(())
 }
 
@@ -324,6 +344,130 @@ async fn a_save_with_no_will_save_and_no_formatting_writes_the_text_as_is() -> T
     Ok(())
 }
 
+/// A server that never answers `willSaveWaitUntil` costs the save one
+/// deadline, not two: the task gives up on the will-save request at the
+/// save's own bound, asks for no formatting after it (the save has been
+/// written by then), answers the save unformatted, and is free for the next
+/// command.
+///
+/// The clock is tokio's virtual one, so the assertion is on which timer
+/// ended the wait. Falsifier: a task that gave each request its own deadline
+/// would format after the will-save timeout and wait twice as long.
+#[tokio::test(start_paused = true)]
+async fn a_will_save_that_never_answers_spends_the_one_deadline() -> TestResult {
+    let (tx, mut observed) = tokio::sync::mpsc::unbounded_channel();
+    let (mut manager, mut updates) = LspManager::new(LspSettings::default(), None, None, None);
+    let spawns = Arc::new(AtomicUsize::new(0));
+    manager.set_connector(test_connector(Behavior::WillSavesNever, Some(tx), spawns));
+    let path = PathBuf::from("/tmp/stalls-on-will-save.rs");
+    let _ = manager.document_opened(Some("rust"), Some("rust"), &path, 1, || {
+        "fn main() {}".into()
+    });
+    let save_timeout = Duration::from_secs(2);
+    let ask = crate::lsp::FormattingAsk {
+        will_save: Some(karet_lsp::SaveReason::Manual),
+        save_timeout,
+        ..crate::lsp::FormattingAsk::default()
+    };
+    let request = (RequestId(1), DocumentId(1), 1);
+    let (id, doc, version) = request;
+    assert!(
+        manager.formatting(Some("rust"), id, doc, version, &path, ask),
+        "the request must reach a server for this to test anything"
+    );
+
+    let started = tokio::time::Instant::now();
+    let answer = loop {
+        let next = tokio::time::timeout(Duration::from_secs(60), updates.recv())
+            .await
+            .map_err(|_elapsed| "the server task never answered the save")?;
+        match next {
+            Some(LspUpdate::Formatting {
+                request,
+                formatted,
+                edits,
+                ..
+            }) => break (request, formatted, edits),
+            Some(_other) => continue,
+            None => return Err("the server task ended without answering".into()),
+        }
+    };
+    let waited = started.elapsed();
+
+    assert_eq!(answer, (RequestId(1), false, Vec::new()));
+    assert!(
+        waited <= crate::lsp::runtime::formatting_deadline(save_timeout),
+        "both requests must share the save's one deadline (waited {waited:?})"
+    );
+
+    // The task is back, and served the completion asked after the save.
+    let position = (LineCol::new(0, 0), karet_core::CompletionTrigger::Invoked);
+    let (id, doc, version) = (RequestId(2), DocumentId(1), 1);
+    assert!(manager.completion(Some("rust"), id, doc, version, &path, position));
+    loop {
+        match updates.recv().await {
+            Some(LspUpdate::Completions { list, .. }) => {
+                assert_eq!(list.items.len(), 1, "the server is still answering");
+                break;
+            },
+            Some(_other) => continue,
+            None => return Err("the server task was left wedged on the will-save".into()),
+        }
+    }
+    let mut methods = Vec::new();
+    while let Ok(message) = observed.try_recv() {
+        if let Some(method) = message["method"].as_str() {
+            methods.push(method.to_owned());
+        }
+    }
+    assert!(
+        methods
+            .iter()
+            .any(|m| m == "textDocument/willSaveWaitUntil")
+    );
+    assert!(
+        !methods.iter().any(|m| m == "textDocument/formatting"),
+        "nothing is formatted once the deadline has passed: {methods:?}"
+    );
+    Ok(())
+}
+
+/// The reason sent with `willSaveWaitUntil` is the save's cause: a save on
+/// losing focus is `FocusOut` (3), and a manual or unrecognised one is
+/// `Manual` (1). Falsifier: a mapping that sent every save as manual, or
+/// swapped two reasons, would pass every other test here.
+#[tokio::test]
+async fn a_save_tells_the_server_why_it_saves() -> TestResult {
+    use crate::api::SaveCause;
+    for (cause, reason) in [
+        (SaveCause::FocusChange, 3),
+        (SaveCause::Manual, 1),
+        (SaveCause::Unknown, 1),
+    ] {
+        let dir = tempfile::tempdir()?;
+        let text = ("main.rs", "original\nsecond\n");
+        let (tx, mut observed) = tokio::sync::mpsc::unbounded_channel();
+        let (backend, mut events, doc, _, _) =
+            opened(&dir, text, (Behavior::WillSaves, Some(tx)), false).await?;
+        let request = backend.next_id();
+        backend.send(request, Command::Save { doc, cause })?;
+        loop {
+            let (id, event) = next_event(&mut events).await.ok_or("no Saved")?;
+            if matches!(event, Event::Saved { .. }) && id == Some(request) {
+                break;
+            }
+        }
+        let mut sent = Vec::new();
+        while let Ok(message) = observed.try_recv() {
+            if message["method"] == "textDocument/willSaveWaitUntil" {
+                sent.push(message["params"]["reason"].as_u64());
+            }
+        }
+        assert_eq!(sent, [Some(reason)], "a {cause:?} save");
+    }
+    Ok(())
+}
+
 /// Answers begun under a settings snapshot that `reconfigure` has since
 /// retired are fenced out, but each request is still answered, with nothing.
 #[test]
@@ -358,7 +502,7 @@ fn answers_from_a_retired_generation_still_answer_with_nothing() -> TestResult {
         range: range((0, 0), (0, 0)),
         new_text: "!".to_owned(),
     }];
-    let triggers = vec![';'];
+    let triggers = Some(vec![';']);
     let reply = crate::lsp::EditingReply::OnType { edits, triggers };
     session.apply_lsp_update(retired(3, reply));
 
@@ -378,6 +522,6 @@ fn answers_from_a_retired_generation_still_answer_with_nothing() -> TestResult {
         }
     }
     assert_eq!(linked, Some(None));
-    assert_eq!(on_type, Some((Vec::new(), Vec::new())));
+    assert_eq!(on_type, Some((Vec::new(), None)));
     Ok(())
 }
