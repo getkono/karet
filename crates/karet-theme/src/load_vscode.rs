@@ -518,6 +518,103 @@ mod tests {
         assert_eq!(scope_to_token("comment.line"), Some(StandardToken::Comment));
     }
 
+    /// Every arm of the order-sensitive chain, each specific prefix paired with
+    /// the general prefix it must be tested ahead of. Falsified by reordering
+    /// any pair (e.g. `constant` before `constant.numeric`), by dropping an
+    /// alternative spelling (`storage`, `support.class`, `markup.deleted`), or
+    /// by widening the fallthrough so an unknown scope maps to something.
+    #[test]
+    fn every_scope_arm_maps_and_specific_prefixes_win() {
+        use StandardToken as S;
+        let table: &[(&str, Option<StandardToken>)] = &[
+            ("markup.heading.2.markdown", Some(S::MarkupHeading)),
+            ("entity.name.section.markdown", Some(S::MarkupHeading)),
+            ("markup.bold.markdown", Some(S::MarkupBold)),
+            ("markup.strong", Some(S::MarkupBold)),
+            ("markup.italic.markdown", Some(S::MarkupItalic)),
+            ("markup.underline.link.markdown", Some(S::MarkupLink)),
+            ("markup.link", Some(S::MarkupLink)),
+            ("markup.inline.raw.string", Some(S::MarkupRaw)),
+            ("markup.raw.block", Some(S::MarkupRaw)),
+            ("markup.fenced_code.block", Some(S::MarkupRaw)),
+            ("markup.quote.markdown", Some(S::MarkupQuote)),
+            ("markup.list.numbered", Some(S::MarkupListMarker)),
+            ("markup.strikethrough", Some(S::MarkupStrikethrough)),
+            ("markup.deleted.diff", Some(S::MarkupStrikethrough)),
+            // `markup.underline` alone is not a link.
+            ("markup.underline", None),
+            ("comment.line.documentation.rust", Some(S::CommentDoc)),
+            ("comment.block", Some(S::Comment)),
+            // `documentation` outside a comment scope is not a doc comment.
+            ("string.documentation", Some(S::String)),
+            ("string.quoted.double", Some(S::String)),
+            ("constant.numeric.integer", Some(S::Number)),
+            ("constant.language.boolean", Some(S::Boolean)),
+            ("constant.character.escape", Some(S::Constant)),
+            ("keyword.operator.arithmetic", Some(S::Operator)),
+            ("keyword.control.flow", Some(S::KeywordControl)),
+            ("keyword.other", Some(S::Keyword)),
+            ("storage.type.fn", Some(S::Keyword)),
+            ("entity.name.function.rust", Some(S::Function)),
+            ("support.function.builtin", Some(S::Function)),
+            ("entity.name.type.struct", Some(S::Type)),
+            ("entity.name.class", Some(S::Type)),
+            ("support.type.primitive", Some(S::Type)),
+            ("support.class.builtin", Some(S::Type)),
+            ("variable.parameter.function", Some(S::Parameter)),
+            ("variable.other.readwrite", Some(S::Variable)),
+            ("entity.name.tag.html", Some(S::Tag)),
+            ("entity.other.attribute-name.html", Some(S::Attribute)),
+            ("entity.name.namespace", None),
+            ("punctuation.definition", None),
+            ("", None),
+        ];
+        for (scope, want) in table {
+            assert_eq!(scope_to_token(scope), *want, "scope {scope:?}");
+        }
+    }
+
+    /// One `scope` string listing several selectors colors each of them, with
+    /// the whitespace around the commas ignored. Falsified by passing the
+    /// string through unsplit (`"string, comment"` maps to `String` only).
+    #[test]
+    fn a_comma_separated_scope_string_colors_every_selector() -> Result<(), ThemeError> {
+        let json = r##"{
+            "tokenColors": [
+                { "scope": "string, comment ,keyword.control", "settings": { "foreground": "#123456" } }
+            ]
+        }"##;
+        let t = Theme::load_vscode(json)?;
+        let c = Rgba::rgb(0x12, 0x34, 0x56);
+        assert_eq!(t.color(StandardToken::String.id()), c);
+        assert_eq!(t.color(StandardToken::Comment.id()), c);
+        assert_eq!(t.color(StandardToken::KeywordControl.id()), c);
+        // A token no selector named keeps its built-in color.
+        assert_eq!(
+            t.color(StandardToken::Function.id()),
+            Theme::dark().color(StandardToken::Function.id())
+        );
+        Ok(())
+    }
+
+    /// The fallback foreground follows the theme's `editor.foreground`, so a
+    /// token id outside the palette paints in the theme's text color rather
+    /// than the built-in one. Falsified by deleting the `fallback_fg`
+    /// assignment in `load`.
+    #[test]
+    fn the_fallback_foreground_is_the_theme_foreground() -> Result<(), ThemeError> {
+        use karet_core::TokenId;
+
+        let t = Theme::load_vscode(r##"{"colors":{"editor.foreground":"#0a0b0c"}}"##)?;
+        let fg = Rgba::rgb(0x0a, 0x0b, 0x0c);
+        assert_ne!(Theme::dark().fallback_fg, fg);
+        assert_eq!(t.fallback_fg, fg);
+        // The highest non-semantic id indexes past the standard palette.
+        let unmapped = TokenId(TokenId::SEMANTIC_BASE - 1);
+        assert_eq!(t.color(unmapped), fg);
+        Ok(())
+    }
+
     #[test]
     fn font_style_overlays_emphasis() -> Result<(), ThemeError> {
         let json = r##"{
