@@ -33,7 +33,7 @@ fn at(line: u32, col: u32) -> Range {
 
 /// A workspace with `main.rs` open and `other.rs` beside it, both on disk so the
 /// jump stack (which drops origins whose file has since vanished) sees real files.
-fn workspace(name: &str) -> Option<(Arc<RecordingBackend>, App, PathBuf)> {
+fn workspace(name: &str) -> (Arc<RecordingBackend>, App, PathBuf) {
     let root = test_dir(name);
     write_file(&root, "other.rs", b"pub fn target() {}\nsecond line\n");
     write_file(&root, "main.rs", b"target();\n");
@@ -43,7 +43,7 @@ fn workspace(name: &str) -> Option<(Arc<RecordingBackend>, App, PathBuf)> {
     if let TabKind::Code { path, .. } = &mut app.tabs[active].kind {
         *path = root.join("main.rs");
     }
-    Some((backend, app, root.join("other.rs")))
+    (backend, app, root.join("other.rs"))
 }
 
 #[test]
@@ -72,9 +72,7 @@ fn the_command_without_a_code_file_explains_itself_and_sends_nothing() {
 
 #[test]
 fn a_single_location_opens_the_file_and_lands_on_the_range_start() {
-    let Some((backend, mut app, other)) = workspace("definition-single") else {
-        return;
-    };
+    let (backend, mut app, other) = workspace("definition-single");
     app.dispatch(Command::GoToDefinition);
     let id = definition_requests(&backend)[0].0;
 
@@ -114,9 +112,7 @@ fn an_empty_answer_reports_why_and_leaves_the_caret_alone() {
 
 #[test]
 fn a_superseded_answer_is_ignored_and_the_live_request_still_lands() {
-    let Some((backend, mut app, other)) = workspace("definition-superseded") else {
-        return;
-    };
+    let (backend, mut app, other) = workspace("definition-superseded");
     app.dispatch(Command::GoToDefinition);
     app.dispatch(Command::GoToDefinition);
     let requests = definition_requests(&backend);
@@ -150,9 +146,7 @@ fn a_superseded_answer_is_ignored_and_the_live_request_still_lands() {
 
 #[test]
 fn an_answer_for_a_view_the_user_left_is_dropped() {
-    let Some((backend, mut app, other)) = workspace("definition-stale-view") else {
-        return;
-    };
+    let (backend, mut app, other) = workspace("definition-stale-view");
     app.dispatch(Command::GoToDefinition);
     let id = definition_requests(&backend)[0].0;
 
@@ -195,9 +189,7 @@ fn an_unsolicited_definition_event_is_ignored() {
 
 #[test]
 fn several_locations_open_a_picker_with_workspace_relative_rows() {
-    let Some((backend, mut app, other)) = workspace("definition-picker") else {
-        return;
-    };
+    let (backend, mut app, other) = workspace("definition-picker");
     app.dispatch(Command::GoToDefinition);
     let id = definition_requests(&backend)[0].0;
 
@@ -240,9 +232,12 @@ fn several_locations_open_a_picker_with_workspace_relative_rows() {
 }
 
 /// Jump to `other.rs` and return the app positioned there.
-fn jumped(name: &str) -> Option<(App, PathBuf, PathBuf)> {
-    let (backend, mut app, other) = workspace(name)?;
-    let origin = app.tabs[app.active].path()?.to_path_buf();
+fn jumped(name: &str) -> (App, PathBuf, PathBuf) {
+    let (backend, mut app, other) = workspace(name);
+    let origin = app.tabs[app.active]
+        .path()
+        .expect("the workspace's active tab is main.rs")
+        .to_path_buf();
     app.dispatch(Command::GoToDefinition);
     let id = definition_requests(&backend)[0].0;
     app.on_backend_event(
@@ -254,14 +249,12 @@ fn jumped(name: &str) -> Option<(App, PathBuf, PathBuf)> {
             }],
         },
     );
-    Some((app, origin, other))
+    (app, origin, other)
 }
 
 #[test]
 fn going_back_returns_to_the_position_the_jump_started_from() {
-    let Some((mut app, origin, other)) = jumped("definition-back") else {
-        return;
-    };
+    let (mut app, origin, other) = jumped("definition-back");
     assert_eq!(app.tabs[app.active].path(), Some(other.as_path()));
 
     app.dispatch(Command::JumpBack);
@@ -275,9 +268,7 @@ fn going_back_returns_to_the_position_the_jump_started_from() {
 
 #[test]
 fn going_back_skips_an_origin_whose_file_is_gone() {
-    let Some((mut app, origin, _other)) = jumped("definition-back-deleted") else {
-        return;
-    };
+    let (mut app, origin, _other) = jumped("definition-back-deleted");
     // `workspace` writes main.rs only in memory, so remove the on-disk origin the
     // stack recorded and check we do not reopen it as an empty phantom buffer.
     let _ = std::fs::remove_file(&origin);
@@ -288,39 +279,49 @@ fn going_back_skips_an_origin_whose_file_is_gone() {
 
 #[test]
 fn the_jump_stack_stays_bounded() {
-    let Some((backend, mut app, other)) = workspace("definition-back-bounded") else {
-        return;
-    };
-    for line in 0..(64 + 5) {
+    // Every jump stays inside main.rs, whose tab holds a live document and so
+    // can ask again; a jump into a freshly opened file would leave a tab with
+    // no document, and every later request would go unsent. The jumps alternate
+    // between two lines a threshold apart, since nearer moves collapse into one
+    // entry and would never reach the cap.
+    let root = test_dir("definition-back-bounded");
+    let far = 2 * NAV_LINE_THRESHOLD;
+    let text: String = (0..=far).map(|n| format!("target{n}();\n")).collect();
+    write_file(&root, "main.rs", text.as_bytes());
+    let (backend, mut app) = completion_app(&text, LineCol::new(0, 1));
+    app.root = root.clone();
+    let main = root.join("main.rs");
+    let active = app.active;
+    if let TabKind::Code { path, .. } = &mut app.tabs[active].kind {
+        *path = main.clone();
+    }
+    for jump in 0..(64 + 5) {
         app.dispatch(Command::GoToDefinition);
         let requests = definition_requests(&backend);
-        let Some(&(id, _)) = requests.last() else {
-            return;
-        };
+        assert_eq!(
+            requests.len(),
+            jump + 1,
+            "every Go to Definition sends a request"
+        );
         app.on_backend_event(
-            Some(id),
+            Some(requests[jump].0),
             SessionEvent::Definitions {
                 locations: vec![Location {
-                    path: other.clone(),
-                    range: at(line % 2, 0),
+                    path: main.clone(),
+                    range: at(if jump % 2 == 0 { far } else { 0 }, 0),
                 }],
             },
         );
     }
-    for history in app.nav_history.values() {
-        let (back, forward) = history.depth();
-        assert!(
-            back <= 64 && forward == 0,
-            "history grew to {back}/{forward}"
-        );
-    }
+    // 69 jumps overfill the stack, so it must sit exactly at its 64-entry cap:
+    // fewer means jumps went unrecorded, more means the bound is gone.
+    let depths: Vec<(usize, usize)> = app.nav_history.values().map(|h| h.depth()).collect();
+    assert_eq!(depths, vec![(64, 0)], "one view's history, capped at 64");
 }
 
 #[test]
 fn going_forward_returns_to_where_go_back_left() {
-    let Some((mut app, origin, other)) = jumped("definition-forward") else {
-        return;
-    };
+    let (mut app, origin, other) = jumped("definition-forward");
     app.dispatch(Command::JumpBack);
     assert_eq!(app.tabs[app.active].path(), Some(origin.as_path()));
 
@@ -648,20 +649,18 @@ fn hover(col: u16, row: u16, mods: KeyModifiers) -> MouseEvent {
 }
 
 /// An app with a running server, one pane frame, and the cursor over "target".
-fn hover_app(name: &str) -> Option<(App, Rect)> {
-    let (_backend, mut app, _other) = workspace(name)?;
+fn hover_app(name: &str) -> (App, Rect) {
+    let (_backend, mut app, _other) = workspace(name);
     let root = app.root.clone();
     attach_running_server(&mut app, &root);
     let rect = Rect::new(0, 0, 40, 5);
     app.pane_frames = vec![content_frame(&app, rect)];
-    Some((app, rect))
+    (app, rect)
 }
 
 #[test]
 fn ctrl_hover_underlines_the_word_under_the_pointer() {
-    let Some((mut app, _rect)) = hover_app("definition-hover") else {
-        return;
-    };
+    let (mut app, _rect) = hover_app("definition-hover");
     // Screen column 4 is buffer column 1, inside "target" on `target();`.
     app.update_definition_hover(&hover(4, 0, KeyModifiers::CONTROL));
 
@@ -677,9 +676,7 @@ fn ctrl_hover_underlines_the_word_under_the_pointer() {
 
 #[test]
 fn a_hover_without_ctrl_or_over_the_gutter_underlines_nothing() {
-    let Some((mut app, _rect)) = hover_app("definition-hover-negative") else {
-        return;
-    };
+    let (mut app, _rect) = hover_app("definition-hover-negative");
 
     app.update_definition_hover(&hover(4, 0, KeyModifiers::NONE));
     assert!(
@@ -701,9 +698,7 @@ fn a_hover_without_ctrl_or_over_the_gutter_underlines_nothing() {
 fn ctrl_hover_underlines_nothing_without_a_running_server() {
     // The underline promises only what a click can deliver, and a click needs a
     // server that is already running.
-    let Some((_backend, mut app, _other)) = workspace("definition-hover-no-server") else {
-        return;
-    };
+    let (_backend, mut app, _other) = workspace("definition-hover-no-server");
     app.pane_frames = vec![content_frame(&app, Rect::new(0, 0, 40, 5))];
 
     app.update_definition_hover(&hover(4, 0, KeyModifiers::CONTROL));
@@ -712,9 +707,7 @@ fn ctrl_hover_underlines_nothing_without_a_running_server() {
 
 #[test]
 fn a_key_press_clears_the_hover_underline() {
-    let Some((mut app, _rect)) = hover_app("definition-hover-cleared") else {
-        return;
-    };
+    let (mut app, _rect) = hover_app("definition-hover-cleared");
     app.update_definition_hover(&hover(4, 0, KeyModifiers::CONTROL));
     assert!(app.definition_underline_decoration().is_some());
 
@@ -762,9 +755,7 @@ fn each_navigation_command_asks_for_its_own_kind_at_the_caret() {
 
 #[test]
 fn a_single_reference_still_opens_the_picker() {
-    let Some((backend, mut app, other)) = workspace("references-single") else {
-        return;
-    };
+    let (backend, mut app, other) = workspace("references-single");
     app.dispatch(Command::FindReferences);
     let id = location_requests(&backend)[0].0;
 
@@ -795,9 +786,7 @@ fn a_single_reference_still_opens_the_picker() {
 
 #[test]
 fn a_single_implementation_is_jumped_to() {
-    let Some((backend, mut app, other)) = workspace("implementation-single") else {
-        return;
-    };
+    let (backend, mut app, other) = workspace("implementation-single");
     app.dispatch(Command::GoToImplementation);
     let id = location_requests(&backend)[0].0;
 
@@ -819,9 +808,7 @@ fn a_single_implementation_is_jumped_to() {
 
 #[test]
 fn a_reference_preview_reads_the_open_buffer_over_the_file_on_disk() {
-    let Some((backend, mut app, other)) = workspace("references-preview") else {
-        return;
-    };
+    let (backend, mut app, other) = workspace("references-preview");
     let root = app.root.clone();
     // The open `main.rs` holds `target();`; what is on disk is out of date.
     write_file(&root, "main.rs", b"stale on disk\n");
@@ -863,9 +850,7 @@ fn a_reference_preview_reads_the_open_buffer_over_the_file_on_disk() {
 
 #[test]
 fn an_empty_references_answer_names_what_was_not_found() {
-    let Some((backend, mut app, _other)) = workspace("references-empty") else {
-        return;
-    };
+    let (backend, mut app, _other) = workspace("references-empty");
     let root = app.root.clone();
     attach_running_server(&mut app, &root);
     app.dispatch(Command::FindReferences);
@@ -885,9 +870,7 @@ fn an_empty_references_answer_names_what_was_not_found() {
 
 #[test]
 fn an_answer_of_another_kind_does_not_settle_the_pending_request() {
-    let Some((backend, mut app, other)) = workspace("navigation-kind-mismatch") else {
-        return;
-    };
+    let (backend, mut app, other) = workspace("navigation-kind-mismatch");
     app.dispatch(Command::GoToTypeDefinition);
     let id = location_requests(&backend)[0].0;
     let answer = |kind| SessionEvent::Locations {

@@ -54,6 +54,15 @@ fn open_spelling_menu(app: &mut App) {
     right_click_at(app, ON_WROD);
 }
 
+/// Whether the backend's answer has added "wrod" to the live dictionary.
+fn word_added(app: &App) -> bool {
+    app.settings
+        .spellcheck
+        .words
+        .iter()
+        .any(|word| word == "wrod")
+}
+
 fn double_click_at(app: &mut App, (column, row): (u16, u16)) {
     let click = MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
@@ -302,7 +311,7 @@ async fn add_word_updates_an_existing_project_settings_file_without_prompt()
     }
 
     app.accept_context_menu();
-    pump(&mut app, &mut events).await;
+    pump_until(&mut app, &mut events, word_added).await;
 
     assert!(app.overlay.is_none());
     let text = std::fs::read_to_string(dir.path().join(".karet/setting.jsonc"))?;
@@ -331,7 +340,7 @@ async fn add_word_requires_confirmation_before_creating_project_settings()
     }
 
     app.accept_context_menu();
-    pump(&mut app, &mut events).await;
+    pump_until(&mut app, &mut events, |app| app.confirm.is_some()).await;
 
     assert!(!path.exists());
     let dialog = app.confirm.as_ref().expect("creation confirmation");
@@ -347,18 +356,23 @@ async fn add_word_requires_confirmation_before_creating_project_settings()
 
     // Enter alone takes the safe answer and creates nothing.
     send_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-    pump(&mut app, &mut events).await;
+    assert!(app.confirm.is_none(), "Enter answers the dialog");
     assert!(!path.exists(), "the safe answer created no file");
+    assert!(!word_added(&app), "the safe answer added no word");
 
+    // Asking again doubles as a barrier: the backend answers in order, so a
+    // file the cancelled dialog had created would show here as a direct add
+    // instead of a second creation prompt.
     open_spelling_menu(&mut app);
     if let Some(menu) = app.context_menu.as_mut() {
         menu.selected = 1;
     }
     app.accept_context_menu();
-    pump(&mut app, &mut events).await;
+    pump_until(&mut app, &mut events, |app| app.confirm.is_some()).await;
+    assert!(!path.exists(), "the safe answer created no file");
     send_key(&mut app, KeyCode::Down, KeyModifiers::NONE);
     send_key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-    pump(&mut app, &mut events).await;
+    pump_until(&mut app, &mut events, word_added).await;
     assert!(path.exists());
     assert!(std::fs::read_to_string(path)?.contains("\"wrod\""));
     Ok(())
