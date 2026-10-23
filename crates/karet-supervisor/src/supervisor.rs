@@ -435,8 +435,11 @@ mod tests {
     /// A parent lease that ends only once `ready` exists, so the supervised tree is known
     /// to be fully started before EOF tells the supervisor to kill it. Bounded, so a child
     /// that never writes `ready` costs a fixed delay and fails the assertions after.
+    /// `eof_at` records when EOF was handed to the supervisor, so the kill can be timed
+    /// from the lease ending rather than from before the wait for `ready`.
     struct OpenUntil {
         ready: PathBuf,
+        eof_at: std::sync::Arc<std::sync::OnceLock<std::time::Instant>>,
     }
 
     #[cfg(unix)]
@@ -448,17 +451,28 @@ mod tests {
                 }
                 std::thread::sleep(Duration::from_millis(10));
             }
+            let _ = self.eof_at.set(std::time::Instant::now());
             Ok(0)
         }
     }
 
     #[cfg(unix)]
-    /// Whether a process with this id still exists, as `kill -0` reports it.
+    /// Whether a process with this id is still running. A zombie counts as dead: it has
+    /// already been killed and only waits for whoever inherited it to reap it, which may
+    /// never happen where PID 1 does not reap (some containers). `kill -0` cannot tell
+    /// the two apart, so read the state from `/proc` where it exists, else from `ps`.
     fn alive(pid: &str) -> bool {
-        std::process::Command::new("sh")
-            .args(["-c", "kill -0 \"$1\" 2>/dev/null", "sh", pid])
-            .status()
-            .is_ok_and(|status| status.success())
+        let running = |state: &str| !state.trim_start().starts_with(['Z', 'X']);
+        if Path::new("/proc/self/stat").exists() {
+            // The state is the first field after the parenthesised command name, which
+            // may itself hold spaces or `)`, so split at the last `)`.
+            return std::fs::read_to_string(Path::new("/proc").join(pid).join("stat"))
+                .is_ok_and(|stat| stat.rsplit_once(')').is_some_and(|(_, rest)| running(rest)));
+        }
+        std::process::Command::new("ps")
+            .args(["-o", "stat=", "-p", pid])
+            .output()
+            .is_ok_and(|out| out.status.success() && running(&String::from_utf8_lossy(&out.stdout)))
     }
 
     #[cfg(unix)]
@@ -470,7 +484,7 @@ mod tests {
         let scratch = tempfile::tempdir()?;
         let pid_file = scratch.path().join("grandchild.pid");
         let script = format!("sleep 30 & echo $! > '{}'; wait", pid_file.display());
-        let started = std::time::Instant::now();
+        let eof_at = std::sync::Arc::new(std::sync::OnceLock::new());
         let code = supervise(
             SupervisorSpec {
                 command: "sh".into(),
@@ -479,13 +493,15 @@ mod tests {
             },
             OpenUntil {
                 ready: pid_file.clone(),
+                eof_at: std::sync::Arc::clone(&eof_at),
             },
             io::sink(),
             io::sink(),
         )?;
         assert_eq!(code, 0);
+        let eof_at = eof_at.get().ok_or("the parent lease never reached EOF")?;
         assert!(
-            started.elapsed() < Duration::from_secs(10),
+            eof_at.elapsed() < Duration::from_secs(5),
             "the owned process group survived its parent's lease"
         );
 
@@ -494,9 +510,9 @@ mod tests {
             pid.parse::<u32>().is_ok(),
             "the grandchild's pid was not recorded: {pid:?}"
         );
-        // A killed grandchild lingers as a zombie until whoever inherited it reaps it,
-        // and `kill -0` still finds a zombie, so allow that a moment — far short of the
-        // 30 s a surviving `sleep` would run for.
+        // A signal is delivered asynchronously, so allow the grandchild a moment to
+        // die (as a zombie, which `alive` counts as dead) — far short of the 30 s a
+        // surviving `sleep` would run for.
         let mut survived = alive(&pid);
         for _ in 0..200 {
             if !survived {
