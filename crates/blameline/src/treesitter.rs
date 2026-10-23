@@ -266,7 +266,18 @@ mod language_tests {
         ));
         #[cfg(feature = "lang-bash")]
         cases.push(("a.sh", "x=1\nf() {\n  echo 1\n}\n", 2, range(2, 4), 0));
+        if zsh_compiled_in() {
+            cases.push(("a.zsh", "x=1\nf() {\n  echo 1\n}\n", 2, range(2, 4), 0));
+        }
         cases
+    }
+
+    /// blameline has no `lang-zsh` feature of its own: the Zsh grammar is
+    /// compiled in only when workspace feature unification turns on
+    /// `karet-treesitter/lang-zsh`, so its case is gated on the grammar
+    /// resolving at run time rather than on a feature.
+    fn zsh_compiled_in() -> bool {
+        language_id_from_path(Path::new("a.zsh")).is_some()
     }
 
     #[test]
@@ -286,11 +297,12 @@ mod language_tests {
     }
 
     /// The table covers every narrowing grammar `all-narrowing-languages`
-    /// turns on, so a new query cannot land untested under `--all-features`.
+    /// turns on, plus Zsh whenever unification compiled it in, so a new query
+    /// cannot land untested under `--all-features`.
     #[cfg(feature = "all-narrowing-languages")]
     #[test]
     fn the_table_covers_every_narrowing_language() {
-        assert_eq!(cases().len(), 14);
+        assert_eq!(cases().len(), 14 + usize::from(zsh_compiled_in()));
     }
 
     /// A line past the end of the source has no start offset, so it narrows
