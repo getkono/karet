@@ -365,7 +365,7 @@ fn classified(
 /// The declared access: a C++ member's label, or a C declaration's linkage.
 fn access(node: &WalkNode<'_>, ctx: &FacetContext<'_>) -> Visibility {
     if in_class(ctx) {
-        return member_access(ctx.text, node.span().start.0);
+        return member_access(node, ctx);
     }
     let is_static = node.children().any(|child| {
         child.kind() == "storage_class_specifier" && child.text(ctx.text) == Some("static")
@@ -379,53 +379,39 @@ fn access(node: &WalkNode<'_>, ctx: &FacetContext<'_>) -> Visibility {
     }
 }
 
-/// The access label in force at `at` inside a class body.
+/// The access label in force for a member `node` of a class body.
 ///
-/// Read off the text rather than the tree, because a label is a sibling that governs every
-/// member after it, and a mapping sees one node at a time. Walks back to the body's
-/// opening brace, skipping nested braces; the nearest label wins, and with none the
-/// default is the one the keyword before the brace implies.
-fn member_access(text: &str, at: usize) -> Visibility {
-    let before = text.get(..at).unwrap_or_default();
-    let mut depth = 0usize;
-    for (offset, ch) in before.char_indices().rev() {
-        match ch {
-            '}' => depth += 1,
-            '{' if depth == 0 => {
-                // The last of `class`/`struct`/`union` as a whole word is the one this
-                // body opens: `template <class T> struct Box` is a struct, and a comment
-                // or file name merely containing "class" is neither.
-                let head = before.get(..offset).unwrap_or_default();
-                let keyword = head
-                    .split(|c: char| !(c.is_alphanumeric() || c == '_'))
-                    .rev()
-                    .find(|word| matches!(*word, "class" | "struct" | "union"));
-                return if keyword == Some("class") {
-                    Visibility::Private
-                } else {
-                    Visibility::Public
-                };
-            },
-            '{' => depth = depth.saturating_sub(1),
-            ':' if depth == 0 => {
-                let label = before.get(..offset).unwrap_or_default().trim_end();
-                for (word, visibility) in [
-                    ("public", Visibility::Public),
-                    ("protected", Visibility::Super),
-                    ("private", Visibility::Private),
-                ] {
-                    if label.ends_with(word)
-                        && !label
-                            .get(..label.len() - word.len())
-                            .unwrap_or_default()
-                            .ends_with(|c: char| c.is_alphanumeric() || c == '_' || c == ':')
-                    {
-                        return visibility;
-                    }
-                }
-            },
-            _ => {},
+/// Read from the tree: a label is an `access_specifier` sibling that governs every member
+/// after it, so the nearest one among the body's earlier children wins, and with none the
+/// default is the one the body's owner implies (`class` private, `struct`/`union`
+/// public). Comments and literals are their own nodes, so a `}` or `private:` inside one
+/// is never mistaken for structure.
+fn member_access(node: &WalkNode<'_>, ctx: &FacetContext<'_>) -> Visibility {
+    let at = node.span().start;
+    let mut body = node.parent();
+    while let Some(candidate) = body.as_ref() {
+        if candidate.kind() == "field_declaration_list" {
+            break;
         }
+        body = candidate.parent();
     }
-    Visibility::Public
+    let Some(body) = body else {
+        return Visibility::Public;
+    };
+    let label = body
+        .children()
+        .take_while(|child| child.span().start < at)
+        .filter(|child| child.kind() == "access_specifier")
+        .last();
+    if let Some(label) = label {
+        return match label.text(ctx.text).map(str::trim) {
+            Some("protected") => Visibility::Super,
+            Some("private") => Visibility::Private,
+            _ => Visibility::Public,
+        };
+    }
+    match body.parent().map(|owner| owner.kind()) {
+        Some("class_specifier") => Visibility::Private,
+        _ => Visibility::Public,
+    }
 }

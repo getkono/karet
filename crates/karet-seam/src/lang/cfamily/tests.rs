@@ -429,6 +429,25 @@ fn a_struct_template_keeps_struct_access_whatever_its_parameters_say() -> TestRe
 }
 
 #[test]
+fn braces_and_labels_in_comments_and_literals_do_not_change_member_access() -> TestResult {
+    let Some(index) = index(&[
+        CMAKE,
+        (
+            "lib/lexer.hpp",
+            "class Lexer {\n    // a closing } and a public: label in a comment\n    /* } public: */\n    bool closes(char c) { return c == '}'; }\n    const char *tag = \"} public:\";\n    int depth;\nprotected:\n    int line;\n};\n",
+        ),
+    ])?
+    else {
+        return Ok(());
+    };
+    assert_eq!(api(&index, "lib::lexer.hpp::Lexer::closes")?, ["private"]);
+    assert_eq!(api(&index, "lib::lexer.hpp::Lexer::tag")?, ["private"]);
+    assert_eq!(api(&index, "lib::lexer.hpp::Lexer::depth")?, ["private"]);
+    assert_eq!(api(&index, "lib::lexer.hpp::Lexer::line")?, ["protected"]);
+    Ok(())
+}
+
+#[test]
 fn a_qualified_call_into_the_standard_library_is_external() -> TestResult {
     let Some(index) = index(&[
         CMAKE,

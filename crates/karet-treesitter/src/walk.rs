@@ -165,6 +165,33 @@ impl<'tree> WalkNode<'tree> {
         })
     }
 
+    /// The node this one is a direct child of, or `None` at the root.
+    ///
+    /// For facts a grammar spreads across siblings rather than nesting under the node
+    /// they govern: a C++ `public:` label is a sibling of every member after it, so a
+    /// member's access is read off its parent's earlier children.
+    #[must_use]
+    pub fn parent(&self) -> Option<WalkNode<'tree>> {
+        let parent = self.node.parent()?;
+        // The field the parent fills is named by the grandparent's cursor.
+        let field = parent.parent().and_then(|grandparent| {
+            let mut cursor = grandparent.walk();
+            let mut has_child = cursor.goto_first_child();
+            while has_child {
+                if cursor.node().id() == parent.id() {
+                    return cursor.field_name();
+                }
+                has_child = cursor.goto_next_sibling();
+            }
+            None
+        });
+        Some(WalkNode {
+            node: parent,
+            field,
+            depth: self.depth.saturating_sub(1),
+        })
+    }
+
     /// Whether any direct child has the given kind.
     ///
     /// The cheap shape of the common test: does this function carry the `unsafe`
@@ -350,6 +377,47 @@ mod tests {
         });
         assert_eq!(trait_text.as_deref(), Some("Display"));
         assert_eq!(type_text.as_deref(), Some("Widget"));
+        Ok(())
+    }
+
+    #[test]
+    fn parent_climbs_one_level_with_its_field_and_depth() -> TestResult {
+        let src = "fn outer() { let x = 1; }";
+        let Some(tree) = parse(src) else {
+            return Ok(());
+        };
+        let mut seen = None;
+        tree.walk(|node| {
+            if node.kind() == "let_declaration" {
+                seen = node.parent().map(|parent| {
+                    let grand = parent.parent().map(|g| g.kind().to_owned());
+                    (
+                        parent.kind().to_owned(),
+                        parent.field_name(),
+                        parent.depth() + 1 == node.depth(),
+                        grand,
+                    )
+                });
+            }
+            WalkControl::Descend
+        });
+        assert_eq!(
+            seen,
+            Some((
+                "block".to_owned(),
+                Some("body"),
+                true,
+                Some("function_item".to_owned()),
+            ))
+        );
+        let mut root_parent = true;
+        tree.walk(|node| {
+            if node.depth() == 0 {
+                root_parent = node.parent().is_some();
+            }
+            WalkControl::Stop
+        });
+        assert!(!root_parent, "the root has no parent");
         Ok(())
     }
 
