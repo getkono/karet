@@ -8,6 +8,20 @@ fn backend_error_displays() {
     );
 }
 
+/// The event stream is single-consumer, and request ids never repeat: a
+/// second `take_events` must not hand out a stream that silently splits the
+/// answers, and two requests must never share an id.
+#[tokio::test]
+async fn local_backend_hands_out_its_events_once_and_ids_in_order() {
+    let (backend, _snaps) = local(crate::session::SessionConfig::default());
+    assert!(backend.take_events().is_some());
+    assert!(backend.take_events().is_none());
+    assert!(backend.take_events().is_none());
+
+    let ids: Vec<u64> = (0..4).map(|_| backend.next_id().0).collect();
+    assert!(ids.windows(2).all(|pair| pair[1] == pair[0] + 1), "{ids:?}");
+}
+
 #[tokio::test]
 async fn local_backend_drives_open() {
     use crate::api::Event;
