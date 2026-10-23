@@ -224,6 +224,108 @@ fn no_roots_closes_the_tree_and_says_why() {
     assert_eq!(titles, vec!["no language server for this file".to_owned()]);
 }
 
+/// No roots from a server that is starting, has failed, or is running says
+/// which: an instant empty answer from a server that cannot answer yet is not
+/// a claim about the symbol.
+#[test]
+fn no_roots_names_the_server_state() {
+    for (runtime, reason) in [
+        (
+            LanguageServerRuntimeState::Starting,
+            "language server is still starting",
+        ),
+        (
+            LanguageServerRuntimeState::Retrying,
+            "language server is still starting",
+        ),
+        (
+            LanguageServerRuntimeState::CircuitOpen,
+            "the language server for this file is not running",
+        ),
+        (
+            LanguageServerRuntimeState::Running,
+            "no type hierarchy at the caret",
+        ),
+    ] {
+        let (backend, mut app) = completion_app("fn main() {}\n", LineCol::new(0, 4));
+        let active = app.active;
+        if let TabKind::Code { path, .. } = &mut app.tabs[active].kind {
+            *path = PathBuf::from("/workspace/main.rs");
+        }
+        app.show_language_server_status(
+            None,
+            vec![language_server_status(
+                LanguageServerId::RustAnalyzer,
+                "rust",
+                true,
+            )],
+        );
+        app.update_language_server_runtime(
+            LanguageServerId::RustAnalyzer,
+            PathBuf::from("/workspace"),
+            runtime.clone(),
+            None,
+        );
+        app.dispatch(Command::ShowSupertypes);
+        let prepare = sent(&backend)[0].0;
+        answer(&mut app, prepare, Vec::new());
+        assert!(app.overlay.is_none(), "{runtime:?}");
+        let titles: Vec<_> = app
+            .notifications
+            .active()
+            .iter()
+            .map(|note| note.title.clone())
+            .collect();
+        // The status updates may toast on their own; the refusal is the last.
+        assert_eq!(
+            titles.last().map(String::as_str),
+            Some(reason),
+            "{runtime:?}"
+        );
+    }
+}
+
+/// Records like [`RecordingBackend`], but refuses every expansion, as a
+/// backend that closed after the roots were asked for would.
+struct RefusingExpansion(RecordingBackend);
+
+impl Backend for RefusingExpansion {
+    fn send(&self, id: RequestId, command: SessionCommand) -> Result<(), BackendError> {
+        if matches!(command, SessionCommand::ExpandHierarchy { .. }) {
+            return Err(BackendError::Closed);
+        }
+        self.0.send(id, command)
+    }
+
+    fn next_id(&self) -> RequestId {
+        self.0.next_id()
+    }
+
+    fn take_events(&self) -> Option<karet_session::EventRx> {
+        None
+    }
+}
+
+/// An expansion that could not be sent leaves no node waiting on an answer
+/// that will never come: the node shows as a leaf, and no loading note
+/// lingers.
+#[test]
+fn an_expansion_that_cannot_be_sent_becomes_a_leaf() {
+    let (_, mut app, root) = workspace("hierarchy-unsent");
+    let backend = Arc::new(RefusingExpansion(RecordingBackend::new()));
+    app.backend = Some(backend.clone());
+    app.dispatch(Command::ShowIncomingCalls);
+    let prepare = sent(&backend.0)[0].0;
+    answer(
+        &mut app,
+        prepare,
+        vec![item("main", &root.join("main.rs"), 0)],
+    );
+    assert_eq!(rows(&app), vec!["· main"]);
+    assert!(app.hierarchy_loading().is_none());
+    assert_eq!(sent(&backend.0).len(), 1, "only the roots were sent");
+}
+
 /// A server without the hierarchy is reported once: the tree closes on the
 /// notice, and the empty answer after it adds nothing.
 #[test]
