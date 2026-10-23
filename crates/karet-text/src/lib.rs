@@ -594,6 +594,144 @@ mod tests {
         assert!(b.undo().is_none(), "reload drops undo history");
     }
 
+    /// `text_hash` is persisted with saved undo history and compared on a later
+    /// run, so it is fixed by its definition: FNV-1a over the length (as
+    /// little-endian `usize` bytes) and then the text. These are golden values;
+    /// if they change, every persisted history is refused as belonging to
+    /// different content.
+    #[test]
+    fn content_hash_is_fixed_by_its_definition() {
+        assert_eq!(text_hash(&ropey::Rope::new()), 0xa8c7_f832_281a_39c5);
+        assert_eq!(
+            text_hash(&ropey::Rope::from_str("hello\n")),
+            0xe148_30a9_01eb_5991
+        );
+
+        // Large enough to span several rope chunks, built two ways so the
+        // chunk boundaries differ: the hash must not depend on them.
+        let text = "0123456789abcdef".repeat(256);
+        let whole = ropey::Rope::from_str(&text);
+        let mut grown = ropey::Rope::new();
+        for piece in text
+            .as_bytes()
+            .chunks(16)
+            .filter_map(|c| std::str::from_utf8(c).ok())
+        {
+            grown.insert(grown.len_chars(), piece);
+        }
+        assert!(whole.chunks().count() > 1, "the text spans several chunks");
+        assert_eq!(grown.to_string(), text);
+        assert_eq!(text_hash(&whole), 0xddb4_2317_550a_c415);
+        assert_eq!(text_hash(&grown), 0xddb4_2317_550a_c415);
+
+        // It is the value a persisted history snapshot carries.
+        let b = TextBuffer::from_text("hello\n");
+        assert_eq!(b.history_snapshot().content_hash(), 0xe148_30a9_01eb_5991);
+    }
+
+    #[test]
+    fn utf16_column_past_the_end_of_an_lf_line() {
+        let b = TextBuffer::from_text("ab\ncd");
+        // Current behaviour: the column counts the line's `\n`, so it lands one
+        // past the content end (2). `line_col_to_byte` and `clamp` pull it back.
+        // Filed as #634; the fix changes this assertion deliberately.
+        assert_eq!(b.utf16_to_line_col(0, 99), LineCol::new(0, 3));
+        assert_eq!(b.clamp(b.utf16_to_line_col(0, 99)), LineCol::new(0, 2));
+        assert_eq!(
+            b.line_col_to_byte(b.utf16_to_line_col(0, 99)),
+            Ok(BytePos(2))
+        );
+        // The last line has no break, so it stops at its content end.
+        assert_eq!(b.utf16_to_line_col(1, 99), LineCol::new(1, 2));
+        // A line past the end keeps its line number and gets column 0.
+        assert_eq!(b.utf16_to_line_col(7, 3), LineCol::new(7, 0));
+        // The opposite direction clamps to the content end.
+        assert_eq!(b.line_col_to_utf16(LineCol::new(0, 99)), 2);
+        assert_eq!(b.line_col_to_utf16(LineCol::new(7, 1)), 0);
+    }
+
+    #[test]
+    fn line_accessors_on_each_break_type() {
+        // `\n` and `\r\n` are stripped from a line's content.
+        for (text, break_len) in [("a\nb", 1), ("a\r\nb", 2)] {
+            let b = TextBuffer::from_text(text);
+            assert_eq!(b.line_count(), 2, "for {text:?}");
+            assert_eq!(b.line(0).as_deref(), Some("a"), "for {text:?}");
+            assert_eq!(
+                b.line_to_byte_range(0),
+                Some(Span {
+                    start: BytePos(0),
+                    end: BytePos(1),
+                }),
+                "for {text:?}"
+            );
+            assert_eq!(b.clamp(LineCol::new(0, 9)), LineCol::new(0, 1));
+            assert_eq!(b.line_col_to_byte(LineCol::new(0, 9)), Ok(BytePos(1)));
+            assert_eq!(
+                b.line_col_to_byte(LineCol::new(1, 0)),
+                Ok(BytePos(1 + break_len))
+            );
+            assert_eq!(b.line(1).as_deref(), Some("b"), "for {text:?}");
+        }
+        // Current behaviour for every other break the rope recognises: it
+        // splits the line, but the accessors keep the break as content, so a
+        // clamped end-of-line position is the next line's start. Filed as #633;
+        // pinned here so the fix changes it deliberately.
+        for brk in ['\r', '\u{0B}', '\u{0C}', '\u{85}', '\u{2028}', '\u{2029}'] {
+            let text = format!("a{brk}b");
+            let end = 1 + brk.len_utf8();
+            let b = TextBuffer::from_text(&text);
+            assert_eq!(b.line_count(), 2, "for {brk:?}");
+            assert_eq!(b.line(0), Some(format!("a{brk}")), "for {brk:?}");
+            assert_eq!(
+                b.line_to_byte_range(0),
+                Some(Span {
+                    start: BytePos(0),
+                    end: BytePos(end),
+                }),
+                "for {brk:?}"
+            );
+            assert_eq!(b.clamp(LineCol::new(0, 9)), LineCol::new(0, 2));
+            assert_eq!(b.line_col_to_byte(LineCol::new(0, 9)), Ok(BytePos(end)));
+            assert_eq!(b.line_col_to_byte(LineCol::new(1, 0)), Ok(BytePos(end)));
+            assert_eq!(b.line(1).as_deref(), Some("b"), "for {brk:?}");
+            // `lines` splits on the same break, without the terminator.
+            assert_eq!(lines(&text).collect::<Vec<_>>(), vec!["a", "b"]);
+        }
+    }
+
+    #[test]
+    fn content_snapshot_shares_content_but_not_history() {
+        let mut b = TextBuffer::from_bytes(b"\xEF\xBB\xBFa\r\nb\nc\r\n").unwrap_or_default();
+        let at_end = LineCol::new(3, 0);
+        let change = karet_core::Change::new(
+            0,
+            vec![karet_core::TextEdit {
+                range: karet_core::Range {
+                    start: at_end,
+                    end: at_end,
+                },
+                new_text: "d".to_string(),
+            }],
+        );
+        assert!(b.apply_simple(&change).is_ok());
+
+        let mut snap = b.content_snapshot();
+        assert_eq!(snap.text(), "a\nb\nc\nd");
+        assert_eq!(snap.version(), b.version());
+        assert_eq!(snap.eol(), Eol::Crlf);
+        assert_eq!(snap.encoding(), Encoding::Utf8Bom);
+        assert!(snap.has_mixed_eol());
+        assert_eq!(snap.saved_state(), b.saved_state());
+        assert_eq!(snap.undo_len(), 0, "a snapshot carries no history");
+        assert!(snap.undo().is_none());
+
+        // Editing the source afterwards leaves the snapshot as it was.
+        assert!(b.undo().is_some());
+        assert_eq!(b.text(), "a\nb\nc\n");
+        assert_eq!(snap.text(), "a\nb\nc\nd");
+    }
+
     #[test]
     fn byte_to_point_uses_byte_columns() {
         // 'é' is two bytes, so the byte column after it is 2 even though it is one char.
