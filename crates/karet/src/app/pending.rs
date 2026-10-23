@@ -71,8 +71,9 @@ impl Pending {
 
 impl App {
     /// Every currently in-flight delayed-loading anchor the UI serves: the
-    /// Source-Control sidebar's log/snapshot loads and each open tab's pending
-    /// loads. This is the one enumeration behind the event loop's
+    /// Source-Control sidebar's log/snapshot loads, the Search sidebar's running
+    /// search, and each open tab's pending loads. This is the one enumeration
+    /// behind the event loop's
     /// reveal-deadline wake — a load missing here would show its placeholder
     /// only on the next input event.
     pub(super) fn pendings(&self) -> Vec<Pending> {
@@ -82,6 +83,14 @@ impl App {
             if self.scm.repository.is_none() {
                 pendings.extend(self.scm.repository_loading_since);
             }
+        }
+        // A workspace search that has streamed nothing yet sends no event to wake the
+        // loop, so its "searching…" status has to schedule its own reveal.
+        if self.sidebar_visible
+            && self.sidebar_panel == SidebarPanel::Search
+            && self.search.searching.is_some()
+        {
+            pendings.extend(self.search.started);
         }
         pendings.extend(self.active_outline_loading());
         pendings.extend(self.quick_open_loading());

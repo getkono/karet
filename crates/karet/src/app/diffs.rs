@@ -332,6 +332,11 @@ impl App {
             .and_then(|n| n.to_str())
             .unwrap_or("diff")
             .to_string();
+        // The tab keeps its view id while it is re-targeted, so a revision or two-file
+        // diff still being prepared for it would otherwise land on the new file: the
+        // superseded request is dropped before the tab changes underneath it.
+        let replaced = self.tabs[self.active].view;
+        self.cancel_loading_for_views(&std::collections::HashSet::from([replaced]));
         if let Some(tab) = self.tabs.get_mut(self.active) {
             tab.title = title;
             tab.kind = TabKind::Diff {
