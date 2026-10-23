@@ -277,9 +277,159 @@ fn md037_survives_odd_runs_of_emphasis_markers() {
         "**a** *** **b**\n",
     ] {
         let issues = lint(text, &Config::default());
-        // The fixes must round-trip too, not just the scan.
-        let _ = apply_fixes(text, &issues);
+        // The fixes must round-trip too, not just the scan: the fixed text
+        // carries nothing left to fix, and fixing it again changes nothing.
+        let out = apply_fixes(text, &issues);
+        let again = lint(&out, &Config::default());
+        assert!(
+            again.iter().all(|i| i.fix.is_none()),
+            "{text:?} fixed to {out:?} still has fixable {again:?}"
+        );
+        assert_eq!(apply_fixes(&out, &again), out, "{text:?}");
+        // Input with nothing to fix comes back byte for byte.
+        if issues.iter().all(|i| i.fix.is_none()) {
+            assert_eq!(out, text);
+        }
     }
+}
+
+/// Text with no fixable issue survives `apply_fixes` unchanged, with or
+/// without a trailing newline (MD047 off, so a missing one is not a fix) and
+/// whatever unfixable issues it carries. Falsified by `apply_fixes`
+/// normalising lines or newlines it was not asked to touch.
+#[test]
+fn text_with_nothing_to_fix_is_returned_unchanged() {
+    let config = Config::from_json(r#"{ "MD047": false }"#).unwrap_or_default();
+    for text in [
+        "",
+        "# Title\n\nBody text.\n",
+        "# Title\n\nBody text.",
+        "plain paragraph\nsecond line\n",
+        "- item\n- item\n",
+    ] {
+        let issues = lint(text, &config);
+        assert!(
+            issues.iter().all(|i| i.fix.is_none()),
+            "{text:?}: {issues:?}"
+        );
+        assert_eq!(apply_fixes(text, &issues), text);
+    }
+}
+
+/// A small deterministic generator (64-bit LCG), so a failure names the seed
+/// that reproduces it.
+struct Rng(u64);
+
+impl Rng {
+    fn below(&mut self, n: usize) -> usize {
+        self.0 = self
+            .0
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        usize::try_from(self.0 >> 33).unwrap_or(0) % n.max(1)
+    }
+}
+
+/// Every rule scans, and its fixes apply, without panicking on arbitrary
+/// markdown — lint rules slicing on marker positions have panicked on
+/// ordinary text before (MD037 on `***`). Each document is built from
+/// markdown-significant fragments, multi-byte characters among them so a
+/// byte-for-char slice lands mid-character. Falsified by any rule indexing
+/// or slicing without a bounds or boundary check, or reporting a position or
+/// a fix target outside the text it scanned.
+///
+/// Fix convergence is deliberately not asserted here: `apply_fixes` keeps
+/// one whole-line fix per line per pass, so a line two rules fix needs a
+/// second pass by design.
+#[test]
+fn lint_and_fix_never_panic_on_generated_markdown() {
+    const PIECES: &[&str] = &[
+        "x",
+        " ",
+        "  ",
+        "\t",
+        "\n",
+        "\n\n",
+        "#",
+        "# ",
+        "## h",
+        "*",
+        "**",
+        "***",
+        "_",
+        "__",
+        "`",
+        "```",
+        "```rust\n",
+        "~~~",
+        "- ",
+        "* ",
+        "+ ",
+        "1. ",
+        "> ",
+        "| a |",
+        "|---|",
+        "[",
+        "]",
+        "(",
+        ")",
+        "[a]: ",
+        "<",
+        ">",
+        "<br>",
+        "<!-- markdownlint-disable -->",
+        "<!-- markdownlint-enable -->",
+        "<!-- markdownlint-disable MD009 -->",
+        "https://example.com",
+        "!",
+        "\\",
+        "é",
+        "日本",
+        "😀",
+        "\r\n",
+        "---",
+        "===",
+    ];
+    for seed in 1..=300 {
+        let mut rng = Rng(seed);
+        let mut text = String::new();
+        for _ in 0..=rng.below(40) {
+            text.push_str(PIECES.get(rng.below(PIECES.len())).unwrap_or(&"x"));
+        }
+        let out = apply_fixes(&text, &checked_lint(&text, seed));
+        // The fixed text must lint and fix again, too.
+        let twice = apply_fixes(&out, &checked_lint(&out, seed));
+        // Fixes may add a final newline, never strip one.
+        if text.ends_with('\n') {
+            assert!(out.ends_with('\n'), "seed {seed}: {text:?} -> {out:?}");
+        }
+        if out.ends_with('\n') {
+            assert!(twice.ends_with('\n'), "seed {seed}: {out:?} -> {twice:?}");
+        }
+    }
+}
+
+/// Lint `text` and require every issue to sit inside it: its line exists,
+/// its column is within (or just past) that line, it spans at least one
+/// character, and any line-addressed fix targets a line `apply_fixes` holds.
+fn checked_lint(text: &str, seed: u64) -> Vec<Issue> {
+    let lines: Vec<&str> = text.lines().collect();
+    let issues = lint(text, &Config::default());
+    for issue in &issues {
+        let ctx = format!("seed {seed}: {issue:?} on {text:?}");
+        assert!(issue.len >= 1, "{ctx}");
+        let line = lines.get(issue.line).copied().unwrap_or("");
+        assert!(issue.line < lines.len().max(1), "{ctx}");
+        assert!(issue.col <= line.chars().count(), "{ctx}");
+        match &issue.fix {
+            Some(Fix::Replace { line, .. } | Fix::Delete { line }) => {
+                assert!(*line < lines.len(), "{ctx}");
+            },
+            Some(Fix::InsertBlankBefore { line }) => assert!(*line <= lines.len(), "{ctx}"),
+            Some(Fix::EnsureTrailingNewline) | None => {},
+        }
+    }
+    issues
 }
 
 #[test]
