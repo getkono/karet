@@ -300,6 +300,42 @@ mod tests {
                 .get_envs()
                 .any(|(key, value)| key == MODE_ENV && value.is_some())
         );
+        assert_spec_round_trips(command)
+    }
+
+    #[test]
+    fn prepared_blocking_command_carries_the_same_launch_description() -> Result<(), SupervisorError>
+    {
+        let command = blocking_command(
+            Path::new("/tmp/karet"),
+            "texlab".to_owned(),
+            vec!["--version".to_owned()],
+            Path::new("/tmp/work"),
+        )?;
+        assert_eq!(command.get_program(), "/tmp/karet");
+        assert!(command.get_args().next().is_none());
+        assert!(
+            command
+                .get_envs()
+                .any(|(key, value)| key == MODE_ENV && value.is_some())
+        );
+        assert_spec_round_trips(&command)
+    }
+
+    /// Decode `SPEC_ENV` the way [`run`] does and check it names exactly what the
+    /// builders in the two tests above were given — argument boundaries included, since
+    /// no shell re-splits them on the other side.
+    fn assert_spec_round_trips(command: &std::process::Command) -> Result<(), SupervisorError> {
+        let encoded = command
+            .get_envs()
+            .find_map(|(key, value)| (key == SPEC_ENV).then_some(value).flatten())
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| SupervisorError::Spec("no launch description was set".to_owned()))?;
+        let spec: SupervisorSpec = serde_json::from_str(encoded)
+            .map_err(|error| SupervisorError::Spec(error.to_string()))?;
+        assert_eq!(spec.command, "texlab");
+        assert_eq!(spec.args, ["--version"]);
+        assert_eq!(spec.current_dir, Path::new("/tmp/work"));
         Ok(())
     }
 
@@ -395,24 +431,97 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(unix)]
+    /// A parent lease that ends only once `ready` exists, so the supervised tree is known
+    /// to be fully started before EOF tells the supervisor to kill it. Bounded, so a child
+    /// that never writes `ready` costs a fixed delay and fails the assertions after.
+    /// `eof_at` records when EOF was handed to the supervisor, so the kill can be timed
+    /// from the lease ending rather than from before the wait for `ready`.
+    struct OpenUntil {
+        ready: PathBuf,
+        eof_at: std::sync::Arc<std::sync::OnceLock<std::time::Instant>>,
+    }
+
+    #[cfg(unix)]
+    impl Read for OpenUntil {
+        fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+            for _ in 0..500 {
+                if std::fs::metadata(&self.ready).is_ok_and(|meta| meta.len() > 0) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let _ = self.eof_at.set(std::time::Instant::now());
+            Ok(0)
+        }
+    }
+
+    #[cfg(unix)]
+    /// Whether a process with this id is still running. A zombie counts as dead: it has
+    /// already been killed and only waits for whoever inherited it to reap it, which may
+    /// never happen where PID 1 does not reap (some containers). `kill -0` cannot tell
+    /// the two apart, so read the state from `/proc` where it exists, else from `ps`.
+    fn alive(pid: &str) -> bool {
+        let running = |state: &str| !state.trim_start().starts_with(['Z', 'X']);
+        if Path::new("/proc/self/stat").exists() {
+            // The state is the first field after the parenthesised command name, which
+            // may itself hold spaces or `)`, so split at the last `)`.
+            return std::fs::read_to_string(Path::new("/proc").join(pid).join("stat"))
+                .is_ok_and(|stat| stat.rsplit_once(')').is_some_and(|(_, rest)| running(rest)));
+        }
+        std::process::Command::new("ps")
+            .args(["-o", "stat=", "-p", pid])
+            .output()
+            .is_ok_and(|out| out.status.success() && running(&String::from_utf8_lossy(&out.stdout)))
+    }
+
+    #[cfg(unix)]
     #[test]
-    fn parent_eof_terminates_a_running_process_group() -> Result<(), SupervisorError> {
-        let started = std::time::Instant::now();
+    fn parent_eof_terminates_a_running_process_group() -> Result<(), Box<dyn std::error::Error>> {
+        // Returning promptly is not the invariant: a supervisor that reaped only the
+        // shell would return just as fast and leave `sleep` running. What has to hold is
+        // that the backgrounded grandchild is gone too.
+        let scratch = tempfile::tempdir()?;
+        let pid_file = scratch.path().join("grandchild.pid");
+        let script = format!("sleep 30 & echo $! > '{}'; wait", pid_file.display());
+        let eof_at = std::sync::Arc::new(std::sync::OnceLock::new());
         let code = supervise(
             SupervisorSpec {
                 command: "sh".into(),
-                args: vec!["-c".into(), "sleep 30 & wait".into()],
+                args: vec!["-c".into(), script],
                 current_dir: std::env::temp_dir(),
             },
-            io::empty(),
+            OpenUntil {
+                ready: pid_file.clone(),
+                eof_at: std::sync::Arc::clone(&eof_at),
+            },
             io::sink(),
             io::sink(),
         )?;
         assert_eq!(code, 0);
+        let eof_at = eof_at.get().ok_or("the parent lease never reached EOF")?;
         assert!(
-            started.elapsed() < Duration::from_secs(5),
+            eof_at.elapsed() < Duration::from_secs(5),
             "the owned process group survived its parent's lease"
         );
+
+        let pid = std::fs::read_to_string(&pid_file)?.trim().to_owned();
+        assert!(
+            pid.parse::<u32>().is_ok(),
+            "the grandchild's pid was not recorded: {pid:?}"
+        );
+        // A signal is delivered asynchronously, so allow the grandchild a moment to
+        // die (as a zombie, which `alive` counts as dead) — far short of the 30 s a
+        // surviving `sleep` would run for.
+        let mut survived = alive(&pid);
+        for _ in 0..200 {
+            if !survived {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+            survived = alive(&pid);
+        }
+        assert!(!survived, "grandchild {pid} outlived the supervisor");
         Ok(())
     }
 }
