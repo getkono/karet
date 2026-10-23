@@ -14,7 +14,7 @@ default-members = ["crates/karet"]
 version      = "0.7.1"
 edition      = "2024"
 rust-version = "1.92"                  # edition 2024 needs 1.85; pinned deps (gamut 0.3.1,
-                                       # ratatui 0.30, ratatui-image→quantette) raise the real floor
+                                       # ratatui 0.30) raise the real floor
 
 authors      = ["Justin Chung"]
 license      = "MIT OR Apache-2.0"
@@ -111,9 +111,6 @@ spargen   = { version = "=0.2.1", default-features = false }
 # Terminal UI
 ratatui   = "0.30.2"
 crossterm = "0.29.0"
-# NOTE: `ratatui-image` (terminal image protocols) is intentionally not centralized
-# here — its build script needs the system C library `chafa`. Wire it in
-# `karet-image` once that system dependency is acceptable.
 unicode-width = "0.2.2"
 # Integrated terminal (app-only, behind karet's `terminal` feature): a pure-Rust
 # PTY (`portable-pty`, libc/nix on Unix, ConPTY via windows APIs) feeding the
