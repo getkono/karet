@@ -417,6 +417,15 @@ mod tests {
     }
 
     #[test]
+    fn a_language_without_a_grammar_is_unsupported() {
+        let unregistered = LanguageId(60000);
+        assert!(matches!(
+            Highlighter::new(unregistered),
+            Err(SyntaxError::UnsupportedLanguage)
+        ));
+    }
+
+    #[test]
     fn disjoint_captures_preserved() {
         let out = spans(vec![
             cap(0, 3, TokenId::KEYWORD, 0),
