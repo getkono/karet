@@ -113,17 +113,45 @@ const ROLE_KEYS: &[(&str, ThemeRole)] = &[
     ("editorOverviewRuler.border", ThemeRole::ScrollbarTrack),
 ];
 
-/// VS Code find-match keys, composited over `editor.background` at load time.
+/// VS Code find-match and word-highlight keys, composited over
+/// `editor.background` at load time.
 ///
 /// Themes conventionally make these translucent (Dark+ ships
 /// `#ea5c0055` for the other matches) so the text shows through, and a terminal
 /// cell cannot carry alpha: taken as-is, the other matches would paint opaque and
 /// saturated, louder than the current match.
+///
+/// `editor.wordHighlightTextBackground` is not read: karet paints a textual
+/// mention in the read role, and VS Code's own default for that key is the
+/// read key's color.
 const BLENDED_ROLE_KEYS: &[(&str, ThemeRole)] = &[
     ("editor.findMatchBackground", ThemeRole::SearchMatchCurrent),
     (
         "editor.findMatchHighlightBackground",
         ThemeRole::SearchMatch,
+    ),
+    ("editor.wordHighlightBackground", ThemeRole::WordHighlight),
+    (
+        "editor.wordHighlightStrongBackground",
+        ThemeRole::WordHighlightStrong,
+    ),
+];
+
+/// Word-highlight keys a theme may leave unset, each with the key whose role
+/// colors that occurrence kind instead: the list-hover color for reads and
+/// textual mentions, the matching-bracket color for writes.
+const WORD_HIGHLIGHT_FALLBACKS: &[(&str, ThemeRole, &str, ThemeRole)] = &[
+    (
+        "editor.wordHighlightBackground",
+        ThemeRole::WordHighlight,
+        "list.hoverBackground",
+        ThemeRole::HoverHighlight,
+    ),
+    (
+        "editor.wordHighlightStrongBackground",
+        ThemeRole::WordHighlightStrong,
+        "editorBracketMatch.background",
+        ThemeRole::MatchingBracket,
     ),
 ];
 
@@ -153,6 +181,19 @@ pub(crate) fn load(json: &str) -> Result<Theme, ThemeError> {
     for (key, role) in BLENDED_ROLE_KEYS {
         if let Some(color) = root.colors.get(*key).and_then(|h| Rgba::from_hex(h)) {
             theme.roles[*role as usize] = composite_over(color, backdrop);
+        }
+    }
+    // A theme without its own word-highlight color keeps the theme-derived
+    // color occurrences painted in before they had roles, rather than the
+    // built-in dark default under (say) a light theme's dark text.
+    for (key, role, fallback_key, fallback_role) in WORD_HIGHLIGHT_FALLBACKS {
+        let own = root.colors.get(*key).and_then(|h| Rgba::from_hex(h));
+        let fallback = root
+            .colors
+            .get(*fallback_key)
+            .and_then(|h| Rgba::from_hex(h));
+        if own.is_none() && fallback.is_some() {
+            theme.roles[*role as usize] = theme.role(*fallback_role);
         }
     }
     // VS Code falls back from a per-kind hint color to the general one, so a
@@ -444,6 +485,84 @@ mod tests {
         // A translucent key is composited over the theme's own background
         // (1/3 orange over #1e1e1e), not painted as opaque orange.
         assert_eq!(t.role(ThemeRole::SearchMatch), Rgba::rgb(98, 51, 20));
+        Ok(())
+    }
+
+    #[test]
+    fn word_highlight_keys_composite_over_the_theme_background() -> Result<(), ThemeError> {
+        // Dark+'s values: both translucent, so each is composited over
+        // #1e1e1e (alpha 0xb8) rather than painted opaque.
+        let json = r##"{
+            "colors": {
+                "editor.background": "#1e1e1e",
+                "editor.wordHighlightBackground": "#575757b8",
+                "editor.wordHighlightStrongBackground": "#004972b8"
+            }
+        }"##;
+        let t = Theme::load_vscode(json)?;
+        assert_eq!(t.role(ThemeRole::WordHighlight), Rgba::rgb(71, 71, 71));
+        assert_eq!(t.role(ThemeRole::WordHighlightStrong), Rgba::rgb(8, 61, 91));
+        Ok(())
+    }
+
+    #[test]
+    fn missing_word_highlight_keys_fall_back_to_the_themes_hover_and_bracket_colors()
+    -> Result<(), ThemeError> {
+        // A light theme that sets neither word-highlight key: occurrences take
+        // its own list-hover and bracket-match colors, not the dark defaults.
+        let json = r##"{
+            "colors": {
+                "editor.background": "#ffffff",
+                "list.hoverBackground": "#e8e8e8",
+                "editorBracketMatch.background": "#c0e0c0"
+            }
+        }"##;
+        let t = Theme::load_vscode(json)?;
+        assert_eq!(
+            t.role(ThemeRole::WordHighlight),
+            Rgba::rgb(0xe8, 0xe8, 0xe8)
+        );
+        assert_eq!(
+            t.role(ThemeRole::WordHighlightStrong),
+            Rgba::rgb(0xc0, 0xe0, 0xc0)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_word_highlight_key_wins_over_its_fallback_key() -> Result<(), ThemeError> {
+        // Each key is resolved on its own: the theme's read color wins over
+        // list hover, while the unset write key still takes the bracket color.
+        let json = r##"{
+            "colors": {
+                "editor.wordHighlightBackground": "#102030",
+                "list.hoverBackground": "#e8e8e8",
+                "editorBracketMatch.background": "#c0e0c0"
+            }
+        }"##;
+        let t = Theme::load_vscode(json)?;
+        assert_eq!(
+            t.role(ThemeRole::WordHighlight),
+            Rgba::rgb(0x10, 0x20, 0x30)
+        );
+        assert_eq!(
+            t.role(ThemeRole::WordHighlightStrong),
+            Rgba::rgb(0xc0, 0xe0, 0xc0)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_word_highlight_text_key_leaves_the_read_role_alone() -> Result<(), ThemeError> {
+        // A textual mention paints in the read role, which only
+        // `editor.wordHighlightBackground` colors.
+        let json = r##"{ "colors": { "editor.wordHighlightTextBackground": "#ff0000" } }"##;
+        let t = Theme::load_vscode(json)?;
+        let dark = Theme::dark();
+        assert_eq!(
+            t.role(ThemeRole::WordHighlight),
+            dark.role(ThemeRole::WordHighlight)
+        );
         Ok(())
     }
 

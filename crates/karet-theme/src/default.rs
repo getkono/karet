@@ -99,6 +99,11 @@ pub(crate) fn dark() -> Theme {
     // The current match: a warm amber against the blue of every other match,
     // still dark enough to keep the code on it readable.
     role(ThemeRole::SearchMatchCurrent, rgb(0x7a, 0x5a, 0x1e));
+    // Occurrences of the symbol under the caret: a neutral slate for reads and
+    // textual mentions, a muted violet for writes, both clear of the blue
+    // search matches and the amber current match.
+    role(ThemeRole::WordHighlight, rgb(0x36, 0x3b, 0x52));
+    role(ThemeRole::WordHighlightStrong, rgb(0x4a, 0x3d, 0x6b));
     role(ThemeRole::Breakpoint, rgb(0xdb, 0x4b, 0x4b));
     // A secondary accent for mouse hover, distinct from the (bluer) Selection.
     role(ThemeRole::HoverHighlight, rgb(0x2e, 0x35, 0x50));
