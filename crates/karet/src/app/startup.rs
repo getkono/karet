@@ -535,3 +535,32 @@ impl App {
             && self.caps.graphics == GraphicsProtocol::Kitty
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::app::tests::support::app;
+    use crate::app::*;
+    use crate::cli::FocusChoice;
+
+    /// `--focus sidebar` lands on the sidebar only when it is showing; a hidden
+    /// sidebar, or `--focus editor`, leaves the editor focused whatever had focus.
+    #[test]
+    fn startup_focus_honours_a_visible_sidebar_only() {
+        let rows = [
+            (FocusChoice::Sidebar, true, Focus::Editor, Focus::Sidebar),
+            (FocusChoice::Sidebar, false, Focus::Sidebar, Focus::Editor),
+            (FocusChoice::Editor, true, Focus::Sidebar, Focus::Editor),
+            (FocusChoice::Editor, false, Focus::Editor, Focus::Editor),
+        ];
+        for (choice, visible, before, expect) in rows {
+            let mut app = app();
+            app.sidebar_visible = visible;
+            app.focus = before;
+            app.apply_startup_focus(choice);
+            assert_eq!(
+                app.focus, expect,
+                "{choice:?} with sidebar visible={visible}"
+            );
+        }
+    }
+}

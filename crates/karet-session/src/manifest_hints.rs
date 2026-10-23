@@ -12,6 +12,7 @@ use std::sync::mpsc::Sender;
 use std::sync::mpsc::TryRecvError;
 
 use dependable_fetch::Checker;
+use dependable_fetch::core::CheckResult;
 use dependable_fetch::core::DependencyStatus;
 use dependable_fetch::core::ManifestKind;
 use tokio::sync::mpsc as tokio_mpsc;
@@ -104,30 +105,39 @@ async fn check(checker: &Checker, job: &HintJob) -> Vec<ManifestHint> {
     else {
         return Vec::new();
     };
+    hints(&job.manifest, &report.results)
+}
+
+/// The hint state a dependency status shows as, or `None` for one that stays
+/// quiet.
+fn hint_state(status: &DependencyStatus) -> Option<ManifestHintState> {
+    Some(match status {
+        DependencyStatus::UpToDate => ManifestHintState::UpToDate,
+        DependencyStatus::PatchAvailable => ManifestHintState::Patch,
+        DependencyStatus::UpdateAvailable | DependencyStatus::Outdated => {
+            ManifestHintState::Outdated
+        },
+        DependencyStatus::Vulnerable => ManifestHintState::Vulnerable,
+        // Path/git/workspace dependencies have no registry story; keeping
+        // quiet is the "silence version overflows" behavior.
+        DependencyStatus::Local | DependencyStatus::Git => return None,
+        DependencyStatus::Error(_) => ManifestHintState::Error,
+        // The status set is non-exhaustive upstream; anything newer stays
+        // quiet rather than mislabeled.
+        _ => return None,
+    })
+}
+
+/// Map check results onto the neutral hint model, sorted by line.
+fn hints(manifest: &str, results: &[CheckResult]) -> Vec<ManifestHint> {
     let mut hints = Vec::new();
-    for result in &report.results {
-        let state = match &result.status {
-            DependencyStatus::UpToDate => ManifestHintState::UpToDate,
-            DependencyStatus::PatchAvailable => ManifestHintState::Patch,
-            DependencyStatus::UpdateAvailable | DependencyStatus::Outdated => {
-                ManifestHintState::Outdated
-            },
-            DependencyStatus::Vulnerable => ManifestHintState::Vulnerable,
-            // Path/git/workspace dependencies have no registry story; keeping
-            // quiet is the "silence version overflows" behavior.
-            DependencyStatus::Local | DependencyStatus::Git => continue,
-            DependencyStatus::Error(_) => ManifestHintState::Error,
-            // The status set is non-exhaustive upstream; anything newer stays
-            // quiet rather than mislabeled.
-            _ => continue,
+    for result in results {
+        let Some(state) = hint_state(&result.status) else {
+            continue;
         };
         // The parser reports byte offsets within the line; the editor speaks
         // character columns.
-        let line_text = job
-            .manifest
-            .lines()
-            .nth(result.item.version_line)
-            .unwrap_or("");
+        let line_text = manifest.lines().nth(result.item.version_line).unwrap_or("");
         let to_col = |byte: usize| {
             u32::try_from(line_text.get(..byte).map_or(0, |s| s.chars().count()))
                 .unwrap_or(u32::MAX)
@@ -148,4 +158,136 @@ async fn check(checker: &Checker, job: &HintJob) -> Vec<ManifestHint> {
     }
     hints.sort_by_key(|hint| hint.line);
     hints
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The dependencies a real Cargo.toml parse yields, so tests start from the
+    /// items the checker would report on.
+    fn items(manifest: &str) -> Vec<dependable_fetch::core::Item> {
+        dependable_fetch::core::parse(ManifestKind::CargoToml, manifest)
+            .map(|parsed| parsed.items)
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn every_status_maps_to_its_hint_state_or_stays_quiet() {
+        for (status, expected) in [
+            (
+                DependencyStatus::UpToDate,
+                Some(ManifestHintState::UpToDate),
+            ),
+            (
+                DependencyStatus::PatchAvailable,
+                Some(ManifestHintState::Patch),
+            ),
+            (
+                DependencyStatus::UpdateAvailable,
+                Some(ManifestHintState::Outdated),
+            ),
+            (
+                DependencyStatus::Outdated,
+                Some(ManifestHintState::Outdated),
+            ),
+            (
+                DependencyStatus::Vulnerable,
+                Some(ManifestHintState::Vulnerable),
+            ),
+            (
+                DependencyStatus::Error("offline".to_owned()),
+                Some(ManifestHintState::Error),
+            ),
+            (DependencyStatus::Local, None),
+            (DependencyStatus::Git, None),
+        ] {
+            assert_eq!(hint_state(&status), expected, "{status:?}");
+        }
+    }
+
+    #[test]
+    fn hints_carry_the_version_span_sorted_by_line_and_skip_quiet_results() {
+        let manifest =
+            "[dependencies]\nzeta = \"0.2\"\nlocal = { path = \"x\" }\nalpha = \"1.0\"\n";
+        let mut results: Vec<CheckResult> = items(manifest)
+            .into_iter()
+            .map(|item| {
+                let status = if item.name == "local" {
+                    DependencyStatus::Local
+                } else {
+                    DependencyStatus::Outdated
+                };
+                CheckResult::new(item, status)
+            })
+            .collect();
+        if results.len() != 3 {
+            return; // the parser did not see the fixture as expected
+        }
+        // Report out of source order: the hints still come back by line.
+        results.reverse();
+        for result in &mut results {
+            result.latest_compatible = Some("compatible".to_owned());
+            if result.item.name == "alpha" {
+                result.latest_available = Some("2.0.0".to_owned());
+                result.current_vulnerabilities = vec!["RUSTSEC-1".to_owned()];
+            }
+        }
+
+        let hints = hints(manifest, &results);
+        let summary: Vec<(&str, u32, u32, u32, Option<&str>)> = hints
+            .iter()
+            .map(|hint| {
+                (
+                    hint.name.as_str(),
+                    hint.line,
+                    hint.col_start,
+                    hint.col_end,
+                    hint.latest.as_deref(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            summary,
+            vec![
+                ("zeta", 1, 8, 11, Some("compatible")),
+                ("alpha", 3, 9, 12, Some("2.0.0")),
+            ],
+            "the latest available version wins over the latest compatible one"
+        );
+        assert_eq!(hints[1].current, "1.0");
+        assert_eq!(hints[1].vulnerabilities, vec!["RUSTSEC-1".to_owned()]);
+    }
+
+    #[test]
+    fn byte_offsets_become_character_columns() {
+        let Some(item) = items("[dependencies]\nserde = \"1.0\"\n")
+            .into_iter()
+            .next()
+        else {
+            return;
+        };
+        let mut result = CheckResult::new(item, DependencyStatus::UpToDate);
+        // A key holding a two-byte character before the version: bytes 8..11
+        // are characters 7..10.
+        let manifest = "[dependencies]\n\"é\" = \"1.0\"\n";
+        result.item.version_line = 1;
+        result.item.version_col_start = 8;
+        result.item.version_col_end = 11;
+        let hint = hints(manifest, &[result.clone()]);
+        assert_eq!(
+            hint.iter().map(|h| (h.col_start, h.col_end)).next(),
+            Some((7, 10))
+        );
+
+        // An offset past the line, or inside a character, cannot be measured
+        // and falls back to column zero rather than panicking.
+        result.item.version_col_start = 2;
+        result.item.version_col_end = 400;
+        let hint = hints(manifest, &[result]);
+        assert_eq!(
+            hint.iter().map(|h| (h.col_start, h.col_end)).next(),
+            Some((0, 0))
+        );
+    }
 }

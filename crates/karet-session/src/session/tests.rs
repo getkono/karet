@@ -15,3 +15,4 @@ include!("tests/undo_save.rs");
 include!("tests/undo_history.rs");
 include!("tests/workspace_edit.rs");
 include!("tests/code_actions.rs");
+include!("tests/config_reload.rs");

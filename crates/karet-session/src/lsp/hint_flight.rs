@@ -563,6 +563,88 @@ mod tests {
         Ok(())
     }
 
+    /// Interleave asks, launches against a pending path, and replies in a
+    /// seeded random order, checking after every step that no document has two
+    /// requests running, and at the end that every request was answered exactly
+    /// once -- by its reply, or reported unanswered when replaced or abandoned.
+    #[tokio::test]
+    async fn seeded_sequences_answer_every_request_exactly_once() {
+        for seed in 1..=24_u64 {
+            let mut state = seed;
+            let mut roll = move |bound: u64| {
+                state = state
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                (state >> 33) % bound
+            };
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            let mut flight = HintFlight::default();
+            let mut replies: HashMap<u64, oneshot::Sender<Vec<InlayHint>>> = HashMap::new();
+            let mut answered: HashMap<u64, usize> = HashMap::new();
+            let mut asked = 0_u64;
+            for _ in 0..120 {
+                match roll(4) {
+                    0 | 1 => {
+                        asked += 1;
+                        flight.ask(ask(asked, roll(3)), &tx, 0);
+                    },
+                    2 => {
+                        let pending = roll(4);
+                        let pending =
+                            (pending < 3).then(|| PathBuf::from(format!("/w/{pending}.rs")));
+                        flight.launch_ready_with(pending.as_deref(), |ask| {
+                            let (reply, answer) = oneshot::channel();
+                            replies.insert(ask.tag.request.0, reply);
+                            async move { answer.await.map_err(|_| LspError::Closed) }
+                        });
+                        let mut docs: Vec<u64> =
+                            flight.running.values().map(|tag| tag.doc.0).collect();
+                        let running = docs.len();
+                        docs.sort_unstable();
+                        docs.dedup();
+                        assert_eq!(
+                            docs.len(),
+                            running,
+                            "seed {seed}: two requests ran for one document"
+                        );
+                    },
+                    _ => {
+                        let mut running = requests(flight.running.values());
+                        if running.is_empty() {
+                            continue;
+                        }
+                        let request = running.swap_remove(roll(running.len() as u64) as usize);
+                        if let Some(reply) = replies.remove(&request) {
+                            let _ = reply.send(Vec::new());
+                        }
+                        let finished = flight.next().await.map(|answer| answer.tag.request.0);
+                        assert_eq!(finished, Some(request), "seed {seed}");
+                        *answered.entry(request).or_default() += 1;
+                    },
+                }
+                for (request, _) in answers(&mut rx) {
+                    *answered.entry(request).or_default() += 1;
+                }
+            }
+            flight.abandon(&tx, 0);
+            for (request, _) in answers(&mut rx) {
+                *answered.entry(request).or_default() += 1;
+            }
+            for request in 1..=asked {
+                assert_eq!(
+                    answered.get(&request),
+                    Some(&1),
+                    "seed {seed}: request {request} was not answered exactly once"
+                );
+            }
+            assert_eq!(
+                answered.len() as u64,
+                asked,
+                "seed {seed}: an unknown request was answered"
+            );
+        }
+    }
+
     fn key() -> SlotKey {
         SlotKey::new(crate::api::LanguageServerId::new("rust"), "/w")
     }

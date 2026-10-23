@@ -252,9 +252,13 @@ pub(crate) fn probe_kitty_graphics(timeout: Duration) -> Option<bool> {
     });
 
     let buf = rx.recv_timeout(timeout).ok()?;
-    // A Kitty graphics acknowledgement looks like: ESC _ G i=31 ; OK ESC \
-    let ok = buf.windows(2).any(|w| w == b"_G") && buf.windows(2).any(|w| w == b"OK");
-    Some(ok)
+    Some(kitty_graphics_acknowledged(&buf))
+}
+
+/// Whether `reply`, the bytes read back after [`probe_kitty_graphics`]'s query,
+/// holds a Kitty graphics acknowledgement: `ESC _ G i=31 ; OK ESC \`.
+fn kitty_graphics_acknowledged(reply: &[u8]) -> bool {
+    reply.windows(2).any(|w| w == b"_G") && reply.windows(2).any(|w| w == b"OK")
 }
 
 /// Probe whether the terminal supports OSC 22 (mouse pointer-shape hints, e.g.
@@ -296,9 +300,13 @@ pub(crate) fn probe_osc22_pointer_shape(timeout: Duration) -> Option<bool> {
     });
 
     let buf = rx.recv_timeout(timeout).ok()?;
-    // An OSC 22 reply contains its own introducer echoed back: ESC ] 22 ; ...
-    let ok = buf.windows(3).any(|w| w == b"]22");
-    Some(ok)
+    Some(osc22_answered(&buf))
+}
+
+/// Whether `reply`, the bytes read back after [`probe_osc22_pointer_shape`]'s
+/// query, holds an OSC 22 reply, which echoes its own introducer: `ESC ] 22 ; …`.
+fn osc22_answered(reply: &[u8]) -> bool {
+    reply.windows(3).any(|w| w == b"]22")
 }
 
 #[cfg(test)]
@@ -465,5 +473,42 @@ mod tests {
         assert!(caps(true, GraphicsProtocol::Kitty, None, Some(true)).pointer_shapes_supported());
         assert!(!caps(true, GraphicsProtocol::Kitty, None, Some(false)).pointer_shapes_supported());
         assert!(!caps(true, GraphicsProtocol::Kitty, None, None).pointer_shapes_supported());
+    }
+
+    /// A graphics acknowledgement before the DA1 reply means kitty graphics; a
+    /// DA1 reply alone, an error reply, or nothing does not.
+    #[test]
+    fn kitty_graphics_reply_is_classified() {
+        let rows: [(&str, &[u8], bool); 6] = [
+            ("ack then DA1", b"\x1b_Gi=31;OK\x1b\\\x1b[?62;22c", true),
+            ("ack alone", b"\x1b_Gi=31;OK\x1b\\", true),
+            ("DA1 only", b"\x1b[?62;22c", false),
+            (
+                "an error reply",
+                b"\x1b_Gi=31;ENOTSUPPORTED\x1b\\\x1b[?62c",
+                false,
+            ),
+            ("OK outside any graphics reply", b"\x1b[?62;OKc", false),
+            ("nothing", b"", false),
+        ];
+        for (name, reply, expect) in rows {
+            assert_eq!(kitty_graphics_acknowledged(reply), expect, "{name}");
+        }
+    }
+
+    /// An echoed `ESC ] 22` before the DA1 reply means OSC 22 pointer shapes; a
+    /// DA1 reply alone, another OSC, or nothing does not.
+    #[test]
+    fn osc22_reply_is_classified() {
+        let rows: [(&str, &[u8], bool); 5] = [
+            ("reply then DA1", b"\x1b]22;default\x1b\\\x1b[?62c", true),
+            ("BEL-terminated reply", b"\x1b]22;text\x07", true),
+            ("DA1 only", b"\x1b[?62;22c", false),
+            ("another OSC", b"\x1b]2;title\x1b\\\x1b[?62c", false),
+            ("nothing", b"", false),
+        ];
+        for (name, reply, expect) in rows {
+            assert_eq!(osc22_answered(reply), expect, "{name}");
+        }
     }
 }

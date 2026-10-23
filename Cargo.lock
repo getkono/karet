@@ -3823,6 +3823,7 @@ dependencies = [
  "regex",
  "regex-syntax 0.8.11",
  "serde",
+ "tempfile",
  "thiserror 2.0.19",
 ]
 

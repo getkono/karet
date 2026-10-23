@@ -173,7 +173,12 @@ fn tokei_rust_reports() -> Result<Vec<RustReport>, String> {
         ));
     }
 
-    let result = serde_json::from_slice::<TokeiOutput>(&output.stdout)
+    parse_tokei_reports(&output.stdout)
+}
+
+/// The per-file Rust reports in `tokei --output json` output.
+fn parse_tokei_reports(json: &[u8]) -> Result<Vec<RustReport>, String> {
+    let result = serde_json::from_slice::<TokeiOutput>(json)
         .map_err(|error| format!("failed to parse tokei output: {error}"))?;
     Ok(result.rust.unwrap_or_default().reports)
 }
@@ -569,6 +574,146 @@ mod tests {
                 },
             ]
         );
+    }
+
+    fn dependency(
+        name: &str,
+        path: Option<&str>,
+        req: &str,
+        kind: Option<&str>,
+    ) -> MetadataDependency {
+        MetadataDependency {
+            name: name.into(),
+            path: path.map(PathBuf::from),
+            req: req.into(),
+            kind: kind.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn publish_closure_skips_dev_unresolved_and_registry_dependencies() {
+        let mut consumer = package("consumer", None);
+        consumer.dependencies = vec![
+            // Dev-dependencies are stripped by `cargo publish`, so an unpublished,
+            // unversioned one is allowed.
+            dependency(
+                "internal",
+                Some("/workspace/crates/internal"),
+                "*",
+                Some("dev"),
+            ),
+            // A path outside the workspace resolves to no package and is not judged.
+            dependency("vendored", Some("/elsewhere/vendored"), "*", None),
+            // A registry dependency carries no path.
+            dependency("serde", None, "^1", None),
+        ];
+        let packages = vec![consumer, package("internal", Some(Vec::new()))];
+
+        assert_eq!(publish_violations(&packages), Vec::new());
+    }
+
+    #[test]
+    fn publish_closure_judges_build_dependencies_like_normal_ones() {
+        let mut consumer = package("consumer", None);
+        consumer.dependencies = vec![dependency(
+            "internal",
+            Some("/workspace/crates/internal"),
+            "^1.0",
+            Some("build"),
+        )];
+        let packages = vec![consumer, package("internal", Some(Vec::new()))];
+
+        assert_eq!(
+            publish_violations(&packages),
+            vec![PublishViolation {
+                package: "consumer".into(),
+                dependency: "internal".into(),
+                kind: PublishViolationKind::UnpublishedDependency,
+            }]
+        );
+    }
+
+    #[test]
+    fn publish_closure_treats_a_crates_io_registry_list_as_publishable() {
+        let crates_io = || Some(vec!["crates-io".to_owned()]);
+        // A `publish = ["crates-io"]` consumer is checked ...
+        let mut consumer = package("consumer", crates_io());
+        consumer.dependencies = vec![
+            dependency("internal", Some("/workspace/crates/internal"), "^1.0", None),
+            dependency("listed", Some("/workspace/crates/listed"), "^1.0", None),
+        ];
+        // ... while a `publish = false` crate's own dependencies are not.
+        let mut internal = package("internal", Some(Vec::new()));
+        internal.dependencies = vec![dependency(
+            "listed",
+            Some("/workspace/crates/listed"),
+            "*",
+            None,
+        )];
+        // ... and a `publish = ["crates-io"]` target satisfies the closure.
+        let packages = vec![consumer, internal, package("listed", crates_io())];
+
+        assert_eq!(
+            publish_violations(&packages),
+            vec![PublishViolation {
+                package: "consumer".into(),
+                dependency: "internal".into(),
+                kind: PublishViolationKind::UnpublishedDependency,
+            }]
+        );
+    }
+
+    /// A fragment of real `tokei 12.1.2 --output json --type Rust` output (the
+    /// version `mise.toml` pins), trimmed to two reports.
+    const TOKEI_12_1_2_FRAGMENT: &str = r#"{
+        "Rust": {
+            "blanks": 30,
+            "children": {
+                "Markdown": [
+                    {"name": "src/big.rs", "stats": {"blanks": 1, "blobs": {}, "code": 0, "comments": 6}}
+                ]
+            },
+            "code": 1601,
+            "comments": 12,
+            "inaccurate": false,
+            "reports": [
+                {
+                    "name": "src/big.rs",
+                    "stats": {
+                        "blanks": 19,
+                        "blobs": {"Markdown": {"blanks": 1, "blobs": {}, "code": 0, "comments": 6}},
+                        "code": 801,
+                        "comments": 11
+                    }
+                },
+                {
+                    "name": "src/fits.rs",
+                    "stats": {"blanks": 11, "blobs": {}, "code": 800, "comments": 1}
+                }
+            ]
+        },
+        "Total": {
+            "blanks": 30,
+            "children": {"Rust": []},
+            "code": 1601,
+            "comments": 12,
+            "inaccurate": false,
+            "reports": []
+        }
+    }"#;
+
+    #[test]
+    fn tokei_output_yields_the_file_over_the_line_limit() -> Result<(), String> {
+        let reports = parse_tokei_reports(TOKEI_12_1_2_FRAGMENT.as_bytes())?;
+
+        assert_eq!(
+            rust_file_offenders(&reports, RUST_FILE_LINE_LIMIT),
+            vec![Offender {
+                name: "src/big.rs".into(),
+                code: 801,
+            }]
+        );
+        Ok(())
     }
 
     #[test]

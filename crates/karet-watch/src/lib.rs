@@ -400,6 +400,42 @@ struct WatchState {
     degraded_sent: bool,
 }
 
+impl WatchState {
+    /// Record `dir` as polled, returning the [`FsEventKind::WatchDegraded`] event
+    /// to emit: only the first fallback of a watcher's lifetime reports one.
+    fn record_polled(&mut self, dir: PathBuf) -> Option<FsEvent> {
+        self.polled.insert(dir.clone());
+        if self.degraded_sent {
+            return None;
+        }
+        self.degraded_sent = true;
+        Some(FsEvent {
+            kind: FsEventKind::WatchDegraded,
+            paths: vec![dir],
+        })
+    }
+}
+
+/// What a failed native watch registration does next.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WatchFallback {
+    /// The native backend ran out of watches: poll the directory instead.
+    Poll,
+    /// Any other failure: log it and leave the directory unwatched.
+    Skip,
+}
+
+/// Decide the fallback for a native watch that failed with `kind`. Only watch
+/// exhaustion degrades to polling; a missing path or an I/O error would fail the
+/// poll watcher just the same.
+fn native_watch_fallback(kind: &ErrorKind) -> WatchFallback {
+    if matches!(kind, ErrorKind::MaxFilesWatch) {
+        WatchFallback::Poll
+    } else {
+        WatchFallback::Skip
+    }
+}
+
 fn watch_dir(
     native: &mut NativeDebouncer,
     poll: &mut PollDebouncer,
@@ -414,7 +450,7 @@ fn watch_dir(
         Ok(()) => {
             watched.native.insert(dir);
         },
-        Err(e) if matches!(e.kind, ErrorKind::MaxFilesWatch) => {
+        Err(e) if native_watch_fallback(&e.kind) == WatchFallback::Poll => {
             tracing::warn!(
                 path = %dir.display(),
                 error = %e,
@@ -436,13 +472,8 @@ fn watch_polled(
 ) {
     match poll.watch(&dir, RecursiveMode::NonRecursive) {
         Ok(()) => {
-            watched.polled.insert(dir.clone());
-            if !watched.degraded_sent {
-                watched.degraded_sent = true;
-                let _ = tx.send(FsEvent {
-                    kind: FsEventKind::WatchDegraded,
-                    paths: vec![dir],
-                });
+            if let Some(degraded) = watched.record_polled(dir) {
+                let _ = tx.send(degraded);
             }
         },
         Err(e) => {
@@ -526,7 +557,7 @@ fn watch_git_dir(
             Ok(()) => {
                 watched.native.insert(refs);
             },
-            Err(e) if matches!(e.kind, ErrorKind::MaxFilesWatch) => {
+            Err(e) if native_watch_fallback(&e.kind) == WatchFallback::Poll => {
                 watch_polled(poll, watched, tx, refs);
             },
             Err(e) => {

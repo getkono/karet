@@ -132,6 +132,32 @@ where
                     "body": {"threadId": 7}});
                 write_msg(&mut write, &continued).await;
             },
+            // Stepping runs the debuggee to its end: it prints, an adapter-side
+            // breakpoint verifies late (once with a source, once without), and
+            // the debuggee exits and the session terminates.
+            "next" => {
+                let frame = respond(Value::Null);
+                write_msg(&mut write, &frame).await;
+                for (event, body) in [
+                    ("output", json!({"category": "stdout", "output": "hello\n"})),
+                    (
+                        "breakpoint",
+                        json!({"reason": "changed", "breakpoint": {"id": 1, "line": 12,
+                            "verified": true, "source": {"path": "/w/main.rs"}}}),
+                    ),
+                    (
+                        "breakpoint",
+                        json!({"reason": "changed", "breakpoint": {"id": 2, "line": 4,
+                            "verified": true}}),
+                    ),
+                    ("exited", json!({"exitCode": 3})),
+                    ("terminated", json!({})),
+                ] {
+                    seq += 1;
+                    let event = json!({"seq": seq, "type": "event", "event": event, "body": body});
+                    write_msg(&mut write, &event).await;
+                }
+            },
             "disconnect" => {
                 let frame = respond(Value::Null);
                 write_msg(&mut write, &frame).await;
@@ -251,6 +277,78 @@ async fn the_command_event_contract_round_trips() {
     // consumer that had to read "stopped" to know that would re-tier the moment
     // this wording changed.
     assert_eq!(idle, Some((Severity::Hint, "stopped".to_owned())));
+}
+
+#[tokio::test]
+async fn adapter_output_late_breakpoints_and_exit_reach_the_event_stream() {
+    let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+    let mut manager = DebugManager::new(settings_with_config(), None, None, events_tx);
+    manager.set_connector(fake_connector());
+    manager.start(None);
+    let stopped = wait_for(&mut events_rx, |event| {
+        matches!(event, Event::DebugStopped { .. }).then_some(())
+    })
+    .await;
+    assert_eq!(stopped, Some(()));
+
+    manager.run_control(RunControl::StepOver);
+    // Everything up to the session's end, in order.
+    let mut seen = Vec::new();
+    let ended = wait_for(&mut events_rx, |event| match event {
+        Event::DebugState {
+            state: DebugSessionState::Idle,
+            severity,
+            detail,
+        } => Some((*severity, detail.clone())),
+        other => {
+            seen.push(other.clone());
+            None
+        },
+    })
+    .await;
+    assert_eq!(
+        ended,
+        Some((Severity::Hint, "session ended".to_owned())),
+        "a debuggee that ends on its own is an ordinary outcome"
+    );
+
+    let outputs: Vec<(String, String)> = seen
+        .iter()
+        .filter_map(|event| match event {
+            Event::DebugOutput { category, text } => Some((category.clone(), text.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        outputs,
+        vec![
+            ("stdout".to_owned(), "hello\n".to_owned()),
+            (
+                "console".to_owned(),
+                "debuggee exited with code 3\n".to_owned()
+            ),
+        ]
+    );
+    let late: Vec<(PathBuf, Vec<DebugBreakpoint>)> = seen
+        .iter()
+        .filter_map(|event| match event {
+            Event::DebugBreakpoints { path, breakpoints } => {
+                Some((path.clone(), breakpoints.clone()))
+            },
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        late,
+        vec![(
+            PathBuf::from("/w/main.rs"),
+            vec![DebugBreakpoint {
+                line: 11,
+                verified: true
+            }]
+        )],
+        "only a breakpoint naming its file is mappable, at its 0-based line"
+    );
 }
 
 /// A connector that never yields a client, so `start` takes the `fail_start` path.
