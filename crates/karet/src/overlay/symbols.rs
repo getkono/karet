@@ -198,6 +198,9 @@ impl Overlay {
     /// What a quick-open's delayed loading note says is still being gathered.
     #[must_use]
     pub fn loading_note(&self) -> &'static str {
+        if matches!(self, Self::Hierarchy(_)) {
+            return "loading…";
+        }
         match self.quick_open_mode() {
             Some(QuickOpenMode::DocumentSymbols | QuickOpenMode::WorkspaceSymbols) => {
                 "loading symbols…"

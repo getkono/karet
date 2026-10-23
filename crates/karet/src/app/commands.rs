@@ -1,3 +1,4 @@
+use karet_core::HierarchyDirection;
 use karet_editor::Motion;
 
 use super::code_actions::ActionsFor;
@@ -261,6 +262,10 @@ impl App {
                 self.request_locations(Some(LocationKind::Implementation));
             },
             Command::FindReferences => self.request_locations(Some(LocationKind::References)),
+            Command::ShowIncomingCalls => self.open_hierarchy(HierarchyDirection::IncomingCalls),
+            Command::ShowOutgoingCalls => self.open_hierarchy(HierarchyDirection::OutgoingCalls),
+            Command::ShowSupertypes => self.open_hierarchy(HierarchyDirection::Supertypes),
+            Command::ShowSubtypes => self.open_hierarchy(HierarchyDirection::Subtypes),
             Command::RenameSymbol => self.start_rename(),
             Command::RenameSubmit => self.rename_submit(),
             Command::RenameCancel => self.rename_cancel(),

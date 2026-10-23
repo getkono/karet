@@ -83,6 +83,21 @@ fn ctrl_shift_f2_starts_linked_editing_in_the_editor() {
     );
 }
 
+/// VS Code's Show Call Hierarchy chord, Shift+Alt+H, opens the incoming
+/// calls from the editor only; the other directions are palette commands.
+#[test]
+fn shift_alt_h_shows_incoming_calls_from_the_editor() {
+    let shift_alt_h = key(KeyCode::Char('H'), KeyModifiers::SHIFT | KeyModifiers::ALT);
+    assert_eq!(
+        res(Focus::Editor, false, shift_alt_h),
+        Some(Command::ShowIncomingCalls)
+    );
+    assert_ne!(
+        res(Focus::Sidebar, false, shift_alt_h),
+        Some(Command::ShowIncomingCalls)
+    );
+}
+
 /// VS Code's formatting chords, from the editor only: Shift+Alt+F formats the
 /// document and `Ctrl+K Ctrl+F` the selections.
 #[test]
