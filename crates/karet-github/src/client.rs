@@ -4,6 +4,8 @@ mod pull_request;
 use pull_request::map_pull_request;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod transport_tests;
 mod wire;
 
 use std::fmt::Debug;
@@ -116,6 +118,9 @@ pub struct GitHubClient {
     http: reqwest::Client,
     generated: Arc<generated::Client>,
     auth: AuthState,
+    /// REST root every hand-written request is joined to: [`API_BASE`] outside
+    /// tests, a loopback listener inside them.
+    base: Arc<str>,
 }
 
 impl GitHubClient {
@@ -161,6 +166,14 @@ impl GitHubClient {
     }
 
     fn with_auth(token: Option<SecretString>, source: AuthSource) -> Result<Self, GitHubError> {
+        Self::with_auth_at(token, source, API_BASE)
+    }
+
+    fn with_auth_at(
+        token: Option<SecretString>,
+        source: AuthSource,
+        base: &str,
+    ) -> Result<Self, GitHubError> {
         let mut headers = HeaderMap::new();
         headers.insert(USER_AGENT, HeaderValue::from_static("karet"));
         headers.insert(
@@ -177,14 +190,19 @@ impl GitHubClient {
             value.set_sensitive(true);
             headers.insert(AUTHORIZATION, value);
         }
-        let http = reqwest::Client::builder()
+        let builder = reqwest::Client::builder()
             .default_headers(headers)
             .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(30))
-            .redirect(reqwest::redirect::Policy::none())
+            .redirect(reqwest::redirect::Policy::none());
+        // Loopback transport tests must reach their listener even where the
+        // developer's environment configures an HTTP proxy.
+        #[cfg(test)]
+        let builder = builder.no_proxy();
+        let http = builder
             .build()
             .map_err(|error| GitHubError::Request(error.to_string()))?;
-        let generated = generated::Client::with_client(http.clone(), API_BASE)
+        let generated = generated::Client::with_client(http.clone(), base)
             .map_err(|error| GitHubError::Generated(format!("{error:?}")))?;
         Ok(Self {
             http,
@@ -195,6 +213,7 @@ impl GitHubClient {
                 viewer_id: None,
                 viewer_login: None,
             },
+            base: Arc::from(base),
         })
     }
 
@@ -564,7 +583,7 @@ impl GitHubClient {
         path: &str,
         query: &[(&str, String)],
     ) -> Result<T, GitHubError> {
-        let url = format!("{API_BASE}{path}");
+        let url = format!("{}{path}", self.base);
         let query: Vec<(&str, &str)> = query
             .iter()
             .map(|(key, value)| (*key, value.as_str()))
@@ -586,7 +605,7 @@ impl GitHubClient {
     {
         let response = self
             .http
-            .post(format!("{API_BASE}{path}"))
+            .post(format!("{}{path}", self.base))
             .json(body)
             .send()
             .await
@@ -856,7 +875,9 @@ fn compact_response_excerpt(bytes: &[u8]) -> String {
 }
 
 fn next_page(current: u32, total: u64) -> Option<u32> {
-    (u64::from(current) * u64::from(PER_PAGE) < total).then_some(current + 1)
+    (u64::from(current) * u64::from(PER_PAGE) < total)
+        .then(|| current.checked_add(1))
+        .flatten()
 }
 
 #[cfg(test)]
