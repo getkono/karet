@@ -156,3 +156,148 @@ impl App {
         }
     }
 }
+
+/// [`App::on_config_changed`]'s side effects beyond applying the settings.
+#[cfg(test)]
+mod tests {
+    use crate::app::tests::support::app;
+    use crate::app::tests::support::text_tab;
+    use crate::app::*;
+    use crate::completion::PendingCompletion;
+
+    const INCOMPATIBLE: &str = "graphical cursor is not compatible with this terminal";
+
+    /// Deliver `settings` as the watcher's reload would.
+    fn reload(app: &mut App, settings: Settings) {
+        reload_report(app, LoadedConfig::from_settings(settings));
+    }
+
+    /// Deliver `report` as the watcher's reload would.
+    fn reload_report(app: &mut App, report: LoadedConfig) {
+        app.on_backend_event(
+            None,
+            SessionEvent::ConfigChanged {
+                report: Box::new(report),
+            },
+        );
+    }
+
+    /// The active notifications' severities and titles, newest first.
+    fn notes(app: &App) -> Vec<(Severity, String)> {
+        app.notifications
+            .active()
+            .into_iter()
+            .map(|note| (note.severity, note.title.clone()))
+            .collect()
+    }
+
+    /// An app whose active tab is a code tab, so per-language settings apply.
+    fn code_app() -> App {
+        let mut app = app();
+        app.push_tab(text_tab("t.rs", "x"));
+        app
+    }
+
+    /// Every open Loaded Settings tab shows the reloaded report, not the one it
+    /// was opened with.
+    #[test]
+    fn open_loaded_settings_tabs_show_the_reloaded_report() {
+        let mut app = app();
+        app.push_tab(Tab::loaded_config(LoadedConfig::from_settings(
+            Settings::default(),
+        )));
+        app.push_tab(Tab::loaded_config(LoadedConfig::from_settings(
+            Settings::default(),
+        )));
+        let mut settings = Settings::default();
+        settings.editor.tab_size = 7;
+        reload(&mut app, settings);
+        let sizes: Vec<_> = app
+            .tabs
+            .iter()
+            .filter_map(|tab| match &tab.kind {
+                TabKind::LoadedConfig { report, .. } => Some(report.settings.editor.tab_size),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(sizes, vec![7, 7]);
+    }
+
+    /// Each load problem the reload carries becomes one `config:` notification
+    /// at its own severity, and is reported once rather than on every reload.
+    #[test]
+    fn reload_diagnostics_are_notified_once() {
+        let mut app = app();
+        let mut report = LoadedConfig::from_settings(Settings::default());
+        report.diagnostics = vec![
+            ConfigDiagnostic {
+                path: PathBuf::from("/c/setting.jsonc"),
+                message: "bad section".into(),
+                severity: Severity::Warning,
+            },
+            ConfigDiagnostic {
+                path: PathBuf::from("/c/setting.jsonc"),
+                message: "unreadable".into(),
+                severity: Severity::Error,
+            },
+        ];
+        reload_report(&mut app, report);
+        assert_eq!(
+            notes(&app),
+            vec![
+                (Severity::Error, "config: unreadable".into()),
+                (Severity::Warning, "config: bad section".into()),
+            ]
+        );
+        assert!(
+            app.config_diagnostics.is_empty(),
+            "they are taken, not kept"
+        );
+    }
+
+    /// Asking for the graphical cursor on a terminal that cannot draw it warns;
+    /// a terminal that can, or a setting left unset, stays quiet.
+    #[test]
+    fn a_graphical_cursor_the_terminal_cannot_draw_is_reported() {
+        let rows = [
+            ("requested, incompatible", Some(true), false, true),
+            ("requested, compatible", Some(true), true, false),
+            ("unset, incompatible", None, false, false),
+            ("declined, incompatible", Some(false), false, false),
+        ];
+        for (name, requested, compatible, warns) in rows {
+            let mut app = code_app();
+            app.caps.kitty_keyboard = compatible;
+            app.caps.kitty_graphics = compatible;
+            app.caps.graphics = if compatible {
+                GraphicsProtocol::Kitty
+            } else {
+                GraphicsProtocol::Halfblocks
+            };
+            let mut settings = Settings::default();
+            settings.editor.graphical_cursor = requested;
+            reload(&mut app, settings);
+            let warned = notes(&app).contains(&(Severity::Error, INCOMPATIBLE.into()));
+            assert_eq!(warned, warns, "{name}");
+        }
+    }
+
+    /// Turning completion off closes a waiting completion request; leaving it on
+    /// keeps it.
+    #[test]
+    fn disabling_completion_closes_a_pending_request() {
+        for (enabled, kept) in [(false, false), (true, true)] {
+            let mut app = code_app();
+            app.pending_completion = Some(PendingCompletion {
+                id: RequestId(1),
+                doc: DocumentId(9),
+                anchor: LineCol::new(0, 0),
+                position: LineCol::new(0, 0),
+            });
+            let mut settings = Settings::default();
+            settings.editor.completion.enabled = enabled;
+            reload(&mut app, settings);
+            assert_eq!(app.pending_completion.is_some(), kept, "enabled={enabled}");
+        }
+    }
+}

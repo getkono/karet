@@ -583,3 +583,26 @@ fn is_alt_word_motion(key: KeyEvent) -> bool {
             .modifiers
             .intersects(KeyModifiers::CONTROL | KeyModifiers::SUPER)
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::app::tests::harness::*;
+    use crate::app::*;
+
+    /// A printable that breaks a pending chord is dropped, not typed: the buffer
+    /// stays as it was and the pending sequence empties, so the next press of the
+    /// same key inserts it as ordinary text.
+    #[test]
+    fn a_printable_breaking_a_chord_is_dropped() {
+        let mut rig = Rig::new("a|b");
+        rig.step(Step::Key(KeyCode::Char('k'), KeyModifiers::CONTROL));
+        assert_eq!(rig.app.pending.len(), 1, "Ctrl+K waits for its second key");
+
+        rig.step(Step::Key(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert_eq!(rig.marked(), "a|b", "the breaking key is not inserted");
+        assert!(rig.app.pending.is_empty(), "the broken sequence is cleared");
+
+        rig.step(Step::Key(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert_eq!(rig.marked(), "ax|b", "the next press types normally");
+    }
+}
