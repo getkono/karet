@@ -30,6 +30,11 @@
 //! - `notebook_kernel` — Jupyter kernels per notebook (feature `notebook-kernel`).
 //! - `aicommit` — AI commit-message generation (feature `aicommit`).
 //! - `manifest_hints` — `Cargo.toml` dependency hints (feature `deps`).
+//! - `toml_lsp` — the built-in TOML language server, taplo run in-process
+//!   (feature `toml-lsp`).
+//! - `toml_format` — the built-in TOML formatter, used when no language server
+//!   formats a TOML document (feature `toml-format`).
+//! - `viz` — the `Cargo.lock` dependency-graph producer (feature `viz`).
 //! - `latex` — external LaTeX compilation and diagnostics.
 //! - `wakatime` — WakaTime heartbeats.
 //!
