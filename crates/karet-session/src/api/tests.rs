@@ -136,84 +136,15 @@ fn github_token_refuses_to_serialize() {
     assert!(result.is_err(), "a credential must not cross the seam");
 }
 
+/// The identifiers' and defaults' documented answers. Constructing a payload
+/// proves nothing the compiler does not, so only observable answers are pinned.
 #[test]
-fn ids_and_payloads_construct() {
+fn ids_server_names_and_document_defaults_answer_as_documented() {
     assert_eq!(DocumentId(1), DocumentId(1));
     assert_ne!(RequestId(1), RequestId(2));
-    let _cmd = Command::Save {
-        doc: DocumentId(7),
-        cause: SaveCause::Manual,
-    };
-    let _cmd = Command::RetargetDocument {
-        doc: DocumentId(7),
-        path: PathBuf::from("new.txt"),
-    };
-    let _cmd = Command::BuildLatex { doc: DocumentId(7) };
-    let _ev = Event::Saved { doc: DocumentId(7) };
-    let _ev = Event::Retargeted {
-        doc: DocumentId(7),
-        path: PathBuf::from("new.txt"),
-    };
-    let _ev = Event::LatexBuildFinished {
-        doc: DocumentId(7),
-        root: PathBuf::from("main.tex"),
-        pdf: Some(PathBuf::from("main.pdf")),
-        diagnostics: Vec::new(),
-        error: None,
-    };
-    let _cfg = Command::LoadedConfig;
     let server = LanguageServerId::Texlab;
     assert_eq!(server.key(), "texlab");
     assert_eq!(server.display_name(), "texlab");
-    let plan = LanguageServerPlanId(9);
-    let change = LanguageServerChange {
-        server: server.clone(),
-        current: Some("1.0.0".into()),
-        target: "2.0.0".into(),
-        download_bytes: Some(42),
-    };
-    let status = LanguageServerStatus {
-        ever_installed: false,
-        declined: false,
-        server: server.clone(),
-        languages: vec!["tex".into()],
-        enabled: true,
-        managed: true,
-        manual_install_reason: None,
-        installed: Some("1.0.0".into()),
-        cleanup_pending: false,
-        instances: vec![LanguageServerInstanceStatus {
-            root: PathBuf::from("/tmp"),
-            source: LanguageServerSource::Managed,
-            command: Some("texlab".into()),
-            args: Vec::new(),
-            runtime: LanguageServerRuntimeState::Running,
-            open_documents: 1,
-            error: None,
-        }],
-    };
-    let _commands = [
-        Command::InstallLanguageServer {
-            server: server.clone(),
-        },
-        Command::ApplyLanguageServerPlan {
-            plan,
-            servers: vec![server.clone()],
-        },
-        Command::UninstallLanguageServer {
-            server: server.clone(),
-        },
-        Command::RestartLanguageServer { server },
-    ];
-    let _events = [
-        Event::LanguageServerUpdatePlan {
-            plan,
-            changes: vec![change],
-        },
-        Event::LanguageServerStatus {
-            servers: vec![status],
-        },
-    ];
     assert_eq!(
         DocumentSettings::default(),
         DocumentSettings {
@@ -284,25 +215,5 @@ fn pull_request_conversation_models_remain_serde_ready() -> Result<(), serde_jso
         serde_json::from_str::<GithubPullRequestActivity>(&activity_json)?,
         activity
     );
-    let commands = [
-        Command::GithubUpdatePullRequestBody {
-            number: 12,
-            body: "body".to_string(),
-        },
-        Command::GithubCommentPullRequest {
-            number: 12,
-            body: "comment".to_string(),
-        },
-        Command::GithubMergePullRequest {
-            number: 12,
-            head_sha: "bbbbbbbb".to_string(),
-        },
-        Command::GithubSetPullRequestDraft {
-            node_id: "PR_node".to_string(),
-            number: 12,
-            draft: true,
-        },
-    ];
-    assert_eq!(commands.len(), 4);
     Ok(())
 }
