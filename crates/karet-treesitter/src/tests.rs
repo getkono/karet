@@ -525,7 +525,7 @@ fn point_at_resolves_rows_and_columns() {
 
 #[cfg(feature = "lang-rust")]
 #[test]
-fn named_ancestors_are_neutral_and_innermost_first()-> Result<(), TsError> {
+fn named_ancestors_are_neutral_and_innermost_first() -> Result<(), TsError> {
     let lang = language_id_from_injection_name("rust").ok_or(TsError::UnknownLanguage)?;
     let source = "fn main() { let value = 1; }";
     let mut pool = ParserPool::new();
