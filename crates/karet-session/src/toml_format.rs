@@ -40,6 +40,8 @@ fn workspace_options(roots: &[PathBuf]) -> Option<taplo::formatter::OptionsIncom
 mod tests {
     use super::*;
 
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
     #[test]
     fn formatting_normalizes_and_reports_only_changes() {
         let messy = "[package]\nname=\"x\"\n";
@@ -52,7 +54,7 @@ mod tests {
     /// Formatting must never change what the document *means*, and a second
     /// pass must find nothing left to do.
     #[test]
-    fn formatting_preserves_values_and_settles_in_one_pass() {
+    fn formatting_preserves_values_and_settles_in_one_pass() -> TestResult {
         for case in [
             "a=1",
             "[a.b.c]\nx=1",
@@ -63,14 +65,16 @@ mod tests {
             "# only a comment\n",
             "k = 2026-08-21T00:00:00Z",
             "'quoted key' = 1",
-            "日本 = \"語\"",
+            // Quoted: TOML 1.0 bare keys are ASCII-only, so the bare form never
+            // parsed and this case was silently skipped.
+            "\"日本\" = \"語\"",
             "arr = [\n 1, # one\n 2, # two\n]",
             "[ a . b ]\nx=1",
             "b = 0b1010\no = 0o755\nh = 0xDEADBEEF",
         ] {
-            let Ok(before) = case.parse::<toml::Table>() else {
-                continue;
-            };
+            let before = case
+                .parse::<toml::Table>()
+                .map_err(|e| format!("fixture does not parse:\n{case}\n---\n{e}"))?;
             let once = format_toml(case, &[]).unwrap_or_else(|| case.to_owned());
             let after = once.parse::<toml::Table>();
             assert!(
@@ -84,6 +88,7 @@ mod tests {
                 "a second pass still wants changes:\n{once}"
             );
         }
+        Ok(())
     }
 
     #[test]

@@ -35,11 +35,9 @@
     }
 
     #[test]
-    fn a_search_streams_hits_carrying_their_matched_line() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
-        let _ = std::fs::write(dir.path().join("a.rs"), "\tlet needle = 1;\n");
+    fn a_search_streams_hits_carrying_their_matched_line() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(dir.path().join("a.rs"), "\tlet needle = 1;\n")?;
         let (mut session, mut events, _snaps) = search_session(dir.path());
 
         session.handle(
@@ -71,17 +69,16 @@
                 ..
             })
         ));
+        Ok(())
     }
 
     /// The cap must stop the *walk*, not merely trim the list — that is the whole
     /// point on a large repository.
     #[test]
-    fn a_search_stops_at_the_match_limit_and_reports_truncation() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
+    fn a_search_stops_at_the_match_limit_and_reports_truncation() -> TestResult {
+        let dir = tempfile::tempdir()?;
         for i in 0..5 {
-            let _ = std::fs::write(dir.path().join(format!("f{i}.rs")), "needle\nneedle\n");
+            std::fs::write(dir.path().join(format!("f{i}.rs")), "needle\nneedle\n")?;
         }
         let (mut session, mut events, _snaps) = search_session(dir.path());
 
@@ -101,22 +98,21 @@
             ..
         }) = finished
         else {
-            unreachable!("expected SearchFinished")
+            return Err("expected SearchFinished".into());
         };
         assert!(truncated, "the cap was hit, so the panel must be told");
         assert!(
             files_scanned < 5,
             "the walk stopped early rather than reading all 5 files: {files_scanned}"
         );
+        Ok(())
     }
 
     #[test]
-    fn a_search_stops_at_the_file_limit_too() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
+    fn a_search_stops_at_the_file_limit_too() -> TestResult {
+        let dir = tempfile::tempdir()?;
         for i in 0..4 {
-            let _ = std::fs::write(dir.path().join(format!("f{i}.rs")), "needle\n");
+            std::fs::write(dir.path().join(format!("f{i}.rs")), "needle\n")?;
         }
         let (mut session, mut events, _snaps) = search_session(dir.path());
 
@@ -138,15 +134,14 @@
                 ..
             })
         ));
+        Ok(())
     }
 
     /// An invalid regex used to be swallowed and read as "no matches".
     #[test]
-    fn an_invalid_pattern_reports_an_error_rather_than_emptiness() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
-        let _ = std::fs::write(dir.path().join("a.rs"), "needle\n");
+    fn an_invalid_pattern_reports_an_error_rather_than_emptiness() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        std::fs::write(dir.path().join("a.rs"), "needle\n")?;
         let (mut session, mut events, _snaps) = search_session(dir.path());
 
         session.handle(
@@ -165,16 +160,15 @@
 
         assert!(hits.is_empty());
         let Some(Event::SearchFinished { error, .. }) = finished else {
-            unreachable!("expected SearchFinished")
+            return Err("expected SearchFinished".into());
         };
         assert!(error.is_some(), "a bad pattern must say so");
+        Ok(())
     }
 
     #[test]
-    fn an_empty_pattern_answers_without_walking() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
+    fn an_empty_pattern_answers_without_walking() -> TestResult {
+        let dir = tempfile::tempdir()?;
         let (mut session, mut events, _snaps) = search_session(dir.path());
 
         session.handle(
@@ -197,18 +191,17 @@
                 }
             )),
         ));
+        Ok(())
     }
 
     /// The query's own excludes are additive to the configured ones, so narrowing
     /// a search never widens it past the project's settings.
     #[test]
-    fn configured_excludes_apply_alongside_the_query_s_own() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
-        let _ = std::fs::create_dir_all(dir.path().join("vendor"));
-        let _ = std::fs::write(dir.path().join("vendor/v.rs"), "needle\n");
-        let _ = std::fs::write(dir.path().join("a.rs"), "needle\n");
+    fn configured_excludes_apply_alongside_the_query_s_own() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        std::fs::create_dir_all(dir.path().join("vendor"))?;
+        std::fs::write(dir.path().join("vendor/v.rs"), "needle\n")?;
+        std::fs::write(dir.path().join("a.rs"), "needle\n")?;
         let (mut session, mut events, _snaps) = Session::new(SessionConfig {
             roots: vec![dir.path().to_path_buf()],
             settings: {
@@ -231,16 +224,15 @@
 
         assert_eq!(hits.len(), 1, "vendor is excluded by settings: {hits:?}");
         assert!(hits[0].path.ends_with("a.rs"));
+        Ok(())
     }
 
     /// Every root is searched; the dispatch used to take `roots.first()` only.
     #[test]
-    fn a_search_covers_every_workspace_root() {
-        let (Ok(one), Ok(two)) = (tempfile::tempdir(), tempfile::tempdir()) else {
-            return;
-        };
-        let _ = std::fs::write(one.path().join("a.rs"), "needle\n");
-        let _ = std::fs::write(two.path().join("b.rs"), "needle\n");
+    fn a_search_covers_every_workspace_root() -> TestResult {
+        let (one, two) = (tempfile::tempdir()?, tempfile::tempdir()?);
+        std::fs::write(one.path().join("a.rs"), "needle\n")?;
+        std::fs::write(two.path().join("b.rs"), "needle\n")?;
         let (mut session, mut events, _snaps) = Session::new(SessionConfig {
             roots: vec![one.path().to_path_buf(), two.path().to_path_buf()],
             ..SessionConfig::default()
@@ -257,6 +249,7 @@
         let (hits, _) = drain_search(&mut events);
 
         assert_eq!(hits.len(), 2, "both roots contribute: {hits:?}");
+        Ok(())
     }
 
     /// The match cap must bound the previews actually *built*, not merely trim the
@@ -264,12 +257,10 @@
     /// converting them all first allocates a preview `String` per match before the
     /// cap ever gets a look in.
     #[test]
-    fn the_match_cap_bounds_the_previews_built_for_a_single_file() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
+    fn the_match_cap_bounds_the_previews_built_for_a_single_file() -> TestResult {
+        let dir = tempfile::tempdir()?;
         // One line, 20_000 matches — the shape of a minified bundle.
-        let _ = std::fs::write(dir.path().join("bundle.js"), "a".repeat(20_000));
+        std::fs::write(dir.path().join("bundle.js"), "a".repeat(20_000))?;
         let (mut session, mut events, _snaps) = search_session(dir.path());
 
         session.handle(
@@ -293,11 +284,12 @@
             ..
         }) = finished
         else {
-            unreachable!("expected SearchFinished")
+            return Err("expected SearchFinished".into());
         };
         assert!(truncated);
         assert_eq!(
             matches_found, 20_000,
             "the count stays honest even though the previews are capped"
         );
+        Ok(())
     }

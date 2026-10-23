@@ -387,11 +387,15 @@ mod tests {
 
     use super::*;
 
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
     const AFF: &str = "SET UTF-8\nSFX S Y 1\nSFX S 0 s .\n";
     const DIC: &str = "10\nhello\nworld/S\nthis\nis\na\ncomment\nreceive\ntext\ntype\nname\n";
 
-    fn dictionary() -> Option<Dictionary> {
-        Dictionary::new(AFF, DIC).ok()
+    fn dictionary() -> Result<Dictionary, Box<dyn std::error::Error>> {
+        // `ParseDictionaryError` is not a `std::error::Error`, so carry its message.
+        Ok(Dictionary::new(AFF, DIC)
+            .map_err(|err| format!("the fixture dictionary does not parse: {err}"))?)
     }
 
     /// A checked text plus the pieces `SpellInput` borrows, kept alive together.
@@ -424,7 +428,7 @@ mod tests {
         }
     }
 
-    fn fixture(text: &str, language: &'static str) -> Fixture {
+    fn fixture(text: &str, language: &'static str) -> Result<Fixture, Box<dyn std::error::Error>> {
         let settings = Spellcheck {
             enabled: true,
             ..Spellcheck::default()
@@ -436,15 +440,11 @@ mod tests {
             "Go" => Path::new("source.go"),
             _ => Path::new("source.rs"),
         };
-        let highlights = language_id_from_path(path)
-            .and_then(|language| {
-                let mut parser = LayeredParser::new();
-                parser.parse(language, text).ok()
-            })
-            .map_or_else(Highlights::default, |tree| {
-                LayeredHighlighter::new().highlight(&tree, text)
-            });
-        Fixture {
+        let language_id = language_id_from_path(path)
+            .ok_or_else(|| format!("no grammar compiled in for {}", path.display()))?;
+        let tree = LayeredParser::new().parse(language_id, text)?;
+        let highlights = LayeredHighlighter::new().highlight(&tree, text);
+        Ok(Fixture {
             text: text.to_owned(),
             language: Some(language),
             language_selector: karet_filetype::file_type_for_path(path).config_selector(),
@@ -452,50 +452,45 @@ mod tests {
             syntax_error_lines: Vec::new(),
             settings,
             suggest: true,
-        }
+        })
     }
 
     #[test]
-    fn markdown_checks_prose_but_skips_code_and_links() {
-        let Some(dictionary) = dictionary() else {
-            return;
-        };
+    fn markdown_checks_prose_but_skips_code_and_links() -> TestResult {
+        let dictionary = dictionary()?;
         let text = "hello wrld `mistke` https://example.test/badd\n";
-        let diagnostics = fixture(text, "Markdown").check(&dictionary);
+        let diagnostics = fixture(text, "Markdown")?.check(&dictionary);
         assert_eq!(diagnostics.len(), 1);
         assert!(diagnostics[0].message.contains("wrld"));
+        Ok(())
     }
 
     #[test]
-    fn source_checks_comments_only_and_respects_custom_words() {
-        let Some(dictionary) = dictionary() else {
-            return;
-        };
+    fn source_checks_comments_only_and_respects_custom_words() -> TestResult {
+        let dictionary = dictionary()?;
         let text = "let misspeled = 1; // this commment is Karet\n";
-        let mut request = fixture(text, "Rust");
+        let mut request = fixture(text, "Rust")?;
         request.settings.words.push("commment".to_owned());
         assert!(request.check(&dictionary).is_empty());
+        Ok(())
     }
 
     #[test]
-    fn bundled_software_terms_apply_independently_of_language_dictionary() {
-        let Some(dictionary) = dictionary() else {
-            return;
-        };
-        let diagnostics = fixture("async breakpoint commment\n", "Markdown").check(&dictionary);
+    fn bundled_software_terms_apply_independently_of_language_dictionary() -> TestResult {
+        let dictionary = dictionary()?;
+        let diagnostics = fixture("async breakpoint commment\n", "Markdown")?.check(&dictionary);
 
         assert_eq!(diagnostics.len(), 1);
         assert!(diagnostics[0].message.contains("commment"));
         assert!(software_terms().contains("rust"));
+        Ok(())
     }
 
     #[test]
-    fn optional_string_and_identifier_scopes_are_independent() {
-        let Some(dictionary) = dictionary() else {
-            return;
-        };
+    fn optional_string_and_identifier_scopes_are_independent() -> TestResult {
+        let dictionary = dictionary()?;
         let text = "fn misspeled() { let value = \"wrld\"; }\n";
-        let mut request = fixture(text, "Rust");
+        let mut request = fixture(text, "Rust")?;
         assert!(request.check(&dictionary).is_empty());
 
         request.settings.strings = true;
@@ -514,30 +509,28 @@ mod tests {
             request.check(&dictionary).is_empty(),
             "identifier linting pauses while syntax is invalid"
         );
+        Ok(())
     }
 
     #[test]
-    fn rust_attribute_strings_are_skipped_but_user_facing_strings_are_checked() {
-        let Some(dictionary) = dictionary() else {
-            return;
-        };
+    fn rust_attribute_strings_are_skipped_but_user_facing_strings_are_checked() -> TestResult {
+        let dictionary = dictionary()?;
         let text = "#[cfg(feature = \"serrde\")]\nfn f() { println!(\"wrld\"); }\n";
-        let mut request = fixture(text, "Rust");
+        let mut request = fixture(text, "Rust")?;
         request.settings.strings = true;
 
         let diagnostics = request.check(&dictionary);
 
         assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
         assert!(diagnostics[0].message.contains("wrld"));
+        Ok(())
     }
 
     #[test]
-    fn identifier_scope_checks_snake_and_camel_case_components() {
-        let Some(dictionary) = dictionary() else {
-            return;
-        };
+    fn identifier_scope_checks_snake_and_camel_case_components() -> TestResult {
+        let dictionary = dictionary()?;
         let text = "struct MisspeledType;\nfn misspeled_name() {}\n";
-        let mut request = fixture(text, "Rust");
+        let mut request = fixture(text, "Rust")?;
         request.settings.identifiers = true;
 
         let diagnostics = request.check(&dictionary);
@@ -559,36 +552,33 @@ mod tests {
                 },
             ]
         );
+        Ok(())
     }
 
     #[test]
-    fn prose_scope_can_be_disabled_without_affecting_the_feature_toggle() {
-        let Some(dictionary) = dictionary() else {
-            return;
-        };
-        let mut request = fixture("hello wrld\n", "Markdown");
+    fn prose_scope_can_be_disabled_without_affecting_the_feature_toggle() -> TestResult {
+        let dictionary = dictionary()?;
+        let mut request = fixture("hello wrld\n", "Markdown")?;
         request.settings.documents = false;
         assert!(request.check(&dictionary).is_empty());
+        Ok(())
     }
 
     #[test]
-    fn common_misspelling_is_not_hidden_as_a_proper_name() {
-        let Some(dictionary) = dictionary() else {
-            return;
-        };
-        let diagnostics = fixture("Recieve this\n", "Markdown").check(&dictionary);
+    fn common_misspelling_is_not_hidden_as_a_proper_name() -> TestResult {
+        let dictionary = dictionary()?;
+        let diagnostics = fixture("Recieve this\n", "Markdown")?.check(&dictionary);
         assert_eq!(diagnostics.len(), 1);
         assert!(diagnostics[0].message.contains("Recieve"));
+        Ok(())
     }
 
     #[test]
-    fn suggestions_are_opt_in_so_a_bulk_scan_can_skip_the_suggester() {
-        let Some(dictionary) = dictionary() else {
-            return;
-        };
+    fn suggestions_are_opt_in_so_a_bulk_scan_can_skip_the_suggester() -> TestResult {
+        let dictionary = dictionary()?;
         // "hell" is one edit from the dictionary's "hello", so the suggester has
         // something to offer — and must stay silent when `suggest` is off.
-        let mut request = fixture("hell thsi\n", "Markdown");
+        let mut request = fixture("hell thsi\n", "Markdown")?;
         let suggested = request.check(&dictionary);
         assert!(
             suggested.iter().any(|d| d.message.contains("; try ")),
@@ -606,6 +596,7 @@ mod tests {
             bare.iter().all(|d| !d.message.contains("; try ")),
             "{bare:?}"
         );
+        Ok(())
     }
 
     #[test]

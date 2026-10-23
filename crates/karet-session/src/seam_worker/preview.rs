@@ -237,29 +237,27 @@ mod tests {
         preview_for(cache, path, range(start, end), range(start, start))
     }
 
+    /// A missing or wrong answer is an `Err`, so a test fails instead of passing.
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
     /// A scratch file whose lines are their own 0-based numbers.
-    fn numbered(dir: &std::path::Path, name: &str, count: u32) -> PathBuf {
+    fn numbered(dir: &std::path::Path, name: &str, count: u32) -> std::io::Result<PathBuf> {
         let path = dir.join(name);
         let text: String = (0..count)
             .map(|n| format!("line {n}\n"))
             .collect::<Vec<_>>()
             .join("");
-        let _ = std::fs::write(&path, text);
-        path
+        std::fs::write(&path, text)?;
+        Ok(path)
     }
 
     #[test]
-    fn a_preview_carries_three_lines_of_context_on_each_side() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
-        let path = numbered(dir.path(), "a.txt", 40);
+    fn a_preview_carries_three_lines_of_context_on_each_side() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = numbered(dir.path(), "a.txt", 40)?;
         let mut cache = None;
         let built = preview_of(&mut cache, &path, 20, 21);
-        assert!(built.is_ok(), "{built:?}");
-        let Ok(preview) = built else {
-            return;
-        };
+        let preview = built?;
         assert_eq!(preview.line_number(0), 17);
         assert_eq!(preview.body_start, 3);
         assert_eq!(preview.body_end, 5);
@@ -268,108 +266,84 @@ mod tests {
         assert_eq!(preview.lines[preview.body_start], "line 20");
         // Contiguous: nothing was cut, so no row follows a gap.
         assert!(!(0..preview.lines.len()).any(|row| preview.is_after_gap(row)));
+        Ok(())
     }
 
     #[test]
-    fn the_head_is_reported_wherever_the_declaration_ends() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
-        let path = numbered(dir.path(), "a.txt", 40);
+    fn the_head_is_reported_wherever_the_declaration_ends() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = numbered(dir.path(), "a.txt", 40)?;
         let mut cache = None;
         // A node spanning lines 20..30 whose signature runs to line 23.
         let built = preview_for(&mut cache, &path, range(20, 30), range(20, 23));
-        assert!(built.is_ok(), "{built:?}");
-        let Ok(preview) = built else {
-            return;
-        };
+        let preview = built?;
         assert_eq!(preview.body_start, 3);
         assert_eq!(preview.head_end, 7);
         assert_eq!(preview.lines[preview.head_end - 1], "line 23");
         assert!(preview.is_head(preview.head_end - 1));
         assert!(!preview.is_head(preview.head_end));
+        Ok(())
     }
 
     #[test]
-    fn a_head_that_outruns_the_node_is_clamped_into_it() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
-        let path = numbered(dir.path(), "a.txt", 40);
+    fn a_head_that_outruns_the_node_is_clamped_into_it() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = numbered(dir.path(), "a.txt", 40)?;
         let mut cache = None;
         // A header range that reaches past the node cannot be trusted; clamping it keeps
         // every downstream index inside the window.
         let built = preview_for(&mut cache, &path, range(20, 21), range(20, 99));
-        assert!(built.is_ok(), "{built:?}");
-        let Ok(preview) = built else {
-            return;
-        };
+        let preview = built?;
         assert_eq!(preview.head_end, preview.body_end);
+        Ok(())
     }
 
     #[test]
-    fn a_node_at_the_top_of_a_file_reports_the_context_it_could_not_fetch() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
-        let path = numbered(dir.path(), "a.txt", 40);
+    fn a_node_at_the_top_of_a_file_reports_the_context_it_could_not_fetch() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = numbered(dir.path(), "a.txt", 40)?;
         let mut cache = None;
         let built = preview_of(&mut cache, &path, 1, 1);
-        assert!(built.is_ok(), "{built:?}");
-        let Ok(preview) = built else {
-            return;
-        };
+        let preview = built?;
         // Reported, never padded: only the view can tell a missing line from a blank one.
         assert_eq!(preview.line_number(0), 0);
         assert_eq!(preview.body_start, 1);
+        Ok(())
     }
 
     #[test]
-    fn a_node_at_the_end_of_a_file_stops_at_the_last_line() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
-        let path = numbered(dir.path(), "a.txt", 10);
+    fn a_node_at_the_end_of_a_file_stops_at_the_last_line() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = numbered(dir.path(), "a.txt", 10)?;
         let mut cache = None;
         let built = preview_of(&mut cache, &path, 9, 9);
-        assert!(built.is_ok(), "{built:?}");
-        let Ok(preview) = built else {
-            return;
-        };
+        let preview = built?;
         assert_eq!(preview.lines.last().map(String::as_str), Some("line 9"));
         assert_eq!(preview.body_end, preview.lines.len());
+        Ok(())
     }
 
     #[test]
-    fn a_node_longer_than_the_cap_says_how_many_lines_it_dropped() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
-        let path = numbered(dir.path(), "a.txt", 1000);
+    fn a_node_longer_than_the_cap_says_how_many_lines_it_dropped() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = numbered(dir.path(), "a.txt", 1000)?;
         let mut cache = None;
         let built = preview_of(&mut cache, &path, 10, 509);
-        assert!(built.is_ok(), "{built:?}");
-        let Ok(preview) = built else {
-            return;
-        };
+        let preview = built?;
         assert_eq!(preview.dropped, 300);
         assert_eq!(preview.body_end - preview.body_start, 200);
+        Ok(())
     }
 
     #[test]
-    fn a_truncated_node_takes_its_trailing_context_from_after_the_node() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
-        let path = numbered(dir.path(), "a.txt", 1000);
+    fn a_truncated_node_takes_its_trailing_context_from_after_the_node() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = numbered(dir.path(), "a.txt", 1000)?;
         let mut cache = None;
         // The node runs 10..=509. Lines 210..212 are *inside* it; the context that
         // follows it is 510..512, and calling the former "context" would be a lie.
         let built = preview_of(&mut cache, &path, 10, 509);
-        assert!(built.is_ok(), "{built:?}");
-        let Ok(preview) = built else {
-            return;
-        };
+        let preview = built?;
         let tail: Vec<&str> = preview.lines[preview.body_end..]
             .iter()
             .map(String::as_str)
@@ -377,141 +351,111 @@ mod tests {
         assert_eq!(tail, ["line 510", "line 511", "line 512"]);
         assert!(preview.is_after_gap(preview.body_end));
         assert_eq!(preview.line_number(preview.body_end), 510);
+        Ok(())
     }
 
     #[test]
-    fn a_truncated_node_at_the_end_of_its_file_has_no_trailing_context() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
-        let path = numbered(dir.path(), "a.txt", 300);
+    fn a_truncated_node_at_the_end_of_its_file_has_no_trailing_context() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = numbered(dir.path(), "a.txt", 300)?;
         let mut cache = None;
         let built = preview_of(&mut cache, &path, 10, 299);
-        assert!(built.is_ok(), "{built:?}");
-        let Ok(preview) = built else {
-            return;
-        };
+        let preview = built?;
         assert_eq!(preview.body_end, preview.lines.len());
+        Ok(())
     }
 
     #[test]
-    fn a_missing_file_is_a_reason_rather_than_an_empty_preview() {
+    fn a_missing_file_is_a_reason_rather_than_an_empty_preview() -> TestResult {
         let mut cache = None;
         let built = preview_of(&mut cache, Path::new("/nope/gone.rs"), 0, 0);
-        assert!(built.is_err(), "{built:?}");
-        let Err(message) = built else {
-            return;
-        };
+        let message = built.err().ok_or("expected a reason, got a preview")?;
         assert!(message.contains("could not be read"), "{message}");
+        Ok(())
     }
 
     #[test]
-    fn a_file_that_is_not_text_is_refused_by_name() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
+    fn a_file_that_is_not_text_is_refused_by_name() -> TestResult {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("blob.bin");
-        let _ = std::fs::write(&path, [0xff_u8, 0xfe, 0x00]);
+        std::fs::write(&path, [0xff_u8, 0xfe, 0x00])?;
         let mut cache = None;
         let built = preview_of(&mut cache, &path, 0, 0);
-        assert!(built.is_err(), "{built:?}");
-        let Err(message) = built else {
-            return;
-        };
+        let message = built.err().ok_or("expected a reason, got a preview")?;
         assert!(message.contains("not text"), "{message}");
+        Ok(())
     }
 
     #[test]
-    fn a_range_past_the_end_of_the_file_is_a_reason_rather_than_a_blank_block() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
-        let path = numbered(dir.path(), "a.txt", 5);
+    fn a_range_past_the_end_of_the_file_is_a_reason_rather_than_a_blank_block() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = numbered(dir.path(), "a.txt", 5)?;
         let mut cache = None;
         let built = preview_of(&mut cache, &path, 99, 99);
-        assert!(built.is_err(), "{built:?}");
-        let Err(message) = built else {
-            return;
-        };
+        let message = built.err().ok_or("expected a reason, got a preview")?;
         assert!(message.contains("no longer in the file"), "{message}");
+        Ok(())
     }
 
     #[test]
-    fn the_cache_serves_a_second_node_in_the_same_file_without_re_reading() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
-        let path = numbered(dir.path(), "a.txt", 40);
+    fn the_cache_serves_a_second_node_in_the_same_file_without_re_reading() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = numbered(dir.path(), "a.txt", 40)?;
         let mut cache = None;
         let _ = preview_of(&mut cache, &path, 10, 10);
         let _ = std::fs::remove_file(&path);
         // Walking a column must not pay a read per row.
         assert!(preview_of(&mut cache, &path, 20, 20).is_ok());
+        Ok(())
     }
 
     #[test]
-    fn a_second_file_replaces_the_cached_one() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
-        let first = numbered(dir.path(), "a.txt", 40);
-        let second = numbered(dir.path(), "b.txt", 40);
+    fn a_second_file_replaces_the_cached_one() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let first = numbered(dir.path(), "a.txt", 40)?;
+        let second = numbered(dir.path(), "b.txt", 40)?;
         let mut cache = None;
         let _ = preview_of(&mut cache, &first, 10, 10);
         let built = preview_of(&mut cache, &second, 10, 10);
-        assert!(built.is_ok(), "{built:?}");
-        let Ok(preview) = built else {
-            return;
-        };
+        let preview = built?;
         assert_eq!(preview.file, second);
+        Ok(())
     }
 
     #[test]
-    fn adopted_text_is_previewed_instead_of_what_is_on_disk() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
-        let path = numbered(dir.path(), "a.txt", 40);
+    fn adopted_text_is_previewed_instead_of_what_is_on_disk() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = numbered(dir.path(), "a.txt", 40)?;
         // The pane has to quote what the index actually read, not what disk still says.
         let mut cache = Some(PreviewSource::adopt(&path, "one\ntwo\nthree\n"));
         let built = preview_of(&mut cache, &path, 1, 1);
-        assert!(built.is_ok(), "{built:?}");
-        let Ok(preview) = built else {
-            return;
-        };
+        let preview = built?;
         assert_eq!(preview.lines, ["one", "two", "three"]);
+        Ok(())
     }
 
     #[test]
-    fn a_file_with_no_grammar_previews_as_plain_text_rather_than_failing() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
-        let path = numbered(dir.path(), "a.unknownext", 10);
+    fn a_file_with_no_grammar_previews_as_plain_text_rather_than_failing() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = numbered(dir.path(), "a.unknownext", 10)?;
         let mut cache = None;
         let built = preview_of(&mut cache, &path, 4, 4);
-        assert!(built.is_ok(), "{built:?}");
-        let Ok(preview) = built else {
-            return;
-        };
+        let preview = built?;
         assert!(preview.tokens.iter().all(Vec::is_empty));
+        Ok(())
     }
 
     #[test]
-    fn every_row_carries_a_token_slot_whether_or_not_it_has_runs() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
-        let path = numbered(dir.path(), "a.txt", 40);
+    fn every_row_carries_a_token_slot_whether_or_not_it_has_runs() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = numbered(dir.path(), "a.txt", 40)?;
         let mut cache = None;
         let built = preview_of(&mut cache, &path, 20, 21);
-        assert!(built.is_ok(), "{built:?}");
-        let Ok(preview) = built else {
-            return;
-        };
+        let preview = built?;
         // The renderer indexes the two in lockstep; a short table would misalign colour.
         assert_eq!(preview.tokens.len(), preview.lines.len());
         assert_eq!(preview.numbers.len(), preview.lines.len());
+        Ok(())
     }
 
     #[test]

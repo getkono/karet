@@ -126,10 +126,8 @@
     }
 
     #[test]
-    fn declining_an_install_records_it_and_undeclining_clears_it() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
+    fn declining_an_install_records_it_and_undeclining_clears_it() -> TestResult {
+        let dir = tempfile::tempdir()?;
         let (mut session, mut events) = registry_session(dir.path());
         let declined =
             || crate::lsp_registry::read_declined(Some(dir.path()), &LanguageServerId::Pyright);
@@ -162,18 +160,15 @@
             },
         );
         assert!(queued(&mut events).is_empty(), "success answers nothing");
+        Ok(())
     }
 
     #[test]
-    fn a_refusal_that_cannot_be_written_says_so() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
+    fn a_refusal_that_cannot_be_written_says_so() -> TestResult {
+        let dir = tempfile::tempdir()?;
         // A file where the registry directory should be: nothing can go under it.
         let registry = dir.path().join("registry");
-        if std::fs::write(&registry, "").is_err() {
-            return;
-        }
+        std::fs::write(&registry, "")?;
         let (mut session, mut events) = registry_session(&registry);
 
         session.handle(
@@ -193,6 +188,7 @@
                 },
             )] if message.starts_with("could not record the refusal")
         ));
+        Ok(())
     }
 
     /// With no registry directory there is nowhere to record anything; both
@@ -219,18 +215,16 @@
     /// duplicate of that answer (the same request settled again) must neither
     /// write the file a second time nor answer the request twice.
     #[test]
-    fn a_retired_formatting_answer_arriving_twice_saves_once() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
+    fn a_retired_formatting_answer_arriving_twice_saves_once() -> TestResult {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("main.rs");
-        if std::fs::write(&path, "original\n").is_err() {
-            return;
-        }
-        let Some((mut session, doc, mut events, request)) = parked_save(&path) else {
-            return;
-        };
-        let version = session.document(doc).map(|d| d.version()).unwrap_or(0);
+        std::fs::write(&path, "original\n")?;
+        let (mut session, doc, mut events, request) =
+            parked_save(&path).ok_or("the save was never parked on a formatting request")?;
+        let version = session
+            .document(doc)
+            .map(|d| d.version())
+            .ok_or("opened document is not registered")?;
         let retired = || crate::lsp::LspUpdate::Formatting {
             generation: u64::MAX,
             request,
@@ -249,14 +243,13 @@
 
         session.apply_lsp_update(retired());
         assert_eq!(saves(&mut events), 1);
-        assert_eq!(std::fs::read_to_string(&path).unwrap_or_default(), "edited\n");
+        assert_eq!(std::fs::read_to_string(&path)?, "edited\n");
 
         // Someone else writes the file; the duplicate must not clobber it.
-        if std::fs::write(&path, "external\n").is_err() {
-            return;
-        }
+        std::fs::write(&path, "external\n")?;
         session.apply_lsp_update(retired());
         assert_eq!(saves(&mut events), 0, "the request was already answered");
-        assert_eq!(std::fs::read_to_string(&path).unwrap_or_default(), "external\n");
+        assert_eq!(std::fs::read_to_string(&path)?, "external\n");
         assert!(session.pending_format_saves.is_empty());
+        Ok(())
     }

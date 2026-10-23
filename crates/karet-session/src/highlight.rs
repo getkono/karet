@@ -714,14 +714,14 @@ mod tests {
     }
 
     #[test]
-    fn a_grammar_without_tables_publishes_none() {
+    fn a_grammar_without_tables_publishes_none() -> Result<(), Box<dyn std::error::Error>> {
         let Some(rust) = karet_treesitter::language_id_from_injection_name("rust") else {
-            return; // rust grammar not compiled in; nothing to test
+            return Ok(()); // rust grammar not compiled in; nothing to test
         };
         let mut pool = LayeredParser::new();
-        let Ok(tree) = pool.parse(rust, "fn main() { let x = a | b; }\n") else {
-            return;
-        };
+        let tree = pool
+            .parse(rust, "fn main() { let x = a | b; }\n")
+            .map_err(|_| "the rust grammar failed to parse a valid file")?;
         let mut finder = TableFinder::default();
         assert!(
             finder
@@ -729,6 +729,7 @@ mod tests {
                 .is_empty()
         );
         assert!(finder.queries.get(&rust).is_some_and(Option::is_none));
+        Ok(())
     }
 
     #[test]
@@ -758,7 +759,7 @@ mod tests {
     fn compute_publishes_the_fold_query_regions_with_their_kinds() {
         use karet_syntax::FoldKind;
         let Some(rust) = karet_treesitter::language_id_from_injection_name("rust") else {
-            return;
+            return; // rust grammar not compiled in; nothing to test
         };
         let text = "use a;\nuse b;\n// one\n// two\nfn f() {\n    1;\n}\n";
         let request = HighlightRequest {
