@@ -7,7 +7,9 @@ include!("tests/vcs_contract.rs");
 #[cfg(feature = "aicommit")]
 include!("tests/aicommit.rs");
 include!("tests/persistence.rs");
+include!("tests/persistence_contract.rs");
 include!("tests/search.rs");
+include!("tests/search_replace.rs");
 include!("tests/spelling.rs");
 include!("tests/lsp_updates.rs");
 include!("tests/seam.rs");
@@ -16,3 +18,6 @@ include!("tests/undo_save.rs");
 include!("tests/undo_history.rs");
 include!("tests/workspace_edit.rs");
 include!("tests/code_actions.rs");
+include!("tests/github.rs");
+include!("tests/debug_notebooks.rs");
+include!("tests/lsp_registry_contract.rs");

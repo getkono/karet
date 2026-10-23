@@ -623,6 +623,112 @@ fn an_older_journal_entry_replays_the_arguments_it_recorded() {
     assert_eq!(installed.launch_args(&server), vec!["--legacy".to_owned()]);
 }
 
+/// The next update from the registry worker, bounded so a silent worker fails
+/// the test rather than hanging it.
+fn next_update(
+    updates: &mut tokio_mpsc::UnboundedReceiver<RegistryUpdate>,
+) -> Result<RegistryUpdate, Box<dyn std::error::Error>> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match updates.try_recv() {
+            Ok(update) => return Ok(update),
+            Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
+            Err(_) => return Err("the registry never answered".into()),
+        }
+    }
+}
+
+/// The failure message a registry job answered `request` with.
+fn failure_for(update: RegistryUpdate, expected: RequestId) -> Option<String> {
+    match update {
+        RegistryUpdate::Failed { request, message } if request == expected => Some(message),
+        _ => None,
+    }
+}
+
+/// Check → Plan → Apply, without the network: with nothing installed the check
+/// has nothing to discover, and every Apply below is refused before it would
+/// download. A refused selection keeps the plan; an id the worker never issued
+/// (or already consumed) reads as expired.
+#[test]
+fn an_update_plan_survives_a_refused_selection_and_unknown_plans_read_as_expired()
+-> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
+    let (jobs, mut updates) = spawn(Some(dir.path().to_path_buf()), None);
+
+    jobs.send(RegistryJob::Check {
+        request: RequestId(1),
+        server: None,
+    })?;
+    let RegistryUpdate::Plan {
+        request,
+        plan,
+        changes,
+    } = next_update(&mut updates)?
+    else {
+        return Err("a check answers with a plan".into());
+    };
+    assert_eq!(request, RequestId(1));
+    assert!(
+        changes.is_empty(),
+        "nothing is installed, so nothing updates"
+    );
+
+    let apply = |request, servers| RegistryJob::Apply {
+        request,
+        plan,
+        servers,
+    };
+    jobs.send(apply(RequestId(2), vec![LanguageServerId::RustAnalyzer]))?;
+    let message = failure_for(next_update(&mut updates)?, RequestId(2)).unwrap_or_default();
+    assert!(message.contains("not in this plan"), "{message}");
+
+    // Still the same plan: the refusal above put it back.
+    jobs.send(apply(RequestId(3), Vec::new()))?;
+    let message = failure_for(next_update(&mut updates)?, RequestId(3)).unwrap_or_default();
+    assert!(message.contains("selection is empty"), "{message}");
+
+    jobs.send(RegistryJob::Apply {
+        request: RequestId(4),
+        plan: LanguageServerPlanId(plan.0.wrapping_add(41)),
+        servers: vec![LanguageServerId::RustAnalyzer],
+    })?;
+    let message = failure_for(next_update(&mut updates)?, RequestId(4)).unwrap_or_default();
+    assert!(message.contains("plan expired"), "{message}");
+
+    // A provider with no managed channel is refused by name, not checked.
+    jobs.send(RegistryJob::Check {
+        request: RequestId(5),
+        server: Some(LanguageServerId::Gopls),
+    })?;
+    let message = failure_for(next_update(&mut updates)?, RequestId(5)).unwrap_or_default();
+    assert!(
+        message.contains("no Karet-managed update channel"),
+        "{message}"
+    );
+    Ok(())
+}
+
+/// Without a storage root every job is still answered, each on its own id.
+#[test]
+fn a_registry_without_storage_answers_every_job_with_a_failure()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (jobs, mut updates) = spawn(None, None);
+    jobs.send(RegistryJob::Check {
+        request: RequestId(1),
+        server: None,
+    })?;
+    jobs.send(RegistryJob::Uninstall {
+        request: RequestId(2),
+        server: LanguageServerId::RustAnalyzer,
+    })?;
+    for expected in [RequestId(1), RequestId(2)] {
+        let message = failure_for(next_update(&mut updates)?, expected).unwrap_or_default();
+        assert!(message.contains("storage is unavailable"), "{message}");
+    }
+    Ok(())
+}
+
 /// A user-configured provider has no launch table row, so re-derivation must
 /// not silently empty its arguments.
 #[test]
