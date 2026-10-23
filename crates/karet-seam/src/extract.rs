@@ -66,7 +66,7 @@ struct Frame {
 /// The package walk resolves these; a single-file extraction cannot, because the file it
 /// would have to read is exactly what it does not have.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ExternalModule {
+pub(crate) struct ExternalModule {
     /// The module node already added to the index, awaiting its contents.
     pub id: SeamId,
     /// The declared module name.
@@ -79,7 +79,7 @@ pub struct ExternalModule {
 
 /// What one file's extraction produced.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct ExtractOutcome {
+pub(crate) struct ExtractOutcome {
     /// Every node added, in source order.
     pub added: Vec<SeamId>,
     /// Module declarations whose bodies live elsewhere.
@@ -103,7 +103,7 @@ pub struct ExtractOutcome {
 /// [`ExtractError::NoGrammar`] when the grammar is not compiled in,
 /// [`ExtractError::NoMapping`] when the language has no seam mapping, and
 /// [`ExtractError::ParseFailed`] when no tree could be produced at all.
-pub fn extract_file(
+pub(crate) fn extract_file(
     index: &mut SeamIndex,
     pool: &mut ParserPool,
     parent: SeamId,
