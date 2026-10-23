@@ -21,7 +21,7 @@ pub use motion::Motion;
 /// currently collapsed. When collapsed, the interior lines `start + 1 ..= end` are
 /// hidden and the `start` line shows a fold marker and a `⋯` affordance.
 ///
-/// The application resolves these from `karet_syntax::FoldRegions` plus its own
+/// The application resolves these from `karet_core::FoldRegions` plus its own
 /// per-view "which folds are collapsed" set, keeping fold *policy* out of the widget.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Fold {

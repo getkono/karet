@@ -3676,7 +3676,6 @@ version = "0.7.1"
 dependencies = [
  "crossterm",
  "karet-core",
- "karet-syntax",
  "karet-text",
  "karet-theme",
  "ratatui",

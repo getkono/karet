@@ -34,9 +34,7 @@ mod map;
 mod outline;
 mod semantic;
 
-pub use blocks::SemanticBlock;
 pub use blocks::SemanticBlocker;
-pub use blocks::SemanticBlocks;
 pub use folding::Folder;
 pub use folding::fold;
 pub use folding::fold_by_indent;
@@ -63,14 +61,16 @@ pub enum SyntaxError {
     Query(String),
 }
 
-// The highlight/fold *data* shapes live in `karet-core` (so renderers can name
-// them without pulling this crate's tree-sitter stack); this crate is the engine
-// that computes them. Re-exported here so existing imports keep working.
+// The highlight/fold/semantic-block *data* shapes live in `karet-core` (so
+// renderers can name them without pulling this crate's tree-sitter stack); this
+// crate is the engine that computes them. Re-exported here so existing imports keep working.
 pub use karet_core::FoldKind;
 pub use karet_core::FoldRegion;
 pub use karet_core::FoldRegions;
 pub use karet_core::HighlightSpan;
 pub use karet_core::Highlights;
+pub use karet_core::SemanticBlock;
+pub use karet_core::SemanticBlocks;
 
 /// Computes the indentation a new line takes from the grammars' indent queries
 /// (see [`karet_treesitter::indents_query`]), across every layer of a

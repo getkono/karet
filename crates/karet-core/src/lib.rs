@@ -86,6 +86,8 @@ pub use highlight::FoldRegion;
 pub use highlight::FoldRegions;
 pub use highlight::HighlightSpan;
 pub use highlight::Highlights;
+pub use highlight::SemanticBlock;
+pub use highlight::SemanticBlocks;
 pub use model::CODE_LENS_SEPARATOR;
 pub use model::CodeAction;
 pub use model::CodeLens;

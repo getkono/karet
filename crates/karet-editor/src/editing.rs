@@ -140,8 +140,8 @@ pub fn newline(caret: LineCol, selection: Option<Range>, buffer: &TextBuffer, ba
 }
 
 /// Insert a newline, replacing any selection, and start the new line with
-/// `indent` — typically a syntax-aware indentation such as
-/// `karet_syntax::Indenter` computes. `None` falls back to [`newline`]'s copy of
+/// `indent` — typically a syntax-aware indentation such as `karet-syntax`'s
+/// `Indenter` computes (this crate does not depend on it). `None` falls back to [`newline`]'s copy of
 /// the current line's leading whitespace.
 #[must_use]
 pub fn newline_indented(
