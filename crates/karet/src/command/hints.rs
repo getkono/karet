@@ -71,6 +71,7 @@ impl Command {
             Self::RenameSymbol | Self::RenameSubmit => "rename",
             Self::RenameCancel => "cancel",
             Self::FormatDocument | Self::FormatSelection => "format",
+            Self::StartLinkedEditing => "linked edit",
             Self::CodeActions => "quick fix",
             Self::SourceAction => "source action",
             Self::OrganizeImports => "organize imports",
@@ -332,6 +333,7 @@ impl Command {
             | Self::Hover
             | Self::SignatureHelp
             | Self::ToggleInlayHints
+            | Self::ToggleFormatOnType
             | Self::ShowDiagnostic
             | Self::DebugStart
             | Self::DebugStop

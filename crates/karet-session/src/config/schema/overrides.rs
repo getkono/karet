@@ -136,6 +136,8 @@ pub struct EditorOverride {
     pub insert_final_newline: Option<bool>,
     /// Override format-on-save.
     pub format_on_save: Option<bool>,
+    /// Override format-on-type.
+    pub format_on_type: Option<bool>,
     /// Partially override semantic-comment behavior.
     pub semantic_comments: Option<SemanticCommentsOverride>,
     /// Partially override completion behavior.
@@ -359,6 +361,14 @@ impl<'a> ResolvedEditor<'a> {
         self.override_
             .and_then(|o| o.format_on_save)
             .unwrap_or(self.base.format_on_save)
+    }
+
+    /// Final format-on-type setting.
+    #[must_use]
+    pub fn format_on_type(self) -> bool {
+        self.override_
+            .and_then(|o| o.format_on_type)
+            .unwrap_or(self.base.format_on_type)
     }
 
     /// Final semantic-comment settings.

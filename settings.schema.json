@@ -479,6 +479,11 @@
           "maximum": 30000,
           "minimum": 1
         },
+        "formatOnType": {
+          "description": "Apply the language server's on-type formatting\n(`textDocument/onTypeFormatting`) after typing one of its trigger\ncharacters. Off by default, as in VS Code.",
+          "type": "boolean",
+          "default": false
+        },
         "graphicalCursor": {
           "description": "Draw the caret with terminal graphics: `null` auto-enables when supported,\n`true` requests it and reports incompatibility, `false` disables it.",
           "type": [
@@ -674,6 +679,14 @@
         },
         "formatOnSave": {
           "description": "Override format-on-save.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        },
+        "formatOnType": {
+          "description": "Override format-on-type.",
           "type": [
             "boolean",
             "null"

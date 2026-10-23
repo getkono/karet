@@ -885,17 +885,8 @@ pub(super) async fn server_task(task: ServerTask) {
                         token,
                         generation,
                     };
-                    let (formatted, edits) =
-                        format::serve(active, &path, &ask, request, &mut context).await;
-                    let _ = updates.send(LspUpdate::Formatting {
-                        generation,
-                        request,
-                        doc,
-                        version,
-                        formatted,
-                        edits,
-                        scope: ask.scope,
-                    });
+                    let asked = (request, doc, version);
+                    format::answer(active, asked, &path, ask, &mut context).await;
                 },
                 // What is left are the requests about the carets: a hover,
                 // signature help, selection ranges, document highlights.

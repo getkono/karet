@@ -169,6 +169,8 @@ impl App {
             completion_matcher: karet_fuzzy::Matcher::new(),
             pending_hover: None,
             pending_expand: None,
+            pending_linked: None,
+            on_type: on_type::OnTypeState::default(),
             theme_ui: theme_picker::ThemeUi::default(),
             hover_ui: None,
             signature: signature::SignatureState::default(),

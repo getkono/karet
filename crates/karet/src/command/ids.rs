@@ -268,6 +268,8 @@ command_ids! {
     RenameCancel => "renameCancel",
     FormatDocument => "formatDocument",
     FormatSelection => "formatSelection",
+    StartLinkedEditing => "startLinkedEditing",
+    ToggleFormatOnType => "toggleFormatOnType",
     CodeActions => "codeActions",
     SourceAction => "sourceAction",
     OrganizeImports => "organizeImports",

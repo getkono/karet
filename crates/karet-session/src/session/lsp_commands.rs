@@ -89,6 +89,14 @@ impl Session {
                 self.document_highlights(id, *doc, *position);
                 return true;
             },
+            Command::LinkedEditingRanges { doc, position } => {
+                self.linked_editing_ranges(id, *doc, *position);
+                return true;
+            },
+            Command::FormatOnType { doc, position, ch } => {
+                self.format_on_type(id, *doc, *position, *ch);
+                return true;
+            },
             Command::CodeLenses { doc, lines } => {
                 self.code_lenses(id, *doc, *lines);
                 return true;

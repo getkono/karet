@@ -266,6 +266,8 @@ impl App {
             Command::RenameCancel => self.rename_cancel(),
             Command::FormatDocument => self.format_active(false),
             Command::FormatSelection => self.format_active(true),
+            Command::StartLinkedEditing => self.start_linked_editing(),
+            Command::ToggleFormatOnType => self.toggle_format_on_type(),
             Command::CodeActions => self.request_code_actions(&[], ActionsFor::Menu),
             Command::SourceAction => self.request_code_actions(&["source"], ActionsFor::Menu),
             Command::OrganizeImports => self.request_code_actions(
@@ -292,6 +294,7 @@ impl App {
                     }
                     self.maybe_auto_complete(c);
                     self.maybe_signature_help(c);
+                    self.maybe_format_on_type(c);
                 }
             },
             Command::InsertNewline => {
@@ -321,6 +324,7 @@ impl App {
                         );
                     }
                 }
+                self.maybe_format_on_type('\n');
             },
             Command::Indent => self.indent_or_toggle_focus(),
             Command::Outdent => self.reindent(true),

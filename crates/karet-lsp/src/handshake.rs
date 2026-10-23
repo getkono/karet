@@ -203,6 +203,22 @@ pub(crate) fn initialize_params(root: &Path) -> Result<lsp_types::InitializePara
             }),
             formatting: Some(dynamic),
             range_formatting: Some(dynamic),
+            // `LspClient::on_type_formatting`. Without dynamic registration:
+            // its options carry the trigger characters, which the gate drops.
+            on_type_formatting: Some(
+                lsp_types::DocumentOnTypeFormattingClientCapabilities::default(),
+            ),
+            // `LspClient::linked_editing_ranges`, for Start Linked Editing.
+            linked_editing_range: Some(lsp_types::LinkedEditingRangeClientCapabilities {
+                dynamic_registration: Some(true),
+            }),
+            // `LspClient::will_save_wait_until`, asked before every save that
+            // may format; `didSave` is sent after every save.
+            synchronization: Some(lsp_types::TextDocumentSyncClientCapabilities {
+                will_save_wait_until: Some(true),
+                did_save: Some(true),
+                ..lsp_types::TextDocumentSyncClientCapabilities::default()
+            }),
             // `LspClient::selection_ranges`, for Expand Selection.
             selection_range: Some(lsp_types::SelectionRangeClientCapabilities {
                 dynamic_registration: Some(true),

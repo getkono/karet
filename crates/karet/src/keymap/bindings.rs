@@ -286,6 +286,8 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(Editor, false, true,  false, F(12),      Command::FindReferences),
     b(Editor, true,  false, false, F(12),      Command::GoToImplementation),
     b(Editor, false, false, false, F(2),       Command::RenameSymbol),
+    // VS Code parity: Ctrl+Shift+F2 starts linked editing (an HTML tag pair).
+    b(Editor, true,  true,  false, F(2),       Command::StartLinkedEditing),
     // Formatting (VS Code parity): Shift+Alt+F formats the document, `Ctrl+K
     // Ctrl+F` the selections (a bare caret, its line).
     b(Editor, false, true,  true,  Char('f'), Command::FormatDocument),

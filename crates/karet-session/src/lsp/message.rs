@@ -229,6 +229,18 @@ pub(crate) enum ServerCmd {
         path: PathBuf,
         ask: FormattingAsk,
     },
+    /// A request an edit makes at `ask`'s position: the linked ranges there,
+    /// or the edits a typed character triggers; always answered with an
+    /// [`LspUpdate::Editing`].
+    Editing {
+        /// The originating request, the document asked about and its version
+        /// at request time, all echoed on the answer.
+        request: RequestId,
+        doc: DocumentId,
+        version: u64,
+        path: PathBuf,
+        ask: EditingAsk,
+    },
     /// One step of listing or running code actions; always answered with an
     /// [`LspUpdate::CodeAction`].
     CodeAction(CodeActionCmd),
@@ -269,6 +281,10 @@ pub(crate) struct FormattingAsk {
     /// selector. A server that honours it reindents the whole file, so a
     /// default here is not a neutral choice.
     pub(crate) indentation: Indentation,
+    /// Why the document is being saved, when the server is to be asked for
+    /// its will-save edits (`textDocument/willSaveWaitUntil`) first. Only a
+    /// save's scopes ask; `None` for one whose will-save edits are applied.
+    pub(crate) will_save: Option<karet_lsp::SaveReason>,
     /// `editor.formatOnSaveTimeout`: how long the save waits for this answer.
     /// The task derives its own, slightly longer, bound from it. A format the
     /// user asked for by hand is bounded the same way.
@@ -282,11 +298,78 @@ pub(crate) enum FormattingScope {
     /// notice on every save would be noise.
     #[default]
     Save,
+    /// Nothing formatted, before a save that does not format: only the
+    /// server's will-save edits are asked for, and the answer is always an
+    /// [`EditingReply::WillSave`].
+    SaveUnformatted,
     /// The whole document, asked for by hand (Format Document).
     Document,
     /// These ranges, in UTF-16 columns, asked for by hand (Format Selection).
     /// One `textDocument/rangeFormatting` each, against the same text.
     Ranges(Vec<Range>),
+}
+
+/// What a [`ServerCmd::Editing`] asks, in UTF-16 columns.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum EditingAsk {
+    /// The ranges linked to the one at `position` (Start Linked Editing).
+    Linked {
+        /// The caret.
+        position: LineCol,
+    },
+    /// The edits the server makes after `ch` was typed, `position` being
+    /// just after it.
+    OnType {
+        /// The caret after the typed character.
+        position: LineCol,
+        /// The character typed; `\n` for a newline.
+        ch: char,
+        /// The buffer's resolved indentation, as a formatting request sends.
+        indentation: Indentation,
+    },
+}
+
+/// A server's answer to a [`ServerCmd::Editing`], or the will-save half of a
+/// save's [`ServerCmd::Formatting`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct EditingAnswer {
+    /// The originating request.
+    pub(crate) request: RequestId,
+    /// The document asked about.
+    pub(crate) doc: DocumentId,
+    /// The document's version at request time.
+    pub(crate) version: u64,
+    /// What the server said.
+    pub(crate) reply: EditingReply,
+}
+
+/// What an [`EditingAnswer`] carries, ranges in UTF-16 columns.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum EditingReply {
+    /// The linked ranges; `None` when the server has none there, does not
+    /// offer them, failed, or could not be asked.
+    Linked(Option<Vec<Range>>),
+    /// The edits a typed character triggered, and every character the server
+    /// formats on.
+    OnType {
+        /// The server's edits; empty for a character it does not format on.
+        edits: Vec<TextEdit>,
+        /// The server's trigger characters, first one first: empty when it
+        /// formats on none, and `None` when no server could be asked, so
+        /// nothing is known about them yet.
+        triggers: Option<Vec<char>>,
+    },
+    /// A save's will-save edits, sent in place of its
+    /// [`LspUpdate::Formatting`] when there are any or the save does not
+    /// format. With `then_format`, the save still formats once they are
+    /// applied: formatting edits made against the text before them would not
+    /// apply after them, so none were asked for yet.
+    WillSave {
+        /// The server's edits, empty when it had none.
+        edits: Vec<TextEdit>,
+        /// Whether the save formats after applying them.
+        then_format: bool,
+    },
 }
 
 /// What a server said about renaming at a position.
@@ -564,6 +647,11 @@ pub(crate) enum LspUpdate {
         /// arrives after its save gave up must not be mistaken for a format
         /// the user asked for by hand.
         scope: FormattingScope,
+    },
+    /// The answer to a [`ServerCmd::Editing`], or a save's will-save edits.
+    Editing {
+        generation: u64,
+        answer: EditingAnswer,
     },
     /// The answer to a [`ServerCmd::CodeAction`]; ranges in UTF-16 columns.
     CodeAction {

@@ -510,6 +510,36 @@ pub enum Command {
         /// The caret, in buffer columns.
         position: LineCol,
     },
+    /// Request the ranges the language server links to the one at
+    /// `position`, such as an HTML tag's name and its closing tag's (Start
+    /// Linked Editing). Answered by [`Event::LinkedEditingRanges`], always:
+    /// with `ranges: None` when no server serves the document, it has no
+    /// linked ranges there, or the request failed. A server that does not
+    /// offer linked editing is reported first as
+    /// [`Event::FeatureUnsupported`], since this is only asked for by hand.
+    LinkedEditingRanges {
+        /// The target document.
+        doc: DocumentId,
+        /// The caret, in buffer columns.
+        position: LineCol,
+    },
+    /// Request the edits the language server makes after `ch` was typed
+    /// (`textDocument/onTypeFormatting`), `position` being the caret just
+    /// after it and `\n` standing for a newline. Answered by
+    /// [`Event::OnTypeFormatting`], always, with the edits for the client to
+    /// apply: the session leaves the text alone, since the user may have typed
+    /// on while the server worked. A character the server does not format on
+    /// costs no request. A refusal is never reported as
+    /// [`Event::FeatureUnsupported`]: the request follows typing, not a
+    /// command.
+    FormatOnType {
+        /// The target document.
+        doc: DocumentId,
+        /// The caret after the typed character, in buffer columns.
+        position: LineCol,
+        /// The character typed.
+        ch: char,
+    },
     /// Resolve the definition of the symbol at a position.
     Definition {
         /// The target document.

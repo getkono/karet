@@ -79,6 +79,14 @@ pub(super) enum Behavior {
     /// line with `formatted\n`. The only behaviour that lets a save actually
     /// reach `begin_format_on_save` and park on a reply.
     Formats,
+    /// Format like [`Behavior::Formats`], and ask for will-save edits
+    /// (`textDocument/willSaveWaitUntil`), answering each with `// saved\n`
+    /// inserted at the start of line 1, where formatting does not reach.
+    WillSaves,
+    /// Ask for will-save edits like [`Behavior::WillSaves`], then never answer
+    /// `textDocument/willSaveWaitUntil`, while formatting and serving
+    /// everything else.
+    WillSavesNever,
     /// Advertise `textDocument/formatting` and then never answer it, while
     /// staying perfectly alive and serving everything else. A formatter wedged
     /// on one request is not a dead server, and must not be treated as one.
@@ -160,9 +168,21 @@ fn advertised_capabilities(behavior: Behavior) -> Value {
         "typeHierarchyProvider": true,
         "selectionRangeProvider": true,
         "documentHighlightProvider": true,
+        "linkedEditingRangeProvider": true,
+        "documentOnTypeFormattingProvider": {
+            "firstTriggerCharacter": ";",
+            "moreTriggerCharacter": ["}"]
+        },
     });
-    if matches!(behavior, Behavior::Formats | Behavior::FormatsNever) {
+    if matches!(
+        behavior,
+        Behavior::Formats | Behavior::FormatsNever | Behavior::WillSaves | Behavior::WillSavesNever
+    ) {
         capabilities["documentFormattingProvider"] = json!(true);
+    }
+    if matches!(behavior, Behavior::WillSaves | Behavior::WillSavesNever) {
+        capabilities["textDocumentSync"] =
+            json!({"openClose": true, "change": 1, "willSaveWaitUntil": true});
     }
     if matches!(behavior, Behavior::Incremental) {
         capabilities["textDocumentSync"] = json!({"openClose": true, "change": 2});
@@ -534,6 +554,47 @@ pub(super) fn test_connector(
                             write_msg(
                                 &mut server_write,
                                 &json!({"jsonrpc": "2.0", "id": msg["id"], "result": result}),
+                            )
+                            .await;
+                        },
+                        // The UTF-16 code unit after the caret, and the
+                        // first of line 1; echoing the caret proves it
+                        // crossed in UTF-16 columns.
+                        Some("textDocument/linkedEditingRange") => {
+                            let at = &msg["params"]["position"];
+                            let after = at["character"].as_u64().unwrap_or(0) + 1;
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": {"ranges": [
+                                    {"start": at, "end": {"line": at["line"], "character": after}},
+                                    {"start": {"line": 1, "character": 0},
+                                     "end": {"line": 1, "character": 1}}
+                                ]}}),
+                            )
+                            .await;
+                        },
+                        // `!` inserted at the caret, echoing it.
+                        Some("textDocument/onTypeFormatting") => {
+                            let at = &msg["params"]["position"];
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": [
+                                    {"range": {"start": at, "end": at}, "newText": "!"}
+                                ]}),
+                            )
+                            .await;
+                        },
+                        // Swallowed whole, as `FormatsNever` swallows formatting.
+                        Some("textDocument/willSaveWaitUntil")
+                            if matches!(behavior, Behavior::WillSavesNever) => {},
+                        Some("textDocument/willSaveWaitUntil") => {
+                            let line_1 = json!({"line": 1, "character": 0});
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": [
+                                    {"range": {"start": line_1, "end": line_1},
+                                     "newText": "// saved\n"}
+                                ]}),
                             )
                             .await;
                         },

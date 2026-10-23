@@ -69,6 +69,20 @@ fn ctrl_t_goes_to_a_workspace_symbol_beside_its_neighbours() {
     );
 }
 
+/// VS Code parity: Ctrl+Shift+F2 starts linked editing, beside F2's rename.
+#[test]
+fn ctrl_shift_f2_starts_linked_editing_in_the_editor() {
+    let chord = key(KeyCode::F(2), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+    assert_eq!(
+        res(Focus::Editor, false, chord),
+        Some(Command::StartLinkedEditing)
+    );
+    assert_eq!(
+        res(Focus::Editor, false, key(KeyCode::F(2), KeyModifiers::NONE)),
+        Some(Command::RenameSymbol)
+    );
+}
+
 /// VS Code's formatting chords, from the editor only: Shift+Alt+F formats the
 /// document and `Ctrl+K Ctrl+F` the selections.
 #[test]

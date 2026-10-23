@@ -50,8 +50,9 @@
 //! [`LspClient::pull_diagnostics`]), completion, navigation,
 //! symbols, document highlights, inlay hints, semantic tokens (whole and delta,
 //! see [`LspClient::semantic_tokens`]), rename, signature help, code actions (with
-//! `codeAction/resolve` and `workspace/executeCommand`), and document/range
-//! formatting are implemented as typed, non-panicking operations.
+//! `codeAction/resolve` and `workspace/executeCommand`), document/range
+//! formatting, on-type formatting, linked editing ranges and will-save edits
+//! are implemented as typed, non-panicking operations.
 
 /// `Content-Length` message framing (the LSP base protocol).
 ///
@@ -61,6 +62,8 @@
 pub use apply_edit::ApplyEditRequest;
 pub use code_action::CodeActionTrigger;
 pub use config::ConnectOptions;
+pub use editing::LinkedEditingRanges;
+pub use editing::SaveReason;
 pub use highlight::DocumentHighlight;
 pub use highlight::HighlightKind;
 pub use karet_jsonrpc::framing::content_length as codec;
@@ -87,6 +90,7 @@ mod completion;
 mod config;
 mod conn;
 mod convert;
+mod editing;
 mod gate;
 mod handshake;
 mod highlight;
