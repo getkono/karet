@@ -388,6 +388,8 @@ mod tests {
     use super::*;
     use crate::cancellation::CancellationHub;
 
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
     const AFF: &str = "SET UTF-8\n";
     const DIC: &str = "4\nhello\nworld\nthe\nends\n";
 
@@ -400,8 +402,13 @@ mod tests {
         batches: usize,
     }
 
-    fn scan_dir(root: &Path, job: impl FnOnce(&mut SpellScanJob)) -> Option<Scanned> {
-        let dictionary = Dictionary::new(AFF, DIC).ok()?;
+    fn scan_dir(
+        root: &Path,
+        job: impl FnOnce(&mut SpellScanJob),
+    ) -> Result<Scanned, Box<dyn std::error::Error>> {
+        // `ParseDictionaryError` is not a `std::error::Error`, so carry its message.
+        let dictionary = Dictionary::new(AFF, DIC)
+            .map_err(|err| format!("the fixture dictionary does not parse: {err}"))?;
         let (tx, mut rx) = tokio_mpsc::unbounded_channel();
         let hub = CancellationHub::default();
         let mut settings = crate::config::Settings::default();
@@ -472,26 +479,22 @@ mod tests {
                 b.range.start.col,
             ))
         });
-        Some(scanned)
+        Ok(scanned)
     }
 
-    fn write(root: &Path, rel: &str, body: &str) {
+    fn write(root: &Path, rel: &str, body: &str) -> std::io::Result<()> {
         let path = root.join(rel);
         if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            std::fs::create_dir_all(parent)?;
         }
-        let _ = std::fs::write(path, body);
+        std::fs::write(path, body)
     }
 
     #[test]
-    fn scan_reports_prose_misspellings_with_their_line_as_context() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
-        write(dir.path(), "notes.md", "hello world\nthe wrld ends\n");
-        let Some(scanned) = scan_dir(dir.path(), |_| {}) else {
-            return;
-        };
+    fn scan_reports_prose_misspellings_with_their_line_as_context() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        write(dir.path(), "notes.md", "hello world\nthe wrld ends\n")?;
+        let scanned = scan_dir(dir.path(), |_| {})?;
 
         assert_eq!(scanned.hits.len(), 1, "{:?}", scanned.hits);
         let hit = &scanned.hits[0];
@@ -502,21 +505,18 @@ mod tests {
         assert_eq!(scanned.files_scanned, 1);
         assert!(!scanned.truncated);
         assert!(!scanned.cancelled);
+        Ok(())
     }
 
     #[test]
-    fn scan_skips_paths_the_session_answered_from_live_buffers() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
-        write(dir.path(), "open.md", "the wrld ends\n");
-        write(dir.path(), "closed.md", "the wrld ends\n");
+    fn scan_skips_paths_the_session_answered_from_live_buffers() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        write(dir.path(), "open.md", "the wrld ends\n")?;
+        write(dir.path(), "closed.md", "the wrld ends\n")?;
         let open = dir.path().join("open.md");
-        let Some(scanned) = scan_dir(dir.path(), |job| {
+        let scanned = scan_dir(dir.path(), |job| {
             job.open.insert(resolve_path(&open));
-        }) else {
-            return;
-        };
+        })?;
 
         assert_eq!(
             scanned.hits.iter().map(|h| &h.path).collect::<Vec<_>>(),
@@ -527,76 +527,64 @@ mod tests {
             scanned.files_scanned, 2,
             "a skipped file still counts as visited"
         );
+        Ok(())
     }
 
     #[test]
-    fn an_open_document_spelled_differently_is_still_recognized() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
-        write(dir.path(), "open.md", "the wrld ends\n");
-        write(dir.path(), "sub/other.md", "hello\n");
+    fn an_open_document_spelled_differently_is_still_recognized() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        write(dir.path(), "open.md", "the wrld ends\n")?;
+        write(dir.path(), "sub/other.md", "hello\n")?;
         // The same file by an unnormalized path, as `karet notes.md` or a
         // symlinked root would hand it to the session.
         let awkward = dir.path().join("sub").join("..").join("open.md");
-        let Some(scanned) = scan_dir(dir.path(), |job| {
+        let scanned = scan_dir(dir.path(), |job| {
             job.open.insert(resolve_path(&awkward));
-        }) else {
-            return;
-        };
+        })?;
 
         assert!(
             scanned.hits.is_empty(),
             "the buffer already answered for this file: {:?}",
             scanned.hits
         );
+        Ok(())
     }
 
     #[test]
-    fn scan_stops_at_the_limit_and_reports_truncation() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
+    fn scan_stops_at_the_limit_and_reports_truncation() -> TestResult {
+        let dir = tempfile::tempdir()?;
         for i in 0..5 {
-            write(dir.path(), &format!("f{i}.md"), "wrld\n");
+            write(dir.path(), &format!("f{i}.md"), "wrld\n")?;
         }
-        let Some(scanned) = scan_dir(dir.path(), |job| job.limit = 2) else {
-            return;
-        };
+        let scanned = scan_dir(dir.path(), |job| job.limit = 2)?;
 
         assert_eq!(scanned.hits.len(), 2);
         assert!(scanned.truncated);
         assert!(scanned.files_scanned < 5, "the walk stopped early");
+        Ok(())
     }
 
     #[test]
-    fn a_cancelled_scan_finishes_immediately_and_says_so() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
-        write(dir.path(), "notes.md", "the wrld ends\n");
+    fn a_cancelled_scan_finishes_immediately_and_says_so() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        write(dir.path(), "notes.md", "the wrld ends\n")?;
         let hub = CancellationHub::default();
         let cancel = hub.register(RequestId(7));
         hub.cancel(RequestId(7));
-        let Some(scanned) = scan_dir(dir.path(), |job| job.cancel = cancel) else {
-            return;
-        };
+        let scanned = scan_dir(dir.path(), |job| job.cancel = cancel)?;
 
         assert!(scanned.cancelled);
         assert!(scanned.hits.is_empty());
         assert_eq!(scanned.files_scanned, 0);
+        Ok(())
     }
 
     #[test]
-    fn source_scopes_are_off_by_default_so_only_prose_is_scanned() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
+    fn source_scopes_are_off_by_default_so_only_prose_is_scanned() -> TestResult {
+        let dir = tempfile::tempdir()?;
         // `comments` is on by default, `strings`/`identifiers` are not.
-        write(dir.path(), "a.rs", "// the wrld ends\nlet s = \"wrld\";\n");
-        let Some(scanned) = scan_dir(dir.path(), |_| {}) else {
-            return;
-        };
+        write(dir.path(), "a.rs", "// the wrld ends\nlet s = \"wrld\";\n")?;
+        let scanned = scan_dir(dir.path(), |_| {})?;
 
         assert_eq!(
             scanned
@@ -608,20 +596,17 @@ mod tests {
             "the comment is checked, the string literal is not: {:?}",
             scanned.hits
         );
+        Ok(())
     }
 
     #[test]
-    fn the_walk_honours_the_workspace_search_excludes() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
-        write(dir.path(), "notes.md", "the wrld ends\n");
-        write(dir.path(), "vendor/copy.md", "the wrld ends\n");
-        let Some(scanned) = scan_dir(dir.path(), |job| {
+    fn the_walk_honours_the_workspace_search_excludes() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        write(dir.path(), "notes.md", "the wrld ends\n")?;
+        write(dir.path(), "vendor/copy.md", "the wrld ends\n")?;
+        let scanned = scan_dir(dir.path(), |job| {
             job.settings.search.exclude = vec!["vendor/**".to_owned()];
-        }) else {
-            return;
-        };
+        })?;
 
         assert_eq!(
             scanned.hits.iter().map(|h| &h.path).collect::<Vec<_>>(),
@@ -629,48 +614,40 @@ mod tests {
             "a path excluded from search must not fill the panel: {:?}",
             scanned.hits
         );
+        Ok(())
     }
 
     #[test]
-    fn every_workspace_root_is_walked_under_one_budget() {
-        let (Ok(first), Ok(second)) = (tempfile::tempdir(), tempfile::tempdir()) else {
-            return;
-        };
-        write(first.path(), "a.md", "the wrld ends\n");
-        write(second.path(), "b.md", "the wrld ends\n");
-        let Some(scanned) = scan_dir(first.path(), |job| {
+    fn every_workspace_root_is_walked_under_one_budget() -> TestResult {
+        let (first, second) = (tempfile::tempdir()?, tempfile::tempdir()?);
+        write(first.path(), "a.md", "the wrld ends\n")?;
+        write(second.path(), "b.md", "the wrld ends\n")?;
+        let scanned = scan_dir(first.path(), |job| {
             job.roots.push(second.path().to_path_buf());
-        }) else {
-            return;
-        };
+        })?;
 
         assert_eq!(scanned.hits.len(), 2, "{:?}", scanned.hits);
         assert_eq!(scanned.files_scanned, 2, "the counter spans both roots");
 
         // The limit is the scan's, not each root's.
-        let Some(capped) = scan_dir(first.path(), |job| {
+        let capped = scan_dir(first.path(), |job| {
             job.roots.push(second.path().to_path_buf());
             job.limit = 1;
-        }) else {
-            return;
-        };
+        })?;
         assert_eq!(capped.hits.len(), 1);
         assert!(capped.truncated);
+        Ok(())
     }
 
     #[test]
-    fn identifier_linting_pauses_on_a_file_that_does_not_parse() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
+    fn identifier_linting_pauses_on_a_file_that_does_not_parse() -> TestResult {
+        let dir = tempfile::tempdir()?;
         // Both files name the same identifier; only the second parses cleanly.
-        write(dir.path(), "broken.rs", "fn wrld( {\n");
-        write(dir.path(), "clean.rs", "fn wrld() {}\n");
-        let Some(scanned) = scan_dir(dir.path(), |job| {
+        write(dir.path(), "broken.rs", "fn wrld( {\n")?;
+        write(dir.path(), "clean.rs", "fn wrld() {}\n")?;
+        let scanned = scan_dir(dir.path(), |job| {
             job.settings.spellcheck.identifiers = true;
-        }) else {
-            return;
-        };
+        })?;
 
         assert_eq!(
             scanned
@@ -683,22 +660,19 @@ mod tests {
              and so must the scan: {:?}",
             scanned.hits
         );
+        Ok(())
     }
 
     #[test]
-    fn editorconfig_selects_the_dictionary_for_a_walked_file() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
+    fn editorconfig_selects_the_dictionary_for_a_walked_file() -> TestResult {
+        let dir = tempfile::tempdir()?;
         write(
             dir.path(),
             ".editorconfig",
             "root = true\n[*.md]\nspelling_language = en-GB\n",
-        );
-        write(dir.path(), "notes.md", "the wrld ends\n");
-        let Some(scanned) = scan_dir(dir.path(), |_| {}) else {
-            return;
-        };
+        )?;
+        write(dir.path(), "notes.md", "the wrld ends\n")?;
+        let scanned = scan_dir(dir.path(), |_| {})?;
 
         assert_eq!(
             scanned
@@ -715,64 +689,58 @@ mod tests {
             dir.path().join("notes.md"),
             "the override resolves to a supported locale, so the file is checked"
         );
+        Ok(())
     }
 
     #[test]
-    fn an_unsupported_editorconfig_locale_skips_the_file_as_the_editor_does() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
+    fn an_unsupported_editorconfig_locale_skips_the_file_as_the_editor_does() -> TestResult {
+        let dir = tempfile::tempdir()?;
         // `resolve` yields no spelling language for `de`, which clears an open
         // document's diagnostics outright — the panel must agree.
         write(
             dir.path(),
             ".editorconfig",
             "root = true\n[*.md]\nspelling_language = de\n",
-        );
-        write(dir.path(), "notes.md", "the wrld ends\n");
-        let Some(scanned) = scan_dir(dir.path(), |_| {}) else {
-            return;
-        };
+        )?;
+        write(dir.path(), "notes.md", "the wrld ends\n")?;
+        let scanned = scan_dir(dir.path(), |_| {})?;
 
         assert!(scanned.hits.is_empty(), "{:?}", scanned.hits);
         assert_eq!(
             scanned.files_scanned, 1,
             "the file was visited and then skipped, not filtered out of the walk"
         );
+        Ok(())
     }
 
     #[test]
-    fn a_workspace_without_the_property_never_pays_for_editorconfig_resolution() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
+    fn a_workspace_without_the_property_never_pays_for_editorconfig_resolution() -> TestResult {
+        let dir = tempfile::tempdir()?;
         write(
             dir.path(),
             ".editorconfig",
             "root = true\n[*]\nindent_size = 2\n",
-        );
+        )?;
         assert!(!ancestry_selects_locale(dir.path()));
 
         write(
             dir.path(),
             ".editorconfig",
             "root = true\n[*.md]\nspelling_language = en-GB\n",
-        );
+        )?;
         assert!(ancestry_selects_locale(dir.path()));
+        Ok(())
     }
 
     #[test]
-    fn a_clean_workspace_still_reports_a_finish_event() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
-        write(dir.path(), "notes.md", "hello world\n");
-        let Some(scanned) = scan_dir(dir.path(), |_| {}) else {
-            return;
-        };
+    fn a_clean_workspace_still_reports_a_finish_event() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        write(dir.path(), "notes.md", "hello world\n")?;
+        let scanned = scan_dir(dir.path(), |_| {})?;
 
         assert!(scanned.hits.is_empty());
         assert_eq!(scanned.batches, 0, "an empty batch is never sent");
         assert_eq!(scanned.files_scanned, 1);
+        Ok(())
     }
 }

@@ -360,24 +360,17 @@ fn write_atomic(dir: &Path, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 mod tests {
     use super::*;
 
-    fn store() -> Option<(tempfile::TempDir, SwapStore)> {
-        let dir = tempfile::tempdir().ok()?;
+    fn store() -> std::io::Result<(tempfile::TempDir, SwapStore)> {
+        let dir = tempfile::tempdir()?;
         let store = SwapStore::with_dir(dir.path().to_path_buf(), 42);
-        Some((dir, store))
+        Ok((dir, store))
     }
 
     #[test]
-    fn write_scan_round_trip() {
-        let Some((_dir, store)) = store() else {
-            return;
-        };
+    fn write_scan_round_trip() -> TestResult {
+        let (_dir, store) = store()?;
         let original = PathBuf::from("/work/main.rs");
-        if store
-            .write(&original, "fn main() {}\n", Some(7), Some(12), 3)
-            .is_err()
-        {
-            return;
-        }
+        store.write(&original, "fn main() {}\n", Some(7), Some(12), 3)?;
         let found = scan(store.dir());
         assert_eq!(found.len(), 1);
         let rec = &found[0];
@@ -385,77 +378,63 @@ mod tests {
         assert_eq!(rec.meta.orig_hash, Some(7));
         assert_eq!(rec.meta.doc_version, 3);
         assert_eq!(rec.content, "fn main() {}\n");
+        Ok(())
     }
 
     #[test]
-    fn remove_deletes_the_swap() {
-        let Some((_dir, store)) = store() else {
-            return;
-        };
+    fn remove_deletes_the_swap() -> TestResult {
+        let (_dir, store) = store()?;
         let original = PathBuf::from("/work/a.txt");
-        if store.write(&original, "x", None, None, 1).is_err() {
-            return;
-        }
+        store.write(&original, "x", None, None, 1)?;
         assert_eq!(scan(store.dir()).len(), 1);
         store.remove(&original);
         assert!(scan(store.dir()).is_empty());
+        Ok(())
     }
 
     #[test]
-    fn overwriting_updates_in_place() {
-        let Some((_dir, store)) = store() else {
-            return;
-        };
+    fn overwriting_updates_in_place() -> TestResult {
+        let (_dir, store) = store()?;
         let original = PathBuf::from("/work/a.txt");
-        let _ = store.write(&original, "first", None, None, 1);
-        let _ = store.write(&original, "second", None, None, 2);
+        store.write(&original, "first", None, None, 1)?;
+        store.write(&original, "second", None, None, 2)?;
         let found = scan(store.dir());
         assert_eq!(found.len(), 1, "same path+session reuses one swap file");
         assert_eq!(found[0].content, "second");
         assert_eq!(found[0].meta.doc_version, 2);
+        Ok(())
     }
 
     #[test]
-    fn conflict_detection_matches_the_content_fingerprint() {
-        let Some((tmp, store)) = store() else {
-            return;
-        };
+    fn conflict_detection_matches_the_content_fingerprint() -> TestResult {
+        let (tmp, store) = store()?;
         let original = tmp.path().join("f.txt");
-        if std::fs::write(&original, "on disk\n").is_err() {
-            return;
-        }
+        std::fs::write(&original, "on disk\n")?;
         let hash = karet_text::content_fingerprint(b"on disk\n");
         // Same fingerprint recorded → no conflict.
-        if store
-            .write(&original, "edited\n", Some(hash), Some(8), 1)
-            .is_err()
-        {
-            return;
-        }
+        store.write(&original, "edited\n", Some(hash), Some(8), 1)?;
         let found = scan(store.dir());
         assert_eq!(found.len(), 1);
         assert!(!found[0].conflicts_with_disk());
 
         // The file changes underneath → conflict.
-        if std::fs::write(&original, "changed by someone else\n").is_err() {
-            return;
-        }
+        std::fs::write(&original, "changed by someone else\n")?;
         assert!(found[0].conflicts_with_disk());
+        Ok(())
     }
 
     #[test]
-    fn malformed_and_wrong_schema_swaps_are_skipped() {
-        let Some((tmp, store)) = store() else {
-            return;
-        };
+    fn malformed_and_wrong_schema_swaps_are_skipped() -> TestResult {
+        let (tmp, store) = store()?;
         // Not JSON at all.
-        let _ = std::fs::write(tmp.path().join("junk.karet-swap"), b"not a swap");
+        std::fs::write(tmp.path().join("junk.karet-swap"), b"not a swap")?;
         // Valid JSON header but a future schema version.
         let bad = "{\"schema\":999,\"original\":\"/x\",\"orig_hash\":null,\"orig_size\":null,\"session_id\":1,\"doc_version\":1,\"updated_unix_ms\":0}\nbody";
-        let _ = std::fs::write(tmp.path().join("future.karet-swap"), bad);
+        std::fs::write(tmp.path().join("future.karet-swap"), bad)?;
         // A real one still parses.
-        let _ = store.write(&PathBuf::from("/work/ok.txt"), "ok", None, None, 1);
+        store.write(&PathBuf::from("/work/ok.txt"), "ok", None, None, 1)?;
         assert_eq!(scan(store.dir()).len(), 1);
+        Ok(())
     }
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
