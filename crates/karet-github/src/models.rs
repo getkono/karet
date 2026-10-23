@@ -277,17 +277,6 @@ pub struct WorkflowRun {
     pub html_url: String,
 }
 
-/// Rate-limit values returned with a response.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RateLimit {
-    /// Request allowance for the resource bucket.
-    pub limit: Option<u64>,
-    /// Requests remaining.
-    pub remaining: Option<u64>,
-    /// Unix reset timestamp.
-    pub reset: Option<i64>,
-}
-
 /// One paginated result page.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Page<T> {
@@ -299,8 +288,6 @@ pub struct Page<T> {
     pub next_page: Option<u32>,
     /// Total result count when the endpoint supplies it.
     pub total_count: Option<u64>,
-    /// Response rate-limit state.
-    pub rate_limit: RateLimit,
 }
 
 /// Fields accepted when creating an issue.
