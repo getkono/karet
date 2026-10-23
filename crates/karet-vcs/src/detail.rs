@@ -204,39 +204,9 @@ fn signer_key(_kind: SignatureKind, _raw: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-    use std::path::PathBuf;
-    use std::process::Command;
-    use std::sync::atomic::AtomicU32;
-    use std::sync::atomic::Ordering;
-
     use super::*;
     use crate::Repository;
-
-    static COUNTER: AtomicU32 = AtomicU32::new(0);
-
-    struct TempDir(PathBuf);
-
-    impl Drop for TempDir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-
-    fn unique_dir(tag: &str) -> PathBuf {
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!("karet-vcs-detail-{tag}-{}-{n}", std::process::id()))
-    }
-
-    fn git(dir: &Path, args: &[&str]) {
-        let ok = Command::new("git")
-            .args(args)
-            .current_dir(dir)
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        assert!(ok, "git {args:?} failed");
-    }
+    use crate::test_support::git;
 
     #[test]
     fn signature_kind_detects_armor_headers() {
@@ -257,30 +227,26 @@ mod tests {
 
     #[test]
     fn commit_detail_reports_message_author_and_committer() -> Result<(), VcsError> {
-        let dir = unique_dir("meta");
-        std::fs::create_dir_all(&dir).map_err(|e| VcsError::Git(e.to_string()))?;
-        let _guard = TempDir(dir.clone());
-        git(&dir, &["init", "-q"]);
-        git(&dir, &["config", "user.name", "Author Person"]);
-        git(&dir, &["config", "user.email", "author@example.com"]);
-        git(&dir, &["config", "commit.gpgsign", "false"]);
+        let guard = crate::test_support::init("detail-meta")?;
+        let dir = guard.0.clone();
+        git(&dir, &["config", "user.name", "Author Person"])?;
+        git(&dir, &["config", "user.email", "author@example.com"])?;
         std::fs::write(dir.join("f.txt"), "hi\n").map_err(|e| VcsError::Git(e.to_string()))?;
-        git(&dir, &["add", "."]);
-        // Distinct committer via env, and a multi-paragraph message.
-        let ok = Command::new("git")
-            .args([
+        git(&dir, &["add", "."])?;
+        // Distinct committer via `committer.*` config, and a multi-paragraph message.
+        git(
+            &dir,
+            &[
+                "-c",
+                "committer.name=Committer Person",
+                "-c",
+                "committer.email=committer@example.com",
                 "commit",
                 "-q",
                 "-m",
                 "subject line\n\nbody paragraph one.\n\nbody two.",
-            ])
-            .current_dir(&dir)
-            .env("GIT_COMMITTER_NAME", "Committer Person")
-            .env("GIT_COMMITTER_EMAIL", "committer@example.com")
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        assert!(ok, "signed commit failed");
+            ],
+        )?;
 
         let repo = Repository::discover(&dir)?;
         let detail = repo.commit_detail("HEAD")?;
@@ -301,18 +267,13 @@ mod tests {
 
     #[test]
     fn commit_detail_resolves_revspecs() -> Result<(), VcsError> {
-        let dir = unique_dir("rev");
-        std::fs::create_dir_all(&dir).map_err(|e| VcsError::Git(e.to_string()))?;
-        let _guard = TempDir(dir.clone());
-        git(&dir, &["init", "-q"]);
-        git(&dir, &["config", "user.name", "Tester"]);
-        git(&dir, &["config", "user.email", "t@example.com"]);
-        git(&dir, &["config", "commit.gpgsign", "false"]);
+        let guard = crate::test_support::init("detail-rev")?;
+        let dir = guard.0.clone();
         for i in 0..3 {
             std::fs::write(dir.join("f.txt"), format!("v{i}\n"))
                 .map_err(|e| VcsError::Git(e.to_string()))?;
-            git(&dir, &["add", "."]);
-            git(&dir, &["commit", "-q", "-m", &format!("commit {i}")]);
+            git(&dir, &["add", "."])?;
+            git(&dir, &["commit", "-q", "-m", &format!("commit {i}")])?;
         }
         let repo = Repository::discover(&dir)?;
         assert_eq!(repo.commit_detail("HEAD")?.summary, "commit 2");
@@ -326,23 +287,22 @@ mod tests {
     #[cfg(feature = "signature")]
     #[test]
     fn ssh_signed_commit_exposes_a_fingerprint() -> Result<(), VcsError> {
-        let dir = unique_dir("ssh");
-        std::fs::create_dir_all(&dir).map_err(|e| VcsError::Git(e.to_string()))?;
-        let _guard = TempDir(dir.clone());
+        let guard = crate::test_support::scratch_dir("detail-ssh")?;
+        let dir = guard.0.clone();
         let key = dir.join("id");
         // Generate an unencrypted ed25519 key to sign with; if ssh-keygen is missing
         // from the environment, there is nothing to exercise, so skip.
-        let keygen = Command::new("ssh-keygen")
+        let keygen = std::process::Command::new("ssh-keygen")
             .args(["-t", "ed25519", "-N", "", "-C", "test", "-f"])
             .arg(&key)
             .status();
         if !matches!(keygen, Ok(s) if s.success()) {
             return Ok(());
         }
-        git(&dir, &["init", "-q"]);
-        git(&dir, &["config", "user.name", "Signer"]);
-        git(&dir, &["config", "user.email", "signer@example.com"]);
-        git(&dir, &["config", "gpg.format", "ssh"]);
+        git(&dir, &["init", "-q"])?;
+        git(&dir, &["config", "user.name", "Signer"])?;
+        git(&dir, &["config", "user.email", "signer@example.com"])?;
+        git(&dir, &["config", "gpg.format", "ssh"])?;
         git(
             &dir,
             &[
@@ -350,10 +310,10 @@ mod tests {
                 "user.signingkey",
                 &format!("{}.pub", key.display()),
             ],
-        );
+        )?;
         std::fs::write(dir.join("f.txt"), "hi\n").map_err(|e| VcsError::Git(e.to_string()))?;
-        git(&dir, &["add", "."]);
-        git(&dir, &["commit", "-q", "-S", "-m", "signed"]);
+        git(&dir, &["add", "."])?;
+        git(&dir, &["commit", "-q", "-S", "-m", "signed"])?;
 
         let repo = Repository::discover(&dir)?;
         let sig = repo

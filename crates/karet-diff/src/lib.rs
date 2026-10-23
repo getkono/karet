@@ -13,6 +13,7 @@
 mod align;
 mod engine;
 mod intraline;
+mod layout;
 mod model;
 mod parse;
 mod patch;
@@ -31,6 +32,13 @@ pub use engine::diff_text;
 pub use intraline::HighlightedPair;
 pub use intraline::Segment;
 pub use intraline::compute_highlights;
+pub use layout::RowContent;
+pub use layout::side_by_side_hunk_at_row;
+pub use layout::side_by_side_hunk_row;
+pub use layout::side_by_side_row;
+pub use layout::unified_hunk_at_row;
+pub use layout::unified_hunk_row;
+pub use layout::unified_row;
 pub use model::Diff;
 pub use model::DiffLine;
 pub use model::FileDiff;
@@ -46,25 +54,11 @@ pub use prepared::line_stats;
 #[cfg(feature = "view")]
 pub use view::DiffPalette;
 #[cfg(feature = "view")]
-pub use view::RowContent;
-#[cfg(feature = "view")]
 pub use view::pad_diff_lines;
-#[cfg(feature = "view")]
-pub use view::side_by_side_hunk_at_row;
-#[cfg(feature = "view")]
-pub use view::side_by_side_hunk_row;
 #[cfg(feature = "view")]
 pub use view::side_by_side_lines;
 #[cfg(feature = "view")]
-pub use view::side_by_side_row;
-#[cfg(feature = "view")]
-pub use view::unified_hunk_at_row;
-#[cfg(feature = "view")]
-pub use view::unified_hunk_row;
-#[cfg(feature = "view")]
 pub use view::unified_lines;
-#[cfg(feature = "view")]
-pub use view::unified_row;
 
 /// Errors produced while diffing or parsing.
 #[derive(Debug, thiserror::Error)]

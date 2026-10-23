@@ -112,177 +112,6 @@ pub fn unified_lines(prepared: &PreparedDiff, palette: &DiffPalette<'_>) -> Vec<
     lines
 }
 
-/// Which hunk of `prepared` the unified view's display `row` falls in.
-///
-/// Mirrors [`unified_lines`]'s layout exactly (optional scope line, header,
-/// then the hunk body). Rows past the last hunk (the trailing blank line) map
-/// to the last hunk, so "the hunk at the viewport top" stays well-defined at
-/// the end of the document; a binary or hunkless diff has no answer.
-#[must_use]
-pub fn unified_hunk_at_row(prepared: &PreparedDiff, row: usize) -> Option<usize> {
-    hunk_at_row(prepared, row, |hunk| hunk.lines.len())
-}
-
-/// Which hunk of `prepared` the side-by-side view's display `row` falls in
-/// (both panes share row geometry). Same conventions as
-/// [`unified_hunk_at_row`].
-#[must_use]
-pub fn side_by_side_hunk_at_row(prepared: &PreparedDiff, row: usize) -> Option<usize> {
-    hunk_at_row(prepared, row, |hunk| crate::align_hunk(&hunk.lines).len())
-}
-
-fn hunk_at_row(
-    prepared: &PreparedDiff,
-    row: usize,
-    body_rows: impl Fn(&crate::Hunk) -> usize,
-) -> Option<usize> {
-    if prepared.is_binary() || prepared.diff.hunks.is_empty() {
-        return None;
-    }
-    let mut next_row = 0usize;
-    let mut found = 0;
-    for (index, hunk) in prepared.diff.hunks.iter().enumerate() {
-        if row < next_row {
-            break;
-        }
-        found = index;
-        next_row += usize::from(hunk.scope.is_some()) + 1 + body_rows(hunk);
-    }
-    Some(found)
-}
-
-/// The unified view's display row on which hunk `index` of `prepared` opens:
-/// its scope line when it has one, otherwise its header.
-///
-/// The inverse of [`unified_hunk_at_row`]: scrolling the view to this row puts
-/// the hunk at the top of the viewport. `None` for a binary or hunkless diff,
-/// or an `index` past the last hunk.
-#[must_use]
-pub fn unified_hunk_row(prepared: &PreparedDiff, index: usize) -> Option<usize> {
-    hunk_row(prepared, index, |hunk| hunk.lines.len())
-}
-
-/// The side-by-side view's display row on which hunk `index` of `prepared`
-/// opens; the inverse of [`side_by_side_hunk_at_row`], with the conventions of
-/// [`unified_hunk_row`].
-#[must_use]
-pub fn side_by_side_hunk_row(prepared: &PreparedDiff, index: usize) -> Option<usize> {
-    hunk_row(prepared, index, |hunk| crate::align_hunk(&hunk.lines).len())
-}
-
-fn hunk_row(
-    prepared: &PreparedDiff,
-    index: usize,
-    body_rows: impl Fn(&crate::Hunk) -> usize,
-) -> Option<usize> {
-    if prepared.is_binary() || index >= prepared.diff.hunks.len() {
-        return None;
-    }
-    Some(
-        prepared
-            .diff
-            .hunks
-            .iter()
-            .take(index)
-            .map(|hunk| usize::from(hunk.scope.is_some()) + 1 + body_rows(hunk))
-            .sum(),
-    )
-}
-
-/// The copyable content of one painted diff row.
-///
-/// The text is the line's own content — the line-number gutter and the
-/// `+`/`-` marker are chrome, so they are neither part of it nor of anything a
-/// selection over the row can copy.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RowContent {
-    /// The row's text, exactly as painted after its gutter.
-    pub text: String,
-    /// How many display columns of gutter precede that text.
-    pub gutter_width: u16,
-}
-
-/// The content of the unified view's display `row`.
-///
-/// `None` when the row carries no copyable text: a scope line, a hunk header, a
-/// binary/hunkless placeholder, or the trailing blank. Mirrors
-/// [`unified_lines`]'s layout exactly, the same invariant
-/// [`unified_hunk_at_row`] holds.
-#[must_use]
-pub fn unified_row(prepared: &PreparedDiff, row: usize) -> Option<RowContent> {
-    let (hunk, body) = body_row_at(prepared, row, |hunk| hunk.lines.len())?;
-    let line = prepared.diff.hunks.get(hunk)?.lines.get(body)?;
-    Some(RowContent {
-        text: line.content.clone(),
-        gutter_width: gutter_width(line.old_lineno)
-            .saturating_add(gutter_width(line.new_lineno))
-            .saturating_add(1),
-    })
-}
-
-/// The `(old, new)` content of the side-by-side view's display `row`.
-///
-/// Either side is `None` where the alignment left that pane empty, and both are
-/// `None` on a row with no copyable text. Mirrors [`side_by_side_lines`]'s
-/// layout, as [`side_by_side_hunk_at_row`] does.
-#[must_use]
-pub fn side_by_side_row(
-    prepared: &PreparedDiff,
-    row: usize,
-) -> (Option<RowContent>, Option<RowContent>) {
-    let content = |cell: Option<&crate::Cell>| {
-        cell.map(|cell| RowContent {
-            text: cell.content.clone(),
-            gutter_width: gutter_width(Some(cell.lineno)),
-        })
-    };
-    let Some((index, body)) = body_row_at(prepared, row, |hunk| align_hunk(&hunk.lines).len())
-    else {
-        return (None, None);
-    };
-    let Some(hunk) = prepared.diff.hunks.get(index) else {
-        return (None, None);
-    };
-    let rows = align_hunk(&hunk.lines);
-    let Some(pair) = rows.get(body) else {
-        return (None, None);
-    };
-    (content(pair.left.as_ref()), content(pair.right.as_ref()))
-}
-
-/// Which `(hunk, body row)` of `prepared` the display `row` falls on, skipping
-/// the scope and header rows that open each hunk.
-fn body_row_at(
-    prepared: &PreparedDiff,
-    row: usize,
-    body_rows: impl Fn(&crate::Hunk) -> usize,
-) -> Option<(usize, usize)> {
-    if prepared.is_binary() || prepared.diff.hunks.is_empty() {
-        return None;
-    }
-    let mut next_row = 0usize;
-    for (index, hunk) in prepared.diff.hunks.iter().enumerate() {
-        let head = usize::from(hunk.scope.is_some()) + 1;
-        let body = body_rows(hunk);
-        if row < next_row + head {
-            return None;
-        }
-        if row < next_row + head + body {
-            return Some((index, row - next_row - head));
-        }
-        next_row += head + body;
-    }
-    None
-}
-
-/// The display width of one line-number gutter cell, mirroring [`gutter_span`]:
-/// a right-aligned number of at least four digits, then one space. A line number
-/// wider than four digits widens the gutter, so this is not a constant.
-fn gutter_width(lineno: Option<u32>) -> u16 {
-    let digits = lineno.map_or(4, |lineno| lineno.to_string().len().max(4));
-    u16::try_from(digits).unwrap_or(u16::MAX).saturating_add(1)
-}
-
 /// Build the side-by-side lines for `prepared` as aligned `(old, new)` columns.
 #[must_use]
 pub fn side_by_side_lines(
@@ -569,6 +398,14 @@ mod tests {
     use super::*;
     use crate::DiffOptions;
     use crate::diff_text;
+    use crate::layout::tests::prepared;
+    use crate::layout::tests::three_hunks;
+    use crate::side_by_side_hunk_at_row;
+    use crate::side_by_side_hunk_row;
+    use crate::side_by_side_row;
+    use crate::unified_hunk_at_row;
+    use crate::unified_hunk_row;
+    use crate::unified_row;
 
     fn palette(token_fg: &dyn Fn(TokenId) -> Color) -> DiffPalette<'_> {
         DiffPalette {
@@ -585,14 +422,6 @@ mod tests {
             dim: Color::Gray,
             token_fg,
         }
-    }
-
-    fn prepared(old: &str, new: &str) -> PreparedDiff {
-        PreparedDiff::new(
-            diff_text(old, new, &DiffOptions::default()),
-            Vec::new(),
-            Vec::new(),
-        )
     }
 
     fn rendered_text(lines: &[Line<'static>]) -> String {
@@ -624,22 +453,6 @@ mod tests {
         binary_diff.hunks.clear();
         let binary = PreparedDiff::new(binary_diff, Vec::new(), Vec::new());
         assert_eq!(unified_hunk_at_row(&binary, 0), None);
-    }
-
-    /// Three hunks, the first rewriting two lines (so the side-by-side body,
-    /// which pairs them, is shorter than the unified one) and the second
-    /// carrying a scope line.
-    fn three_hunks() -> PreparedDiff {
-        let old: String = (0..30).map(|n| format!("l{n}\n")).collect();
-        let new = old
-            .replacen("l0\nl1\n", "L0\nL1\n", 1)
-            .replacen("l14\n", "L14\n", 1)
-            .replacen("l29\n", "", 1);
-        let mut prep = prepared(&old, &new);
-        if let Some(hunk) = prep.diff.hunks.get_mut(1) {
-            hunk.scope = Some("fn middle".to_string());
-        }
-        prep
     }
 
     #[test]
@@ -685,18 +498,6 @@ mod tests {
             side_by_side_hunk_row(&prep, 1),
             "the paired rewrite takes fewer side-by-side rows"
         );
-    }
-
-    #[test]
-    fn hunk_row_has_no_answer_past_the_hunks_or_for_a_binary_diff() {
-        let prep = three_hunks();
-        assert_eq!(unified_hunk_row(&prep, 3), None);
-        assert_eq!(side_by_side_hunk_row(&prep, usize::MAX), None);
-        let mut binary_diff = diff_text("a\n", "b\n", &DiffOptions::default());
-        binary_diff.is_binary = true;
-        let binary = PreparedDiff::new(binary_diff, Vec::new(), Vec::new());
-        assert_eq!(unified_hunk_row(&binary, 0), None);
-        assert_eq!(side_by_side_hunk_row(&binary, 0), None);
     }
 
     /// The text a painted row shows after its gutter, for cross-checking the
@@ -783,14 +584,7 @@ mod tests {
 
     #[test]
     fn a_wide_line_number_widens_the_gutter_it_reports() {
-        // Four digits is the minimum width, so 9999 and 1 gutter alike...
-        assert_eq!(gutter_width(Some(1)), 5);
-        assert_eq!(gutter_width(Some(9999)), 5);
-        assert_eq!(gutter_width(None), 5);
-        // ...but a fifth digit pushes the content one column right.
-        assert_eq!(gutter_width(Some(10_000)), 6);
-
-        // End to end: a file long enough to reach five-digit line numbers.
+        // A file long enough to reach five-digit line numbers.
         let old: String = (1..=10_050).map(|n| format!("line {n}\n")).collect();
         let new = old.replace("line 10040\n", "line 10040 changed\n");
         let prep = prepared(&old, &new);
@@ -813,21 +607,6 @@ mod tests {
                 "five-digit line numbers widen the two gutters past the four-digit minimum"
             );
         }
-    }
-
-    #[test]
-    fn a_binary_or_hunkless_diff_has_no_selectable_rows() {
-        let mut binary_diff = diff_text("a\n", "b\n", &DiffOptions::default());
-        binary_diff.is_binary = true;
-        binary_diff.hunks.clear();
-        let binary = PreparedDiff::new(binary_diff, Vec::new(), Vec::new());
-        // The placeholder and its trailing blank are chrome, not content.
-        assert_eq!(unified_row(&binary, 0), None);
-        assert_eq!(unified_row(&binary, 1), None);
-        assert_eq!(side_by_side_row(&binary, 0), (None, None));
-
-        let identical = prepared("same\n", "same\n");
-        assert_eq!(unified_row(&identical, 0), None);
     }
 
     #[test]
