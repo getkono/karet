@@ -716,6 +716,9 @@ pub struct Workbench {
     pub icon_style: IconStyleSetting,
     /// Which sidebar panel is shown at startup (`none` starts collapsed).
     pub startup_panel: StartupPanel,
+    /// Reopen a workspace's tabs, splits, and cursors as the last clean exit
+    /// left them, when karet starts on it without a file to open.
+    pub restore_layout: bool,
 }
 
 impl Default for Workbench {
@@ -724,6 +727,7 @@ impl Default for Workbench {
             color_theme: "dark".to_string(),
             icon_style: IconStyleSetting::NerdFont,
             startup_panel: StartupPanel::Explorer,
+            restore_layout: true,
         }
     }
 }
@@ -1013,6 +1017,13 @@ mod tests {
         assert_eq!(files.undo_limit, 1000);
         assert_eq!(files.undo_cap(), Some(1000));
         assert!(!files.persistent_undo, "persistent undo is opt-in");
+    }
+
+    #[test]
+    fn layout_restore_defaults_on_and_can_be_switched_off() {
+        assert!(Workbench::default().restore_layout);
+        let off = serde_json::from_str::<Workbench>(r#"{ "restoreLayout": false }"#);
+        assert!(off.is_ok_and(|workbench| !workbench.restore_layout));
     }
 
     #[test]

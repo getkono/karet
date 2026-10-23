@@ -14,6 +14,11 @@
 //! JSON file per document, keyed by path alone so the next session finds it. Its
 //! history carries a fingerprint of the text it was taken at, so it is restored only
 //! onto a file whose content still matches.
+//!
+//! It also holds each workspace's **saved layout** (`workbench.restoreLayout`):
+//! one JSON file per workspace root ([`WorkspaceLayout`]) recording its panes,
+//! their tabs, and each tab's cursors, written on a clean exit and read back by
+//! the next session that opens the same root.
 
 use std::borrow::Cow;
 use std::io::Write;
@@ -22,6 +27,7 @@ use std::path::PathBuf;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
+use karet_core::CursorState;
 use karet_text::HistorySnapshot;
 use serde::Deserialize;
 use serde::Serialize;
@@ -292,6 +298,135 @@ impl<W: Write> Write for BoundedWriter<W> {
     }
 }
 
+/// The saved-layout file extension (written beside the swaps; [`scan`] skips it).
+const LAYOUT_EXT: &str = "karet-layout";
+
+/// The saved-layout format version; a file of another version is discarded.
+const LAYOUT_SCHEMA_VERSION: u32 = 1;
+
+/// The largest saved-layout file read back. A real layout is a few kilobytes;
+/// anything past this is not one, and is discarded unread.
+const MAX_LAYOUT_BYTES: u64 = 4 * 1024 * 1024;
+
+/// A workspace's pane layout as the last session left it: the split tree, the
+/// tabs each pane held, and which pane had focus.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WorkspaceLayout {
+    /// The pane tree.
+    pub root: LayoutNode,
+    /// Which pane had focus: an index into the panes in tree order
+    /// (left-to-right, top-to-bottom).
+    pub focus: usize,
+}
+
+/// One node of a saved pane tree.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum LayoutNode {
+    /// A pane and its tabs.
+    Pane(LayoutPane),
+    /// Child nodes laid out along `axis`.
+    Split {
+        /// The axis the children divide.
+        axis: LayoutAxis,
+        /// The children, left-to-right or top-to-bottom.
+        children: Vec<LayoutNode>,
+        /// One relative size per child.
+        weights: Vec<f32>,
+    },
+}
+
+/// The axis a saved split divides along.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LayoutAxis {
+    /// Side-by-side columns.
+    Cols,
+    /// Stacked rows.
+    Rows,
+}
+
+/// A saved pane: its tabs in strip order and which one was in front.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct LayoutPane {
+    /// The pane's tabs.
+    pub tabs: Vec<LayoutTab>,
+    /// Index into `tabs` of the tab in front.
+    pub active: usize,
+}
+
+/// A saved tab: the file it shows and where its cursors and viewport were.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LayoutTab {
+    /// The file the tab shows.
+    pub path: PathBuf,
+    /// Its cursors and selections (a lone caret at the origin for a tab
+    /// without a text cursor).
+    pub cursors: CursorState,
+    /// The first visible line.
+    pub scroll_line: u32,
+    /// The first visible column.
+    pub scroll_col: u32,
+    /// Whether it was the pane's reusable preview tab.
+    pub preview: bool,
+}
+
+/// The on-disk saved layout: the root it belongs to, and the layout.
+#[derive(Serialize, Deserialize)]
+struct LayoutRecord<'a> {
+    schema: u32,
+    workspace: Cow<'a, Path>,
+    layout: Cow<'a, WorkspaceLayout>,
+}
+
+/// The saved-layout path for the workspace `root` under `dir`.
+fn layout_path(dir: &Path, root: &Path) -> PathBuf {
+    let key = karet_text::content_fingerprint(root.to_string_lossy().as_bytes());
+    dir.join(format!("{key:016x}.{LAYOUT_EXT}"))
+}
+
+/// Save `layout` as the layout of the workspace `root` under `dir`,
+/// replacing any earlier one.
+///
+/// # Errors
+/// Returns an [`std::io::Error`] if the directory or file cannot be written.
+pub fn write_layout(dir: &Path, root: &Path, layout: &WorkspaceLayout) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let record = LayoutRecord {
+        schema: LAYOUT_SCHEMA_VERSION,
+        workspace: Cow::Borrowed(root),
+        layout: Cow::Borrowed(layout),
+    };
+    let bytes = serde_json::to_vec(&record).map_err(std::io::Error::other)?;
+    write_atomic(dir, &layout_path(dir, root), &bytes)
+}
+
+/// The saved layout of the workspace `root` under `dir`, provided one exists,
+/// is within the size bound, parses, and was written for this very root. A
+/// file that fails any of those is removed, so it is not read again.
+#[must_use]
+pub fn read_layout(dir: &Path, root: &Path) -> Option<WorkspaceLayout> {
+    let path = layout_path(dir, root);
+    let len = std::fs::metadata(&path).ok()?.len();
+    let parsed = (len <= MAX_LAYOUT_BYTES)
+        .then(|| std::fs::read(&path).ok())
+        .flatten()
+        .and_then(|bytes| serde_json::from_slice::<LayoutRecord>(&bytes).ok());
+    match parsed {
+        Some(record) if record.schema == LAYOUT_SCHEMA_VERSION && record.workspace == root => {
+            Some(record.layout.into_owned())
+        },
+        _ => {
+            discard(&path);
+            None
+        },
+    }
+}
+
+/// Remove the saved layout of the workspace `root` under `dir` (a no-op if
+/// none exists).
+pub fn remove_layout(dir: &Path, root: &Path) {
+    discard(&layout_path(dir, root));
+}
+
 /// Scan `dir` for all recoverable swaps (from any session). Malformed or
 /// wrong-schema files are skipped.
 #[must_use]
@@ -519,6 +654,86 @@ mod tests {
         assert!(out.write_all(b"e").is_err());
         assert!(out.exceeded);
         assert_eq!(sink, b"abcd", "nothing past the bound reaches the sink");
+    }
+
+    /// Two side-by-side panes, the second focused, with a multi-caret tab.
+    fn sample_layout() -> WorkspaceLayout {
+        let tab = |path: &str, line: u32| LayoutTab {
+            path: PathBuf::from(path),
+            cursors: CursorState {
+                selections: vec![
+                    karet_core::Selection::caret(karet_core::LineCol::new(line, 2)),
+                    karet_core::Selection::caret(karet_core::LineCol::new(line + 1, 0)),
+                ],
+                primary: 1,
+            },
+            scroll_line: line,
+            scroll_col: 0,
+            preview: false,
+        };
+        WorkspaceLayout {
+            root: LayoutNode::Split {
+                axis: LayoutAxis::Cols,
+                children: vec![
+                    LayoutNode::Pane(LayoutPane {
+                        tabs: vec![tab("/work/a.rs", 3), tab("/work/b.rs", 9)],
+                        active: 1,
+                    }),
+                    LayoutNode::Pane(LayoutPane {
+                        tabs: vec![tab("/work/c.rs", 0)],
+                        active: 0,
+                    }),
+                ],
+                weights: vec![0.7, 0.3],
+            },
+            focus: 1,
+        }
+    }
+
+    #[test]
+    fn a_layout_round_trips_per_workspace() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let (work, other) = (Path::new("/work"), Path::new("/other"));
+        write_layout(dir.path(), work, &sample_layout())?;
+        assert_eq!(read_layout(dir.path(), work), Some(sample_layout()));
+        assert_eq!(read_layout(dir.path(), other), None, "keyed by root");
+        assert!(scan(dir.path()).is_empty(), "a layout is never a swap");
+        remove_layout(dir.path(), work);
+        assert_eq!(read_layout(dir.path(), work), None);
+        Ok(())
+    }
+
+    #[test]
+    fn unreadable_or_foreign_layout_files_are_discarded() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let root = Path::new("/work");
+        let path = layout_path(dir.path(), root);
+
+        std::fs::write(&path, b"{ not json")?;
+        assert_eq!(read_layout(dir.path(), root), None);
+        assert!(!path.exists(), "a corrupt file is removed, not re-read");
+
+        let record = |schema, workspace: &'static str| LayoutRecord {
+            schema,
+            workspace: Cow::Borrowed(Path::new(workspace)),
+            layout: Cow::Owned(sample_layout()),
+        };
+        // Recorded for another root under this name, or in a future format.
+        for foreign in [
+            record(LAYOUT_SCHEMA_VERSION, "/elsewhere"),
+            record(99, "/work"),
+        ] {
+            std::fs::write(&path, serde_json::to_vec(&foreign)?)?;
+            assert_eq!(read_layout(dir.path(), root), None);
+            assert!(!path.exists());
+        }
+
+        // Past the size bound: discarded without being parsed.
+        let file = std::fs::File::create(&path)?;
+        file.set_len(MAX_LAYOUT_BYTES + 1)?;
+        assert_eq!(read_layout(dir.path(), root), None);
+        assert!(!path.exists());
+        Ok(())
     }
 
     #[test]

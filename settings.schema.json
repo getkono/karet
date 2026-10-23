@@ -1789,6 +1789,11 @@
           "description": "Which sidebar panel is shown at startup (`none` starts collapsed).",
           "$ref": "#/$defs/StartupPanel",
           "default": "explorer"
+        },
+        "restoreLayout": {
+          "description": "Reopen a workspace's tabs, splits, and cursors as the last clean exit\nleft them, when karet starts on it without a file to open.",
+          "type": "boolean",
+          "default": true
         }
       },
       "additionalProperties": false
