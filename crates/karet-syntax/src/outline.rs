@@ -309,13 +309,7 @@ mod tests {
         expected: &[&str],
     ) -> TestResult<Vec<Symbol>> {
         let extracted = symbols(path, source)?;
-        let actual = names(&extracted);
-        for name in expected {
-            assert!(
-                actual.contains(name),
-                "{path}: missing {name:?}: {extracted:#?}"
-            );
-        }
+        assert_eq!(names(&extracted), expected, "{path}: {extracted:#?}");
         Ok(extracted)
     }
 

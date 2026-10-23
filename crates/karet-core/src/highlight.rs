@@ -196,6 +196,19 @@ mod tests {
         assert_eq!(h.spans_in(span(4, 10)), &[hs(4, 8, 2)]);
         assert_eq!(h.spans_in(span(2, 11)).len(), 3);
         assert!(h.spans_in(span(8, 10)).is_empty());
+        // A window strictly inside one span returns just that span.
+        assert_eq!(h.spans_in(span(5, 7)), &[hs(4, 8, 2)]);
+    }
+
+    #[test]
+    fn translate_on_a_pure_deletion_shifts_later_spans_left() {
+        let h = Highlights::from_sorted_spans(vec![hs(0, 3, 1), hs(10, 14, 2)]);
+        // Delete [5,8): the span before is untouched, the one after slides left by 3.
+        let t = h.translate(BytePos(5), BytePos(8), BytePos(5));
+        assert_eq!(t.all(), &[hs(0, 3, 1), hs(7, 11, 2)]);
+        // Deleting up to a span's start moves it to the deletion point.
+        let t = h.translate(BytePos(4), BytePos(10), BytePos(4));
+        assert_eq!(t.all(), &[hs(0, 3, 1), hs(4, 8, 2)]);
     }
 
     #[test]
