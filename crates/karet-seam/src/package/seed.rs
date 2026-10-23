@@ -117,12 +117,25 @@ fn add_module_node(
 /// node that file already contributes as a module of its own.
 fn seed_file_tree(index: &mut SeamIndex, package: &Discovered, root_id: SeamId) -> Vec<Pending> {
     let mut queue = Vec::new();
-    let modules = crate::modules::files::walk(
+    let modules = crate::modules::files::walk_skipping(
         &package.root,
         package.kind.extensions(),
         package.kind.index_names(),
+        package.kind.vendored_directories(),
     );
-    for module in modules {
+    for mut module in modules {
+        // A C header and its source share a stem — `widget.h` declares what `widget.c`
+        // defines — and identity is the path, so named by stem the second would land on
+        // the first and replace it. The file name keeps them apart.
+        if package.kind == PackageKind::CFamily
+            && module.extract
+            && let (Some(last), Some(name)) = (
+                module.segments.last_mut(),
+                module.file.file_name().and_then(|name| name.to_str()),
+            )
+        {
+            name.clone_into(last);
+        }
         // An empty namespace path is the root's own index file, whose contents belong to
         // the package node itself rather than to a child module named after it.
         let parent = if module.segments.is_empty() {
@@ -150,8 +163,10 @@ pub(crate) fn seed(
     match package.kind {
         PackageKind::Cargo => seed_cargo(entry_points, root_id),
         PackageKind::Python => seed_python(index, package, root_id),
-        PackageKind::Node | PackageKind::Swift | PackageKind::Gradle => {
-            seed_file_tree(index, package, root_id)
-        },
+        PackageKind::Node
+        | PackageKind::Swift
+        | PackageKind::Gradle
+        | PackageKind::CFamily
+        | PackageKind::Maven => seed_file_tree(index, package, root_id),
     }
 }

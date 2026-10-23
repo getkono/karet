@@ -69,12 +69,15 @@ pub fn fingerprint() -> u64 {
     const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
     const PRIME: u64 = 0x0000_0100_0000_01b3;
     let mut hash = OFFSET;
+    // Every grammar a mapping serves, not just its first: C and C++ share a mapping and
+    // read with different queries.
     for mapping in crate::lang::registered() {
-        let language = mapping.language();
-        let source = mapping.call_query(language).unwrap_or_default();
-        for byte in language.0.to_le_bytes().iter().chain(source.as_bytes()) {
-            hash ^= u64::from(*byte);
-            hash = hash.wrapping_mul(PRIME);
+        for language in mapping.language_ids() {
+            let source = mapping.call_query(language).unwrap_or_default();
+            for byte in language.0.to_le_bytes().iter().chain(source.as_bytes()) {
+                hash ^= u64::from(*byte);
+                hash = hash.wrapping_mul(PRIME);
+            }
         }
     }
     hash

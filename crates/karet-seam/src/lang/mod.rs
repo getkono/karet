@@ -22,6 +22,10 @@ use crate::model::NodeKind;
 use crate::model::Visibility;
 use crate::text::LineIndex;
 
+#[cfg(any(feature = "lang-c", feature = "lang-cpp"))]
+pub mod cfamily;
+#[cfg(feature = "lang-java")]
+pub mod java;
 #[cfg(feature = "lang-kotlin")]
 pub mod kotlin;
 pub mod python;
@@ -99,6 +103,26 @@ pub struct Owner {
     /// for Widget` reads as `impl Display` under `Widget`, and as `impl for Widget` under
     /// `Display`. Naming is therefore per candidate rather than per construct.
     pub rename: Option<(String, String)>,
+    /// What the construct becomes when this candidate resolves to a module rather than a
+    /// type, or `None` to stay what it is.
+    ///
+    /// C++ writes `void ns::f() {}` and `void Widget::f() {}` alike, and only the owner
+    /// that resolves says which was meant: a member whose access its class declared, or
+    /// a free function with linkage of its own.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub in_module: Option<ModuleForm>,
+}
+
+/// What a construct nested under a module is, in place of what it was extracted as.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ModuleForm {
+    /// The kind it takes on.
+    pub kind: NodeKind,
+    /// The visibility it takes on.
+    pub visibility: Option<Visibility>,
+    /// The facets it takes on, replacing the ones it was extracted with.
+    pub facets: Vec<Facet>,
 }
 
 impl Owner {
@@ -109,6 +133,7 @@ impl Owner {
             name: name.into(),
             dissolve: false,
             rename: None,
+            in_module: None,
         }
     }
 
@@ -119,7 +144,15 @@ impl Owner {
             name: name.into(),
             dissolve: true,
             rename: None,
+            in_module: None,
         }
+    }
+
+    /// Become `form` if this candidate resolves to a module.
+    #[must_use]
+    pub fn in_module(mut self, form: ModuleForm) -> Self {
+        self.in_module = Some(form);
+        self
     }
 
     /// Rename the construct to `name`, addressed by `segment`, if this candidate wins.
@@ -143,6 +176,11 @@ pub struct FacetContext<'a> {
     /// This is what separates a method in a trait (a substitutable default) from the
     /// same syntax in an inherent implementation (not one).
     pub container: Option<NodeKind>,
+    /// The names of the modules written in this file around this node, outermost first.
+    ///
+    /// Not only the nearest container: a C++ function two namespaces inside an anonymous
+    /// one still has internal linkage.
+    pub modules: &'a [String],
     /// Type parameter names in scope on the enclosing declaration.
     ///
     /// A blanket implementation is one whose self type *is* one of these, and that is
@@ -175,6 +213,14 @@ impl FacetContext<'_> {
 pub trait SeamLanguage {
     /// Which grammar this maps.
     fn language(&self) -> LanguageId;
+
+    /// Every grammar this maps, [`Self::language`] first.
+    ///
+    /// One for most languages. A mapping serving several grammars — TypeScript and
+    /// JavaScript, C and C++ — lists them all, since each reads with its own call query.
+    fn language_ids(&self) -> Vec<LanguageId> {
+        vec![self.language()]
+    }
 
     /// Map one syntax node onto a universal kind, or `None` if it is not a node at all.
     ///
@@ -278,6 +324,16 @@ pub trait SeamLanguage {
         false
     }
 
+    /// The lenses this mapping does not read at all.
+    ///
+    /// A lens with no facets on a node normally means the index looked and found nothing.
+    /// A mapping that never looks — a language mapped for containment and visibility
+    /// only — names those lenses here, so the view can say "not read" (`?`) rather than
+    /// "none" (`—`). Empty, the default, means every lens is read.
+    fn unread_lenses(&self) -> &'static [Lens] {
+        &[]
+    }
+
     /// The edge kinds this language's semantic tier can resolve. May be empty.
     fn semantic_capabilities(&self) -> &'static [EdgeKind];
 
@@ -349,6 +405,10 @@ pub fn registered() -> Vec<&'static dyn SeamLanguage> {
     out.push(swift::mapping());
     #[cfg(feature = "lang-kotlin")]
     out.push(kotlin::mapping());
+    #[cfg(any(feature = "lang-c", feature = "lang-cpp"))]
+    out.push(cfamily::mapping());
+    #[cfg(feature = "lang-java")]
+    out.push(java::mapping());
     out
 }
 
@@ -401,6 +461,16 @@ pub fn for_language(language: LanguageId) -> Option<&'static dyn SeamLanguage> {
     {
         return Some(kotlin::mapping());
     }
+    #[cfg(any(feature = "lang-c", feature = "lang-cpp"))]
+    if cfamily::language_ids().contains(&language) {
+        return Some(cfamily::mapping());
+    }
+    #[cfg(feature = "lang-java")]
+    if let Some(java) = java::language_id()
+        && java == language
+    {
+        return Some(java::mapping());
+    }
     let _ = language;
     None
 }
@@ -438,6 +508,7 @@ mod tests {
             lines: &lines,
             attributes: &attributes,
             container: None,
+            modules: &[],
             type_parameters: &[],
         };
         assert_eq!(ctx.attribute("cfg").map(Attribute::args), Some("unix"));
@@ -454,6 +525,7 @@ mod tests {
                 name: "Widget".to_owned(),
                 dissolve: false,
                 rename: None,
+                in_module: None,
             }
         );
         let dissolved = Owner::dissolved("Widget");

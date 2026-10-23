@@ -14,7 +14,7 @@
 //! Two rules shape the result:
 //!
 //! - **Every ecosystem always runs.** Cargo discovery does not suppress Python discovery,
-//!   nor Node, Swift or Gradle. A repository with a Rust workspace, a Python service and
+//!   nor Node, Swift, Gradle, Maven or C/C++. A repository with a Rust workspace, a Python service and
 //!   a TypeScript front end is one repository, and answering with only part of it would
 //!   be a quieter kind of wrong than failing.
 //! - **The order is stable and meaningful.** Outermost first, then declaration order, then
@@ -46,6 +46,10 @@ pub enum PackageKind {
     Swift,
     /// A Gradle module, marked by `build.gradle{,.kts}`, one root per source set.
     Gradle,
+    /// A C or C++ project, marked by `CMakeLists.txt`, `meson.build` or a `Makefile`.
+    CFamily,
+    /// A Maven module, marked by `pom.xml`, one root per source set.
+    Maven,
 }
 
 impl PackageKind {
@@ -58,8 +62,23 @@ impl PackageKind {
         match self {
             Self::Node => &["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs"],
             Self::Swift => &["swift"],
-            Self::Gradle => &["kt", "kts"],
+            Self::Gradle => &["kt", "kts", "java"],
+            Self::CFamily => &["c", "h", "cc", "cpp", "cxx", "hpp", "hh", "hxx"],
+            Self::Maven => &["java"],
             Self::Cargo | Self::Python => &[],
+        }
+    }
+
+    /// Directory names this ecosystem copies other people's code into.
+    ///
+    /// Per ecosystem, not global: C and C++ vendor dependencies under `third_party` or
+    /// meson's `subprojects`, while a Gradle build keeps its own modules under
+    /// `subprojects` and must not lose them.
+    #[must_use]
+    pub fn vendored_directories(self) -> &'static [&'static str] {
+        match self {
+            Self::CFamily => &["third_party", "3rdparty", "subprojects"],
+            _ => &[],
         }
     }
 
@@ -130,8 +149,14 @@ pub fn discover(root: &Path, options: DiscoveryOptions) -> Vec<Discovered> {
     found.extend(python::discover(root, options));
     found.extend(trees::discover(root, options));
 
-    let mut seen: HashSet<PathBuf> = HashSet::new();
-    found.retain(|package| seen.insert(package.root.clone()));
+    // One package per root, so two ecosystems reading the same files do not index them
+    // twice — except C/C++, whose extensions no other ecosystem reads: a Cargo crate or a
+    // Node addon with a `CMakeLists.txt` beside its manifest has C sources nothing else
+    // would index, and the C walk has already pruned the nested projects below them.
+    let mut seen: HashSet<(PathBuf, bool)> = HashSet::new();
+    found.retain(|package| {
+        seen.insert((package.root.clone(), package.kind == PackageKind::CFamily))
+    });
     found.truncate(options.max_packages);
     found
 }

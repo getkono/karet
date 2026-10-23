@@ -239,6 +239,63 @@ fn a_qualifier_does_not_reach_into_another_languages_package() -> TestResult {
 }
 
 #[test]
+fn a_method_named_by_one_contract_dispatches_through_it() -> TestResult {
+    if crate::lang::rust::language_id().is_none() {
+        return Ok(());
+    }
+    let dir = rust(
+        "pub trait Shape { fn area(&self) -> u32; }\n\
+         pub struct Square;\n\
+         impl Shape for Square { fn area(&self) -> u32 { 4 } }\n\
+         pub struct Circle;\n\
+         impl Shape for Circle { fn area(&self) -> u32 { 3 } }\n\
+         pub fn total(s: &dyn Shape) -> u32 { s.area() }\n",
+    )?;
+    let index = index(dir.path())?;
+    let total = calls(&index, "k::total")?;
+    assert!(
+        total.contains(&("k::Shape::area".to_owned(), Resolution::Dispatch)),
+        "{total:?}"
+    );
+    assert_eq!(
+        total
+            .iter()
+            .filter(|(_, r)| *r == Resolution::DispatchImpl)
+            .count(),
+        2,
+        "{total:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn an_unrelated_method_of_the_same_name_keeps_the_call_ambiguous() -> TestResult {
+    if crate::lang::rust::language_id().is_none() {
+        return Ok(());
+    }
+    let dir = rust(
+        "pub trait Render { fn render(&self) -> u32; }\n\
+         pub struct Card;\n\
+         impl Render for Card { fn render(&self) -> u32 { 1 } }\n\
+         pub struct Page;\n\
+         impl Page { pub fn render(&self) -> u32 { 2 } }\n\
+         pub fn show(p: &Page) -> u32 { p.render() }\n",
+    )?;
+    let index = index(dir.path())?;
+    let show = calls(&index, "k::show")?;
+    // `Page::render` implements nothing, so the call may be to it: nothing is established.
+    assert!(
+        show.iter().all(|(_, r)| *r == Resolution::Ambiguous),
+        "{show:?}"
+    );
+    assert!(
+        show.contains(&("k::Page::render".to_owned(), Resolution::Ambiguous)),
+        "{show:?}"
+    );
+    Ok(())
+}
+
+#[test]
 fn the_graph_answers_callers_reached_by_and_external_apis() -> TestResult {
     if crate::lang::rust::language_id().is_none() {
         return Ok(());

@@ -48,7 +48,7 @@ and a query spans all of them at once:
  karet-diff   ▸ 31│▸provider      ▸ 3│▸SymbolProvider  ◉◊ 2
 ```
 
-Five ecosystems are read, and every one of them always runs — a repository with a Rust
+Seven ecosystems are read, and every one of them always runs — a repository with a Rust
 workspace, a Python service and a TypeScript front end is one repository, and answering
 with only part of it would be a quieter kind of wrong than failing.
 
@@ -59,6 +59,16 @@ with only part of it would be a quieter kind of wrong than failing.
 | `package.json` | `src`, or the package directory | package |
 | `Package.swift` | `Sources/<Target>` | target |
 | `build.gradle{,.kts}` | `src/<set>/{kotlin,java}` | source set |
+| `pom.xml` | `src/<set>/java` | source set |
+| `CMakeLists.txt`, `meson.build`, `Makefile`, `GNUmakefile` | the project directory | project |
+
+C and C++ have no manifest, so the build file stands in for one. A CMake project usually
+has one in every directory, so the outermost claims the tree beneath it. A bare `Makefile`
+is every kind of project's build file, so it marks a C project only when C or C++ sources
+sit beside it or in its `src`. A directory is one package even when two manifests mark
+it, except that a C/C++ project is kept beside whatever else roots there: a Rust crate or
+Node addon with a `CMakeLists.txt` next to its manifest is two packages, since no other
+ecosystem reads C or C++ sources.
 
 Four Cargo shapes are read: a package, a virtual `[workspace]` root, a root that is both,
 and a root with no manifest whose crates sit a level or two down (`rust/api/`,
@@ -68,15 +78,18 @@ and a root with no manifest whose crates sit a level or two down (`rust/api/`,
 where to look next, so a Cargo crate is walked by following declarations. Everywhere else
 a file is a module and a directory holding source is a namespace, so the tree is read off
 the filesystem — with the `__init__.py`/`index.ts` convention honoured where a language
-has one, meaning that file *is* its directory rather than a module beside it. Swift and
-Kotlin have no such convention, so every file there is its own module.
+has one, meaning that file *is* its directory rather than a module beside it. Swift,
+Kotlin, Java, C and C++ have no such convention, so every file there is its own module.
 
 **A package's name comes from the directory, not the manifest**, everywhere except Cargo.
 A `[project] name` is a *distribution* name and a `package.json` name may be scoped;
 neither need match anything importable, and the directory is both what a reader sees and
 what an import path is made of.
 
-Build output, dependency caches, and virtual environments are never walked. `seam.maxIndexedFiles`
+Build output (including `cmake-build-*`), dependency caches, `vendor`, and virtual
+environments are never walked. A C or C++ project also leaves out `third_party`,
+`3rdparty` and meson's `subprojects`, where those languages copy their dependencies in —
+only there, since a Gradle build keeps its own modules under `subprojects`. `seam.maxIndexedFiles`
 caps the whole index rather than each package, and the header says so when it bites.
 
 ## Syncing, and what is kept between runs
@@ -171,6 +184,35 @@ not extend it. Subtypes *within* a lens are open, so each language names its own
 | `variation` | decorators, conditional types, dynamic `import()`, `process.env` branches | `#if`, `@available`, `@propertyWrapper`, attributes | annotations, `expect`/`actual`, `inline`, `reified` |
 | `boundary` | package imports, `declare module`, `globalThis` | `@_cdecl`, `@objc`, `@_silgen_name`, `@main`, module imports | `external fun`, `@Jvm*`, `main`, imports |
 | `hazard` | `async`, await points, `as any`, `!`, `@ts-ignore`, `eval` | `async`, await points, `throws`, `try!`/`as!`, unsafe pointers, `@unchecked` | `suspend`, `!!`, `lateinit`, `@Volatile` |
+
+C, C++ and Java are mapped for **containment and the `api` lens only**:
+
+| Lens | C / C++ | Java |
+|---|---|---|
+| `api` | `static` and `extern` linkage of functions (inside an anonymous namespace, `static`); C++ `public:`/`protected:`/`private:` sections | `public`, `protected`, `private`, package-private |
+| `substitution` · `variation` · `boundary` · `hazard` | `?` — not read | `?` — not read |
+
+A lens a language does not read shows `?` and "not read for this language" in the facet
+pane, its rollup is `null` in `--seam-query`, and the node lists it under
+`unread_lenses`, because showing `—` would claim the index looked and found nothing.
+A lens is unread at a node only when neither its language nor any language beneath it
+reads the lens: a directory of a Gradle source set mixing Java and Kotlin counts what its
+Kotlin files carry, so it reports their counts whichever file it is anchored on.
+Those three surfaces are the only ones that carry the distinction: the spine's lens
+filter and the query language stay two-valued, matching what carries a facet of the lens,
+so `!lens:hazard` includes a node whose `hazard` is unread, and the filter counts and
+dims it as having none. A
+C or C++ file is a module named by its whole file name — `widget.h` and `widget.c` are
+two modules, since a header and its source share a stem. A C++ method defined outside its
+class (`void Widget::draw() {…}`) is regrouped under the class beside its declaration, as
+a Rust `impl` is, and claims no access of its own. The same shape with a namespace as its
+owner (`int geo::scale() {…}`) is regrouped under that namespace as a free function with
+`extern` linkage.
+
+One known limit: a `.h` file is always read with the C grammar, as its extension says. A
+C++ class declared in a `.h` therefore parses as damaged C (its nodes are marked
+partial), its out-of-line methods have no class to regroup under, and a method called on
+it resolves as external. Declaring C++ classes in `.hpp`/`.hh` avoids this.
 
 Each language names its own subtypes and a query accepts any of them, so
 `substitution:blanket-impl`, `substitution:protocol` and `substitution:implements` are all
@@ -415,14 +457,16 @@ The scope rules, first match wins: a `self`/`this` receiver means the caller's o
 a qualifier (`net::send`, `Widget.create`) means the container it names, and one the
 index does not hold means an external callee — a Cargo package is named as code writes
 it, `karet_core` for `karet-core`; a method on a named value is exact when the only
-member of that name in the language is in the caller's package, and otherwise every
-candidate is ambiguous; a method on a call's result (`xs.iter().filter(…)`) is never
-exact, since its type is unknown; a free call means, in Rust, Python and TypeScript, the
-caller's module, then its file, its imports, a type of that name (a constructor), and its
-package. Kotlin and Swift first check a member of the caller's type, since a bare name can
-reach one there, and then check the file before the module, since a module there spans
-files and a file-private helper beats its namesake elsewhere; the imports, constructor and
-package follow as before. A free name found only in
+member of that name in the language is in the caller's package, a dispatch when one of
+the candidates is a contract's declaration and every other names that contract as what it
+implements, and otherwise every candidate is ambiguous; a method on a call's result
+(`xs.iter().filter(…)`) is never exact, since its type is unknown; a free call means, in
+Rust, Python and TypeScript, the caller's module, then its file, its imports, a type of
+that name (a constructor), and its package. Kotlin, Swift, Java and the C family first
+check a member of the caller's type, since a bare name can reach one there (C has no
+members, so the check finds nothing), and then check the file before the module, since a
+module there spans files and a file-private helper beats its namesake elsewhere; the
+imports, constructor and package follow as before. A free name found only in
 another package is ambiguous, since nothing imported it. Candidates are always in the
 caller's language family, the ones the host build has win over gated-out twins, and a
 definition wins over its bare declaration.
@@ -450,7 +494,7 @@ A language's whole part in this is one tree-sitter query in
 `@call.external` and `@call.weak`; `@body` on callable bodies; `@comment`; and
 `@import.path`, `@import.prefix`, `@import.alias`, `@import.glob` and `@import.head`
 (an import binding its first segment, as Python's `import a.b` does). A language whose
-bare names can reach a member of the enclosing type — Kotlin, Swift — also says so with
+bare names can reach a member of the enclosing type — Kotlin, Swift, Java, C++ — also says so with
 `SeamLanguage::implicit_receiver`. Attribution, line counting, resolution and measuring
 are language-neutral.
 
@@ -462,7 +506,7 @@ The view keeps three answers apart that a less careful one would flatten into a 
 |---|---|
 | `—` | the index looked, and there is nothing |
 | `…` | not resolved yet |
-| `?` | never resolvable |
+| `?` | never resolvable — or, on a lens, a lens this language's mapping does not read |
 
 The same care applies at the package level. A truncated index says so, unresolved modules
 are counted in the header rather than silently omitted, a file that did not parse cleanly
@@ -495,7 +539,9 @@ cascading navigator cannot afford — and a large crate flattens to a few hundre
 Adding one must not change the view, the query language, the lens set, or the model. A
 language contributes a mapping from its constructs to the universal node kinds, a mapping
 from its constructs to lens facets, and a declaration of what its semantic tier can
-resolve — which may be empty, in which case the view degrades rather than failing.
+resolve — which may be empty, in which case the view degrades rather than failing. A
+mapping that reads only some lenses names the rest in `SeamLanguage::unread_lenses`, so the
+view can tell "not read" from "none"; its [call query](#adding-a-language) is separate.
 
 Python is the conformance test, chosen because it shares almost nothing structurally with
 Rust: no visibility keyword, no `cfg`, no monomorphized generics, no module-per-file rule.
@@ -516,7 +562,8 @@ See [`configuration.md`](configuration.md#seam) for the `seam.*` keys.
 | Source preview with context | ✅ shipped |
 | Query language + `--seam-query` | ✅ shipped |
 | Configuration switching (three-valued `cfg`) | ✅ shipped |
-| Rust + Python mappings | ✅ shipped |
+| Rust, Python, TypeScript/JavaScript, Swift, Kotlin mappings | ✅ shipped |
+| C, C++, Java mappings (containment + `api`; other lenses `?`) | ✅ shipped |
 | Workspace / multi-package / nested-crate discovery | ✅ shipped |
 | Choosing a start point | ✅ shipped |
 | Call edges, own/inclusive/tree-weighted lines, `reach:`/`callers:` | ✅ shipped |

@@ -57,7 +57,6 @@ struct Frame {
     depth: u16,
     id: SeamId,
     kind: NodeKind,
-    name: String,
     path: SeamPath,
     type_parameters: Vec<String>,
 }
@@ -131,10 +130,10 @@ pub fn extract_file(
             depth: 0,
             id: parent,
             kind: parent_kind,
-            name: String::new(),
             path: parent_path,
             type_parameters: Vec::new(),
         }],
+        modules: Vec::new(),
         pending: Vec::new(),
         ordinals: HashMap::new(),
         outcome: ExtractOutcome::default(),
@@ -153,6 +152,8 @@ struct Extractor<'a> {
     lines: &'a LineIndex,
     file: FileId,
     stack: Vec<Frame>,
+    /// The names of the module frames above frame 0, kept in step with `stack`.
+    modules: Vec<String>,
     pending: Vec<(u16, Attribute)>,
     ordinals: HashMap<(SeamId, String), u32>,
     outcome: ExtractOutcome,
@@ -164,7 +165,9 @@ impl Extractor<'_> {
         let depth = node.depth();
         // Everything deeper than this node is finished, so unwind to its level.
         while self.stack.len() > 1 && self.stack.last().is_some_and(|f| f.depth >= depth) {
-            self.stack.pop();
+            if self.stack.pop().is_some_and(|f| f.kind == NodeKind::Module) {
+                self.modules.pop();
+            }
         }
 
         // A decoration is read by the language, since only it knows what one looks
@@ -219,6 +222,7 @@ impl Extractor<'_> {
             lines: self.lines,
             attributes,
             container: self.stack.last().map(|f| f.kind),
+            modules: &self.modules,
             type_parameters: self.stack.last().map_or(&[][..], |f| &f.type_parameters),
         }
     }
@@ -255,7 +259,9 @@ impl Extractor<'_> {
         let id = self.index.intern(path.clone());
         let type_parameters = self.mapping.type_parameters(node, self.text);
 
-        let name = classified.name.clone();
+        if classified.kind == NodeKind::Module {
+            self.modules.push(classified.name.clone());
+        }
         self.index.insert(Node {
             id,
             kind: classified.kind,
@@ -281,7 +287,6 @@ impl Extractor<'_> {
             depth,
             id,
             kind: classified.kind,
-            name,
             path,
             type_parameters,
         });
@@ -294,12 +299,7 @@ impl Extractor<'_> {
     /// opened by a `mod … { … }` in this file, and each one deepens where a nested
     /// `mod x;` looks for its file.
     fn inline_module_path(&self) -> Vec<String> {
-        self.stack
-            .iter()
-            .skip(1)
-            .filter(|frame| frame.kind == NodeKind::Module)
-            .map(|frame| frame.name.clone())
-            .collect()
+        self.modules.clone()
     }
 
     /// Disambiguate a segment against its siblings.

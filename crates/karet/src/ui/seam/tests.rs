@@ -36,6 +36,7 @@ fn node(id: &str, parent: Option<&str>, children: &[&str], rollups: [u32; 5]) ->
         visibility: Some("public".to_owned()),
         membership: "active".to_owned(),
         provisional: false,
+        unread_lenses: Vec::new(),
     }
 }
 
@@ -201,6 +202,44 @@ fn the_facet_pane_spells_out_every_lens_including_the_empty_ones() {
         rendered.contains('—'),
         "an empty lens must read as absent:\n{rendered}"
     );
+}
+
+#[test]
+fn a_lens_the_language_does_not_read_says_so_rather_than_none() {
+    let mut state = SeamViewState::pending(std::path::PathBuf::new());
+    let mut function = node("demo::area", Some("demo"), &[], [1, 0, 0, 0, 0]);
+    function.kind = "function".to_owned();
+    function.facets = vec![facet("api", "extern")];
+    function.unread_lenses = vec!["hazard".to_owned(), "boundary".to_owned()];
+    state.adopt(
+        summary(),
+        vec![
+            node("demo", None, &["demo::area"], [1, 0, 0, 0, 0]),
+            function,
+        ],
+    );
+    state.select_path("demo::area");
+    let buf = render(&mut state, 120, 24);
+    let rendered = text(&buf);
+    let line_of = |lens: &str| {
+        rendered
+            .lines()
+            .find(|line| line.contains(&format!(" {lens} ")))
+            .unwrap_or_default()
+            .to_owned()
+    };
+    // Never looked at: `?`, said in words.
+    assert!(
+        line_of("hazard").contains("? not read for this language"),
+        "{rendered}"
+    );
+    assert!(
+        line_of("boundary").contains("? not read for this language"),
+        "{rendered}"
+    );
+    // Looked at and empty: `—`, as before.
+    assert!(line_of("variation").contains('—'), "{rendered}");
+    assert!(!line_of("variation").contains('?'), "{rendered}");
 }
 
 #[test]
