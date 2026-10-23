@@ -17,6 +17,13 @@
 //! follows its **own** SemVer line starting at `1.0.0`. See the crate `README.md`.
 
 mod blame;
+
+/// Compiles the crate `README.md` examples as doctests, so the published usage
+/// snippet cannot drift from the API.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;
+
 #[cfg(feature = "treesitter")]
 mod treesitter;
 
