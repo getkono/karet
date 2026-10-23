@@ -26,6 +26,7 @@ fn feature_label(feature: ServerFeature) -> &'static str {
         ServerFeature::Formatting => "formatting",
         ServerFeature::RangeFormatting => "formatting a selection",
         ServerFeature::CodeAction => "code actions",
+        ServerFeature::LinkedEditingRange => "linked editing",
         _ => "this request",
     }
 }
@@ -68,6 +69,7 @@ impl App {
             // Likewise a quick-fix request: its empty answer must not add
             // "none available" to a notice that already says why.
             self.refuse_code_actions(id);
+            self.refuse_linked_editing(id);
         }
         self.notify(
             Report::Refusal,

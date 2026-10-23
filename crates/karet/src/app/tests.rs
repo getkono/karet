@@ -24,6 +24,7 @@ mod definition;
 mod deps;
 mod diff_view;
 mod display_settings;
+mod edit_requests;
 mod editor_drag;
 mod editor_mouse;
 mod explorer;

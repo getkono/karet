@@ -32,11 +32,13 @@ mod inline_macros;
 mod input;
 mod language_servers;
 mod lifecycle;
+mod linked_editing;
 mod markdown_edit;
 mod mouse;
 mod navigation;
 mod notifications;
 mod occurrences;
+mod on_type;
 mod panes;
 mod pending;
 mod problems;
@@ -667,6 +669,12 @@ pub struct App {
     /// The Expand Selection waiting on the server's selection ranges, if any
     /// (see [`syntax_select`]).
     pub(crate) pending_expand: Option<syntax_select::PendingExpand>,
+    /// The Start Linked Editing waiting on the server's linked ranges, if
+    /// any (see [`linked_editing`]).
+    pub(crate) pending_linked: Option<linked_editing::PendingLinked>,
+    /// On-type formatting: the request in flight, each document's trigger
+    /// characters, and the session toggle (see [`on_type`]).
+    pub(crate) on_type: on_type::OnTypeState,
     /// The open hover popup, if any.
     pub(crate) hover_ui: Option<crate::hover::HoverUi>,
     /// Signature help: the request in flight, the open popup, and each
