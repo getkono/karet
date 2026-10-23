@@ -60,6 +60,7 @@ async fn dynamic_registration_is_declared_only_where_it_is_honoured() -> TestRes
         "hover",
         "definition",
         "implementation",
+        "callHierarchy",
         "typeHierarchy",
         "documentSymbol",
         "rename",
