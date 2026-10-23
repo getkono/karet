@@ -1,16 +1,15 @@
 use std::path::Path;
 use std::path::PathBuf;
-use std::process::Command;
 use std::sync::Mutex;
-use std::sync::atomic::AtomicU32;
-use std::sync::atomic::Ordering;
 
 use crate::Repository;
 use crate::Selection;
 use crate::StatusKind;
 use crate::VcsError;
+use crate::test_support::TestRepo;
+use crate::test_support::git;
+use crate::test_support::write;
 
-static COUNTER: AtomicU32 = AtomicU32::new(0);
 /// Serializes the tests that mutate the process-wide current directory.
 static CWD_LOCK: Mutex<()> = Mutex::new(());
 
@@ -23,63 +22,15 @@ impl Drop for CwdGuard {
     }
 }
 
-/// A temp directory removed on drop.
-struct TempRepo {
-    path: PathBuf,
-}
-
-impl Drop for TempRepo {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
-    }
-}
-
-/// Allocate a unique, not-yet-created temp directory path.
-fn unique_dir() -> PathBuf {
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!("karet-vcs-{}-{}", std::process::id(), n))
-}
-
-/// Run `git` in `dir`, surfacing any failure as a [`VcsError`].
-fn git(dir: &Path, args: &[&str]) -> Result<(), VcsError> {
-    let status = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .status()
-        .map_err(|e| VcsError::Git(e.to_string()))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(VcsError::Git(format!("git {args:?} exited with {status}")))
-    }
-}
-
 /// Create an initialized repository in a fresh temp directory.
-fn init_repo() -> Result<TempRepo, VcsError> {
-    let path = unique_dir();
-    std::fs::create_dir_all(&path).map_err(|e| VcsError::Git(e.to_string()))?;
-    let repo = TempRepo { path };
-    git(&repo.path, &["init", "-q"])?;
-    git(&repo.path, &["config", "user.email", "test@example.com"])?;
-    git(&repo.path, &["config", "user.name", "karet test"])?;
-    git(&repo.path, &["config", "commit.gpgsign", "false"])?;
-    Ok(repo)
-}
-
-/// Write `contents` to `rel` inside `dir`.
-fn write(dir: &Path, rel: &str, contents: &[u8]) -> Result<(), VcsError> {
-    let path = dir.join(rel);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| VcsError::Git(e.to_string()))?;
-    }
-    std::fs::write(&path, contents).map_err(|e| VcsError::Git(e.to_string()))
+fn init_repo() -> Result<TestRepo, VcsError> {
+    crate::test_support::init("changes")
 }
 
 #[test]
 fn discover_non_repo_then_repo() -> Result<(), VcsError> {
-    let dir = unique_dir();
-    std::fs::create_dir_all(&dir).map_err(|e| VcsError::Git(e.to_string()))?;
-    let guard = TempRepo { path: dir.clone() };
+    let scratch = crate::test_support::scratch_dir("discover")?;
+    let dir = scratch.0.clone();
 
     assert!(matches!(
         Repository::discover(&dir),
@@ -88,16 +39,14 @@ fn discover_non_repo_then_repo() -> Result<(), VcsError> {
 
     git(&dir, &["init", "-q"])?;
     assert!(Repository::discover(&dir).is_ok());
-
-    drop(guard);
     Ok(())
 }
 
 #[test]
 fn untracked_file_is_unstaged() -> Result<(), VcsError> {
     let repo = init_repo()?;
-    write(&repo.path, "new.txt", b"hello\n")?;
-    let r = Repository::discover(&repo.path)?;
+    write(&repo.0, "new.txt", b"hello\n")?;
+    let r = Repository::discover(&repo.0)?;
 
     assert_eq!(r.default_selection()?, Some(Selection::Unstaged));
 
@@ -115,12 +64,12 @@ fn untracked_file_is_unstaged() -> Result<(), VcsError> {
 #[test]
 fn staged_modification_has_old_and_new() -> Result<(), VcsError> {
     let repo = init_repo()?;
-    write(&repo.path, "a.txt", b"one\n")?;
-    git(&repo.path, &["add", "a.txt"])?;
-    git(&repo.path, &["commit", "-q", "-m", "init"])?;
-    write(&repo.path, "a.txt", b"two\n")?;
-    git(&repo.path, &["add", "a.txt"])?;
-    let r = Repository::discover(&repo.path)?;
+    write(&repo.0, "a.txt", b"one\n")?;
+    git(&repo.0, &["add", "a.txt"])?;
+    git(&repo.0, &["commit", "-q", "-m", "init"])?;
+    write(&repo.0, "a.txt", b"two\n")?;
+    git(&repo.0, &["add", "a.txt"])?;
+    let r = Repository::discover(&repo.0)?;
 
     assert_eq!(r.default_selection()?, Some(Selection::Staged));
 
@@ -137,11 +86,11 @@ fn staged_modification_has_old_and_new() -> Result<(), VcsError> {
 #[test]
 fn unstaged_modification_has_old_and_new() -> Result<(), VcsError> {
     let repo = init_repo()?;
-    write(&repo.path, "a.txt", b"one\n")?;
-    git(&repo.path, &["add", "a.txt"])?;
-    git(&repo.path, &["commit", "-q", "-m", "init"])?;
-    write(&repo.path, "a.txt", b"two\n")?; // modify the worktree, do not stage
-    let r = Repository::discover(&repo.path)?;
+    write(&repo.0, "a.txt", b"one\n")?;
+    git(&repo.0, &["add", "a.txt"])?;
+    git(&repo.0, &["commit", "-q", "-m", "init"])?;
+    write(&repo.0, "a.txt", b"two\n")?; // modify the worktree, do not stage
+    let r = Repository::discover(&repo.0)?;
 
     let changes = r.changes(Selection::Unstaged, None)?;
     assert_eq!(changes.len(), 1);
@@ -156,8 +105,8 @@ fn unstaged_modification_has_old_and_new() -> Result<(), VcsError> {
 #[test]
 fn binary_file_is_marked_binary() -> Result<(), VcsError> {
     let repo = init_repo()?;
-    write(&repo.path, "bin.dat", b"abc\x00def")?;
-    let r = Repository::discover(&repo.path)?;
+    write(&repo.0, "bin.dat", b"abc\x00def")?;
+    let r = Repository::discover(&repo.0)?;
 
     let changes = r.changes(Selection::Unstaged, None)?;
     assert_eq!(changes.len(), 1);
@@ -171,10 +120,10 @@ fn binary_file_is_marked_binary() -> Result<(), VcsError> {
 #[test]
 fn clean_repo_has_no_default_selection() -> Result<(), VcsError> {
     let repo = init_repo()?;
-    write(&repo.path, "a.txt", b"one\n")?;
-    git(&repo.path, &["add", "a.txt"])?;
-    git(&repo.path, &["commit", "-q", "-m", "init"])?;
-    let r = Repository::discover(&repo.path)?;
+    write(&repo.0, "a.txt", b"one\n")?;
+    git(&repo.0, &["add", "a.txt"])?;
+    git(&repo.0, &["commit", "-q", "-m", "init"])?;
+    let r = Repository::discover(&repo.0)?;
 
     assert_eq!(r.default_selection()?, None);
     Ok(())
@@ -183,11 +132,11 @@ fn clean_repo_has_no_default_selection() -> Result<(), VcsError> {
 #[test]
 fn pathspec_equal_to_repo_root_is_no_filter() -> Result<(), VcsError> {
     let repo = init_repo()?;
-    write(&repo.path, "a.txt", b"hi\n")?;
-    let r = Repository::discover(&repo.path)?;
+    write(&repo.0, "a.txt", b"hi\n")?;
+    let r = Repository::discover(&repo.0)?;
     // Passing the repo root as the pathspec yields an empty relative pattern,
     // which must be treated as "no filter" rather than erroring.
-    let changes = r.changes(Selection::Unstaged, Some(&repo.path))?;
+    let changes = r.changes(Selection::Unstaged, Some(&repo.0))?;
     assert_eq!(changes.len(), 1);
     assert_eq!(changes[0].path, PathBuf::from("a.txt"));
     Ok(())
@@ -199,14 +148,14 @@ fn cwd_relative_pathspec_resolves_against_current_dir() -> Result<(), VcsError> 
     // current directory, not the repo root. Pointing it at the repo root itself
     // must reduce to an empty (no-op) filter, so the change is still reported.
     let repo = init_repo()?;
-    write(&repo.path, "a.txt", b"hi\n")?;
+    write(&repo.0, "a.txt", b"hi\n")?;
     let parent = repo
-        .path
+        .0
         .parent()
         .ok_or_else(|| VcsError::Git("temp repo has no parent".into()))?
         .to_path_buf();
     let name = repo
-        .path
+        .0
         .file_name()
         .ok_or_else(|| VcsError::Git("temp repo has no name".into()))?
         .to_owned();
@@ -228,9 +177,9 @@ fn untracked_files_in_new_dir_are_listed() -> Result<(), VcsError> {
     // A brand-new, wholly-untracked directory tree: every file inside it must
     // surface, not just the top-level ones.
     let repo = init_repo()?;
-    write(&repo.path, "newdir/a.txt", b"aaa\n")?;
-    write(&repo.path, "newdir/sub/b.txt", b"bbb\n")?;
-    let r = Repository::discover(&repo.path)?;
+    write(&repo.0, "newdir/a.txt", b"aaa\n")?;
+    write(&repo.0, "newdir/sub/b.txt", b"bbb\n")?;
+    let r = Repository::discover(&repo.0)?;
 
     let changes = r.changes(Selection::Unstaged, None)?;
     let paths: Vec<PathBuf> = changes.iter().map(|c| c.path.clone()).collect();
@@ -249,13 +198,13 @@ fn untracked_files_in_new_dir_are_listed() -> Result<(), VcsError> {
 fn staged_rename_is_detected_even_when_config_disables_renames() -> Result<(), VcsError> {
     let repo = init_repo()?;
     // Explicitly turn rename detection off in config; the SCM view forces it on.
-    git(&repo.path, &["config", "diff.renames", "false"])?;
-    write(&repo.path, "old.txt", b"one\ntwo\nthree\nfour\nfive\n")?;
-    git(&repo.path, &["add", "old.txt"])?;
-    git(&repo.path, &["commit", "-q", "-m", "init"])?;
+    git(&repo.0, &["config", "diff.renames", "false"])?;
+    write(&repo.0, "old.txt", b"one\ntwo\nthree\nfour\nfive\n")?;
+    git(&repo.0, &["add", "old.txt"])?;
+    git(&repo.0, &["commit", "-q", "-m", "init"])?;
     // `git mv` stages the rename (updates the index).
-    git(&repo.path, &["mv", "old.txt", "new.txt"])?;
-    let r = Repository::discover(&repo.path)?;
+    git(&repo.0, &["mv", "old.txt", "new.txt"])?;
+    let r = Repository::discover(&repo.0)?;
 
     let changes = r.changes(Selection::Staged, None)?;
     let fc = changes
@@ -270,14 +219,14 @@ fn staged_rename_is_detected_even_when_config_disables_renames() -> Result<(), V
 #[test]
 fn staged_copy_is_reported_as_copied_not_renamed() -> Result<(), VcsError> {
     let repo = init_repo()?;
-    write(&repo.path, "src.txt", b"one\ntwo\nthree\nfour\nfive\n")?;
-    git(&repo.path, &["add", "src.txt"])?;
-    git(&repo.path, &["commit", "-q", "-m", "init"])?;
+    write(&repo.0, "src.txt", b"one\ntwo\nthree\nfour\nfive\n")?;
+    git(&repo.0, &["add", "src.txt"])?;
+    git(&repo.0, &["commit", "-q", "-m", "init"])?;
     // Copy the file and edit the source, which is the shape copy detection keys on.
-    write(&repo.path, "copy.txt", b"one\ntwo\nthree\nfour\nfive\n")?;
-    write(&repo.path, "src.txt", b"one\nTWO\nthree\nfour\nfive\n")?;
-    git(&repo.path, &["add", "-A"])?;
-    let r = Repository::discover(&repo.path)?;
+    write(&repo.0, "copy.txt", b"one\ntwo\nthree\nfour\nfive\n")?;
+    write(&repo.0, "src.txt", b"one\nTWO\nthree\nfour\nfive\n")?;
+    git(&repo.0, &["add", "-A"])?;
+    let r = Repository::discover(&repo.0)?;
 
     let changes = r.changes(Selection::Staged, None)?;
     let seen: Vec<(&Path, StatusKind)> = changes
@@ -308,18 +257,18 @@ fn rewrite_status_distinguishes_a_copy_from_a_rename() {
 #[test]
 fn staged_changes_during_a_merge_do_not_error() -> Result<(), VcsError> {
     let repo = init_repo()?;
-    write(&repo.path, "a.txt", b"base\n")?;
-    git(&repo.path, &["add", "a.txt"])?;
-    git(&repo.path, &["commit", "-q", "-m", "base"])?;
-    git(&repo.path, &["checkout", "-q", "-b", "feature"])?;
-    write(&repo.path, "a.txt", b"feature\n")?;
-    git(&repo.path, &["commit", "-q", "-am", "feature"])?;
-    git(&repo.path, &["checkout", "-q", "-"])?;
-    write(&repo.path, "a.txt", b"main\n")?;
-    git(&repo.path, &["commit", "-q", "-am", "main"])?;
+    write(&repo.0, "a.txt", b"base\n")?;
+    git(&repo.0, &["add", "a.txt"])?;
+    git(&repo.0, &["commit", "-q", "-m", "base"])?;
+    git(&repo.0, &["checkout", "-q", "-b", "feature"])?;
+    write(&repo.0, "a.txt", b"feature\n")?;
+    git(&repo.0, &["commit", "-q", "-am", "feature"])?;
+    git(&repo.0, &["checkout", "-q", "-"])?;
+    write(&repo.0, "a.txt", b"main\n")?;
+    git(&repo.0, &["commit", "-q", "-am", "main"])?;
     // The merge conflicts, leaving unmerged (stage 1/2/3) entries in the index.
-    let _ = git(&repo.path, &["merge", "--no-edit", "feature"]);
-    let r = Repository::discover(&repo.path)?;
+    let _ = git(&repo.0, &["merge", "--no-edit", "feature"]);
+    let r = Repository::discover(&repo.0)?;
 
     // The staged (HEAD↔index) read must succeed over an unmerged index rather
     // than error — otherwise `Session::compute_vcs` swallows it into an empty
@@ -335,14 +284,14 @@ fn staged_changes_during_a_merge_do_not_error() -> Result<(), VcsError> {
 #[test]
 fn commit_changes_diffs_against_first_parent() -> Result<(), VcsError> {
     let repo = init_repo()?;
-    write(&repo.path, "a.txt", b"one\n")?;
-    git(&repo.path, &["add", "."])?;
-    git(&repo.path, &["commit", "-q", "-m", "init"])?;
-    write(&repo.path, "a.txt", b"one\ntwo\n")?;
-    write(&repo.path, "b.txt", b"new file\n")?;
-    git(&repo.path, &["add", "."])?;
-    git(&repo.path, &["commit", "-q", "-m", "second"])?;
-    let r = Repository::discover(&repo.path)?;
+    write(&repo.0, "a.txt", b"one\n")?;
+    git(&repo.0, &["add", "."])?;
+    git(&repo.0, &["commit", "-q", "-m", "init"])?;
+    write(&repo.0, "a.txt", b"one\ntwo\n")?;
+    write(&repo.0, "b.txt", b"new file\n")?;
+    git(&repo.0, &["add", "."])?;
+    git(&repo.0, &["commit", "-q", "-m", "second"])?;
+    let r = Repository::discover(&repo.0)?;
 
     let changes = r.commit_changes("HEAD")?;
     assert_eq!(changes.len(), 2);
@@ -365,10 +314,10 @@ fn commit_changes_diffs_against_first_parent() -> Result<(), VcsError> {
 #[test]
 fn commit_changes_on_root_are_all_additions() -> Result<(), VcsError> {
     let repo = init_repo()?;
-    write(&repo.path, "a.txt", b"one\n")?;
-    git(&repo.path, &["add", "."])?;
-    git(&repo.path, &["commit", "-q", "-m", "root"])?;
-    let r = Repository::discover(&repo.path)?;
+    write(&repo.0, "a.txt", b"one\n")?;
+    git(&repo.0, &["add", "."])?;
+    git(&repo.0, &["commit", "-q", "-m", "root"])?;
+    let r = Repository::discover(&repo.0)?;
 
     let changes = r.commit_changes("HEAD")?;
     assert_eq!(changes.len(), 1);
@@ -381,13 +330,13 @@ fn commit_changes_on_root_are_all_additions() -> Result<(), VcsError> {
 #[test]
 fn commit_changes_detect_renames() -> Result<(), VcsError> {
     let repo = init_repo()?;
-    git(&repo.path, &["config", "diff.renames", "false"])?;
-    write(&repo.path, "old.txt", b"one\ntwo\nthree\nfour\nfive\n")?;
-    git(&repo.path, &["add", "."])?;
-    git(&repo.path, &["commit", "-q", "-m", "init"])?;
-    git(&repo.path, &["mv", "old.txt", "new.txt"])?;
-    git(&repo.path, &["commit", "-q", "-m", "rename"])?;
-    let r = Repository::discover(&repo.path)?;
+    git(&repo.0, &["config", "diff.renames", "false"])?;
+    write(&repo.0, "old.txt", b"one\ntwo\nthree\nfour\nfive\n")?;
+    git(&repo.0, &["add", "."])?;
+    git(&repo.0, &["commit", "-q", "-m", "init"])?;
+    git(&repo.0, &["mv", "old.txt", "new.txt"])?;
+    git(&repo.0, &["commit", "-q", "-m", "rename"])?;
+    let r = Repository::discover(&repo.0)?;
 
     let changes = r.commit_changes("HEAD")?;
     let fc = changes
@@ -402,19 +351,19 @@ fn commit_changes_detect_renames() -> Result<(), VcsError> {
 #[test]
 fn conflicted_file_is_reported() -> Result<(), VcsError> {
     let repo = init_repo()?;
-    write(&repo.path, "a.txt", b"base\n")?;
-    git(&repo.path, &["add", "a.txt"])?;
-    git(&repo.path, &["commit", "-q", "-m", "base"])?;
+    write(&repo.0, "a.txt", b"base\n")?;
+    git(&repo.0, &["add", "a.txt"])?;
+    git(&repo.0, &["commit", "-q", "-m", "base"])?;
     // Diverge the same line on a feature branch and on the original branch.
-    git(&repo.path, &["checkout", "-q", "-b", "feature"])?;
-    write(&repo.path, "a.txt", b"feature\n")?;
-    git(&repo.path, &["commit", "-q", "-am", "feature"])?;
-    git(&repo.path, &["checkout", "-q", "-"])?;
-    write(&repo.path, "a.txt", b"main\n")?;
-    git(&repo.path, &["commit", "-q", "-am", "main"])?;
+    git(&repo.0, &["checkout", "-q", "-b", "feature"])?;
+    write(&repo.0, "a.txt", b"feature\n")?;
+    git(&repo.0, &["commit", "-q", "-am", "feature"])?;
+    git(&repo.0, &["checkout", "-q", "-"])?;
+    write(&repo.0, "a.txt", b"main\n")?;
+    git(&repo.0, &["commit", "-q", "-am", "main"])?;
     // The merge conflicts; `git merge` exits non-zero, which is expected here.
-    let _ = git(&repo.path, &["merge", "--no-edit", "feature"]);
-    let r = Repository::discover(&repo.path)?;
+    let _ = git(&repo.0, &["merge", "--no-edit", "feature"]);
+    let r = Repository::discover(&repo.0)?;
 
     let changes = r.changes(Selection::Unstaged, None)?;
     let fc = changes
@@ -428,17 +377,17 @@ fn conflicted_file_is_reported() -> Result<(), VcsError> {
 #[test]
 fn conflict_sides_reads_ours_and_theirs_from_the_index() -> Result<(), VcsError> {
     let repo = init_repo()?;
-    write(&repo.path, "a.txt", b"base\n")?;
-    git(&repo.path, &["add", "a.txt"])?;
-    git(&repo.path, &["commit", "-q", "-m", "base"])?;
-    git(&repo.path, &["checkout", "-q", "-b", "incoming"])?;
-    write(&repo.path, "a.txt", b"incoming\n")?;
-    git(&repo.path, &["commit", "-q", "-am", "incoming"])?;
-    git(&repo.path, &["checkout", "-q", "-"])?;
-    write(&repo.path, "a.txt", b"current\n")?;
-    git(&repo.path, &["commit", "-q", "-am", "current"])?;
-    let _ = git(&repo.path, &["merge", "--no-edit", "incoming"]);
-    let repository = Repository::discover(&repo.path)?;
+    write(&repo.0, "a.txt", b"base\n")?;
+    git(&repo.0, &["add", "a.txt"])?;
+    git(&repo.0, &["commit", "-q", "-m", "base"])?;
+    git(&repo.0, &["checkout", "-q", "-b", "incoming"])?;
+    write(&repo.0, "a.txt", b"incoming\n")?;
+    git(&repo.0, &["commit", "-q", "-am", "incoming"])?;
+    git(&repo.0, &["checkout", "-q", "-"])?;
+    write(&repo.0, "a.txt", b"current\n")?;
+    git(&repo.0, &["commit", "-q", "-am", "current"])?;
+    let _ = git(&repo.0, &["merge", "--no-edit", "incoming"]);
+    let repository = Repository::discover(&repo.0)?;
 
     let sides = repository
         .conflict_sides(Path::new("a.txt"))?
@@ -455,28 +404,28 @@ fn conflict_sides_reads_ours_and_theirs_from_the_index() -> Result<(), VcsError>
 
 /// A repo whose `main` forks into `feature`, with `main` also advancing afterwards.
 /// Returns the repo so callers can diff `main` against `feature` two ways.
-fn forked_repo() -> Result<TempRepo, VcsError> {
+fn forked_repo() -> Result<TestRepo, VcsError> {
     let repo = init_repo()?;
-    write(&repo.path, "base.txt", b"base\n")?;
-    git(&repo.path, &["add", "."])?;
-    git(&repo.path, &["commit", "-q", "-m", "base"])?;
-    git(&repo.path, &["branch", "-M", "main"])?;
+    write(&repo.0, "base.txt", b"base\n")?;
+    git(&repo.0, &["add", "."])?;
+    git(&repo.0, &["commit", "-q", "-m", "base"])?;
+    git(&repo.0, &["branch", "-M", "main"])?;
     // feature adds feature.txt on top of the fork point.
-    git(&repo.path, &["checkout", "-q", "-b", "feature"])?;
-    write(&repo.path, "feature.txt", b"feature\n")?;
-    git(&repo.path, &["add", "."])?;
-    git(&repo.path, &["commit", "-q", "-m", "add feature"])?;
+    git(&repo.0, &["checkout", "-q", "-b", "feature"])?;
+    write(&repo.0, "feature.txt", b"feature\n")?;
+    git(&repo.0, &["add", "."])?;
+    git(&repo.0, &["commit", "-q", "-m", "add feature"])?;
     // main advances independently, changing base.txt after the fork.
-    git(&repo.path, &["checkout", "-q", "main"])?;
-    write(&repo.path, "base.txt", b"base changed on main\n")?;
-    git(&repo.path, &["commit", "-q", "-am", "advance main"])?;
+    git(&repo.0, &["checkout", "-q", "main"])?;
+    write(&repo.0, "base.txt", b"base changed on main\n")?;
+    git(&repo.0, &["commit", "-q", "-am", "advance main"])?;
     Ok(repo)
 }
 
 #[test]
 fn range_changes_two_dot_diffs_the_two_tips() -> Result<(), VcsError> {
     let repo = forked_repo()?;
-    let r = Repository::discover(&repo.path)?;
+    let r = Repository::discover(&repo.0)?;
     // main..feature is the raw tree diff between the tips: feature adds feature.txt,
     // and (relative to main's newer tip) reverts main's change to base.txt.
     let changes = r.range_changes("main", "feature", false)?;
@@ -492,7 +441,7 @@ fn range_changes_two_dot_diffs_the_two_tips() -> Result<(), VcsError> {
 #[test]
 fn range_changes_three_dot_uses_the_merge_base() -> Result<(), VcsError> {
     let repo = forked_repo()?;
-    let r = Repository::discover(&repo.path)?;
+    let r = Repository::discover(&repo.0)?;
     // main...feature diffs from the fork point, so only feature's own change shows;
     // main's later change to base.txt is excluded.
     let changes = r.range_changes("main", "feature", true)?;
@@ -505,7 +454,7 @@ fn range_changes_three_dot_uses_the_merge_base() -> Result<(), VcsError> {
 #[test]
 fn merge_base_finds_the_fork_point() -> Result<(), VcsError> {
     let repo = forked_repo()?;
-    let r = Repository::discover(&repo.path)?;
+    let r = Repository::discover(&repo.0)?;
     let base = r
         .merge_base("main", "feature")?
         .ok_or_else(|| VcsError::Git("expected a merge base".into()))?;
@@ -518,16 +467,16 @@ fn merge_base_finds_the_fork_point() -> Result<(), VcsError> {
 #[test]
 fn merge_base_is_none_for_unrelated_histories() -> Result<(), VcsError> {
     let repo = init_repo()?;
-    write(&repo.path, "a.txt", b"a\n")?;
-    git(&repo.path, &["add", "."])?;
-    git(&repo.path, &["commit", "-q", "-m", "first"])?;
-    git(&repo.path, &["branch", "-M", "main"])?;
+    write(&repo.0, "a.txt", b"a\n")?;
+    git(&repo.0, &["add", "."])?;
+    git(&repo.0, &["commit", "-q", "-m", "first"])?;
+    git(&repo.0, &["branch", "-M", "main"])?;
     // An orphan branch has no common ancestor with main.
-    git(&repo.path, &["checkout", "-q", "--orphan", "other"])?;
-    write(&repo.path, "b.txt", b"b\n")?;
-    git(&repo.path, &["add", "."])?;
-    git(&repo.path, &["commit", "-q", "-m", "orphan"])?;
-    let r = Repository::discover(&repo.path)?;
+    git(&repo.0, &["checkout", "-q", "--orphan", "other"])?;
+    write(&repo.0, "b.txt", b"b\n")?;
+    git(&repo.0, &["add", "."])?;
+    git(&repo.0, &["commit", "-q", "-m", "orphan"])?;
+    let r = Repository::discover(&repo.0)?;
     assert!(r.merge_base("main", "other")?.is_none());
     // A three-dot range over unrelated histories is an error, not a silent success.
     assert!(r.range_changes("main", "other", true).is_err());
@@ -537,12 +486,12 @@ fn merge_base_is_none_for_unrelated_histories() -> Result<(), VcsError> {
 #[test]
 fn default_base_branch_skips_the_current_branch() -> Result<(), VcsError> {
     let repo = forked_repo()?; // leaves us on `main`
-    let r = Repository::discover(&repo.path)?;
+    let r = Repository::discover(&repo.0)?;
     // On main, main is excluded and no other candidate exists.
     assert_eq!(r.default_base_branch(), None);
     // On feature, main is the detected base.
-    git(&repo.path, &["checkout", "-q", "feature"])?;
-    let r = Repository::discover(&repo.path)?;
+    git(&repo.0, &["checkout", "-q", "feature"])?;
+    let r = Repository::discover(&repo.0)?;
     assert_eq!(r.default_base_branch().as_deref(), Some("main"));
     Ok(())
 }
@@ -550,24 +499,21 @@ fn default_base_branch_skips_the_current_branch() -> Result<(), VcsError> {
 #[test]
 fn upstream_of_head_is_none_without_a_live_tracking_branch() -> Result<(), VcsError> {
     let repo = init_repo()?;
-    write(&repo.path, "a.txt", b"a\n")?;
-    git(&repo.path, &["add", "."])?;
-    git(&repo.path, &["commit", "-q", "-m", "first"])?;
-    let r = Repository::discover(&repo.path)?;
+    write(&repo.0, "a.txt", b"a\n")?;
+    git(&repo.0, &["add", "."])?;
+    git(&repo.0, &["commit", "-q", "-m", "first"])?;
+    let r = Repository::discover(&repo.0)?;
     // A fresh local repo has no remote, so the branch has no upstream.
     assert!(r.upstream_of_head()?.is_none());
 
-    let remote = init_repo()?;
+    let remote = crate::test_support::bare_remote("upstream")?;
     git(
-        &repo.path,
-        &["remote", "add", "origin", &remote.path.to_string_lossy()],
+        &repo.0,
+        &["remote", "add", "origin", &remote.0.to_string_lossy()],
     )?;
-    git(&repo.path, &["push", "-q", "-u", "origin", "HEAD:main"])?;
-    git(
-        &repo.path,
-        &["update-ref", "-d", "refs/remotes/origin/main"],
-    )?;
-    let r = Repository::discover(&repo.path)?;
+    git(&repo.0, &["push", "-q", "-u", "origin", "HEAD:main"])?;
+    git(&repo.0, &["update-ref", "-d", "refs/remotes/origin/main"])?;
+    let r = Repository::discover(&repo.0)?;
     // A configured upstream whose local remote-tracking ref is gone cannot be
     // compared and therefore behaves like no live upstream.
     assert!(r.upstream_of_head()?.is_none());
@@ -577,14 +523,14 @@ fn upstream_of_head_is_none_without_a_live_tracking_branch() -> Result<(), VcsEr
 #[test]
 fn file_at_rev_reads_each_revision_and_reports_absence() -> Result<(), VcsError> {
     let repo = init_repo()?;
-    write(&repo.path, "a.txt", b"v0\n")?;
-    git(&repo.path, &["add", "."])?;
-    git(&repo.path, &["commit", "-q", "-m", "c0"])?;
-    write(&repo.path, "a.txt", b"v1\n")?;
-    git(&repo.path, &["commit", "-q", "-am", "c1"])?;
-    let r = Repository::discover(&repo.path)?;
+    write(&repo.0, "a.txt", b"v0\n")?;
+    git(&repo.0, &["add", "."])?;
+    git(&repo.0, &["commit", "-q", "-m", "c0"])?;
+    write(&repo.0, "a.txt", b"v1\n")?;
+    git(&repo.0, &["commit", "-q", "-am", "c1"])?;
+    let r = Repository::discover(&repo.0)?;
 
-    let path = repo.path.join("a.txt");
+    let path = repo.0.join("a.txt");
     // HEAD holds the newest content; the previous commit holds the older one.
     assert_eq!(r.file_at_rev(&path, "HEAD")?.as_deref(), Some(&b"v1\n"[..]));
     assert_eq!(
@@ -593,7 +539,7 @@ fn file_at_rev_reads_each_revision_and_reports_absence() -> Result<(), VcsError>
     );
     // A path that does not exist at that revision is `None`, not an error.
     assert!(
-        r.file_at_rev(&repo.path.join("missing.txt"), "HEAD")?
+        r.file_at_rev(&repo.0.join("missing.txt"), "HEAD")?
             .is_none()
     );
     Ok(())
@@ -603,13 +549,12 @@ fn file_at_rev_reads_each_revision_and_reports_absence() -> Result<(), VcsError>
 fn file_at_rev_returns_bytes_verbatim_for_binary_content() -> Result<(), VcsError> {
     let repo = init_repo()?;
     let bytes = b"\x00\x01\x02rust\xff\xfe";
-    write(&repo.path, "bin.dat", bytes)?;
-    git(&repo.path, &["add", "."])?;
-    git(&repo.path, &["commit", "-q", "-m", "add binary"])?;
-    let r = Repository::discover(&repo.path)?;
+    write(&repo.0, "bin.dat", bytes)?;
+    git(&repo.0, &["add", "."])?;
+    git(&repo.0, &["commit", "-q", "-m", "add binary"])?;
+    let r = Repository::discover(&repo.0)?;
     assert_eq!(
-        r.file_at_rev(&repo.path.join("bin.dat"), "HEAD")?
-            .as_deref(),
+        r.file_at_rev(&repo.0.join("bin.dat"), "HEAD")?.as_deref(),
         Some(&bytes[..])
     );
     Ok(())
@@ -618,21 +563,18 @@ fn file_at_rev_returns_bytes_verbatim_for_binary_content() -> Result<(), VcsErro
 #[test]
 fn file_at_rev_of_a_bad_revision_errors() -> Result<(), VcsError> {
     let repo = init_repo()?;
-    write(&repo.path, "a.txt", b"x\n")?;
-    git(&repo.path, &["add", "."])?;
-    git(&repo.path, &["commit", "-q", "-m", "c0"])?;
-    let r = Repository::discover(&repo.path)?;
-    assert!(
-        r.file_at_rev(&repo.path.join("a.txt"), "no-such-rev")
-            .is_err()
-    );
+    write(&repo.0, "a.txt", b"x\n")?;
+    git(&repo.0, &["add", "."])?;
+    git(&repo.0, &["commit", "-q", "-m", "c0"])?;
+    let r = Repository::discover(&repo.0)?;
+    assert!(r.file_at_rev(&repo.0.join("a.txt"), "no-such-rev").is_err());
     Ok(())
 }
 
 #[test]
 fn branches_lists_locals_and_flags_the_head() -> Result<(), VcsError> {
     let repo = forked_repo()?; // leaves us on `main`; also has `feature`
-    let r = Repository::discover(&repo.path)?;
+    let r = Repository::discover(&repo.0)?;
     let branches = r.branches()?;
     let names: Vec<&str> = branches.iter().map(|b| b.name.as_str()).collect();
     assert_eq!(names, vec!["feature", "main"], "sorted by name");
@@ -648,10 +590,10 @@ fn branches_lists_locals_and_flags_the_head() -> Result<(), VcsError> {
 #[test]
 fn current_branch_tracks_the_checkout() -> Result<(), VcsError> {
     let repo = forked_repo()?;
-    let r = Repository::discover(&repo.path)?;
+    let r = Repository::discover(&repo.0)?;
     assert_eq!(r.current_branch()?.as_deref(), Some("main"));
-    git(&repo.path, &["checkout", "-q", "feature"])?;
-    let r = Repository::discover(&repo.path)?;
+    git(&repo.0, &["checkout", "-q", "feature"])?;
+    let r = Repository::discover(&repo.0)?;
     assert_eq!(r.current_branch()?.as_deref(), Some("feature"));
     Ok(())
 }
@@ -661,8 +603,8 @@ fn unborn_branch_has_a_name_but_no_branch_refs() -> Result<(), VcsError> {
     // A fresh repository's HEAD symbolically points at an unborn branch: it has
     // a name, but no ref exists yet so the local branch list is empty.
     let repo = init_repo()?;
-    git(&repo.path, &["symbolic-ref", "HEAD", "refs/heads/main"])?;
-    let r = Repository::discover(&repo.path)?;
+    git(&repo.0, &["symbolic-ref", "HEAD", "refs/heads/main"])?;
+    let r = Repository::discover(&repo.0)?;
     assert_eq!(r.current_branch()?.as_deref(), Some("main"));
     assert!(r.branches()?.is_empty());
     Ok(())
@@ -671,11 +613,11 @@ fn unborn_branch_has_a_name_but_no_branch_refs() -> Result<(), VcsError> {
 #[test]
 fn detached_head_has_no_current_branch() -> Result<(), VcsError> {
     let repo = init_repo()?;
-    write(&repo.path, "a.txt", b"a\n")?;
-    git(&repo.path, &["add", "."])?;
-    git(&repo.path, &["commit", "-q", "-m", "c0"])?;
-    git(&repo.path, &["checkout", "-q", "--detach"])?;
-    let r = Repository::discover(&repo.path)?;
+    write(&repo.0, "a.txt", b"a\n")?;
+    git(&repo.0, &["add", "."])?;
+    git(&repo.0, &["commit", "-q", "-m", "c0"])?;
+    git(&repo.0, &["checkout", "-q", "--detach"])?;
+    let r = Repository::discover(&repo.0)?;
     assert!(r.current_branch()?.is_none());
     Ok(())
 }

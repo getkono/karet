@@ -262,19 +262,13 @@ mod tests {
     }
 
     #[test]
-    fn hostile_revisions_never_reach_the_subprocess_as_options() {
+    fn hostile_revisions_never_reach_the_subprocess_as_options() -> Result<(), VcsError> {
         // Every write resolves its revision to a full hash in-process first, so
         // an argument that looks like a `git` option — or like shell syntax —
         // must fail to resolve rather than being handed to the subprocess.
-        let Ok(dir) = init("ops-injection") else {
-            return;
-        };
-        if commit(&dir, "one", "first").is_err() {
-            return;
-        }
-        let Ok(repo) = Repository::discover(&dir.0) else {
-            return;
-        };
+        let dir = init("ops-injection")?;
+        commit(&dir, "one", "first")?;
+        let repo = Repository::discover(&dir.0)?;
         let canary = dir.0.join("PWNED");
         for rev in [
             "--upload-pack=touch PWNED",
@@ -305,19 +299,14 @@ mod tests {
             "a hostile revision reached the shell and wrote {}",
             canary.display()
         );
+        Ok(())
     }
 
     #[test]
-    fn hostile_tag_names_are_refused_before_any_write() {
-        let Ok(dir) = init("ops-tag-injection") else {
-            return;
-        };
-        if commit(&dir, "one", "first").is_err() {
-            return;
-        }
-        let Ok(repo) = Repository::discover(&dir.0) else {
-            return;
-        };
+    fn hostile_tag_names_are_refused_before_any_write() -> Result<(), VcsError> {
+        let dir = init("ops-tag-injection")?;
+        commit(&dir, "one", "first")?;
+        let repo = Repository::discover(&dir.0)?;
         for name in [
             "--upload-pack=x",
             "-f",
@@ -348,7 +337,8 @@ mod tests {
             );
         }
         // The guard is not simply refusing everything.
-        assert!(repo.tag_create("v9.9.9", "HEAD", Some("real")).is_ok());
+        repo.tag_create("v9.9.9", "HEAD", Some("real"))?;
+        Ok(())
     }
 
     #[test]
@@ -500,7 +490,7 @@ mod tests {
     }
 
     #[test]
-    fn interactive_rebase_survives_a_shell_hostile_repository_path() {
+    fn interactive_rebase_survives_a_shell_hostile_repository_path() -> Result<(), VcsError> {
         // The todo file is handed to git through `GIT_SEQUENCE_EDITOR`, which
         // git runs under `sh`. Single quotes must neutralize every metacharacter
         // a directory name can carry, and the canary proves none of them ran.
@@ -513,35 +503,21 @@ mod tests {
             "pipe|touch PWNED",
             "star*glob?q",
         ] {
-            let Ok(dir) = init(hostile) else {
-                continue;
-            };
-            let Ok(base) = commit(&dir, "base\n", "base") else {
-                continue;
-            };
-            if write(&dir.0, "gone.txt", b"gone\n").is_err()
-                || git(&dir.0, &["add", "gone.txt"]).is_err()
-                || git(&dir.0, &["commit", "-q", "-m", "gone"]).is_err()
-            {
-                continue;
-            }
-            let Ok(gone) = git(&dir.0, &["rev-parse", "HEAD"]) else {
-                continue;
-            };
-            let Ok(repo) = Repository::discover(&dir.0) else {
-                continue;
-            };
-            assert!(
-                repo.rebase_interactive(
-                    &base,
-                    &[RebaseStep {
-                        action: RebaseAction::Drop,
-                        rev: gone,
-                    }],
-                )
-                .is_ok(),
-                "rebase failed in {hostile:?}"
+            let dir = init(hostile)?;
+            let base = commit(&dir, "base\n", "base")?;
+            write(&dir.0, "gone.txt", b"gone\n")?;
+            git(&dir.0, &["add", "gone.txt"])?;
+            git(&dir.0, &["commit", "-q", "-m", "gone"])?;
+            let gone = git(&dir.0, &["rev-parse", "HEAD"])?;
+            let repo = Repository::discover(&dir.0)?;
+            let rebased = repo.rebase_interactive(
+                &base,
+                &[RebaseStep {
+                    action: RebaseAction::Drop,
+                    rev: gone,
+                }],
             );
+            assert!(rebased.is_ok(), "rebase failed in {hostile:?}: {rebased:?}");
             assert!(
                 !dir.0.join("gone.txt").exists(),
                 "the plan did not apply in {hostile:?}"
@@ -551,31 +527,21 @@ mod tests {
                 "a path metacharacter reached the shell in {hostile:?}"
             );
         }
+        Ok(())
     }
 
     #[test]
-    fn interactive_rebase_refuses_a_path_it_cannot_quote() {
+    fn interactive_rebase_refuses_a_path_it_cannot_quote() -> Result<(), VcsError> {
         // A single quote inside the path cannot be escaped portably inside the
         // single-quoted editor command, so the operation must refuse rather
         // than build a command that means something else.
-        let Ok(dir) = init("quote'inside") else {
-            return;
-        };
-        let Ok(base) = commit(&dir, "base\n", "base") else {
-            return;
-        };
-        if write(&dir.0, "gone.txt", b"gone\n").is_err()
-            || git(&dir.0, &["add", "gone.txt"]).is_err()
-            || git(&dir.0, &["commit", "-q", "-m", "gone"]).is_err()
-        {
-            return;
-        }
-        let Ok(gone) = git(&dir.0, &["rev-parse", "HEAD"]) else {
-            return;
-        };
-        let Ok(repo) = Repository::discover(&dir.0) else {
-            return;
-        };
+        let dir = init("quote'inside")?;
+        let base = commit(&dir, "base\n", "base")?;
+        write(&dir.0, "gone.txt", b"gone\n")?;
+        git(&dir.0, &["add", "gone.txt"])?;
+        git(&dir.0, &["commit", "-q", "-m", "gone"])?;
+        let gone = git(&dir.0, &["rev-parse", "HEAD"])?;
+        let repo = Repository::discover(&dir.0)?;
         let refused = repo.rebase_interactive(
             &base,
             &[RebaseStep {
@@ -588,6 +554,7 @@ mod tests {
             dir.0.join("gone.txt").exists(),
             "the refusal must leave the history alone"
         );
+        Ok(())
     }
 
     #[test]
