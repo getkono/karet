@@ -111,8 +111,14 @@ impl Cancellation {
 
 impl Drop for Cancellation {
     fn drop(&mut self) {
+        // Remove only this token's own registration: when the id was registered
+        // again, the entry belongs to the newer token, and removing it would leave
+        // that request uncancellable.
         if let Some(tasks) = self.tasks.upgrade()
             && let Ok(mut tasks) = tasks.lock()
+            && tasks
+                .get(&self.id)
+                .is_some_and(|state| Arc::ptr_eq(state, &self.state))
         {
             tasks.remove(&self.id);
         }
@@ -138,5 +144,82 @@ mod tests {
                 .is_ok(),
             "cancellation must wake a pending network-read future"
         );
+    }
+
+    /// A counter and a hook that bumps it.
+    fn counting_hook() -> (
+        Arc<std::sync::atomic::AtomicUsize>,
+        impl Fn() + Send + Sync + 'static,
+    ) {
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let hook_count = count.clone();
+        (count, move || {
+            hook_count.fetch_add(1, Ordering::SeqCst);
+        })
+    }
+
+    #[test]
+    fn on_cancel_runs_at_once_for_a_request_cancelled_while_queued() {
+        let hub = CancellationHub::default();
+        let token = hub.register(RequestId(1));
+        hub.cancel(RequestId(1));
+        let (count, hook) = counting_hook();
+        token.on_cancel(hook);
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            1,
+            "a queued cancel is not lost"
+        );
+        assert!(token.is_cancelled());
+    }
+
+    #[test]
+    fn the_cancel_hook_runs_at_most_once() {
+        let hub = CancellationHub::default();
+        let token = hub.register(RequestId(2));
+        let (count, hook) = counting_hook();
+        token.on_cancel(hook);
+        assert_eq!(count.load(Ordering::SeqCst), 0, "registering does not fire");
+        hub.cancel(RequestId(2));
+        hub.cancel(RequestId(2));
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            1,
+            "a repeated cancel fires nothing"
+        );
+    }
+
+    #[test]
+    fn dropping_a_token_unregisters_its_request() {
+        let hub = CancellationHub::default();
+        let token = hub.register(RequestId(3));
+        let (count, hook) = counting_hook();
+        token.on_cancel(hook);
+        drop(token);
+        assert!(
+            hub.tasks.lock().is_ok_and(|tasks| tasks.is_empty()),
+            "a finished request must not stay in the registry"
+        );
+        hub.cancel(RequestId(3));
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            0,
+            "a dropped request cannot be cancelled"
+        );
+    }
+
+    #[test]
+    fn dropping_an_older_token_keeps_a_newer_registration_of_the_same_id() {
+        let hub = CancellationHub::default();
+        let older = hub.register(RequestId(4));
+        let newer = hub.register(RequestId(4));
+        drop(older);
+        hub.cancel(RequestId(4));
+        assert!(
+            newer.is_cancelled(),
+            "the newer request must stay cancellable"
+        );
+        drop(newer);
+        assert!(hub.tasks.lock().is_ok_and(|tasks| tasks.is_empty()));
     }
 }
