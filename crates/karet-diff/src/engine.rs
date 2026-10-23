@@ -447,6 +447,165 @@ mod tests {
         let h = &f.hunks[0];
         let add = h.lines.iter().find(|l| l.kind == LineKind::Add);
         assert_eq!(add.map(|l| l.content.as_str()), Some("B"));
+        // The stripped `\r` is recorded, not lost.
+        assert!(h.lines.iter().all(|l| l.crlf && !l.no_newline));
+    }
+
+    /// Each line of `hunk` as `(kind, content, crlf, no_newline)`.
+    fn line_facts(hunk: &Hunk) -> Vec<(LineKind, &str, bool, bool)> {
+        hunk.lines
+            .iter()
+            .map(|l| (l.kind, l.content.as_str(), l.crlf, l.no_newline))
+            .collect()
+    }
+
+    #[test]
+    fn terminator_flags_record_each_lines_original_ending() {
+        // Old: CRLF throughout, last line unterminated. New: the last line gains
+        // a bare `\n`, and a CRLF line is edited.
+        let f = diff_text("a\r\nb\r\nc", "a\r\nB\r\nc\n", &DiffOptions::default());
+        assert_eq!(f.hunks.len(), 1);
+        assert_eq!(
+            line_facts(&f.hunks[0]),
+            vec![
+                (LineKind::Context, "a", true, false),
+                (LineKind::Remove, "b", true, false),
+                (LineKind::Remove, "c", false, true),
+                (LineKind::Add, "B", true, false),
+                (LineKind::Add, "c", false, false),
+            ]
+        );
+    }
+
+    #[test]
+    fn missing_final_newline_on_both_sides_is_flagged_on_both_lines() {
+        let f = diff_text("x\ny", "x\nz", &DiffOptions::default());
+        assert_eq!(
+            line_facts(&f.hunks[0]),
+            vec![
+                (LineKind::Context, "x", false, false),
+                (LineKind::Remove, "y", false, true),
+                (LineKind::Add, "z", false, true),
+            ]
+        );
+    }
+
+    /// The `@@` headers `diff_text` produces for `old` → `new` at `context`.
+    fn headers(old: &str, new: &str, context: usize) -> Vec<String> {
+        let opts = DiffOptions {
+            context_lines: context,
+            ..Default::default()
+        };
+        diff_text(old, new, &opts)
+            .hunks
+            .into_iter()
+            .map(|h| h.header)
+            .collect()
+    }
+
+    #[test]
+    fn changes_exactly_two_contexts_apart_share_one_hunk() {
+        // Changes at lines 1 and 4 leave a gap of 2 unchanged lines, which is
+        // 2 * ctx at ctx 1: the context windows touch, so `git diff -U1` merges.
+        assert_eq!(
+            headers("a\nb\nc\nd\ne\n", "A\nb\nc\nD\ne\n", 1),
+            vec!["@@ -1,5 +1,5 @@"]
+        );
+    }
+
+    #[test]
+    fn changes_one_past_two_contexts_apart_split() {
+        // A gap of 3 at ctx 1 is one line too many: two hunks, each with its own
+        // clamped context window.
+        assert_eq!(
+            headers("a\nb\nc\nd\ne\nf\n", "A\nb\nc\nd\nE\nf\n", 1),
+            vec!["@@ -1,2 +1,2 @@", "@@ -4,3 +4,3 @@"]
+        );
+    }
+
+    #[test]
+    fn zero_context_emits_bare_changes() {
+        // Any unchanged line between changes splits them at ctx 0.
+        assert_eq!(
+            headers("a\nb\nc\n", "A\nb\nC\n", 0),
+            vec!["@@ -1,1 +1,1 @@", "@@ -3,1 +3,1 @@"]
+        );
+        let f = diff_text(
+            "a\nb\nc\n",
+            "A\nb\nC\n",
+            &DiffOptions {
+                context_lines: 0,
+                ..Default::default()
+            },
+        );
+        assert!(
+            f.hunks
+                .iter()
+                .flat_map(|h| &h.lines)
+                .all(|l| l.kind != LineKind::Context)
+        );
+        // A pure insertion names the old line it follows, a pure deletion the new
+        // line it collapsed after — git's `-k,0` / `+k,0` convention.
+        assert_eq!(headers("a\nb\n", "a\nX\nb\n", 0), vec!["@@ -1,0 +2,1 @@"]);
+        assert_eq!(headers("a\nb\nc\n", "a\nc\n", 0), vec!["@@ -2,1 +1,0 @@"]);
+    }
+
+    #[test]
+    fn diff_files_detects_a_rename_only_when_asked_and_paths_differ() -> Result<(), DiffError> {
+        let dir = scratch()?;
+        let old = write(&dir, "old.txt", b"a\nb\n")?;
+        let new = write(&dir, "new.txt", b"a\nB\n")?;
+        let detect = DiffOptions {
+            detect_rename: true,
+            ..Default::default()
+        };
+
+        let f = diff_files(&old, &new, &detect)?;
+        assert_eq!(f.status, FileStatus::Renamed { similarity: 100 });
+        assert_eq!(f.old_path.as_deref(), Some(old.to_string_lossy().as_ref()));
+        assert_eq!(f.path, new.to_string_lossy());
+        assert_eq!(f.hunks.len(), 1);
+
+        // Off by default: the same pair is a plain modification.
+        let f = diff_files(&old, &new, &DiffOptions::default())?;
+        assert_eq!(f.status, FileStatus::Modified);
+        assert!(f.old_path.is_none());
+
+        // The same path on both sides is never a rename.
+        let f = diff_files(&new, &new, &detect)?;
+        assert_eq!(f.status, FileStatus::Modified);
+        assert!(f.old_path.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn binary_status_follows_rename_then_emptiness() -> Result<(), DiffError> {
+        let dir = scratch()?;
+        let empty = write(&dir, "empty", b"")?;
+        let blob = write(&dir, "blob.bin", b"\x00payload")?;
+        let other = write(&dir, "other.bin", b"\x00other")?;
+        let detect = DiffOptions {
+            detect_rename: true,
+            ..Default::default()
+        };
+
+        let added = diff_files(&empty, &blob, &DiffOptions::default())?;
+        assert!(added.is_binary);
+        assert_eq!(added.status, FileStatus::Added);
+
+        let removed = diff_files(&blob, &empty, &DiffOptions::default())?;
+        assert!(removed.is_binary);
+        assert_eq!(removed.status, FileStatus::Removed);
+
+        // A rename outranks emptiness, as it does for text.
+        let renamed = diff_files(&blob, &other, &detect)?;
+        assert!(renamed.is_binary && renamed.hunks.is_empty());
+        assert_eq!(renamed.status, FileStatus::Renamed { similarity: 100 });
+        assert_eq!(
+            renamed.old_path.as_deref(),
+            Some(blob.to_string_lossy().as_ref())
+        );
+        Ok(())
     }
 
     #[test]
@@ -479,6 +638,8 @@ mod tests {
             },
         );
         assert_eq!(f.hunks.len(), 2);
+        let headers: Vec<&str> = f.hunks.iter().map(|h| h.header.as_str()).collect();
+        assert_eq!(headers, ["@@ -1,2 +1,2 @@", "@@ -7,2 +7,2 @@"]);
     }
 
     #[test]
