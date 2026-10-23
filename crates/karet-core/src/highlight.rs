@@ -200,10 +200,30 @@ impl SemanticBlock {
 }
 
 /// Semantic blocks in document order, outer scopes before inner scopes on ties.
+///
+/// With the `serde` feature the collection travels as a bare array of blocks,
+/// and deserializing goes through [`SemanticBlocks::new`], so input in any
+/// order still comes out normalized.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(from = "Vec<SemanticBlock>", into = "Vec<SemanticBlock>")
+)]
 pub struct SemanticBlocks {
     blocks: Vec<SemanticBlock>,
+}
+
+impl From<Vec<SemanticBlock>> for SemanticBlocks {
+    fn from(blocks: Vec<SemanticBlock>) -> Self {
+        Self::new(blocks)
+    }
+}
+
+impl From<SemanticBlocks> for Vec<SemanticBlock> {
+    fn from(blocks: SemanticBlocks) -> Self {
+        blocks.blocks
+    }
 }
 
 impl SemanticBlocks {
@@ -369,6 +389,27 @@ mod tests {
         let blocks = SemanticBlocks::new(vec![block(0, 0, 9), block(2, 3, 5)]);
         let back = serde_json::from_str::<SemanticBlocks>(&serde_json::to_string(&blocks)?)?;
         assert_eq!(back, blocks);
+        Ok(())
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn semantic_blocks_deserialize_normalizes_unsorted_input() -> Result<(), serde_json::Error> {
+        // Inner before outer on a shared header line, a later block first, and a
+        // duplicate: the wire form never went through `new`.
+        let json = r#"[
+            {"header_start":5,"header_end":5,"scope_end":8},
+            {"header_start":0,"header_end":1,"scope_end":4},
+            {"header_start":0,"header_end":0,"scope_end":9},
+            {"header_start":0,"header_end":1,"scope_end":4}
+        ]"#;
+        let back = serde_json::from_str::<SemanticBlocks>(json)?;
+        let (outer, inner, later) = (block(0, 0, 9), block(0, 1, 4), block(5, 5, 8));
+        assert_eq!(back.blocks(), [outer, inner, later]);
+        assert_eq!(back.active_at(4), [outer, inner]);
+        // And it round-trips to the normalized array.
+        let again = serde_json::from_str::<SemanticBlocks>(&serde_json::to_string(&back)?)?;
+        assert_eq!(again, back);
         Ok(())
     }
 
