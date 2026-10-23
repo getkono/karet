@@ -77,6 +77,107 @@ run = """cargo mutants --package karet-session \
   --file 'crates/karet-session/src/session/retirement.rs' \
   -- --all-features"""
 
+# Opt-in mutation scopes over the pure, synchronously tested modules: no
+# process, network or clock in the code under test, so a surviving mutant
+# points straight at a loose test rather than at a deadline it waited out.
+# Process-, network- and clock-bound modules (wakatime, aicommit, the notebook
+# kernel, dap, latex, watch) are deliberately left out. Like `mutants`, none of
+# these is in `verify` and none runs in CI; each is kept green, so a survivor
+# is a regression in the tests. `timeout` is the wall-clock cap on the whole
+# run: a run that outgrows it stops instead of running on unattended.
+# `mutants-all` runs every scope in turn.
+[tasks.mutants-text]
+description = "Opt-in: mutation-test karet-text's apply, history, read and load (cap 20m)"
+timeout = "20m"
+run = """cargo mutants --package karet-text --all-features \
+  --file 'crates/karet-text/src/apply.rs' \
+  --file 'crates/karet-text/src/history.rs' \
+  --file 'crates/karet-text/src/read.rs' \
+  --file 'crates/karet-text/src/load.rs'"""
+
+[tasks.mutants-diff]
+description = "Opt-in: mutation-test karet-diff's engine, parse, patch, intraline, prepared and align (cap 30m)"
+timeout = "30m"
+run = """cargo mutants --package karet-diff --all-features \
+  --file 'crates/karet-diff/src/engine.rs' \
+  --file 'crates/karet-diff/src/parse/*.rs' \
+  --file 'crates/karet-diff/src/patch.rs' \
+  --file 'crates/karet-diff/src/intraline.rs' \
+  --file 'crates/karet-diff/src/prepared.rs' \
+  --file 'crates/karet-diff/src/align.rs'"""
+
+[tasks.mutants-core]
+description = "Opt-in: mutation-test karet-core's edit, highlight, coord, capability and graph (cap 20m)"
+timeout = "20m"
+run = """cargo mutants --package karet-core --all-features \
+  --file 'crates/karet-core/src/edit.rs' \
+  --file 'crates/karet-core/src/highlight.rs' \
+  --file 'crates/karet-core/src/coord.rs' \
+  --file 'crates/karet-core/src/capability.rs' \
+  --file 'crates/karet-core/src/graph.rs'"""
+
+[tasks.mutants-cbor]
+description = "Opt-in: mutation-test karet-cbor's diagnostic-notation parser and printer (cap 20m)"
+timeout = "20m"
+run = """cargo mutants --package karet-cbor --all-features \
+  --file 'crates/karet-cbor/src/diag.rs' \
+  --file 'crates/karet-cbor/src/diag/*.rs'"""
+
+[tasks.mutants-seam]
+description = "Opt-in: mutation-test karet-seam's query language, cfg predicates, ids, regroup and rollup (cap 40m)"
+timeout = "40m"
+run = """cargo mutants --package karet-seam --all-features \
+  --file 'crates/karet-seam/src/query/*.rs' \
+  --file 'crates/karet-seam/src/config/predicate.rs' \
+  --file 'crates/karet-seam/src/id.rs' \
+  --file 'crates/karet-seam/src/regroup.rs' \
+  --file 'crates/karet-seam/src/rollup.rs'"""
+
+[tasks.mutants-editor]
+description = "Opt-in: mutation-test karet-editor's text, bracket, conflict and editing models (cap 40m)"
+timeout = "40m"
+run = """cargo mutants --package karet-editor --all-features \
+  --file 'crates/karet-editor/src/text.rs' \
+  --file 'crates/karet-editor/src/bracket.rs' \
+  --file 'crates/karet-editor/src/conflict.rs' \
+  --file 'crates/karet-editor/src/editing.rs' \
+  --file 'crates/karet-editor/src/editing/*.rs'"""
+
+[tasks.mutants-session-pure]
+description = "Opt-in: mutation-test karet-session's pure helpers: semantic-token delta, hint flight, archive, config load, cancellation, highlight merge, linediff, backup (cap 60m)"
+timeout = "60m"
+run = """cargo mutants --package karet-session --all-features \
+  --file 'crates/karet-session/src/lsp/delta.rs' \
+  --file 'crates/karet-session/src/lsp/hint_flight.rs' \
+  --file 'crates/karet-session/src/lsp_registry/archive.rs' \
+  --file 'crates/karet-session/src/config/load.rs' \
+  --file 'crates/karet-session/src/cancellation.rs' \
+  --file 'crates/karet-session/src/highlight.rs' \
+  --file 'crates/karet-session/src/vcs_worker/linediff.rs' \
+  --file 'crates/karet-session/src/backup.rs'"""
+
+[tasks.mutants-app]
+description = "Opt-in: mutation-test the app's chord resolver, terminal input, CLI and command resolution (cap 60m)"
+timeout = "60m"
+run = """cargo mutants --package karet --all-features \
+  --file 'crates/karet/src/keymap/chord.rs' \
+  --file 'crates/karet/src/terminal/input.rs' \
+  --file 'crates/karet/src/cli.rs' \
+  --file 'crates/karet/src/command/resolve.rs'"""
+
+[tasks.mutants-all]
+description = "Opt-in: run every pure-module mutation scope in turn (cap is the sum of theirs)"
+run = [
+  "mise run mutants-text",
+  "mise run mutants-diff",
+  "mise run mutants-core",
+  "mise run mutants-cbor",
+  "mise run mutants-seam",
+  "mise run mutants-editor",
+  "mise run mutants-session-pure",
+  "mise run mutants-app",
+]
+
 [tasks.test-servers-live]
 description = "Opt-in: really install and start every managed language server (network, minutes)"
 run = "cargo test -p karet-session --features testbed --test managed_install_matrix -- --ignored --nocapture --test-threads=1"
