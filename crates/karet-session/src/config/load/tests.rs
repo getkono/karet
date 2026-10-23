@@ -1,4 +1,3 @@
-
 use super::*;
 use crate::config::schema::AutoSave;
 use crate::config::schema::LineNumbers;
