@@ -431,9 +431,7 @@ fn outline_panel_toggles_and_jumps_to_a_bookmarked_page() {
 5 0 obj<</Type/Outlines/First 6 0 R/Last 6 0 R/Count 1>>endobj\n\
 6 0 obj<</Title(Page Two)/Parent 5 0 R/Dest[4 0 R/Fit]>>endobj\n\
 trailer<</Size 7/Root 1 0 R>>\n%%EOF";
-    let Ok(doc) = karet_pdf::Document::load(PDF.to_vec()) else {
-        return;
-    };
+    let doc = karet_pdf::Document::load(PDF.to_vec()).expect("the bookmarked fixture parses");
     let page_count = doc.page_count();
     let outline = doc.outline();
     let mut app = app();
@@ -485,9 +483,7 @@ fn page_keys_turn_a_documents_pages() {
 3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]>>endobj\n\
 4 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]>>endobj\n\
 trailer<</Size 5/Root 1 0 R>>\n%%EOF";
-    let Ok(doc) = karet_pdf::Document::load(PDF.to_vec()) else {
-        return;
-    };
+    let doc = karet_pdf::Document::load(PDF.to_vec()).expect("the two-page fixture parses");
     let page_count = doc.page_count();
     assert_eq!(page_count, 2);
     let mut app = app();
