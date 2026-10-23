@@ -280,6 +280,10 @@ mod tests {
         let text = "fn a() {}\nfn é() {}\n";
         let idx = LineIndex::new(text);
         assert_eq!(idx.line_count(), 3);
+        // An empty text still has one line, and its only span is the empty range.
+        let empty = LineIndex::new("");
+        assert_eq!(empty.line_count(), 1);
+        assert_eq!(empty.range("", Span::default()), Range::default());
         // A span on the second row, its end counted in chars past the 2-byte 'é'.
         let span = Span {
             start: BytePos(10),
