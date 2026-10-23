@@ -237,6 +237,84 @@ mod tests {
     }
 
     #[test]
+    fn size_guard_is_inclusive_at_the_boundary() {
+        // `len > guard` is the rule: a file of exactly SIZE_GUARD bytes still opens.
+        assert_eq!(
+            classify(Path::new("big.rs"), b"fn", SIZE_GUARD),
+            FileKind::Text
+        );
+        assert_eq!(
+            classify(Path::new("big.rs"), b"fn", SIZE_GUARD - 1),
+            FileKind::Text
+        );
+        // The guard runs before routing, so even an extension-routed kind is guarded.
+        let len = SIZE_GUARD + 1;
+        assert_eq!(
+            classify(Path::new("big.png"), b"", len),
+            FileKind::TooLarge { len }
+        );
+    }
+
+    #[test]
+    fn notebook_routes_by_extension() {
+        assert_eq!(
+            classify(Path::new("analysis.ipynb"), b"{\"cells\": []}", 13),
+            FileKind::Notebook
+        );
+    }
+
+    #[test]
+    fn extensions_match_case_insensitively() {
+        let cases = [
+            ("PHOTO.PNG", FileKind::Image),
+            ("Photo.JpEg", FileKind::Image),
+            ("REPORT.PDF", FileKind::Pdf),
+            ("Letter.DOCX", FileKind::Docx),
+            ("Analysis.IPYNB", FileKind::Notebook),
+            ("DATA.CBOR", FileKind::Cbor),
+            ("README.MD", FileKind::Markdown),
+        ];
+        for (name, expected) in cases {
+            assert_eq!(classify(Path::new(name), b"# hi", 4), expected, "{name}");
+        }
+    }
+
+    #[test]
+    fn every_image_signature_is_recovered_from_a_mislabeled_file() {
+        let cases: &[(&str, &[u8])] = &[
+            ("jpeg", &[0xFF, 0xD8, 0xFF, 0xE0]),
+            ("gif87a", b"GIF87a\x01\x00"),
+            ("gif89a", b"GIF89a\x01\x00"),
+            ("bmp", b"BM\x36\x00"),
+            ("webp", b"RIFF\x24\x00\x00\x00WEBPVP8 "),
+        ];
+        for &(label, head) in cases {
+            assert_eq!(
+                classify(Path::new("x.bin"), head, head.len() as u64),
+                FileKind::Image,
+                "{label}"
+            );
+        }
+    }
+
+    #[test]
+    fn near_miss_image_signatures_are_not_images() {
+        // A RIFF container that is not WEBP (e.g. WAVE audio) is not an image; its
+        // NUL-bearing size field falls through to the binary sniff.
+        let wave = b"RIFF\x24\x00\x00\x00WAVEfmt ";
+        assert_eq!(classify(Path::new("x.bin"), wave, 16), FileKind::Binary);
+        // A RIFF header cut short before the form type is not an image either.
+        assert_eq!(classify(Path::new("x.bin"), b"RIFFabcd", 8), FileKind::Text);
+        // Only the two real GIF versions count.
+        assert_eq!(classify(Path::new("x.bin"), b"GIF88a", 6), FileKind::Text);
+        // Two JPEG marker bytes without the third are invalid UTF-8, not an image.
+        assert_eq!(
+            classify(Path::new("x.bin"), &[0xFF, 0xD8, 0x41], 3),
+            FileKind::Binary
+        );
+    }
+
+    #[test]
     fn custom_guard_overrides_default_ceiling() {
         // A file under SIZE_GUARD but over a caller's smaller budget is TooLarge.
         let len = 300 * 1024;

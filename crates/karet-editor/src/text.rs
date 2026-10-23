@@ -609,3 +609,39 @@ pub fn line_span(buffer: &TextBuffer, line: u32) -> (LineCol, LineCol) {
     };
     (LineCol::new(line, 0), head)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn range(start: (u32, u32), end: (u32, u32)) -> Range {
+        Range {
+            start: LineCol::new(start.0, start.1),
+            end: LineCol::new(end.0, end.1),
+        }
+    }
+
+    #[test]
+    fn selection_text_slices_by_char_columns_across_lines() {
+        let source = "h\u{e9}llo\nw\u{f6}rld\n";
+        let buffer = TextBuffer::from_text(source);
+        assert_eq!(
+            selection_text(&buffer, source, range((0, 1), (1, 2))).as_deref(),
+            Some("\u{e9}llo\nw\u{f6}")
+        );
+        assert_eq!(
+            selection_text(&buffer, source, range((1, 1), (1, 1))).as_deref(),
+            Some("")
+        );
+    }
+
+    #[test]
+    fn selection_text_is_none_for_an_unresolvable_range() {
+        let source = "ab\ncd";
+        let buffer = TextBuffer::from_text(source);
+        // A line past the end, a reversed range, and a source shorter than the buffer.
+        assert_eq!(selection_text(&buffer, source, range((0, 0), (9, 0))), None);
+        assert_eq!(selection_text(&buffer, source, range((1, 1), (0, 1))), None);
+        assert_eq!(selection_text(&buffer, "a", range((0, 0), (1, 1))), None);
+    }
+}

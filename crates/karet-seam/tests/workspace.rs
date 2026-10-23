@@ -6,8 +6,9 @@
 //! lost a module because a top-level `#[path]` was resolved from the module directory
 //! instead of the declaring file's own directory.
 //!
-//! Every test degrades to a pass when the layout is not what it expects, so this suite
-//! never fails a build for reasons unrelated to indexing.
+//! A test skips only when there is nothing to index: the Rust grammar is not compiled in,
+//! or the sibling crate it reads is not where this repository keeps it. Once it has
+//! something to index, an indexing error fails the test rather than passing it.
 
 use std::path::Path;
 use std::path::PathBuf;
@@ -18,6 +19,8 @@ use karet_seam::Lens;
 use karet_seam::SeamIndex;
 use karet_seam::index_package;
 use karet_seam::index_workspace;
+
+type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 /// Crates whose shapes between them exercise every resolution rule: flat modules,
 /// `mod.rs` directories, nested non-root files, and `#[path]` overrides.
@@ -37,14 +40,20 @@ fn crate_dir(name: &str) -> Option<PathBuf> {
     path.join("Cargo.toml").is_file().then_some(path)
 }
 
-fn index(name: &str) -> Option<SeamIndex> {
-    index_package(&crate_dir(name)?, IndexOptions::default()).ok()
+/// The indexed sibling crate, `None` only when [`crate_dir`] finds nothing to index.
+///
+/// # Errors
+/// Whatever [`index_package`] returns — an indexing failure is a test failure.
+fn index(name: &str) -> Result<Option<SeamIndex>, karet_seam::PackageError> {
+    crate_dir(name)
+        .map(|dir| index_package(&dir, IndexOptions::default()))
+        .transpose()
 }
 
 #[test]
-fn every_module_in_this_workspace_resolves_to_a_file() {
+fn every_module_in_this_workspace_resolves_to_a_file() -> TestResult {
     for name in CRATES {
-        let Some(index) = index(name) else { continue };
+        let Some(index) = index(name)? else { continue };
         let unresolved: Vec<String> = index
             .unresolved_modules()
             .iter()
@@ -55,18 +64,17 @@ fn every_module_in_this_workspace_resolves_to_a_file() {
             "{name} has unresolved modules: {unresolved:?}"
         );
     }
+    Ok(())
 }
 
 #[test]
-fn a_real_crate_yields_a_connected_tree_reaching_every_file() {
-    let Some(index) = index("karet-core") else {
-        return;
+fn a_real_crate_yields_a_connected_tree_reaching_every_file() -> TestResult {
+    let Some(index) = index("karet-core")? else {
+        return Ok(());
     };
     // One package root, and everything hangs from it.
     assert_eq!(index.roots().len(), 1, "a package has exactly one root");
-    let Some(root) = index.roots().first().copied() else {
-        return;
-    };
+    let root = index.roots().first().copied().ok_or("no package root")?;
     assert_eq!(
         index.subtree(root).len(),
         index.len(),
@@ -78,16 +86,19 @@ fn a_real_crate_yields_a_connected_tree_reaching_every_file() {
     );
     assert!(index.files().len() > 5, "its modules span several files");
     assert_eq!(index.truncated_after(), None, "nothing should be truncated");
+    Ok(())
 }
 
 #[test]
-fn rollups_at_the_root_account_for_the_whole_package() {
-    let Some(index) = index("karet-core") else {
-        return;
+fn rollups_at_the_root_account_for_the_whole_package() -> TestResult {
+    let Some(index) = index("karet-core")? else {
+        return Ok(());
     };
-    let Some(root) = index.roots().first().and_then(|id| index.node(*id)) else {
-        return;
-    };
+    let root = index
+        .roots()
+        .first()
+        .and_then(|id| index.node(*id))
+        .ok_or("no package root")?;
     for lens in LENSES {
         let direct: u32 = index
             .nodes()
@@ -101,15 +112,13 @@ fn rollups_at_the_root_account_for_the_whole_package() {
             lens.name()
         );
     }
+    Ok(())
 }
 
 #[test]
-fn the_binary_crate_has_exactly_one_entry_point() {
-    let Some(dir) = crate_dir("karet") else {
-        return;
-    };
-    let Ok(index) = index_package(&dir, IndexOptions::default()) else {
-        return;
+fn the_binary_crate_has_exactly_one_entry_point() -> TestResult {
+    let Some(index) = index("karet")? else {
+        return Ok(());
     };
     let entry_points: Vec<String> = index
         .nodes()
@@ -121,14 +130,15 @@ fn the_binary_crate_has_exactly_one_entry_point() {
         1,
         "expected one entry point, got {entry_points:?}"
     );
+    Ok(())
 }
 
 #[test]
-fn an_async_heavy_crate_reports_hazards_and_a_pure_model_crate_does_not() {
+fn an_async_heavy_crate_reports_hazards_and_a_pure_model_crate_does_not() -> TestResult {
     // The lens has to discriminate. Reporting hazards everywhere, or nowhere, would both
     // be useless — and both would pass a test that only checked one crate.
-    let (Some(async_crate), Some(model_crate)) = (index("karet-lsp"), index("karet-core")) else {
-        return;
+    let (Some(async_crate), Some(model_crate)) = (index("karet-lsp")?, index("karet-core")?) else {
+        return Ok(());
     };
     let async_count = |index: &SeamIndex| {
         index
@@ -145,26 +155,20 @@ fn an_async_heavy_crate_reports_hazards_and_a_pure_model_crate_does_not() {
         0,
         "karet-core is a synchronous model crate"
     );
+    Ok(())
 }
 
 #[test]
-fn reindexing_a_real_file_leaves_the_tree_consistent() {
-    let Some(dir) = crate_dir("karet-core") else {
-        return;
-    };
-    let Some(mut index) = index("karet-core") else {
-        return;
+fn reindexing_a_real_file_leaves_the_tree_consistent() -> TestResult {
+    let (Some(dir), Some(mut index)) = (crate_dir("karet-core"), index("karet-core")?) else {
+        return Ok(());
     };
     let before = index.len();
     let target = dir.join("src").join("coord.rs");
-    let Ok(text) = std::fs::read_to_string(&target) else {
-        return;
-    };
+    let text = std::fs::read_to_string(&target)?;
 
     let mut pool = karet_treesitter::ParserPool::new();
-    if karet_seam::reindex_file(&mut index, &mut pool, &target, &text).is_err() {
-        return;
-    }
+    karet_seam::reindex_file(&mut index, &mut pool, &target, &text)?;
 
     // Re-indexing a file with its own unchanged contents must be a no-op in shape.
     assert_eq!(
@@ -172,25 +176,24 @@ fn reindexing_a_real_file_leaves_the_tree_consistent() {
         before,
         "re-indexing unchanged text changed the tree"
     );
-    let Some(root) = index.roots().first().copied() else {
-        return;
-    };
+    let root = index.roots().first().copied().ok_or("no package root")?;
     assert_eq!(
         index.subtree(root).len(),
         index.len(),
         "every node must still be reachable after a re-index"
     );
+    Ok(())
 }
 
 #[test]
-fn real_calls_link_from_callables_and_measure_consistently() {
+fn real_calls_link_from_callables_and_measure_consistently() -> TestResult {
     use karet_seam::CallGraph;
     use karet_seam::EdgeKind;
     use karet_seam::GraphOptions;
     use karet_seam::Resolution;
 
     for name in CRATES {
-        let Some(index) = index(name) else { continue };
+        let Some(index) = index(name)? else { continue };
         let calls: Vec<&karet_seam::Edge> = index
             .edges()
             .all()
@@ -230,6 +233,7 @@ fn real_calls_link_from_callables_and_measure_consistently() {
             );
         }
     }
+    Ok(())
 }
 
 /// The repository root, when the layout is the one these tests expect.
@@ -271,18 +275,16 @@ fn the_repository_root_discovers_every_member_crate() {
 }
 
 #[test]
-fn the_repository_root_indexes_as_one_tree_with_a_root_per_package() {
+fn the_repository_root_indexes_as_one_tree_with_a_root_per_package() -> TestResult {
     // The case that was a hard error: this repository's root manifest is virtual, so the
     // only entry point the editor could reach always failed on it.
     if karet_seam::lang::rust::language_id().is_none() {
-        return;
+        return Ok(());
     }
     let Some(root) = repository_root() else {
-        return;
+        return Ok(());
     };
-    let Ok(index) = index_workspace(&root, IndexOptions::default()) else {
-        return;
-    };
+    let index = index_workspace(&root, IndexOptions::default())?;
 
     assert!(index.roots().len() > 20, "every member becomes a root");
     assert_eq!(
@@ -307,21 +309,20 @@ fn the_repository_root_indexes_as_one_tree_with_a_root_per_package() {
         .collect();
     assert!(names.contains(&"karet-core"), "got {names:?}");
     assert!(names.contains(&"karet-seam"), "got {names:?}");
+    Ok(())
 }
 
 #[test]
-fn every_module_across_the_whole_workspace_resolves_to_a_file() {
+fn every_module_across_the_whole_workspace_resolves_to_a_file() -> TestResult {
     // The sibling of the per-crate check, over every crate at once — which is where a
     // resolution bug in a crate nobody listed would otherwise hide.
     if karet_seam::lang::rust::language_id().is_none() {
-        return;
+        return Ok(());
     }
     let Some(root) = repository_root() else {
-        return;
+        return Ok(());
     };
-    let Ok(index) = index_workspace(&root, IndexOptions::default()) else {
-        return;
-    };
+    let index = index_workspace(&root, IndexOptions::default())?;
     let unresolved: Vec<String> = index
         .unresolved_modules()
         .iter()
@@ -331,6 +332,7 @@ fn every_module_across_the_whole_workspace_resolves_to_a_file() {
         unresolved.is_empty(),
         "unresolved across the workspace: {unresolved:?}"
     );
+    Ok(())
 }
 
 /// Not an assertion — a stopwatch. `cargo test --release -- --ignored --nocapture bench`

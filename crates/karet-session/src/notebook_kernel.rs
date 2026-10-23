@@ -390,15 +390,7 @@ async fn run_cells(
     only: Option<usize>,
     ctx: &KernelTask,
 ) {
-    let indices: Vec<usize> = notebook
-        .cells
-        .iter()
-        .enumerate()
-        .filter(|(index, cell)| {
-            cell.kind == CellKind::Code && only.is_none_or(|wanted| wanted == *index)
-        })
-        .map(|(index, _)| index)
-        .collect();
+    let indices = runnable(notebook, only);
     let total = indices.len();
     let step = |step: &RunStep| {
         let (severity, text) = step.report();
@@ -440,6 +432,21 @@ async fn run_cells(
         }
     }
     step(&RunStep::Finished);
+}
+
+/// The cells a run executes, in order: every code cell, or only `only` when
+/// it names a code cell. A markdown or raw cell, or an index past the end,
+/// runs nothing.
+fn runnable(notebook: &Notebook, only: Option<usize>) -> Vec<usize> {
+    notebook
+        .cells
+        .iter()
+        .enumerate()
+        .filter(|(index, cell)| {
+            cell.kind == CellKind::Code && only.is_none_or(|wanted| wanted == *index)
+        })
+        .map(|(index, _)| index)
+        .collect()
 }
 
 /// Clear every code cell's outputs and counter (a restarted kernel makes
@@ -500,10 +507,78 @@ mod tests {
         );
     }
 
+    /// A notebook of markdown, code, raw, code cells -- the second code cell
+    /// already run once.
+    fn mixed_notebook() -> Option<Notebook> {
+        karet_notebook::parse(
+            r##"{"nbformat": 4, "nbformat_minor": 5, "metadata": {}, "cells": [
+                {"cell_type": "markdown", "metadata": {}, "source": "# title"},
+                {"cell_type": "code", "metadata": {}, "execution_count": null,
+                 "source": "1", "outputs": []},
+                {"cell_type": "raw", "metadata": {}, "source": "raw"},
+                {"cell_type": "code", "metadata": {}, "execution_count": 4, "source": "2",
+                 "outputs": [{"output_type": "stream", "name": "stdout", "text": "2\n"}]}
+            ]}"##,
+        )
+        .ok()
+    }
+
+    #[test]
+    fn a_run_selects_code_cells_only() {
+        let Some(notebook) = mixed_notebook() else {
+            return;
+        };
+        assert_eq!(
+            runnable(&notebook, None),
+            vec![1, 3],
+            "every code cell, in order"
+        );
+        assert_eq!(runnable(&notebook, Some(3)), vec![3], "one named code cell");
+        assert!(
+            runnable(&notebook, Some(0)).is_empty(),
+            "a markdown cell runs nothing"
+        );
+        assert!(
+            runnable(&notebook, Some(2)).is_empty(),
+            "a raw cell runs nothing"
+        );
+        assert!(
+            runnable(&notebook, Some(9)).is_empty(),
+            "past the end runs nothing"
+        );
+    }
+
+    #[test]
+    fn mark_stale_clears_code_cell_results_and_leaves_other_cells_alone() {
+        let Some(mut notebook) = mixed_notebook() else {
+            return;
+        };
+        let before: Vec<_> = notebook
+            .cells
+            .iter()
+            .map(|cell| (cell.execution_count, cell.outputs.clone()))
+            .collect();
+        mark_stale(&mut notebook);
+        for (index, cell) in notebook.cells.iter().enumerate() {
+            if cell.kind == CellKind::Code {
+                assert_eq!(cell.execution_count, Some(None), "cell {index}");
+                assert_eq!(cell.outputs, Some(Vec::new()), "cell {index}");
+            } else {
+                assert_eq!(
+                    (cell.execution_count, cell.outputs.clone()),
+                    before[index],
+                    "a non-code cell {index} has no results to go stale"
+                );
+            }
+        }
+    }
+
     #[tokio::test]
     async fn run_without_an_installed_kernel_diagnoses() {
-        let dir = std::env::temp_dir().join(format!("karet-nbk-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&dir);
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        let dir = dir.path();
         let path = dir.join("empty.ipynb");
         let _ = std::fs::write(
             &path,
@@ -526,14 +601,14 @@ mod tests {
             }
         };
         assert!(message.contains("no installed kernel"), "{message}");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
     async fn a_broken_notebook_diagnoses_the_parse() {
-        let dir = std::env::temp_dir().join(format!("karet-nbk-bad-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&dir);
-        let path = dir.join("bad.ipynb");
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        let path = dir.path().join("bad.ipynb");
         let _ = std::fs::write(&path, "not json");
         let (events_tx, mut events_rx) = mpsc::unbounded_channel();
         let mut kernels = NotebookKernels::new(None, events_tx);
@@ -550,7 +625,6 @@ mod tests {
             }
         };
         assert!(message.contains("notebook:"), "{message}");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

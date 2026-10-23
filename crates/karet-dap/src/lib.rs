@@ -200,7 +200,7 @@ impl DapClient {
             .kill_on_drop(true)
             .spawn()
             .map_err(|e| DapError::Launch(e.to_string()))?;
-        let stream = connect_with_retries(port).await?;
+        let stream = connect_with_retries(port, TCP_CONNECT_TIMEOUT).await?;
         let (read, write) = stream.into_split();
         Ok(Self {
             conn: conn::Connection::start(read, write),
@@ -610,9 +610,13 @@ pub fn free_port() -> std::io::Result<u16> {
     Ok(listener.local_addr()?.port())
 }
 
-/// Connect to the adapter's socket, retrying while it boots.
-async fn connect_with_retries(port: u16) -> Result<tokio::net::TcpStream, DapError> {
-    let deadline = tokio::time::Instant::now() + TCP_CONNECT_TIMEOUT;
+/// Connect to the adapter's socket, retrying while it boots, for at most
+/// `timeout` (a parameter so tests can exercise the deadline quickly).
+async fn connect_with_retries(
+    port: u16,
+    timeout: Duration,
+) -> Result<tokio::net::TcpStream, DapError> {
+    let deadline = tokio::time::Instant::now() + timeout;
     loop {
         match tokio::net::TcpStream::connect(("127.0.0.1", port)).await {
             Ok(stream) => return Ok(stream),
