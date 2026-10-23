@@ -79,13 +79,20 @@ pub enum GraphicsProtocol {
 /// Detect the best-supported graphics protocol from the environment.
 #[must_use]
 pub fn detect_protocol() -> GraphicsProtocol {
-    if std::env::var_os("KITTY_WINDOW_ID").is_some() {
+    protocol_from_env(|key| std::env::var_os(key))
+}
+
+/// [`detect_protocol`] over an injected environment lookup, so the decision
+/// table is testable without mutating the process environment.
+fn protocol_from_env(lookup: impl Fn(&str) -> Option<std::ffi::OsString>) -> GraphicsProtocol {
+    if lookup("KITTY_WINDOW_ID").is_some() {
         return GraphicsProtocol::Kitty;
     }
     let env_contains = |key: &str, needles: &[&str]| {
-        std::env::var(key)
+        lookup(key)
+            .and_then(|v| v.into_string().ok())
             .map(|v| v.to_ascii_lowercase())
-            .is_ok_and(|v| needles.iter().any(|n| v.contains(n)))
+            .is_some_and(|v| needles.iter().any(|n| v.contains(n)))
     };
     if env_contains("TERM", &["kitty", "ghostty"])
         || env_contains("TERM_PROGRAM", &["ghostty", "wezterm"])
