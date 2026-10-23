@@ -61,7 +61,6 @@ pub mod parallel;
 pub mod query;
 pub mod regroup;
 pub mod rollup;
-pub mod text;
 
 pub use calls::Bound;
 pub use calls::CallGraph;
@@ -129,4 +128,3 @@ pub use query::QueryResult;
 pub use query::Term;
 pub use query::TermKind;
 pub use rollup::Rollups;
-pub use text::LineIndex;

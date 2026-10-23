@@ -13,6 +13,7 @@
 
 use std::collections::HashMap;
 
+use karet_core::LineIndex;
 use karet_treesitter::LanguageId;
 use karet_treesitter::ParserPool;
 use karet_treesitter::SyntaxTree;
@@ -35,7 +36,6 @@ use crate::model::Node;
 use crate::model::NodeKind;
 use crate::model::SeamLocation;
 use crate::rollup::Rollups;
-use crate::text::LineIndex;
 
 /// Errors extracting a file into the index.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

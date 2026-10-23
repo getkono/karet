@@ -10,6 +10,7 @@
 //! time, plus the context the walk has accumulated around it; it never sees the index,
 //! so it cannot invent structure that the containment tree does not already express.
 
+use karet_core::LineIndex;
 use karet_core::Range;
 use karet_treesitter::LanguageId;
 use karet_treesitter::WalkNode;
@@ -20,7 +21,6 @@ use crate::model::FacetSubtype;
 use crate::model::Lens;
 use crate::model::NodeKind;
 use crate::model::Visibility;
-use crate::text::LineIndex;
 
 #[cfg(any(feature = "lang-c", feature = "lang-cpp"))]
 pub mod cfamily;
@@ -478,7 +478,6 @@ pub fn for_language(language: LanguageId) -> Option<&'static dyn SeamLanguage> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::text::LineIndex;
 
     fn attribute(name: &str, arguments: Option<&str>) -> Attribute {
         Attribute {
