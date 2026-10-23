@@ -225,7 +225,44 @@ mod tests {
         let p = prepared("a\nold b\nc\n", "a\nnew b\nc\n");
         let rows: Vec<bool> = p.intraline[0].iter().map(Option::is_some).collect();
         // Context rows carry no pair; the remove/add pair both do.
-        assert!(rows.iter().filter(|set| **set).count() == 2);
+        assert_eq!(rows, [false, true, true, false]);
+        // Both rows of a pair hold the same pair, computed old → new.
+        assert_eq!(p.intraline[0][1], p.intraline[0][2]);
+        assert_eq!(
+            p.intraline[0][1],
+            Some(compute_highlights("old b", "new b"))
+        );
+    }
+
+    #[test]
+    fn intraline_leaves_the_ragged_tail_of_a_run_unpaired() {
+        // Three removals against one addition: only the first of each pairs up.
+        let p = prepared("a\nr1\nr2\nr3\nz\n", "a\nn1\nz\n");
+        let rows: Vec<bool> = p.intraline[0].iter().map(Option::is_some).collect();
+        assert_eq!(rows, [false, true, false, false, true, false]);
+        assert_eq!(p.intraline[0][1], Some(compute_highlights("r1", "n1")));
+
+        // And the mirror image: one removal, three additions.
+        let p = prepared("a\nr1\nz\n", "a\nn1\nn2\nn3\nz\n");
+        let rows: Vec<bool> = p.intraline[0].iter().map(Option::is_some).collect();
+        assert_eq!(rows, [false, true, true, false, false, false]);
+    }
+
+    #[test]
+    fn intraline_is_indexed_per_hunk() {
+        let diff = diff_text(
+            "a\nb\nc\nd\ne\nf\ng\nh\n",
+            "A\nb\nc\nd\ne\nf\ng\nH\n",
+            &DiffOptions {
+                context_lines: 1,
+                ..Default::default()
+            },
+        );
+        let p = PreparedDiff::new(diff, Vec::new(), Vec::new());
+        assert_eq!(p.intraline.len(), p.diff.hunks.len());
+        for (rows, hunk) in p.intraline.iter().zip(&p.diff.hunks) {
+            assert_eq!(rows.len(), hunk.lines.len());
+        }
     }
 
     #[test]

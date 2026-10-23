@@ -281,6 +281,49 @@ mod tests {
         assert!(!binary.is_content_unchanged());
     }
 
+    fn hunk_with(header: &str, scope: Option<&str>, new_scope: Option<&str>) -> Hunk {
+        Hunk {
+            old_start: 1,
+            old_count: 2,
+            new_start: 1,
+            new_count: 2,
+            header: header.into(),
+            scope: scope.map(Into::into),
+            new_scope: new_scope.map(Into::into),
+            lines: vec![],
+        }
+    }
+
+    #[test]
+    fn right_header_swaps_in_the_new_scope() {
+        let h = hunk_with(
+            "@@ -1,2 +1,2 @@ fn old()",
+            Some("fn old()"),
+            Some("fn new()"),
+        );
+        assert_eq!(h.right_header(), "@@ -1,2 +1,2 @@ fn new()");
+        assert_eq!(h.right_scope(), Some("fn new()"));
+
+        // A header that had no scope text still gains the new one.
+        let h = hunk_with("@@ -1,2 +1,2 @@", None, Some("fn new()"));
+        assert_eq!(h.right_header(), "@@ -1,2 +1,2 @@ fn new()");
+    }
+
+    #[test]
+    fn right_header_falls_back_to_the_header_verbatim() {
+        // No new-side scope: the old header stands, scope and all.
+        let h = hunk_with("@@ -1,2 +1,2 @@ fn old()", Some("fn old()"), None);
+        assert_eq!(h.right_header(), "@@ -1,2 +1,2 @@ fn old()");
+        assert_eq!(h.right_scope(), Some("fn old()"));
+
+        // A header with no closing `@@` has no range to keep, so it is not
+        // rewritten into something half-formed.
+        let h = hunk_with("@@ -1,2 +1,2", None, Some("fn new()"));
+        assert_eq!(h.right_header(), "@@ -1,2 +1,2");
+        let h = hunk_with("not a header", None, Some("fn new()"));
+        assert_eq!(h.right_header(), "not a header");
+    }
+
     #[test]
     fn diff_line_terminator_reflects_flags() {
         let mut line = DiffLine::new(LineKind::Add, None, Some(1), "x");
