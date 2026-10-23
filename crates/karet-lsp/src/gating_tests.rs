@@ -3,6 +3,8 @@
 //! Split from `lib_tests`, which owns the wire harness and the per-request
 //! round trips. These are about the gate in front of them: the whole point is
 //! that a refused request produces *no traffic*, so they assert on silence.
+//! The gate's open side lives here too for the requests no round trip in
+//! `lib_tests` issues (`workspace/symbol`, `textDocument/signatureHelp`).
 
 use serde_json::json;
 
@@ -71,6 +73,42 @@ async fn an_unadvertised_capability_is_refused_without_issuing_a_request() -> Te
             .await,
         Err(LspError::Unsupported { .. })
     ));
+    assert!(matches!(
+        client.document_symbols(doc).await,
+        Err(LspError::Unsupported {
+            method: "textDocument/documentSymbol"
+        })
+    ));
+    assert!(matches!(
+        client.workspace_symbols("x").await,
+        Err(LspError::Unsupported {
+            method: "workspace/symbol"
+        })
+    ));
+    assert!(matches!(
+        client.implementations(doc, pos).await,
+        Err(LspError::Unsupported {
+            method: "textDocument/implementation"
+        })
+    ));
+    assert!(matches!(
+        client.supertypes(doc, pos).await,
+        Err(LspError::Unsupported {
+            method: "textDocument/prepareTypeHierarchy"
+        })
+    ));
+    assert!(matches!(
+        client.prepare_rename(doc, pos).await,
+        Err(LspError::Unsupported {
+            method: "textDocument/prepareRename"
+        })
+    ));
+    assert!(matches!(
+        client.signature_help(doc, pos).await,
+        Err(LspError::Unsupported {
+            method: "textDocument/signatureHelp"
+        })
+    ));
 
     // The one thing it *did* advertise is issued, and is the first message the
     // server sees after the handshake. If any refusal above had gone to the
@@ -88,6 +126,98 @@ async fn an_unadvertised_capability_is_refused_without_issuing_a_request() -> Te
             .is_empty()
     );
     formatting.await?;
+    Ok(())
+}
+
+// The gate's open side, for the two requests no other test issues: once the
+// server advertises them, they reach the wire with their params and the answer
+// maps into the neutral model.
+
+#[tokio::test]
+async fn workspace_symbols_round_trip_once_advertised() -> TestResult {
+    let ((read, write), mut server) = wire();
+    let server_task = tokio::spawn(async move {
+        server.handshake().await;
+        let request = server.recv().await;
+        assert_eq!(request["method"], "workspace/symbol");
+        assert_eq!(request["params"]["query"], "pars");
+        server
+            .respond(
+                &request["id"],
+                json!([{
+                    "name": "parse", "kind": 12, "containerName": "codec",
+                    "location": {"uri": "file:///w/src/codec.rs",
+                                 "range": {"start": {"line": 4, "character": 7},
+                                           "end": {"line": 4, "character": 12}}}
+                }]),
+            )
+            .await;
+    });
+    let client = LspClient::connect(read, write, Path::new("/w")).await?;
+    let found = client.workspace_symbols("pars").await?;
+    server_task.await?;
+    let [symbol] = found.as_slice() else {
+        return Err(format!("expected one symbol, got {found:?}").into());
+    };
+    assert_eq!(symbol.name, "parse");
+    assert_eq!(symbol.kind, karet_core::SymbolKind::Function);
+    assert_eq!(symbol.container_name.as_deref(), Some("codec"));
+    assert_eq!(symbol.path, Path::new("/w/src/codec.rs"));
+    let range = symbol
+        .range
+        .as_ref()
+        .ok_or("the located form lost its range")?;
+    assert_eq!(
+        (range.start, range.end),
+        (LineCol::new(4, 7), LineCol::new(4, 12))
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn signature_help_round_trips_once_advertised() -> TestResult {
+    let ((read, write), mut server) = wire();
+    let server_task = tokio::spawn(async move {
+        server.handshake().await;
+        let request = server.recv().await;
+        assert_eq!(request["method"], "textDocument/signatureHelp");
+        assert_eq!(request["params"]["textDocument"]["uri"], "file:///w/a.rs");
+        assert_eq!(
+            request["params"]["position"],
+            json!({"line": 3, "character": 9})
+        );
+        server
+            .respond(
+                &request["id"],
+                json!({
+                    "signatures": [{
+                        "label": "fn f(a: i32, b: i32)",
+                        // One simple label, one by UTF-16 offsets into `label`.
+                        "parameters": [{"label": "a: i32"}, {"label": [13, 19]}]
+                    }],
+                    "activeSignature": 0,
+                    "activeParameter": 1
+                }),
+            )
+            .await;
+    });
+    let client = LspClient::connect(read, write, Path::new("/w")).await?;
+    let help = client
+        .signature_help(Path::new("/w/a.rs"), LineCol::new(3, 9))
+        .await?
+        .ok_or("signature help came back empty")?;
+    server_task.await?;
+    assert_eq!((help.active_signature, help.active_parameter), (0, 1));
+    let [signature] = help.signatures.as_slice() else {
+        return Err(format!("expected one signature, got {:?}", help.signatures).into());
+    };
+    assert_eq!(signature.label, "fn f(a: i32, b: i32)");
+    let labels: Vec<&str> = signature
+        .parameters
+        .iter()
+        .map(|parameter| parameter.label.as_str())
+        .collect();
+    assert_eq!(labels, ["a: i32", "b: i32"]);
     Ok(())
 }
 

@@ -159,6 +159,38 @@ async fn unanswered_requests_time_out() -> TestResult {
     Ok(())
 }
 
+/// Falsified by a timed-out request leaving its pending entry behind, by an
+/// abandoned id being reused, or by the late answer resolving the next request.
+#[tokio::test]
+async fn a_late_answer_to_a_timed_out_request_is_absorbed() -> TestResult {
+    let ((read, write), mut peer) = wire();
+    let connection = Connection::start(TestHandler, read, write);
+    let (timed_out, wait_for_timeout) = oneshot::channel::<()>();
+    let peer_task = tokio::spawn(async move {
+        let first = peer.recv().await;
+        let _ = wait_for_timeout.await;
+        // Answered only once the requester has given up on it.
+        peer.respond(&first["id"], json!("stale")).await;
+        let second = peer.recv().await;
+        peer.respond(&second["id"], json!("fresh")).await;
+        (first["id"].clone(), second["id"].clone())
+    });
+    let err = connection
+        .request_with::<_, String>("test/slow", Value::Null, Duration::from_millis(50))
+        .await;
+    assert!(matches!(err, Err(RpcError::Timeout)), "got {err:?}");
+    assert!(
+        connection.pending.lock().is_ok_and(|map| map.is_empty()),
+        "the timed-out request is still pending"
+    );
+    let _ = timed_out.send(());
+    let next: String = connection.request("test/next", Value::Null).await?;
+    assert_eq!(next, "fresh", "the stale answer resolved the next request");
+    let (first, second) = peer_task.await?;
+    assert_ne!(first, second, "an abandoned id was reused");
+    Ok(())
+}
+
 #[tokio::test]
 async fn eof_fails_in_flight_requests_with_closed() -> TestResult {
     let ((read, write), mut peer) = wire();
@@ -202,6 +234,99 @@ async fn notifications_reach_the_wire() -> TestResult {
         note,
         json!({"jsonrpc": "2.0", "method": "test/note", "params": {"n": 1}})
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn notify_fails_fast_with_queue_full_and_recovers_once_drained() -> TestResult {
+    struct NarrowHandler;
+
+    impl Handler for NarrowHandler {
+        type Framing = ContentLength;
+        type Push = (String, Value);
+
+        const OUTBOUND_CHANNEL_CAPACITY: usize = 1;
+
+        fn push_payload(&self, _method: &str, _params: &Value) -> Option<Self::Push> {
+            None
+        }
+    }
+
+    // A pipe narrower than one frame, read by nobody: the writer stalls
+    // mid-write and the one-slot queue fills up behind it.
+    let (client_end, peer_end) = tokio::io::duplex(16);
+    let (client_read, client_write) = tokio::io::split(client_end);
+    let (peer_read, peer_write) = tokio::io::split(peer_end);
+    let mut peer = FakePeer {
+        reader: BufReader::new(peer_read),
+        writer: peer_write,
+    };
+    let connection = Connection::start(NarrowHandler, client_read, client_write);
+
+    let mut accepted = 0_i64;
+    let mut refused = None;
+    for _ in 0..16 {
+        match connection.notify("test/note", json!({"n": accepted})) {
+            Ok(()) => accepted += 1,
+            Err(error) => {
+                refused = Some(error);
+                break;
+            },
+        }
+        tokio::task::yield_now().await; // let the writer reach the stall
+    }
+    assert!(
+        matches!(refused, Some(RpcError::QueueFull)),
+        "got {refused:?} after {accepted} accepted"
+    );
+    assert!(accepted >= 1);
+
+    // Failing fast dropped only the refused frame: every accepted one arrives
+    // in order, and the connection still carries notifications afterwards.
+    for n in 0..accepted {
+        let note = tokio::time::timeout(Duration::from_secs(5), peer.recv()).await?;
+        assert_eq!(note["params"]["n"], json!(n));
+    }
+    connection.notify("test/after", Value::Null)?;
+    let after = tokio::time::timeout(Duration::from_secs(5), peer.recv()).await?;
+    assert_eq!(after["method"], "test/after");
+    Ok(())
+}
+
+/// Params whose serialization always fails.
+struct Unencodable;
+
+impl Serialize for Unencodable {
+    fn serialize<S: serde::Serializer>(&self, _serializer: S) -> Result<S::Ok, S::Error> {
+        Err(serde::ser::Error::custom("refuses to encode"))
+    }
+}
+
+#[tokio::test]
+async fn unencodable_params_fail_with_encode_and_send_nothing() -> TestResult {
+    let ((read, write), mut peer) = wire();
+    let connection = Connection::start(TestHandler, read, write);
+
+    let notified = connection.notify("test/bad-note", Unencodable);
+    assert!(
+        matches!(&notified, Err(RpcError::Encode { method, .. }) if method == "test/bad-note"),
+        "got {notified:?}"
+    );
+    let requested = connection
+        .request::<_, Value>("test/bad-request", Unencodable)
+        .await;
+    assert!(
+        matches!(&requested, Err(RpcError::Encode { method, .. }) if method == "test/bad-request"),
+        "got {requested:?}"
+    );
+    assert!(
+        connection.pending.lock().is_ok_and(|map| map.is_empty()),
+        "a request that never encoded is pending"
+    );
+
+    // Neither reached the wire: the first frame the peer sees is this one.
+    connection.notify("test/good", Value::Null)?;
+    assert_eq!(peer.recv().await["method"], "test/good");
     Ok(())
 }
 
