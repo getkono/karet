@@ -306,7 +306,7 @@ mod tests {
     fn scan_reports_each_codetag_with_its_line_and_message() -> TestResult {
         let dir = tempfile::tempdir()?;
         if !rust_grammar() {
-            return Ok(());
+            return Ok(()); // rust grammar not compiled in; nothing to test
         }
         write(
             dir.path(),
@@ -329,7 +329,7 @@ mod tests {
     fn an_open_buffer_is_scanned_instead_of_its_stale_disk_copy() -> TestResult {
         let dir = tempfile::tempdir()?;
         if !rust_grammar() {
-            return Ok(());
+            return Ok(()); // rust grammar not compiled in; nothing to test
         }
         write(dir.path(), "a.rs", "// TODO: on disk\n")?;
         let path = dir.path().join("a.rs");
@@ -356,7 +356,7 @@ mod tests {
     fn the_hit_limit_truncates_the_scan() -> TestResult {
         let dir = tempfile::tempdir()?;
         if !rust_grammar() {
-            return Ok(());
+            return Ok(()); // rust grammar not compiled in; nothing to test
         }
         write(
             dir.path(),
