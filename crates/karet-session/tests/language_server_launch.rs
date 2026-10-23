@@ -68,6 +68,28 @@ struct Harness {
 /// `Result` fails the test instead, which is what a broken fixture deserves.
 type SetupError = Box<dyn std::error::Error>;
 
+/// Place the process double at `target`, as a project-local server binary.
+///
+/// A link rather than a copy. Copying writes the file from this process, and
+/// these tests run on parallel threads that keep forking supervisors: a fork
+/// that lands while the copy's write descriptor is open hands the child a
+/// duplicate of it, held until that child execs. A supervisor that execs the
+/// copy during that window gets `ETXTBSY`, exits, and the runtime reads the
+/// exit as a server that can never start -- `Unavailable` for a binary that is
+/// perfectly runnable. A link opens nothing for writing, so there is no window.
+/// `is_executable_file` follows the link, which is how a virtualenv's own
+/// `bin/` entries usually look anyway.
+fn stage_testbed(target: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(TESTBED, target)
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::copy(TESTBED, target).map(drop)
+    }
+}
+
 /// A session whose Rust provider is the process double.
 ///
 /// `brokered` picks the production fork: with a registry directory the
@@ -593,7 +615,7 @@ async fn a_diagnostics_companion_attaches_even_with_no_primary_provider() -> Res
     // Pyright, Python's primary, is deliberately absent.
     let venv = root.join(".venv").join("bin");
     std::fs::create_dir_all(&venv)?;
-    std::fs::copy(TESTBED, venv.join("ruff"))?;
+    stage_testbed(&venv.join("ruff"))?;
     let file = root.join("main.py");
     std::fs::write(&file, "x = 1\n")?;
 
@@ -650,7 +672,7 @@ async fn disabling_lsp_stops_companions_and_not_only_primaries() -> Result<(), S
     std::fs::write(root.join("ruff.toml"), "line-length = 88\n")?;
     let venv = root.join(".venv").join("bin");
     std::fs::create_dir_all(&venv)?;
-    std::fs::copy(TESTBED, venv.join("ruff"))?;
+    stage_testbed(&venv.join("ruff"))?;
     let file = root.join("main.py");
     std::fs::write(&file, "x = 1\n")?;
 

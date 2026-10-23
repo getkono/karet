@@ -50,6 +50,24 @@ fn github_app() -> App {
     app
 }
 
+/// [`github_app`] with a recording backend, so every page's request carries a
+/// real id and replies can be tagged the way the session tags them.
+pub(super) fn tagged_github_app() -> App {
+    let mut app = app();
+    app.backend = Some(Arc::new(RecordingBackend::new()));
+    app.view = View::GitHub;
+    app.focus = Focus::Editor;
+    app.apply_github_availability(Some(repository()), anonymous_auth());
+    app
+}
+
+/// The request the dashboard is waiting on.
+pub(super) fn dashboard_pending(app: &App) -> Option<RequestId> {
+    app.github
+        .dashboard()
+        .and_then(|dashboard| dashboard.pending)
+}
+
 #[test]
 fn every_github_page_names_itself_from_its_own_state() {
     // The strip and the tab both label a page with `title()`, and a creation form
@@ -92,9 +110,9 @@ fn github_dashboard_opens_a_masked_in_tui_sign_in_control() {
 
 #[test]
 fn github_issue_table_supports_keyboard_multi_selection() {
-    let mut app = github_app();
+    let mut app = tagged_github_app();
     app.apply_github_issues(
-        None,
+        dashboard_pending(&app),
         GithubPage {
             items: vec![issue(1), issue(2), issue(3)],
             page: 1,
@@ -112,9 +130,9 @@ fn github_issue_table_supports_keyboard_multi_selection() {
 
 #[test]
 fn github_shift_click_appends_focused_range_across_card_rows() {
-    let mut app = github_app();
+    let mut app = tagged_github_app();
     app.apply_github_issues(
-        None,
+        dashboard_pending(&app),
         GithubPage {
             items: (1..=5).map(issue).collect(),
             page: 1,
@@ -436,13 +454,14 @@ fn pull_request_conversation_renders_github_familiar_controls_and_success_colour
     // Drawn through the real `ui::draw`, so the page has to be where the view layer
     // will look for it: on the GitHub surface, under the GitHub view.
     let mut app = github_app();
+    let request = Some(RequestId(77));
     app.push_github_page(crate::app::github::github_pull_request(
         pull_request(12, false),
         true,
-        None,
+        request,
     ));
     app.apply_github_pull_request(
-        None,
+        request,
         pull_request(12, false),
         GithubPage {
             items: Vec::new(),
@@ -788,7 +807,7 @@ fn reopening_an_issue_focuses_it_without_orphaning_a_request() {
     app.focus = Focus::Editor;
     app.apply_github_availability(Some(repository()), anonymous_auth());
     app.apply_github_issues(
-        None,
+        dashboard_pending(&app),
         GithubPage {
             items: vec![issue(1)],
             page: 1,
