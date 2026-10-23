@@ -88,7 +88,8 @@ impl PreparedDiff {
                     LineKind::Add => return Some(line.new_lineno.unwrap_or(new_line).max(1)),
                     LineKind::Remove => return Some(new_line.max(1)),
                     LineKind::Context => {
-                        new_line = line.new_lineno.map_or(new_line + 1, |n| n + 1);
+                        // Saturate: a parsed context line may sit at exactly `u32::MAX`.
+                        new_line = line.new_lineno.unwrap_or(new_line).saturating_add(1);
                     },
                 }
             }
@@ -218,6 +219,22 @@ mod tests {
         // Deleting every line leaves the new side empty (new_start 0): the caret
         // target still clamps to a valid 1-based line.
         assert_eq!(prepared("a\nb\n", "").first_changed_line(), Some(1));
+    }
+
+    #[test]
+    fn first_changed_line_does_not_overflow_past_a_context_line_at_u32_max()
+    -> Result<(), crate::DiffError> {
+        // The parser accepts a context line numbered exactly `u32::MAX` on the new
+        // side; a removal after it must not overflow stepping past that line.
+        let raw = "diff --git a/f b/f\n--- a/f\n+++ b/f\n\
+                   @@ -4294967294,2 +4294967295 @@\n last\n-gone\n";
+        let first = crate::parse(raw)?
+            .files
+            .into_iter()
+            .next()
+            .map(|file| PreparedDiff::new(file, Vec::new(), Vec::new()).first_changed_line());
+        assert_eq!(first, Some(Some(u32::MAX)));
+        Ok(())
     }
 
     #[test]
