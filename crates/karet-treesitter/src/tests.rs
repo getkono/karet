@@ -134,15 +134,19 @@ fn missing_nodes_count_as_errors() -> Result<(), TsError> {
     Ok(())
 }
 
-#[cfg(feature = "lang-rust")]
+#[cfg(all(feature = "lang-markdown", feature = "lang-rust"))]
 #[test]
 fn layered_error_lines_union_the_layers() -> Result<(), TsError> {
-    let lang = language_id_from_injection_name("rust").ok_or(TsError::UnknownLanguage)?;
+    let md = language_id_from_injection_name("markdown").ok_or(TsError::UnknownLanguage)?;
     let mut parser = LayeredParser::new();
-    let clean = parser.parse(lang, "fn main() {}\n")?;
+    let clean = parser.parse(md, "# Title\n\n```rust\nfn ok() {}\n```\n")?;
     assert!(clean.error_lines().is_empty());
-    let broken = parser.parse(lang, "fn broken( {{{\n")?;
-    assert!(!broken.error_lines().is_empty());
+    // Line 6 (0-based) is broken inside the fence; the markdown host is well formed,
+    // so the only error rows come from the injected rust layer.
+    let src = "# Title\n\nText.\n\n```rust\nfn ok() {}\nfn broken() { let x = ; }\n```\n";
+    let broken = parser.parse(md, src)?;
+    assert!(broken.root().error_lines().is_empty());
+    assert_eq!(broken.error_lines(), vec![(6, 6)]);
     Ok(())
 }
 
@@ -472,8 +476,23 @@ fn self_injecting_grammar_terminates() -> Result<(), TsError> {
     // depth cap and identity guard this descends forever.
     let rust = language_id_from_injection_name("rust").ok_or(TsError::UnknownLanguage)?;
     let mut parser = LayeredParser::new();
-    let tree = parser.parse(rust, "macro_rules! m { () => { m!(); } }\nfn f() { m!(); }")?;
-    assert!(tree.children().len() < MAX_INJECTION_LAYERS);
+    let src = "macro_rules! m { () => { m!(); } }\nfn f() { m!(); }";
+    let tree = parser.parse(rust, src)?;
+    let layers: Vec<(LanguageId, &str)> = tree
+        .children()
+        .iter()
+        .map(|layer| {
+            (
+                layer.language(),
+                &src[layer.span().start.0..layer.span().end.0],
+            )
+        })
+        .collect();
+    // Exactly three layers, each a macro token tree parsed once more as rust.
+    assert_eq!(
+        layers,
+        vec![(rust, "{ m!(); }"), (rust, "()"), (rust, "()")]
+    );
     Ok(())
 }
 
