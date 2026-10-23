@@ -156,6 +156,58 @@ fn a_single_trailing_newline_is_required() {
     assert!(ids("# T\n\ntext\n").is_empty());
 }
 
+// --- line endings ---
+
+/// Every fix kind (replace, insert-blank, delete, trailing newline) applied
+/// to a CRLF document yields the LF result with CRLF endings: untouched
+/// lines keep theirs and added lines take the document's. Falsified by
+/// `apply_fixes` re-joining lines with a bare `\n`.
+#[test]
+fn fixes_preserve_crlf_line_endings() {
+    for lf in [
+        "text \nkept\n",
+        "a\tb\nkept\n",
+        "# Title\nBody\n",
+        "a\n\n\n\nb\n",
+        "# T\n\ntext",
+        "# T\n\ntext\n\n\n",
+        "- item\n\n\n- item",
+    ] {
+        let crlf = lf.replace('\n', "\r\n");
+        let expected = fixed(lf).replace('\n', "\r\n");
+        assert_ne!(fixed(lf), lf, "{lf:?} must exercise a fix");
+        assert_eq!(ids(&crlf), ids(lf), "{crlf:?} must lint like {lf:?}");
+        assert_eq!(fixed(&crlf), expected, "{crlf:?}");
+    }
+}
+
+/// A mixed-ending document keeps each untouched line's own ending, and a
+/// fixed line keeps its ending too. Falsified by normalising every line to
+/// one ending style.
+#[test]
+fn fixes_keep_each_lines_own_ending_in_mixed_documents() {
+    assert_eq!(fixed("a\r\nb \nc\r\n"), "a\r\nb\nc\r\n");
+    assert_eq!(fixed("a \r\nb\nc"), "a\r\nb\nc\r\n");
+}
+
+/// Text with nothing to fix comes back byte-identical whatever its endings,
+/// including a lone `\r` that is not part of a line ending.
+#[test]
+fn crlf_text_with_nothing_to_fix_is_returned_unchanged() {
+    for text in [
+        "# T\r\n\r\nBody.\r\n",
+        "# T\r\n\r\nBody.\n",
+        "# T\r\n\r\na\rb\r\n",
+    ] {
+        let issues = lint(text, &base_config());
+        assert!(
+            issues.iter().all(|i| i.fix.is_none()),
+            "{text:?}: {issues:?}"
+        );
+        assert_eq!(apply_fixes(text, &issues), text);
+    }
+}
+
 // --- fences gate content rules ---
 
 #[test]

@@ -700,7 +700,9 @@ fn document_level(cx: &Context<'_>, issues: &mut Vec<Issue>) {
     if cx.text.is_empty() {
         return;
     }
-    let single_trailing = cx.text.ends_with('\n') && !cx.text.ends_with("\n\n");
+    // `\n\r\n` is the CRLF spelling of a blank final line.
+    let single_trailing =
+        cx.text.ends_with('\n') && !cx.text.ends_with("\n\n") && !cx.text.ends_with("\n\r\n");
     if !single_trailing {
         let last = cx.lines.len().saturating_sub(1);
         issues.push(issue(

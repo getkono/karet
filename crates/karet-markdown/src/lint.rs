@@ -279,9 +279,32 @@ pub fn lint(text: &str, config: &Config) -> Vec<Issue> {
 
 /// Apply every fix carried by `issues` to `text`, bottom-up so earlier lines
 /// keep their coordinates. Overlapping fixes on one line keep the first.
+///
+/// Line endings are preserved: every line keeps its own `\n` or `\r\n`, and a
+/// line a fix inserts (or a newline the trailing-newline fix adds) takes the
+/// document's first ending, so fixing a CRLF document leaves it CRLF.
 #[must_use]
 pub fn apply_fixes(text: &str, issues: &[Issue]) -> String {
-    let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
+    // Split exactly as `str::lines` does (so `Issue::line` coordinates match),
+    // but keep each line's terminator alongside its content.
+    let mut lines: Vec<(String, &str)> = text
+        .split_inclusive('\n')
+        .map(|line| {
+            let (content, ending) = if let Some(c) = line.strip_suffix("\r\n") {
+                (c, "\r\n")
+            } else if let Some(c) = line.strip_suffix('\n') {
+                (c, "\n")
+            } else {
+                (line, "")
+            };
+            (content.to_owned(), ending)
+        })
+        .collect();
+    let eol = lines
+        .iter()
+        .map(|(_, ending)| *ending)
+        .find(|ending| !ending.is_empty())
+        .unwrap_or("\n");
     let mut fixes: Vec<&Fix> = issues.iter().filter_map(|i| i.fix.as_ref()).collect();
     let mut ensure_trailing = false;
     fixes.retain(|f| {
@@ -302,13 +325,13 @@ pub fn apply_fixes(text: &str, issues: &[Issue]) -> String {
         match fix {
             Fix::Replace { line, text } => {
                 if *line < lines.len() && !touched.contains(line) {
-                    lines[*line].clone_from(text);
+                    lines[*line].0.clone_from(text);
                     touched.push(*line);
                 }
             },
             Fix::InsertBlankBefore { line } => {
                 if *line <= lines.len() {
-                    lines.insert(*line, String::new());
+                    lines.insert(*line, (String::new(), eol));
                 }
             },
             Fix::Delete { line } => {
@@ -320,14 +343,26 @@ pub fn apply_fixes(text: &str, issues: &[Issue]) -> String {
             Fix::EnsureTrailingNewline => {},
         }
     }
-    let mut out = lines.join("\n");
-    let had_trailing = text.ends_with('\n');
-    if had_trailing || ensure_trailing {
-        out.push('\n');
-    }
     if ensure_trailing {
-        while out.ends_with("\n\n") {
-            out.pop();
+        // Exactly one trailing newline: drop the blank lines after the last
+        // content line (keeping one line, so all-blank text becomes one ending).
+        while lines.len() > 1 && lines.last().is_some_and(|(c, _)| c.is_empty()) {
+            lines.pop();
+        }
+        if lines.is_empty() {
+            lines.push((String::new(), eol));
+        }
+    }
+    let wants_trailing = ensure_trailing || text.ends_with('\n');
+    let last = lines.len().saturating_sub(1);
+    let mut out = String::with_capacity(text.len() + 2);
+    for (i, (content, ending)) in lines.iter().enumerate() {
+        out.push_str(content);
+        // A deleted or inserted-after final line can leave an unterminated
+        // line mid-document, or move the terminator onto the last line; the
+        // last line ends only when the result should end with a newline.
+        if i < last || wants_trailing {
+            out.push_str(if ending.is_empty() { eol } else { ending });
         }
     }
     out
