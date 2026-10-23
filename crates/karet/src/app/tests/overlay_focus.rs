@@ -30,7 +30,7 @@ fn find(query: &str) -> Vec<Step> {
 /// auto-save or a highlight pass does.
 fn republish(app: &mut App) {
     let buffer = match &app.tabs[app.active].kind {
-        TabKind::Code { buffer, .. } => buffer.clone(),
+        TabKind::Code { buffer, .. } => (**buffer).clone(),
         _ => karet_text::TextBuffer::from_text(""),
     };
     let snapshot = DocSnapshot {

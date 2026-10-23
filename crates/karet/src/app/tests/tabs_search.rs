@@ -487,7 +487,7 @@ fn find_highlights_matches_in_a_code_tab() {
             language: "Rust",
             doc: None,
             next_version: 0,
-            buffer: TextBuffer::from_text("foo bar foo"),
+            buffer: TextBuffer::from_text("foo bar foo").into(),
             text: "foo bar foo".into(),
             highlights: Highlights::default(),
             semantic_blocks: karet_syntax::SemanticBlocks::default(),

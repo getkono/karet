@@ -122,7 +122,7 @@ fn a_markdown_table_still_reaches_the_renderer() {
     app.dispatch(Command::InsertChar('\n'));
     draw(&mut app);
     let buffer = match &app.tabs[app.active].kind {
-        TabKind::Code { buffer, .. } => buffer.clone(),
+        TabKind::Code { buffer, .. } => (**buffer).clone(),
         _ => panic!("expected the active tab to be a code tab"),
     };
     app.on_snapshot(
@@ -160,4 +160,76 @@ fn a_split_view_keeps_the_markdown_table_lines() {
     let split = &app.tabs[app.active];
     assert_ne!(split.view, original, "the split should focus the new view");
     assert_eq!(*split.markdown_table_lines, [0..=2]);
+}
+
+/// Every view's buffer of doc 9, across every pane.
+fn doc_buffers(app: &App) -> Vec<Arc<karet_text::TextBuffer>> {
+    app.all_tabs()
+        .filter_map(|tab| match &tab.kind {
+            TabKind::Code {
+                doc: Some(DocumentId(9)),
+                buffer,
+                ..
+            } => Some(Arc::clone(buffer)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Whether every view of doc 9 holds one and the same buffer.
+fn one_buffer(app: &App) -> bool {
+    let buffers = doc_buffers(app);
+    buffers.len() == 2 && Arc::ptr_eq(&buffers[0], &buffers[1])
+}
+
+/// The snapshot echoing the focused view's buffer as it now stands.
+fn echo(app: &App) -> DocSnapshot {
+    let buffer = match &app.tabs[app.active].kind {
+        TabKind::Code { buffer, .. } => buffer.content_snapshot(),
+        _ => karet_text::TextBuffer::default(),
+    };
+    DocSnapshot {
+        version: buffer.version(),
+        buffer,
+        highlights: Arc::default(),
+        semantic_blocks: Arc::default(),
+        folds: Arc::default(),
+        decorations: Arc::default(),
+        syntax_error_lines: Arc::default(),
+        table_lines: Arc::default(),
+        language: Some("Markdown"),
+        dirty: true,
+        cursor: None,
+    }
+}
+
+/// A split view holds the document's buffer itself, not a copy of it (#397):
+/// splitting shares it, an edit in one view copies it for that view alone, and
+/// the next snapshot hands every view the same buffer again.
+#[test]
+fn split_views_share_one_buffer() {
+    let mut app = markdown_app("abc\n");
+    app.split_focused(karet_widgets::SplitDir::Right);
+    assert!(one_buffer(&app), "the split copied the buffer");
+
+    app.dispatch(Command::InsertChar('x'));
+    let buffers = doc_buffers(&app);
+    assert_eq!(buffers.len(), 2);
+    assert!(
+        !Arc::ptr_eq(&buffers[0], &buffers[1]),
+        "an edit in one view must not reach into the other's buffer"
+    );
+    let texts: Vec<String> = buffers.iter().map(|b| b.text()).collect();
+    assert!(texts.contains(&"xabc\n".to_owned()), "{texts:?}");
+    assert!(texts.contains(&"abc\n".to_owned()), "{texts:?}");
+
+    let snap = echo(&app);
+    app.on_snapshot(DocumentId(9), &snap);
+    assert!(one_buffer(&app), "the snapshot left the views apart");
+    assert_eq!(doc_buffers(&app)[0].text(), "xabc\n");
+
+    // A republish of the same version reunites views that already caught up.
+    let again = echo(&app);
+    app.on_snapshot(DocumentId(9), &again);
+    assert!(one_buffer(&app));
 }

@@ -904,8 +904,10 @@ impl App {
             // snapshot echo (the prior cause of "backspace skips characters"
             // under fast/held input). `base` was read from this same buffer, so
             // the session would reject whatever this rejects: on failure leave
-            // the text, the carets and the session alone.
-            let Ok(applied) = buffer.apply(
+            // the text, the carets and the session alone. A buffer another
+            // split view still shares is copied first (the rope structurally),
+            // so this view runs ahead alone until the snapshot reunites them.
+            let Ok(applied) = std::sync::Arc::make_mut(buffer).apply(
                 &change,
                 karet_text::EditContext {
                     cause,
