@@ -678,7 +678,7 @@ fn query_tokens(query: &str) -> Vec<String> {
 }
 
 async fn discover_token() -> (Option<SecretString>, AuthSource) {
-    if let Some((token, source)) = auth::env_token() {
+    if let Some((token, source)) = auth::env_token(auth::process_env) {
         return (Some(token), source);
     }
     let mut command = tokio::process::Command::new("gh");
