@@ -362,6 +362,15 @@ pub enum ThemeRole {
     /// Code-lens titles on their rows above the code they describe, VS Code's
     /// `editorCodeLens.foreground`.
     CodeLens,
+    /// Background of an occurrence of the symbol under the caret that reads
+    /// it, or mentions it as text, VS Code's `editor.wordHighlightBackground`.
+    WordHighlight,
+    /// Background of an occurrence of the symbol under the caret that writes
+    /// it, VS Code's `editor.wordHighlightStrongBackground`.
+    ///
+    /// Split from [`WordHighlight`](Self::WordHighlight) so the places a value
+    /// changes stand out from the places it is only read.
+    WordHighlightStrong,
 }
 
 #[cfg(test)]

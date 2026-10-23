@@ -113,17 +113,27 @@ const ROLE_KEYS: &[(&str, ThemeRole)] = &[
     ("editorOverviewRuler.border", ThemeRole::ScrollbarTrack),
 ];
 
-/// VS Code find-match keys, composited over `editor.background` at load time.
+/// VS Code find-match and word-highlight keys, composited over
+/// `editor.background` at load time.
 ///
 /// Themes conventionally make these translucent (Dark+ ships
 /// `#ea5c0055` for the other matches) so the text shows through, and a terminal
 /// cell cannot carry alpha: taken as-is, the other matches would paint opaque and
 /// saturated, louder than the current match.
+///
+/// `editor.wordHighlightTextBackground` is not read: karet paints a textual
+/// mention in the read role, and VS Code's own default for that key is the
+/// read key's color.
 const BLENDED_ROLE_KEYS: &[(&str, ThemeRole)] = &[
     ("editor.findMatchBackground", ThemeRole::SearchMatchCurrent),
     (
         "editor.findMatchHighlightBackground",
         ThemeRole::SearchMatch,
+    ),
+    ("editor.wordHighlightBackground", ThemeRole::WordHighlight),
+    (
+        "editor.wordHighlightStrongBackground",
+        ThemeRole::WordHighlightStrong,
     ),
 ];
 
@@ -444,6 +454,37 @@ mod tests {
         // A translucent key is composited over the theme's own background
         // (1/3 orange over #1e1e1e), not painted as opaque orange.
         assert_eq!(t.role(ThemeRole::SearchMatch), Rgba::rgb(98, 51, 20));
+        Ok(())
+    }
+
+    #[test]
+    fn word_highlight_keys_composite_over_the_theme_background() -> Result<(), ThemeError> {
+        // Dark+'s values: both translucent, so each is composited over
+        // #1e1e1e (alpha 0xb8) rather than painted opaque.
+        let json = r##"{
+            "colors": {
+                "editor.background": "#1e1e1e",
+                "editor.wordHighlightBackground": "#575757b8",
+                "editor.wordHighlightStrongBackground": "#004972b8"
+            }
+        }"##;
+        let t = Theme::load_vscode(json)?;
+        assert_eq!(t.role(ThemeRole::WordHighlight), Rgba::rgb(71, 71, 71));
+        assert_eq!(t.role(ThemeRole::WordHighlightStrong), Rgba::rgb(8, 61, 91));
+        Ok(())
+    }
+
+    #[test]
+    fn the_word_highlight_text_key_leaves_the_read_role_alone() -> Result<(), ThemeError> {
+        // A textual mention paints in the read role, which only
+        // `editor.wordHighlightBackground` colors.
+        let json = r##"{ "colors": { "editor.wordHighlightTextBackground": "#ff0000" } }"##;
+        let t = Theme::load_vscode(json)?;
+        let dark = Theme::dark();
+        assert_eq!(
+            t.role(ThemeRole::WordHighlight),
+            dark.role(ThemeRole::WordHighlight)
+        );
         Ok(())
     }
 
