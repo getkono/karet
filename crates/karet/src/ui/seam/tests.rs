@@ -204,6 +204,129 @@ fn the_facet_pane_spells_out_every_lens_including_the_empty_ones() {
     );
 }
 
+/// A view on a function whose detail carries measures and two calls.
+fn measured_view() -> SeamViewState {
+    let mut state = view();
+    state.select_path("demo::danger");
+    state.metrics = Some(karet_session::api::SeamCallMetricsView {
+        code_lines: 12,
+        span_lines: 14,
+        inclusive: 340,
+        inclusive_upper: 410,
+        tree_weighted: 1_234,
+        saturated: false,
+        fan_in: 3,
+        fan_out: 7,
+        external_apis: 2,
+        depth: 4,
+        scc_size: 3,
+        recursive: true,
+    });
+    let call = |target: &str, resolution: &str, count: u32| karet_session::api::SeamEdgeView {
+        kind: "calls".to_owned(),
+        outgoing: true,
+        target: Some(target.to_owned()),
+        display: None,
+        state: "resolved".to_owned(),
+        resolvable: true,
+        site: None,
+        resolution: Some(resolution.to_owned()),
+        count,
+    };
+    state.edges = vec![
+        call("demo::quiet", "exact", 3),
+        call("demo::other", "ambiguous", 1),
+    ];
+    state
+}
+
+#[test]
+fn a_function_shows_its_measures_on_one_line_above_its_calls() {
+    let mut state = measured_view();
+    let rendered = text(&render(&mut state, 220, 30));
+    let calls = rendered
+        .lines()
+        .find(|line| line.contains(" calls ") && line.contains(" own"))
+        .unwrap_or_default();
+    assert!(
+        calls.contains(
+            "12 own · 340 (≤410) reach · tree 1.2k · in 3 · out 7 · depth 4 · ext 2 · cycle of 3"
+        ),
+        "{rendered}"
+    );
+    // One row per target, with how it was resolved and how many sites it stands for.
+    assert!(rendered.contains("demo::quiet   (exact ×3)"), "{rendered}");
+    assert!(rendered.contains("demo::other   (ambiguous)"), "{rendered}");
+    let order = (
+        rendered.find(" own · ").unwrap_or(usize::MAX),
+        rendered.find("demo::quiet   (exact").unwrap_or(0),
+    );
+    assert!(
+        order.0 < order.1,
+        "the measures come before the edges:\n{rendered}"
+    );
+}
+
+#[test]
+fn a_narrow_pane_keeps_the_numbers_and_drops_the_words() {
+    // At 140 columns the pane is half the terminal: the full line would be cut short.
+    let mut state = measured_view();
+    let rendered = text(&render(&mut state, 140, 30));
+    assert!(
+        rendered.contains("12 own · 340 (≤410) reach · in 3 out 7 · cycle of 3"),
+        "{rendered}"
+    );
+    assert!(!rendered.contains("tree 1.2k"), "{rendered}");
+    // Narrower still, the numbers that matter most come first and survive.
+    let mut state = measured_view();
+    let rendered = text(&render(&mut state, 60, 30));
+    assert!(
+        rendered.contains("12 own · 340 (≤410) reach · in 3 out 7"),
+        "{rendered}"
+    );
+}
+
+#[test]
+fn a_long_edge_list_scrolls_to_keep_the_selected_edge_in_sight() {
+    let mut state = measured_view();
+    let template = state.edges.first().cloned();
+    state.edges = (0..40)
+        .filter_map(|n| {
+            let mut edge = template.clone()?;
+            edge.target = Some(format!("demo::caller{n:02}"));
+            Some(edge)
+        })
+        .collect();
+    state.focus = crate::app::seam::SeamFocus::Facets;
+    state.facet_row = 39;
+    let rendered = text(&render(&mut state, 220, 30));
+    assert!(rendered.contains("demo::caller39"), "{rendered}");
+    assert!(!rendered.contains("demo::caller00"), "{rendered}");
+    assert!(rendered.contains("more"), "{rendered}");
+    // Every row the mouse can hit is one that is drawn, and it names its own edge.
+    assert!(
+        state.hits.edges.iter().any(|(_, index)| *index == 39),
+        "{:?}",
+        state.hits.edges
+    );
+}
+
+#[test]
+fn a_function_with_no_calls_says_so_instead_of_pending() {
+    let mut state = measured_view();
+    state.edges.clear();
+    let rendered = text(&render(&mut state, 220, 30));
+    assert!(rendered.contains("no calls or callers"), "{rendered}");
+}
+
+#[test]
+fn a_node_with_no_measures_shows_no_calls_line() {
+    let mut state = view();
+    state.select_path("demo::danger");
+    let rendered = text(&render(&mut state, 120, 24));
+    assert!(!rendered.contains(" own · "), "{rendered}");
+}
+
 #[test]
 fn a_lens_the_language_does_not_read_says_so_rather_than_none() {
     let mut state = SeamViewState::pending(std::path::PathBuf::new());

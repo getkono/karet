@@ -270,11 +270,8 @@ pub fn report(
     };
 
     CallReport {
-        configuration: if tests_included {
-            format!("{} + tests", configuration.name)
-        } else {
-            configuration.name.clone()
-        },
+        // A test build already says so in its name.
+        configuration: configuration.name.clone(),
         summary: summary(index, &measured),
         hotspots: hotspots::find(&context, &measured, testing, &test_gated),
         coupling: coupling::measure(index, &graph, &measured),

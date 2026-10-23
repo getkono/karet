@@ -237,6 +237,30 @@ edges as jump targets. It is what keeps the glyphs honest: a marker in the spine
 summarizes, but every glyph corresponds to a spelled-out line below, so nobody is left
 decoding pictograms.
 
+On a function the pane also shows its [call measures](#calls) on one line, and its calls
+among the edges:
+
+```
+  calls         12 own · 340 (≤410) reach · tree 1.2k · in 3 · out 7 · depth 4 · cycle of 3
+  edges        5 — Enter to pivot
+  implements         → net::Transport   (resolved)
+  calls              → net::Client::send   (exact ×3)
+  calls              → net::retry   (ambiguous)
+  calls              ← app::run   (exact)
+```
+
+One row per callee and resolution, however many sites call it, with the callees reaching
+the most code first and the callers last, in path order — a caller's reach measures the
+caller rather than what it asks of this function, and path order keeps one module's
+callers together. Enter on a call pivots to its other end, like
+any edge; an external or unresolved callee has nothing here to pivot to, and says so. The
+measures and the call rows follow the active configuration, so cycling to the test
+configuration lists and counts test callers too, and saving a file refreshes both. Where
+the line would not fit, it keeps the headline measures (own size, reach, fan-in and
+fan-out, and any cycle or recursion) and drops the tree weight, the depth and the
+external-API count; where the edges outnumber
+the pane's rows, the list scrolls with the selection and says how many are out of sight.
+
 | Key | |
 |---|---|
 | `↑` `↓` / `k` `j` | move within a column |
@@ -614,6 +638,6 @@ See [`configuration.md`](configuration.md#seam) for the `seam.*` keys.
 | Choosing a start point | ✅ shipped |
 | Call edges, own/inclusive/tree-weighted lines, `reach:`/`callers:` | ✅ shipped |
 | `--seam-report` structural report, `--seam-call-tree` | ✅ shipped |
-| Calls and measures in the facet pane | 🧭 designed |
+| Calls and measures in the facet pane | ✅ shipped |
 | Manifest-derived feature/target configurations | 🧭 designed — needs `dependable-core` 0.2.0 |
 | Semantic-tier edge resolution via rust-analyzer | 🧭 designed — `karet-lsp` requests are in place |

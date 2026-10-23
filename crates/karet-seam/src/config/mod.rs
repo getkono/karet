@@ -72,10 +72,17 @@ impl Configuration {
     }
 
     /// This configuration built for a named target, which decides `test` and friends.
+    ///
+    /// The target joins the name: a configuration is chosen and shown by name, and a
+    /// test build named like the default one could never be told apart from it — nor
+    /// selected, since choosing by name would always find the default first.
     #[must_use]
     pub fn for_target(mut self, target: &str) -> Self {
         if matches!(target, "test" | "bench") {
             self.env.flags.insert("test".to_owned());
+        }
+        if self.target.as_deref() != Some(target) {
+            self.name = format!("{} + {target}", self.name);
         }
         self.target = Some(target.to_owned());
         self
@@ -452,6 +459,17 @@ mod tests {
             membership(&index, "pkg::suite"),
             Some(ConfigMembership::Active)
         );
+    }
+
+    #[test]
+    fn a_target_build_is_named_apart_from_the_default() {
+        let default = Configuration::unconfigured();
+        let testing = default.clone().for_target("test");
+        // Chosen by name, so the two must differ — or the test build is unreachable.
+        assert_ne!(testing.name, default.name);
+        assert!(testing.name.ends_with(" + test"), "{}", testing.name);
+        // Asking for the same target twice does not grow the name.
+        assert_eq!(testing.clone().for_target("test").name, testing.name);
     }
 
     #[test]

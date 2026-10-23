@@ -4,13 +4,16 @@
 //! index is always built by walking source — so this is a lossy, presentation-shaped view
 //! by design rather than a serialization format.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
+use karet_seam::CallGraph;
 use karet_seam::Configuration;
 use karet_seam::SeamId;
 use karet_seam::SeamIndex;
 use karet_seam::model::Node;
 
+use crate::api::SeamCallMetricsView;
 use crate::api::SeamEdgeView;
 use crate::api::SeamFacetView;
 use crate::api::SeamNodeView;
@@ -71,29 +74,41 @@ fn facet_view(facet: &karet_seam::Facet) -> SeamFacetView {
 /// Both directions, because the reader's question is "what is on the other end" and the
 /// relation's written direction is an implementation detail of the grammar: a trait's
 /// implementors point at it, while its re-export points away.
+///
+/// Structural relations come first, as they always have. Calls follow, one row per
+/// target and resolution rather than one per call site — a busy function would
+/// otherwise bury everything else under hundreds of rows — with the callees reaching the
+/// most code first, so the row worth pivoting to is near the top, and then the callers.
 #[must_use]
-pub(crate) fn edges_of(index: &SeamIndex, node: SeamId) -> Vec<SeamEdgeView> {
+pub(crate) fn edges_of(
+    index: &SeamIndex,
+    graph: Option<&CallGraph>,
+    node: SeamId,
+) -> Vec<SeamEdgeView> {
     let resolve = |id: SeamId| index.path(id).map(ToString::to_string);
-    // Calls are one edge per call site, so a busy function would bury its structural
-    // relations under hundreds of rows. They stay out of the pane until it can show them
-    // aggregated per target.
-    let structural = |edge: &&karet_seam::Edge| edge.kind != karet_seam::EdgeKind::Calls;
-    let outgoing = index.edges().from(node).filter(structural).map(|edge| {
-        let (state, resolvable) = endpoint_state(&edge.to);
-        SeamEdgeView {
-            kind: edge.kind.name().to_owned(),
-            outgoing: true,
-            target: edge.to.resolved().and_then(resolve),
-            display: edge.to.display_hint().map(str::to_owned),
-            state,
-            resolvable,
-            site: edge.site,
-        }
-    });
+    let is_call = |edge: &&karet_seam::Edge| edge.kind == karet_seam::EdgeKind::Calls;
+    let outgoing = index
+        .edges()
+        .from(node)
+        .filter(|edge| !is_call(edge))
+        .map(|edge| {
+            let (state, resolvable) = endpoint_state(&edge.to);
+            SeamEdgeView {
+                kind: edge.kind.name().to_owned(),
+                outgoing: true,
+                target: edge.to.resolved().and_then(resolve),
+                display: edge.to.display_hint().map(str::to_owned),
+                state,
+                resolvable,
+                site: edge.site,
+                resolution: None,
+                count: 1,
+            }
+        });
     let incoming = index
         .edges()
         .to(node)
-        .filter(structural)
+        .filter(|edge| !is_call(edge))
         .map(|edge| SeamEdgeView {
             kind: edge.kind.name().to_owned(),
             outgoing: false,
@@ -102,8 +117,115 @@ pub(crate) fn edges_of(index: &SeamIndex, node: SeamId) -> Vec<SeamEdgeView> {
             state: "resolved".to_owned(),
             resolvable: true,
             site: edge.site,
+            resolution: None,
+            count: 1,
         });
-    outgoing.chain(incoming).collect()
+    let mut out: Vec<SeamEdgeView> = outgoing.chain(incoming).collect();
+
+    let reach = |id: Option<SeamId>| {
+        id.and_then(|id| graph?.metrics(id))
+            .map_or(0, |metrics| metrics.inclusive_lower)
+    };
+    // Grouped by (target, display, resolution); the first site is kept to navigate to.
+    let mut callees: BTreeMap<CallKey, (u64, SeamEdgeView)> = BTreeMap::new();
+    // Calls follow the active configuration, as the measures beside them do: a caller
+    // the configuration leaves out — test code, by default — is not listed as one.
+    let live = |id: SeamId| {
+        index
+            .node(id)
+            .is_none_or(|other| other.membership != karet_seam::ConfigMembership::Inactive)
+    };
+    for edge in index
+        .edges()
+        .from(node)
+        .filter(is_call)
+        .filter(|edge| edge.to.resolved().is_none_or(live))
+    {
+        let resolution = edge
+            .resolution
+            .map_or("unresolved", karet_seam::Resolution::name);
+        let target = edge.to.resolved().and_then(resolve);
+        let display = edge.to.display_hint().map(str::to_owned);
+        let (state, resolvable) = endpoint_state(&edge.to);
+        let row = callees
+            .entry((target.clone(), display.clone(), resolution))
+            .or_insert_with(|| {
+                (
+                    reach(edge.to.resolved()),
+                    SeamEdgeView {
+                        kind: edge.kind.name().to_owned(),
+                        outgoing: true,
+                        target,
+                        display,
+                        state,
+                        resolvable,
+                        site: edge.site,
+                        resolution: Some(resolution.to_owned()),
+                        count: 0,
+                    },
+                )
+            });
+        row.1.count = row.1.count.saturating_add(1);
+    }
+    let mut callees: Vec<(u64, SeamEdgeView)> = callees.into_values().collect();
+    callees.sort_by_key(|(reach, _)| std::cmp::Reverse(*reach));
+    out.extend(callees.into_iter().map(|(_, view)| view));
+
+    // Callers are listed in path order (then resolution), not by reach: a caller's reach
+    // measures the caller, not what it asks of this function, and path order keeps the
+    // callers from one module together and stable as their bodies change.
+    let mut callers: BTreeMap<(Option<String>, &str), SeamEdgeView> = BTreeMap::new();
+    for edge in index
+        .edges()
+        .to(node)
+        .filter(is_call)
+        .filter(|edge| live(edge.from))
+    {
+        let resolution = edge
+            .resolution
+            .map_or("unresolved", karet_seam::Resolution::name);
+        let target = resolve(edge.from);
+        let row = callers
+            .entry((target.clone(), resolution))
+            .or_insert_with(|| SeamEdgeView {
+                kind: edge.kind.name().to_owned(),
+                outgoing: false,
+                target,
+                display: None,
+                state: "resolved".to_owned(),
+                resolvable: true,
+                site: edge.site,
+                resolution: Some(resolution.to_owned()),
+                count: 0,
+            });
+        row.count = row.count.saturating_add(1);
+    }
+    out.extend(callers.into_values());
+    out
+}
+
+/// What one row of outgoing calls stands for: the target, or how it was written when it
+/// has none, and how it was resolved.
+type CallKey = (Option<String>, Option<String>, &'static str);
+
+/// A function's call measures, when the graph holds it.
+#[must_use]
+pub(crate) fn metrics_of(graph: &CallGraph, node: SeamId) -> Option<SeamCallMetricsView> {
+    let m = graph.metrics(node)?;
+    Some(SeamCallMetricsView {
+        code_lines: m.code_lines,
+        span_lines: m.span_lines,
+        inclusive: m.inclusive_lower,
+        inclusive_upper: m.inclusive_upper,
+        tree_weighted: m.tree_weighted,
+        saturated: m.saturated,
+        fan_in: m.fan_in,
+        fan_out: m.fan_out,
+        external_apis: m.external_apis,
+        depth: m.depth,
+        scc_size: m.scc_size,
+        recursive: m.recursive,
+    })
 }
 
 /// An endpoint's state name, and whether it may yet resolve.
@@ -295,7 +417,7 @@ mod tests {
     #[test]
     fn edges_of_an_unknown_node_are_empty_rather_than_a_failure() {
         let index = SeamIndex::new();
-        assert!(edges_of(&index, SeamId(0)).is_empty());
+        assert!(edges_of(&index, None, SeamId(0)).is_empty());
     }
 
     #[test]
@@ -334,22 +456,77 @@ mod tests {
     }
 
     #[test]
-    fn call_edges_stay_out_of_the_facet_pane() {
-        let mut index = SeamIndex::new();
-        let edge = |kind, from, to| karet_seam::Edge {
-            kind,
-            from: SeamId(from),
-            to: karet_seam::Endpoint::Resolved(SeamId(to)),
-            site: None,
-            resolution: None,
-        };
-        index.edges_mut().insert_all([
-            edge(karet_seam::EdgeKind::Calls, 1, 2),
-            edge(karet_seam::EdgeKind::Calls, 3, 1),
-            edge(karet_seam::EdgeKind::Implements, 1, 4),
-        ]);
-        let edges = edges_of(&index, SeamId(1));
-        assert_eq!(edges.len(), 1);
-        assert!(edges.iter().all(|edge| edge.kind == "implements"));
+    fn calls_are_one_row_per_target_after_the_structural_edges()
+    -> Result<(), Box<dyn std::error::Error>> {
+        if karet_seam::lang::rust::language_id().is_none() {
+            return Ok(());
+        }
+        let dir = tempfile::tempdir()?;
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"k\"\nversion = \"0.1.0\"\n",
+        )?;
+        std::fs::create_dir_all(dir.path().join("src"))?;
+        std::fs::write(
+            dir.path().join("src/lib.rs"),
+            "pub trait T { fn go(&self); }\npub struct S;\nimpl T for S { fn go(&self) { small(); big(); big(); missing(); } }\n\
+             fn small() {}\nfn big() { small(); small(); }\npub fn other(s: &S) { s.go(); }\n",
+        )?;
+        let index = karet_seam::index_workspace(dir.path(), karet_seam::IndexOptions::default())?;
+        let graph = CallGraph::build(&index, &karet_seam::GraphOptions::default());
+        let go = index
+            .resolve(&"k::S::{impl T}::go".parse()?)
+            .ok_or("no go")?;
+        let edges = edges_of(&index, Some(&graph), go);
+
+        let kinds: Vec<&str> = edges.iter().map(|edge| edge.kind.as_str()).collect();
+        let first_call = kinds
+            .iter()
+            .position(|kind| *kind == "calls")
+            .ok_or("no calls")?;
+        assert!(
+            kinds[..first_call].iter().all(|kind| *kind != "calls"),
+            "structural edges come first: {kinds:?}"
+        );
+        let outgoing: Vec<(Option<&str>, u32)> = edges
+            .iter()
+            .filter(|edge| edge.kind == "calls" && edge.outgoing)
+            .map(|edge| {
+                (
+                    edge.target.as_deref().or(edge.display.as_deref()),
+                    edge.count,
+                )
+            })
+            .collect();
+        // Two calls to `big`, one row; the callee reaching more code first.
+        assert_eq!(
+            outgoing,
+            [
+                (Some("k::big"), 2),
+                (Some("k::small"), 1),
+                (Some("missing"), 1)
+            ]
+        );
+        assert!(
+            edges
+                .iter()
+                .filter(|edge| edge.kind == "calls")
+                .all(|edge| edge.resolution.is_some())
+        );
+
+        // `other` calls `go` through the trait: an incoming row, after every outgoing one.
+        let incoming = edges
+            .iter()
+            .rposition(|edge| edge.kind == "calls" && !edge.outgoing);
+        let last_outgoing = edges
+            .iter()
+            .rposition(|edge| edge.kind == "calls" && edge.outgoing);
+        assert!(incoming > last_outgoing, "{edges:?}");
+
+        let measured = metrics_of(&graph, go).ok_or("no metrics")?;
+        assert_eq!(measured.fan_out, 2);
+        let type_node = index.resolve(&"k::S".parse()?).ok_or("no S")?;
+        assert!(metrics_of(&graph, type_node).is_none());
+        Ok(())
     }
 }

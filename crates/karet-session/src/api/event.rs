@@ -652,6 +652,9 @@ pub enum Event {
         node: String,
         /// Its edges, in both directions.
         edges: Vec<SeamEdgeView>,
+        /// Its call measures under the active configuration, when it is a function the
+        /// configuration includes.
+        metrics: Option<crate::api::SeamCallMetricsView>,
         /// Its source lines with context, or a reader-facing reason there are none.
         ///
         /// Carried by the same event as the edges rather than by a second round trip:

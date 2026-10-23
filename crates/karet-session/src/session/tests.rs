@@ -10,6 +10,7 @@ include!("tests/search.rs");
 include!("tests/spelling.rs");
 include!("tests/lsp_updates.rs");
 include!("tests/seam.rs");
+include!("tests/seam_calls.rs");
 include!("tests/format_on_save.rs");
 include!("tests/undo_save.rs");
 include!("tests/undo_history.rs");
