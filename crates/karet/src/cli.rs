@@ -452,11 +452,14 @@ impl Cli {
 
     #[must_use]
     pub fn explicit_icon_style(&self) -> Option<IconStyle> {
-        self.icons.map(IconStyle::from).or_else(|| {
-            std::env::var("KARET_ICONS")
-                .ok()
-                .and_then(|v| IconStyle::from_name(&v))
-        })
+        self.explicit_icon_style_in(|key| std::env::var(key).ok())
+    }
+
+    /// [`Cli::explicit_icon_style`], reading the environment through `var`.
+    fn explicit_icon_style_in(&self, var: impl Fn(&str) -> Option<String>) -> Option<IconStyle> {
+        self.icons
+            .map(IconStyle::from)
+            .or_else(|| var("KARET_ICONS").as_deref().and_then(IconStyle::from_name))
     }
 }
 
@@ -468,6 +471,10 @@ mod tests {
     use clap::Parser;
 
     use super::Cli;
+    use super::FocusChoice;
+    use super::IconStyle;
+    use super::StartupPanelChoice;
+    use super::ViewChoice;
 
     #[test]
     fn cli_definition_is_valid() {
@@ -787,5 +794,110 @@ mod tests {
         ] {
             assert_eq!(parse_line_col(junk), None, "{junk:?}");
         }
+    }
+
+    /// The explicit icon style over an environment holding only `karet_icons`.
+    fn icons_with(args: &[&str], karet_icons: Option<&str>) -> Option<IconStyle> {
+        let cli = Cli::try_parse_from(args).ok()?;
+        cli.explicit_icon_style_in(|key| {
+            (key == "KARET_ICONS")
+                .then_some(karet_icons)
+                .flatten()
+                .map(str::to_owned)
+        })
+    }
+
+    #[test]
+    fn icons_flag_beats_env_which_beats_nothing() {
+        use IconStyle::*;
+        let rows: [(&[&str], Option<&str>, Option<IconStyle>); 7] = [
+            (&["karet", "--icons", "ascii"], Some("unicode"), Some(Ascii)),
+            (&["karet", "--icons", "nerd"], None, Some(NerdFont)),
+            (
+                &["karet", "--icons", "unicode"],
+                Some("bogus"),
+                Some(Unicode),
+            ),
+            (&["karet"], Some("unicode"), Some(Unicode)),
+            (&["karet"], Some(" ASCII "), Some(Ascii)),
+            (&["karet"], Some("bogus"), None),
+            (&["karet"], None, None),
+        ];
+        for (args, env, expect) in rows {
+            assert_eq!(
+                icons_with(args, env),
+                expect,
+                "{args:?} KARET_ICONS={env:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn icons_flag_rejects_an_unknown_style() {
+        assert!(Cli::try_parse_from(["karet", "--icons", "emoji"]).is_err());
+    }
+
+    #[test]
+    fn startup_choice_flags_parse_and_default_to_none() -> Result<(), clap::Error> {
+        let cli = Cli::try_parse_from([
+            "karet",
+            "--startup-panel",
+            "source-control",
+            "--view",
+            "github",
+            "--focus",
+            "sidebar",
+        ])?;
+        assert_eq!(cli.startup_panel, Some(StartupPanelChoice::SourceControl));
+        assert_eq!(cli.view, Some(ViewChoice::Github));
+        assert_eq!(cli.focus, Some(FocusChoice::Sidebar));
+        let cli = Cli::try_parse_from(["karet"])?;
+        assert_eq!((cli.startup_panel, cli.view, cli.focus), (None, None, None));
+        for bad in [
+            ["--startup-panel", "outline"],
+            ["--view", "agents"],
+            ["--focus", "terminal"],
+        ] {
+            let args = ["karet", bad[0], bad[1]];
+            assert!(Cli::try_parse_from(args).is_err(), "{bad:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn open_is_repeatable_and_preview_and_path_are_single() -> Result<(), clap::Error> {
+        let cli = Cli::try_parse_from([
+            "karet",
+            "root",
+            "--open",
+            "a.rs",
+            "--open",
+            "b.rs",
+            "--preview",
+            "README.md",
+        ])?;
+        assert_eq!(cli.path, Some(PathBuf::from("root")));
+        assert_eq!(cli.open, vec![PathBuf::from("a.rs"), PathBuf::from("b.rs")]);
+        assert_eq!(cli.preview, Some(PathBuf::from("README.md")));
+        let cli = Cli::try_parse_from(["karet"])?;
+        assert!(cli.path.is_none() && cli.open.is_empty() && cli.preview.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn no_syntax_flag_parses_and_defaults_to_off() -> Result<(), clap::Error> {
+        assert!(Cli::try_parse_from(["karet", "--no-syntax"])?.no_syntax);
+        assert!(!Cli::try_parse_from(["karet"])?.no_syntax);
+        Ok(())
+    }
+
+    #[test]
+    fn seam_config_requires_seam_query() -> Result<(), clap::Error> {
+        let cli =
+            Cli::try_parse_from(["karet", "--seam-query", "kind:fn", "--seam-config", "test"])?;
+        assert_eq!(cli.seam_query.as_deref(), Some("kind:fn"));
+        assert_eq!(cli.seam_config.as_deref(), Some("test"));
+        assert!(Cli::try_parse_from(["karet", "--seam-config", "test"]).is_err());
+        Ok(())
     }
 }
