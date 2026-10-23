@@ -144,3 +144,55 @@ pub fn directory_icon(open: bool, style: IconStyle) -> Option<char> {
         IconStyle::Unicode | IconStyle::Ascii => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn from_name_accepts_every_documented_alias() {
+        let cases = [
+            ("nerd", IconStyle::NerdFont),
+            ("nerdfont", IconStyle::NerdFont),
+            ("nerd-font", IconStyle::NerdFont),
+            ("unicode", IconStyle::Unicode),
+            ("uni", IconStyle::Unicode),
+            ("ascii", IconStyle::Ascii),
+            ("plain", IconStyle::Ascii),
+        ];
+        for (name, expected) in cases {
+            assert_eq!(IconStyle::from_name(name), Some(expected), "{name}");
+        }
+    }
+
+    #[test]
+    fn from_name_ignores_case_and_surrounding_whitespace() {
+        // `KARET_ICONS` comes from a user's shell, so `NERD`, `Unicode ` and a
+        // trailing newline from `$(cat file)` must all resolve.
+        assert_eq!(IconStyle::from_name("NERD"), Some(IconStyle::NerdFont));
+        assert_eq!(IconStyle::from_name("Nerd-Font"), Some(IconStyle::NerdFont));
+        assert_eq!(IconStyle::from_name(" Unicode "), Some(IconStyle::Unicode));
+        assert_eq!(IconStyle::from_name("\tascii\n"), Some(IconStyle::Ascii));
+    }
+
+    #[test]
+    fn from_name_rejects_unknown_and_near_miss_names() {
+        // `None` lets the caller fall back to the default rather than guess.
+        for name in [
+            "",
+            "   ",
+            "emoji",
+            "nerd font",
+            "nerd_font",
+            "asc",
+            "n e r d",
+        ] {
+            assert_eq!(IconStyle::from_name(name), None, "{name:?}");
+        }
+    }
+
+    #[test]
+    fn the_default_style_is_nerd_font() {
+        assert_eq!(IconStyle::default(), IconStyle::NerdFont);
+    }
+}
