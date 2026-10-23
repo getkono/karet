@@ -64,6 +64,117 @@ fn convert_maps_kinds_and_filters_ignored() {
 }
 
 #[test]
+fn convert_maps_remove_rename_and_modify() {
+    use notify::event::DataChange;
+    use notify::event::MetadataKind;
+    use notify::event::RemoveKind;
+    use notify::event::RenameMode;
+    let roots = vec![PathBuf::from("/r")];
+    let exact = BTreeSet::new();
+    let a = PathBuf::from("/r/src/a.rs");
+    let b = PathBuf::from("/r/src/b.rs");
+    let kind_of = |kind: EventKind, paths: &[PathBuf]| {
+        convert(kind, paths, &roots, &[], &exact).map(|e| (e.kind, e.paths))
+    };
+
+    assert_eq!(
+        kind_of(
+            EventKind::Remove(RemoveKind::File),
+            std::slice::from_ref(&a)
+        ),
+        Some((FsEventKind::Removed, vec![a.clone()]))
+    );
+    // A rename carries both locations, old then new.
+    let both = [a.clone(), b.clone()];
+    assert_eq!(
+        kind_of(EventKind::Modify(ModifyKind::Name(RenameMode::Both)), &both),
+        Some((FsEventKind::Renamed, both.to_vec()))
+    );
+    for modify in [
+        ModifyKind::Data(DataChange::Content),
+        ModifyKind::Metadata(MetadataKind::Permissions),
+        ModifyKind::Any,
+    ] {
+        assert_eq!(
+            kind_of(EventKind::Modify(modify), std::slice::from_ref(&a)),
+            Some((FsEventKind::Modified, vec![a.clone()])),
+            "{modify:?}"
+        );
+    }
+    // Catch-alls carry no change worth surfacing.
+    assert_eq!(kind_of(EventKind::Any, std::slice::from_ref(&a)), None);
+    assert_eq!(kind_of(EventKind::Other, std::slice::from_ref(&a)), None);
+    // A rename out of an ignored dir keeps only the surfaced side.
+    let mixed = [PathBuf::from("/r/target/a.rs"), b.clone()];
+    assert_eq!(
+        kind_of(
+            EventKind::Modify(ModifyKind::Name(RenameMode::Both)),
+            &mixed
+        ),
+        Some((FsEventKind::Renamed, vec![b]))
+    );
+}
+
+/// notify may report a watched path through its canonical spelling (macOS's
+/// `/private/var` for `/var`); events must come back under the caller's root.
+#[cfg(unix)]
+#[test]
+fn convert_reports_paths_under_a_symlinked_root() -> Result<(), Box<dyn std::error::Error>> {
+    use notify::event::CreateKind;
+    let scratch = TempDir::new()?;
+    let real = scratch.path().join("real");
+    fs::create_dir_all(real.join("src"))?;
+    let link = scratch.path().join("link");
+    std::os::unix::fs::symlink(&real, &link)?;
+
+    let reported = vec![fs::canonicalize(&real)?.join("src/a.rs")];
+    let got = convert(
+        EventKind::Create(CreateKind::File),
+        &reported,
+        std::slice::from_ref(&link),
+        &[],
+        &BTreeSet::new(),
+    );
+    assert_eq!(got.map(|e| e.paths), Some(vec![link.join("src/a.rs")]));
+    Ok(())
+}
+
+#[test]
+fn only_watch_exhaustion_falls_back_to_polling() {
+    assert_eq!(
+        native_watch_fallback(&ErrorKind::MaxFilesWatch),
+        WatchFallback::Poll
+    );
+    for kind in [
+        ErrorKind::Generic("boom".to_owned()),
+        ErrorKind::Io(std::io::Error::other("io")),
+        ErrorKind::PathNotFound,
+        ErrorKind::WatchNotFound,
+    ] {
+        assert_eq!(
+            native_watch_fallback(&kind),
+            WatchFallback::Skip,
+            "{kind:?}"
+        );
+    }
+}
+
+#[test]
+fn only_the_first_polled_dir_reports_degradation() {
+    let mut state = WatchState::default();
+    let first = state.record_polled(PathBuf::from("/r/a"));
+    assert_eq!(
+        first.map(|e| (e.kind, e.paths)),
+        Some((FsEventKind::WatchDegraded, vec![PathBuf::from("/r/a")]))
+    );
+    assert!(state.record_polled(PathBuf::from("/r/b")).is_none());
+    assert_eq!(
+        state.polled,
+        BTreeSet::from([PathBuf::from("/r/a"), PathBuf::from("/r/b")])
+    );
+}
+
+#[test]
 fn exact_path_bypasses_workspace_and_hidden_filters() {
     let exact_path = PathBuf::from("/outside/.karet/setting.jsonc");
     let exact = BTreeSet::from([exact_path.clone()]);
@@ -362,11 +473,51 @@ fn watcher_filters_build_dirs() -> Result<(), Box<dyn std::error::Error>> {
     let (_watcher, mut rx) = Watcher::spawn(&[root.path().to_path_buf()], &[])?;
     std::thread::sleep(Duration::from_secs(1));
 
-    fs::write(root.path().join("target/x"), "x")?;
-    fs::write(root.path().join("node_modules/y"), "y")?;
+    let pruned = [root.path().join("target"), root.path().join("node_modules")];
+    fs::write(pruned[0].join("x"), "x")?;
+    fs::write(pruned[1].join("y"), "y")?;
+    // Positive control: a live watcher must still surface a kept file written
+    // after the pruned ones, and nothing pruned may arrive before it.
+    let kept = root.path().join("kept.rs");
+    fs::write(&kept, "fn main() {}")?;
 
-    assert!(!wait_for_event(&mut rx, Duration::from_millis(800), |_| {
-        true
+    assert!(wait_for_event(&mut rx, Duration::from_secs(5), |e| {
+        assert!(
+            !e.paths
+                .iter()
+                .any(|p| pruned.iter().any(|dir| p.starts_with(dir))),
+            "pruned path surfaced: {e:?}"
+        );
+        e.paths.contains(&kept)
+    }));
+    Ok(())
+}
+
+#[test]
+fn watcher_surfaces_git_ref_updates_but_not_objects() -> Result<(), Box<dyn std::error::Error>> {
+    let _guard = WATCH_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let root = TempDir::new()?;
+    let git_dir = root.path().join(".git");
+    fs::create_dir_all(git_dir.join("refs/heads"))?;
+    fs::create_dir_all(git_dir.join("objects/ab"))?;
+    fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n")?;
+
+    let (_watcher, mut rx) =
+        Watcher::spawn(&[root.path().to_path_buf()], std::slice::from_ref(&git_dir))?;
+    std::thread::sleep(Duration::from_secs(1));
+
+    // `objects/` is never watched, so the loose object never surfaces; the ref
+    // under the recursively watched `refs/` does.
+    let object = git_dir.join("objects/ab/cdef");
+    fs::write(&object, "blob")?;
+    let branch = git_dir.join("refs/heads/main");
+    fs::write(&branch, "0123456789abcdef0123456789abcdef01234567\n")?;
+
+    assert!(wait_for_event(&mut rx, Duration::from_secs(5), |e| {
+        assert!(!e.paths.contains(&object), "object surfaced: {e:?}");
+        e.paths.contains(&branch)
     }));
     Ok(())
 }
