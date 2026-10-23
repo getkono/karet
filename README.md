@@ -4,7 +4,7 @@
   <img src="assets/karet.svg" alt="A karet window: the view switcher along the top, the file explorer on the left, a Rust source file with syntax highlighting in the editor, and the status bar along the bottom" width="100%">
 </p>
 
-> **Status: beta (v0.6.0).** The editor is usable for day-to-day terminal coding.
+> **Status: beta.** The editor is usable for day-to-day terminal coding.
 > Pre-1.0: the `karet-*` library APIs may still change on a minor bump.
 
 `karet` is a terminal IDE: a keyboard-first code editor that behaves less like a
@@ -24,15 +24,15 @@ toolchain, no C compiler. karet is not in mise's registry, so name the `github` 
 
 ```bash
 mise use -g github:getkono/karet            # latest release, on PATH
-mise use -g github:getkono/karet@0.6.0      # or pin a version
+mise use -g github:getkono/karet@X.Y.Z      # or pin a release version
 ```
 
-`mise use -g github:getkono/karet@latest` moves a pinned install up again. To pin karet for
-one project rather than globally, put it in that repository's `mise.toml`:
+`mise use -g github:getkono/karet@latest` moves a pinned install up again. To install karet
+for one project rather than globally, put it in that repository's `mise.toml`:
 
 ```toml
 [tools]
-"github:getkono/karet" = "0.6.0"
+"github:getkono/karet" = "latest"   # or a release version, to pin it
 ```
 
 **Homebrew**
@@ -93,7 +93,7 @@ A path outside a repository is fine — you just get no Source Control.
 
 | Flag | What it does |
 | --- | --- |
-| `--view <editor\|github\|agents>` | Top-level view to start in |
+| `--view <editor\|github>` | Top-level view to start in |
 | `--startup-panel <explorer\|search\|source-control\|none>` | Sidebar panel at startup, overriding `workbench.startupPanel` |
 | `--focus <sidebar\|editor>` | Where focus lands once startup is done |
 | `--open <PATH>` | Open an extra file as a tab (repeatable) |
@@ -123,7 +123,7 @@ VS Code where VS Code has an answer.
 | `Ctrl+\` / `Ctrl+K Ctrl+\` | Split right / split down |
 | `Ctrl+K Z` / `Ctrl+K M` | Zen Mode (hide the sidebar, outline, view switcher, and status bar) / maximise the focused pane |
 | `Ctrl+Tab` / `Ctrl+W` | Next tab / close tab |
-| `Ctrl+K 1/2/3` | Switch top-level view |
+| `Ctrl+K 1/2` | Switch top-level view (Editor / GitHub) |
 | `Ctrl+K S` / `Ctrl+K V` | Seam view / Markdown preview to the side |
 | `F5` / `F9` | Start debugging / toggle breakpoint |
 | ``Ctrl+` `` / ``Ctrl+Shift+` `` | Toggle the integrated terminal / start another terminal (shells start in the workspace root) |
@@ -195,19 +195,9 @@ misspelling across the workspace, and selecting one opens its file at the word.
 ## Configuration
 
 Settings live in `setting.jsonc` across three layers, with per-language overrides.
-[`docs/configuration.md`](docs/configuration.md) is the per-key reference.
-
-| Document | What it answers |
-| --- | --- |
-| [`goals.md`](docs/goals.md) | The design goals, each with a checkable rule |
-| [`configuration.md`](docs/configuration.md) | Every setting, the three layers, per-language overrides |
-| [`file-formats.md`](docs/file-formats.md) | What opens how: grammars per extension, media and document formats |
-| [`language-servers.md`](docs/language-servers.md) | The canonical language-support matrix and managed installs |
-| [`debugging.md`](docs/debugging.md) | The DAP debugger: adapters, configurations, keys, breakpoints |
-| [`seam.md`](docs/seam.md) | The Seam view and its query language |
-| [`visualizations.md`](docs/visualizations.md) | Graph lenses and their status |
-| [`scope.md`](docs/scope.md) | Deliberate non-goals, and features weighed and kept in scope |
-| [`binary-size.md`](docs/binary-size.md) | What the optional features cost, measured |
+[`docs/configuration.md`](docs/configuration.md) is the per-key reference. Every other
+document — design goals, the editing spec, file formats, language servers, debugging, the
+Seam view, scope, binary size — is listed in the index at [`docs/README.md`](docs/README.md).
 
 Diagnostics are written to daily `karet.log.*` files in the platform state directory;
 the seven most recent are kept, `RUST_LOG` tunes verbosity, and `karet --log` prints
@@ -269,7 +259,7 @@ coupling in its public API. See [its README](crates/blameline/README.md).
   `mise install`
 
 ```bash
-mise install        # provision hk, pkl, and cargo-llvm-cov
+mise install        # provision the tools in mise.toml
 hk install          # activate the git hooks
 cargo build
 cargo run -- .      # run karet against this repo
@@ -277,7 +267,7 @@ cargo run -- .      # run karet against this repo
 
 Three commands share the word *install* and mean different things: `mise install`
 provisions the tools above, `mise run install` builds *this checkout* into your path
-(`cargo install --path crates/karet --locked`), and `mise use -g ubi:getkono/karet` — the
+(`cargo install --path crates/karet --locked`), and `mise use -g github:getkono/karet` — the
 one in [Install](#install) — fetches a released binary and needs no checkout at all.
 
 **Tasks**
