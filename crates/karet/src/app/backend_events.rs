@@ -291,6 +291,7 @@ impl App {
             SessionEvent::Locations { kind, locations } => {
                 self.on_locations(id, Some(kind), locations);
             },
+            SessionEvent::Hierarchy { items, .. } => self.on_hierarchy(id, items),
             SessionEvent::RenamePrepared {
                 doc,
                 target,

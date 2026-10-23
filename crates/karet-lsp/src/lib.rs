@@ -93,6 +93,7 @@ mod convert;
 mod editing;
 mod gate;
 mod handshake;
+mod hierarchy;
 mod highlight;
 mod inlay;
 mod launch;
@@ -939,45 +940,6 @@ impl LspClient {
             .request("textDocument/implementation", params)
             .await?;
         Ok(convert::locations_from_lsp(response))
-    }
-
-    /// Resolve the supertypes of the type at `pos` — what it derives from or implements.
-    ///
-    /// Two round trips, as the protocol requires: `prepare` establishes the item, and
-    /// `supertypes` walks upward from it. A server that declines the first returns no
-    /// supertypes rather than an error, since not supporting the request is not a failure.
-    ///
-    /// # Errors
-    /// Returns [`LspError::Unsupported`] **without issuing a request** when the
-    /// server did not advertise the capability, else [`LspError::Server`] or
-    /// [`LspError::Timeout`].
-    pub async fn supertypes(&self, doc: &Path, pos: LineCol) -> Result<Vec<Location>, LspError> {
-        self.require_for(
-            ServerFeature::TypeHierarchy,
-            "textDocument/prepareTypeHierarchy",
-            doc,
-        )?;
-        let prepare = lsp_types::TypeHierarchyPrepareParams {
-            text_document_position_params: text_document_position(doc, pos)?,
-            work_done_progress_params: lsp_types::WorkDoneProgressParams::default(),
-        };
-        let items: Option<Vec<lsp_types::TypeHierarchyItem>> = self
-            .conn
-            .request("textDocument/prepareTypeHierarchy", prepare)
-            .await?;
-        let Some(item) = items.unwrap_or_default().into_iter().next() else {
-            return Ok(Vec::new());
-        };
-        let params = lsp_types::TypeHierarchySupertypesParams {
-            item,
-            work_done_progress_params: lsp_types::WorkDoneProgressParams::default(),
-            partial_result_params: lsp_types::PartialResultParams::default(),
-        };
-        let response: Option<Vec<lsp_types::TypeHierarchyItem>> = self
-            .conn
-            .request("typeHierarchy/supertypes", params)
-            .await?;
-        Ok(convert::type_hierarchy_locations(response))
     }
 
     /// Resolve the definition location(s) of the symbol at `pos`.

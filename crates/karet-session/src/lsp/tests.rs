@@ -567,6 +567,7 @@ mod document_highlight_tests;
 mod editing_tests;
 mod failure_policy_tests;
 mod format_tests;
+mod hierarchy_tests;
 mod hint_tests;
 mod incremental_sync_tests;
 mod intelligence_tests;

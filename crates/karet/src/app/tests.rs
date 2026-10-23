@@ -34,6 +34,7 @@ mod folding;
 mod github;
 mod gutter;
 pub(crate) mod harness;
+mod hierarchy;
 mod hover;
 mod indent;
 mod inlay;

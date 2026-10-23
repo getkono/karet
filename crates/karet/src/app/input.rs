@@ -560,6 +560,15 @@ impl App {
 
     /// Edit the overlay query with an unbound key (backspace / printable).
     pub(super) fn overlay_input(&mut self, key: KeyEvent) {
+        // A hierarchy has no query to type into: the arrows walk its tree.
+        if matches!(self.overlay, Some(Overlay::Hierarchy(_))) {
+            match key.code {
+                KeyCode::Right => self.hierarchy_expand(),
+                KeyCode::Left => self.hierarchy_collapse(),
+                _ => {},
+            }
+            return;
+        }
         // A sigil typed or deleted switches quick-open's list (`@` symbols).
         self.edit_overlay_query(|overlay| match key.code {
             KeyCode::Backspace => overlay.pop_char(),

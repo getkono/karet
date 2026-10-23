@@ -35,6 +35,7 @@ use super::editing;
 use super::health::FailureTally;
 use super::message::DocumentHighlightsAnswer;
 use super::message::EditingAnswer;
+use super::message::HierarchyAsk;
 use super::message::LspUpdate;
 use super::message::RenameAnswer;
 use super::message::SelectionRangesAnswer;
@@ -204,7 +205,8 @@ pub(super) async fn resolve_item(
 /// Document highlights are too, answered `None`: they are asked for whenever
 /// the caret rests, and the client falls back to matching the word as text.
 /// Linked editing is reported, being asked for by hand; on-type formatting
-/// is not, being offered after every typed character.
+/// is not, being offered after every typed character. A hierarchy request is
+/// reported too: every one is asked for by hand, opening or expanding a tree.
 pub(super) async fn caret_query(
     client: &LspClient,
     cmd: ServerCmd,
@@ -330,6 +332,26 @@ pub(super) async fn caret_query(
                 reply,
             };
             let _ = updates.send(LspUpdate::Editing { generation, answer });
+        },
+        ServerCmd::Hierarchy {
+            request,
+            direction,
+            ask,
+        } => {
+            let result = match ask {
+                HierarchyAsk::Prepare { path, position } => {
+                    client.prepare_hierarchy(direction, &path, position).await
+                },
+                HierarchyAsk::Children(item) => client.hierarchy_children(direction, &item).await,
+            };
+            let refused = Some((request, direction.feature()));
+            let items = settle(result.map(Some), refused, generation, health).unwrap_or_default();
+            let _ = updates.send(LspUpdate::Hierarchy {
+                generation,
+                request,
+                direction,
+                items,
+            });
         },
         cmd => answer_empty(updates, cmd, generation),
     }
@@ -556,6 +578,16 @@ pub(super) fn answer_empty(
             };
             let _ = updates.send(LspUpdate::Editing { generation, answer });
         },
+        ServerCmd::Hierarchy {
+            request, direction, ..
+        } => {
+            let _ = updates.send(LspUpdate::Hierarchy {
+                generation,
+                request,
+                direction,
+                items: Vec::new(),
+            });
+        },
         ServerCmd::Definition {
             request,
             doc,
@@ -734,6 +766,7 @@ pub(super) fn remember_document(
         | ServerCmd::SelectionRanges { .. }
         | ServerCmd::DocumentHighlights { .. }
         | ServerCmd::Editing { .. }
+        | ServerCmd::Hierarchy { .. }
         | ServerCmd::Definition { .. }
         | ServerCmd::WorkspaceSymbols { .. }
         | ServerCmd::Rename { .. }

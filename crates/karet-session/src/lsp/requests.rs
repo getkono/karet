@@ -7,6 +7,7 @@
 
 use karet_core::CompletionItem;
 use karet_core::CompletionTrigger;
+use karet_core::HierarchyDirection;
 use karet_core::InlayHint;
 use karet_core::Range;
 
@@ -220,6 +221,33 @@ impl LspManager {
             version,
             path,
             position,
+        })
+        .is_ok()
+    }
+
+    /// Forward a hierarchy request to the server serving `path`, the document
+    /// the hierarchy was asked from (a prepared item's position already in
+    /// UTF-16 columns); `false` when no server serves it or its queue is
+    /// full, so the caller answers it with no items.
+    pub(crate) fn hierarchy(
+        &self,
+        language: Option<&str>,
+        (request, direction): (RequestId, HierarchyDirection),
+        path: &Path,
+        ask: HierarchyAsk,
+    ) -> bool {
+        let path = absolute_path(path);
+        let Some(tx) = self.existing_server(language, &path) else {
+            return false;
+        };
+        let ask = match ask {
+            HierarchyAsk::Prepare { position, .. } => HierarchyAsk::Prepare { path, position },
+            children @ HierarchyAsk::Children(_) => children,
+        };
+        tx.try_send(ServerCmd::Hierarchy {
+            request,
+            direction,
+            ask,
         })
         .is_ok()
     }
