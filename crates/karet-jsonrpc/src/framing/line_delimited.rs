@@ -130,6 +130,12 @@ where
 /// `body` must not contain a raw newline; compact `serde_json` output never
 /// does, which is what makes this framing safe for JSON-RPC payloads.
 ///
+/// Two newline-free bodies do not round-trip through [`read_frame`] either,
+/// because it reads a line the way a padded or CRLF peer writes one: an
+/// **empty** body is skipped as a blank line, and a body **ending in `\r`**
+/// comes back without that byte. Neither is a JSON document, so a JSON-RPC
+/// payload never meets them.
+///
 /// # Errors
 ///
 /// Returns the underlying [`io::Error`] if the write or flush fails.
@@ -215,6 +221,63 @@ mod tests {
             Some(br#"{"b":2}"#.as_slice())
         );
         assert!(read_frame(&mut reader).await?.is_none());
+        Ok(())
+    }
+
+    /// `count` newline-free bodies from a deterministic LCG (so a failure
+    /// replays), over an alphabet weighted toward `\r` and JSON punctuation.
+    fn generated_bodies(seed: u64, count: usize) -> Vec<Vec<u8>> {
+        const ALPHABET: &[u8] = b"\r\r:{}\"\\ aZ0\x00\xff";
+        let mut state = seed;
+        let mut below = |bound: usize| {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            usize::try_from(state >> 33).unwrap_or_default() % bound
+        };
+        (0..count)
+            .map(|_| {
+                let len = below(24);
+                (0..len).map(|_| ALPHABET[below(ALPHABET.len())]).collect()
+            })
+            .collect()
+    }
+
+    /// Falsified by a body coming back altered other than as `write_frame`
+    /// documents: an empty body skipped, one trailing `\r` dropped.
+    #[tokio::test]
+    async fn roundtrips_generated_bodies_except_the_documented_two() -> TestResult {
+        let bodies = generated_bodies(0x5eed, 300);
+        let excluded = |body: &Vec<u8>| body.is_empty() || body.ends_with(b"\r");
+        let verbatim = bodies.iter().filter(|body| !excluded(body)).count();
+        assert!(bodies.iter().any(Vec::is_empty), "no empty body generated");
+        assert!(
+            bodies.iter().any(|body| body.ends_with(b"\r")),
+            "no `\\r`-ended body generated"
+        );
+        assert!(
+            verbatim > bodies.len() / 2,
+            "too few verbatim cases to mean anything"
+        );
+        let expected: Vec<Vec<u8>> = bodies
+            .iter()
+            .map(|body| body.strip_suffix(b"\r").unwrap_or(body).to_vec())
+            .filter(|body| !body.is_empty())
+            .collect();
+        let (reader, mut writer) = duplex(4096);
+        let feeder = tokio::spawn(async move {
+            for body in &bodies {
+                if write_frame(&mut writer, body).await.is_err() {
+                    return;
+                }
+            }
+        });
+        let mut reader = BufReader::new(reader);
+        for body in &expected {
+            assert_eq!(read_frame(&mut reader).await?.as_ref(), Some(body));
+        }
+        assert!(read_frame(&mut reader).await?.is_none());
+        feeder.await?;
         Ok(())
     }
 
