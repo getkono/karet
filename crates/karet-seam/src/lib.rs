@@ -44,7 +44,7 @@
 //! each function by the code it pulls in. Unlike facets these are *numbers*, but they are
 //! measurements rather than a ranking: each comes with a lower and an upper bound, and
 //! nothing here decides which functions matter.
-
+//!
 //! # Surface
 //!
 //! Three modules are public because each is a vocabulary of its own: [`query`] (the
