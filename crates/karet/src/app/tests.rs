@@ -52,6 +52,7 @@ mod multi_caret_edit;
 mod multi_click;
 mod occurrences;
 mod overlay_focus;
+mod pending;
 mod pointer_routing;
 mod preview;
 #[cfg(feature = "images")]
