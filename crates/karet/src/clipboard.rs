@@ -213,9 +213,10 @@ mod tests {
 
     #[test]
     fn osc52_wraps_base64() {
-        let seq = osc52_set_sequence("hi");
-        assert!(seq.starts_with("\x1b]52;c;"));
-        assert!(seq.ends_with('\x07'));
+        assert_eq!(osc52_set_sequence("hi"), "\x1b]52;c;aGk=\x07");
+        // Multi-byte text is encoded as its UTF-8 bytes (c3 a9 20 e2 9c 93).
+        assert_eq!(osc52_set_sequence("é ✓"), "\x1b]52;c;w6kg4pyT\x07");
+        assert_eq!(osc52_set_sequence(""), "\x1b]52;c;\x07");
     }
 
     #[test]
