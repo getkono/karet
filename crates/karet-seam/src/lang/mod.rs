@@ -30,7 +30,24 @@ pub(crate) mod cfamily;
 pub(crate) mod java;
 #[cfg(feature = "lang-kotlin")]
 pub(crate) mod kotlin;
+// Rust and Python stay compiled without their features because the crate's tests ask
+// `rust::language_id()`/`python::language_id()` whether the grammar is in and skip when
+// it is not; with the feature off nothing else in them is reached.
+#[cfg_attr(
+    not(feature = "lang-python"),
+    allow(
+        dead_code,
+        reason = "only `language_id` is reached without `lang-python`"
+    )
+)]
 pub(crate) mod python;
+#[cfg_attr(
+    not(feature = "lang-rust"),
+    allow(
+        dead_code,
+        reason = "only `language_id` is reached without `lang-rust`"
+    )
+)]
 pub(crate) mod rust;
 #[cfg(feature = "lang-swift")]
 pub(crate) mod swift;
