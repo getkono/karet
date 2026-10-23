@@ -216,15 +216,49 @@ mod tests {
 
     #[test]
     fn json_shape_matches_issue() -> Result<(), BlameError> {
-        let json = to_json(&[group(42, 58, "abc123")])?;
-        // Field names line up with the issue's structured output.
-        assert!(json.contains("\"lines\""));
-        assert!(json.contains("\"commit_hash\""));
-        assert!(json.contains("\"message\""));
-        assert!(json.contains("\"author\""));
-        assert!(json.contains("\"date\""));
-        assert!(json.contains("\"start\": 42"));
-        assert!(json.contains("\"end\": 58"));
+        let groups = [group(42, 58, "abc123")];
+        let json = to_json(&groups)?;
+        // The whole document, so a renamed, reordered, nested or dropped field
+        // fails — the shape is the contract downstream tools parse.
+        let want = r#"[
+  {
+    "lines": {
+      "start": 42,
+      "end": 58
+    },
+    "commit_hash": "abc123",
+    "message": "subject line\n\nbody",
+    "author": "Jane Doe",
+    "date": "2026-03-16T00:00:00+00:00"
+  }
+]"#;
+        assert_eq!(json, want);
+        // And it reads back to the same groups.
+        let back: Vec<BlameGroup> =
+            serde_json::from_str(&json).map_err(|e| BlameError::Json(e.to_string()))?;
+        assert_eq!(back, groups);
+        assert_eq!(to_json(&[])?, "[]");
         Ok(())
+    }
+
+    /// Each error's message is part of what a caller shows; pin them.
+    #[test]
+    fn error_messages_are_exact() {
+        assert_eq!(
+            BlameError::NotARepository.to_string(),
+            "not a git repository"
+        );
+        assert_eq!(
+            BlameError::NotCommitted("src/a.rs".into()).to_string(),
+            "no committed history for src/a.rs yet"
+        );
+        assert_eq!(
+            BlameError::Git("boom".into()).to_string(),
+            "git error: boom"
+        );
+        assert_eq!(
+            BlameError::Json("bad".into()).to_string(),
+            "json error: bad"
+        );
     }
 }
