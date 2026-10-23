@@ -169,6 +169,48 @@ mod tests {
         assert!(rendered.contains("68 65 6c 6c 6f")); // "hello"
         assert!(rendered.contains("|hello"));
     }
+
+    /// The row `y` of `buf` as painted.
+    fn row(buf: &Buffer, y: u16) -> String {
+        (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect()
+    }
+
+    #[test]
+    fn each_column_paints_in_its_role_color() {
+        let theme = Theme::dark();
+        let area = Rect::new(0, 0, 80, 1);
+        let mut buf = Buffer::empty(area);
+        HexView::new(b"A").theme(&theme).render(area, &mut buf);
+        let fg = |role: ThemeRole| theme.role(role).to_ratatui();
+        let painted = row(&buf, 0);
+        let ascii = painted.find("|A").and_then(|x| u16::try_from(x + 1).ok());
+        assert_eq!(buf[(0, 0)].fg, fg(ThemeRole::LineNumber), "offset");
+        assert_eq!(buf[(OFFSET_WIDTH, 0)].fg, fg(ThemeRole::Foreground), "byte");
+        assert_eq!(
+            ascii.map(|x| buf[(x, 0)].fg),
+            Some(fg(ThemeRole::LineNumberActive)),
+            "ascii in {painted:?}"
+        );
+    }
+
+    #[test]
+    fn scroll_starts_painting_at_that_row_and_stops_after_the_last() {
+        let bytes: Vec<u8> = (0u8..48).collect();
+        let area = Rect::new(0, 0, 80, 3);
+        let mut buf = Buffer::empty(area);
+        HexView::new(&bytes).scroll(1).render(area, &mut buf);
+        assert!(
+            row(&buf, 0).starts_with("00000010  10 11"),
+            "{:?}",
+            row(&buf, 0)
+        );
+        assert!(
+            row(&buf, 1).starts_with("00000020  20 21"),
+            "{:?}",
+            row(&buf, 1)
+        );
+        assert_eq!(row(&buf, 2).trim(), "", "nothing past the last row");
+    }
 }
 
 #[cfg(test)]

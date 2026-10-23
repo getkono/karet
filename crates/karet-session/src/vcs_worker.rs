@@ -710,6 +710,9 @@ fn file_at_rev(path: &Path, rev: &str) -> Result<Option<String>, String> {
 }
 
 #[cfg(test)]
+mod job_tests;
+
+#[cfg(test)]
 mod tests {
     use karet_core::BlameAttribution;
 

@@ -379,6 +379,150 @@ mod tests {
         assert_eq!(b.line(0).as_deref(), Some("aXbcdYef"));
     }
 
+    fn edit(start: (u32, u32), end: (u32, u32), text: &str) -> TextEdit {
+        TextEdit {
+            range: Range {
+                start: LineCol::new(start.0, start.1),
+                end: LineCol::new(end.0, end.1),
+            },
+            new_text: text.to_string(),
+        }
+    }
+
+    /// `(start_byte, old_end_byte, new_end_byte, replaced)` of each edit, in order.
+    fn spans(applied: &Applied) -> Vec<(usize, usize, usize, &str)> {
+        applied
+            .edits
+            .iter()
+            .map(|e| {
+                (
+                    e.start_byte,
+                    e.old_end_byte,
+                    e.new_end_byte,
+                    e.replaced.as_str(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn length_changing_multi_edit_applies_undoes_and_redoes() {
+        // "ab\ncd\nef": a growing insert, a shrinking replace across a line
+        // break, and a deleted line break — listed out of order, so the result
+        // depends on resolving every edit against the pre-edit text, and the
+        // undo depends on the running delta shifting each inverse into place.
+        let mut b = TextBuffer::from_text("ab\ncd\nef");
+        let change = Change::new(
+            0,
+            vec![
+                edit((2, 1), (2, 1), "XYZ"),
+                edit((0, 1), (1, 1), "Q"),
+                edit((1, 2), (2, 0), ""),
+            ],
+        );
+        let applied = b.apply_simple(&change).unwrap_or_default();
+        assert_eq!(b.text(), "aQdeXYZf");
+        assert_eq!(applied.version, 1);
+        // Descending by start byte, each in the pre-edit frame.
+        assert_eq!(
+            spans(&applied),
+            vec![(7, 7, 10, ""), (5, 6, 5, "\n"), (1, 4, 2, "b\nc")]
+        );
+        let points: Vec<_> = applied
+            .edits
+            .iter()
+            .map(|e| (e.start_point, e.old_end_point, e.new_end_point))
+            .collect();
+        assert_eq!(
+            points,
+            vec![
+                (
+                    BytePoint::new(2, 1),
+                    BytePoint::new(2, 1),
+                    BytePoint::new(2, 4)
+                ),
+                (
+                    BytePoint::new(1, 2),
+                    BytePoint::new(2, 0),
+                    BytePoint::new(1, 2)
+                ),
+                (
+                    BytePoint::new(0, 1),
+                    BytePoint::new(1, 1),
+                    BytePoint::new(0, 2)
+                ),
+            ]
+        );
+
+        let undone = b.undo().unwrap_or_default();
+        assert_eq!(b.text(), "ab\ncd\nef");
+        assert!(!b.is_dirty());
+        assert_eq!(undone.version, 2);
+        // The inverse edits, in the post-edit frame, again descending.
+        assert_eq!(
+            spans(&undone),
+            vec![(4, 7, 4, "XYZ"), (3, 3, 4, ""), (1, 2, 4, "Q")]
+        );
+
+        let redone = b.redo().unwrap_or_default();
+        assert_eq!(b.text(), "aQdeXYZf");
+        assert_eq!(redone.version, 3);
+        assert_eq!(spans(&redone), spans(&applied));
+    }
+
+    #[test]
+    fn touching_edits_are_not_overlapping() {
+        // The first edit ends exactly where the second starts.
+        let mut b = TextBuffer::from_text("abcd");
+        let change = Change::new(
+            0,
+            vec![edit((0, 1), (0, 2), "XX"), edit((0, 2), (0, 3), "")],
+        );
+        let applied = b.apply_simple(&change).unwrap_or_default();
+        assert_eq!(b.text(), "aXXd");
+        assert_eq!(spans(&applied), vec![(2, 3, 2, "c"), (1, 2, 3, "b")]);
+        assert!(b.undo().is_some());
+        assert_eq!(b.text(), "abcd");
+    }
+
+    /// Assert `b` still holds `text` untouched: same content, version, and no
+    /// undo step recorded.
+    fn assert_untouched(b: &mut TextBuffer, text: &str) {
+        assert_eq!(b.text(), text);
+        assert_eq!(b.version(), 0);
+        assert!(!b.is_dirty());
+        assert_eq!(b.undo_len(), 0);
+        assert!(b.undo().is_none());
+    }
+
+    #[test]
+    fn an_edit_past_the_last_line_rejects_the_whole_change() {
+        let mut b = TextBuffer::from_text("ab\ncd");
+        // A valid edit alongside one addressing line 5 of a two-line buffer.
+        let change = Change::new(
+            0,
+            vec![edit((0, 0), (0, 0), "Z"), edit((5, 0), (5, 0), "!")],
+        );
+        assert_eq!(b.apply_simple(&change).err(), Some(TextError::OutOfBounds));
+        assert_untouched(&mut b, "ab\ncd");
+        // An end past the last line is rejected the same way.
+        let change = Change::new(0, vec![edit((1, 0), (2, 0), "")]);
+        assert_eq!(b.apply_simple(&change).err(), Some(TextError::OutOfBounds));
+        assert_untouched(&mut b, "ab\ncd");
+    }
+
+    #[test]
+    fn a_reversed_range_is_out_of_bounds() {
+        let mut b = TextBuffer::from_text("ab\ncd");
+        for change in [
+            Change::new(0, vec![edit((0, 2), (0, 1), "X")]),
+            Change::new(0, vec![edit((1, 0), (0, 1), "")]),
+        ] {
+            assert_eq!(b.apply_simple(&change).err(), Some(TextError::OutOfBounds));
+            assert_untouched(&mut b, "ab\ncd");
+        }
+    }
+
     #[test]
     fn overlapping_edits_rejected() {
         let mut b = TextBuffer::from_text("abcdef");
@@ -405,6 +549,7 @@ mod tests {
             b.apply_simple(&change).err(),
             Some(TextError::OverlappingEdits)
         );
+        assert_untouched(&mut b, "abcdef");
     }
 
     #[test]

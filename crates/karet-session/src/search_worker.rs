@@ -330,3 +330,200 @@ fn send(
         ControlFlow::Continue(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cancellation::CancellationHub;
+
+    type Events = tokio_mpsc::UnboundedReceiver<(Option<RequestId>, Event)>;
+
+    fn query(pattern: &str) -> SearchQuery {
+        SearchQuery {
+            pattern: pattern.to_owned(),
+            case_sensitive: true,
+            ..SearchQuery::default()
+        }
+    }
+
+    fn search_job(
+        hub: &CancellationHub,
+        id: u64,
+        root: &std::path::Path,
+        pattern: &str,
+    ) -> SearchJob {
+        SearchJob::Search {
+            id: RequestId(id),
+            roots: vec![root.to_path_buf()],
+            query: query(pattern),
+            file_limit: 100,
+            match_limit: 100,
+            cancel: hub.register(RequestId(id)),
+        }
+    }
+
+    /// Queue every job before the worker starts, so they coalesce exactly as a
+    /// burst would, then run the worker to completion.
+    fn run_all(jobs: Vec<SearchJob>) -> Events {
+        let (jobs_tx, jobs_rx) = std::sync::mpsc::channel();
+        for job in jobs {
+            let _ = jobs_tx.send(job);
+        }
+        drop(jobs_tx);
+        let (events_tx, events_rx) = tokio_mpsc::unbounded_channel();
+        run(&jobs_rx, &events_tx);
+        events_rx
+    }
+
+    /// `(request, files_scanned, matches_found, truncated, cancelled)` per
+    /// terminal search event, in emission order.
+    fn finishes(events: &mut Events) -> Vec<(u64, usize, usize, bool, bool)> {
+        let mut out = Vec::new();
+        while let Ok((id, event)) = events.try_recv() {
+            if let Event::SearchFinished {
+                files_scanned,
+                matches_found,
+                truncated,
+                cancelled,
+                ..
+            } = event
+            {
+                out.push((
+                    id.map_or(0, |id| id.0),
+                    files_scanned,
+                    matches_found,
+                    truncated,
+                    cancelled,
+                ));
+            }
+        }
+        out
+    }
+
+    fn tree(files: &[(&str, &str)]) -> Option<tempfile::TempDir> {
+        let dir = tempfile::tempdir().ok()?;
+        for (name, body) in files {
+            std::fs::write(dir.path().join(name), body).ok()?;
+        }
+        Some(dir)
+    }
+
+    #[test]
+    fn a_queued_search_is_superseded_by_a_newer_one_and_still_answered() {
+        let Some(dir) = tree(&[("a.txt", "needle\n")]) else {
+            return;
+        };
+        let hub = CancellationHub::default();
+        let mut events = run_all(vec![
+            search_job(&hub, 1, dir.path(), "needle"),
+            search_job(&hub, 2, dir.path(), "needle"),
+        ]);
+        assert_eq!(
+            finishes(&mut events),
+            vec![(1, 0, 0, false, true), (2, 1, 1, false, false)],
+            "the stale search is answered as cancelled; only the newest walks"
+        );
+    }
+
+    #[test]
+    fn a_replace_is_never_coalesced_away() {
+        let Some(dir) = tree(&[("a.txt", "old old\n")]) else {
+            return;
+        };
+        let hub = CancellationHub::default();
+        let mut events = run_all(vec![
+            search_job(&hub, 1, dir.path(), "old"),
+            SearchJob::ReplaceAll {
+                id: RequestId(2),
+                roots: vec![dir.path().to_path_buf()],
+                query: query("old"),
+                replacement: "new".to_owned(),
+            },
+            search_job(&hub, 3, dir.path(), "new"),
+        ]);
+        let mut order = Vec::new();
+        while let Ok((id, event)) = events.try_recv() {
+            match event {
+                Event::SearchReplaced {
+                    files_changed,
+                    replacements,
+                } => order.push((id.map_or(0, |id| id.0), files_changed, replacements)),
+                Event::SearchFinished {
+                    matches_found,
+                    cancelled,
+                    ..
+                } => order.push((
+                    id.map_or(0, |id| id.0),
+                    usize::from(cancelled),
+                    matches_found,
+                )),
+                _ => {},
+            }
+        }
+        // The first search ran before the replace (not superseded), the replace
+        // rewrote both matches, and the last search sees the new text.
+        assert_eq!(order, vec![(1, 0, 2), (2, 1, 2), (3, 0, 2)]);
+        let text = std::fs::read_to_string(dir.path().join("a.txt")).unwrap_or_default();
+        assert_eq!(text, "new new\n");
+    }
+
+    #[test]
+    fn a_cancelled_search_finishes_as_cancelled_without_walking() {
+        let Some(dir) = tree(&[("a.txt", "needle\n"), ("b.txt", "needle\n")]) else {
+            return;
+        };
+        let hub = CancellationHub::default();
+        let job = search_job(&hub, 1, dir.path(), "needle");
+        hub.cancel(RequestId(1));
+        let mut events = run_all(vec![job]);
+        assert_eq!(finishes(&mut events), vec![(1, 0, 0, false, true)]);
+    }
+
+    #[test]
+    fn the_file_limit_truncates_the_walk() {
+        let Some(dir) = tree(&[
+            ("a.txt", "needle\n"),
+            ("b.txt", "needle\n"),
+            ("c.txt", "needle\n"),
+        ]) else {
+            return;
+        };
+        let hub = CancellationHub::default();
+        let job = SearchJob::Search {
+            id: RequestId(1),
+            roots: vec![dir.path().to_path_buf()],
+            query: query("needle"),
+            file_limit: 2,
+            match_limit: 100,
+            cancel: hub.register(RequestId(1)),
+        };
+        let mut events = run_all(vec![job]);
+        assert_eq!(finishes(&mut events), vec![(1, 2, 2, true, false)]);
+    }
+
+    #[test]
+    fn an_invalid_pattern_is_reported_not_read_as_no_matches() {
+        let Ok(dir) = tempfile::tempdir() else {
+            return;
+        };
+        let hub = CancellationHub::default();
+        let job = SearchJob::Search {
+            id: RequestId(1),
+            roots: vec![dir.path().to_path_buf()],
+            query: SearchQuery {
+                regex: true,
+                ..query("(")
+            },
+            file_limit: 10,
+            match_limit: 10,
+            cancel: hub.register(RequestId(1)),
+        };
+        let mut events = run_all(vec![job]);
+        let error =
+            std::iter::from_fn(|| events.try_recv().ok()).find_map(|(_, event)| match event {
+                Event::SearchFinished { error, .. } => error,
+                _ => None,
+            });
+        assert!(error.is_some(), "a bad regex must surface as an error");
+    }
+}

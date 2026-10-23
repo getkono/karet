@@ -223,6 +223,106 @@ mod tests {
         );
     }
 
+    /// Seeded `(head, current)` pairs: short files over a tiny vocabulary (so
+    /// lines repeat and the diff has ambiguity to resolve), the current side an
+    /// edited copy of the head.
+    fn adversarial_pairs() -> Vec<(Vec<&'static str>, Vec<&'static str>)> {
+        const WORDS: &[&str] = &["a", "b", "c", "", "a"];
+        let mut state = 0x2545_f491_4f6c_dd1d_u64;
+        let mut roll = move |bound: usize| {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            usize::try_from(state >> 33).unwrap_or_default() % bound
+        };
+        (0..300)
+            .map(|_| {
+                let head: Vec<&str> = (0..roll(8)).map(|_| WORDS[roll(WORDS.len())]).collect();
+                let mut current = head.clone();
+                for _ in 0..roll(4) {
+                    let at = roll(current.len() + 1);
+                    match roll(3) {
+                        0 => current.insert(at, WORDS[roll(WORDS.len())]),
+                        1 if at < current.len() => {
+                            current.remove(at);
+                        },
+                        _ if at < current.len() => current[at] = "x",
+                        _ => current.push("y"),
+                    }
+                }
+                (head, current)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn line_terminators_never_change_the_markers() {
+        for (head, current) in adversarial_pairs() {
+            let lf = |lines: &[&str]| {
+                lines
+                    .iter()
+                    .map(|line| format!("{line}\n"))
+                    .collect::<String>()
+            };
+            let crlf = |lines: &[&str]| {
+                lines
+                    .iter()
+                    .map(|line| format!("{line}\r\n"))
+                    .collect::<String>()
+            };
+            let expected = spans(&lf(&head), &lf(&current));
+            for (old, new) in [
+                (crlf(&head), lf(&current)),
+                (lf(&head), crlf(&current)),
+                (crlf(&head), crlf(&current)),
+                (lf(&head).trim_end_matches('\n').to_owned(), lf(&current)),
+                (lf(&head), lf(&current).trim_end_matches('\n').to_owned()),
+            ] {
+                // Trimming every final newline also drops trailing empty lines,
+                // which is a real content change; only compare where it is not.
+                if karet_text::lines(&old).count() != head.len()
+                    || karet_text::lines(&new).count() != current.len()
+                {
+                    continue;
+                }
+                assert_eq!(spans(&old, &new), expected, "{old:?} -> {new:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn markers_are_ordered_disjoint_and_inside_the_current_text() {
+        for (head, current) in adversarial_pairs() {
+            let text = |lines: &[&str]| {
+                lines
+                    .iter()
+                    .map(|line| format!("{line}\n"))
+                    .collect::<String>()
+            };
+            let got = spans(&text(&head), &text(&current));
+            assert_eq!(
+                got.is_empty(),
+                head == current,
+                "{head:?} -> {current:?}: {got:?}"
+            );
+            let rows = u32::try_from(current.len().max(1)).unwrap_or(u32::MAX);
+            let mut previous: Option<u32> = None;
+            for &(first, last, _, _) in &got {
+                assert!(
+                    first <= last && last < rows,
+                    "{head:?} -> {current:?}: {got:?}"
+                );
+                // A deletion marker can share the row a modification above it
+                // ends on, but no two markers ever start out of order.
+                assert!(
+                    previous.is_none_or(|end| first >= end),
+                    "{head:?} -> {current:?}: {got:?}"
+                );
+                previous = Some(last);
+            }
+        }
+    }
+
     #[test]
     fn a_new_file_against_an_empty_blob_is_all_added() {
         assert_eq!(

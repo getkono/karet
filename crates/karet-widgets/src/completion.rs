@@ -809,4 +809,18 @@ mod tests {
         let buf = render(&items, "", Rect::new(0, 0, 14, 1), &mut state);
         assert!(row_text(&buf, 0).contains("doc_bearer"));
     }
+
+    #[test]
+    fn accept_range_spans_anchor_to_caret_only_while_anchored() {
+        use karet_core::LineCol;
+        let anchor = LineCol::new(3, 4);
+        let span = |caret| {
+            accept_range(anchor, caret).map(|range: karet_core::Range| (range.start, range.end))
+        };
+        assert_eq!(span(LineCol::new(3, 7)), Some((anchor, LineCol::new(3, 7))));
+        assert_eq!(span(anchor), Some((anchor, anchor)), "an empty prefix");
+        assert_eq!(span(LineCol::new(3, 3)), None, "before the anchor");
+        assert_eq!(span(LineCol::new(4, 7)), None, "another line");
+        assert_eq!(span(LineCol::new(2, 9)), None, "another line");
+    }
 }

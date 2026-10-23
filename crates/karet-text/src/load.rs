@@ -215,6 +215,38 @@ mod tests {
     }
 
     #[test]
+    fn lone_cr_is_kept_as_content() {
+        // Only `\r\n` is normalized; an old-Mac `\r` stays and is not counted as
+        // a line ending when choosing the one to save with.
+        let b = TextBuffer::from_bytes(b"a\rb\r\nc").unwrap_or_default();
+        assert_eq!(b.text(), "a\rb\nc");
+        assert_eq!(b.eol(), Eol::Crlf);
+        assert!(!b.has_mixed_eol());
+
+        let b = TextBuffer::from_bytes(b"a\rb\rc").unwrap_or_default();
+        assert_eq!(b.text(), "a\rb\rc");
+        assert_eq!(b.eol(), Eol::Lf);
+        assert!(!b.has_mixed_eol());
+
+        // A `\r` right before a CRLF survives, so in memory it pairs with the
+        // normalized `\n`.
+        let b = TextBuffer::from_bytes(b"a\r\r\nb").unwrap_or_default();
+        assert_eq!(b.text(), "a\r\nb");
+        assert_eq!(b.eol(), Eol::Crlf);
+    }
+
+    #[test]
+    fn majority_line_ending_wins_and_a_tie_is_lf() {
+        let b = TextBuffer::from_bytes(b"a\nb\r\nc\n").unwrap_or_default();
+        assert_eq!(b.eol(), Eol::Lf);
+        assert!(b.has_mixed_eol());
+        let b = TextBuffer::from_bytes(b"a\r\nb\n").unwrap_or_default();
+        assert_eq!(b.eol(), Eol::Lf);
+        assert!(b.has_mixed_eol());
+        assert_eq!(b.text(), "a\nb\n");
+    }
+
+    #[test]
     fn bom_stripped_and_recorded() {
         let mut bytes = vec![0xEF, 0xBB, 0xBF];
         bytes.extend_from_slice(b"hi");

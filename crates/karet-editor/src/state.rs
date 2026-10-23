@@ -1180,3 +1180,34 @@ impl EditorState {
             .find_map(|&(painted, rect)| (painted == index).then_some(rect))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use karet_core::FoldRegion;
+    use karet_core::FoldRegions;
+
+    use super::*;
+
+    #[test]
+    fn resolve_folds_collapses_only_the_folded_headers() {
+        let regions = FoldRegions::from_sorted_regions(vec![
+            FoldRegion::new(0, 9),
+            FoldRegion::new(2, 4),
+            FoldRegion::new(6, 8),
+        ]);
+        // Line 3 is inside a region but heads none, so it collapses nothing.
+        let folded = BTreeSet::from([2, 3]);
+        let fold = |start, end, collapsed| Fold {
+            start,
+            end,
+            collapsed,
+        };
+        assert_eq!(
+            resolve_folds(&regions, &folded),
+            [fold(0, 9, false), fold(2, 4, true), fold(6, 8, false)]
+        );
+        assert!(resolve_folds(&FoldRegions::default(), &folded).is_empty());
+    }
+}

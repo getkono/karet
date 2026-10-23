@@ -307,6 +307,202 @@ fn every_query_round_trips_through_its_text_form() -> TestResult {
     Ok(())
 }
 
+/// A deterministic pseudo-random stream (an LCG), so a failure replays from its seed.
+struct Rng(u64);
+
+impl Rng {
+    fn below(&mut self, bound: usize) -> usize {
+        self.0 = self
+            .0
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        usize::try_from(self.0 >> 33).unwrap_or_default() % bound.max(1)
+    }
+
+    fn pick<'a, T>(&mut self, items: &'a [T]) -> &'a T {
+        &items[self.below(items.len())]
+    }
+
+    fn chance(&mut self, one_in: usize) -> bool {
+        self.below(one_in) == 0
+    }
+
+    /// A word from `alphabet`, `min..=max` characters long.
+    fn word(&mut self, alphabet: &[&str], min: usize, max: usize) -> String {
+        let len = min + self.below(max - min + 1);
+        (0..len).map(|_| *self.pick(alphabet)).collect()
+    }
+}
+
+/// Characters a value can hold and still survive its text form: no whitespace, no quote,
+/// none of the path syntax (`:`, `#`, braces), and no leading `!` — but multibyte text,
+/// so a span that lands inside a character would show up.
+const WORD: &[&str] = &[
+    "a", "z", "Q", "_", "-", ".", "0", "7", "<", ">", "(", ")", ",", "=", "é", "日", "🦀",
+];
+
+/// A path segment: plain, numbered, or a whitespace-free anonymous `{…}` construct.
+fn segment(rng: &mut Rng) -> crate::id::SeamSegment {
+    let name = if rng.chance(4) {
+        format!("{{{}}}", rng.word(WORD, 1, 6))
+    } else {
+        rng.word(WORD, 1, 6)
+    };
+    let ordinal = if rng.chance(3) {
+        u32::try_from(1 + rng.below(40)).unwrap_or(1)
+    } else {
+        0
+    };
+    crate::id::SeamSegment::numbered(name, ordinal)
+}
+
+fn path(rng: &mut Rng) -> SeamPath {
+    let len = 1 + rng.below(4);
+    SeamPath::new((0..len).map(|_| segment(rng)).collect())
+}
+
+/// One term of any kind, with a value its text form can carry.
+fn term_kind(rng: &mut Rng) -> TermKind {
+    let lens = *rng.pick(&crate::model::LENSES);
+    match rng.below(11) {
+        0 => TermKind::Lens(lens),
+        1 => {
+            let known = super::parse::known_subtypes(lens);
+            let subtype = if known.is_empty() {
+                rng.word(WORD, 1, 8)
+            } else {
+                rng.pick(&known).clone()
+            };
+            TermKind::Facet { lens, subtype }
+        },
+        2 => TermKind::Visibility(*rng.pick(Visibility::all())),
+        3 => TermKind::Kind(*rng.pick(NodeKind::all())),
+        4 => TermKind::In(path(rng)),
+        // A predicate value may itself hold `:` and a balanced quote, as
+        // `cfg:feature="view"` does.
+        5 => TermKind::Cfg(match rng.below(3) {
+            0 => format!("{}=\"{}\"", rng.word(WORD, 1, 5), rng.word(WORD, 1, 5)),
+            1 => format!("{}:{}", rng.word(WORD, 1, 5), rng.word(WORD, 1, 5)),
+            _ => rng.word(WORD, 1, 8),
+        }),
+        6 => TermKind::Pivot {
+            edge: *rng.pick(EdgeKind::all()),
+            target: path(rng),
+        },
+        7 => TermKind::Reach(path(rng)),
+        8 => TermKind::Callers(path(rng)),
+        9 => TermKind::Name(rng.word(WORD, 1, 10)),
+        // Quoted, so whitespace is part of a phrase rather than the end of it.
+        _ => TermKind::Phrase(rng.word(&[WORD, &[" ", "\t"]].concat(), 0, 10)),
+    }
+}
+
+/// A query of up to six terms, sometimes under a configuration.
+fn query(rng: &mut Rng) -> Query {
+    let configuration = rng.chance(3).then(|| rng.word(WORD, 1, 8));
+    let terms = (0..rng.below(7))
+        .map(|_| super::Term {
+            negated: rng.chance(3),
+            kind: term_kind(rng),
+            span: 0..0,
+        })
+        .collect();
+    Query {
+        terms,
+        configuration,
+    }
+}
+
+#[test]
+fn every_generated_query_round_trips_through_its_text_form() -> TestResult {
+    // The table above checks the forms someone thought to write down; this checks every
+    // term kind, negated or not, in any order and combination, with multibyte values.
+    let mut rng = Rng(0x5EA4_0529);
+    for case in 0..4000 {
+        let query = query(&mut rng);
+        let rendered = query.to_string();
+        let reparsed = parse(&rendered).map_err(|error| {
+            format!(
+                "case {case}: {rendered:?} did not parse back: {}",
+                error.describe()
+            )
+        })?;
+
+        assert_eq!(
+            reparsed.configuration, query.configuration,
+            "case {case}: {rendered:?}"
+        );
+        let written: Vec<_> = query.terms.iter().map(|t| (t.negated, &t.kind)).collect();
+        let read: Vec<_> = reparsed
+            .terms
+            .iter()
+            .map(|t| (t.negated, &t.kind))
+            .collect();
+        assert_eq!(read, written, "case {case}: {rendered:?}");
+
+        // Each span covers exactly the text that term renders to, so the filter box's
+        // caret lands under the term a reader would point at.
+        for term in &reparsed.terms {
+            assert_eq!(
+                rendered.get(term.span.clone()),
+                Some(term.to_string().as_str()),
+                "case {case}: {rendered:?}"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn every_span_parse_reports_lands_on_the_text_that_produced_it() -> TestResult {
+    // Arbitrary text, valid or not: fragments of real syntax, stray quotes and
+    // negations, ASCII and non-ASCII whitespace, and multibyte characters. Whatever
+    // `parse` returns, a span must slice the input on character boundaries — the filter
+    // box draws its caret from it, and a span inside a character panics that slice.
+    const FRAGMENTS: &[&str] = &[
+        "lens:", "api", "kind:", "type", "vis:", "public", "in:", "pkg", "::", "#2", "{", "}",
+        "cfg:", "config:", "pivot:", "calls:", "reach:", "callers:", "hazard:", "x", ":", "!",
+        "\"", " ", "  ", "\t", "\n", "\u{a0}", "\u{3000}", "é", "日本", "🦀",
+    ];
+    let mut rng = Rng(0x0529_5EA4);
+    for case in 0..6000 {
+        let text = rng.word(FRAGMENTS, 0, 14);
+        match parse(&text) {
+            Ok(query) => {
+                let mut end = 0;
+                for term in &query.terms {
+                    assert!(
+                        term.span.start >= end && term.span.start < term.span.end,
+                        "case {case}: {text:?} has a span out of order: {:?}",
+                        term.span
+                    );
+                    end = term.span.end;
+                    let Some(source) = text.get(term.span.clone()) else {
+                        return Err(format!("case {case}: {text:?} split a character").into());
+                    };
+                    // A term's own text means the same thing alone as it did in place.
+                    let alone = parse(source)?;
+                    let [only] = alone.terms.as_slice() else {
+                        return Err(format!("case {case}: {source:?} is not one term").into());
+                    };
+                    assert_eq!(
+                        (only.negated, &only.kind, only.span.clone()),
+                        (term.negated, &term.kind, 0..source.len()),
+                        "case {case}: {text:?}"
+                    );
+                }
+            },
+            Err(error) => assert!(
+                text.get(error.span.clone())
+                    .is_some_and(|source| !source.is_empty()),
+                "case {case}: {text:?} reported an error at {:?}",
+                error.span
+            ),
+        }
+    }
+    Ok(())
+}
+
 #[test]
 fn ui_narrowing_state_is_readable_back_out_of_a_query() -> TestResult {
     // Rerooting and lens toggles are what the breadcrumb is made of, so a query has to

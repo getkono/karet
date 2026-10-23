@@ -85,35 +85,44 @@ fn run(jobs: &Receiver<SpellJob>, results: &tokio_mpsc::UnboundedSender<SpellRes
             },
         };
         match received {
-            Ok(job) => {
-                let delay = Duration::from_millis(job.settings.debounce_ms.clamp(50, 5_000));
-                pending.insert(
-                    job.doc,
-                    Pending {
-                        due: Instant::now() + delay,
-                        job,
-                    },
-                );
-            },
+            Ok(job) => enqueue(&mut pending, job, Instant::now()),
             Err(RecvTimeoutError::Timeout) => {
-                let now = Instant::now();
-                let ready: Vec<DocumentId> = pending
-                    .iter()
-                    .filter(|(_, pending)| pending.due <= now)
-                    .map(|(doc, _)| *doc)
-                    .collect();
-                for doc in ready {
-                    if let Some(pending) = pending.remove(&doc) {
-                        let result = check_job(pending.job, &mut dictionaries);
-                        if results.send(result).is_err() {
-                            return;
-                        }
+                for job in take_due(&mut pending, Instant::now()) {
+                    let result = check_job(job, &mut dictionaries);
+                    if results.send(result).is_err() {
+                        return;
                     }
                 }
             },
             Err(RecvTimeoutError::Disconnected) => break,
         }
     }
+}
+
+/// The quiet period a job waits before it is checked, bounded so a configured
+/// `0` cannot spin the worker and a huge value cannot stall it.
+fn debounce(settings: &Spellcheck) -> Duration {
+    Duration::from_millis(settings.debounce_ms.clamp(50, 5_000))
+}
+
+/// Queue `job`, replacing any older version of the same document and restarting
+/// that document's deadline from `now`. Other documents keep their deadlines.
+fn enqueue(pending: &mut HashMap<DocumentId, Pending>, job: SpellJob, now: Instant) {
+    let due = now + debounce(&job.settings);
+    pending.insert(job.doc, Pending { due, job });
+}
+
+/// Remove and return every job whose deadline has passed at `now`.
+fn take_due(pending: &mut HashMap<DocumentId, Pending>, now: Instant) -> Vec<SpellJob> {
+    let ready: Vec<DocumentId> = pending
+        .iter()
+        .filter(|(_, pending)| pending.due <= now)
+        .map(|(doc, _)| *doc)
+        .collect();
+    ready
+        .into_iter()
+        .filter_map(|doc| pending.remove(&doc).map(|pending| pending.job))
+        .collect()
 }
 
 fn check_job(
@@ -279,6 +288,62 @@ fn user_dictionary_dir() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn job(doc: u64, version: u64, debounce_ms: u64) -> SpellJob {
+        SpellJob {
+            doc: DocumentId(doc),
+            version,
+            language: None,
+            language_selector: None,
+            spelling_language: SpellingLanguage::EnglishUnitedStates,
+            text: String::new(),
+            highlights: Arc::new(Highlights::default()),
+            syntax_error_lines: Arc::new(Vec::new()),
+            settings: Spellcheck {
+                debounce_ms,
+                ..Spellcheck::default()
+            },
+        }
+    }
+
+    #[test]
+    fn debounce_is_bounded_on_both_sides() {
+        assert_eq!(debounce(&job(1, 1, 0).settings), Duration::from_millis(50));
+        assert_eq!(
+            debounce(&job(1, 1, 300).settings),
+            Duration::from_millis(300)
+        );
+        assert_eq!(
+            debounce(&job(1, 1, 60_000).settings),
+            Duration::from_secs(5)
+        );
+    }
+
+    #[test]
+    fn a_newer_version_replaces_the_queued_one_and_restarts_its_deadline() {
+        let start = Instant::now();
+        let mut pending = HashMap::new();
+        enqueue(&mut pending, job(1, 1, 100), start);
+        enqueue(&mut pending, job(2, 7, 100), start);
+        let later = start + Duration::from_millis(80);
+        enqueue(&mut pending, job(1, 2, 100), later);
+        assert_eq!(pending.len(), 2, "one entry per document");
+
+        // Document 2 is due on its own schedule; document 1 restarted at `later`.
+        let due = take_due(&mut pending, start + Duration::from_millis(100));
+        let due: Vec<(DocumentId, u64)> = due.iter().map(|job| (job.doc, job.version)).collect();
+        assert_eq!(due, vec![(DocumentId(2), 7)]);
+        assert!(take_due(&mut pending, start + Duration::from_millis(179)).is_empty());
+
+        let due = take_due(&mut pending, later + Duration::from_millis(100));
+        let due: Vec<(DocumentId, u64)> = due.iter().map(|job| (job.doc, job.version)).collect();
+        assert_eq!(
+            due,
+            vec![(DocumentId(1), 2)],
+            "only the newest version is checked"
+        );
+        assert!(pending.is_empty(), "a taken job leaves the queue");
+    }
 
     #[test]
     fn dictionary_loader_decodes_latin1_hunspell_files() -> Result<(), Box<dyn std::error::Error>> {
