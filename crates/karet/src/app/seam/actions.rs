@@ -359,8 +359,9 @@ impl App {
         // Ask for what the reader is on: what they just landed on, or the node they were
         // already reading — a save or a configuration switch changes its calls and
         // measures under it. The answer replaces the detail in place, since it is the same
-        // node's, rather than blanking the pane on every save.
-        self.request_seam_node();
+        // node's, rather than blanking the pane on every save. Looked up wherever the
+        // view is shown: the save that re-answered the index came from an editor tab.
+        self.refresh_seam_node();
     }
 
     /// Merge one package that has finished indexing.
@@ -389,7 +390,7 @@ impl App {
             if let Some(state) = self.seam_view() {
                 state.move_row(0);
             }
-            self.request_seam_node();
+            self.refresh_seam_node();
         }
     }
 
@@ -418,7 +419,7 @@ impl App {
             // A sync re-reads files and resets the configuration, so the node the reader
             // has open may have different calls and measures now. A first index asked for
             // its landing node already, when the first package arrived.
-            self.request_seam_node();
+            self.refresh_seam_node();
             self.notify_tagged(
                 Report::Outcome,
                 NotificationKind::System,
@@ -515,15 +516,28 @@ impl App {
         state.facet_row = state.facet_row.min(state.edges.len().saturating_sub(1));
     }
 
-    /// Ask the backend for the selected node's edges and source.
+    /// Ask the backend for the selected node's edges and source, from input on the
+    /// focused Seam tab.
     pub(crate) fn request_seam_node(&mut self) {
+        if self.active_seam().is_none() {
+            return;
+        }
+        self.refresh_seam_node();
+    }
+
+    /// Ask the backend for the Seam view's selected node, wherever the view is shown.
+    ///
+    /// Backend answers call this rather than [`Self::request_seam_node`]: a save from an
+    /// editor tab re-answers the index while the Seam view sits in another pane or behind
+    /// the focused tab, and the node it has open must still be refreshed.
+    pub(crate) fn refresh_seam_node(&mut self) {
         let Some(id) = self
-            .active_seam()
+            .seam_view()
             .and_then(|state| state.selected_id().map(str::to_owned))
         else {
             return;
         };
-        if let Some(state) = self.active_seam() {
+        if let Some(state) = self.seam_view() {
             // The block's rows are already reserved on screen; only the shared reveal
             // delay decides whether they say anything while the answer is on its way.
             state.detail_since = Some(Pending::start());

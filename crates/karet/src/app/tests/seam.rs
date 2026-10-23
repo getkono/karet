@@ -718,6 +718,43 @@ fn a_re_answered_index_asks_again_for_the_node_being_read() {
 }
 
 #[test]
+fn a_save_from_an_editor_tab_refreshes_the_node_the_seam_view_has_open() {
+    // The save that re-answers the index comes from an editor tab, so the Seam view is
+    // never the focused tab when the answer lands; its open node must be asked for anyway.
+    let (backend, mut app) = calling_app();
+    app.push_tab(text_tab("a.rs", "fn thing() {}\n"));
+    assert!(app.active_seam().is_none());
+    let asked = node_requests(&backend).len();
+    app.reindex_seams(Path::new("/repo/a.rs"), "fn thing() {}".to_owned());
+    let id = app.seam_index_req;
+    app.on_seam_indexed(
+        id,
+        summary("repo", 1),
+        vec![
+            node("core::thing", "/repo/a.rs"),
+            node("core::callee", "/repo/a.rs"),
+        ],
+    );
+    let requests = node_requests(&backend);
+    assert_eq!(requests.len(), asked + 1);
+    assert_eq!(requests.last().map(String::as_str), Some("core::thing"));
+
+    // The refreshed answer lands on the unfocused view too.
+    let detail = app.seam_node_req;
+    app.on_seam_node_detail(
+        detail,
+        "core::thing".to_owned(),
+        vec![call_edge(Some("core::callee"), None, 5)],
+        None,
+        Ok(preview("/repo/a.rs")),
+    );
+    assert!(
+        app.seam_view()
+            .is_some_and(|state| state.edges.first().map(|edge| edge.count) == Some(5))
+    );
+}
+
+#[test]
 fn a_finished_sync_asks_again_for_the_node_being_read_and_keeps_its_place() {
     let (backend, mut app) = calling_app();
     if let Some(state) = app.active_seam() {
