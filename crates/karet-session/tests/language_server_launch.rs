@@ -553,10 +553,10 @@ async fn a_stale_broker_endpoint_does_not_block_a_new_launch() -> Result<(), Set
     // proves an unrelated stale file is simply ignored.
     let stale =
         brokers.join("0000000000000000000000000000000000000000000000000000000000000000.json");
-    let _ = std::fs::write(
+    std::fs::write(
         &stale,
         br#"{"address":"127.0.0.1:1","token":"stale","pid":1,"command":null}"#,
-    );
+    )?;
 
     assert!(harness.open());
     let opened = harness
