@@ -333,8 +333,9 @@ pub(crate) fn git(dir: &Path, args: &[&str]) {
 /// when `git` is unavailable (so the test skips rather than fails).
 ///
 /// With `git` present every setup step must succeed, or the test panics. The
-/// repository's own config also pins signing and hooks off, so the git the
-/// backend runs for its writes is as isolated as the fixture's.
+/// repository's own config also pins signing and hooks off, which overrides
+/// the developer's global config, so the git the backend runs for its writes
+/// can neither sign nor run a hook either.
 pub(crate) fn init_test_repo() -> Option<TempRepo> {
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
