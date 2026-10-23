@@ -104,18 +104,38 @@ impl SeamIndex {
         self.attribution.get(&file).copied()
     }
 
-    /// The lenses the mapping that produced `id` does not read.
+    /// The lenses no mapping that produced `id` or anything beneath it reads.
     ///
     /// Empty for a node no single language produced — a package sits in its manifest —
-    /// and for every node of a language that reads all five.
+    /// and for every node of a language that reads all five. A node takes its own
+    /// language from its file, but its rollups count its descendants too: a directory
+    /// module of a mixed Java/Kotlin source set, anchored on a Java file, still counts
+    /// what its Kotlin files carry, so a lens is unread there only when neither reads it.
     #[must_use]
-    pub fn unread_lenses(&self, id: SeamId) -> &'static [crate::model::Lens] {
+    pub fn unread_lenses(&self, id: SeamId) -> Vec<crate::model::Lens> {
         let Some(node) = self.nodes.get(&id) else {
-            return &[];
+            return Vec::new();
         };
         if node.kind == crate::model::NodeKind::Package {
-            return &[];
+            return Vec::new();
         }
+        let mut unread = self.language_unread_lenses(node).to_vec();
+        let mut stack = node.children.clone();
+        while let Some(child) = stack.pop() {
+            if unread.is_empty() {
+                break;
+            }
+            if let Some(child) = self.nodes.get(&child) {
+                let theirs = self.language_unread_lenses(child);
+                unread.retain(|lens| theirs.contains(lens));
+                stack.extend_from_slice(&child.children);
+            }
+        }
+        unread
+    }
+
+    /// The lenses the mapping of the file holding `node` does not read.
+    fn language_unread_lenses(&self, node: &Node) -> &'static [crate::model::Lens] {
         self.file_attribution(node.location.file)
             .map(|(_, language)| language)
             .or_else(|| {

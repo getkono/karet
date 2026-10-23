@@ -195,6 +195,9 @@ C, C++ and Java are mapped for **containment and the `api` lens only**:
 A lens a language does not read shows `?` and "not read for this language" in the facet
 pane, its rollup is `null` in `--seam-query`, and the node lists it under
 `unread_lenses`, because showing `—` would claim the index looked and found nothing.
+A lens is unread at a node only when neither its language nor any language beneath it
+reads the lens: a directory of a Gradle source set mixing Java and Kotlin counts what its
+Kotlin files carry, so it reports their counts whichever file it is anchored on.
 Those three surfaces are the only ones that carry the distinction: the spine's lens
 filter and the query language stay two-valued, matching what carries a facet of the lens,
 so `!lens:hazard` includes a node whose `hazard` is unread, and the filter counts and
