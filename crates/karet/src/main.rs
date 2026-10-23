@@ -376,7 +376,9 @@ fn has_trailing_separator(path: &Path) -> bool {
 }
 
 fn startup_readme(root: &Path) -> Option<PathBuf> {
-    if !root.join(".git").is_dir() {
+    // A linked worktree or a submodule has a `.git` *file* (a `gitdir:` pointer),
+    // not a directory, and is just as much a repository root.
+    if !root.join(".git").exists() {
         return None;
     }
     for name in ["README.md", "README.markdown", "README.txt", "README"] {
@@ -629,6 +631,19 @@ mod tests {
         let plain = tempfile::tempdir()?;
         std::fs::write(plain.path().join("README.md"), "")?;
         assert_eq!(startup_readme(plain.path()), None, "not a git root");
+
+        // A linked worktree or submodule root: `.git` is a `gitdir:` file.
+        let linked = tempfile::tempdir()?;
+        std::fs::write(
+            linked.path().join(".git"),
+            "gitdir: /elsewhere/.git/worktrees/x\n",
+        )?;
+        std::fs::write(linked.path().join("README.md"), "")?;
+        assert_eq!(
+            startup_readme(linked.path()),
+            Some(linked.path().join("README.md")),
+            "a `.git` file marks a git root too"
+        );
 
         for files in [&[][..], &["readme/"], &["READMEFIRST", "notes.md"]] {
             let dir = repo_with(files)?;

@@ -426,9 +426,6 @@ impl From<StartupPanelChoice> for StartupPanel {
 }
 
 impl Cli {
-    /// The explicitly-requested icon style, if any: an `--icons` flag wins, then the
-    /// `KARET_ICONS` env var. `None` when neither is set, so the configured
-    /// `workbench.iconStyle` (else the Nerd Font default) is left in place.
     /// Resolve the `--capture*` flags into a [`CaptureSpec`], filling every unset
     /// flag from the `CAPTURE_DEFAULT_*` constants.
     ///
@@ -450,6 +447,9 @@ impl Cli {
         })
     }
 
+    /// The explicitly-requested icon style, if any: an `--icons` flag wins, then the
+    /// `KARET_ICONS` env var. `None` when neither is set, so the configured
+    /// `workbench.iconStyle` (else the Nerd Font default) is left in place.
     #[must_use]
     pub fn explicit_icon_style(&self) -> Option<IconStyle> {
         self.explicit_icon_style_in(|key| std::env::var(key).ok())
