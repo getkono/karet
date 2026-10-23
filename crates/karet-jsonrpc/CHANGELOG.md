@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0](https://github.com/getkono/karet/compare/karet-jsonrpc-v0.7.1...karet-jsonrpc-v0.8.0) - 2026-10-23
+
+### Other
+
+- pin karet-jsonrpc's queue/encode/timeout contracts and karet-lsp's gating ([#645](https://github.com/getkono/karet/pull/645))
+
 ## [0.7.0](https://github.com/getkono/karet/compare/karet-jsonrpc-v0.6.1...karet-jsonrpc-v0.7.0) - 2026-09-24
 
 ### Added

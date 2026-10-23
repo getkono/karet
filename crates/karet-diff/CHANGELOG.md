@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0](https://github.com/getkono/karet/compare/karet-diff-v0.7.1...karet-diff-v0.8.0) - 2026-10-23
+
+### Added
+
+- *(editor)* a change-marker click lands the diff on the clicked hunk ([#455](https://github.com/getkono/karet/pull/455))
+
+### Fixed
+
+- *(diff)* return a parse error instead of panicking on malformed headers ([#676](https://github.com/getkono/karet/pull/676))
+
+### Other
+
+- *(diff)* reuse prepared intraline pairs in side-by-side painting ([#673](https://github.com/getkono/karet/pull/673))
+- *(diff)* ungate row-to-hunk geometry into a layout module ([#656](https://github.com/getkono/karet/pull/656))
+- *(diff)* pin engine flags, hunk merging and patch round trip ([#627](https://github.com/getkono/karet/pull/627))
+
 ## [0.6.0](https://github.com/getkono/karet/compare/karet-diff-v0.5.0...karet-diff-v0.6.0) - 2026-08-29
 
 ### Added
