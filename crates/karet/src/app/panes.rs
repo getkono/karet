@@ -479,6 +479,9 @@ impl App {
         self.tabs = front.tabs;
         self.set_active(front.active);
         self.find_open = false;
+        // Resuming work: the keyboard goes to the restored editor, as it does
+        // for any file the user opens, not to the startup sidebar panel.
+        self.show_editor();
     }
 
     /// The live tree for a saved `node`, opening each pane's tabs into `panes`.

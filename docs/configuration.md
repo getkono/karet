@@ -576,7 +576,8 @@ of the last clean exit survives it.
 
 The next time karet starts on the same root with nothing to open (no file argument,
 `--open`, `--preview`, `--split`, `--diff`, or `--goto`), it reopens that layout in
-place of the repository README preview. A file that no longer exists is skipped, and a
+place of the repository README preview. A `--preview` of that root README is the same
+surface karet shows unasked, so it too gives way to the saved layout. A file that no longer exists is skipped, and a
 pane left with no tabs is dropped. Switching the setting off restores nothing and
 deletes the saved layout at the next exit.
 

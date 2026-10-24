@@ -73,6 +73,10 @@ fn a_clean_exit_layout_reopens_its_panes_tabs_and_cursors() {
         "the right pane has focus"
     );
     assert_eq!(tab_paths(&after.tabs), vec![root.join("c.rs")]);
+    assert!(
+        matches!(after.focus, Focus::Editor),
+        "the keyboard is in the restored editor"
+    );
     let left: Vec<&StoredPane> = after.stored.values().collect();
     assert_eq!(left.len(), 1);
     assert_eq!(
