@@ -60,10 +60,14 @@ pub struct BlameGroup {
 
 impl BlameGroup {
     /// An abbreviated, 7-character commit hash for display.
+    ///
+    /// A `commit_hash` that is not ASCII hex (possible only through a
+    /// hand-built or deserialized group) is returned whole when byte 7 does
+    /// not fall on a character boundary, rather than panicking.
     #[must_use]
     pub fn short_hash(&self) -> &str {
         let n = self.commit_hash.len().min(7);
-        &self.commit_hash[..n]
+        self.commit_hash.get(..n).unwrap_or(&self.commit_hash)
     }
 
     /// The first line (subject) of the commit message.
@@ -178,6 +182,16 @@ mod tests {
     fn short_hash_handles_tiny_hashes() {
         let g = group(1, 1, "abc");
         assert_eq!(g.short_hash(), "abc");
+    }
+
+    #[test]
+    fn short_hash_does_not_panic_off_a_char_boundary() {
+        // `é` spans bytes 6..8, so byte 7 is inside it.
+        let g = group(1, 1, "abcdeféxyz");
+        assert_eq!(g.short_hash(), "abcdeféxyz");
+        // A multi-byte char ending exactly at byte 7 still truncates.
+        let g = group(1, 1, "abcdeéxyz");
+        assert_eq!(g.short_hash(), "abcdeé");
     }
 
     #[test]
