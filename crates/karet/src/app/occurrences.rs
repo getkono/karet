@@ -68,8 +68,8 @@ pub(crate) struct Occurrences {
 /// from the reads and textual mentions around it.
 fn role_for(kind: HighlightKind) -> ThemeRole {
     match kind {
-        HighlightKind::Write => ThemeRole::MatchingBracket,
-        HighlightKind::Read | HighlightKind::Text => ThemeRole::HoverHighlight,
+        HighlightKind::Write => ThemeRole::WordHighlightStrong,
+        HighlightKind::Read | HighlightKind::Text => ThemeRole::WordHighlight,
     }
 }
 

@@ -6,10 +6,10 @@
 
 use std::path::Path;
 
-use karet_seam::Configuration;
+use karet_seam::Node;
 use karet_seam::SeamId;
 use karet_seam::SeamIndex;
-use karet_seam::model::Node;
+use karet_seam::config::Configuration;
 
 use crate::api::SeamEdgeView;
 use crate::api::SeamFacetView;
@@ -32,15 +32,15 @@ pub(crate) fn node_view(index: &SeamIndex, node: &Node) -> Option<SeamNodeView> 
         range: node.location.range,
         selection: node.location.selection,
         parent: node
-            .parent
+            .parent()
             .and_then(|parent| index.path(parent).map(ToString::to_string)),
         children: node
-            .children
+            .children()
             .iter()
             .filter_map(|child| index.path(*child).map(ToString::to_string))
             .collect(),
         facets: node.facets.iter().map(facet_view).collect(),
-        rollups: node.rollups.counts(),
+        rollups: node.rollups().counts(),
         visibility: node.effective_visibility().map(|v| v.name().to_owned()),
         membership: node.membership.name().to_owned(),
         provisional: node.provisional,
@@ -203,33 +203,8 @@ mod tests {
 
     #[test]
     fn a_workspace_is_named_for_its_directory_rather_than_one_arbitrary_member() {
-        let mut index = SeamIndex::new();
-        for name in ["alpha", "beta"] {
-            let id = index.intern(karet_seam::SeamPath::new(vec![
-                karet_seam::SeamSegment::new(name),
-            ]));
-            let file = index.intern_file(Path::new("Cargo.toml"));
-            index.insert(Node {
-                id,
-                kind: karet_seam::NodeKind::Package,
-                name: name.to_owned(),
-                detail: None,
-                location: karet_seam::SeamLocation {
-                    file,
-                    range: karet_core::Range::default(),
-                    span: karet_core::Span::default(),
-                    selection: karet_core::Range::default(),
-                    header: karet_core::Range::default(),
-                },
-                parent: None,
-                children: Vec::new(),
-                facets: Vec::new(),
-                visibility: None,
-                rollups: karet_seam::Rollups::new(),
-                membership: karet_seam::ConfigMembership::Active,
-                provisional: false,
-            });
-        }
+        let manifest = Path::new("Cargo.toml");
+        let index = SeamIndex::from_packages([("alpha", manifest), ("beta", manifest)], []);
 
         let summary = summary_of(&index, Some(Path::new("/repo/myproject")), None, &[]);
         assert_eq!(summary.packages, 2);
@@ -239,31 +214,7 @@ mod tests {
 
     #[test]
     fn a_lone_package_is_still_named_for_itself() {
-        let mut index = SeamIndex::new();
-        let id = index.intern(karet_seam::SeamPath::new(vec![
-            karet_seam::SeamSegment::new("solo"),
-        ]));
-        let file = index.intern_file(Path::new("Cargo.toml"));
-        index.insert(Node {
-            id,
-            kind: karet_seam::NodeKind::Package,
-            name: "solo".to_owned(),
-            detail: None,
-            location: karet_seam::SeamLocation {
-                file,
-                range: karet_core::Range::default(),
-                span: karet_core::Span::default(),
-                selection: karet_core::Range::default(),
-                header: karet_core::Range::default(),
-            },
-            parent: None,
-            children: Vec::new(),
-            facets: Vec::new(),
-            visibility: None,
-            rollups: karet_seam::Rollups::new(),
-            membership: karet_seam::ConfigMembership::Active,
-            provisional: false,
-        });
+        let index = SeamIndex::from_packages([("solo", Path::new("Cargo.toml"))], []);
 
         let summary = summary_of(&index, Some(Path::new("/repo/elsewhere")), None, &[]);
         assert_eq!(summary.packages, 1);
@@ -301,7 +252,7 @@ mod tests {
     #[test]
     fn a_node_carries_the_lenses_its_language_does_not_read()
     -> Result<(), Box<dyn std::error::Error>> {
-        if karet_seam::lang::java::language_id().is_none() {
+        if karet_treesitter::language_id_from_injection_name("java").is_none() {
             return Ok(());
         }
         let dir = tempfile::tempdir()?;
@@ -335,7 +286,6 @@ mod tests {
 
     #[test]
     fn call_edges_stay_out_of_the_facet_pane() {
-        let mut index = SeamIndex::new();
         let edge = |kind, from, to| karet_seam::Edge {
             kind,
             from: SeamId(from),
@@ -343,11 +293,14 @@ mod tests {
             site: None,
             resolution: None,
         };
-        index.edges_mut().insert_all([
-            edge(karet_seam::EdgeKind::Calls, 1, 2),
-            edge(karet_seam::EdgeKind::Calls, 3, 1),
-            edge(karet_seam::EdgeKind::Implements, 1, 4),
-        ]);
+        let index = SeamIndex::from_packages(
+            [],
+            [
+                edge(karet_seam::EdgeKind::Calls, 1, 2),
+                edge(karet_seam::EdgeKind::Calls, 3, 1),
+                edge(karet_seam::EdgeKind::Implements, 1, 4),
+            ],
+        );
         let edges = edges_of(&index, SeamId(1));
         assert_eq!(edges.len(), 1);
         assert!(edges.iter().all(|edge| edge.kind == "implements"));

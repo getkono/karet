@@ -253,3 +253,68 @@ fn attribution_survives_removing_the_files_own_nodes() {
     assert_eq!(index.node(child), None);
     assert_eq!(index.file_attribution(file), Some((owner, LanguageId(3))));
 }
+
+#[test]
+fn node_getters_read_the_links_the_index_maintains() -> Result<(), &'static str> {
+    let mut index = SeamIndex::new();
+    let parent = add(&mut index, "alpha", api());
+    let child = add(&mut index, "alpha::inner", api());
+    index.recompute_rollups();
+    let parent_node = index.node(parent).ok_or("parent was inserted")?;
+    let child_node = index.node(child).ok_or("child was inserted")?;
+    assert_eq!(parent_node.parent(), None);
+    assert_eq!(parent_node.children(), &[child]);
+    assert_eq!(child_node.parent(), Some(parent));
+    assert!(child_node.children().is_empty());
+    // The parent's rollup counts its own facet and its child's.
+    assert_eq!(parent_node.rollups().get(Lens::Api), 2);
+    assert_eq!(child_node.rollups().get(Lens::Api), 1);
+    Ok(())
+}
+
+#[test]
+fn a_fixture_index_holds_one_root_per_package_and_the_edges_given() {
+    use crate::edge::Edge;
+    use crate::edge::EdgeKind;
+    use crate::edge::Endpoint;
+
+    let edge = Edge {
+        kind: EdgeKind::Implements,
+        from: SeamId(1),
+        to: Endpoint::Resolved(SeamId(2)),
+        site: None,
+        resolution: None,
+    };
+    let index = SeamIndex::from_packages(
+        [
+            ("alpha", Path::new("alpha/Cargo.toml")),
+            ("beta", Path::new("beta/Cargo.toml")),
+        ],
+        [edge.clone()],
+    );
+
+    assert_eq!(index.len(), 2);
+    let names: Vec<&str> = index
+        .roots()
+        .iter()
+        .filter_map(|id| index.node(*id))
+        .map(|node| node.name.as_str())
+        .collect();
+    assert_eq!(names, ["alpha", "beta"]);
+    for (root, manifest) in index
+        .roots()
+        .iter()
+        .zip(["alpha/Cargo.toml", "beta/Cargo.toml"])
+    {
+        let node = index.node(*root);
+        assert_eq!(node.map(|node| node.kind), Some(NodeKind::Package));
+        assert_eq!(node.and_then(|node| node.parent()), None);
+        assert_eq!(
+            node.and_then(|node| index.file_path(node.location.file)),
+            Some(Path::new(manifest))
+        );
+        // The root's id is the one its single-segment path resolves to.
+        assert_eq!(index.path(*root).map(SeamPath::len), Some(1));
+    }
+    assert_eq!(index.edges().all(), [edge]);
+}

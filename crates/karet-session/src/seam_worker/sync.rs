@@ -15,11 +15,11 @@ use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
-use karet_seam::Configuration;
 use karet_seam::FileContribution;
 use karet_seam::FileStamp;
 use karet_seam::IndexObserver;
 use karet_seam::IndexedPackage;
+use karet_seam::config::Configuration;
 use tokio::sync::mpsc as tokio_mpsc;
 
 use super::project;

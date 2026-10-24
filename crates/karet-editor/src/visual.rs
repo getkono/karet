@@ -14,16 +14,50 @@ pub(super) struct VisualAnchor {
     pub(super) subrow: u32,
 }
 
+/// One visual row of a line: the buffer columns `start..end` it shows, and
+/// the blank cells painted ahead of them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct VisualRange {
     pub(super) start: u32,
     pub(super) end: u32,
+    /// Cells left blank before the row's first column: the
+    /// [`WrappingIndent`] of a soft-wrapped continuation row, else 0.
+    ///
+    /// Painting, caret placement, hit-testing and vertical motion all add
+    /// it to (or take it from) [`offset_within_row`], so the four agree on
+    /// which cell shows which column.
+    pub(super) indent: u32,
 }
 
 impl VisualRange {
     pub(super) const fn empty(at: u32) -> Self {
-        Self { start: at, end: at }
+        Self::new(at, at)
     }
+
+    /// An unindented row showing `start..end`.
+    pub(super) const fn new(start: u32, end: u32) -> Self {
+        Self {
+            start,
+            end,
+            indent: 0,
+        }
+    }
+}
+
+/// How a soft-wrapped line's continuation rows are indented.
+///
+/// The indent is capped at half the wrap width, so a deeply indented line
+/// in a narrow pane still leaves its continuation rows room for text.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WrappingIndent {
+    /// Continuation rows start at the left edge of the text area.
+    #[default]
+    None,
+    /// Continuation rows line up with the line's own leading whitespace.
+    Same,
+    /// Continuation rows sit one tab stop deeper than the line's leading
+    /// whitespace.
+    Indent,
 }
 
 /// Everything that decides where a buffer position lands on screen.
@@ -47,6 +81,11 @@ pub(super) struct Layout<'a> {
     /// Whether lines soft-wrap at `width`; unwrapped, every line has one
     /// text row.
     pub(super) wrap: bool,
+    /// The column soft wrapping breaks at when it is narrower than `width`;
+    /// `None` (or 0) wraps at `width`.
+    pub(super) wrap_column: Option<u32>,
+    /// How a wrapped line's continuation rows are indented.
+    pub(super) wrapping_indent: WrappingIndent,
 }
 
 /// What one visual row of a shown line holds.
@@ -91,6 +130,17 @@ impl<'a> Layout<'a> {
         }
     }
 
+    /// The cells a soft-wrapped row may fill: `width`, narrowed to
+    /// [`wrap_column`](Self::wrap_column) when that is smaller. A soft-wrapped
+    /// view has no horizontal scroll, so a column wider than the viewport
+    /// wraps at the viewport rather than clipping text off its right edge.
+    pub(super) fn wrap_width(&self) -> u32 {
+        self.wrap_column
+            .filter(|&column| column > 0)
+            .map_or(self.width, |column| column.min(self.width))
+            .max(1)
+    }
+
     /// The text rows of `line` as a frame paints them: its soft-wrapped
     /// rows, or, unwrapped, its one row scrolled to `scroll_col`.
     pub(super) fn text_rows(
@@ -102,12 +152,29 @@ impl<'a> Layout<'a> {
         if self.wrap {
             visual_ranges(buffer, line, *self)
         } else {
-            vec![VisualRange {
-                start: scroll_col,
-                end: u32::MAX,
-            }]
+            vec![VisualRange::new(scroll_col, u32::MAX)]
         }
     }
+}
+
+/// The blank cells ahead of each continuation row of `chars` wrapped at
+/// `width`, as [`Layout::wrapping_indent`] asks: the line's leading
+/// whitespace with its tabs expanded, one tab stop deeper for
+/// [`WrappingIndent::Indent`], and never more than half of `width`, so a
+/// continuation row keeps room for its text.
+fn continuation_indent(chars: &[char], width: u32, layout: Layout<'_>) -> u32 {
+    let extra = match layout.wrapping_indent {
+        WrappingIndent::None => return 0,
+        WrappingIndent::Same => 0,
+        WrappingIndent::Indent => u32::from(layout.tab_width.max(1)),
+    };
+    let leading = chars
+        .iter()
+        .take_while(|&&ch| ch == ' ' || ch == '\t')
+        .fold(0_u32, |col, &ch| {
+            col.saturating_add(character_width(ch, 1, col, layout.tab_width))
+        });
+    leading.saturating_add(extra).min(width / 2)
 }
 
 /// Every row `line` takes: its text rows and its virtual lines.
@@ -280,10 +347,7 @@ pub(super) fn visual_ranges(
             .iter()
             .any(|range| range.contains(&line))
     {
-        return vec![VisualRange {
-            start: 0,
-            end: line_len(buffer, line),
-        }];
+        return vec![VisualRange::new(0, line_len(buffer, line))];
     }
     let chars: Vec<char> = buffer
         .line(line as usize)
@@ -295,7 +359,8 @@ pub(super) fn visual_ranges(
         return vec![VisualRange::empty(0)];
     }
     let hints = layout.hints_on(line);
-    let width = layout.width.max(1);
+    let full = layout.wrap_width();
+    let indent = continuation_indent(&chars, full, layout);
     let widths = cluster_widths(&chars);
     // Rows break between grapheme clusters only, so a wrap never splits a
     // combining sequence, a ZWJ emoji or a flag across two rows.
@@ -303,6 +368,10 @@ pub(super) fn visual_ranges(
     let mut ranges = Vec::new();
     let mut first = 0_usize;
     while let Some(&(start, ..)) = runs.get(first) {
+        // A continuation row gives its indent's cells to blanks; the indent
+        // is at most half of `full`, so at least one cell is left.
+        let row_indent = if ranges.is_empty() { 0 } else { indent };
+        let width = full.saturating_sub(row_indent).max(1);
         let mut next = first;
         let mut used = 0_u32;
         // `display_col(start)` stops short of the hint at `start`: this row
@@ -337,6 +406,7 @@ pub(super) fn visual_ranges(
         ranges.push(VisualRange {
             start,
             end: runs.get(end).map_or(len, |cluster| cluster.0),
+            indent: row_indent,
         });
         first = end;
     }
@@ -745,14 +815,19 @@ pub(super) fn caret_cell(
         if anchor == target {
             let ranges = layout.text_rows(buffer, at.line, state.scroll_col);
             let index = target.subrow.saturating_sub(layout.above(at.line)) as usize;
-            let start = ranges.get(index).map_or(0, |range| range.start);
+            let range = ranges
+                .get(index)
+                .copied()
+                .unwrap_or_else(|| VisualRange::empty(0));
+            // A continuation row paints its indent before its first column.
             let rel = offset_within_row(
                 &chars,
-                start,
+                range.start,
                 at.col,
                 state.last_tab_width,
                 layout.hints_on(at.line),
-            );
+            )
+            .saturating_add(range.indent);
             let rel = if wrap {
                 rel.min(u32::from(content_width.saturating_sub(1)))
             } else if rel >= u32::from(content_width) {

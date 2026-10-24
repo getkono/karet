@@ -374,7 +374,8 @@ impl Session {
     /// still completes the save, unformatted, and selection ranges still
     /// answer the request with empty chains, because `Command::SelectionRanges`
     /// is always answered and Expand Selection waits on it. Document
-    /// highlights are answered with none for the same reason. A code-lens
+    /// highlights, linked ranges and on-type edits are answered with none for
+    /// the same reason, and a save's will-save edits are dropped. A code-lens
     /// listing is answered as unanswered, so the client asks again, and a
     /// lens run reports how it went, since its command did run. Every other
     /// fenced answer is advisory and simply dropped.
@@ -397,6 +398,7 @@ impl Session {
                 self.adopt_document_highlights(answer);
             },
             LspUpdate::CodeLens { answer, .. } => self.adopt_code_lens(answer.fenced()),
+            LspUpdate::Editing { answer, .. } => self.settle_retired_editing(answer),
             _ => {},
         }
     }
@@ -801,7 +803,9 @@ impl Session {
         } else if report {
             let message = match scope {
                 FormattingScope::Ranges(_) => NO_RANGE_FORMATTER,
-                FormattingScope::Save | FormattingScope::Document => NO_FORMATTER,
+                FormattingScope::Save
+                | FormattingScope::SaveUnformatted
+                | FormattingScope::Document => NO_FORMATTER,
             };
             self.emit(Some(id), format_notice(message));
         }

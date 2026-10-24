@@ -10,6 +10,7 @@
 //! time, plus the context the walk has accumulated around it; it never sees the index,
 //! so it cannot invent structure that the containment tree does not already express.
 
+use karet_core::LineIndex;
 use karet_core::Range;
 use karet_treesitter::LanguageId;
 use karet_treesitter::WalkNode;
@@ -20,20 +21,38 @@ use crate::model::FacetSubtype;
 use crate::model::Lens;
 use crate::model::NodeKind;
 use crate::model::Visibility;
-use crate::text::LineIndex;
 
+// Each language's mapping is reached through [`registered`] and [`for_language`]; the
+// modules themselves, and the tree-walk helpers inside them, are implementation.
 #[cfg(any(feature = "lang-c", feature = "lang-cpp"))]
-pub mod cfamily;
+pub(crate) mod cfamily;
 #[cfg(feature = "lang-java")]
-pub mod java;
+pub(crate) mod java;
 #[cfg(feature = "lang-kotlin")]
-pub mod kotlin;
-pub mod python;
-pub mod rust;
+pub(crate) mod kotlin;
+// Rust and Python stay compiled without their features because the crate's tests ask
+// `rust::language_id()`/`python::language_id()` whether the grammar is in and skip when
+// it is not; with the feature off nothing else in them is reached.
+#[cfg_attr(
+    not(feature = "lang-python"),
+    allow(
+        dead_code,
+        reason = "only `language_id` is reached without `lang-python`"
+    )
+)]
+pub(crate) mod python;
+#[cfg_attr(
+    not(feature = "lang-rust"),
+    allow(
+        dead_code,
+        reason = "only `language_id` is reached without `lang-rust`"
+    )
+)]
+pub(crate) mod rust;
 #[cfg(feature = "lang-swift")]
-pub mod swift;
+pub(crate) mod swift;
 #[cfg(feature = "lang-javascript")]
-pub mod typescript;
+pub(crate) mod typescript;
 
 /// What a language made of one syntax node.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -83,7 +102,7 @@ impl Attribute {
 /// A candidate is a *name*, not a node: a language mapping sees one syntax node at a time
 /// and never the index, so it cannot know whether `Widget` exists, let alone where. It
 /// says what it is looking for and what to become if that is found; resolving the name is
-/// [`crate::regroup`]'s job, and a name that resolves to nothing leaves the node exactly
+/// the regroup pass's job, and a name that resolves to nothing leaves the node exactly
 /// where it was written.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -275,7 +294,7 @@ pub trait SeamLanguage {
     ///
     /// Returning candidates rather than a decision keeps the contract narrow: the
     /// language still sees one node and never the index, and it is the neutral
-    /// [`crate::regroup`] pass that decides whether a name resolves. Empty — the default
+    /// regroup pass that decides whether a name resolves. Empty — the default
     /// — means the construct is already written where it belongs, which is the common
     /// case and the whole of Python.
     fn ownership(&self, node: &WalkNode<'_>, ctx: &FacetContext<'_>) -> Vec<Owner> {
@@ -306,7 +325,8 @@ pub trait SeamLanguage {
     /// for the grammar `language` — or `None`, and the language has no call tier.
     ///
     /// This is the whole of a language's part in the call tier: the captures it may use
-    /// are listed in [`crate::calls::site::CAPTURES`], and everything after the query —
+    /// are the `@call…`, `@body`, `@comment` and `@import…` names the call tier's own
+    /// tests check every query against, and everything after the query —
     /// attribution, line counting, resolution, measuring — is language-neutral. A
     /// mapping serving several grammars receives the one being read, since node names can
     /// differ between them.
@@ -353,7 +373,7 @@ pub trait SeamLanguage {
 /// signature plus a stolen line of code. So a body that opens its own line — nothing but
 /// whitespace before it — cuts at the end of the line above instead.
 #[must_use]
-pub fn header_before_body(node: &WalkNode<'_>, ctx: &FacetContext<'_>) -> Range {
+pub(crate) fn header_before_body(node: &WalkNode<'_>, ctx: &FacetContext<'_>) -> Range {
     let span = node.span();
     // A body that starts at or before the construct does is not a body we can cut at;
     // the whole extent is the honest answer rather than an inverted range.
@@ -478,7 +498,6 @@ pub fn for_language(language: LanguageId) -> Option<&'static dyn SeamLanguage> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::text::LineIndex;
 
     fn attribute(name: &str, arguments: Option<&str>) -> Attribute {
         Attribute {

@@ -430,7 +430,6 @@ mod tests {
     }
 
     /// A minimal single-page PDF (empty US-Letter page), inline (no fixture).
-    #[cfg(feature = "pdf")]
     const MINIMAL_PDF: &[u8] = b"%PDF-1.4\n\
 1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n\
 2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n\
@@ -448,6 +447,23 @@ trailer<</Size 4/Root 1 0 R>>\n%%EOF";
             panic!("expected a document tab for a .pdf file");
         };
         assert_eq!(page_count, 1);
+    }
+
+    /// A lean build has no PDF renderer, so even a valid PDF routes to the
+    /// placeholder describing it rather than a document tab.
+    #[cfg(not(feature = "pdf"))]
+    #[test]
+    fn opens_valid_pdf_as_placeholder_without_the_pdf_feature() {
+        let dir = temp_dir();
+        let file = dir.path.join("a.pdf");
+        let _ = std::fs::write(&file, MINIMAL_PDF);
+        assert!(matches!(
+            open_file(&file).kind,
+            TabKind::Placeholder {
+                kind: FileKind::Pdf,
+                ..
+            }
+        ));
     }
 
     #[test]

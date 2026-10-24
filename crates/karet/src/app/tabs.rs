@@ -363,6 +363,7 @@ impl App {
             self.auto_save_pending.remove(&doc);
             self.completion_chars.remove(&doc);
             self.signature.chars.remove(&doc);
+            self.on_type.triggers.remove(&doc);
             if let Some(backend) = &self.backend {
                 let id = backend.next_id();
                 let _ = backend.send(id, SessionCommand::CloseDocument { doc });

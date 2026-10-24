@@ -163,7 +163,11 @@ pub(crate) fn annotate(
     let owners = lines::innermost(&spans, &starts);
     let mut loose = 0u32;
     for (((start, end), draft), owner) in harvest.calls.iter().zip(owners) {
-        let range = range(&line_index, text, *start, *end);
+        let span = Span {
+            start: karet_core::BytePos(*start),
+            end: karet_core::BytePos(*end),
+        };
+        let range = line_index.range(text, span);
         let site = finish(draft, text, range);
         match owner.and_then(|owner| sites.get_mut(owner)) {
             Some(list) => list.push(site),
@@ -312,14 +316,6 @@ fn receiver(written: &str) -> Receiver {
 /// The text of a span, or nothing when it does not fall on character boundaries.
 fn slice(text: &str, span: Span) -> &str {
     text.get(span.start.0..span.end.0).unwrap_or_default()
-}
-
-/// The line/column range of a byte range.
-fn range(lines: &LineIndex, text: &str, start: usize, end: usize) -> Range {
-    Range {
-        start: lines.line_col(text, karet_core::BytePos(start)),
-        end: lines.line_col(text, karet_core::BytePos(end)),
-    }
 }
 
 #[cfg(test)]

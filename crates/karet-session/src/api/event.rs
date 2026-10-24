@@ -414,6 +414,35 @@ pub enum Event {
         /// the server's ranges describe text that is no longer there.
         highlights: Option<Vec<DocumentHighlight>>,
     },
+    /// Linked ranges answering a [`Command::LinkedEditingRanges`].
+    LinkedEditingRanges {
+        /// The document the request was made in.
+        doc: DocumentId,
+        /// The document version the request was made against.
+        version: u64,
+        /// The linked ranges, in the server's order, in buffer columns, the
+        /// caret's among them. `None` when no server answered, it has none
+        /// there, or the document changed before the answer arrived.
+        ranges: Option<Vec<Range>>,
+    },
+    /// On-type formatting edits answering a [`Command::FormatOnType`].
+    OnTypeFormatting {
+        /// The document the request was made in.
+        doc: DocumentId,
+        /// The document version the request was made against; the edits
+        /// apply to that text only, so a client whose text has moved on
+        /// drops them.
+        version: u64,
+        /// The server's edits, in buffer columns; empty when it had none,
+        /// does not format on the character, could not be asked, or the
+        /// document changed before the answer arrived.
+        edits: Vec<karet_core::TextEdit>,
+        /// Every character the server formats on, so the client need offer
+        /// only those: empty when it formats on none (does not offer on-type
+        /// formatting), so the client need offer nothing more, and `None`
+        /// when no server could be asked, so nothing is known yet.
+        triggers: Option<Vec<char>>,
+    },
     /// Definition locations answering a [`Command::Definition`].
     Definitions {
         /// The resolved locations.

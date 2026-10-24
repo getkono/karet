@@ -260,13 +260,11 @@ mod tests {
     }
 
     #[test]
-    fn byte_offsets_become_character_columns() {
-        let Some(item) = items("[dependencies]\nserde = \"1.0\"\n")
+    fn byte_offsets_become_character_columns() -> Result<(), Box<dyn std::error::Error>> {
+        let item = items("[dependencies]\nserde = \"1.0\"\n")
             .into_iter()
             .next()
-        else {
-            return;
-        };
+            .ok_or("the manifest names one dependency")?;
         let mut result = CheckResult::new(item, DependencyStatus::UpToDate);
         // A key holding a two-byte character before the version: bytes 8..11
         // are characters 7..10.
@@ -289,5 +287,6 @@ mod tests {
             hint.iter().map(|h| (h.col_start, h.col_end)).next(),
             Some((0, 0))
         );
+        Ok(())
     }
 }

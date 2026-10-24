@@ -34,17 +34,12 @@
     }
 
     #[test]
-    fn a_settings_layer_change_reresolves_documents_without_fs_changed() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
+    fn a_settings_layer_change_reresolves_documents_without_fs_changed() -> TestResult {
+        let dir = tempfile::tempdir()?;
         let settings_path = dir.path().join("setting.jsonc");
         let file = dir.path().join("a.txt");
-        if std::fs::write(&settings_path, r#"{ "editor": { "tabSize": 4 } }"#).is_err()
-            || std::fs::write(&file, "x\n").is_err()
-        {
-            return;
-        }
+        std::fs::write(&settings_path, r#"{ "editor": { "tabSize": 4 } }"#)?;
+        std::fs::write(&file, "x\n")?;
         let loaded = crate::config::load::load_layer_reports(crate::config::load::ordered_layers(
             None,
             None,
@@ -55,14 +50,10 @@
             loaded_config: loaded,
             ..SessionConfig::default()
         });
-        let Some(doc) = open_for_reload(&mut session, &mut events, &file) else {
-            return;
-        };
+        let doc = open_for_reload(&mut session, &mut events, &file).ok_or("no Opened event")?;
         drain_events(&mut events);
 
-        if std::fs::write(&settings_path, r#"{ "editor": { "tabSize": 2 } }"#).is_err() {
-            return;
-        }
+        std::fs::write(&settings_path, r#"{ "editor": { "tabSize": 2 } }"#)?;
         session.handle_fs_event(karet_watch::FsEvent {
             kind: karet_watch::FsEventKind::Modified,
             paths: vec![settings_path],
@@ -79,19 +70,17 @@
             !emitted.iter().any(|event| matches!(event, Event::FsChanged { .. })),
             "a settings layer is not workspace content: {emitted:?}"
         );
+        Ok(())
     }
 
     #[test]
-    fn an_unchanged_settings_layer_rewrite_emits_nothing_for_documents() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
+    fn an_unchanged_settings_layer_rewrite_emits_nothing_for_documents() -> TestResult {
+        let dir = tempfile::tempdir()?;
         let settings_path = dir.path().join("setting.jsonc");
         let file = dir.path().join("a.txt");
         let body = r#"{ "editor": { "tabSize": 3 } }"#;
-        if std::fs::write(&settings_path, body).is_err() || std::fs::write(&file, "x\n").is_err() {
-            return;
-        }
+        std::fs::write(&settings_path, body)?;
+        std::fs::write(&file, "x\n")?;
         let loaded = crate::config::load::load_layer_reports(crate::config::load::ordered_layers(
             None,
             None,
@@ -102,9 +91,7 @@
             loaded_config: loaded,
             ..SessionConfig::default()
         });
-        if open_for_reload(&mut session, &mut events, &file).is_none() {
-            return;
-        }
+        open_for_reload(&mut session, &mut events, &file).ok_or("no Opened event")?;
         drain_events(&mut events);
 
         // A save that rewrites identical content changes nothing observable.
@@ -120,27 +107,21 @@
             )),
             "{emitted:?}"
         );
+        Ok(())
     }
 
     #[test]
-    fn an_editorconfig_change_reresolves_open_documents() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
+    fn an_editorconfig_change_reresolves_open_documents() -> TestResult {
+        let dir = tempfile::tempdir()?;
         let editorconfig = dir.path().join(".editorconfig");
         let file = dir.path().join("a.txt");
-        if std::fs::write(&editorconfig, "root = true\n").is_err() || std::fs::write(&file, "x\n").is_err() {
-            return;
-        }
+        std::fs::write(&editorconfig, "root = true\n")?;
+        std::fs::write(&file, "x\n")?;
         let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
-        let Some(doc) = open_for_reload(&mut session, &mut events, &file) else {
-            return;
-        };
+        let doc = open_for_reload(&mut session, &mut events, &file).ok_or("no Opened event")?;
         drain_events(&mut events);
 
-        if std::fs::write(&editorconfig, "root = true\n\n[*]\nindent_style = tab\ntab_width = 3\n").is_err() {
-            return;
-        }
+        std::fs::write(&editorconfig, "root = true\n\n[*]\nindent_style = tab\ntab_width = 3\n")?;
         session.handle_fs_event(karet_watch::FsEvent {
             kind: karet_watch::FsEventKind::Modified,
             paths: vec![editorconfig],
@@ -153,4 +134,5 @@
             Some((false, 3)),
             "{emitted:?}"
         );
+        Ok(())
     }

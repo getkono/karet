@@ -189,6 +189,18 @@ impl LineIndex {
             .map_or(0, |s| s.chars().count());
         LineCol::new(row, u32::try_from(col).unwrap_or(u32::MAX))
     }
+
+    /// The [`Range`] covering byte span `span` within `text`: both ends converted
+    /// through [`line_col`](Self::line_col).
+    ///
+    /// `text` must be the same snapshot the index was built from.
+    #[must_use]
+    pub fn range(&self, text: &str, span: Span) -> Range {
+        Range {
+            start: self.line_col(text, span.start),
+            end: self.line_col(text, span.end),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -261,5 +273,40 @@ mod tests {
         assert_eq!(idx.point_at(BytePos(6)), (1, 3));
         assert_eq!(idx.line_col(text, BytePos(6)), LineCol::new(1, 0));
         assert_eq!(idx.line_col(text, BytePos(999)), LineCol::new(3, 0));
+    }
+
+    #[test]
+    fn line_index_converts_spans_to_ranges() {
+        let text = "fn a() {}\nfn é() {}\n";
+        let idx = LineIndex::new(text);
+        assert_eq!(idx.line_count(), 3);
+        // An empty text still has one line, and its only span is the empty range.
+        let empty = LineIndex::new("");
+        assert_eq!(empty.line_count(), 1);
+        assert_eq!(empty.range("", Span::default()), Range::default());
+        // A span on the second row, its end counted in chars past the 2-byte 'é'.
+        let span = Span {
+            start: BytePos(10),
+            end: BytePos(text.len() - 1),
+        };
+        assert_eq!(
+            idx.range(text, span),
+            Range {
+                start: LineCol::new(1, 0),
+                end: LineCol::new(1, 9),
+            }
+        );
+        // A span crossing a newline ends on the next row.
+        let across = Span {
+            start: BytePos(3),
+            end: BytePos(13),
+        };
+        assert_eq!(
+            idx.range(text, across),
+            Range {
+                start: LineCol::new(0, 3),
+                end: LineCol::new(1, 3),
+            }
+        );
     }
 }

@@ -103,6 +103,54 @@ fn saving_an_out_of_range_integer_is_rejected() {
     ));
 }
 
+/// Text nesting `depth` containers, cycling array → map → tag, around `1`.
+fn mixed_nesting(depth: usize) -> String {
+    let (mut open, mut close) = (String::new(), String::new());
+    for level in 0..depth {
+        let (o, c) = match level % 3 {
+            0 => ("[", "]"),
+            1 => ("{\"k\": ", "}"),
+            _ => ("24(", ")"),
+        };
+        open.push_str(o);
+        close.insert_str(0, c);
+    }
+    format!("{open}1{close}")
+}
+
+#[test]
+fn text_at_the_depth_limit_saves_and_reopens() -> Result<(), Box<dyn std::error::Error>> {
+    // Parse, encode, decode, print, and drop all handle MAX_DEPTH levels, and
+    // the decoder accepts every depth the parser does: a save never writes a
+    // file the editor cannot reopen.
+    let text = mixed_nesting(karet_cbor::MAX_DEPTH);
+    let bytes = encode_from_text(&text)?;
+    let reopened = decode_to_text(&bytes)?;
+    assert_eq!(encode_from_text(&reopened)?, bytes);
+    assert_eq!(
+        karet_cbor::from_diagnostic(&reopened)?,
+        karet_cbor::from_diagnostic(&text)?
+    );
+    Ok(())
+}
+
+#[test]
+fn text_past_the_depth_limit_is_refused_before_saving() {
+    assert!(matches!(
+        encode_from_text(&mixed_nesting(karet_cbor::MAX_DEPTH + 1)),
+        Err(CborError::Parse { .. })
+    ));
+}
+
+#[test]
+fn a_cbor_sequence_fails_to_open() -> Result<(), Box<dyn std::error::Error>> {
+    // Opening only the first item would make the next save drop the rest.
+    let mut bytes = encode(&sample())?;
+    bytes.extend(encode(&CborValue::Integer(2))?);
+    assert!(matches!(decode_to_text(&bytes), Err(CborError::Decode(_))));
+    Ok(())
+}
+
 #[test]
 fn truncated_cbor_fails_to_open() -> Result<(), Box<dyn std::error::Error>> {
     let bytes = encode(&sample())?;

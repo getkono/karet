@@ -509,7 +509,7 @@ mod tests {
 
     /// A notebook of markdown, code, raw, code cells -- the second code cell
     /// already run once.
-    fn mixed_notebook() -> Option<Notebook> {
+    fn mixed_notebook() -> Result<Notebook, karet_notebook::NotebookError> {
         karet_notebook::parse(
             r##"{"nbformat": 4, "nbformat_minor": 5, "metadata": {}, "cells": [
                 {"cell_type": "markdown", "metadata": {}, "source": "# title"},
@@ -520,14 +520,14 @@ mod tests {
                  "outputs": [{"output_type": "stream", "name": "stdout", "text": "2\n"}]}
             ]}"##,
         )
-        .ok()
     }
 
+    /// A missing or wrong answer is an `Err`, so a test fails instead of passing.
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
     #[test]
-    fn a_run_selects_code_cells_only() {
-        let Some(notebook) = mixed_notebook() else {
-            return;
-        };
+    fn a_run_selects_code_cells_only() -> TestResult {
+        let notebook = mixed_notebook()?;
         assert_eq!(
             runnable(&notebook, None),
             vec![1, 3],
@@ -546,13 +546,12 @@ mod tests {
             runnable(&notebook, Some(9)).is_empty(),
             "past the end runs nothing"
         );
+        Ok(())
     }
 
     #[test]
-    fn mark_stale_clears_code_cell_results_and_leaves_other_cells_alone() {
-        let Some(mut notebook) = mixed_notebook() else {
-            return;
-        };
+    fn mark_stale_clears_code_cell_results_and_leaves_other_cells_alone() -> TestResult {
+        let mut notebook = mixed_notebook()?;
         let before: Vec<_> = notebook
             .cells
             .iter()
@@ -571,21 +570,20 @@ mod tests {
                 );
             }
         }
+        Ok(())
     }
 
     #[tokio::test]
-    async fn run_without_an_installed_kernel_diagnoses() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
+    async fn run_without_an_installed_kernel_diagnoses() -> TestResult {
+        let dir = tempfile::tempdir()?;
         let dir = dir.path();
         let path = dir.join("empty.ipynb");
-        let _ = std::fs::write(
+        std::fs::write(
             &path,
             r#"{"nbformat": 4, "nbformat_minor": 5, "metadata": {},
                "cells": [{"cell_type": "code", "metadata": {}, "execution_count": null,
                           "source": "1", "outputs": []}]}"#,
-        );
+        )?;
         let (events_tx, mut events_rx) = mpsc::unbounded_channel();
         let mut kernels = NotebookKernels::new(None, events_tx);
         kernels.spec_dirs = Some(vec![dir.join("no-kernels-here")]);
@@ -601,15 +599,14 @@ mod tests {
             }
         };
         assert!(message.contains("no installed kernel"), "{message}");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn a_broken_notebook_diagnoses_the_parse() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
+    async fn a_broken_notebook_diagnoses_the_parse() -> TestResult {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("bad.ipynb");
-        let _ = std::fs::write(&path, "not json");
+        std::fs::write(&path, "not json")?;
         let (events_tx, mut events_rx) = mpsc::unbounded_channel();
         let mut kernels = NotebookKernels::new(None, events_tx);
         kernels.spec_dirs = Some(Vec::new());
@@ -625,6 +622,7 @@ mod tests {
             }
         };
         assert!(message.contains("notebook:"), "{message}");
+        Ok(())
     }
 
     #[tokio::test]

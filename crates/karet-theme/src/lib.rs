@@ -20,7 +20,7 @@ mod semantic;
 /// Number of [`StandardToken`](karet_core::StandardToken) classes (token id space).
 pub(crate) const TOKEN_COUNT: usize = 32;
 /// Number of [`ThemeRole`] variants.
-pub(crate) const ROLE_COUNT: usize = 39;
+pub(crate) const ROLE_COUNT: usize = 41;
 
 /// Errors produced while loading a theme.
 #[derive(Debug, thiserror::Error)]
@@ -297,6 +297,15 @@ mod tests {
         );
     }
 
+    #[cfg(not(feature = "vscode"))]
+    #[test]
+    fn load_vscode_without_the_feature_is_unsupported() {
+        assert!(matches!(
+            Theme::load_vscode("{}"),
+            Err(ThemeError::Unsupported)
+        ));
+    }
+
     #[test]
     fn bracket_pair_colors_are_three_distinct_token_hues() {
         let t = Theme::dark();
@@ -467,6 +476,7 @@ mod tests {
         // back to the foreground (which would make a hint look like code).
         let theme = Theme::dark();
         assert!((ThemeRole::InlayHintParameter as usize) < ROLE_COUNT);
+        #[cfg(feature = "view")]
         let bg = theme.role(ThemeRole::Background);
         let other = theme.role(ThemeRole::InlayHint);
         let ty = theme.role(ThemeRole::InlayHintType);
@@ -476,6 +486,8 @@ mod tests {
         assert_ne!(param, other);
         for hint in [other, ty, param] {
             assert_ne!(hint, theme.role(ThemeRole::Foreground));
+            // Contrast checking (and its color-science dep) is `view`-only.
+            #[cfg(feature = "view")]
             assert!(contrast_ratio(hint, bg) > 2.0);
         }
     }
@@ -489,6 +501,7 @@ mod tests {
         let lens = theme.role(ThemeRole::CodeLens);
         assert_ne!(lens, theme.role(ThemeRole::Foreground));
         assert_ne!(lens, theme.role(ThemeRole::InlayHint));
+        #[cfg(feature = "view")]
         assert!(contrast_ratio(lens, theme.role(ThemeRole::Background)) > 2.0);
     }
 
@@ -499,6 +512,7 @@ mod tests {
         // editor background (the diff background tints do not).
         let theme = Theme::dark();
         assert!((ThemeRole::GutterDeleted as usize) < ROLE_COUNT);
+        #[cfg(feature = "view")]
         let bg = theme.role(ThemeRole::Background);
         let added = theme.role(ThemeRole::GutterAdded);
         let modified = theme.role(ThemeRole::GutterModified);
@@ -508,6 +522,7 @@ mod tests {
         assert_ne!(modified, deleted);
         for marker in [added, modified, deleted] {
             assert_ne!(marker, theme.fallback_fg);
+            #[cfg(feature = "view")]
             assert!(contrast_ratio(marker, bg) > 3.0);
         }
     }
@@ -522,6 +537,40 @@ mod tests {
         assert_ne!(current, theme.role(ThemeRole::SearchMatch));
         assert_ne!(current, theme.role(ThemeRole::Selection));
         assert_ne!(current, theme.fallback_fg);
+    }
+
+    #[test]
+    fn occurrence_roles_are_their_own_readable_text_backgrounds() {
+        // The last-declared role: an index past ROLE_COUNT would fall back to
+        // the foreground and paint every occurrence as a solid bar over its
+        // own text.
+        let theme = Theme::dark();
+        assert!((ThemeRole::WordHighlightStrong as usize) < ROLE_COUNT);
+        let read = theme.role(ThemeRole::WordHighlight);
+        let write = theme.role(ThemeRole::WordHighlightStrong);
+        // A write stands out from a read, and an occurrence reads apart from
+        // every other background it can sit beside or under.
+        assert_ne!(read, write);
+        for other in [
+            ThemeRole::Background,
+            ThemeRole::CursorLine,
+            ThemeRole::Selection,
+            ThemeRole::SearchMatch,
+            ThemeRole::SearchMatchCurrent,
+            ThemeRole::MatchingBracket,
+            ThemeRole::HoverHighlight,
+        ] {
+            assert_ne!(read, theme.role(other), "{other:?}");
+            assert_ne!(write, theme.role(other), "{other:?}");
+        }
+        // The code on an occurrence stays readable (WCAG AA for normal text).
+        #[cfg(feature = "view")]
+        {
+            let fg = theme.role(ThemeRole::Foreground);
+            for bg in [read, write] {
+                assert!(contrast_ratio(fg, bg) > 4.5, "{bg:?}");
+            }
+        }
     }
 
     #[cfg(feature = "view")]

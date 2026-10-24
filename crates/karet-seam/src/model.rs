@@ -409,8 +409,8 @@ pub struct SeamLocation {
 /// One node in the containment tree.
 ///
 /// Containment is a tree and everything else is an edge; a node therefore has exactly
-/// one parent and never points sideways. Relations that are not containment live in
-/// [`crate::edge`].
+/// one parent and never points sideways. Relations that are not containment are
+/// [`Edge`](crate::Edge)s.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Node {
@@ -425,15 +425,19 @@ pub struct Node {
     /// Where it lives in the source.
     pub location: SeamLocation,
     /// Its parent, or `None` at a tree root.
-    pub parent: Option<SeamId>,
+    ///
+    /// Crate-private, like `children` and `rollups`: the three are the tree's own
+    /// bookkeeping, which [`SeamIndex`](crate::SeamIndex) keeps consistent across every
+    /// node, so a caller reads them through [`Self::parent`] and friends.
+    pub(crate) parent: Option<SeamId>,
     /// Its children, in source order.
-    pub children: Vec<SeamId>,
+    pub(crate) children: Vec<SeamId>,
     /// The seam properties it carries.
     pub facets: Vec<Facet>,
     /// Its declared visibility, when the language expresses one.
     pub visibility: Option<Visibility>,
     /// Per-lens counts over this node's whole subtree, under the active configuration.
-    pub rollups: crate::rollup::Rollups,
+    pub(crate) rollups: crate::rollup::Rollups,
     /// Whether the active configuration includes it.
     pub membership: ConfigMembership,
     /// Whether the subtree this node came from failed to parse cleanly.
@@ -444,6 +448,52 @@ pub struct Node {
 }
 
 impl Node {
+    /// A detached node: no parent, no children, no facets, zero rollups, active and
+    /// not provisional.
+    ///
+    /// Where it sits in the tree is the index's to decide: [`SeamIndex`](crate::SeamIndex)
+    /// links `parent` and `children` as it inserts.
+    #[must_use]
+    pub(crate) fn new(
+        id: SeamId,
+        kind: NodeKind,
+        name: impl Into<String>,
+        location: SeamLocation,
+    ) -> Self {
+        Self {
+            id,
+            kind,
+            name: name.into(),
+            detail: None,
+            location,
+            parent: None,
+            children: Vec::new(),
+            facets: Vec::new(),
+            visibility: None,
+            rollups: crate::rollup::Rollups::new(),
+            membership: ConfigMembership::Active,
+            provisional: false,
+        }
+    }
+
+    /// Its parent, or `None` at a tree root.
+    #[must_use]
+    pub fn parent(&self) -> Option<SeamId> {
+        self.parent
+    }
+
+    /// Its children, in source order.
+    #[must_use]
+    pub fn children(&self) -> &[SeamId] {
+        &self.children
+    }
+
+    /// Per-lens counts over this node's whole subtree, under the active configuration.
+    #[must_use]
+    pub fn rollups(&self) -> crate::rollup::Rollups {
+        self.rollups
+    }
+
     /// Every facet belonging to `lens`.
     pub fn facets_for(&self, lens: Lens) -> impl Iterator<Item = &Facet> {
         self.facets.iter().filter(move |facet| facet.lens == lens)

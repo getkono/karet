@@ -400,19 +400,20 @@ mod tests {
         out
     }
 
-    fn tree(files: &[(&str, &str)]) -> Option<tempfile::TempDir> {
-        let dir = tempfile::tempdir().ok()?;
+    /// A missing or wrong answer is an `Err`, so a test fails instead of passing.
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    fn tree(files: &[(&str, &str)]) -> std::io::Result<tempfile::TempDir> {
+        let dir = tempfile::tempdir()?;
         for (name, body) in files {
-            std::fs::write(dir.path().join(name), body).ok()?;
+            std::fs::write(dir.path().join(name), body)?;
         }
-        Some(dir)
+        Ok(dir)
     }
 
     #[test]
-    fn a_queued_search_is_superseded_by_a_newer_one_and_still_answered() {
-        let Some(dir) = tree(&[("a.txt", "needle\n")]) else {
-            return;
-        };
+    fn a_queued_search_is_superseded_by_a_newer_one_and_still_answered() -> TestResult {
+        let dir = tree(&[("a.txt", "needle\n")])?;
         let hub = CancellationHub::default();
         let mut events = run_all(vec![
             search_job(&hub, 1, dir.path(), "needle"),
@@ -423,13 +424,12 @@ mod tests {
             vec![(1, 0, 0, false, true), (2, 1, 1, false, false)],
             "the stale search is answered as cancelled; only the newest walks"
         );
+        Ok(())
     }
 
     #[test]
-    fn a_replace_is_never_coalesced_away() {
-        let Some(dir) = tree(&[("a.txt", "old old\n")]) else {
-            return;
-        };
+    fn a_replace_is_never_coalesced_away() -> TestResult {
+        let dir = tree(&[("a.txt", "old old\n")])?;
         let hub = CancellationHub::default();
         let mut events = run_all(vec![
             search_job(&hub, 1, dir.path(), "old"),
@@ -463,31 +463,29 @@ mod tests {
         // The first search ran before the replace (not superseded), the replace
         // rewrote both matches, and the last search sees the new text.
         assert_eq!(order, vec![(1, 0, 2), (2, 1, 2), (3, 0, 2)]);
-        let text = std::fs::read_to_string(dir.path().join("a.txt")).unwrap_or_default();
+        let text = std::fs::read_to_string(dir.path().join("a.txt"))?;
         assert_eq!(text, "new new\n");
+        Ok(())
     }
 
     #[test]
-    fn a_cancelled_search_finishes_as_cancelled_without_walking() {
-        let Some(dir) = tree(&[("a.txt", "needle\n"), ("b.txt", "needle\n")]) else {
-            return;
-        };
+    fn a_cancelled_search_finishes_as_cancelled_without_walking() -> TestResult {
+        let dir = tree(&[("a.txt", "needle\n"), ("b.txt", "needle\n")])?;
         let hub = CancellationHub::default();
         let job = search_job(&hub, 1, dir.path(), "needle");
         hub.cancel(RequestId(1));
         let mut events = run_all(vec![job]);
         assert_eq!(finishes(&mut events), vec![(1, 0, 0, false, true)]);
+        Ok(())
     }
 
     #[test]
-    fn the_file_limit_truncates_the_walk() {
-        let Some(dir) = tree(&[
+    fn the_file_limit_truncates_the_walk() -> TestResult {
+        let dir = tree(&[
             ("a.txt", "needle\n"),
             ("b.txt", "needle\n"),
             ("c.txt", "needle\n"),
-        ]) else {
-            return;
-        };
+        ])?;
         let hub = CancellationHub::default();
         let job = SearchJob::Search {
             id: RequestId(1),
@@ -499,13 +497,12 @@ mod tests {
         };
         let mut events = run_all(vec![job]);
         assert_eq!(finishes(&mut events), vec![(1, 2, 2, true, false)]);
+        Ok(())
     }
 
     #[test]
-    fn an_invalid_pattern_is_reported_not_read_as_no_matches() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
+    fn an_invalid_pattern_is_reported_not_read_as_no_matches() -> TestResult {
+        let dir = tempfile::tempdir()?;
         let hub = CancellationHub::default();
         let job = SearchJob::Search {
             id: RequestId(1),
@@ -525,5 +522,6 @@ mod tests {
                 _ => None,
             });
         assert!(error.is_some(), "a bad regex must surface as an error");
+        Ok(())
     }
 }

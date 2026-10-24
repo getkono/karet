@@ -48,9 +48,10 @@ pub(crate) fn run(
 
     // A named configuration changes what the tree even contains, so it is applied
     // before the query rather than filtered afterwards.
-    let active = configuration.map_or_else(karet_seam::Configuration::unconfigured, |name| {
-        karet_seam::Configuration::named(name, Vec::new())
-    });
+    let active = configuration
+        .map_or_else(karet_seam::config::Configuration::unconfigured, |name| {
+            karet_seam::config::Configuration::named(name, Vec::new())
+        });
     karet_seam::config::apply(&mut index, &active);
 
     let parsed = karet_seam::query::parse(query).map_err(|error| QueryFailure {
@@ -147,7 +148,7 @@ fn node_json(
             let count = if unread.contains(lens) {
                 "null".to_owned()
             } else {
-                node.rollups.get(*lens).to_string()
+                node.rollups().get(*lens).to_string()
             };
             format!("{}: {count}", quote(lens.name()))
         })
@@ -314,7 +315,7 @@ mod tests {
     #[test]
     fn a_result_carries_identities_locations_facets_and_rollups()
     -> Result<(), Box<dyn std::error::Error>> {
-        if karet_seam::lang::rust::language_id().is_none() {
+        if karet_treesitter::language_id_from_injection_name("rust").is_none() {
             return Ok(());
         }
         let dir = tempfile::tempdir()?;
@@ -345,7 +346,7 @@ mod tests {
 
     #[test]
     fn a_function_carries_its_sizes_and_its_calls() -> Result<(), Box<dyn std::error::Error>> {
-        if karet_seam::lang::rust::language_id().is_none() {
+        if karet_treesitter::language_id_from_injection_name("rust").is_none() {
             return Ok(());
         }
         let dir = tempfile::tempdir()?;
@@ -390,7 +391,7 @@ mod tests {
     #[test]
     fn a_lens_a_language_does_not_read_reports_null_rather_than_zero()
     -> Result<(), Box<dyn std::error::Error>> {
-        if karet_seam::lang::java::language_id().is_none() {
+        if karet_treesitter::language_id_from_injection_name("java").is_none() {
             return Ok(());
         }
         let dir = tempfile::tempdir()?;
@@ -416,7 +417,7 @@ mod tests {
     #[test]
     fn a_query_matching_nothing_is_a_success_with_no_nodes()
     -> Result<(), Box<dyn std::error::Error>> {
-        if karet_seam::lang::rust::language_id().is_none() {
+        if karet_treesitter::language_id_from_injection_name("rust").is_none() {
             return Ok(());
         }
         let dir = tempfile::tempdir()?;

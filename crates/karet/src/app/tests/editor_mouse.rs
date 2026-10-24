@@ -324,6 +324,30 @@ fn mouse_caret_and_selection_conformance() {
             "foo|\nbar",
         ),
         case(
+            "a click below the last line lands at the end of the document",
+            "|foo\nbar",
+            vec![click(At::Offset(1, 1, 0, 2))],
+            "foo\nbar|",
+        ),
+        case(
+            "a click on the right half of a wide character lands after it",
+            "|日本",
+            vec![click(At::Offset(0, 0, 1, 0))],
+            "日|本",
+        ),
+        case(
+            "a click on the last cell of a tab lands after it",
+            "|\tx",
+            vec![click(At::Offset(0, 1, -1, 0))],
+            "\t|x",
+        ),
+        case(
+            "a click on the first cell of a tab lands before it",
+            "\t|x",
+            vec![click(text(0, 0))],
+            "|\tx",
+        ),
+        case(
             "a click drops every secondary caret",
             "|foo\n#bar",
             vec![click(text(0, 2))],

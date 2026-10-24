@@ -208,6 +208,15 @@ impl App {
             SessionEvent::SelectionRanges { doc, chains, .. } => {
                 self.on_selection_ranges(id, doc, chains);
             },
+            SessionEvent::LinkedEditingRanges { doc, ranges, .. } => {
+                self.on_linked_editing_ranges(id, doc, ranges);
+            },
+            SessionEvent::OnTypeFormatting {
+                doc,
+                version,
+                edits,
+                triggers,
+            } => self.on_type_formatting(id, (doc, version), edits, triggers),
             SessionEvent::DocumentHighlights {
                 doc,
                 version,

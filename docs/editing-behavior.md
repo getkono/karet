@@ -53,7 +53,7 @@ today. Each fix then adds its own failing reproductions.
   punctuation and a run of whitespace are each one unit of their own for word
   motion and double-click.
 - Columns are counted in grapheme clusters wherever a user can see them:
-  motion, deletion, hit-testing and display width (#342).
+  motion, deletion, hit-testing and display width.
 
 ## Motion
 
@@ -111,7 +111,7 @@ too, not word selection.
 |---|---|---|
 | Ctrl+Alt+Down / Ctrl+Alt+Up | Add a caret on the line below / above, at the goal column. The new caret is primary. | harness |
 | Alt+click | Add a caret at the click, which becomes primary. Alt+click on an existing caret removes it, and the primary stays the same caret. | harness |
-| Ctrl+D | With an empty caret, select the word under it. Then add the next occurrence after the most recently added one, wrapping and skipping ranges already selected. Matching is whole-word when the sequence began from an empty caret, and plain substring when it began from a selection. | #341 |
+| Ctrl+D | With an empty caret, select the word under it. Then add the next occurrence after the most recently added one, wrapping and skipping ranges already selected. Matching is whole-word when the sequence began from an empty caret, and plain substring when it began from a selection. | harness |
 | Ctrl+Shift+L | Replace every selection with one over each occurrence of the primary selection's text, the primary staying on the occurrence it was on. From an empty caret, take the word under it and match whole words; from a selection, match plain substrings, unless it is still the set a whole-word Ctrl+D run left. Nothing happens off a word. | harness |
 | Ctrl+K Ctrl+D | Move the primary selection (the most recently added occurrence) to the next occurrence after it, wrapping and passing over ranges already selected, so the occurrence it was on is skipped. From an empty caret, select the word under it, as Ctrl+D does. With no further occurrence nothing changes. | harness |
 | Shift+Alt+I | Replace each selection with a caret at the end of every line it spans; on its last line the caret goes where the selection ends, and a selection ending at the start of a line puts none there. A one-line selection becomes a caret at its end. The primary is the last caret the primary selection produced. | harness |
@@ -137,16 +137,12 @@ at. Esc still keeps the original caret, as in VS Code.
 
 | Input | Behaviour | Status |
 |---|---|---|
-| The primary caret rests on a word | Once the caret and the text have been still for the edit debounce (150ms), paint every occurrence of the symbol under the caret behind the text: the language server's document highlights (`textDocument/documentHighlight`) when the document's server answers, a write in a stronger color than a read or a textual mention. When no server answers (none serves the document, it does not offer document highlights, or the request fails), paint every whole-word, case-sensitive match of the word the caret is on, or of the one ending at it. A server that answers with no highlights paints nothing. Off a word, or with a selection, nothing is asked. | app unit tests (`tests/occurrences.rs`) |
+| The primary caret rests on a word | Once the caret and the text have been still for the edit debounce (150ms), paint every occurrence of the symbol under the caret behind the text: the language server's document highlights (`textDocument/documentHighlight`) when the document's server answers, a read or a textual mention in the theme's `editor.wordHighlightBackground` and a write in its stronger `editor.wordHighlightStrongBackground` (a theme without the read key paints reads in its `list.hoverBackground`, and one without the write key paints writes in its `editorBracketMatch.background`). When no server answers (none serves the document, it does not offer document highlights, or the request fails), paint every whole-word, case-sensitive match of the word the caret is on, or of the one ending at it. A server that answers with no highlights paints nothing. Off a word, or with a selection, nothing is asked. | app unit tests (`tests/occurrences.rs`) |
 | Moving the caret, editing | A move that stays on a painted occurrence keeps the paint until the next answer replaces it; a move off every occurrence, an edit, or a selection takes it down at once. An answer for a caret or text that moved on before it arrived is dropped. | app unit tests (`tests/occurrences.rs`) |
 
 Deviation: VS Code also highlights the other matches of a selected word
 (`editor.selectionHighlight`). karet paints occurrences from a bare caret only,
-since the find bar and Ctrl+Shift+L already cover a selection's matches. Until
-the theme carries roles of its own for occurrences (VS Code's
-`editor.wordHighlightBackground` and `editor.wordHighlightStrongBackground`),
-reads and textual mentions take the list-hover color and writes the
-matching-bracket color.
+since the find bar and Ctrl+Shift+L already cover a selection's matches.
 
 ## Indentation
 
@@ -204,14 +200,14 @@ kind closes is `editor.autoClosingBrackets` / `editor.autoClosingQuotes`
 ## Click
 
 Clicks land on the character boundary nearest to the pointer: the right half
-of a wide character or of a tab's cells resolves to after it (#337).
+of a wide character or of a tab's cells resolves to after it.
 
 | Input | Behaviour | Status |
 |---|---|---|
-| Click on text | Place the caret there and drop every other caret. A click on visible text never scrolls. | harness (horizontal scroll read from the rig in `editor_drag.rs`; folds and sticky headers in `karet-editor`'s `tests/pointer.rs`) |
+| Click on text | Place the caret there and drop every other caret. A click on visible text never scrolls. | harness (horizontal scroll read from the rig in `editor_drag.rs`; folds and sticky headers in `karet-editor`'s `src/tests/pointer.rs`) |
 | Click past the end of a line | Caret at the line end. | harness |
-| Click below the last line | Caret at the end of the document. | #337 |
-| Click at a wrap boundary | The caret stays on the visual row that was clicked. | #337 |
+| Click below the last line | Caret at the end of the document. | harness |
+| Click at a wrap boundary | The caret stays on the visual row that was clicked. | harness (`vertical_motion.rs`) |
 | Shift+click | Extend the primary selection from its anchor to the click; drop the other carets. | harness (forward and backward) |
 | Ctrl+click (Super+click where the terminal reports it) | Go to the definition of the identifier under the pointer. On anything else (whitespace, past the line end, the gutter) nothing happens. | — (needs a language server); non-identifiers by a recording backend in `tests/definition.rs` |
 | Ctrl+click on a link written in the source | Open the link instead of going to a definition: a bare `http`/`https` URL in any file, and in Markdown an inline `[text](target)` (or `![alt](src)`) link anywhere from its `[` to its `)`. A URL opens with the desktop's opener; a relative file target opens in karet, and one that resolves outside the workspace asks first; any other target is refused with a notice. Holding Ctrl (or Super) over a link underlines it, whether or not a language server is running; the underline shows in the focused split only, but a Ctrl+click on a link in an unfocused split focuses that split and opens the link. Ctrl+Alt and Ctrl+Shift keep their editor meanings. | `tests/source_links.rs`; scanning in `autolink.rs` |

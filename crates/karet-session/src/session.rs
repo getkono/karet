@@ -24,6 +24,7 @@ use docfile::normalize_text_for_save;
 use docfile::resolve_document_settings;
 use docfile::save_document;
 mod documents;
+mod edit_requests;
 #[cfg(feature = "github")]
 mod github;
 mod hints;

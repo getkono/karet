@@ -106,7 +106,11 @@ impl fmt::Display for SeamSegment {
 /// The semantic path naming one node, and the citation unit an agent hands back to a
 /// human.
 ///
-/// See the [module docs](self) for the identity rules this encodes.
+/// It names a node by where it sits in the containment hierarchy, never by where it sits
+/// in a file, so editing around a node leaves its path alone. An anonymous construct is
+/// a braced segment describing it (`{impl SymbolProvider for Vec<Symbol>}`), siblings
+/// that still collide take a `#n` ordinal in source order, and generic parameters and
+/// `where` clauses are left out, since adding a bound is not a rename.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SeamPath {

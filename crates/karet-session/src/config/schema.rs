@@ -312,9 +312,16 @@ pub struct Editor {
     pub render_whitespace: RenderWhitespace,
     /// `editor.bracketPairColorization.*` — brackets coloured by nesting depth.
     pub bracket_pair_colorization: BracketPairColorization,
-    /// Override file-type wrapping: `null` uses the file default, `true` wraps,
-    /// and `false` uses horizontal overflow.
-    pub word_wrap: Option<bool>,
+    /// Override file-type wrapping: `null` uses the file default, `true` or
+    /// `"on"` wraps at the viewport, `false` or `"off"` uses horizontal
+    /// overflow, and `"wordWrapColumn"` or `"bounded"` wrap at
+    /// `wordWrapColumn` (or the viewport, when it is narrower).
+    pub word_wrap: Option<WordWrap>,
+    /// The column `"wordWrapColumn"` and `"bounded"` wrapping break at; `0`
+    /// wraps at the viewport.
+    pub word_wrap_column: u16,
+    /// How the continuation rows of a soft-wrapped line are indented.
+    pub wrapping_indent: WrappingIndent,
     /// Keep the active semantic block hierarchy pinned above scrolled text.
     pub sticky_scroll: bool,
     /// Paste the primary selection at a middle click in the text: `null` turns
@@ -339,6 +346,10 @@ pub struct Editor {
     #[serde(deserialize_with = "format_on_save_timeout")]
     #[cfg_attr(feature = "schema", schemars(range(min = 1, max = FORMAT_ON_SAVE_TIMEOUT_MAX_MS)))]
     pub format_on_save_timeout: u64,
+    /// Apply the language server's on-type formatting
+    /// (`textDocument/onTypeFormatting`) after typing one of its trigger
+    /// characters. Off by default, as in VS Code.
+    pub format_on_type: bool,
     /// Distinct highlighting of codetag comment blocks (`TODO:`, `FIXME:`, …).
     pub semantic_comments: SemanticComments,
     /// Re-render TypeScript diagnostics as markdown (quoted types lifted into
@@ -417,6 +428,8 @@ impl Default for Editor {
             render_whitespace: RenderWhitespace::None,
             bracket_pair_colorization: BracketPairColorization::default(),
             word_wrap: None,
+            word_wrap_column: 80,
+            wrapping_indent: WrappingIndent::Same,
             sticky_scroll: true,
             middle_click_paste: None,
             auto_closing_brackets: AutoClosing::LanguageDefined,
@@ -425,6 +438,7 @@ impl Default for Editor {
             insert_final_newline: true,
             format_on_save: true,
             format_on_save_timeout: FORMAT_ON_SAVE_TIMEOUT_DEFAULT_MS,
+            format_on_type: false,
             semantic_comments: SemanticComments::default(),
             pretty_errors: true,
             completion: Completion::default(),
@@ -473,6 +487,8 @@ pub use display::Guides;
 pub use display::LineNumbers;
 pub use display::RenderWhitespace;
 pub use display::SemanticHighlighting;
+pub use display::WordWrap;
+pub use display::WrappingIndent;
 pub use inlay_hints::InlayHints;
 pub use inlay_hints::InlayHintsEnabled;
 pub use inline_diagnostics::DiagnosticSeverity;

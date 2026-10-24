@@ -14,10 +14,10 @@ use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
 
-use karet_seam::Configuration;
 use karet_seam::IndexOptions;
 use karet_seam::SeamIndex;
 use karet_seam::SeamPath;
+use karet_seam::config::Configuration;
 use karet_treesitter::ParserPool;
 use tokio::sync::mpsc as tokio_mpsc;
 

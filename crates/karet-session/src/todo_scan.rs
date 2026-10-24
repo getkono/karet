@@ -296,23 +296,23 @@ mod tests {
         scanned
     }
 
-    fn write(root: &Path, rel: &str, body: &str) {
-        let _ = std::fs::write(root.join(rel), body);
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    fn write(root: &Path, rel: &str, body: &str) -> std::io::Result<()> {
+        std::fs::write(root.join(rel), body)
     }
 
     #[test]
-    fn scan_reports_each_codetag_with_its_line_and_message() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
+    fn scan_reports_each_codetag_with_its_line_and_message() -> TestResult {
+        let dir = tempfile::tempdir()?;
         if !rust_grammar() {
-            return;
+            return Ok(()); // rust grammar not compiled in; nothing to test
         }
         write(
             dir.path(),
             "a.rs",
             "fn a() {}\n// TODO: tidy this\nfn b() {}\n",
-        );
+        )?;
         let scanned = scan_dir(dir.path(), &CancellationHub::default(), |_| {});
         let hits: Vec<(u32, &str, &str)> = scanned
             .hits
@@ -322,17 +322,16 @@ mod tests {
         assert_eq!(hits, vec![(1, "TODO", "tidy this")]);
         assert_eq!(scanned.files_scanned, 1);
         assert!(!scanned.truncated && !scanned.cancelled);
+        Ok(())
     }
 
     #[test]
-    fn an_open_buffer_is_scanned_instead_of_its_stale_disk_copy() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
+    fn an_open_buffer_is_scanned_instead_of_its_stale_disk_copy() -> TestResult {
+        let dir = tempfile::tempdir()?;
         if !rust_grammar() {
-            return;
+            return Ok(()); // rust grammar not compiled in; nothing to test
         }
-        write(dir.path(), "a.rs", "// TODO: on disk\n");
+        write(dir.path(), "a.rs", "// TODO: on disk\n")?;
         let path = dir.path().join("a.rs");
         let scanned = scan_dir(dir.path(), &CancellationHub::default(), |job| {
             job.open = vec![(
@@ -350,38 +349,37 @@ mod tests {
             vec![(path.as_path(), 1, "in the buffer")],
             "the live text wins and the disk copy is not scanned a second time"
         );
+        Ok(())
     }
 
     #[test]
-    fn the_hit_limit_truncates_the_scan() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
+    fn the_hit_limit_truncates_the_scan() -> TestResult {
+        let dir = tempfile::tempdir()?;
         if !rust_grammar() {
-            return;
+            return Ok(()); // rust grammar not compiled in; nothing to test
         }
         write(
             dir.path(),
             "a.rs",
             "// TODO: one\n// TODO: two\n// TODO: three\n",
-        );
+        )?;
         let scanned = scan_dir(dir.path(), &CancellationHub::default(), |job| job.limit = 2);
         assert_eq!(scanned.hits.len(), 2, "never more hits than the limit");
         assert!(scanned.truncated);
         assert!(!scanned.cancelled);
+        Ok(())
     }
 
     #[test]
-    fn a_cancelled_scan_stops_before_walking() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
-        write(dir.path(), "a.rs", "// TODO: one\n");
-        write(dir.path(), "b.rs", "// TODO: two\n");
+    fn a_cancelled_scan_stops_before_walking() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        write(dir.path(), "a.rs", "// TODO: one\n")?;
+        write(dir.path(), "b.rs", "// TODO: two\n")?;
         let hub = CancellationHub::default();
         let scanned = scan_dir(dir.path(), &hub, |_| hub.cancel(RequestId(7)));
         assert!(scanned.cancelled);
         assert_eq!(scanned.files_scanned, 0);
         assert!(scanned.hits.is_empty());
+        Ok(())
     }
 }

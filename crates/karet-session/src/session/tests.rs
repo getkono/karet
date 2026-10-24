@@ -14,6 +14,7 @@ include!("tests/spelling.rs");
 include!("tests/lsp_updates.rs");
 include!("tests/seam.rs");
 include!("tests/format_on_save.rs");
+include!("tests/will_save.rs");
 include!("tests/undo_save.rs");
 include!("tests/undo_history.rs");
 include!("tests/workspace_edit.rs");

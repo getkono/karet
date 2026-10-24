@@ -478,12 +478,11 @@ fn activate(root: &Path, server: &LanguageServerId, version: &str) -> std::io::R
 }
 
 #[test]
-fn a_provider_never_touched_was_never_installed() {
-    let Ok(dir) = tempfile::tempdir() else {
-        return;
-    };
+fn a_provider_never_touched_was_never_installed() -> Result<(), Box<dyn std::error::Error>> {
+    let dir = tempfile::tempdir()?;
     assert!(!ever_installed(Some(dir.path()), &LanguageServerId::Texlab));
     assert!(!ever_installed(None, &LanguageServerId::Texlab));
+    Ok(())
 }
 
 #[test]

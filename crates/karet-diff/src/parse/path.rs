@@ -5,25 +5,31 @@
 //! here reverses that, and never loses a filename: undecodable bytes fall back to
 //! lossy UTF-8 rather than dropping the path.
 
+use crate::DiffError;
+
 /// Given `a/<old> b/<new>`, split into `(old, new)` stripping the `a/` / `b/`
 /// prefixes. Handles bare, both-quoted, and `\NNN`-octal-escaped header shapes.
-pub(super) fn split_ab_paths(s: &str) -> (String, String) {
+///
+/// A header too short to hold the prefixes it is sliced around, or one whose
+/// prefix boundary falls inside a multi-byte character, is reported as
+/// [`DiffError::Parse`] rather than panicking.
+pub(super) fn split_ab_paths(s: &str) -> Result<(String, String), DiffError> {
     if s.starts_with("\"a/")
         && let Some((old, new)) = split_quoted_ab(s)
     {
-        return (old, new);
+        return Ok((old, new));
     }
-    if let Some(pos) = find_b_split(s) {
-        let old = s[2..pos].to_string(); // skip "a/"
-        let new = s[pos + 3..].to_string(); // skip " b/"
-        return (old, new);
+    // `find_b_split` leaves a non-empty `a/` segment; otherwise fall back to the
+    // first space. Either way the `a/` and ` b/` prefixes are skipped by width.
+    let Some(pos) = find_b_split(s).or_else(|| s.find(' ')) else {
+        return Ok((s.to_string(), s.to_string()));
+    };
+    let old = s.get(2..pos); // skip "a/"
+    let new = pos.checked_add(3).and_then(|from| s.get(from..)); // skip " b/"
+    match (old, new) {
+        (Some(old), Some(new)) => Ok((old.to_string(), new.to_string())),
+        _ => Err(DiffError::Parse(format!("invalid diff --git header: {s}"))),
     }
-    if let Some(pos) = s.find(' ') {
-        let old = s[2..pos].to_string();
-        let new = s[pos + 3..].to_string();
-        return (old, new);
-    }
-    (s.to_string(), s.to_string())
 }
 
 /// Parse a `"a/..." "b/..."` header. Returns `None` if the structure doesn't match.
@@ -157,39 +163,71 @@ mod tests {
     }
 
     #[test]
-    fn split_bare_paths() {
+    fn split_bare_paths() -> Result<(), DiffError> {
         assert_eq!(
-            split_ab_paths("a/src/main.rs b/src/main.rs"),
+            split_ab_paths("a/src/main.rs b/src/main.rs")?,
             ("src/main.rs".to_string(), "src/main.rs".to_string())
         );
         // A rename splits at the rightmost ` b/`.
         assert_eq!(
-            split_ab_paths("a/foo.rs b/bar.rs"),
+            split_ab_paths("a/foo.rs b/bar.rs")?,
             ("foo.rs".to_string(), "bar.rs".to_string())
         );
+        // No space at all: the whole string stands for both sides.
+        assert_eq!(
+            split_ab_paths("lonely")?,
+            ("lonely".to_string(), "lonely".to_string())
+        );
+        Ok(())
     }
 
     #[test]
-    fn split_quoted_paths() {
+    fn split_quoted_paths() -> Result<(), DiffError> {
         assert_eq!(
-            split_ab_paths("\"a/foo bar.txt\" \"b/foo bar.txt\""),
+            split_ab_paths("\"a/foo bar.txt\" \"b/foo bar.txt\"")?,
             ("foo bar.txt".to_string(), "foo bar.txt".to_string())
         );
+        Ok(())
     }
 
     #[test]
-    fn split_path_containing_b_slash_takes_the_rightmost_boundary() {
+    fn split_path_containing_b_slash_takes_the_rightmost_boundary() -> Result<(), DiffError> {
         // A path with a `b/` directory in it splits at the *last* ` b/`.
         assert_eq!(
-            split_ab_paths("a/src b/lib.rs b/src b/lib.rs"),
+            split_ab_paths("a/src b/lib.rs b/src b/lib.rs")?,
             ("src b/lib.rs b/src".to_string(), "lib.rs".to_string())
         );
         // Genuinely ambiguous without quoting, but unreachable from git: it quotes
         // any path containing a space, which `split_quoted_ab` then splits exactly.
         assert_eq!(
-            split_ab_paths("\"a/src b/lib.rs\" \"b/src b/lib.rs\""),
+            split_ab_paths("\"a/src b/lib.rs\" \"b/src b/lib.rs\"")?,
             ("src b/lib.rs".to_string(), "src b/lib.rs".to_string())
         );
+        Ok(())
+    }
+
+    #[test]
+    fn split_malformed_headers_error_instead_of_panicking() {
+        // The first space comes before the two-byte `a/` prefix ends.
+        assert!(split_ab_paths("x y").is_err());
+        // The first space leaves fewer than three bytes for the ` b/` prefix.
+        assert!(split_ab_paths("ab c").is_err());
+        // Byte 2 falls inside the multi-byte `é`, so it is no slice boundary.
+        assert!(split_ab_paths("xé b/x").is_err());
+        // The width skipped after the space ends inside the multi-byte `é`.
+        assert!(split_ab_paths("abc xé").is_err());
+    }
+
+    #[test]
+    fn parse_malformed_git_header_errors_instead_of_panicking() {
+        assert!(matches!(
+            crate::parse::parse("diff --git x y\n"),
+            Err(DiffError::Parse(_))
+        ));
+        assert!(matches!(
+            crate::parse::parse("diff --git ab c\n"),
+            Err(DiffError::Parse(_))
+        ));
     }
 
     #[test]

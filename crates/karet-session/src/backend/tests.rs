@@ -1,4 +1,81 @@
+use std::path::Path;
+use std::path::PathBuf;
+
 use super::*;
+use crate::api::DocumentId;
+use crate::api::Event;
+
+type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+/// Whether a `git` binary runs here: the one environment precondition the
+/// repository tests skip on (fixture failures past it fail the test).
+fn git_available() -> bool {
+    std::process::Command::new("git")
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
+
+/// Run `git args` in `dir`, failing when the fixture step fails.
+fn git(dir: &Path, args: &[&str]) -> TestResult {
+    let status = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("git {args:?} failed: {status}").into())
+    }
+}
+
+/// `git init` in `dir` with a committer identity.
+fn init_repo(dir: &Path) -> TestResult {
+    git(dir, &["init", "-q"])?;
+    git(dir, &["config", "user.email", "test@example.com"])?;
+    git(dir, &["config", "user.name", "karet test"])
+}
+
+/// Send `command`, then wait for the first event answering it that `pick`
+/// accepts; an error when the send fails, the wait times out or the stream ends.
+async fn answer<T>(
+    backend: &LocalBackend,
+    events: &mut EventRx,
+    command: Command,
+    mut pick: impl FnMut(Event) -> Option<T>,
+) -> Result<T, Box<dyn std::error::Error>> {
+    let id = backend.next_id();
+    backend.send(id, command)?;
+    let found = tokio::time::timeout(Duration::from_secs(10), async {
+        while let Some((event_id, event)) = events.recv().await {
+            if event_id == Some(id)
+                && let Some(found) = pick(event)
+            {
+                return Some(found);
+            }
+        }
+        None
+    })
+    .await?;
+    found.ok_or_else(|| "the event stream closed before the answer".into())
+}
+
+/// Open `path` and answer the `(doc, version)` it was opened as.
+async fn open(
+    backend: &LocalBackend,
+    events: &mut EventRx,
+    path: PathBuf,
+) -> Result<(DocumentId, u64), Box<dyn std::error::Error>> {
+    let command = Command::OpenDocument {
+        path,
+        language: None,
+    };
+    answer(backend, events, command, |event| match event {
+        Event::Opened { doc, version } => Some((doc, version)),
+        _ => None,
+    })
+    .await
+}
 
 #[test]
 fn backend_error_displays() {
@@ -23,82 +100,41 @@ async fn local_backend_hands_out_its_events_once_and_ids_in_order() {
 }
 
 #[tokio::test]
-async fn local_backend_drives_open() {
-    use crate::api::Event;
-    use crate::session::Session;
-    use crate::session::SessionConfig;
-
-    let Ok(dir) = tempfile::tempdir() else {
-        return;
-    };
+async fn local_backend_drives_open() -> TestResult {
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("hello.txt");
-    if std::fs::write(&path, "hello\n").is_err() {
-        return;
-    }
+    std::fs::write(&path, "hello\n")?;
 
     let (session, mut events, _snaps) = Session::new(SessionConfig::default());
     let backend = local_session(session, None);
-    let id = backend.next_id();
-    assert!(
-        backend
-            .send(
-                id,
-                Command::OpenDocument {
-                    path,
-                    language: None
-                }
-            )
-            .is_ok()
-    );
-
     // Startup producers may announce capability state first. Correlate the answer
     // instead of assuming this command owns the stream's first event.
-    let opened = tokio::time::timeout(Duration::from_secs(10), async {
-        while let Some((event_id, event)) = events.recv().await {
-            if event_id == Some(id) && matches!(event, Event::Opened { .. }) {
-                return true;
-            }
-        }
-        false
-    })
-    .await
-    .unwrap_or(false);
+    let opened = open(&backend, &mut events, path).await;
     assert!(
-        opened,
-        "local backend should drive the session to open the file"
+        opened.is_ok(),
+        "local backend should drive the session to open the file: {opened:?}"
     );
+    Ok(())
 }
 
 #[cfg(feature = "mdlint")]
 #[tokio::test]
-async fn opening_markdown_publishes_markdownlint_diagnostics() {
-    use crate::api::Event;
-    use crate::session::Session;
-    use crate::session::SessionConfig;
-
-    let Ok(dir) = tempfile::tempdir() else {
-        return;
-    };
+async fn opening_markdown_publishes_markdownlint_diagnostics() -> TestResult {
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("doc.md");
     // Trailing spaces (MD009) and a bare URL (MD034) under a proper title.
-    if std::fs::write(&path, "# Title\n\ntext \nhttps://example.com\n").is_err() {
-        return;
-    }
+    std::fs::write(&path, "# Title\n\ntext \nhttps://example.com\n")?;
 
     let (session, mut events, _snaps) = Session::new(SessionConfig::default());
     let backend = local_session(session, None);
     let id = backend.next_id();
-    assert!(
-        backend
-            .send(
-                id,
-                Command::OpenDocument {
-                    path,
-                    language: None
-                }
-            )
-            .is_ok()
-    );
+    backend.send(
+        id,
+        Command::OpenDocument {
+            path,
+            language: None,
+        },
+    )?;
     let rules = tokio::time::timeout(Duration::from_secs(10), async {
         while let Some((_, event)) = events.recv().await {
             if let Event::DiagnosticsPublished { diagnostics, .. } = event
@@ -117,25 +153,16 @@ async fn opening_markdown_publishes_markdownlint_diagnostics() {
     .unwrap_or_default();
     assert!(rules.contains(&"MD009".to_owned()), "found: {rules:?}");
     assert!(rules.contains(&"MD034".to_owned()), "found: {rules:?}");
+    Ok(())
 }
 
 #[tokio::test]
-async fn workspace_todo_scan_streams_codetag_hits() {
-    use crate::api::Event;
-    use crate::session::Session;
-    use crate::session::SessionConfig;
-
-    let Ok(dir) = tempfile::tempdir() else {
-        return;
-    };
-    if std::fs::write(
+async fn workspace_todo_scan_streams_codetag_hits() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    std::fs::write(
         dir.path().join("main.rs"),
         "// TODO: ship it\nfn main() {}\n",
-    )
-    .is_err()
-    {
-        return;
-    }
+    )?;
 
     let config = SessionConfig {
         roots: vec![dir.path().to_path_buf()],
@@ -144,11 +171,7 @@ async fn workspace_todo_scan_streams_codetag_hits() {
     let (session, mut events, _snaps) = Session::new(config);
     let backend = local_session(session, None);
     let id = backend.next_id();
-    assert!(
-        backend
-            .send(id, Command::ScanWorkspaceTodos { limit: 100 })
-            .is_ok()
-    );
+    backend.send(id, Command::ScanWorkspaceTodos { limit: 100 })?;
     let (mut tags, mut finished) = (Vec::new(), false);
     let _ = tokio::time::timeout(Duration::from_secs(10), async {
         while let Some((event_id, event)) = events.recv().await {
@@ -173,260 +196,111 @@ async fn workspace_todo_scan_streams_codetag_hits() {
         tags.contains(&("TODO".to_owned(), "ship it".to_owned())),
         "found: {tags:?}"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn local_backend_reports_an_exact_nested_repository_status() {
-    use crate::api::Event;
-    use crate::session::Session;
-    use crate::session::SessionConfig;
-
-    let Ok(dir) = tempfile::tempdir() else {
-        return;
-    };
+async fn local_backend_reports_an_exact_nested_repository_status() -> TestResult {
+    if !git_available() {
+        return Ok(()); // no `git` binary to build the fixture repository with
+    }
+    let dir = tempfile::tempdir()?;
     let nested = dir.path().join("nested");
-    if std::fs::create_dir_all(&nested).is_err() {
-        return;
-    }
-    let git = |args: &[&str]| {
-        std::process::Command::new("git")
-            .args(args)
-            .current_dir(&nested)
-            .status()
-            .ok()
-            .is_some_and(|status| status.success())
-    };
-    if !git(&["init", "-q"])
-        || !git(&["config", "user.email", "test@example.com"])
-        || !git(&["config", "user.name", "karet test"])
-        || std::fs::write(nested.join("file.txt"), "one\n").is_err()
-        || !git(&["add", "file.txt"])
-        || !git(&["commit", "-q", "-m", "initial"])
-        || std::fs::write(nested.join("file.txt"), "one\ntwo\n").is_err()
-    {
-        return;
-    }
+    std::fs::create_dir_all(&nested)?;
+    init_repo(&nested)?;
+    std::fs::write(nested.join("file.txt"), "one\n")?;
+    git(&nested, &["add", "file.txt"])?;
+    git(&nested, &["commit", "-q", "-m", "initial"])?;
+    std::fs::write(nested.join("file.txt"), "one\ntwo\n")?;
 
     let (session, mut events, _snaps) = Session::new(SessionConfig {
         roots: vec![dir.path().to_path_buf()],
         ..SessionConfig::default()
     });
     let backend = local_session(session, None);
-    let id = backend.next_id();
-    assert!(
-        backend
-            .send(
-                id,
-                Command::NestedRepositoryStatus {
-                    path: nested.clone(),
-                },
-            )
-            .is_ok()
-    );
-
-    let received = tokio::time::timeout(Duration::from_secs(10), async {
-        while let Some((event_id, event)) = events.recv().await {
-            if event_id == Some(id)
-                && let Event::NestedRepositoryStatus { path, summary } = event
-            {
-                return Some((path, summary));
-            }
-        }
-        None
-    })
-    .await
-    .ok()
-    .flatten();
-    let Some((path, summary)) = received else {
-        return;
+    let command = Command::NestedRepositoryStatus {
+        path: nested.clone(),
     };
+    let (path, summary) = answer(&backend, &mut events, command, |event| match event {
+        Event::NestedRepositoryStatus { path, summary } => Some((path, summary)),
+        _ => None,
+    })
+    .await?;
     assert_eq!(path, nested);
     assert_eq!((summary.added, summary.removed), (1, 0));
+    Ok(())
 }
 
 #[tokio::test]
-async fn repository_actions_and_blame_run_off_actor() {
+async fn repository_actions_and_blame_run_off_actor() -> TestResult {
     use karet_core::BlameAttribution;
     use karet_vcs::CreateBranchOptions;
 
-    use crate::api::Event;
     use crate::api::VcsAction;
-    use crate::session::Session;
-    use crate::session::SessionConfig;
 
-    let Ok(dir) = tempfile::tempdir() else {
-        return;
-    };
-    let root = dir.path().to_path_buf();
-    let git = |args: &[&str]| {
-        std::process::Command::new("git")
-            .args(args)
-            .current_dir(&root)
-            .status()
-            .ok()
-            .is_some_and(|status| status.success())
-    };
-    if !git(&["init", "-q"])
-        || !git(&["config", "user.email", "test@example.com"])
-        || !git(&["config", "user.name", "karet test"])
-        || std::fs::write(root.join("code.rs"), "fn main() {}\n").is_err()
-        || !git(&["add", "code.rs"])
-        || !git(&["commit", "-q", "-m", "initial"])
-    {
-        return;
+    if !git_available() {
+        return Ok(()); // no `git` binary to build the fixture repository with
     }
+    let dir = tempfile::tempdir()?;
+    let root = dir.path().to_path_buf();
+    init_repo(&root)?;
+    std::fs::write(root.join("code.rs"), "fn main() {}\n")?;
+    git(&root, &["add", "code.rs"])?;
+    git(&root, &["commit", "-q", "-m", "initial"])?;
 
     let (session, mut events, _snaps) = Session::new(SessionConfig {
         roots: vec![root.clone()],
         ..SessionConfig::default()
     });
     let backend = local_session(session, None);
-    let open_id = backend.next_id();
-    assert!(
-        backend
-            .send(
-                open_id,
-                Command::OpenDocument {
-                    path: root.join("code.rs"),
-                    language: None,
-                },
-            )
-            .is_ok()
-    );
-    let opened = tokio::time::timeout(Duration::from_secs(10), async {
-        while let Some((id, event)) = events.recv().await {
-            if id == Some(open_id)
-                && let Event::Opened { doc, version } = event
-            {
-                return Some((doc, version));
-            }
-        }
-        None
-    })
-    .await
-    .ok()
-    .flatten();
-    let Some((doc, version)) = opened else {
-        return;
+    let (doc, version) = open(&backend, &mut events, root.join("code.rs")).await?;
+    let blame = Command::Blame {
+        doc,
+        version,
+        line: 0,
     };
-
-    let blame_id = backend.next_id();
-    assert!(
-        backend
-            .send(
-                blame_id,
-                Command::Blame {
-                    doc,
-                    version,
-                    line: 0,
-                },
-            )
-            .is_ok()
-    );
-    let blamed = tokio::time::timeout(Duration::from_secs(10), async {
-        while let Some((id, event)) = events.recv().await {
-            if id == Some(blame_id)
-                && let Event::BlameResult { attribution, .. } = event
-            {
-                return attribution;
-            }
-        }
-        None
+    let blamed = answer(&backend, &mut events, blame, |event| match event {
+        Event::BlameResult { attribution, .. } => Some(attribution),
+        _ => None,
     })
-    .await
-    .unwrap_or_default();
-    assert!(matches!(blamed, Some(BlameAttribution::Commit(_))));
-
-    if std::fs::write(root.join("untracked.rs"), "fn new_file() {}\n").is_err() {
-        return;
-    }
-    let untracked_open_id = backend.next_id();
+    .await?;
     assert!(
-        backend
-            .send(
-                untracked_open_id,
-                Command::OpenDocument {
-                    path: root.join("untracked.rs"),
-                    language: None,
-                },
-            )
-            .is_ok()
+        matches!(blamed, Some(BlameAttribution::Commit(_))),
+        "{blamed:?}"
     );
-    let untracked = tokio::time::timeout(Duration::from_secs(10), async {
-        while let Some((id, event)) = events.recv().await {
-            if id == Some(untracked_open_id)
-                && let Event::Opened { doc, version } = event
-            {
-                return Some((doc, version));
-            }
-        }
-        None
-    })
-    .await
-    .ok()
-    .flatten();
-    let Some((untracked_doc, untracked_version)) = untracked else {
-        return;
+
+    std::fs::write(root.join("untracked.rs"), "fn new_file() {}\n")?;
+    let (untracked_doc, untracked_version) =
+        open(&backend, &mut events, root.join("untracked.rs")).await?;
+    let blame = Command::Blame {
+        doc: untracked_doc,
+        version: untracked_version,
+        line: 0,
     };
-    let untracked_blame_id = backend.next_id();
+    let unavailable = answer(&backend, &mut events, blame, Some).await?;
     assert!(
-        backend
-            .send(
-                untracked_blame_id,
-                Command::Blame {
-                    doc: untracked_doc,
-                    version: untracked_version,
-                    line: 0,
-                },
-            )
-            .is_ok()
-    );
-    let unavailable = tokio::time::timeout(Duration::from_secs(10), async {
-        while let Some((id, event)) = events.recv().await {
-            if id == Some(untracked_blame_id) {
-                return Some(event);
+        matches!(
+            unavailable,
+            Event::BlameResult {
+                attribution: None,
+                ..
             }
-        }
-        None
-    })
-    .await
-    .ok()
-    .flatten();
-    assert!(matches!(
-        unavailable,
-        Some(Event::BlameResult {
-            attribution: None,
-            ..
-        })
-    ));
+        ),
+        "{unavailable:?}"
+    );
 
-    let branch_id = backend.next_id();
     let mut branch_options = CreateBranchOptions::default();
     branch_options.name = "feature".to_string();
-    assert!(
-        backend
-            .send(
-                branch_id,
-                Command::VcsAction {
-                    action: VcsAction::CreateBranch(branch_options),
-                },
-            )
-            .is_ok()
-    );
-    let branch = tokio::time::timeout(Duration::from_secs(10), async {
-        while let Some((id, event)) = events.recv().await {
-            if id == Some(branch_id)
-                && let Event::RepositorySnapshot { snapshot } = event
-            {
-                return snapshot.state.branch;
-            }
-        }
-        None
+    let create = Command::VcsAction {
+        action: VcsAction::CreateBranch(branch_options),
+    };
+    let branch = answer(&backend, &mut events, create, |event| match event {
+        Event::RepositorySnapshot { snapshot } => Some(snapshot.state.branch),
+        _ => None,
     })
-    .await
-    .ok()
-    .flatten();
+    .await?;
     assert_eq!(branch.as_deref(), Some("feature"));
+    Ok(())
 }
 
 /// Drain snapshots until one satisfies `wanted`, or time out.
@@ -448,21 +322,14 @@ async fn await_snapshot(
 }
 
 #[tokio::test]
-async fn injected_language_is_highlighted_through_the_worker() {
+async fn injected_language_is_highlighted_through_the_worker() -> TestResult {
     use karet_core::TokenId;
 
-    use crate::session::Session;
-    use crate::session::SessionConfig;
-
-    let Ok(dir) = tempfile::tempdir() else {
-        return;
-    };
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("notes.md");
     // A markdown file whose fenced block is rust: only the injection machinery,
     // driven end to end through the worker, can colour `fn` as a keyword.
-    if std::fs::write(&path, "# T\n\n```rust\nfn main() {}\n```\n").is_err() {
-        return;
-    }
+    std::fs::write(&path, "# T\n\n```rust\nfn main() {}\n```\n")?;
 
     let (session, _events, mut snaps) = Session::new(SessionConfig::default());
     let backend = local_session(session, None);
@@ -491,21 +358,15 @@ async fn injected_language_is_highlighted_through_the_worker() {
         highlighted,
         "the embedded rust fence should eventually be highlighted"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn syntax_error_lines_reach_the_snapshot_stream() {
-    use crate::session::Session;
-    use crate::session::SessionConfig;
-
-    let Ok(dir) = tempfile::tempdir() else {
-        return;
-    };
+async fn syntax_error_lines_reach_the_snapshot_stream() -> TestResult {
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("broken.rs");
     // Line 1 (0-based) is broken; the completion gate reads these ranges.
-    if std::fs::write(&path, "fn ok() {}\nfn broken() { let x = ; }\n").is_err() {
-        return;
-    }
+    std::fs::write(&path, "fn ok() {}\nfn broken() { let x = ; }\n")?;
 
     let (session, _events, mut snaps) = Session::new(SessionConfig::default());
     let backend = local_session(session, None);
@@ -528,20 +389,14 @@ async fn syntax_error_lines_reach_the_snapshot_stream() {
     })
     .await;
     assert!(flagged, "the broken line should be flagged on the snapshot");
+    Ok(())
 }
 
 #[tokio::test]
-async fn markdown_table_lines_reach_the_snapshot_stream() {
-    use crate::session::Session;
-    use crate::session::SessionConfig;
-
-    let Ok(dir) = tempfile::tempdir() else {
-        return;
-    };
+async fn markdown_table_lines_reach_the_snapshot_stream() -> TestResult {
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("notes.md");
-    if std::fs::write(&path, "# Notes\n\n| a | b |\n|---|---|\n| 1 | 2 |\n").is_err() {
-        return;
-    }
+    std::fs::write(&path, "# Notes\n\n| a | b |\n|---|---|\n| 1 | 2 |\n")?;
 
     let (session, _events, mut snaps) = Session::new(SessionConfig::default());
     let backend = local_session(session, None);
@@ -559,20 +414,14 @@ async fn markdown_table_lines_reach_the_snapshot_stream() {
 
     let found = await_snapshot(&mut snaps, |snap| *snap.table_lines == [2..=4]).await;
     assert!(found, "the worker's table ranges should ride the snapshot");
+    Ok(())
 }
 
 #[tokio::test]
-async fn semantic_blocks_reach_the_snapshot_stream() {
-    use crate::session::Session;
-    use crate::session::SessionConfig;
-
-    let Ok(dir) = tempfile::tempdir() else {
-        return;
-    };
+async fn semantic_blocks_reach_the_snapshot_stream() -> TestResult {
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("notes.md");
-    if std::fs::write(&path, "# Top\n\n## Child\n\nbody\n").is_err() {
-        return;
-    }
+    std::fs::write(&path, "# Top\n\n## Child\n\nbody\n")?;
 
     let (session, _events, mut snaps) = Session::new(SessionConfig::default());
     let backend = local_session(session, None);
@@ -596,52 +445,20 @@ async fn semantic_blocks_reach_the_snapshot_stream() {
         published,
         "the Markdown H1/H2 chain should reach the UI snapshot"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn document_symbols_fall_back_to_the_syntax_worker() {
+async fn document_symbols_fall_back_to_the_syntax_worker() -> TestResult {
     use karet_core::StandardToken;
 
-    use crate::api::Event;
-    use crate::session::Session;
-    use crate::session::SessionConfig;
-
-    let Ok(dir) = tempfile::tempdir() else {
-        return;
-    };
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("outline.rs");
-    if std::fs::write(&path, "mod café { pub struct Thé; }\n").is_err() {
-        return;
-    }
+    std::fs::write(&path, "mod café { pub struct Thé; }\n")?;
 
     let (session, mut events, mut snaps) = Session::new(SessionConfig::default());
     let backend = local_session(session, None);
-    let open = backend.next_id();
-    assert!(
-        backend
-            .send(
-                open,
-                Command::OpenDocument {
-                    path,
-                    language: None,
-                },
-            )
-            .is_ok()
-    );
-    let doc = tokio::time::timeout(Duration::from_secs(10), async {
-        while let Some((id, event)) = events.recv().await {
-            if id == Some(open)
-                && let Event::Opened { doc, .. } = event
-            {
-                return Some(doc);
-            }
-        }
-        None
-    })
-    .await
-    .ok()
-    .flatten();
-    let Some(doc) = doc else { return };
+    let (doc, _) = open(&backend, &mut events, path).await?;
     assert!(
         await_snapshot(&mut snaps, |snapshot| snapshot
             .highlights
@@ -651,42 +468,24 @@ async fn document_symbols_fall_back_to_the_syntax_worker() {
         .await
     );
 
-    let request = backend.next_id();
-    assert!(
-        backend
-            .send(request, Command::DocumentSymbols { doc })
-            .is_ok()
-    );
-    let symbols = tokio::time::timeout(Duration::from_secs(10), async {
-        while let Some((id, event)) = events.recv().await {
-            if id == Some(request)
-                && let Event::Symbols { symbols, .. } = event
-            {
-                return symbols;
-            }
-        }
-        Vec::new()
+    let request = Command::DocumentSymbols { doc };
+    let symbols = answer(&backend, &mut events, request, |event| match event {
+        Event::Symbols { symbols, .. } => Some(symbols),
+        _ => None,
     })
-    .await
-    .unwrap_or_default();
+    .await?;
     assert_eq!(symbols[0].name, "café");
     assert_eq!(symbols[0].children[0].name, "Thé");
+    Ok(())
 }
 
 #[tokio::test]
-async fn todo_comments_are_marked_in_a_real_rust_buffer() {
+async fn todo_comments_are_marked_in_a_real_rust_buffer() -> TestResult {
     use karet_core::StandardToken;
 
-    use crate::session::Session;
-    use crate::session::SessionConfig;
-
-    let Ok(dir) = tempfile::tempdir() else {
-        return;
-    };
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("lib.rs");
-    if std::fs::write(&path, "// TODO: fix bug here\n// context\nfn main() {}\n").is_err() {
-        return;
-    }
+    std::fs::write(&path, "// TODO: fix bug here\n// context\nfn main() {}\n")?;
 
     // Default settings: `editor.semanticComments` is on.
     let (session, _events, mut snaps) = Session::new(SessionConfig::default());
@@ -712,23 +511,17 @@ async fn todo_comments_are_marked_in_a_real_rust_buffer() {
         marked,
         "the TODO comment block should be published as CommentMark"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn disabling_semantic_comments_leaves_comments_plain() {
+async fn disabling_semantic_comments_leaves_comments_plain() -> TestResult {
     use karet_core::StandardToken;
     use karet_core::TokenId;
 
-    use crate::session::Session;
-    use crate::session::SessionConfig;
-
-    let Ok(dir) = tempfile::tempdir() else {
-        return;
-    };
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("lib.rs");
-    if std::fs::write(&path, "// TODO: fix bug here\nfn main() {}\n").is_err() {
-        return;
-    }
+    std::fs::write(&path, "// TODO: fix bug here\nfn main() {}\n")?;
 
     let mut config = SessionConfig::default();
     config.settings.editor.semantic_comments.enabled = false;
@@ -770,10 +563,11 @@ async fn disabling_semantic_comments_leaves_comments_plain() {
         !saw_mark,
         "with the setting off, no snapshot may carry CommentMark"
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn editing_republishes_highlights_for_the_new_text() {
+async fn editing_republishes_highlights_for_the_new_text() -> TestResult {
     use karet_core::Change;
     use karet_core::LineCol;
     use karet_core::Range;
@@ -781,41 +575,16 @@ async fn editing_republishes_highlights_for_the_new_text() {
     use karet_core::TokenId;
     use karet_text::EditCause;
 
-    use crate::api::Event;
-    use crate::session::Session;
-    use crate::session::SessionConfig;
-
-    let Ok(dir) = tempfile::tempdir() else {
-        return;
-    };
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("live.md");
-    if std::fs::write(&path, "text\n").is_err() {
-        return;
-    }
+    std::fs::write(&path, "text\n")?;
 
     let (session, mut events, mut snaps) = Session::new(SessionConfig::default());
     let backend = local_session(session, None);
-    let id = backend.next_id();
-    if backend
-        .send(
-            id,
-            Command::OpenDocument {
-                path,
-                language: None,
-            },
-        )
-        .is_err()
-    {
-        return;
-    }
-    let Some((_, Event::Opened { doc, version })) = events.recv().await else {
-        return;
-    };
+    let (doc, version) = open(&backend, &mut events, path).await?;
 
     // Type a rust code fence at the end of the buffer.
-    let Ok(range) = Range::new(LineCol::new(1, 0), LineCol::new(1, 0)) else {
-        return;
-    };
+    let range = Range::new(LineCol::new(1, 0), LineCol::new(1, 0))?;
     let change = Change::new(
         version,
         vec![TextEdit {
@@ -823,20 +592,16 @@ async fn editing_republishes_highlights_for_the_new_text() {
             new_text: "\n```rust\nfn f() {}\n```\n".to_owned(),
         }],
     );
+    let id = backend.next_id();
     assert!(backend.next_id() > id);
-    if backend
-        .send(
-            backend.next_id(),
-            Command::ApplyChange {
-                doc,
-                change,
-                cause: EditCause::Paste,
-            },
-        )
-        .is_err()
-    {
-        return;
-    }
+    backend.send(
+        id,
+        Command::ApplyChange {
+            doc,
+            change,
+            cause: EditCause::Paste,
+        },
+    )?;
 
     // The fence did not exist a moment ago; the worker must discover the injection
     // and republish. This is the live-update contract.
@@ -851,4 +616,5 @@ async fn editing_republishes_highlights_for_the_new_text() {
         highlighted,
         "typing a code fence should light up the embedded language"
     );
+    Ok(())
 }

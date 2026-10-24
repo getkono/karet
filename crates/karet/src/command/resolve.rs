@@ -82,6 +82,8 @@ static PALETTE: &[Command] = &[
     Command::RenameSymbol,
     Command::FormatDocument,
     Command::FormatSelection,
+    Command::StartLinkedEditing,
+    Command::ToggleFormatOnType,
     Command::CodeActions,
     Command::SourceAction,
     Command::OrganizeImports,

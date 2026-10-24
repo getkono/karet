@@ -441,6 +441,12 @@ pub enum Command {
     FormatDocument,
     /// Format every selection, or the caret's line (Ctrl+K Ctrl+F).
     FormatSelection,
+    /// Put a caret in every range the language server links to the caret's,
+    /// such as an HTML tag's name and its closing tag's (Ctrl+Shift+F2).
+    StartLinkedEditing,
+    /// Turn the language server's on-type formatting on or off for this
+    /// session, over `editor.formatOnType`.
+    ToggleFormatOnType,
     /// Open the code-action menu at the caret (Ctrl+., Alt+Enter).
     CodeActions,
     /// Open the code-action menu showing only source actions.
@@ -1017,6 +1023,8 @@ impl Command {
             Self::RenameCancel => "Rename Symbol: Cancel",
             Self::FormatDocument => "Format Document",
             Self::FormatSelection => "Format Selection",
+            Self::StartLinkedEditing => "Start Linked Editing",
+            Self::ToggleFormatOnType => "Toggle Format on Type",
             Self::CodeActions => "Quick Fix…",
             Self::SourceAction => "Source Action…",
             Self::OrganizeImports => "Organize Imports",

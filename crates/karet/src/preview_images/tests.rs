@@ -186,11 +186,21 @@ fn the_reveal_delay_runs_from_the_first_paint_not_from_layout() {
     let dir = workspace(&[("logo.png", &png(2, 2, [0, 0, 0]))]);
     let images = PreviewImages::default();
     let _ = size(&images, dir.path(), "logo.png");
-    std::thread::sleep(crate::app::LOADING_REVEAL_DELAY);
+    // Layout reserves the rows but starts no clock: nothing is pending yet.
+    assert!(images.pendings().is_empty(), "sizing queues no decode");
+    let painted_at = std::time::Instant::now();
     let Lookup::Loading(pending) = lookup(&images, dir.path(), "logo.png") else {
         panic!("the first paint queues the decode");
     };
-    assert!(!pending.visible(), "no placeholder the moment it is queued");
+    assert!(
+        pending.since() >= painted_at,
+        "the reveal delay is anchored at the paint, not at layout"
+    );
+    assert_eq!(
+        pending.wake(pending.since()),
+        Some(crate::app::LOADING_REVEAL_DELAY),
+        "no placeholder the moment it is queued: a full delay remains"
+    );
 }
 
 #[test]
@@ -333,12 +343,19 @@ fn a_pending_load_is_offered_for_the_reveal_wake() {
     let images = PreviewImages::default();
     let _ = size(&images, dir.path(), "logo.png");
     let _ = lookup(&images, dir.path(), "logo.png");
-    assert_eq!(images.pendings().len(), 1);
-    assert!(
-        images
-            .pendings()
-            .iter()
-            .all(|pending| pending.wake(std::time::Instant::now()).is_some())
+    let pendings = images.pendings();
+    assert_eq!(pendings.len(), 1);
+    // Asked at fixed offsets from the anchor, the wake is exact rather than
+    // racing the real clock.
+    let pending = pendings[0];
+    let since = pending.since();
+    let delay = crate::app::LOADING_REVEAL_DELAY;
+    let step = std::time::Duration::from_millis(50);
+    assert_eq!(pending.wake(since), Some(delay));
+    assert_eq!(pending.wake(since + step), Some(delay - step));
+    assert_eq!(
+        pending.wake(since + delay + std::time::Duration::from_millis(1)),
+        None
     );
     images.backdate_pending();
     assert!(images.pendings().iter().all(|pending| pending.visible()));
