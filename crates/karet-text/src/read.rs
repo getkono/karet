@@ -241,6 +241,7 @@ mod tests {
     fn slice_rejects_bad_spans() {
         let b = TextBuffer::from_text("héllo");
         assert_eq!(b.slice(span(2, 1)), None, "reversed");
+        assert_eq!(b.slice(span(3, 1)), None, "reversed, both on boundaries");
         assert_eq!(b.slice(span(0, 99)), None, "past the end");
         assert_eq!(b.slice(span(2, 4)), None, "starts inside `é`");
         assert_eq!(b.slice(span(0, 2)), None, "ends inside `é`");
@@ -261,6 +262,9 @@ mod tests {
     fn find_edge_cases() {
         let b = TextBuffer::from_text("abc");
         assert_eq!(b.find("", span(2, 3)), Some(BytePos(2)));
+        assert_eq!(b.find("", span(2, 2)), Some(BytePos(2)), "empty span");
+        assert_eq!(b.find("abc", span(0, 3)), Some(BytePos(0)), "exact fit");
+        assert_eq!(b.find("b", span(1, 2)), Some(BytePos(1)), "exact fit");
         assert_eq!(b.find("c", span(0, 99)), Some(BytePos(2)), "end clamps");
         assert_eq!(b.find("a", span(2, 1)), None, "reversed");
         assert_eq!(TextBuffer::new().find("a", span(0, 0)), None);
@@ -292,6 +296,41 @@ mod tests {
                     text.find(needle),
                     "needle at {pos} (boundary {edge})"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn find_across_boundaries_for_every_needle_length_and_span_start() {
+        // A one-byte needle keeps no carry at all, a two-byte one keeps exactly
+        // one byte, and a span starting just short of a boundary hands the first
+        // pass a piece shorter than the carry it keeps: each is a different edge
+        // of the carry bookkeeping.
+        let len = 20_000;
+        let b = TextBuffer::from_text(&"x".repeat(len));
+        let boundaries: Vec<usize> = b
+            .rope
+            .chunks()
+            .scan(0, |at, chunk| {
+                *at += chunk.len();
+                Some(*at)
+            })
+            .take(3)
+            .collect();
+        for needle in ["<", "<>", "<<<<<<<"] {
+            for &edge in &boundaries {
+                for pos in edge.saturating_sub(needle.len())..=edge {
+                    let text = multi_chunk(needle, &[pos], len);
+                    let b = TextBuffer::from_text(&text);
+                    for start in [0, edge.saturating_sub(2), pos] {
+                        let want = text[start..].find(needle).map(|at| start + at);
+                        assert_eq!(
+                            b.find(needle, span(start, len)).map(|p| p.0),
+                            want,
+                            "{needle:?} at {pos}, span from {start} (boundary {edge})"
+                        );
+                    }
+                }
             }
         }
     }
