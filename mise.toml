@@ -119,9 +119,17 @@ run = """cargo mutants --package karet-core --all-features \
 [tasks.mutants-cbor]
 description = "Opt-in: mutation-test karet-cbor's diagnostic-notation parser and printer (cap 20m)"
 timeout = "20m"
+# Equivalent mutants, excluded with their argument:
+# - `(hi << 4) | lo` -> `^` in `parse_bytes`: `hi << 4` has its low four bits
+#   clear and `lo` is a single hex digit (< 16), so the operands share no set
+#   bit and OR equals XOR for every input.
+# - `f < 0.0` -> `<=` in `format_float`: the comparison runs only for an
+#   infinite `f`, which is never `0.0`, so both pick the same sign.
 run = """cargo mutants --package karet-cbor --all-features \
   --file 'crates/karet-cbor/src/diag.rs' \
-  --file 'crates/karet-cbor/src/diag/*.rs'"""
+  --file 'crates/karet-cbor/src/diag/*.rs' \
+  --exclude-re 'replace \\| with \\^ in Parser::parse_bytes' \
+  --exclude-re 'replace < with <= in format_float'"""
 
 [tasks.mutants-seam]
 description = "Opt-in: mutation-test karet-seam's query language, cfg predicates, ids, regroup and rollup (cap 40m)"
