@@ -12,17 +12,21 @@
 - Works for any bundled tree-sitter language with clear function syntax (Rust,
   Python, JavaScript/TypeScript, Go, C, …).
 
-```rust
+```rust no_run
 use std::path::Path;
 
-// Whole-file semantic blame, grouped by commit.
-let groups = blameline::blame_file(Path::new("."), Path::new("src/parser.rs"))?;
-println!("{}", blameline::to_json(&groups)?);
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Whole-file semantic blame, grouped by commit.
+    let groups = blameline::blame_file(Path::new("."), Path::new("src/parser.rs"))?;
+    println!("{}", blameline::to_json(&groups)?);
 
-// Blame narrowed to the function enclosing line 42 (0-based).
-let source = std::fs::read_to_string("src/parser.rs")?;
-let scoped = blameline::blame_function(Path::new("."), Path::new("src/parser.rs"), &source, 42)?;
-# Ok::<(), blameline::BlameError>(())
+    // Blame narrowed to the function enclosing line 42 (0-based).
+    let source = std::fs::read_to_string("src/parser.rs")?;
+    let scoped =
+        blameline::blame_function(Path::new("."), Path::new("src/parser.rs"), &source, 42)?;
+    println!("{}", blameline::to_json(&scoped)?);
+    Ok(())
+}
 ```
 
 ## Git backend

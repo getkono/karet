@@ -42,7 +42,9 @@ fn strip_cr(line: &str) -> (&str, bool) {
 /// Parse unified diff text into a [`Diff`].
 ///
 /// # Errors
-/// Returns [`DiffError::Parse`] if a hunk header or range is malformed.
+/// Returns [`DiffError::Parse`] if a `diff --git` header's `a/`/`b/` paths
+/// cannot be split, if a hunk header or range is malformed, or if a hunk's
+/// line numbers run past `u32::MAX`.
 pub fn parse(raw: &str) -> Result<Diff, DiffError> {
     let mut files = Vec::new();
     for block in split_blocks(raw) {

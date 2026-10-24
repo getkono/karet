@@ -297,6 +297,15 @@ mod tests {
         );
     }
 
+    #[cfg(not(feature = "vscode"))]
+    #[test]
+    fn load_vscode_without_the_feature_is_unsupported() {
+        assert!(matches!(
+            Theme::load_vscode("{}"),
+            Err(ThemeError::Unsupported)
+        ));
+    }
+
     #[test]
     fn bracket_pair_colors_are_three_distinct_token_hues() {
         let t = Theme::dark();
@@ -467,6 +476,7 @@ mod tests {
         // back to the foreground (which would make a hint look like code).
         let theme = Theme::dark();
         assert!((ThemeRole::InlayHintParameter as usize) < ROLE_COUNT);
+        #[cfg(feature = "view")]
         let bg = theme.role(ThemeRole::Background);
         let other = theme.role(ThemeRole::InlayHint);
         let ty = theme.role(ThemeRole::InlayHintType);
@@ -476,6 +486,8 @@ mod tests {
         assert_ne!(param, other);
         for hint in [other, ty, param] {
             assert_ne!(hint, theme.role(ThemeRole::Foreground));
+            // Contrast checking (and its color-science dep) is `view`-only.
+            #[cfg(feature = "view")]
             assert!(contrast_ratio(hint, bg) > 2.0);
         }
     }
@@ -489,6 +501,7 @@ mod tests {
         let lens = theme.role(ThemeRole::CodeLens);
         assert_ne!(lens, theme.role(ThemeRole::Foreground));
         assert_ne!(lens, theme.role(ThemeRole::InlayHint));
+        #[cfg(feature = "view")]
         assert!(contrast_ratio(lens, theme.role(ThemeRole::Background)) > 2.0);
     }
 
@@ -499,6 +512,7 @@ mod tests {
         // editor background (the diff background tints do not).
         let theme = Theme::dark();
         assert!((ThemeRole::GutterDeleted as usize) < ROLE_COUNT);
+        #[cfg(feature = "view")]
         let bg = theme.role(ThemeRole::Background);
         let added = theme.role(ThemeRole::GutterAdded);
         let modified = theme.role(ThemeRole::GutterModified);
@@ -508,6 +522,7 @@ mod tests {
         assert_ne!(modified, deleted);
         for marker in [added, modified, deleted] {
             assert_ne!(marker, theme.fallback_fg);
+            #[cfg(feature = "view")]
             assert!(contrast_ratio(marker, bg) > 3.0);
         }
     }
@@ -549,9 +564,12 @@ mod tests {
             assert_ne!(write, theme.role(other), "{other:?}");
         }
         // The code on an occurrence stays readable (WCAG AA for normal text).
-        let fg = theme.role(ThemeRole::Foreground);
-        for bg in [read, write] {
-            assert!(contrast_ratio(fg, bg) > 4.5, "{bg:?}");
+        #[cfg(feature = "view")]
+        {
+            let fg = theme.role(ThemeRole::Foreground);
+            for bg in [read, write] {
+                assert!(contrast_ratio(fg, bg) > 4.5, "{bg:?}");
+            }
         }
     }
 
