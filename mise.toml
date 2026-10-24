@@ -86,19 +86,64 @@ run = """cargo mutants --package karet-session \
 # is a regression in the tests. `timeout` is the wall-clock cap on the whole
 # run: a run that outgrows it stops instead of running on unattended.
 # `mutants-all` runs every scope in turn.
+#
+# Green means no mutant is missed. cargo-mutants exits 3 when the only problem
+# is a timeout, and a timeout here is a mutant that turns a loop infinite (a
+# cursor that stops advancing, say): the suite never passes it, so it is
+# caught, and each run below accepts exit 3 as well as 0 (the `trap` turns a 3
+# into a 0 on the way out). Exit 2 (missed) and every other failure still fail
+# the task. `cargo mutants` stays the last command so that arguments after
+# `--` reach it: `mise run mutants-text -- -j 4`.
+#
+# An equivalent mutant (one no input can tell apart from the original) is
+# excluded by an `--exclude-re` that names its file, line, operator and
+# function, with the argument written beside it. The line anchor is
+# deliberate: when an edit moves the code, the exclusion stops matching and the
+# mutant reappears as missed, so a stale argument can never hide a different
+# mutant. Re-check the argument and update the line when that happens.
 [tasks.mutants-text]
 description = "Opt-in: mutation-test karet-text's apply, history, read and load (cap 20m)"
 timeout = "20m"
-run = """cargo mutants --package karet-text --all-features \
+# Equivalent mutants, excluded with their argument:
+# - apply.rs `old_end_char > start_char` -> `>=` in `mutate`: when the two are
+#   equal the range is empty, and removing an empty range leaves the rope as it
+#   was, so the guard only skips a no-op.
+# - read.rs `end - start < needle.len()` -> `end + start <` / `==` in `find`: a
+#   fast path. The chunk loop only searches bytes inside `[start, end)`, so a
+#   span shorter than the needle finds nothing there either; skipping the early
+#   return changes the work done, never the answer. (`<=` is not equivalent and
+#   is caught: an exact fit must match.)
+# - read.rs `needle.len() - 1` -> `+` / `/` (the boundary head) in `find`: a
+#   boundary match is only taken when it starts inside the carry, and such a
+#   match ends within `needle.len() - 1` bytes of the head; extra head bytes
+#   are never part of a match that is taken.
+# - read.rs `at < boundary_len` -> `<=` in `find`: a match starting at
+#   `boundary_len` lies wholly in the current piece, which the very next search
+#   finds at the same offset (`carry_start + boundary_len == piece_start`).
+# - read.rs `keep = needle.len() - 1` -> `+` / `/`, `carry.len() > keep` ->
+#   `>=` / `==` in `find`: all keep the same or more carry than needed. A
+#   match lying wholly in earlier carry bytes would already have been returned
+#   when those bytes were searched, so the extra bytes never produce an answer.
+#   (The variants that keep less, or underflow, are caught by the one- and
+#   two-byte needles in the boundary tests.)
+run = """trap 'test $? -eq 3 && exit 0' EXIT
+cargo mutants --package karet-text --all-features \
   --file 'crates/karet-text/src/apply.rs' \
   --file 'crates/karet-text/src/history.rs' \
   --file 'crates/karet-text/src/read.rs' \
-  --file 'crates/karet-text/src/load.rs'"""
+  --file 'crates/karet-text/src/load.rs' \
+  --exclude-re 'apply\\.rs:215:\\d+: replace > with >= in TextBuffer::mutate' \
+  --exclude-re 'read\\.rs:50:\\d+: replace (- with \\+|< with ==) in TextBuffer::find' \
+  --exclude-re 'read\\.rs:68:\\d+: replace - with [+/] in TextBuffer::find' \
+  --exclude-re 'read\\.rs:72:\\d+: replace < with <= in TextBuffer::find' \
+  --exclude-re 'read\\.rs:82:\\d+: replace - with [+/] in TextBuffer::find' \
+  --exclude-re 'read\\.rs:83:\\d+: replace > with (>=|==) in TextBuffer::find'"""
 
 [tasks.mutants-diff]
 description = "Opt-in: mutation-test karet-diff's engine, parse, patch, intraline, prepared and align (cap 30m)"
 timeout = "30m"
-run = """cargo mutants --package karet-diff --all-features \
+run = """trap 'test $? -eq 3 && exit 0' EXIT
+cargo mutants --package karet-diff --all-features \
   --file 'crates/karet-diff/src/engine.rs' \
   --file 'crates/karet-diff/src/parse/*.rs' \
   --file 'crates/karet-diff/src/patch.rs' \
@@ -109,7 +154,8 @@ run = """cargo mutants --package karet-diff --all-features \
 [tasks.mutants-core]
 description = "Opt-in: mutation-test karet-core's edit, highlight, coord, capability and graph (cap 20m)"
 timeout = "20m"
-run = """cargo mutants --package karet-core --all-features \
+run = """trap 'test $? -eq 3 && exit 0' EXIT
+cargo mutants --package karet-core --all-features \
   --file 'crates/karet-core/src/edit.rs' \
   --file 'crates/karet-core/src/highlight.rs' \
   --file 'crates/karet-core/src/coord.rs' \
@@ -125,7 +171,8 @@ timeout = "20m"
 #   bit and OR equals XOR for every input.
 # - `f < 0.0` -> `<=` in `format_float`: the comparison runs only for an
 #   infinite `f`, which is never `0.0`, so both pick the same sign.
-run = """cargo mutants --package karet-cbor --all-features \
+run = """trap 'test $? -eq 3 && exit 0' EXIT
+cargo mutants --package karet-cbor --all-features \
   --file 'crates/karet-cbor/src/diag.rs' \
   --file 'crates/karet-cbor/src/diag/*.rs' \
   --exclude-re 'replace \\| with \\^ in Parser::parse_bytes' \
@@ -134,7 +181,8 @@ run = """cargo mutants --package karet-cbor --all-features \
 [tasks.mutants-seam]
 description = "Opt-in: mutation-test karet-seam's query language, cfg predicates, ids, regroup and rollup (cap 40m)"
 timeout = "40m"
-run = """cargo mutants --package karet-seam --all-features \
+run = """trap 'test $? -eq 3 && exit 0' EXIT
+cargo mutants --package karet-seam --all-features \
   --file 'crates/karet-seam/src/query/*.rs' \
   --file 'crates/karet-seam/src/config/predicate.rs' \
   --file 'crates/karet-seam/src/id.rs' \
@@ -144,7 +192,8 @@ run = """cargo mutants --package karet-seam --all-features \
 [tasks.mutants-editor]
 description = "Opt-in: mutation-test karet-editor's text, bracket, conflict and editing models (cap 40m)"
 timeout = "40m"
-run = """cargo mutants --package karet-editor --all-features \
+run = """trap 'test $? -eq 3 && exit 0' EXIT
+cargo mutants --package karet-editor --all-features \
   --file 'crates/karet-editor/src/text.rs' \
   --file 'crates/karet-editor/src/bracket.rs' \
   --file 'crates/karet-editor/src/conflict.rs' \
@@ -154,7 +203,8 @@ run = """cargo mutants --package karet-editor --all-features \
 [tasks.mutants-session-pure]
 description = "Opt-in: mutation-test karet-session's pure helpers: semantic-token delta, hint flight, archive, config load, cancellation, highlight merge, linediff, backup (cap 60m)"
 timeout = "60m"
-run = """cargo mutants --package karet-session --all-features \
+run = """trap 'test $? -eq 3 && exit 0' EXIT
+cargo mutants --package karet-session --all-features \
   --file 'crates/karet-session/src/lsp/delta.rs' \
   --file 'crates/karet-session/src/lsp/hint_flight.rs' \
   --file 'crates/karet-session/src/lsp_registry/archive.rs' \
@@ -167,7 +217,8 @@ run = """cargo mutants --package karet-session --all-features \
 [tasks.mutants-app]
 description = "Opt-in: mutation-test the app's chord resolver, terminal input, CLI and command resolution (cap 60m)"
 timeout = "60m"
-run = """cargo mutants --package karet --all-features \
+run = """trap 'test $? -eq 3 && exit 0' EXIT
+cargo mutants --package karet --all-features \
   --file 'crates/karet/src/keymap/chord.rs' \
   --file 'crates/karet/src/terminal/input.rs' \
   --file 'crates/karet/src/cli.rs' \
