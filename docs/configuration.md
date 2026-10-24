@@ -168,6 +168,7 @@ also beats a user-level `[rust]` `formatOnSave`.
 | `colorTheme` | string | `"dark"` | Built-in `"dark"`, or a path to a VS Code `.json` theme (see [scope](scope.md#tui-theming)); the [theme picker](#color-themes) previews and chooses among them. A theme's `semanticTokenColors` style semantic tokens (`editor.semanticHighlighting`) by VS Code's selectors (`variable.readonly`, `*.deprecated`); a selector scoped to a language (`variable:rust`) is not applied, and a token no rule styles takes its `tokenColors` colour for the closest syntax class. |
 | `iconStyle` | `"nerdFont"`\|`"unicode"`\|`"ascii"` | `"nerdFont"` | File-tree / activity-bar glyphs. |
 | `startupPanel` | `"explorer"`\|`"search"`\|`"sourceControl"`\|`"none"` | `"explorer"` | Sidebar panel shown at startup. |
+| `restoreLayout` | bool | `true` | Reopen the workspace's tabs, splits, and cursors as the last clean exit left them (see [Saved layout](#saved-layout)). |
 
 #### Color themes
 
@@ -561,6 +562,23 @@ fingerprint; history for a file changed elsewhere since is deleted instead, and 
 history larger than 16 MiB is not kept at all. The files
 hold text you have deleted, which is why the setting is off by default; switching it off
 deletes each file's history the next time that file is saved or closed.
+
+## Saved layout
+
+With `workbench.restoreLayout` on (the default), quitting karet cleanly saves the
+workspace's layout beside the swaps (`…/karet/swaps/*.karet-layout`, one file per
+workspace root): the split tree and its ratios, each pane's file tabs in strip order and
+which one is in front, the focused pane, and every tab's cursors, selections, and scroll
+position. Tabs that do not show a file (diffs, commit views, terminals, Welcome) are
+not saved, and a file shown as a rendered preview reopens in its usual view. Quitting
+with no file tab open deletes the saved layout. A crash writes nothing, so the layout
+of the last clean exit survives it.
+
+The next time karet starts on the same root with nothing to open (no file argument,
+`--open`, `--preview`, `--split`, `--diff`, or `--goto`), it reopens that layout in
+place of the repository README preview. A file that no longer exists is skipped, and a
+pane left with no tabs is dropped. Switching the setting off restores nothing and
+deletes the saved layout at the next exit.
 
 ## Regenerating the schema
 

@@ -70,6 +70,7 @@ mod scroll;
 mod seam;
 mod search_completion;
 mod search_panel;
+mod session_restore;
 mod signature;
 mod snippet_session;
 mod source_links;
