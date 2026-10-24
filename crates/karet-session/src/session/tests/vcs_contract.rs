@@ -46,26 +46,15 @@
         (session, events)
     }
 
-    /// Wait (5s) for the event answering `id` that `pick` accepts.
+    /// The event answering `id` that `pick` accepts, or `None` past [`EVENT_DEADLINE`].
     fn wait_answer<T>(
         events: &mut EventRx,
         id: RequestId,
         mut pick: impl FnMut(Event) -> Option<T>,
     ) -> Option<T> {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        loop {
-            while let Some((tag, event)) = events.try_recv() {
-                if tag == Some(id)
-                    && let Some(value) = pick(event)
-                {
-                    return Some(value);
-                }
-            }
-            if std::time::Instant::now() > deadline {
-                return None;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
+        await_event(events, EVENT_DEADLINE, |tag, event| {
+            if tag == Some(id) { pick(event) } else { None }
+        })
     }
 
     type Status = (Vec<crate::api::ChangeSummary>, Vec<crate::api::ChangeSummary>);
