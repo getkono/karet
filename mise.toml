@@ -93,7 +93,8 @@ run = """cargo mutants --package karet-session \
 # caught, and each run below accepts exit 3 as well as 0 (the `trap` turns a 3
 # into a 0 on the way out). Exit 2 (missed) and every other failure still fail
 # the task. `cargo mutants` stays the last command so that arguments after
-# `--` reach it: `mise run mutants-text -- -j 4`.
+# `--` reach it: `mise run mutants-text -- -j 8`. Four jobs run at once unless
+# `CARGO_MUTANTS_JOBS` or `-j` says otherwise; the caps are sized for that.
 #
 # An equivalent mutant (one no input can tell apart from the original) is
 # excluded by an `--exclude-re` that names its file, line, operator and
@@ -127,6 +128,7 @@ timeout = "20m"
 #   (The variants that keep less, or underflow, are caught by the one- and
 #   two-byte needles in the boundary tests.)
 run = """trap 'test $? -eq 3 && exit 0' EXIT
+export CARGO_MUTANTS_JOBS="${CARGO_MUTANTS_JOBS:-4}"
 cargo mutants --package karet-text --all-features \
   --file 'crates/karet-text/src/apply.rs' \
   --file 'crates/karet-text/src/history.rs' \
@@ -143,6 +145,7 @@ cargo mutants --package karet-text --all-features \
 description = "Opt-in: mutation-test karet-diff's engine, parse, patch, intraline, prepared and align (cap 30m)"
 timeout = "30m"
 run = """trap 'test $? -eq 3 && exit 0' EXIT
+export CARGO_MUTANTS_JOBS="${CARGO_MUTANTS_JOBS:-4}"
 cargo mutants --package karet-diff --all-features \
   --file 'crates/karet-diff/src/engine.rs' \
   --file 'crates/karet-diff/src/parse/*.rs' \
@@ -154,13 +157,20 @@ cargo mutants --package karet-diff --all-features \
 [tasks.mutants-core]
 description = "Opt-in: mutation-test karet-core's edit, highlight, coord, capability and graph (cap 20m)"
 timeout = "20m"
+# Equivalent mutant, excluded with its argument:
+# - edit.rs `leader.head < leader.anchor` -> `<=` in `normalize_tracking`: the
+#   two differ only when the leader is a caret, which happens only when no
+#   member of the merge is non-empty. Carets collide only when they coincide,
+#   so then `lo == hi` and both branches build the same caret.
 run = """trap 'test $? -eq 3 && exit 0' EXIT
+export CARGO_MUTANTS_JOBS="${CARGO_MUTANTS_JOBS:-4}"
 cargo mutants --package karet-core --all-features \
   --file 'crates/karet-core/src/edit.rs' \
   --file 'crates/karet-core/src/highlight.rs' \
   --file 'crates/karet-core/src/coord.rs' \
   --file 'crates/karet-core/src/capability.rs' \
-  --file 'crates/karet-core/src/graph.rs'"""
+  --file 'crates/karet-core/src/graph.rs' \
+  --exclude-re 'edit\\.rs:389:\\d+: replace < with <= in CursorState::normalize_tracking'"""
 
 [tasks.mutants-cbor]
 description = "Opt-in: mutation-test karet-cbor's diagnostic-notation parser and printer (cap 20m)"
@@ -172,6 +182,7 @@ timeout = "20m"
 # - `f < 0.0` -> `<=` in `format_float`: the comparison runs only for an
 #   infinite `f`, which is never `0.0`, so both pick the same sign.
 run = """trap 'test $? -eq 3 && exit 0' EXIT
+export CARGO_MUTANTS_JOBS="${CARGO_MUTANTS_JOBS:-4}"
 cargo mutants --package karet-cbor --all-features \
   --file 'crates/karet-cbor/src/diag.rs' \
   --file 'crates/karet-cbor/src/diag/*.rs' \
@@ -182,6 +193,7 @@ cargo mutants --package karet-cbor --all-features \
 description = "Opt-in: mutation-test karet-seam's query language, cfg predicates, ids, regroup and rollup (cap 40m)"
 timeout = "40m"
 run = """trap 'test $? -eq 3 && exit 0' EXIT
+export CARGO_MUTANTS_JOBS="${CARGO_MUTANTS_JOBS:-4}"
 cargo mutants --package karet-seam --all-features \
   --file 'crates/karet-seam/src/query/*.rs' \
   --file 'crates/karet-seam/src/config/predicate.rs' \
@@ -193,6 +205,7 @@ cargo mutants --package karet-seam --all-features \
 description = "Opt-in: mutation-test karet-editor's text, bracket, conflict and editing models (cap 40m)"
 timeout = "40m"
 run = """trap 'test $? -eq 3 && exit 0' EXIT
+export CARGO_MUTANTS_JOBS="${CARGO_MUTANTS_JOBS:-4}"
 cargo mutants --package karet-editor --all-features \
   --file 'crates/karet-editor/src/text.rs' \
   --file 'crates/karet-editor/src/bracket.rs' \
@@ -204,6 +217,7 @@ cargo mutants --package karet-editor --all-features \
 description = "Opt-in: mutation-test karet-session's pure helpers: semantic-token delta, hint flight, archive, config load, cancellation, highlight merge, linediff, backup (cap 60m)"
 timeout = "60m"
 run = """trap 'test $? -eq 3 && exit 0' EXIT
+export CARGO_MUTANTS_JOBS="${CARGO_MUTANTS_JOBS:-4}"
 cargo mutants --package karet-session --all-features \
   --file 'crates/karet-session/src/lsp/delta.rs' \
   --file 'crates/karet-session/src/lsp/hint_flight.rs' \
@@ -218,6 +232,7 @@ cargo mutants --package karet-session --all-features \
 description = "Opt-in: mutation-test the app's chord resolver, terminal input, CLI and command resolution (cap 60m)"
 timeout = "60m"
 run = """trap 'test $? -eq 3 && exit 0' EXIT
+export CARGO_MUTANTS_JOBS="${CARGO_MUTANTS_JOBS:-4}"
 cargo mutants --package karet --all-features \
   --file 'crates/karet/src/keymap/chord.rs' \
   --file 'crates/karet/src/terminal/input.rs' \

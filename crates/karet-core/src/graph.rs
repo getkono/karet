@@ -171,6 +171,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn len_and_is_empty_count_nodes() {
+        let mut view = GraphView::new();
+        assert_eq!(view.len(), 0);
+        assert!(view.is_empty());
+        view.nodes
+            .push(GraphNode::new("a", "A", GraphNodeKind::Symbol));
+        view.nodes
+            .push(GraphNode::new("b", "B", GraphNodeKind::Symbol));
+        assert_eq!(view.len(), 2);
+        assert!(!view.is_empty());
+    }
+
+    #[test]
     fn successors_and_predecessors_follow_edge_direction() {
         let mut view = GraphView::new();
         view.nodes

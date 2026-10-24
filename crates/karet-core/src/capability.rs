@@ -327,6 +327,7 @@ mod tests {
         capabilities.enable(ServerFeature::Rename);
         assert!(capabilities.supports(ServerFeature::Hover));
         assert_eq!(capabilities.len(), 2);
+        assert!(!capabilities.is_empty());
 
         // Enabling twice is idempotent, so a re-registration cannot double-count.
         capabilities.enable(ServerFeature::Hover);
