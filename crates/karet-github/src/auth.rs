@@ -135,6 +135,18 @@ mod tests {
         assert_eq!(env_pick(&[("GITHUB_TOKEN", ""), ("GH_TOKEN", "  ")]), None);
     }
 
+    /// The production lookup reads the live process environment, and a variable
+    /// that is not set reads as absent; it is only read here, never changed.
+    #[test]
+    fn process_env_reads_the_process_environment() {
+        // Cargo sets `CARGO_PKG_NAME` for the test process it runs.
+        assert_eq!(
+            process_env("CARGO_PKG_NAME"),
+            Some(env!("CARGO_PKG_NAME").to_string())
+        );
+        assert_eq!(process_env("KARET_GITHUB_TEST_UNSET_VARIABLE"), None);
+    }
+
     /// Both lookups read `gh`'s answer through this, so the blocking one trims
     /// and refuses a failed or blank answer exactly as discovery does.
     #[test]
