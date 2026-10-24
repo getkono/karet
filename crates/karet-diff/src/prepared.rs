@@ -267,6 +267,30 @@ mod tests {
     }
 
     #[test]
+    fn intraline_pairs_each_removal_with_the_addition_at_the_same_offset() {
+        let p = prepared("a\nr1\nr2\nz\n", "a\nn1\nn2\nz\n");
+        let rows = &p.intraline[0];
+        let kinds: Vec<LineKind> = p.diff.hunks[0].lines.iter().map(|l| l.kind).collect();
+        assert_eq!(
+            kinds,
+            [
+                LineKind::Context,
+                LineKind::Remove,
+                LineKind::Remove,
+                LineKind::Add,
+                LineKind::Add,
+                LineKind::Context,
+            ]
+        );
+        // The second removal pairs with the second addition, and both rows of
+        // that pair carry it.
+        assert_eq!(rows[1], Some(compute_highlights("r1", "n1")));
+        assert_eq!(rows[2], Some(compute_highlights("r2", "n2")));
+        assert_eq!(rows[3], Some(compute_highlights("r1", "n1")));
+        assert_eq!(rows[4], Some(compute_highlights("r2", "n2")));
+    }
+
+    #[test]
     fn intraline_is_indexed_per_hunk() {
         let diff = diff_text(
             "a\nb\nc\nd\ne\nf\ng\nh\n",

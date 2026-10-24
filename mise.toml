@@ -144,6 +144,10 @@ cargo mutants --package karet-text --all-features \
 [tasks.mutants-diff]
 description = "Opt-in: mutation-test karet-diff's engine, parse, patch, intraline, prepared and align (cap 30m)"
 timeout = "30m"
+# Equivalent mutants, excluded with their argument:
+# - parse/path.rs `|` -> `^` joining the three octal digits in `decode_path`:
+#   each digit is below 8, so `d1 << 6`, `d2 << 3` and `d3` occupy disjoint
+#   bits (6-7, 3-5, 0-2) and OR equals XOR for every input.
 run = """trap 'test $? -eq 3 && exit 0' EXIT
 export CARGO_MUTANTS_JOBS="${CARGO_MUTANTS_JOBS:-4}"
 cargo mutants --package karet-diff --all-features \
@@ -152,7 +156,8 @@ cargo mutants --package karet-diff --all-features \
   --file 'crates/karet-diff/src/patch.rs' \
   --file 'crates/karet-diff/src/intraline.rs' \
   --file 'crates/karet-diff/src/prepared.rs' \
-  --file 'crates/karet-diff/src/align.rs'"""
+  --file 'crates/karet-diff/src/align.rs' \
+  --exclude-re 'path\\.rs:8[78]:\\d+: replace \\| with \\^ in decode_path'"""
 
 [tasks.mutants-core]
 description = "Opt-in: mutation-test karet-core's edit, highlight, coord, capability and graph (cap 20m)"
