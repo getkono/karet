@@ -208,6 +208,11 @@ mod tests {
             split_ab_paths("a/foo.rs b/bar.rs")?,
             ("foo.rs".to_string(), "bar.rs".to_string())
         );
+        // A `b/` not preceded by a space is part of a name, not the boundary.
+        assert_eq!(
+            split_ab_paths("a/foo b/barb/baz")?,
+            ("foo".to_string(), "barb/baz".to_string())
+        );
         // No space at all: the whole string stands for both sides.
         assert_eq!(
             split_ab_paths("lonely")?,

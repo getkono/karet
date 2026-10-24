@@ -148,6 +148,10 @@ timeout = "30m"
 # - parse/path.rs `|` -> `^` joining the three octal digits in `decode_path`:
 #   each digit is below 8, so `d1 << 6`, `d2 << 3` and `d3` occupy disjoint
 #   bits (6-7, 3-5, 0-2) and OR equals XOR for every input.
+# - intraline.rs `dp[i][j - 1]` -> `dp[i][j / 1]` in the `lcs_tokens`
+#   backtrack: the branch runs only when the tokens differ, where
+#   `dp[i][j] = max(dp[i - 1][j], dp[i][j - 1])`, so `up >= left` and
+#   `up >= dp[i][j]` both hold exactly when `up == dp[i][j]`.
 run = """trap 'test $? -eq 3 && exit 0' EXIT
 export CARGO_MUTANTS_JOBS="${CARGO_MUTANTS_JOBS:-4}"
 cargo mutants --package karet-diff --all-features \
@@ -157,7 +161,8 @@ cargo mutants --package karet-diff --all-features \
   --file 'crates/karet-diff/src/intraline.rs' \
   --file 'crates/karet-diff/src/prepared.rs' \
   --file 'crates/karet-diff/src/align.rs' \
-  --exclude-re 'path\\.rs:8[78]:\\d+: replace \\| with \\^ in decode_path'"""
+  --exclude-re 'path\\.rs:8[78]:\\d+: replace \\| with \\^ in decode_path' \
+  --exclude-re 'intraline\\.rs:109:43: replace - with / in lcs_tokens'"""
 
 [tasks.mutants-core]
 description = "Opt-in: mutation-test karet-core's edit, highlight, coord, capability and graph (cap 20m)"
