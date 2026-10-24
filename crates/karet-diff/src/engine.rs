@@ -451,6 +451,16 @@ mod tests {
         assert!(h.lines.iter().all(|l| l.crlf && !l.no_newline));
     }
 
+    #[test]
+    fn line_parts_reads_each_terminator() {
+        assert_eq!(line_parts("a\n"), ("a", false, false));
+        assert_eq!(line_parts("a\r\n"), ("a", true, false));
+        assert_eq!(line_parts("a"), ("a", false, true));
+        // The `""` an out-of-range lookup yields is no line at all, so it must
+        // not be flagged as an unterminated last line.
+        assert_eq!(line_parts(at(&["a\n"], 5)), ("", false, false));
+    }
+
     /// Each line of `hunk` as `(kind, content, crlf, no_newline)`.
     fn line_facts(hunk: &Hunk) -> Vec<(LineKind, &str, bool, bool)> {
         hunk.lines
