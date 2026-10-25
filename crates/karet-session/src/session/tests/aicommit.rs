@@ -42,76 +42,80 @@
     }
 
     #[test]
-    fn generation_is_refused_when_the_setting_is_off() {
-        let Some((_dir, root, _file)) = init_temp_repo() else {
-            return;
+    fn generation_is_refused_when_the_setting_is_off() -> TestResult {
+        let Some((_dir, root, _file)) = init_git_repo()? else {
+            // Skip: `git` is not on PATH.
+            return Ok(());
         };
         let (mut session, mut events) = ai_session(root);
         session.config.settings.git.ai_commit.enabled = false;
 
         session.handle(RequestId(1), Command::GenerateCommitMessage);
 
-        let found = failure(&drain(&mut events));
-        assert!(found.is_some(), "a refusal answers the request");
-        let (id, message) = found.unwrap_or_default();
+        let (id, message) =
+            failure(&drain(&mut events)).ok_or("a refusal answers the request")?;
         assert_eq!(id, Some(RequestId(1)), "attributed to the asker");
         assert!(message.contains("disabled"), "{message}");
+        Ok(())
     }
 
     #[test]
-    fn generation_is_refused_with_nothing_staged() {
-        let Some((_dir, root, _file)) = init_temp_repo() else {
-            return;
+    fn generation_is_refused_with_nothing_staged() -> TestResult {
+        let Some((_dir, root, _file)) = init_git_repo()? else {
+            // Skip: `git` is not on PATH.
+            return Ok(());
         };
         // A tokio runtime, because the real path spawns onto one.
-        let Ok(runtime) = tokio::runtime::Runtime::new() else {
-            return;
-        };
+        let runtime = tokio::runtime::Runtime::new()?;
         let (mut session, mut events) = runtime.block_on(async { ai_session(root) });
 
-        runtime.block_on(async {
-            session.handle(RequestId(1), Command::GenerateCommitMessage);
-            // The diff read is a blocking task; give it a moment to answer.
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        });
-
-        let found = failure(&drain(&mut events));
-        assert!(found.is_some(), "nothing staged is a failure");
-        let (id, message) = found.unwrap_or_default();
+        // The diff read is a blocking task; await its answer rather than guessing
+        // how long it takes.
+        let (id, message) = runtime
+            .block_on(async {
+                session.handle(RequestId(1), Command::GenerateCommitMessage);
+                next_event(&mut events, EVENT_DEADLINE, |id, event| match event {
+                    Event::CommitMessageFailed { message } => Some((id, message)),
+                    _ => None,
+                })
+                .await
+            })
+            .ok_or("nothing staged is a failure")?;
         assert_eq!(id, Some(RequestId(1)));
         assert!(message.contains("stage changes first"), "{message}");
+        Ok(())
     }
 
     #[test]
-    fn a_session_without_a_reactor_answers_rather_than_panicking() {
-        let Some((_dir, root, _file)) = init_temp_repo() else {
-            return;
+    fn a_session_without_a_reactor_answers_rather_than_panicking() -> TestResult {
+        let Some((_dir, root, _file)) = init_git_repo()? else {
+            // Skip: `git` is not on PATH.
+            return Ok(());
         };
         let (mut session, mut events) = ai_session(root);
 
         // No runtime here at all: the request must still be answered.
         session.handle(RequestId(1), Command::GenerateCommitMessage);
 
-        let found = failure(&drain(&mut events));
-        assert!(found.is_some(), "answered even without a reactor");
-        let (id, message) = found.unwrap_or_default();
+        let (id, message) =
+            failure(&drain(&mut events)).ok_or("answered even without a reactor")?;
         assert_eq!(id, Some(RequestId(1)));
         assert!(message.contains("runtime"), "{message}");
+        Ok(())
     }
 
     #[test]
-    fn availability_reports_the_configuration_without_probing_when_disabled() {
-        let Some((_dir, root, _file)) = init_temp_repo() else {
-            return;
+    fn availability_reports_the_configuration_without_probing_when_disabled() -> TestResult {
+        let Some((_dir, root, _file)) = init_git_repo()? else {
+            // Skip: `git` is not on PATH.
+            return Ok(());
         };
         let (mut session, mut events) = ai_session(root);
         session.config.settings.git.ai_commit.enabled = false;
 
         session.handle(RequestId(1), Command::ProbeAiCommit);
 
-        let found = availability(&drain(&mut events));
-        assert!(found.is_some(), "availability is pushed");
-        let Some(status) = found else { return };
+        let status = availability(&drain(&mut events)).ok_or("availability is pushed")?;
         assert!(!status.enabled);
         assert!(
             status.agents.is_empty(),
@@ -121,12 +125,14 @@
             status.blocker().is_some_and(|b| b.contains("disabled")),
             "{status:?}"
         );
+        Ok(())
     }
 
     #[test]
-    fn start_seeds_the_client_with_availability() {
-        let Some((_dir, root, _file)) = init_temp_repo() else {
-            return;
+    fn start_seeds_the_client_with_availability() -> TestResult {
+        let Some((_dir, root, _file)) = init_git_repo()? else {
+            // Skip: `git` is not on PATH.
+            return Ok(());
         };
         let (mut session, mut events) = ai_session(root);
         // Off, so `start` reports without launching anything — the point here is
@@ -135,16 +141,16 @@
 
         session.start();
 
-        let found = availability(&drain(&mut events));
-        assert!(found.is_some(), "startup pushes availability");
-        let Some(status) = found else { return };
+        let status = availability(&drain(&mut events)).ok_or("startup pushes availability")?;
         assert_eq!(status.options, session.config.settings.git.ai_commit);
+        Ok(())
     }
 
     #[test]
-    fn a_repository_cannot_choose_which_executable_runs() {
-        let Some((_dir, root, _file)) = init_temp_repo() else {
-            return;
+    fn a_repository_cannot_choose_which_executable_runs() -> TestResult {
+        let Some((_dir, root, _file)) = init_git_repo()? else {
+            // Skip: `git` is not on PATH.
+            return Ok(());
         };
         let (mut session, _events) = ai_session(root);
         session.config.settings.git.ai_commit.binary = Some("./payload.sh".to_string());
@@ -172,12 +178,14 @@
         // Everything else the repository asked for is still honoured.
         session.config.settings.git.ai_commit.model = "haiku".to_string();
         assert_eq!(session.ai_commit_options().model, "haiku");
+        Ok(())
     }
 
     #[test]
-    fn changing_the_settings_re_reports_availability() {
-        let Some((_dir, root, _file)) = init_temp_repo() else {
-            return;
+    fn changing_the_settings_re_reports_availability() -> TestResult {
+        let Some((_dir, root, _file)) = init_git_repo()? else {
+            // Skip: `git` is not on PATH.
+            return Ok(());
         };
         let (mut session, mut events) = ai_session(root);
         session.config.settings.git.ai_commit.enabled = false;
@@ -195,8 +203,8 @@
         report.settings.git.ai_commit.enabled = true;
         report.settings.git.ai_commit.binary = Some("karet-no-such-agent".to_string());
         session.apply_config_report(report);
-        let found = availability(&drain(&mut events));
-        assert!(found.is_some(), "a changed setting re-reports availability");
-        let Some(status) = found else { return };
+        let status = availability(&drain(&mut events))
+            .ok_or("a changed setting re-reports availability")?;
         assert!(status.enabled);
+        Ok(())
     }

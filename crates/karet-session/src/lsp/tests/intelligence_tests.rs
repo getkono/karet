@@ -168,7 +168,10 @@ async fn a_hint_request_waits_for_its_edit_without_flushing_it_early() -> TestRe
     Ok(())
 }
 
-#[tokio::test]
+// On tokio's virtual clock, so the closing silence window proves absence: the
+// server is in-process, and idle time advances only once every task has run, so
+// a request already launched reaches the wire before the window can close.
+#[tokio::test(start_paused = true)]
 async fn a_server_without_inlay_hints_answers_them_empty() -> TestResult {
     // Refused before the wire, and still answered: the editor asks on every
     // viewport change and must never be left holding a request open.

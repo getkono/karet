@@ -67,6 +67,14 @@ impl Pending {
     pub(crate) fn at(since: Instant) -> Self {
         Self { since }
     }
+
+    /// The instant this load is anchored at, so a test can ask [`Self::wake`]
+    /// about fixed offsets from it instead of racing the real clock.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn since(self) -> Instant {
+        self.since
+    }
 }
 
 impl App {
@@ -157,11 +165,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_fresh_pending_is_hidden_and_wakes_within_the_delay() {
-        let pending = Pending::start();
-        assert!(!pending.visible());
-        let wake = pending.wake(Instant::now());
-        assert!(wake.is_some_and(|d| d <= LOADING_REVEAL_DELAY));
+    fn a_fresh_pending_is_hidden() {
+        assert!(!Pending::start().visible());
+    }
+
+    #[test]
+    fn the_wake_counts_down_exactly_to_the_reveal_delay() {
+        let t0 = Instant::now();
+        let pending = Pending::at(t0);
+        let step = Duration::from_millis(50);
+        assert_eq!(
+            pending.wake(t0),
+            Some(LOADING_REVEAL_DELAY),
+            "a full delay at the anchor"
+        );
+        assert_eq!(pending.wake(t0 + step), Some(LOADING_REVEAL_DELAY - step));
+        assert_eq!(
+            pending.wake(t0 + LOADING_REVEAL_DELAY + Duration::from_millis(1)),
+            None,
+            "past the delay the placeholder is painted, so nothing wakes"
+        );
+        assert_eq!(pending.elapsed_since(t0 + step), step);
+    }
+
+    #[test]
+    fn an_instant_before_the_anchor_saturates_to_a_full_delay() {
+        let t0 = Instant::now();
+        let pending = Pending::at(t0 + Duration::from_secs(1));
+        assert_eq!(pending.wake(t0), Some(LOADING_REVEAL_DELAY));
+        assert_eq!(pending.elapsed_since(t0), Duration::ZERO);
     }
 
     #[test]

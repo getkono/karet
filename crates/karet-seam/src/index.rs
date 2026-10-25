@@ -45,10 +45,44 @@ impl SeamIndex {
         Self::default()
     }
 
+    /// A fixture index: one [`Package`](crate::NodeKind::Package) root per
+    /// `(name, manifest)` pair, in the order given, plus `edges` taken as they are.
+    ///
+    /// For a consumer's tests, which need a tree to read without parsing one. The index's
+    /// mutators are crate-private, so this builds through them rather than handing out a
+    /// node to rewire: each root is interned, located in its manifest, and recorded as a
+    /// root exactly as indexing would leave it. A real index comes from
+    /// [`index_workspace`](crate::index_workspace) and its siblings.
+    #[must_use]
+    pub fn from_packages<'a>(
+        packages: impl IntoIterator<Item = (&'a str, &'a Path)>,
+        edges: impl IntoIterator<Item = crate::edge::Edge>,
+    ) -> Self {
+        let mut index = Self::new();
+        for (name, manifest) in packages {
+            let id = index.intern(SeamPath::new(vec![crate::id::SeamSegment::new(name)]));
+            let file = index.intern_file(manifest);
+            index.insert(Node::new(
+                id,
+                crate::model::NodeKind::Package,
+                name,
+                SeamLocation {
+                    file,
+                    range: karet_core::Range::default(),
+                    span: karet_core::Span::default(),
+                    selection: karet_core::Range::default(),
+                    header: karet_core::Range::default(),
+                },
+            ));
+        }
+        index.edges.insert_all(edges);
+        index
+    }
+
     // --- identity -------------------------------------------------------------
 
     /// The id for `path`, assigning one if this is the first time it is seen.
-    pub fn intern(&mut self, path: SeamPath) -> SeamId {
+    pub(crate) fn intern(&mut self, path: SeamPath) -> SeamId {
         self.interner.intern(path)
     }
 
@@ -67,7 +101,7 @@ impl SeamIndex {
     // --- files ----------------------------------------------------------------
 
     /// The handle for `path`, registering it if it is new.
-    pub fn intern_file(&mut self, path: &Path) -> FileId {
+    pub(crate) fn intern_file(&mut self, path: &Path) -> FileId {
         if let Some(id) = self.file_ids.get(path) {
             return *id;
         }
@@ -79,7 +113,7 @@ impl SeamIndex {
 
     /// The handle already assigned to `path`, without assigning one.
     ///
-    /// Re-indexing asks this rather than [`Self::intern_file`]: a path the index never
+    /// Re-indexing asks this rather than registering the path: a path the index never
     /// held has nothing to rebuild, and registering it would inflate the file count the
     /// header reports for work that never happened.
     #[must_use]
@@ -94,7 +128,7 @@ impl SeamIndex {
     /// works only while every module node is located in its *declaring* file, which is a
     /// Rust accident: Python declares nothing, so its module nodes sit in the very file
     /// they own, and the inference silently lands one level too high.
-    pub fn attribute_file(&mut self, file: FileId, owner: SeamId, language: LanguageId) {
+    pub(crate) fn attribute_file(&mut self, file: FileId, owner: SeamId, language: LanguageId) {
         self.attribution.insert(file, (owner, language));
     }
 
@@ -164,7 +198,7 @@ impl SeamIndex {
     /// A node whose parent is not in the index yet is still accepted — the extractor
     /// inserts in tree order, and a missing parent means the caller is splicing a
     /// subtree whose root attaches later.
-    pub fn insert(&mut self, node: Node) {
+    pub(crate) fn insert(&mut self, node: Node) {
         let id = node.id;
         let parent = node.parent;
         match parent {
@@ -191,7 +225,7 @@ impl SeamIndex {
     }
 
     /// Mutable access to the node behind `id`.
-    pub fn node_mut(&mut self, id: SeamId) -> Option<&mut Node> {
+    pub(crate) fn node_mut(&mut self, id: SeamId) -> Option<&mut Node> {
         self.nodes.get_mut(&id)
     }
 
@@ -260,7 +294,7 @@ impl SeamIndex {
     }
 
     /// Mutable access to the edge store.
-    pub fn edges_mut(&mut self) -> &mut EdgeStore {
+    pub(crate) fn edges_mut(&mut self) -> &mut EdgeStore {
         &mut self.edges
     }
 
@@ -284,7 +318,7 @@ impl SeamIndex {
     /// The node stays in the tree. Removing it would say the package has no such module,
     /// when what actually happened is that its text could not be located — a different
     /// answer, and the one the reader needs.
-    pub fn mark_module_unresolved(&mut self, id: SeamId, candidates: Vec<PathBuf>) {
+    pub(crate) fn mark_module_unresolved(&mut self, id: SeamId, candidates: Vec<PathBuf>) {
         self.unresolved.push((id, candidates));
     }
 
@@ -311,7 +345,7 @@ impl SeamIndex {
 
     /// Remove every node located in `file` that sits under `root`, detaching them from
     /// their parents and dropping the edges they owned.
-    pub fn remove_nodes_in_file(&mut self, file: FileId, root: SeamId) {
+    pub(crate) fn remove_nodes_in_file(&mut self, file: FileId, root: SeamId) {
         let doomed: Vec<SeamId> = self
             .subtree(root)
             .into_iter()
@@ -533,7 +567,7 @@ impl SeamIndex {
     /// hangs from is not in the index, which means the caller replayed out of order or
     /// handed over a contribution belonging to a different tree; either way the honest
     /// response is to parse the file rather than to guess.
-    pub fn replay(
+    pub(crate) fn replay(
         &mut self,
         contribution: &crate::contribution::FileContribution,
     ) -> Option<Vec<(SeamId, Vec<crate::lang::Owner>)>> {
@@ -620,7 +654,7 @@ impl SeamIndex {
     /// matter of re-interning: a node keeps the name it had and gets whatever handle this
     /// index has free. Callers give each package a distinct root segment, so two packages
     /// never contend for a path.
-    pub fn merge(&mut self, other: Self) {
+    pub(crate) fn merge(&mut self, other: Self) {
         let Self {
             interner,
             mut nodes,
@@ -725,7 +759,7 @@ impl SeamIndex {
     ///
     /// A capped index that says nothing reads as a complete one, so this is surfaced in
     /// the header rather than swallowed.
-    pub fn mark_truncated(&mut self, scanned: usize) {
+    pub(crate) fn mark_truncated(&mut self, scanned: usize) {
         self.truncated = Some(scanned);
     }
 
@@ -743,7 +777,7 @@ impl SeamIndex {
     /// *indeterminate* node does contribute: excluding it would assert an absence the
     /// index has not established, which is precisely the confusion the three-state
     /// model exists to prevent.
-    pub fn recompute_rollups(&mut self) {
+    pub(crate) fn recompute_rollups(&mut self) {
         let roots = self.roots.clone();
         for root in roots {
             self.recompute_subtree(root);
@@ -754,7 +788,7 @@ impl SeamIndex {
     ///
     /// This is the incremental path: re-indexing one file changes one subtree, and only
     /// the spine above it needs to be revisited.
-    pub fn recompute_rollups_from(&mut self, id: SeamId) {
+    pub(crate) fn recompute_rollups_from(&mut self, id: SeamId) {
         self.recompute_subtree(id);
         for ancestor in self.ancestors(id) {
             let merged = self.own_and_children_rollups(ancestor);

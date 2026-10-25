@@ -229,7 +229,13 @@ async fn search_replace_all_rewrites_matching_files() {
     app.search.case_sensitive = true;
     app.search.replace = "pin".to_string();
     app.search_replace_all();
-    pump(&mut app, &mut events).await;
+    pump_until(&mut app, &mut events, |app| {
+        app.notifications
+            .active()
+            .iter()
+            .any(|note| note.title.starts_with("replaced "))
+    })
+    .await;
     assert_eq!(
         std::fs::read_to_string(dir.join("a.txt")).unwrap_or_default(),
         "pin and pin\n"
@@ -274,6 +280,16 @@ fn scm_app(root: PathBuf) -> (App, EventRx) {
     app.focus = Focus::Sidebar;
     (app, events)
 }
+
+/// Whether the seeded status has reached the Source-Control pane.
+fn status_listed(app: &App) -> bool {
+    !app.scm.changes.is_empty()
+}
+
+/// Whether a status listing a staged file has reached the pane.
+fn staged_something(app: &App) -> bool {
+    app.scm.staged_count > 0
+}
 #[tokio::test]
 async fn backspace_and_insert_apply_to_the_local_buffer_without_waiting_for_a_snapshot() {
     // Regression for "editor jumps back / skips characters on backspace": edits
@@ -296,7 +312,8 @@ async fn backspace_and_insert_apply_to_the_local_buffer_without_waiting_for_a_sn
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
     app.backend = Some(backend);
     app.open_path(&path);
-    pump(&mut app, &mut events).await; // registers the doc so submit_edit can act
+    // Registers the doc so submit_edit can act.
+    pump_until(&mut app, &mut events, active_doc_open).await;
 
     app.dispatch(Command::InsertChar('x'));
     assert_eq!(code_tab_text(&app), "xab");
@@ -338,7 +355,7 @@ async fn paste_while_find_is_open_targets_the_find_query_not_the_editor() {
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
     app.backend = Some(backend);
     app.open_path(&path);
-    pump(&mut app, &mut events).await;
+    pump_until(&mut app, &mut events, active_doc_open).await;
 
     app.open_find();
     assert!(app.find_open);
@@ -383,7 +400,12 @@ async fn a_non_utf8_file_opens_read_only_instead_of_a_silently_dead_tab() {
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
     app.backend = Some(backend);
     app.open_path(&path);
-    pump(&mut app, &mut events).await;
+    // The open is answered once the tab is no longer a code tab still waiting
+    // on its document: either the load succeeded or the tab fell back.
+    pump_until(&mut app, &mut events, |app| {
+        !matches!(app.tabs[app.active].kind, TabKind::Code { doc: None, .. })
+    })
+    .await;
 
     assert!(
         matches!(app.tabs[app.active].kind, TabKind::Hex { .. }),
@@ -401,13 +423,13 @@ async fn scm_stage_key_stages_through_the_backend() {
     let (mut app, mut events) = scm_app(repo.path.clone());
 
     // The seeded status lists the untracked file.
-    pump(&mut app, &mut events).await;
+    pump_until(&mut app, &mut events, status_listed).await;
     assert_eq!(app.scm.changes.len(), 1);
     assert_eq!(app.scm.changes[0].status, StatusKind::Untracked);
 
     // Pressing 's' in the focused SCM pane stages it, end to end.
     app.handle_key(press('s'));
-    pump(&mut app, &mut events).await;
+    pump_until(&mut app, &mut events, staged_something).await;
     assert_eq!(app.scm.staged_count, 1);
     assert_eq!(app.scm.changes[0].status, StatusKind::Added);
 }
@@ -422,7 +444,7 @@ async fn scm_stage_still_works_after_previewing_a_diff() {
         return;
     };
     let (mut app, mut events) = scm_app(repo.path.clone());
-    pump(&mut app, &mut events).await;
+    pump_until(&mut app, &mut events, status_listed).await;
     assert_eq!(app.scm.changes.len(), 1);
 
     // Arrow-browse onto the change: its diff previews, focus stays on SCM.
@@ -433,7 +455,7 @@ async fn scm_stage_still_works_after_previewing_a_diff() {
 
     // Staging still works while the preview is up.
     app.handle_key(press('s'));
-    pump(&mut app, &mut events).await;
+    pump_until(&mut app, &mut events, staged_something).await;
     assert_eq!(app.scm.staged_count, 1);
     assert_eq!(app.scm.changes[0].status, StatusKind::Added);
 }
@@ -443,17 +465,15 @@ async fn scm_stages_a_multi_file_selection() {
     let Some(repo) = init_test_repo() else {
         return;
     };
-    if std::fs::write(repo.path.join("second.rs"), b"fn second() {}\n").is_err() {
-        return;
-    }
+    std::fs::write(repo.path.join("second.rs"), b"fn second() {}\n").expect("write second.rs");
     let (mut app, mut events) = scm_app(repo.path.clone());
-    pump(&mut app, &mut events).await;
+    pump_until(&mut app, &mut events, status_listed).await;
     assert_eq!(app.scm.changes.len(), 2);
 
     // Select both changed files, then stage the whole selection at once.
     app.scm.selection.select_all();
     app.handle_key(press('s'));
-    pump(&mut app, &mut events).await;
+    pump_until(&mut app, &mut events, staged_something).await;
     assert_eq!(app.scm.staged_count, 2);
     assert!(
         app.scm

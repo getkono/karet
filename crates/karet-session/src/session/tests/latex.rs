@@ -1,8 +1,7 @@
     #[test]
-    fn latex_build_command_reports_a_missing_external_compiler() {
-        let Some((dir, path)) = write_temp("main.tex", "\\documentclass{article}\n") else {
-            return;
-        };
+    fn latex_build_command_reports_a_missing_external_compiler() -> TestResult {
+        let (dir, path) =
+            write_temp("main.tex", "\\documentclass{article}\n").ok_or("temp file not written")?;
         let mut settings = crate::config::Settings::default();
         settings.latex.command = "karet-test-definitely-missing-latex".to_owned();
         let (mut session, mut events, _snaps) = Session::new(SessionConfig {
@@ -17,9 +16,7 @@
                 language: None,
             },
         );
-        let Some(doc) = opened_doc(&mut events) else {
-            return;
-        };
+        let doc = opened_doc(&mut events).ok_or("no Opened event")?;
         session.handle(
             RequestId(2),
             Command::ApplyChange {
@@ -45,16 +42,11 @@
                 .is_ok_and(|contents| contents.contains("saved before compilation")),
             "an explicit build must safely persist the current buffer first"
         );
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        let mut failure = None;
-        while std::time::Instant::now() < deadline {
-            if let Some((id, Event::LatexBuildFinished { error, .. })) = events.try_recv()
-                && id == Some(RequestId(3))
-            {
-                failure = error;
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
+        let failure = await_event(&mut events, EVENT_DEADLINE, |id, event| match event {
+            Event::LatexBuildFinished { error, .. } if id == Some(RequestId(3)) => Some(error),
+            _ => None,
+        })
+        .ok_or("the build never finished")?;
         assert!(failure.is_some_and(|error| error.contains("could not start")));
+        Ok(())
     }

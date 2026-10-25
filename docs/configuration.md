@@ -56,7 +56,9 @@ Keys use the VS Code / Zed camelCase style. Defaults shown.
 | `guides` | object | `{ "indentation": true, "highlightActiveIndentation": true }` | `indentation` draws a `│` guide every `tabSize` columns of a line's leading whitespace; a blank line takes the deeper indentation of the code around it, so a block's guide runs through its blank lines. `highlightActiveIndentation` draws the guide of the block holding the caret brighter (on a block's header line, the block it opens). Global only; not a per-language override. |
 | `renderWhitespace` | `"none"`\|`"boundary"`\|`"selection"`\|`"trailing"`\|`"all"` | `"none"` | Which whitespace is drawn visibly: a space as `·`, a tab as `→`. `"boundary"` shows all but a single space between words; `"selection"` only whitespace inside a selection; `"trailing"` only whitespace at a line's end. An indentation guide wins the cell it shares with a mark. Global only; not a per-language override. |
 | `bracketPairColorization` | object | `{ "enabled": false }` | `enabled` colours each code `()`, `[]` and `{}` by its nesting depth, cycling through the theme's constant, keyword and function colours. Brackets in strings and comments, and a closer with no opener, keep their own colour. Global only; not a per-language override. |
-| `wordWrap` | bool\|null | `null` | Override long-line handling; `null` uses the file-type default, `true` wraps, and `false` scrolls horizontally. |
+| `wordWrap` | bool\|`"off"`\|`"on"`\|`"wordWrapColumn"`\|`"bounded"`\|null | `null` | Override long-line handling; `null` uses the file-type default, `true`/`"on"` wraps at the viewport, and `false`/`"off"` scrolls horizontally. `"wordWrapColumn"` and `"bounded"` wrap at `wordWrapColumn`, or at the viewport when it is narrower: a wrapped view has no horizontal scroll, so in a terminal the two read the same. |
+| `wordWrapColumn` | number | `80` | The column `"wordWrapColumn"` and `"bounded"` wrap at; `0` wraps at the viewport. |
+| `wrappingIndent` | `"none"`\|`"same"`\|`"indent"` | `"same"` | How a wrapped line's continuation rows are indented: `"none"` starts them at the left edge, `"same"` lines them up with the line's own leading whitespace, `"indent"` puts them one `tabSize` deeper. The indent never takes more than half the wrap width, so a deeply indented line in a narrow pane keeps room for its text. A click in the indent puts the caret at the row's first character, and Up/Down keep the screen column across it. |
 | `stickyScroll` | bool | `true` | Pin the active semantic block hierarchy above scrolled text. Multi-line signatures collapse to one row with an ellipsis. |
 | `middleClickPaste` | bool\|null | `null` | Paste the primary selection (the X11/Wayland "last selected text") at a middle click in the text, read through `wl-paste`, `xclip` or `xsel`. `null` turns it on for Linux and off elsewhere. A middle click on a tab closes it either way. Global only; not a per-language override. |
 | `autoClosingBrackets` | `"always"`\|`"languageDefined"`\|`"never"` | `"languageDefined"` | When typing `(`, `[` or `{` also inserts its closer. `"languageDefined"` closes only before whitespace, the end of the line, or closing punctuation (`;:.,=}])>`); `"always"` closes wherever the caret is. Typing a closer the editor inserted steps over it, Backspace between an empty pair deletes both halves, and an opener typed over a selection wraps it. Enter between a bracket pair and a closer typed on a blank line (which snaps to its opener's indentation) work whatever this says. |
@@ -566,7 +568,7 @@ The JSON Schema is emitted from the `Settings` type; regenerate it after changin
 schema with:
 
 ```sh
-cargo run -p karet-session --example settings-schema > settings.schema.json
+cargo run -p karet-session --features schema --example settings-schema > settings.schema.json
 ```
 
 A test (`karet-session`'s `config::tests::checked_in_schema_is_current`) fails if the

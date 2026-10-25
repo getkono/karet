@@ -2,13 +2,15 @@ use super::*;
 use crate::config::schema::AutoSave;
 use crate::config::schema::LineNumbers;
 
-/// Create a temp dir and write `body` to `name` inside it. Returns `None` (so the
-/// test skips) on any IO failure, matching the crate's unwrap-free test idiom.
-fn scratch(name: &str, body: &str) -> Option<(tempfile::TempDir, PathBuf)> {
-    let dir = tempfile::tempdir().ok()?;
+type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+/// Create a temp dir and write `body` to `name` inside it. Any IO failure is an
+/// error, so a broken fixture fails the test instead of skipping it.
+fn scratch(name: &str, body: &str) -> std::io::Result<(tempfile::TempDir, PathBuf)> {
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join(name);
-    std::fs::write(&path, body).ok()?;
-    Some((dir, path))
+    std::fs::write(&path, body)?;
+    Ok((dir, path))
 }
 
 #[test]
@@ -19,42 +21,38 @@ fn absent_files_yield_defaults_without_diagnostics() {
 }
 
 #[test]
-fn jsonc_comments_and_trailing_commas_parse() {
-    let Some((_dir, path)) = scratch(
+fn jsonc_comments_and_trailing_commas_parse() -> TestResult {
+    let (_dir, path) = scratch(
         "setting.jsonc",
         r#"{
                 // a line comment
                 "editor": { "tabSize": 2, }, /* trailing comma + block comment */
             }"#,
-    ) else {
-        return;
-    };
+    )?;
     let (settings, diags) = load_layers([path]);
     assert!(diags.is_empty(), "{diags:?}");
     assert_eq!(settings.editor.tab_size, 2);
     // Unset fields keep their sane defaults.
     assert!(settings.editor.insert_spaces);
+    Ok(())
 }
 
 #[test]
-fn later_layers_override_earlier_and_merge_deeply() {
-    let Some((dir, _system)) = scratch(
+fn later_layers_override_earlier_and_merge_deeply() -> TestResult {
+    let (dir, _system) = scratch(
         "system.jsonc",
         r#"{ "editor": { "tabSize": 8, "lineNumbers": "relative" } }"#,
-    ) else {
-        return;
-    };
+    )?;
     let system = dir.path().join("system.jsonc");
     let project = dir.path().join("project.jsonc");
-    if std::fs::write(&project, r#"{ "editor": { "tabSize": 2 } }"#).is_err() {
-        return;
-    }
+    std::fs::write(&project, r#"{ "editor": { "tabSize": 2 } }"#)?;
     // Order is low → high precedence.
     let (settings, diags) = load_layers([system, project]);
     assert!(diags.is_empty(), "{diags:?}");
     // project wins tabSize; system's lineNumbers survives the deep merge.
     assert_eq!(settings.editor.tab_size, 2);
     assert_eq!(settings.editor.line_numbers, LineNumbers::Relative);
+    Ok(())
 }
 
 #[test]
@@ -91,27 +89,23 @@ fn ordered_layers_lists_system_then_user_then_project_skipping_absent_tiers() {
 }
 
 #[test]
-fn project_beats_user_beats_system_in_the_load_report_order() {
-    let Ok(dir) = tempfile::tempdir() else {
-        return;
-    };
+fn project_beats_user_beats_system_in_the_load_report_order() -> TestResult {
+    let dir = tempfile::tempdir()?;
     let write = |name: &str, body: &str| {
         let path = dir.path().join(name);
-        std::fs::write(&path, body).ok().map(|()| path)
+        std::fs::write(&path, body).map(|()| path)
     };
-    let (Some(system), Some(user), Some(project)) = (
+    let (system, user, project) = (
         write(
             "system.jsonc",
             r#"{ "editor": { "tabSize": 8, "lineNumbers": "relative" } }"#,
-        ),
+        )?,
         write(
             "user.jsonc",
             r#"{ "editor": { "tabSize": 6, "insertSpaces": false } }"#,
-        ),
-        write("project.jsonc", r#"{ "editor": { "tabSize": 2 } }"#),
-    ) else {
-        return;
-    };
+        )?,
+        write("project.jsonc", r#"{ "editor": { "tabSize": 2 } }"#)?,
+    );
 
     let report = load_layer_reports(ordered_layers(
         Some(system.clone()),
@@ -144,11 +138,12 @@ fn project_beats_user_beats_system_in_the_load_report_order() {
         report.explicit.get("editor.tabSize"),
         Some(&ConfigLayer::User)
     );
+    Ok(())
 }
 
 #[test]
-fn language_specificity_wins_after_layer_merging() {
-    let Some((dir, _system)) = scratch(
+fn language_specificity_wins_after_layer_merging() -> TestResult {
+    let (dir, _system) = scratch(
         "system.jsonc",
         r#"{
                 "editor": {
@@ -159,12 +154,10 @@ fn language_specificity_wins_after_layer_merging() {
                     }
                 }
             }"#,
-    ) else {
-        return;
-    };
+    )?;
     let system = dir.path().join("system.jsonc");
     let project = dir.path().join("project.jsonc");
-    if std::fs::write(
+    std::fs::write(
         &project,
         r#"{
                 "editor": {
@@ -172,11 +165,7 @@ fn language_specificity_wins_after_layer_merging() {
                     "[rust]": { "completion": { "autoTrigger": false } }
                 }
             }"#,
-    )
-    .is_err()
-    {
-        return;
-    }
+    )?;
 
     let report = load_layer_reports([
         (ConfigLayer::System, system),
@@ -201,22 +190,19 @@ fn language_specificity_wins_after_layer_merging() {
         report.explicit.get("editor.[rust].tabSize"),
         Some(&ConfigLayer::System)
     );
+    Ok(())
 }
 
 #[test]
-fn report_tracks_loaded_layers_and_explicit_leaf_sources() {
-    let Some((dir, _system)) = scratch(
+fn report_tracks_loaded_layers_and_explicit_leaf_sources() -> TestResult {
+    let (dir, _system) = scratch(
         "system.jsonc",
         r#"{ "editor": { "tabSize": 4, "lineNumbers": "relative" } }"#,
-    ) else {
-        return;
-    };
+    )?;
     let system = dir.path().join("system.jsonc");
     let user = dir.path().join("user.jsonc");
     let project = dir.path().join("project.jsonc");
-    if std::fs::write(&project, r#"{ "editor": { "tabSize": 2 } }"#).is_err() {
-        return;
-    }
+    std::fs::write(&project, r#"{ "editor": { "tabSize": 2 } }"#)?;
 
     let report = load_layer_reports([
         (ConfigLayer::System, system),
@@ -237,64 +223,54 @@ fn report_tracks_loaded_layers_and_explicit_leaf_sources() {
         report.layers[1].status,
         ConfigLayerStatus::Missing
     ));
+    Ok(())
 }
 
 #[test]
-fn manager_rereads_only_changed_layers_and_falls_back_after_deletion() {
-    let Some((dir, path)) = scratch("setting.jsonc", r#"{ "editor": { "tabSize": 2 } }"#) else {
-        return;
-    };
+fn manager_rereads_only_changed_layers_and_falls_back_after_deletion() -> TestResult {
+    let (dir, path) = scratch("setting.jsonc", r#"{ "editor": { "tabSize": 2 } }"#)?;
     let report = load_layer_reports([(ConfigLayer::Project, path.clone())]);
-    let Some(mut manager) = ConfigManager::from_loaded(&report) else {
-        return;
-    };
+    let mut manager = ConfigManager::from_loaded(&report)
+        .ok_or("from_loaded built no manager for a loaded report")?;
     assert!(
         manager
             .reload(&[dir.path().join("unrelated.jsonc")])
             .is_none()
     );
 
-    if std::fs::write(&path, r#"{ "editor": { "tabSize": 6 } }"#).is_err() {
-        return;
-    }
-    let Some(updated) = manager.reload(std::slice::from_ref(&path)) else {
-        return;
-    };
+    std::fs::write(&path, r#"{ "editor": { "tabSize": 6 } }"#)?;
+    let updated = manager
+        .reload(std::slice::from_ref(&path))
+        .ok_or("reload of the changed layer reported no update")?;
     assert_eq!(updated.settings.editor.tab_size, 6);
     assert_eq!(
         updated.explicit.get("editor.tabSize"),
         Some(&ConfigLayer::Project)
     );
 
-    if std::fs::remove_file(&path).is_err() {
-        return;
-    }
-    let Some(missing) = manager.reload(std::slice::from_ref(&path)) else {
-        return;
-    };
+    std::fs::remove_file(&path)?;
+    let missing = manager
+        .reload(std::slice::from_ref(&path))
+        .ok_or("reload of the changed layer reported no update")?;
     assert_eq!(missing.settings.editor.tab_size, 4);
     assert!(matches!(
         missing.layers[0].status,
         ConfigLayerStatus::Missing
     ));
+    Ok(())
 }
 
 #[test]
-fn manager_retains_last_valid_layer_until_an_invalid_edit_recovers() {
-    let Some((_dir, path)) = scratch("setting.jsonc", r#"{ "editor": { "tabSize": 2 } }"#) else {
-        return;
-    };
+fn manager_retains_last_valid_layer_until_an_invalid_edit_recovers() -> TestResult {
+    let (_dir, path) = scratch("setting.jsonc", r#"{ "editor": { "tabSize": 2 } }"#)?;
     let report = load_layer_reports([(ConfigLayer::Project, path.clone())]);
-    let Some(mut manager) = ConfigManager::from_loaded(&report) else {
-        return;
-    };
+    let mut manager = ConfigManager::from_loaded(&report)
+        .ok_or("from_loaded built no manager for a loaded report")?;
 
-    if std::fs::write(&path, r#"{ "editor": { "tabSize": "wide" } }"#).is_err() {
-        return;
-    }
-    let Some(invalid) = manager.reload(std::slice::from_ref(&path)) else {
-        return;
-    };
+    std::fs::write(&path, r#"{ "editor": { "tabSize": "wide" } }"#)?;
+    let invalid = manager
+        .reload(std::slice::from_ref(&path))
+        .ok_or("reload of the changed layer reported no update")?;
     assert_eq!(
         invalid.settings.editor.tab_size, 2,
         "a malformed live edit must not replace the last valid layer"
@@ -305,28 +281,25 @@ fn manager_retains_last_valid_layer_until_an_invalid_edit_recovers() {
     ));
     assert_eq!(invalid.diagnostics.len(), 1);
 
-    if std::fs::write(&path, r#"{ "editor": { "tabSize": 3 } }"#).is_err() {
-        return;
-    }
-    let Some(recovered) = manager.reload(std::slice::from_ref(&path)) else {
-        return;
-    };
+    std::fs::write(&path, r#"{ "editor": { "tabSize": 3 } }"#)?;
+    let recovered = manager
+        .reload(std::slice::from_ref(&path))
+        .ok_or("reload of the changed layer reported no update")?;
     assert_eq!(recovered.settings.editor.tab_size, 3);
     assert!(recovered.diagnostics.is_empty());
     assert!(matches!(
         recovered.layers[0].status,
         ConfigLayerStatus::Loaded
     ));
+    Ok(())
 }
 
 #[test]
-fn invalid_sections_do_not_remain_explicit() {
-    let Some((_dir, path)) = scratch(
+fn invalid_sections_do_not_remain_explicit() -> TestResult {
+    let (_dir, path) = scratch(
         "setting.jsonc",
         r#"{ "editor": { "wat": 1 }, "files": { "backup": true } }"#,
-    ) else {
-        return;
-    };
+    )?;
     let report = load_layer_reports([(ConfigLayer::Project, path)]);
     assert!(!report.explicit.contains_key("editor.wat"));
     assert!(!report.explicit.contains_key("editor.tabSize"));
@@ -334,62 +307,55 @@ fn invalid_sections_do_not_remain_explicit() {
         report.explicit.get("files.backup"),
         Some(&ConfigLayer::Project)
     );
+    Ok(())
 }
 
 #[test]
-fn unknown_key_warns_but_keeps_valid_settings() {
-    let Some((_dir, path)) = scratch(
+fn unknown_key_warns_but_keeps_valid_settings() -> TestResult {
+    let (_dir, path) = scratch(
         "setting.jsonc",
         r#"{ "editor": { "tabSize": 3 }, "nonsense": true }"#,
-    ) else {
-        return;
-    };
+    )?;
     let (settings, diags) = load_layers([path]);
     assert_eq!(settings.editor.tab_size, 3);
     assert_eq!(diags.len(), 1);
     assert!(diags[0].message.contains("unknown setting `nonsense`"));
+    Ok(())
 }
 
 #[test]
-fn bad_section_resets_only_itself_and_warns() {
+fn bad_section_resets_only_itself_and_warns() -> TestResult {
     // `editor.wat` is unknown (deny_unknown_fields) → the editor section is
     // rejected; `files` is untouched and still applies.
-    let Some((_dir, path)) = scratch(
+    let (_dir, path) = scratch(
         "setting.jsonc",
         r#"{ "editor": { "wat": 1 }, "files": { "autoSave": "afterDelay" } }"#,
-    ) else {
-        return;
-    };
+    )?;
     let (settings, diags) = load_layers([path]);
     assert_eq!(settings.editor, Default::default());
     assert_eq!(settings.files.auto_save, AutoSave::AfterDelay);
     assert_eq!(diags.len(), 1);
     assert!(diags[0].message.contains("invalid `editor` settings"));
+    Ok(())
 }
 
 #[test]
-fn syntax_error_is_reported_and_degrades_to_defaults() {
-    let Some((_dir, path)) = scratch("setting.jsonc", "{ this is not json ") else {
-        return;
-    };
+fn syntax_error_is_reported_and_degrades_to_defaults() -> TestResult {
+    let (_dir, path) = scratch("setting.jsonc", "{ this is not json ")?;
     let (settings, diags) = load_layers([path]);
     assert_eq!(settings, Settings::default());
     assert_eq!(diags.len(), 1);
     assert!(diags[0].message.contains("invalid JSONC"));
+    Ok(())
 }
 
 #[test]
-fn project_layer_is_discovered_under_the_git_root() {
-    let Some(tmp) = tempfile::tempdir().ok() else {
-        return;
-    };
+fn project_layer_is_discovered_under_the_git_root() -> TestResult {
+    let tmp = tempfile::tempdir()?;
     let root = tmp.path().join("repo");
     let nested = root.join("crates").join("thing");
-    if std::fs::create_dir_all(&nested).is_err()
-        || std::fs::create_dir_all(root.join(".git")).is_err()
-    {
-        return;
-    }
+    std::fs::create_dir_all(&nested)?;
+    std::fs::create_dir_all(root.join(".git"))?;
     // From a nested workspace root, the project layer resolves to the git root.
     assert_eq!(
         project_config_path(std::slice::from_ref(&nested)),
@@ -397,6 +363,7 @@ fn project_layer_is_discovered_under_the_git_root() {
     );
     // The directory other per-project config files share.
     assert_eq!(project_config_dir(&[nested]), Some(root.join(".karet")));
+    Ok(())
 }
 
 /// Every entry in [`SECTIONS`] must actually be deserialized into
@@ -409,7 +376,7 @@ fn project_layer_is_discovered_under_the_git_root() {
 /// pins each one to a value that differs from the default, so a new
 /// section cannot be added to the list and forgotten.
 #[test]
-fn every_section_round_trips_a_value() {
+fn every_section_round_trips_a_value() -> TestResult {
     /// One section's probe: its key, a `setting.jsonc` body holding a
     /// non-default value, and the check that the value landed.
     type Probe = (&'static str, &'static str, fn(&Settings) -> bool);
@@ -463,9 +430,8 @@ fn every_section_round_trips_a_value() {
             SECTIONS.contains(name),
             "{name} is probed but not in SECTIONS"
         );
-        let Ok(value) = serde_json::from_str::<Value>(body) else {
-            continue;
-        };
+        let value = serde_json::from_str::<Value>(body)
+            .map_err(|err| format!("the `{name}` probe body is not JSON: {err}"))?;
         let mut merged = Map::new();
         merged.insert((*name).to_owned(), value);
         let mut diags = Vec::new();
@@ -477,19 +443,16 @@ fn every_section_round_trips_a_value() {
             "`{name}` parsed without complaint but never reached Settings"
         );
     }
+    Ok(())
 }
 
 #[test]
-fn git_root_is_found_by_ascending() {
-    let Some(tmp) = tempfile::tempdir().ok() else {
-        return;
-    };
+fn git_root_is_found_by_ascending() -> TestResult {
+    let tmp = tempfile::tempdir()?;
     let root = tmp.path().join("repo");
     let nested = root.join("crates").join("thing");
-    if std::fs::create_dir_all(&nested).is_err()
-        || std::fs::create_dir_all(root.join(".git")).is_err()
-    {
-        return;
-    }
+    std::fs::create_dir_all(&nested)?;
+    std::fs::create_dir_all(root.join(".git"))?;
     assert_eq!(git_root(&nested).as_deref(), Some(root.as_path()));
+    Ok(())
 }

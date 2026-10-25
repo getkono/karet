@@ -81,11 +81,10 @@ fn dragging_a_unified_diff_selects_rows_without_their_gutters() {
             app.surface_row(&region, *row)
                 .is_some_and(|painted| painted.text == "BRAVO")
         });
-    assert!(added.is_some(), "the added line should be a selectable row");
-    let Some(added) = added else { return };
-    let painted = app.surface_row(&region, added);
-    assert!(painted.is_some());
-    let Some(painted) = painted else { return };
+    let added = added.expect("the added line should be a selectable row");
+    let painted = app
+        .surface_row(&region, added)
+        .expect("the added row paints content");
 
     let y = region.area.y + u16::try_from(added - region.first_row).unwrap_or_default();
     let start = region.area.x + painted.content_x;
@@ -157,10 +156,10 @@ fn a_side_by_side_drag_never_bleeds_into_the_other_column() {
     let row = (0..old.area.height)
         .map(|offset| old.first_row + usize::from(offset))
         .find(|row| app.surface_row(&old, *row).is_some());
-    assert!(row.is_some());
-    let Some(row) = row else { return };
-    let painted = app.surface_row(&old, row);
-    let Some(painted) = painted else { return };
+    let row = row.expect("the old column paints a content row");
+    let painted = app
+        .surface_row(&old, row)
+        .expect("the found row paints content");
     let y = old.area.y + u16::try_from(row - old.first_row).unwrap_or_default();
 
     drag(
@@ -211,11 +210,10 @@ fn the_selected_run_is_painted_with_the_selection_background() {
             app.surface_row(&region, *row)
                 .is_some_and(|painted| painted.text == "BRAVO")
         });
-    assert!(added.is_some());
-    let Some(added) = added else { return };
-    let Some(painted) = app.surface_row(&region, added) else {
-        return;
-    };
+    let added = added.expect("the added line should be a selectable row");
+    let painted = app
+        .surface_row(&region, added)
+        .expect("the added row paints content");
     let y = region.area.y + u16::try_from(added - region.first_row).unwrap_or_default();
     let start = region.area.x + painted.content_x;
 
@@ -256,9 +254,9 @@ fn dragging_a_hex_dump_copies_its_bytes_without_the_offset_column() {
     screen(&mut app, 100, 24);
     let region = region(&app, SelectSurface::Hex);
 
-    let Some(first) = app.surface_row(&region, 0) else {
-        return;
-    };
+    let first = app
+        .surface_row(&region, 0)
+        .expect("the first hex row paints content");
     let start = region.area.x + first.content_x;
     // Select the first two byte columns of the first row.
     drag(&mut app, (start, region.area.y), (start + 6, region.area.y));
@@ -285,9 +283,9 @@ fn a_hex_selection_spanning_rows_copies_each_row_in_full() {
     app.active = 0;
     screen(&mut app, 100, 24);
     let region = region(&app, SelectSurface::Hex);
-    let Some(first) = app.surface_row(&region, 0) else {
-        return;
-    };
+    let first = app
+        .surface_row(&region, 0)
+        .expect("the first hex row paints content");
     let start = region.area.x + first.content_x;
 
     drag(
@@ -322,11 +320,10 @@ fn dragging_a_markdown_preview_copies_the_text_it_renders() {
             app.surface_row(&region, *row)
                 .is_some_and(|painted| painted.text.contains("paragraph"))
         });
-    assert!(prose.is_some(), "the paragraph should be a selectable row");
-    let Some(prose) = prose else { return };
-    let Some(painted) = app.surface_row(&region, prose) else {
-        return;
-    };
+    let prose = prose.expect("the paragraph should be a selectable row");
+    let painted = app
+        .surface_row(&region, prose)
+        .expect("the paragraph row paints content");
 
     let y = region.area.y + u16::try_from(prose - region.first_row).unwrap_or_default();
     let width = u16::try_from(painted.text.len()).unwrap_or(u16::MAX);
@@ -356,11 +353,10 @@ fn a_markdown_selection_carries_the_rendered_decorations() {
             app.surface_row(&region, *row)
                 .is_some_and(|painted| painted.text.contains("first item"))
         });
-    assert!(bullet.is_some());
-    let Some(bullet) = bullet else { return };
-    let Some(painted) = app.surface_row(&region, bullet) else {
-        return;
-    };
+    let bullet = bullet.expect("the first list item should be a selectable row");
+    let painted = app
+        .surface_row(&region, bullet)
+        .expect("the list item row paints content");
     // A preview row's text is what the reader sees, list marker included — the
     // markdown source is not recoverable per row.
     assert!(
@@ -396,9 +392,7 @@ fn dragging_a_commit_file_card_copies_the_diff_without_its_rail() {
     let mut app = responsive_commit_app();
     // Wide enough for the rail-and-diff layout.
     screen(&mut app, 120, 24);
-    let region = cards_region(&app);
-    assert!(region.is_some(), "the wide layout records a card region");
-    let Some(region) = region else { return };
+    let region = cards_region(&app).expect("the wide layout records a card region");
     assert!(
         matches!(
             region.surface,
@@ -407,9 +401,7 @@ fn dragging_a_commit_file_card_copies_the_diff_without_its_rail() {
         "the wide layout keeps its file index in a separate rail"
     );
 
-    let found = first_card_row(&app, &region);
-    assert!(found.is_some(), "a card body row should be selectable");
-    let Some((y, painted)) = found else { return };
+    let (y, painted) = first_card_row(&app, &region).expect("a card body row should be selectable");
 
     let start = region.area.x + painted.content_x;
     let width = u16::try_from(painted.text.len()).unwrap_or(u16::MAX);
@@ -427,12 +419,10 @@ fn the_stacked_layout_records_its_file_index_as_prefix_rows() {
     let mut app = responsive_commit_app();
     // Below the 104-column breakpoint the file index stacks above the cards.
     screen(&mut app, 100, 24);
-    let region = cards_region(&app);
-    assert!(region.is_some(), "the stacked layout records a card region");
-    let Some(region) = region else { return };
+    let region = cards_region(&app).expect("the stacked layout records a card region");
 
     let SelectSurface::CommitCards { prefix_rows } = region.surface else {
-        return;
+        panic!("a card region is a CommitCards surface: {region:?}");
     };
     assert!(
         prefix_rows > 0,
@@ -452,9 +442,7 @@ fn the_stacked_layout_records_its_file_index_as_prefix_rows() {
 fn a_commit_selection_skips_the_chrome_between_two_cards() {
     let mut app = responsive_commit_app();
     screen(&mut app, 120, 40);
-    let Some(region) = cards_region(&app) else {
-        return;
-    };
+    let region = cards_region(&app).expect("the wide layout records a card region");
 
     // Every row the cards paint, tagged with whether it carries content.
     let rows: Vec<(usize, Option<String>)> = (0..region.area.height)
@@ -472,12 +460,14 @@ fn a_commit_selection_skips_the_chrome_between_two_cards() {
 
     // Selecting across the whole visible span copies the body rows and leaves
     // blank lines where the card borders and separators were.
-    let Some(first) = rows.first().map(|(row, _)| *row) else {
-        return;
-    };
-    let Some(last) = rows.last().map(|(row, _)| *row) else {
-        return;
-    };
+    let first = rows
+        .first()
+        .map(|(row, _)| *row)
+        .expect("the cards paint rows");
+    let last = rows
+        .last()
+        .map(|(row, _)| *row)
+        .expect("the cards paint rows");
     let mut selection = RowSelection::new(RowPos::new(first, 0));
     selection.extend_to(RowPos::new(last, 0));
     app.surface_selection = Some(SurfaceSelection {
@@ -568,9 +558,10 @@ fn clicking_the_replace_row_moves_the_edited_field() {
     }
     screen(&mut app, 80, 24);
 
-    let replace = app.find_rects.replace;
-    assert!(replace.is_some(), "the replace row records its field");
-    let Some(replace) = replace else { return };
+    let replace = app
+        .find_rects
+        .replace
+        .expect("the replace row records its field");
 
     drag(&mut app, (replace.x, replace.y), (replace.x + 7, replace.y));
     assert_eq!(
@@ -592,9 +583,10 @@ fn dragging_the_explorer_rename_field_selects_within_the_name() {
     app.dispatch(Command::ExplorerRename);
     screen(&mut app, 80, 24);
 
-    let rect = app.explorer.edit_rect();
-    assert!(rect.is_some(), "the rename row reports its field");
-    let Some(rect) = rect else { return };
+    let rect = app
+        .explorer
+        .edit_rect()
+        .expect("the rename row reports its field");
 
     // Drag across the extension.
     drag(&mut app, (rect.x + 6, rect.y), (rect.x + 9, rect.y));

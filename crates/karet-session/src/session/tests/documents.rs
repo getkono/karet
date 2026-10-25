@@ -6,6 +6,56 @@
     use super::*;
     use crate::api::Command;
 
+    /// What a session test returns: a missing or wrong answer is an `Err`, so it fails
+    /// instead of returning early to a pass. Shared by every file `tests.rs` includes.
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    /// How long a test waits for an answer from one of the session's worker threads.
+    ///
+    /// It bounds only a failure: [`await_event`] returns the moment the answer arrives,
+    /// so a generous bound costs nothing on a pass and keeps a loaded machine from
+    /// turning a slow answer into a missing one.
+    const EVENT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
+    /// The first event `pick` accepts, with the request it answers, or `None` once
+    /// `deadline` passes or the stream ends. Shared by every file `tests.rs` includes.
+    ///
+    /// `pick` sees every event in arrival order, so one that folds a stream (search
+    /// hits, a commit's output) keeps its own state and yields once the stream closes.
+    /// Async, for a test already inside a runtime; [`await_event`] is the blocking form.
+    async fn next_event<T>(
+        events: &mut EventRx,
+        deadline: std::time::Duration,
+        mut pick: impl FnMut(Option<RequestId>, Event) -> Option<T>,
+    ) -> Option<T> {
+        let accepted = async {
+            while let Some((id, event)) = events.recv().await {
+                if let Some(value) = pick(id, event) {
+                    return Some(value);
+                }
+            }
+            None
+        };
+        tokio::time::timeout(deadline, accepted).await.ok().flatten()
+    }
+
+    /// [`next_event`] for a synchronous test: blocks on the event stream itself rather
+    /// than polling it, so the answer is taken the moment a worker thread sends it.
+    ///
+    /// Panics if called inside a Tokio runtime (it starts its own); an async test
+    /// awaits [`next_event`] instead.
+    fn await_event<T>(
+        events: &mut EventRx,
+        deadline: std::time::Duration,
+        pick: impl FnMut(Option<RequestId>, Event) -> Option<T>,
+    ) -> Option<T> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .ok()?;
+        runtime.block_on(next_event(events, deadline, pick))
+    }
+
     fn write_temp(name: &str, body: &str) -> Option<(tempfile::TempDir, PathBuf)> {
         let dir = tempfile::tempdir().ok()?;
         let path = dir.path().join(name);
@@ -23,43 +73,54 @@
         found
     }
 
+    /// `Session::new` leaves the tree walk to [`Session::start`]: the initial status,
+    /// a full `git status` over every file, is not computed or queued on the caller's
+    /// thread, and arrives only once the session is started.
+    ///
+    /// Observed through the event stream rather than a stopwatch, which a loaded
+    /// machine could fail on a correct build: the VCS worker runs its jobs in order,
+    /// so a status queued by `Session::new` would arrive before the answer to a
+    /// snapshot requested after it. Falsified by emitting the initial status from
+    /// `Session::new`.
     #[test]
-    fn session_constructs_with_streams() {
-        let (_session, _events, _snaps) = Session::new(SessionConfig::default());
-    }
-
-    #[test]
-    fn session_new_does_not_walk_large_tree_on_caller_thread() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
+    fn session_new_does_not_walk_large_tree_on_caller_thread() -> TestResult {
+        let Some((_dir, root, _file)) = init_git_repo()? else {
+            // Skip: `git` is not on PATH.
+            return Ok(());
         };
         for i in 0..1200 {
-            let path = dir.path().join(format!("src/{i}/nested"));
-            if std::fs::create_dir_all(path).is_err() {
-                return;
-            }
+            std::fs::create_dir_all(root.join(format!("src/{i}/nested")))?;
         }
 
-        let started = std::time::Instant::now();
-        let (_session, _events, _snaps) = Session::new(SessionConfig {
-            roots: vec![dir.path().to_path_buf()],
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig {
+            roots: vec![root],
             ..SessionConfig::default()
         });
 
+        // A sentinel behind anything `Session::new` queued on the VCS worker.
+        session.handle(RequestId(1), Command::RepositorySnapshot);
+        let mut walked = false;
+        await_event(&mut events, EVENT_DEADLINE, |id, event| {
+            walked |= matches!(event, Event::VcsStatus { .. });
+            (id == Some(RequestId(1))).then_some(())
+        })
+        .ok_or("the snapshot sentinel was never answered")?;
         assert!(
-            started.elapsed() < std::time::Duration::from_secs(1),
-            "Session::new must not synchronously enumerate large trees"
+            !walked,
+            "Session::new must not walk the tree for the initial status"
         );
+        session.start();
+        await_event(&mut events, EVENT_DEADLINE, |_, event| {
+            matches!(event, Event::VcsStatus { .. }).then_some(())
+        })
+        .ok_or("start() never delivered the initial status")?;
+        Ok(())
     }
 
     #[test]
-    fn opening_a_non_utf8_file_reports_not_utf8_instead_of_a_generic_error() {
-        let Some((_dir, path)) = write_temp("bad.rs", "") else {
-            return;
-        };
-        if std::fs::write(&path, [0x66, 0x6e, 0xff, 0x00]).is_err() {
-            return;
-        }
+    fn opening_a_non_utf8_file_reports_not_utf8_instead_of_a_generic_error() -> TestResult {
+        let (_dir, path) = write_temp("bad.rs", "").ok_or("temp file not written")?;
+        std::fs::write(&path, [0x66, 0x6e, 0xff, 0x00])?;
         let (mut session, mut events, mut snaps) = Session::new(SessionConfig::default());
         session.handle(
             RequestId(1),
@@ -83,13 +144,12 @@
             snaps.try_recv().is_none(),
             "no document was registered, so no snapshot should follow"
         );
+        Ok(())
     }
 
     #[test]
-    fn spell_results_publish_only_for_the_current_document_version() {
-        let Some((_dir, path)) = write_temp("notes.md", "hello wrld\n") else {
-            return;
-        };
+    fn spell_results_publish_only_for_the_current_document_version() -> TestResult {
+        let (_dir, path) = write_temp("notes.md", "hello wrld\n").ok_or("temp file not written")?;
         let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
         session.handle(
             RequestId(1),
@@ -98,12 +158,11 @@
                 language: None,
             },
         );
-        let Some(doc) = opened_doc(&mut events) else {
-            return;
-        };
-        let Some(version) = session.document(doc).map(|view| view.version()) else {
-            return;
-        };
+        let doc = opened_doc(&mut events).ok_or("no Opened event")?;
+        let version = session
+            .document(doc)
+            .map(|view| view.version())
+            .ok_or("opened document is not registered")?;
         let diagnostic = karet_core::Diagnostic {
             range: Range {
                 start: LineCol::new(0, 6),
@@ -143,13 +202,12 @@
                 diagnostics,
             }) if published_doc == doc && diagnostics == vec![diagnostic]
         ));
+        Ok(())
     }
 
     #[test]
-    fn unsupported_spell_language_is_reported_instead_of_silently_disabling() {
-        let Some((_dir, path)) = write_temp("notes.md", "") else {
-            return;
-        };
+    fn unsupported_spell_language_is_reported_instead_of_silently_disabling() -> TestResult {
+        let (_dir, path) = write_temp("notes.md", "").ok_or("temp file not written")?;
         let mut settings = crate::config::Settings::default();
         settings.spellcheck.enabled = true;
         settings.spellcheck.language = "fr_FR".to_owned();
@@ -161,23 +219,18 @@
         assert!(error.is_some_and(|message| {
             message.contains("en_US") && message.contains("en_GB")
         }));
+        Ok(())
     }
 
     #[test]
-    fn editorconfig_settings_are_reported_and_applied_on_save() {
-        let Some((dir, path)) = write_temp("main.rs", "let x = 1;  \n") else {
-            return;
-        };
-        if std::fs::write(
+    fn editorconfig_settings_are_reported_and_applied_on_save() -> TestResult {
+        let (dir, path) = write_temp("main.rs", "let x = 1;  \n").ok_or("temp file not written")?;
+        std::fs::write(
             dir.path().join(".editorconfig"),
             "root = true\n[*.rs]\nindent_style = tab\nindent_size = 6\n\
              tab_width = 4\nend_of_line = crlf\ncharset = utf-8-bom\n\
              trim_trailing_whitespace = true\ninsert_final_newline = true\n",
-        )
-        .is_err()
-        {
-            return;
-        }
+        )?;
         let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
 
         session.handle(
@@ -195,9 +248,8 @@
             Event::DocumentSettingsChanged { settings, .. } => Some(settings),
             _ => None,
         });
-        let (Some(doc), Some(settings)) = (opened, settings) else {
-            return;
-        };
+        let doc = opened.ok_or("first event was not Opened")?;
+        let settings = settings.ok_or("second event was not DocumentSettingsChanged")?;
         assert_eq!(settings.indent_size, 6);
         assert_eq!(settings.tab_width, 4);
         assert!(!settings.insert_spaces);
@@ -212,17 +264,14 @@
         assert!(session.document(doc).is_some_and(|view| {
             view.buffer().text() == "let x = 1;\n" && !view.buffer().is_dirty()
         }));
+        Ok(())
     }
 
     #[test]
-    fn editorconfig_re_resolves_for_open_documents() {
-        let Some((dir, path)) = write_temp("main.rs", "fn main() {}\n") else {
-            return;
-        };
+    fn editorconfig_re_resolves_for_open_documents() -> TestResult {
+        let (dir, path) = write_temp("main.rs", "fn main() {}\n").ok_or("temp file not written")?;
         let config = dir.path().join(".editorconfig");
-        if std::fs::write(&config, "root=true\n[*.rs]\nindent_size=2\n").is_err() {
-            return;
-        }
+        std::fs::write(&config, "root=true\n[*.rs]\nindent_size=2\n")?;
         let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
         session.handle(
             RequestId(1),
@@ -231,11 +280,8 @@
                 language: None,
             },
         );
-        let doc = opened_doc(&mut events);
-        let Some(doc) = doc else { return };
-        if std::fs::write(&config, "root=true\n[*.rs]\nindent_size=8\n").is_err() {
-            return;
-        }
+        let doc = opened_doc(&mut events).ok_or("no Opened event")?;
+        std::fs::write(&config, "root=true\n[*.rs]\nindent_size=8\n")?;
 
         session.refresh_document_settings(&[doc]);
 
@@ -248,21 +294,16 @@
             }
         }
         assert_eq!(changed.map(|settings| settings.indent_size), Some(8));
+        Ok(())
     }
 
     #[test]
-    fn final_newline_does_not_make_an_empty_file_nonempty() {
-        let Some((dir, path)) = write_temp("empty.txt", "") else {
-            return;
-        };
-        if std::fs::write(
+    fn final_newline_does_not_make_an_empty_file_nonempty() -> TestResult {
+        let (dir, path) = write_temp("empty.txt", "").ok_or("temp file not written")?;
+        std::fs::write(
             dir.path().join(".editorconfig"),
             "root=true\n[*]\ninsert_final_newline=true\n",
-        )
-        .is_err()
-        {
-            return;
-        }
+        )?;
         let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
         session.handle(
             RequestId(1),
@@ -271,9 +312,7 @@
                 language: None,
             },
         );
-        let Some(doc) = opened_doc(&mut events) else {
-            return;
-        };
+        let doc = opened_doc(&mut events).ok_or("no Opened event")?;
 
         session.handle(RequestId(2), Command::Save {
                 doc,
@@ -281,21 +320,16 @@
             });
 
         assert_eq!(std::fs::read(&path).unwrap_or_default(), b"");
+        Ok(())
     }
 
     #[test]
-    fn disabled_final_newline_does_not_remove_an_existing_newline() {
-        let Some((dir, path)) = write_temp("note.txt", "kept\n") else {
-            return;
-        };
-        if std::fs::write(
+    fn disabled_final_newline_does_not_remove_an_existing_newline() -> TestResult {
+        let (dir, path) = write_temp("note.txt", "kept\n").ok_or("temp file not written")?;
+        std::fs::write(
             dir.path().join(".editorconfig"),
             "root=true\n[*]\ninsert_final_newline=false\n",
-        )
-        .is_err()
-        {
-            return;
-        }
+        )?;
         let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
         session.handle(
             RequestId(1),
@@ -304,9 +338,7 @@
                 language: None,
             },
         );
-        let Some(doc) = opened_doc(&mut events) else {
-            return;
-        };
+        let doc = opened_doc(&mut events).ok_or("no Opened event")?;
 
         session.handle(RequestId(2), Command::Save {
                 doc,
@@ -314,17 +346,16 @@
             });
 
         assert_eq!(std::fs::read(&path).unwrap_or_default(), b"kept\n");
+        Ok(())
     }
 
     #[test]
-    fn wakatime_disabled_never_spawns_a_worker_or_reads_its_config() {
+    fn wakatime_disabled_never_spawns_a_worker_or_reads_its_config() -> TestResult {
         // The privacy contract: with `wakatime.enabled` false (the default),
         // editing must not start the worker thread — which is what reads
         // `.wakatime.cfg` and opens the network — no matter how much typing
         // funnels through the heartbeat call site.
-        let Some((_dir, path)) = write_temp("main.rs", "fn main() {}\n") else {
-            return;
-        };
+        let (_dir, path) = write_temp("main.rs", "fn main() {}\n").ok_or("temp file not written")?;
         let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
         assert!(!session.config.settings.wakatime.enabled, "off by default");
 
@@ -335,9 +366,7 @@
                 language: None,
             },
         );
-        let Some(doc) = opened_doc(&mut events) else {
-            return;
-        };
+        let doc = opened_doc(&mut events).ok_or("no Opened event")?;
         for i in 0..5 {
             let change = Change::new(
                 i,
@@ -367,13 +396,12 @@
             session.wakatime_last.is_none(),
             "a disabled tracker records nothing"
         );
+        Ok(())
     }
 
     #[test]
-    fn open_apply_save_undo_flow() {
-        let Some((_dir, path)) = write_temp("main.rs", "fn main() {}\n") else {
-            return;
-        };
+    fn open_apply_save_undo_flow() -> TestResult {
+        let (_dir, path) = write_temp("main.rs", "fn main() {}\n").ok_or("temp file not written")?;
         let (mut session, mut events, mut snaps) = Session::new(SessionConfig::default());
 
         session.handle(
@@ -383,9 +411,7 @@
                 language: None,
             },
         );
-        let doc = opened_doc(&mut events);
-        assert!(doc.is_some(), "expected an Opened event");
-        let Some(doc) = doc else { return };
+        let doc = opened_doc(&mut events).ok_or("expected an Opened event")?;
         assert!(snaps.try_recv().is_some(), "open publishes a snapshot");
 
         // Insert "!" after the body's closing brace position (line 0, col 11).
@@ -420,8 +446,7 @@
         while let Some((_, s)) = snaps.try_recv() {
             last_snap = Some(s);
         }
-        assert!(last_snap.is_some(), "expected a snapshot after apply");
-        let Some(snap) = last_snap else { return };
+        let snap = last_snap.ok_or("expected a snapshot after apply")?;
         assert_eq!(snap.version, 1);
         assert!(snap.dirty);
         // "fn main() {}\n" + inserted "\nfn x() {}" → three lines.
@@ -462,13 +487,12 @@
                 .document(doc)
                 .is_some_and(|v| v.buffer().line_count() == 2)
         );
+        Ok(())
     }
 
     #[test]
-    fn retarget_document_updates_the_save_destination() {
-        let Some((_dir, path)) = write_temp("old.txt", "old\n") else {
-            return;
-        };
+    fn retarget_document_updates_the_save_destination() -> TestResult {
+        let (_dir, path) = write_temp("old.txt", "old\n").ok_or("temp file not written")?;
         let new_path = path.with_file_name("new.txt");
         let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
 
@@ -479,12 +503,8 @@
                 language: None,
             },
         );
-        let Some(doc) = opened_doc(&mut events) else {
-            return;
-        };
-        if std::fs::rename(&path, &new_path).is_err() {
-            return;
-        }
+        let doc = opened_doc(&mut events).ok_or("no Opened event")?;
+        std::fs::rename(&path, &new_path)?;
 
         session.handle(
             RequestId(2),
@@ -530,13 +550,12 @@
             "old moved\n"
         );
         assert!(!path.exists());
+        Ok(())
     }
 
     #[test]
-    fn save_refuses_to_overwrite_a_file_changed_on_disk_since_it_was_read() {
-        let Some((_dir, path)) = write_temp("main.rs", "fn main() {}\n") else {
-            return;
-        };
+    fn save_refuses_to_overwrite_a_file_changed_on_disk_since_it_was_read() -> TestResult {
+        let (_dir, path) = write_temp("main.rs", "fn main() {}\n").ok_or("temp file not written")?;
         let (mut session, mut events, mut snaps) = Session::new(SessionConfig::default());
         session.handle(
             RequestId(1),
@@ -545,9 +564,7 @@
                 language: None,
             },
         );
-        let Some(doc) = opened_doc(&mut events) else {
-            return;
-        };
+        let doc = opened_doc(&mut events).ok_or("no Opened event")?;
         let _ = snaps.try_recv();
 
         // Dirty the in-memory buffer without touching the file yet.
@@ -573,9 +590,7 @@
         let _ = snaps.try_recv();
 
         // Someone else changes the file on disk before we save.
-        if std::fs::write(&path, "fn main() { /* external */ }\n").is_err() {
-            return;
-        }
+        std::fs::write(&path, "fn main() { /* external */ }\n")?;
 
         session.handle(RequestId(3), Command::Save {
                 doc,
@@ -602,18 +617,17 @@
         );
         // The in-memory edit is still there (unsaved, not discarded).
         assert!(session.document(doc).is_some_and(|v| v.buffer().is_dirty()));
+        Ok(())
     }
 
     #[test]
-    fn apply_against_a_stale_version_resyncs_instead_of_dropping_silently() {
+    fn apply_against_a_stale_version_resyncs_instead_of_dropping_silently() -> TestResult {
         // Regression: a client whose local speculative version has diverged from
         // the backend's (e.g. after a dropped/duplicate message) used to have its
         // edit silently discarded with no way to recover — every subsequent edit
         // on that document would then fail the same way forever. It must instead
         // be told and get a fresh snapshot back so it can resync.
-        let Some((_dir, path)) = write_temp("main.rs", "fn main() {}\n") else {
-            return;
-        };
+        let (_dir, path) = write_temp("main.rs", "fn main() {}\n").ok_or("temp file not written")?;
         let (mut session, mut events, mut snaps) = Session::new(SessionConfig::default());
         session.handle(
             RequestId(1),
@@ -622,9 +636,7 @@
                 language: None,
             },
         );
-        let Some(doc) = opened_doc(&mut events) else {
-            return;
-        };
+        let doc = opened_doc(&mut events).ok_or("no Opened event")?;
         let _ = snaps.try_recv(); // drain the open snapshot
 
         // Base the change on a version that doesn't exist yet (the real base is 0).
@@ -668,13 +680,12 @@
                 .document(doc)
                 .is_some_and(|v| v.buffer().text() == "fn main() {}\n")
         );
+        Ok(())
     }
 
     #[test]
-    fn undo_redo_snapshot_carries_caret_but_edits_do_not() {
-        let Some((_dir, path)) = write_temp("main.rs", "fn main() {}\n") else {
-            return;
-        };
+    fn undo_redo_snapshot_carries_caret_but_edits_do_not() -> TestResult {
+        let (_dir, path) = write_temp("main.rs", "fn main() {}\n").ok_or("temp file not written")?;
         let (mut session, mut events, mut snaps) = Session::new(SessionConfig::default());
         session.handle(
             RequestId(1),
@@ -683,9 +694,7 @@
                 language: None,
             },
         );
-        let Some(doc) = opened_doc(&mut events) else {
-            return;
-        };
+        let doc = opened_doc(&mut events).ok_or("no Opened event")?;
 
         // Helper: drain the snapshot stream and return the most recent snapshot.
         fn drain(snaps: &mut SnapshotRx) -> Option<std::sync::Arc<DocSnapshot>> {
@@ -735,13 +744,12 @@
             drain(&mut snaps).is_some_and(|s| s.cursor.is_some()),
             "redo must carry a caret derived from the re-applied edit"
         );
+        Ok(())
     }
 
     #[test]
-    fn external_change_reloads_clean_buffer() {
-        let Some((_dir, path)) = write_temp("ext.txt", "one\n") else {
-            return;
-        };
+    fn external_change_reloads_clean_buffer() -> TestResult {
+        let (_dir, path) = write_temp("ext.txt", "one\n").ok_or("temp file not written")?;
         let (mut session, mut events, mut snaps) = Session::new(SessionConfig::default());
         session.handle(
             RequestId(1),
@@ -750,13 +758,11 @@
                 language: None,
             },
         );
-        let Some(doc) = opened_doc(&mut events) else {
-            return;
-        };
+        let doc = opened_doc(&mut events).ok_or("no Opened event")?;
         while snaps.try_recv().is_some() {}
 
         // The file changes on disk (the buffer is clean, so this should reload).
-        let _ = std::fs::write(&path, "one\ntwo\n");
+        std::fs::write(&path, "one\ntwo\n")?;
         session.handle_fs_event(karet_watch::FsEvent {
             kind: karet_watch::FsEventKind::Modified,
             paths: vec![path],
@@ -776,13 +782,12 @@
         );
         // The reload bumped the version (kept monotonic) and a snapshot was published.
         assert!(snaps.try_recv().is_some());
+        Ok(())
     }
 
     #[test]
-    fn open_dedups_by_path_and_refcounts_close() {
-        let Some((_dir, path)) = write_temp("a.txt", "hi\n") else {
-            return;
-        };
+    fn open_dedups_by_path_and_refcounts_close() -> TestResult {
+        let (_dir, path) = write_temp("a.txt", "hi\n").ok_or("temp file not written")?;
         let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
         session.handle(
             RequestId(1),
@@ -791,9 +796,7 @@
                 language: None,
             },
         );
-        let Some(doc) = opened_doc(&mut events) else {
-            return;
-        };
+        let doc = opened_doc(&mut events).ok_or("no Opened event")?;
         // Second open of the same path reuses the document.
         session.handle(
             RequestId(2),
@@ -809,13 +812,13 @@
         assert!(session.document(doc).is_some());
         session.handle(RequestId(4), Command::CloseDocument { doc });
         assert!(session.document(doc).is_none());
+        Ok(())
     }
 
     #[test]
-    fn a_plaintext_snapshot_folds_by_indentation() {
-        let Some((_dir, path)) = write_temp("notes.txt", "list\n  one\n  two\nend\n") else {
-            return;
-        };
+    fn a_plaintext_snapshot_folds_by_indentation() -> TestResult {
+        let (_dir, path) =
+            write_temp("notes.txt", "list\n  one\n  two\nend\n").ok_or("temp file not written")?;
         let (mut session, _events, mut snaps) = Session::new(SessionConfig::default());
         session.handle(
             RequestId(1),
@@ -829,4 +832,5 @@
             folds = Some(snap.folds.regions().iter().map(|r| (r.start, r.end)).collect::<Vec<_>>());
         }
         assert_eq!(folds, Some(vec![(0, 2)]));
+        Ok(())
     }

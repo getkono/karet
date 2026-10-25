@@ -289,8 +289,11 @@ async fn exercise(server: &LanguageServerId, supervisor: &Path) -> Row {
         row.note = "no sample file for this provider; add one to SAMPLE_FILES".to_owned();
         return row;
     };
-    if let Some((marker, contents)) = markers_for(server.key()) {
-        let _ = std::fs::write(workspace.path().join(marker), contents);
+    if let Some((marker, contents)) = markers_for(server.key())
+        && std::fs::write(workspace.path().join(marker), contents).is_err()
+    {
+        row.note = "could not write the workspace marker file".to_owned();
+        return row;
     }
     let path = workspace.path().join(name);
     if std::fs::write(&path, body).is_err() {

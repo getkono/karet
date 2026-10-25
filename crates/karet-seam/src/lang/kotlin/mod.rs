@@ -164,7 +164,7 @@ fn classify_node(node: &WalkNode<'_>, ctx: &FacetContext<'_>) -> Option<Classifi
 /// Read from the text between the modifiers and the name: the token itself is anonymous,
 /// so the walk never offers it.
 #[must_use]
-pub fn keyword(node: &WalkNode<'_>, ctx: &FacetContext<'_>) -> String {
+fn keyword(node: &WalkNode<'_>, ctx: &FacetContext<'_>) -> String {
     let from = node
         .children()
         .find(|child| child.kind() == "modifiers")
@@ -184,7 +184,7 @@ pub fn keyword(node: &WalkNode<'_>, ctx: &FacetContext<'_>) -> String {
 /// A receiver and a return type are both bare `user_type` children; what separates them is
 /// that the receiver is written *before* the declaration's name and the return type after.
 #[must_use]
-pub fn receiver(node: &WalkNode<'_>, ctx: &FacetContext<'_>) -> Option<String> {
+fn receiver(node: &WalkNode<'_>, ctx: &FacetContext<'_>) -> Option<String> {
     if !matches!(node.kind(), "function_declaration" | "property_declaration") {
         return None;
     }
@@ -207,7 +207,7 @@ pub fn receiver(node: &WalkNode<'_>, ctx: &FacetContext<'_>) -> Option<String> {
 /// Shallow by the same choice the Rust and Swift mappings make: generic arguments and
 /// qualification are dropped, and anything with no single name at its head is refused.
 #[must_use]
-pub fn base_name(text: &str) -> Option<String> {
+fn base_name(text: &str) -> Option<String> {
     let head = text
         .trim()
         .split(['<', ' ', '?'])
@@ -287,7 +287,7 @@ fn build(
 /// The default is `public`, which is the opposite of Rust's and worth stating: an unmarked
 /// Kotlin declaration is part of the module's surface, not hidden from it.
 #[must_use]
-pub fn visibility_of(node: &WalkNode<'_>, ctx: &FacetContext<'_>) -> Visibility {
+fn visibility_of(node: &WalkNode<'_>, ctx: &FacetContext<'_>) -> Visibility {
     match modifier(node, ctx, "visibility_modifier").as_deref() {
         Some("private") => Visibility::Private,
         Some("protected") => Visibility::Super,
@@ -298,7 +298,7 @@ pub fn visibility_of(node: &WalkNode<'_>, ctx: &FacetContext<'_>) -> Visibility 
 
 /// The text of a modifier of the given kind, if the declaration carries one.
 #[must_use]
-pub fn modifier(node: &WalkNode<'_>, ctx: &FacetContext<'_>, kind: &str) -> Option<String> {
+fn modifier(node: &WalkNode<'_>, ctx: &FacetContext<'_>, kind: &str) -> Option<String> {
     node.children()
         .find(|child| child.kind() == "modifiers")?
         .children()
@@ -309,7 +309,7 @@ pub fn modifier(node: &WalkNode<'_>, ctx: &FacetContext<'_>, kind: &str) -> Opti
 
 /// Every modifier of the given kind, for the kinds a declaration may repeat.
 #[must_use]
-pub fn modifiers<'a>(node: &WalkNode<'_>, ctx: &FacetContext<'a>, kind: &str) -> Vec<&'a str> {
+fn modifiers<'a>(node: &WalkNode<'_>, ctx: &FacetContext<'a>, kind: &str) -> Vec<&'a str> {
     let Some(modifiers) = node.children().find(|child| child.kind() == "modifiers") else {
         return Vec::new();
     };

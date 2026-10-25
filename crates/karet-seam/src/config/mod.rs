@@ -18,12 +18,13 @@ use crate::model::ConfigMembership;
 use crate::model::FileId;
 use crate::model::Lens;
 
-pub mod predicate;
+mod predicate;
 
 pub use predicate::CfgEnv;
 pub use predicate::CfgError;
 pub use predicate::CfgPredicate;
 pub use predicate::Truth;
+pub use predicate::parse as parse_predicate;
 
 /// A named set of build-time choices to evaluate a package under.
 #[derive(Debug, Clone, PartialEq, Eq)]

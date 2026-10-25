@@ -278,7 +278,8 @@ one in [Install](#install) — fetches a released binary and needs no checkout a
 | `mise run format` / `format-check` | rustfmt on the pinned nightly |
 | `mise run lint` / `lint-fix` | Clippy, denying warnings |
 | `mise run file-lines` | Enforce the 800-code-line ceiling per `.rs` file |
-| `mise run build-lean` | Build the app and `karet-fileview` across feature subsets |
+| `mise run build-lean` | Build the app and `karet-fileview` across feature subsets, and test the app with no default features |
+| `mise run feature-subsets` | Test the grammar-less, single-grammar and headless configurations (run by CI after `verify`) |
 | `mise run coverage` | Generate `lcov.info` and print the summary |
 | `mise run verify` | **The merge gate** — the whole chain below, in order |
 | `mise run install` | `cargo install --path crates/karet --locked` — this checkout onto your path |

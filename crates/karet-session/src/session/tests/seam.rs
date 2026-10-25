@@ -30,31 +30,35 @@
     /// streaming itself is covered separately, below.
     fn await_seam_event(events: &mut crate::session::EventRx) -> Option<Event> {
         let mut streamed: Vec<(usize, Vec<crate::api::SeamNodeView>)> = Vec::new();
-        for _ in 0..400 {
-            while let Some((_, event)) = events.try_recv() {
-                match event {
-                    Event::SeamPackageIndexed { order, nodes, .. } => {
-                        streamed.push((order, nodes));
-                    },
-                    Event::SeamIndexFinished { summary, .. } => {
-                        // Sorted back into discovery order, which is what the view does
-                        // with the `order` each package carries.
-                        streamed.sort_by_key(|(order, _)| *order);
-                        return Some(Event::SeamIndexed {
-                            summary,
-                            nodes: streamed.into_iter().flat_map(|(_, nodes)| nodes).collect(),
-                        });
-                    },
-                    Event::SeamIndexed { .. }
-                    | Event::SeamIndexFailed { .. }
-                    | Event::SeamQueryResult { .. }
-                    | Event::SeamNodeDetail { .. } => return Some(event),
-                    _ => {},
-                }
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        None
+        await_event(events, EVENT_DEADLINE, |_, event| match event {
+            Event::SeamPackageIndexed { order, nodes, .. } => {
+                streamed.push((order, nodes));
+                None
+            },
+            Event::SeamIndexFinished { summary, .. } => {
+                // Sorted back into discovery order, which is what the view does
+                // with the `order` each package carries.
+                let mut packages = std::mem::take(&mut streamed);
+                packages.sort_by_key(|(order, _)| *order);
+                Some(Event::SeamIndexed {
+                    summary,
+                    nodes: packages.into_iter().flat_map(|(_, nodes)| nodes).collect(),
+                })
+            },
+            Event::SeamIndexed { .. }
+            | Event::SeamIndexFailed { .. }
+            | Event::SeamQueryResult { .. }
+            | Event::SeamNodeDetail { .. } => Some(event),
+            _ => None,
+        })
+    }
+
+    /// [`await_seam_event`], with a missing answer as an error naming what was awaited.
+    fn next_seam_answer(
+        events: &mut crate::session::EventRx,
+        awaited: &str,
+    ) -> Result<Event, Box<dyn std::error::Error>> {
+        await_seam_event(events).ok_or_else(|| format!("no {awaited} answer arrived").into())
     }
 
     /// One package as it crossed the wire.
@@ -74,55 +78,55 @@
     /// Collect a whole index run as it actually arrives, event by event.
     fn await_index_stream(events: &mut crate::session::EventRx) -> Option<StreamedIndex> {
         let mut packages = Vec::new();
-        for _ in 0..400 {
-            while let Some((_, event)) = events.try_recv() {
-                match event {
-                    Event::SeamPackageIndexed {
-                        order, root, nodes, ..
-                    } => packages.push(StreamedPackage {
-                        order,
-                        root,
-                        nodes: nodes.len(),
-                    }),
-                    Event::SeamIndexFinished { parsed, files, .. } => {
-                        return Some(StreamedIndex {
-                            packages,
-                            parsed,
-                            files,
-                        });
-                    },
-                    Event::SeamIndexFailed { .. } => return None,
-                    _ => {},
-                }
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        None
+        await_event(events, EVENT_DEADLINE, |_, event| match event {
+            Event::SeamPackageIndexed {
+                order, root, nodes, ..
+            } => {
+                packages.push(StreamedPackage {
+                    order,
+                    root,
+                    nodes: nodes.len(),
+                });
+                None
+            },
+            Event::SeamIndexFinished { parsed, files, .. } => Some(Some(StreamedIndex {
+                packages: std::mem::take(&mut packages),
+                parsed,
+                files,
+            })),
+            Event::SeamIndexFailed { .. } => Some(None),
+            _ => None,
+        })
+        .flatten()
     }
 
+    /// What an index-stream test awaits; `await_index_stream` yields `None` on failure too.
+    const NO_STREAM: &str = "no index stream finished (timed out or SeamIndexFailed)";
+
     /// A session rooted at a freshly built package, with its index already requested.
-    fn indexed_session() -> Option<(Session, crate::session::EventRx, tempfile::TempDir, Event)> {
-        let dir = tempfile::tempdir().ok()?;
-        seam_package(dir.path()).ok()?;
+    fn indexed_session() -> Result<
+        (Session, crate::session::EventRx, tempfile::TempDir, Event),
+        Box<dyn std::error::Error>,
+    > {
+        let dir = tempfile::tempdir()?;
+        seam_package(dir.path())?;
         let (mut session, mut events, _snaps) = Session::new(SessionConfig {
             roots: vec![dir.path().to_path_buf()],
             ..SessionConfig::default()
         });
         session.handle(RequestId(1), Command::IndexSeams {
-                root: None,
-                mode: crate::api::SeamSync::Incremental,
-            });
-        let indexed = await_seam_event(&mut events)?;
-        Some((session, events, dir, indexed))
+            root: None,
+            mode: crate::api::SeamSync::Incremental,
+        });
+        let indexed = next_seam_answer(&mut events, "initial SeamIndexed")?;
+        Ok((session, events, dir, indexed))
     }
 
     #[test]
-    fn indexing_a_package_answers_with_the_whole_tree_and_a_summary() {
-        let Some((_session, _events, _dir, event)) = indexed_session() else {
-            return;
-        };
+    fn indexing_a_package_answers_with_the_whole_tree_and_a_summary() -> TestResult {
+        let (_session, _events, _dir, event) = indexed_session()?;
         let Event::SeamIndexed { summary, nodes } = event else {
-            return;
+            return Err(format!("expected SeamIndexed, got {event:?}").into());
         };
         assert_eq!(summary.package, "seamdemo");
         assert!(summary.nodes > 0);
@@ -131,34 +135,33 @@
         assert_eq!(nodes.len(), summary.nodes);
         assert!(nodes.iter().any(|n| n.id == "seamdemo::inner::helper"));
         assert!(nodes.iter().any(|n| n.id == "seamdemo::danger"));
+        Ok(())
     }
 
     #[test]
-    fn the_header_always_names_a_configuration_and_says_when_it_is_incomplete() {
-        let Some((_session, _events, _dir, event)) = indexed_session() else {
-            return;
-        };
+    fn the_header_always_names_a_configuration_and_says_when_it_is_incomplete() -> TestResult {
+        let (_session, _events, _dir, event) = indexed_session()?;
         let Event::SeamIndexed { summary, .. } = event else {
-            return;
+            return Err(format!("expected SeamIndexed, got {event:?}").into());
         };
         // Nothing renders unattributed, even before a manifest has been read.
         assert!(!summary.configuration.is_empty());
         assert!(!summary.available_configurations.is_empty());
         // And with no manifest the variation lens must not claim completeness.
         assert!(!summary.variation_complete);
+        Ok(())
     }
 
     #[test]
-    fn a_node_carries_its_facets_rollups_and_location() {
-        let Some((_session, _events, _dir, event)) = indexed_session() else {
-            return;
-        };
+    fn a_node_carries_its_facets_rollups_and_location() -> TestResult {
+        let (_session, _events, _dir, event) = indexed_session()?;
         let Event::SeamIndexed { nodes, .. } = event else {
-            return;
+            return Err(format!("expected SeamIndexed, got {event:?}").into());
         };
-        let Some(danger) = nodes.iter().find(|n| n.id == "seamdemo::danger") else {
-            return;
-        };
+        let danger = nodes
+            .iter()
+            .find(|n| n.id == "seamdemo::danger")
+            .ok_or("seamdemo::danger is not in the tree")?;
         assert_eq!(danger.kind, "function");
         assert!(danger.facets.iter().any(|f| f.lens == "hazard" && f.subtype == "unsafe"));
         assert!(danger.facets.iter().any(|f| f.lens == "api"));
@@ -167,143 +170,136 @@
 
         // The root's rollups account for what is beneath it, so a collapsed row is
         // still navigable.
-        let Some(root) = nodes.iter().find(|n| n.parent.is_none()) else {
-            return;
-        };
+        let root = nodes
+            .iter()
+            .find(|n| n.parent.is_none())
+            .ok_or("the tree has no root node")?;
         assert!(root.rollups.iter().any(|count| *count > 0));
+        Ok(())
     }
 
     #[test]
-    fn indexing_somewhere_with_no_package_reports_a_failure_rather_than_an_empty_tree() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
+    fn indexing_somewhere_with_no_package_reports_a_failure_rather_than_an_empty_tree(
+    ) -> TestResult {
+        let dir = tempfile::tempdir()?;
         let (mut session, mut events, _snaps) = Session::new(SessionConfig {
             roots: vec![dir.path().to_path_buf()],
             ..SessionConfig::default()
         });
         session.handle(RequestId(1), Command::IndexSeams {
-                root: None,
-                mode: crate::api::SeamSync::Incremental,
-            });
-        let Some(event) = await_seam_event(&mut events) else {
-            return;
-        };
+            root: None,
+            mode: crate::api::SeamSync::Incremental,
+        });
+        let event = next_seam_answer(&mut events, "SeamIndexFailed")?;
         // An empty tree would say "this package has nothing in it", which is not what
         // happened — there is no package here at all.
         assert!(matches!(event, Event::SeamIndexFailed { .. }), "got {event:?}");
+        Ok(())
     }
 
     #[test]
-    fn a_query_answers_with_matching_node_identities() {
-        let Some((mut session, mut events, _dir, _)) = indexed_session() else {
-            return;
-        };
+    fn a_query_answers_with_matching_node_identities() -> TestResult {
+        let (mut session, mut events, _dir, _) = indexed_session()?;
         session.handle(
             RequestId(2),
             Command::SeamQuery {
                 text: "lens:hazard".to_owned(),
             },
         );
-        let Some(Event::SeamQueryResult { nodes, error, .. }) = await_seam_event(&mut events)
-        else {
-            return;
+        let event = next_seam_answer(&mut events, "SeamQueryResult")?;
+        let Event::SeamQueryResult { nodes, error, .. } = event else {
+            return Err(format!("expected SeamQueryResult, got {event:?}").into());
         };
         assert!(error.is_none());
         assert_eq!(nodes, ["seamdemo::danger"]);
+        Ok(())
     }
 
     #[test]
-    fn an_unreadable_query_answers_with_a_positioned_error_not_an_empty_result() {
-        let Some((mut session, mut events, _dir, _)) = indexed_session() else {
-            return;
-        };
+    fn an_unreadable_query_answers_with_a_positioned_error_not_an_empty_result() -> TestResult {
+        let (mut session, mut events, _dir, _) = indexed_session()?;
         session.handle(
             RequestId(2),
             Command::SeamQuery {
                 text: "lens:hazrd".to_owned(),
             },
         );
-        let Some(Event::SeamQueryResult { nodes, error, .. }) = await_seam_event(&mut events)
-        else {
-            return;
+        let event = next_seam_answer(&mut events, "SeamQueryResult")?;
+        let Event::SeamQueryResult { nodes, error, .. } = event else {
+            return Err(format!("expected SeamQueryResult, got {event:?}").into());
         };
         assert!(nodes.is_empty());
         // The distinction matters: "I could not read that" is not "nothing matched".
-        let Some(error) = error else {
-            return;
-        };
+        let error = error.ok_or("an unreadable query answered with no error")?;
         assert!(error.message.contains("unknown lens"));
         assert!(error.end > error.start, "the error must be positioned");
         assert!(error.suggestions.contains(&"hazard".to_owned()));
+        Ok(())
     }
 
     #[test]
-    fn a_query_naming_a_configuration_reports_it_back() {
-        let Some((mut session, mut events, _dir, _)) = indexed_session() else {
-            return;
-        };
+    fn a_query_naming_a_configuration_reports_it_back() -> TestResult {
+        let (mut session, mut events, _dir, _) = indexed_session()?;
         session.handle(
             RequestId(2),
             Command::SeamQuery {
                 text: "config:tests lens:api".to_owned(),
             },
         );
-        let Some(Event::SeamQueryResult { configuration, .. }) = await_seam_event(&mut events)
-        else {
-            return;
+        let event = next_seam_answer(&mut events, "SeamQueryResult")?;
+        let Event::SeamQueryResult { configuration, .. } = event else {
+            return Err(format!("expected SeamQueryResult, got {event:?}").into());
         };
         assert_eq!(configuration.as_deref(), Some("tests"));
+        Ok(())
     }
 
     #[test]
-    fn asking_for_a_node_answers_for_that_node_even_with_no_edges() {
-        let Some((mut session, mut events, _dir, _)) = indexed_session() else {
-            return;
-        };
+    fn asking_for_a_node_answers_for_that_node_even_with_no_edges() -> TestResult {
+        let (mut session, mut events, _dir, _) = indexed_session()?;
         session.handle(
             RequestId(2),
             Command::SeamNode {
                 path: "seamdemo::inner::Contract".to_owned(),
             },
         );
-        let Some(Event::SeamNodeDetail { node, .. }) = await_seam_event(&mut events) else {
-            return;
+        let event = next_seam_answer(&mut events, "SeamNodeDetail")?;
+        let Event::SeamNodeDetail { node, .. } = event else {
+            return Err(format!("expected SeamNodeDetail, got {event:?}").into());
         };
         // The answer is correlated to what was asked, so a stale reply is detectable.
         assert_eq!(node, "seamdemo::inner::Contract");
+        Ok(())
     }
 
     #[test]
-    fn asking_for_a_node_answers_with_its_edges_and_its_source_together() {
-        let Some((mut session, mut events, _dir, _)) = indexed_session() else {
-            return;
-        };
+    fn asking_for_a_node_answers_with_its_edges_and_its_source_together() -> TestResult {
+        let (mut session, mut events, _dir, _) = indexed_session()?;
         session.handle(
             RequestId(2),
             Command::SeamNode {
                 path: "seamdemo::danger".to_owned(),
             },
         );
-        let Some(Event::SeamNodeDetail { preview, .. }) = await_seam_event(&mut events) else {
-            return;
+        let event = next_seam_answer(&mut events, "SeamNodeDetail")?;
+        let Event::SeamNodeDetail { preview, .. } = event else {
+            return Err(format!("expected SeamNodeDetail, got {event:?}").into());
         };
         assert!(preview.is_ok(), "{preview:?}");
         let Ok(preview) = preview else {
-            return;
+            return Err(format!("expected a source preview, got {preview:?}").into());
         };
         // One answer, not two: the pane can never show one node's source under another
         // node's relations.
         let body = preview.lines[preview.body_start..preview.body_end].join("\n");
         assert!(body.contains("unsafe fn danger"), "{body:?}");
         assert!(preview.file.ends_with("lib.rs"), "{:?}", preview.file);
+        Ok(())
     }
 
     #[test]
-    fn a_node_request_with_no_index_says_why_it_has_no_source() {
-        let Some(dir) = tempfile::tempdir().ok() else {
-            return;
-        };
+    fn a_node_request_with_no_index_says_why_it_has_no_source() -> TestResult {
+        let dir = tempfile::tempdir()?;
         let (mut session, mut events, _snaps) = Session::new(SessionConfig {
             roots: vec![dir.path().to_path_buf()],
             ..SessionConfig::default()
@@ -311,30 +307,29 @@
         session.handle(RequestId(1), Command::SeamNode {
             path: "absent::thing".to_owned(),
         });
-        let Some(Event::SeamNodeDetail { preview, .. }) = await_seam_event(&mut events) else {
-            return;
+        let event = next_seam_answer(&mut events, "SeamNodeDetail")?;
+        let Event::SeamNodeDetail { preview, .. } = event else {
+            return Err(format!("expected SeamNodeDetail, got {event:?}").into());
         };
         // A reason, never a blank block: the pane keeps "nothing there" and "nobody
         // looked" apart everywhere else, and the source must not be the exception.
         assert!(preview.is_err(), "{preview:?}");
+        Ok(())
     }
 
     #[test]
-    fn switching_configuration_re_answers_with_the_new_one_named() {
-        let Some((mut session, mut events, _dir, first)) = indexed_session() else {
-            return;
-        };
+    #[ignore = "#657: both offered configurations share one name, so none can be switched to"]
+    fn switching_configuration_re_answers_with_the_new_one_named() -> TestResult {
+        let (mut session, mut events, _dir, first) = indexed_session()?;
         let Event::SeamIndexed { summary, .. } = first else {
-            return;
+            return Err(format!("expected SeamIndexed, got {first:?}").into());
         };
-        let Some(other) = summary
+        let other = summary
             .available_configurations
             .iter()
             .find(|name| **name != summary.configuration)
             .cloned()
-        else {
-            return;
-        };
+            .ok_or("the index offers no second configuration to switch to")?;
 
         session.handle(
             RequestId(2),
@@ -342,20 +337,20 @@
                 name: other.clone(),
             },
         );
-        let Some(Event::SeamIndexed { summary: after, .. }) = await_seam_event(&mut events) else {
-            return;
+        let event = next_seam_answer(&mut events, "re-indexed SeamIndexed")?;
+        let Event::SeamIndexed { summary: after, .. } = event else {
+            return Err(format!("expected SeamIndexed, got {event:?}").into());
         };
         assert_eq!(after.configuration, other);
         assert_eq!(after.nodes, summary.nodes, "switching must not lose nodes");
+        Ok(())
     }
 
     #[test]
-    fn re_indexing_one_file_keeps_the_rest_of_the_tree() {
-        let Some((mut session, mut events, dir, first)) = indexed_session() else {
-            return;
-        };
+    fn re_indexing_one_file_keeps_the_rest_of_the_tree() -> TestResult {
+        let (mut session, mut events, dir, first) = indexed_session()?;
         let Event::SeamIndexed { nodes: before, .. } = first else {
-            return;
+            return Err(format!("expected SeamIndexed, got {first:?}").into());
         };
         assert!(before.iter().any(|n| n.id == "seamdemo::inner::helper"));
 
@@ -366,15 +361,16 @@
                 text: "pub trait Contract {}\npub fn renamed() {}\n".to_owned(),
             },
         );
-        let Some(Event::SeamIndexed { nodes: after, .. }) = await_seam_event(&mut events) else {
-            return;
+        let event = next_seam_answer(&mut events, "re-indexed SeamIndexed")?;
+        let Event::SeamIndexed { nodes: after, .. } = event else {
+            return Err(format!("expected SeamIndexed, got {event:?}").into());
         };
         assert!(after.iter().any(|n| n.id == "seamdemo::inner::renamed"));
         assert!(!after.iter().any(|n| n.id == "seamdemo::inner::helper"));
         // The neighbouring file is untouched by its sibling's edit.
         assert!(after.iter().any(|n| n.id == "seamdemo::danger"));
+        Ok(())
     }
-    
 
     /// A virtual Cargo workspace on disk, with `members` under `crates/`.
     fn seam_workspace(dir: &std::path::Path, members: &[&str]) -> std::io::Result<()> {
@@ -404,25 +400,22 @@
     }
 
     #[test]
-    fn indexing_a_workspace_root_answers_with_every_package_as_a_root() {
+    fn indexing_a_workspace_root_answers_with_every_package_as_a_root() -> TestResult {
         // The command the editor actually sends, against the shape a repository actually
         // has. This used to answer `SeamIndexFailed` on every Cargo workspace.
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
-        if seam_workspace(dir.path(), &["alpha", "beta"]).is_err() {
-            return;
-        }
+        let dir = tempfile::tempdir()?;
+        seam_workspace(dir.path(), &["alpha", "beta"])?;
         let (mut session, mut events, _snaps) = Session::new(SessionConfig {
             roots: vec![dir.path().to_path_buf()],
             ..SessionConfig::default()
         });
         session.handle(RequestId(1), Command::IndexSeams {
-                root: None,
-                mode: crate::api::SeamSync::Incremental,
-            });
-        let Some(Event::SeamIndexed { summary, nodes }) = await_seam_event(&mut events) else {
-            return;
+            root: None,
+            mode: crate::api::SeamSync::Incremental,
+        });
+        let event = next_seam_answer(&mut events, "SeamIndexed")?;
+        let Event::SeamIndexed { summary, nodes } = event else {
+            return Err(format!("expected SeamIndexed, got {event:?}").into());
         };
 
         assert_eq!(summary.packages, 2);
@@ -434,55 +427,53 @@
         assert_eq!(roots, ["alpha", "beta"]);
         assert!(nodes.iter().any(|n| n.id == "alpha::alpha_danger"));
         assert!(nodes.iter().any(|n| n.id == "beta::beta_danger"));
+        Ok(())
     }
 
     #[test]
-    fn a_workspace_summary_names_the_directory_rather_than_one_member() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
-        if seam_workspace(dir.path(), &["alpha", "beta"]).is_err() {
-            return;
-        }
+    fn a_workspace_summary_names_the_directory_rather_than_one_member() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        seam_workspace(dir.path(), &["alpha", "beta"])?;
         let (mut session, mut events, _snaps) = Session::new(SessionConfig {
             roots: vec![dir.path().to_path_buf()],
             ..SessionConfig::default()
         });
         session.handle(RequestId(1), Command::IndexSeams {
-                root: None,
-                mode: crate::api::SeamSync::Incremental,
-            });
-        let Some(Event::SeamIndexed { summary, .. }) = await_seam_event(&mut events) else {
-            return;
+            root: None,
+            mode: crate::api::SeamSync::Incremental,
+        });
+        let event = next_seam_answer(&mut events, "SeamIndexed")?;
+        let Event::SeamIndexed { summary, .. } = event else {
+            return Err(format!("expected SeamIndexed, got {event:?}").into());
         };
 
-        let expected = dir.path().file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let expected = dir
+            .path()
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or("the temp dir has no UTF-8 name")?;
         assert_eq!(summary.package, expected);
         assert_ne!(summary.package, "alpha");
+        Ok(())
     }
 
     #[test]
-    fn a_single_package_index_still_reports_one_package() {
-        let Some((_session, _events, _dir, event)) = indexed_session() else {
-            return;
-        };
+    fn a_single_package_index_still_reports_one_package() -> TestResult {
+        let (_session, _events, _dir, event) = indexed_session()?;
         let Event::SeamIndexed { summary, .. } = event else {
-            return;
+            return Err(format!("expected SeamIndexed, got {event:?}").into());
         };
         assert_eq!(summary.packages, 1);
         assert_eq!(summary.package, "seamdemo");
+        Ok(())
     }
 
     #[test]
-    fn the_configured_file_cap_is_what_the_index_is_built_under() {
+    fn the_configured_file_cap_is_what_the_index_is_built_under() -> TestResult {
         // Declared in settings since the view shipped and never read, which stops being
         // harmless once one index can span a whole repository.
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
-        if seam_workspace(dir.path(), &["alpha", "beta", "gamma"]).is_err() {
-            return;
-        }
+        let dir = tempfile::tempdir()?;
+        seam_workspace(dir.path(), &["alpha", "beta", "gamma"])?;
         let mut settings = crate::config::Settings::default();
         settings.seam.max_indexed_files = 1;
         let (mut session, mut events, _snaps) = Session::new(SessionConfig {
@@ -491,34 +482,33 @@
             ..SessionConfig::default()
         });
         session.handle(RequestId(1), Command::IndexSeams {
-                root: None,
-                mode: crate::api::SeamSync::Incremental,
-            });
-        let Some(Event::SeamIndexed { summary, .. }) = await_seam_event(&mut events) else {
-            return;
+            root: None,
+            mode: crate::api::SeamSync::Incremental,
+        });
+        let event = next_seam_answer(&mut events, "SeamIndexed")?;
+        let Event::SeamIndexed { summary, .. } = event else {
+            return Err(format!("expected SeamIndexed, got {event:?}").into());
         };
         assert_eq!(summary.truncated_after, Some(1));
+        Ok(())
     }
 
     #[test]
-    fn a_query_with_no_index_answers_rather_than_going_silent() {
+    fn a_query_with_no_index_answers_rather_than_going_silent() -> TestResult {
         // Reachable the moment a reader can pick a start point: index somewhere with no
         // package, then type in the filter box. A dropped answer leaves the request
         // outstanding forever and the view believing a filter is still running.
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
+        let dir = tempfile::tempdir()?;
         let (mut session, mut events, _snaps) = Session::new(SessionConfig {
             roots: vec![dir.path().to_path_buf()],
             ..SessionConfig::default()
         });
         session.handle(RequestId(1), Command::IndexSeams {
-                root: None,
-                mode: crate::api::SeamSync::Incremental,
-            });
-        let Some(Event::SeamIndexFailed { .. }) = await_seam_event(&mut events) else {
-            return;
-        };
+            root: None,
+            mode: crate::api::SeamSync::Incremental,
+        });
+        let event = next_seam_answer(&mut events, "SeamIndexFailed")?;
+        assert!(matches!(event, Event::SeamIndexFailed { .. }), "got {event:?}");
 
         session.handle(RequestId(2), Command::SeamQuery {
             text: "lens:api".to_owned(),
@@ -529,24 +519,22 @@
                 if nodes.is_empty() && error.is_none()),
             "got {answer:?}"
         );
+        Ok(())
     }
 
     #[test]
-    fn asking_for_a_node_with_no_index_answers_with_no_edges() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
+    fn asking_for_a_node_with_no_index_answers_with_no_edges() -> TestResult {
+        let dir = tempfile::tempdir()?;
         let (mut session, mut events, _snaps) = Session::new(SessionConfig {
             roots: vec![dir.path().to_path_buf()],
             ..SessionConfig::default()
         });
         session.handle(RequestId(1), Command::IndexSeams {
-                root: None,
-                mode: crate::api::SeamSync::Incremental,
-            });
-        let Some(Event::SeamIndexFailed { .. }) = await_seam_event(&mut events) else {
-            return;
-        };
+            root: None,
+            mode: crate::api::SeamSync::Incremental,
+        });
+        let event = next_seam_answer(&mut events, "SeamIndexFailed")?;
+        assert!(matches!(event, Event::SeamIndexFailed { .. }), "got {event:?}");
 
         session.handle(RequestId(2), Command::SeamNode {
             path: "absent::thing".to_owned(),
@@ -556,6 +544,7 @@
             matches!(answer, Some(Event::SeamNodeDetail { ref edges, .. }) if edges.is_empty()),
             "got {answer:?}"
         );
+        Ok(())
     }
 
     /// A session over `dir`, storing its index in `cache`.
@@ -572,11 +561,9 @@
     }
 
     #[test]
-    fn an_index_arrives_as_one_event_per_package_closed_by_one_finish() {
-        let Ok(dir) = tempfile::tempdir() else { return };
-        if seam_workspace(dir.path(), &["alpha", "beta"]).is_err() {
-            return;
-        }
+    fn an_index_arrives_as_one_event_per_package_closed_by_one_finish() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        seam_workspace(dir.path(), &["alpha", "beta"])?;
         let (mut session, mut events, _snaps) = Session::new(SessionConfig {
             roots: vec![dir.path().to_path_buf()],
             ..SessionConfig::default()
@@ -586,9 +573,7 @@
             mode: crate::api::SeamSync::Incremental,
         });
 
-        let Some(mut stream) = await_index_stream(&mut events) else {
-            return;
-        };
+        let mut stream = await_index_stream(&mut events).ok_or(NO_STREAM)?;
         assert_eq!(
             stream.packages.len(),
             2,
@@ -609,16 +594,13 @@
             .map(|package| package.root.as_str())
             .collect();
         assert_eq!(names, ["alpha", "beta"]);
+        Ok(())
     }
 
     #[test]
-    fn a_second_index_replays_the_stored_one_instead_of_parsing() {
-        let (Ok(dir), Ok(cache)) = (tempfile::tempdir(), tempfile::tempdir()) else {
-            return;
-        };
-        if seam_workspace(dir.path(), &["alpha", "beta"]).is_err() {
-            return;
-        }
+    fn a_second_index_replays_the_stored_one_instead_of_parsing() -> TestResult {
+        let (dir, cache) = (tempfile::tempdir()?, tempfile::tempdir()?);
+        seam_workspace(dir.path(), &["alpha", "beta"])?;
 
         // Cold: everything is parsed, and the result is stored.
         let (mut session, mut events) = cached_session(dir.path(), cache.path());
@@ -626,9 +608,7 @@
             root: None,
             mode: crate::api::SeamSync::Incremental,
         });
-        let Some(cold) = await_index_stream(&mut events) else {
-            return;
-        };
+        let cold = await_index_stream(&mut events).ok_or(NO_STREAM)?;
         assert_eq!(cold.parsed, cold.files);
         drop(session);
 
@@ -638,80 +618,64 @@
             root: None,
             mode: crate::api::SeamSync::Incremental,
         });
-        let Some(warm) = await_index_stream(&mut events) else {
-            return;
-        };
+        let warm = await_index_stream(&mut events).ok_or(NO_STREAM)?;
         assert_eq!(warm.parsed, 0, "an unchanged workspace was parsed again");
         assert_eq!(warm.files, cold.files, "a warm index covers the same files");
         assert_eq!(warm.packages.len(), 2, "every package is still reported");
+        Ok(())
     }
 
     #[test]
-    fn a_changed_file_is_the_only_one_reread() {
-        let (Ok(dir), Ok(cache)) = (tempfile::tempdir(), tempfile::tempdir()) else {
-            return;
-        };
-        if seam_workspace(dir.path(), &["alpha", "beta"]).is_err() {
-            return;
-        }
+    fn a_changed_file_is_the_only_one_reread() -> TestResult {
+        let (dir, cache) = (tempfile::tempdir()?, tempfile::tempdir()?);
+        seam_workspace(dir.path(), &["alpha", "beta"])?;
         let (mut session, mut events) = cached_session(dir.path(), cache.path());
         session.handle(RequestId(1), Command::IndexSeams {
             root: None,
             mode: crate::api::SeamSync::Incremental,
         });
-        if await_index_stream(&mut events).is_none() {
-            return;
-        }
+        await_index_stream(&mut events).ok_or(NO_STREAM)?;
         drop(session);
 
         let touched = dir.path().join("crates").join("alpha").join("src").join("inner.rs");
-        if std::fs::write(&touched, "pub trait Contract {}\npub fn helper() {}\npub fn extra() {}\n")
-            .is_err()
-        {
-            return;
-        }
+        std::fs::write(
+            &touched,
+            "pub trait Contract {}\npub fn helper() {}\npub fn extra() {}\n",
+        )?;
 
         let (mut session, mut events) = cached_session(dir.path(), cache.path());
         session.handle(RequestId(2), Command::IndexSeams {
             root: None,
             mode: crate::api::SeamSync::Incremental,
         });
-        let Some(stream) = await_index_stream(&mut events) else {
-            return;
-        };
+        let stream = await_index_stream(&mut events).ok_or(NO_STREAM)?;
         assert_eq!(stream.parsed, 1, "one file changed, so one file should be read");
+        Ok(())
     }
 
     #[test]
-    fn a_forced_sync_reads_everything_again() {
-        let (Ok(dir), Ok(cache)) = (tempfile::tempdir(), tempfile::tempdir()) else {
-            return;
-        };
-        if seam_workspace(dir.path(), &["alpha", "beta"]).is_err() {
-            return;
-        }
+    fn a_forced_sync_reads_everything_again() -> TestResult {
+        let (dir, cache) = (tempfile::tempdir()?, tempfile::tempdir()?);
+        seam_workspace(dir.path(), &["alpha", "beta"])?;
         let (mut session, mut events) = cached_session(dir.path(), cache.path());
         session.handle(RequestId(1), Command::IndexSeams {
             root: None,
             mode: crate::api::SeamSync::Incremental,
         });
-        let Some(first) = await_index_stream(&mut events) else {
-            return;
-        };
+        let first = await_index_stream(&mut events).ok_or(NO_STREAM)?;
 
         // The recourse when the stored index is itself suspect: nothing is trusted.
         session.handle(RequestId(2), Command::IndexSeams {
             root: None,
             mode: crate::api::SeamSync::Forced,
         });
-        let Some(forced) = await_index_stream(&mut events) else {
-            return;
-        };
+        let forced = await_index_stream(&mut events).ok_or(NO_STREAM)?;
         assert_eq!(
             forced.parsed, forced.files,
             "a forced sync trusted something"
         );
         assert_eq!(forced.files, first.files);
+        Ok(())
     }
 
     /// Not an assertion — a stopwatch over the path a reader actually takes.
@@ -720,14 +684,13 @@
     ///   -- --ignored --nocapture bench_seam`
     #[test]
     #[ignore = "timing, not a correctness check"]
-    fn bench_seam_cold_then_warm() {
+    fn bench_seam_cold_then_warm() -> TestResult {
+        // Skip: the bench needs a real tree to time, named by KARET_BENCH_ROOT.
         let Ok(root) = std::env::var("KARET_BENCH_ROOT") else {
-            return;
+            return Ok(());
         };
         let root = std::path::PathBuf::from(root);
-        let Ok(cache) = tempfile::tempdir() else {
-            return;
-        };
+        let cache = tempfile::tempdir()?;
 
         for (label, request) in [("COLD", RequestId(1)), ("WARM", RequestId(2))] {
             let (mut session, mut events, _snaps) = Session::new(SessionConfig {
@@ -740,9 +703,7 @@
                 root: None,
                 mode: crate::api::SeamSync::Incremental,
             });
-            let Some(stream) = await_index_stream(&mut events) else {
-                return;
-            };
+            let stream = await_index_stream(&mut events).ok_or(NO_STREAM)?;
             let elapsed = start.elapsed();
             let nodes: usize = stream.packages.iter().map(|package| package.nodes).sum();
             println!(
@@ -752,4 +713,5 @@
                 stream.files
             );
         }
+        Ok(())
     }

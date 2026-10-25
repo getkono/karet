@@ -25,8 +25,14 @@ pub(super) fn parse_hunks(lines: &[&str]) -> Result<Vec<Hunk>, DiffError> {
         i += 1;
 
         let mut diff_lines = Vec::new();
-        let mut old_lineno = old_start;
-        let mut new_lineno = new_start;
+        // Counted wide so stepping past the last line never overflows; a line
+        // number is only narrowed back to `u32` when a line actually claims it.
+        let mut old_lineno = u64::from(old_start);
+        let mut new_lineno = u64::from(new_start);
+        let lineno = |n: u64| {
+            u32::try_from(n)
+                .map_err(|_| DiffError::Parse(format!("hunk line number overflows: {header}")))
+        };
 
         while i < lines.len() && !strip_cr(lines[i]).0.starts_with("@@ ") {
             let (l, crlf) = strip_cr(lines[i]);
@@ -50,18 +56,18 @@ pub(super) fn parse_hunks(lines: &[&str]) -> Result<Vec<Hunk>, DiffError> {
 
             let (old_ln, new_ln) = match kind {
                 LineKind::Context => {
-                    let pair = (Some(old_lineno), Some(new_lineno));
+                    let pair = (Some(lineno(old_lineno)?), Some(lineno(new_lineno)?));
                     old_lineno += 1;
                     new_lineno += 1;
                     pair
                 },
                 LineKind::Remove => {
-                    let pair = (Some(old_lineno), None);
+                    let pair = (Some(lineno(old_lineno)?), None);
                     old_lineno += 1;
                     pair
                 },
                 LineKind::Add => {
-                    let pair = (None, Some(new_lineno));
+                    let pair = (None, Some(lineno(new_lineno)?));
                     new_lineno += 1;
                     pair
                 },
@@ -173,6 +179,34 @@ mod tests {
         assert_eq!(lines.len(), 2);
         assert!(lines[0].no_newline && lines[1].no_newline);
         assert_eq!(lines[0].terminator(), "");
+        Ok(())
+    }
+
+    #[test]
+    fn a_line_past_u32_max_errors_instead_of_overflowing() {
+        // The first context line is `u32::MAX` itself; the second would be one past.
+        let raw = ["@@ -4294967295 +1 @@", " a", " b"];
+        assert!(matches!(parse_hunks(&raw), Err(DiffError::Parse(_))));
+        let raw = ["@@ -1 +4294967295,2 @@", "+a", "+b"];
+        assert!(matches!(parse_hunks(&raw), Err(DiffError::Parse(_))));
+        // Through the public entry point, as the issue reported it.
+        let diff = "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -4294967295 +1 @@\n-x\n-y\n";
+        assert!(matches!(
+            crate::parse::parse(diff),
+            Err(DiffError::Parse(_))
+        ));
+    }
+
+    #[test]
+    fn a_hunk_ending_exactly_at_u32_max_still_parses() -> Result<(), DiffError> {
+        // Stepping past the last line must not fail when no line claims the number.
+        let raw = ["@@ -4294967295 +4294967295 @@", " last"];
+        let hunks = parse_hunks(&raw)?;
+        let line = &hunks[0].lines[0];
+        assert_eq!(
+            (line.old_lineno, line.new_lineno),
+            (Some(u32::MAX), Some(u32::MAX))
+        );
         Ok(())
     }
 

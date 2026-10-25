@@ -44,7 +44,7 @@ Deliberately not built:
 - **A karet-native theme format.** Author themes for VS Code, load them here.
 - **Chrome/UI theming beyond the palette** — configurable borders, chrome
   layouts, per-panel styling. The `TokenId`/`ThemeRole` vocabulary in
-  `karet-core` (32 tokens, 30 roles) is the complete customization surface, and
+  `karet-core` is the complete customization surface, and
   widgets resolve every color through it.
 - **A light built-in theme.** Load a light VS Code theme instead; the contrast
   checker in `karet-theme` keeps it legible.

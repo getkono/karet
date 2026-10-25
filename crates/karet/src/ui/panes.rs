@@ -90,7 +90,13 @@ pub(super) fn draw_panes(
                     .editor
                     .for_language(crate::app::tab_language(tab))
             });
-            let word_wrap = resolved.map_or(app.settings.editor.word_wrap, |r| r.word_wrap());
+            let word_wrap = resolved.map_or(
+                app.settings
+                    .editor
+                    .word_wrap
+                    .map(karet_session::config::schema::WordWrap::wraps),
+                |r| r.word_wrap(),
+            );
             let display = EditorDisplay::resolve(
                 resolved.unwrap_or_else(|| app.settings.editor.for_language(None)),
             )
@@ -157,7 +163,13 @@ pub(super) fn draw_panes(
                     .editor
                     .for_language(crate::app::tab_language(tab))
             });
-            let word_wrap = resolved.map_or(app.settings.editor.word_wrap, |r| r.word_wrap());
+            let word_wrap = resolved.map_or(
+                app.settings
+                    .editor
+                    .word_wrap
+                    .map(karet_session::config::schema::WordWrap::wraps),
+                |r| r.word_wrap(),
+            );
             let display = EditorDisplay::resolve(
                 resolved.unwrap_or_else(|| app.settings.editor.for_language(None)),
             )

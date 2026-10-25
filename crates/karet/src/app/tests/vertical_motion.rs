@@ -297,3 +297,31 @@ fn with_word_wrap_motion_acts_on_visual_rows() {
         "Home on a continuation row goes to its start"
     );
 }
+
+#[test]
+fn a_click_past_the_end_of_a_wrapped_row_keeps_the_caret_on_that_row() {
+    // `alpha ` fills row 0 and the long word starts row 1, so column 6 is both
+    // the end of row 0 and the start of row 1.
+    let long = "x".repeat(40);
+    let (mut rig, width) = wrapped_rig(&format!("|alpha {long}"));
+    assert!(width < 46, "the line wraps");
+    rig.run(&[click(At::Offset(0, 0, 10, 0))]);
+    assert_eq!(rig.tab().editor.cursor(), LineCol::new(0, 6));
+    // Home acts on the caret's visual row: row 0's start, not row 1's.
+    rig.run(&[key(KeyCode::Home)]);
+    assert_eq!(
+        rig.tab().editor.cursor(),
+        LineCol::new(0, 0),
+        "the caret stayed on the clicked row"
+    );
+
+    // The same position clicked at the start of row 1 stays on row 1.
+    rig.run(&[PAUSE, click(At::Offset(0, 0, 0, 1))]);
+    assert_eq!(rig.tab().editor.cursor(), LineCol::new(0, 6));
+    rig.run(&[key(KeyCode::Home)]);
+    assert_eq!(
+        rig.tab().editor.cursor(),
+        LineCol::new(0, 6),
+        "Home on row 1 keeps its start"
+    );
+}

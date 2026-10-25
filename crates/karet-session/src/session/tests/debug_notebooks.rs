@@ -225,7 +225,7 @@
 
     #[cfg(feature = "notebook-kernel")]
     #[tokio::test]
-    async fn notebook_commands_reach_the_kernel_manager() {
+    async fn notebook_commands_reach_the_kernel_manager() -> TestResult {
         let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
 
         session.handle(RequestId(1), Command::NotebookInterrupt);
@@ -241,9 +241,7 @@
 
         // Running a notebook that does not parse starts a kernel task, which
         // diagnoses the file before it discovers or launches anything.
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
+        let dir = tempfile::tempdir()?;
         for (n, command) in [
             |path| Command::NotebookRunAll { path },
             |path| Command::NotebookRunCell { path, cell: 0 },
@@ -252,11 +250,10 @@
         .enumerate()
         {
             let path = dir.path().join(format!("broken{n}.ipynb"));
-            if std::fs::write(&path, "not json").is_err() {
-                return;
-            }
+            std::fs::write(&path, "not json")?;
             session.handle(RequestId(3 + n as u64), command(path));
             let message = next_notification(&mut events).await.unwrap_or_default();
             assert!(message.starts_with("notebook:"), "{message}");
         }
+        Ok(())
     }

@@ -14,6 +14,8 @@
         use crate::session::Session;
         use crate::session::SessionConfig;
 
+        use super::TestResult;
+
         /// A line whose leading emoji is one `char` but *two* UTF-16 code units, so
         /// a column that is not converted lands one place too far right.
         const NON_BMP: &str = "let \u{1f680} = target;\n";
@@ -71,15 +73,11 @@
         }
 
         #[test]
-        fn a_navigation_with_no_server_is_answered_empty_with_its_kind() {
-            let Ok(dir) = tempfile::tempdir() else { return };
+        fn a_navigation_with_no_server_is_answered_empty_with_its_kind() -> TestResult {
+            let dir = tempfile::tempdir()?;
             let path = dir.path().join("notes.txt");
-            if std::fs::write(&path, "plain text\n").is_err() {
-                return;
-            }
-            let Some((mut session, doc, mut events)) = session_with(&path) else {
-                return;
-            };
+            std::fs::write(&path, "plain text\n")?;
+            let (mut session, doc, mut events) = session_with(&path).ok_or("no Opened event")?;
             session.handle(
                 crate::api::RequestId(9),
                 Command::FindLocations {
@@ -100,18 +98,15 @@
                 answer,
                 Some((Some(crate::api::RequestId(9)), LocationKind::Implementation, 0))
             );
+            Ok(())
         }
 
         #[test]
-        fn signature_help_with_no_server_is_answered_empty() {
-            let Ok(dir) = tempfile::tempdir() else { return };
+        fn signature_help_with_no_server_is_answered_empty() -> TestResult {
+            let dir = tempfile::tempdir()?;
             let path = dir.path().join("notes.txt");
-            if std::fs::write(&path, "plain(text\n").is_err() {
-                return;
-            }
-            let Some((mut session, doc, mut events)) = session_with(&path) else {
-                return;
-            };
+            std::fs::write(&path, "plain(text\n")?;
+            let (mut session, doc, mut events) = session_with(&path).ok_or("no Opened event")?;
             session.handle(
                 crate::api::RequestId(9),
                 Command::SignatureHelp {
@@ -140,21 +135,19 @@
                     karet_core::SignatureHelpOptions::default()
                 ))
             );
+            Ok(())
         }
 
         #[test]
-        fn a_navigation_answer_is_converted_and_keeps_its_kind() {
-            let Ok(dir) = tempfile::tempdir() else { return };
+        fn a_navigation_answer_is_converted_and_keeps_its_kind() -> TestResult {
+            let dir = tempfile::tempdir()?;
             let path = dir.path().join("here.rs");
-            if std::fs::write(&path, NON_BMP).is_err() {
-                return;
-            }
-            let Some((mut session, doc, mut events)) = session_with(&path) else {
-                return;
-            };
-            let Some(version) = session.document(doc).map(|doc| doc.version()) else {
-                return;
-            };
+            std::fs::write(&path, NON_BMP)?;
+            let (mut session, doc, mut events) = session_with(&path).ok_or("no Opened event")?;
+            let version = session
+                .document(doc)
+                .map(|doc| doc.version())
+                .ok_or("opened document is not registered")?;
             session.apply_lsp_update(LspUpdate::Definitions {
                 generation: 0,
                 request: crate::api::RequestId(2),
@@ -183,18 +176,15 @@
             // UTF-16 column 6 is buffer column 5, as for a definition.
             let column = answer.and_then(|(_, l)| l.first().map(|l| l.range.start.col));
             assert_eq!(column, Some(5));
+            Ok(())
         }
 
         #[test]
-        fn a_definition_in_the_requesting_file_is_converted() {
-            let Ok(dir) = tempfile::tempdir() else { return };
+        fn a_definition_in_the_requesting_file_is_converted() -> TestResult {
+            let dir = tempfile::tempdir()?;
             let path = dir.path().join("here.rs");
-            if std::fs::write(&path, NON_BMP).is_err() {
-                return;
-            }
-            let Some((mut session, doc, mut events)) = session_with(&path) else {
-                return;
-            };
+            std::fs::write(&path, NON_BMP)?;
+            let (mut session, doc, mut events) = session_with(&path).ok_or("no Opened event")?;
 
             // UTF-16 column 6 is buffer column 5: the rocket counts twice.
             let out = adopt(
@@ -207,20 +197,16 @@
                 }],
             );
             assert_eq!(out.and_then(|l| l.first().map(|l| l.range.start.col)), Some(5));
+            Ok(())
         }
 
         #[test]
-        fn a_definition_in_another_open_file_is_converted_against_that_file() {
-            let Ok(dir) = tempfile::tempdir() else { return };
+        fn a_definition_in_another_open_file_is_converted_against_that_file() -> TestResult {
+            let dir = tempfile::tempdir()?;
             let (here, there) = (dir.path().join("here.rs"), dir.path().join("there.rs"));
-            if std::fs::write(&here, "fn caller() {}\n").is_err()
-                || std::fs::write(&there, NON_BMP).is_err()
-            {
-                return;
-            }
-            let Some((mut session, doc, mut events)) = session_with(&here) else {
-                return;
-            };
+            std::fs::write(&here, "fn caller() {}\n")?;
+            std::fs::write(&there, NON_BMP)?;
+            let (mut session, doc, mut events) = session_with(&here).ok_or("no Opened event")?;
             session.handle(
                 crate::api::RequestId(3),
                 Command::OpenDocument {
@@ -240,20 +226,16 @@
                 }],
             );
             assert_eq!(out.and_then(|l| l.first().map(|l| l.range.start.col)), Some(5));
+            Ok(())
         }
 
         #[test]
-        fn a_definition_in_a_file_that_is_not_open_is_converted_from_disk() {
-            let Ok(dir) = tempfile::tempdir() else { return };
+        fn a_definition_in_a_file_that_is_not_open_is_converted_from_disk() -> TestResult {
+            let dir = tempfile::tempdir()?;
             let (here, there) = (dir.path().join("here.rs"), dir.path().join("there.rs"));
-            if std::fs::write(&here, "fn caller() {}\n").is_err()
-                || std::fs::write(&there, NON_BMP).is_err()
-            {
-                return;
-            }
-            let Some((mut session, doc, mut events)) = session_with(&here) else {
-                return;
-            };
+            std::fs::write(&here, "fn caller() {}\n")?;
+            std::fs::write(&there, NON_BMP)?;
+            let (mut session, doc, mut events) = session_with(&here).ok_or("no Opened event")?;
 
             let out = adopt(
                 &mut session,
@@ -265,23 +247,18 @@
                 }],
             );
             assert_eq!(out.and_then(|l| l.first().map(|l| l.range.start.col)), Some(5));
+            Ok(())
         }
 
         #[test]
-        fn many_hits_across_files_are_each_converted_against_their_own_file() {
-            let Ok(dir) = tempfile::tempdir() else { return };
+        fn many_hits_across_files_are_each_converted_against_their_own_file() -> TestResult {
+            let dir = tempfile::tempdir()?;
             let (here, there) = (dir.path().join("here.rs"), dir.path().join("there.rs"));
             let plain = dir.path().join("plain.rs");
-            if std::fs::write(&here, NON_BMP).is_err()
-                || std::fs::write(&there, "let \u{1f680} = a;\nlet \u{1f680}\u{1f680} = b;\n")
-                    .is_err()
-                || std::fs::write(&plain, "let x = c;\n").is_err()
-            {
-                return;
-            }
-            let Some((mut session, doc, mut events)) = session_with(&here) else {
-                return;
-            };
+            std::fs::write(&here, NON_BMP)?;
+            std::fs::write(&there, "let \u{1f680} = a;\nlet \u{1f680}\u{1f680} = b;\n")?;
+            std::fs::write(&plain, "let x = c;\n")?;
+            let (mut session, doc, mut events) = session_with(&here).ok_or("no Opened event")?;
             let at = |path: &std::path::Path, line, col| Location {
                 path: path.to_path_buf(),
                 range: range(line, col),
@@ -298,18 +275,15 @@
             let columns: Option<Vec<u32>> =
                 out.map(|l| l.iter().map(|l| l.range.start.col).collect());
             assert_eq!(columns, Some(vec![5, 5, 6, 6]));
+            Ok(())
         }
 
         #[test]
-        fn an_unreadable_definition_target_is_passed_through_rather_than_dropped() {
-            let Ok(dir) = tempfile::tempdir() else { return };
+        fn an_unreadable_definition_target_is_passed_through_rather_than_dropped() -> TestResult {
+            let dir = tempfile::tempdir()?;
             let here = dir.path().join("here.rs");
-            if std::fs::write(&here, "fn caller() {}\n").is_err() {
-                return;
-            }
-            let Some((mut session, doc, mut events)) = session_with(&here) else {
-                return;
-            };
+            std::fs::write(&here, "fn caller() {}\n")?;
+            let (mut session, doc, mut events) = session_with(&here).ok_or("no Opened event")?;
 
             // An approximate column beats a dropped result: `goto` clamps anyway,
             // and the line number is still right.
@@ -326,6 +300,7 @@
             let first = out.and_then(|l| l.first().cloned());
             assert_eq!(first.as_ref().map(|l| l.path.clone()), Some(missing));
             assert_eq!(first.map(|l| l.range.start), Some(LineCol::new(3, 6)));
+            Ok(())
         }
 
         fn workspace_symbol(
@@ -343,18 +318,13 @@
         }
 
         #[test]
-        fn workspace_symbols_keep_their_files_and_open_ones_are_converted() {
-            let Ok(dir) = tempfile::tempdir() else { return };
+        fn workspace_symbols_keep_their_files_and_open_ones_are_converted() -> TestResult {
+            let dir = tempfile::tempdir()?;
             let here = dir.path().join("here.rs");
             let elsewhere = dir.path().join("elsewhere.rs");
-            if std::fs::write(&here, NON_BMP).is_err()
-                || std::fs::write(&elsewhere, NON_BMP).is_err()
-            {
-                return;
-            }
-            let Some((mut session, _doc, mut events)) = session_with(&here) else {
-                return;
-            };
+            std::fs::write(&here, NON_BMP)?;
+            std::fs::write(&elsewhere, NON_BMP)?;
+            let (mut session, _doc, mut events) = session_with(&here).ok_or("no Opened event")?;
             session.apply_lsp_update(LspUpdate::WorkspaceSymbols {
                 generation: 0,
                 request: crate::api::RequestId(5),
@@ -370,9 +340,7 @@
                     answer = Some((id, symbols));
                 }
             }
-            let Some((id, symbols)) = answer else {
-                unreachable!("the answer is emitted")
-            };
+            let (id, symbols) = answer.ok_or("no WorkspaceSymbols answer")?;
             assert_eq!(id, Some(crate::api::RequestId(5)));
             let found: Vec<_> = symbols
                 .iter()
@@ -388,6 +356,7 @@
                     ("lazy", elsewhere, None),
                 ]
             );
+            Ok(())
         }
 
         #[test]
@@ -421,6 +390,8 @@
         use crate::session::Session;
         use crate::session::SessionConfig;
 
+        use super::TestResult;
+
         /// A session whose registry state lives under `root`, with the default
         /// `managedDownloads: "prompt"` policy.
         fn session_rooted_at(root: &std::path::Path) -> (Session, crate::session::EventRx) {
@@ -451,30 +422,26 @@
         }
 
         #[test]
-        fn a_provider_never_offered_raises_the_prompt() {
-            let Ok(dir) = tempfile::tempdir() else {
-                return;
-            };
+        fn a_provider_never_offered_raises_the_prompt() -> TestResult {
+            let dir = tempfile::tempdir()?;
             let (mut session, mut events) = session_rooted_at(dir.path());
             install_required(&mut session);
             assert!(offered(&mut events));
+            Ok(())
         }
 
         #[test]
-        fn a_declined_provider_is_never_offered_again() {
-            let Ok(dir) = tempfile::tempdir() else {
-                return;
-            };
+        fn a_declined_provider_is_never_offered_again() -> TestResult {
+            let dir = tempfile::tempdir()?;
             let declined = Declined::now();
-            if write_declined(dir.path(), &LanguageServerId::Texlab, &declined).is_err() {
-                return;
-            }
+            write_declined(dir.path(), &LanguageServerId::Texlab, &declined)?;
             let (mut session, mut events) = session_rooted_at(dir.path());
             install_required(&mut session);
             assert!(
                 !offered(&mut events),
                 "the user has already answered this question"
             );
+            Ok(())
         }
     }
 

@@ -139,6 +139,47 @@ fn convert_reports_paths_under_a_symlinked_root() -> Result<(), Box<dyn std::err
     Ok(())
 }
 
+/// The symlink case macOS hits by default (`/var` → `/private/var`), made
+/// deterministic on any unix: an exact path named through a symlinked directory
+/// — for a file that does not exist yet, so only its nearest existing ancestor
+/// can be canonicalized — still matches the canonical spelling notify reports,
+/// and the event comes back in the caller's spelling.
+#[cfg(unix)]
+#[test]
+fn exact_path_through_a_symlink_matches_its_canonical_spelling()
+-> Result<(), Box<dyn std::error::Error>> {
+    use notify::event::CreateKind;
+    let scratch = TempDir::new()?;
+    let real = scratch.path().join("private-var");
+    fs::create_dir_all(&real)?;
+    let link = scratch.path().join("var");
+    std::os::unix::fs::symlink(&real, &link)?;
+
+    let exact_path = link.join("cfg/setting.jsonc");
+    let canonical = fs::canonicalize(&real)?.join("cfg/setting.jsonc");
+    assert_ne!(exact_path, canonical);
+    assert_eq!(normalize_path(&exact_path), canonical);
+    assert!(same_path(&canonical, &exact_path));
+    assert!(path_is_within(&canonical, &link));
+    // A sibling outside the symlinked directory is not the same path.
+    assert!(!same_path(
+        &scratch.path().join("cfg/setting.jsonc"),
+        &exact_path
+    ));
+
+    let exact = BTreeSet::from([exact_path.clone()]);
+    assert!(keep_path(&canonical, &[], &[], &exact));
+    let got = convert(
+        EventKind::Create(CreateKind::File),
+        std::slice::from_ref(&canonical),
+        &[],
+        &[],
+        &exact,
+    );
+    assert_eq!(got.map(|e| e.paths), Some(vec![exact_path]));
+    Ok(())
+}
+
 #[test]
 fn only_watch_exhaustion_falls_back_to_polling() {
     assert_eq!(

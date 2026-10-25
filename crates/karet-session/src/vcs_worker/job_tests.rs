@@ -9,23 +9,37 @@ use crate::cancellation::CancellationHub;
 
 type Events = tokio::sync::mpsc::UnboundedReceiver<(Option<RequestId>, Event)>;
 
+/// A missing or wrong answer is an `Err`, so a test fails instead of passing.
+type TestResult = Result<(), Box<dyn std::error::Error>>;
+
 /// A scratch repository with `commits` commits of `a.txt` (the n-th writes
-/// `"n\n"`). `None` when `git` is unavailable.
-fn repo_with_commits(commits: usize) -> Option<(tempfile::TempDir, PathBuf)> {
-    let dir = tempfile::tempdir().ok()?;
-    let root = std::fs::canonicalize(dir.path()).ok()?;
+/// `"n\n"`). `Ok(None)` only when `git` is unavailable: any fixture failure past
+/// that is an error, so a test cannot pass on a repository it never built.
+fn repo_with_commits(
+    commits: usize,
+) -> Result<Option<(tempfile::TempDir, PathBuf)>, Box<dyn std::error::Error>> {
+    let git_on_path = std::process::Command::new("git")
+        .arg("--version")
+        .output()
+        .is_ok_and(|out| out.status.success());
+    if !git_on_path {
+        return Ok(None);
+    }
+    let dir = tempfile::tempdir()?;
+    let root = std::fs::canonicalize(dir.path())?;
     git(&root, &["init", "-q"])?;
     for n in 1..=commits {
-        std::fs::write(root.join("a.txt"), format!("{n}\n")).ok()?;
+        std::fs::write(root.join("a.txt"), format!("{n}\n"))?;
         git(&root, &["add", "a.txt"])?;
         git(&root, &["commit", "-q", "-m", &format!("commit {n}")])?;
     }
-    Some((dir, root))
+    Ok(Some((dir, root)))
 }
 
-/// Run `git` in `root` with a fixed identity and no signing, `None` on failure.
-fn git(root: &Path, args: &[&str]) -> Option<()> {
-    std::process::Command::new("git")
+/// Run `git` in `root` with a fixed identity and no signing, failing on a
+/// non-zero exit.
+fn git(root: &Path, args: &[&str]) -> TestResult {
+    let status = std::process::Command::new("git")
         .args([
             "-c",
             "user.email=test@example.com",
@@ -36,10 +50,12 @@ fn git(root: &Path, args: &[&str]) -> Option<()> {
         ])
         .args(args)
         .current_dir(root)
-        .status()
-        .ok()
-        .filter(std::process::ExitStatus::success)
-        .map(|_| ())
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("git {args:?} failed: {status}").into())
+    }
 }
 
 /// Dispatch one job through the worker's `run` and collect what it emitted.
@@ -69,9 +85,10 @@ fn log_page(events: &[(Option<RequestId>, Event)]) -> Option<(usize, Vec<String>
 }
 
 #[test]
-fn log_pages_through_history_and_reports_whether_more_remains() {
-    let Some((_dir, root)) = repo_with_commits(3) else {
-        return;
+fn log_pages_through_history_and_reports_whether_more_remains() -> TestResult {
+    let Some((_dir, root)) = repo_with_commits(3)? else {
+        // Skip: `git` is not on PATH.
+        return Ok(());
     };
     let hub = CancellationHub::default();
     let first = dispatch(
@@ -116,6 +133,7 @@ fn log_pages_through_history_and_reports_whether_more_remains() {
         log_page(&exact),
         Some((1, vec!["commit 2".to_owned(), "commit 1".to_owned()], false))
     );
+    Ok(())
 }
 
 #[test]
@@ -182,14 +200,13 @@ fn diff_with_rev(
 }
 
 #[test]
-fn diff_with_rev_compares_the_revision_with_the_live_buffer_or_the_worktree() {
-    let Some((_dir, root)) = repo_with_commits(1) else {
-        return;
+fn diff_with_rev_compares_the_revision_with_the_live_buffer_or_the_worktree() -> TestResult {
+    let Some((_dir, root)) = repo_with_commits(1)? else {
+        // Skip: `git` is not on PATH.
+        return Ok(());
     };
     let path = root.join("a.txt");
-    if std::fs::write(&path, "changed\n").is_err() {
-        return;
-    }
+    std::fs::write(&path, "changed\n")?;
     assert_eq!(
         diff_with_rev(&path, "HEAD", None),
         Some(Ok((false, 1))),
@@ -207,49 +224,45 @@ fn diff_with_rev_compares_the_revision_with_the_live_buffer_or_the_worktree() {
         ),
         "a file absent at the revision is an error, not an all-added diff"
     );
-    if std::fs::write(&path, [0xff, 0xfe, 0x00]).is_err() {
-        return;
-    }
+    std::fs::write(&path, [0xff, 0xfe, 0x00])?;
     assert_eq!(
         diff_with_rev(&path, "HEAD", None),
         Some(Ok((true, 0))),
         "a non-text current side marks the change binary"
     );
+    Ok(())
 }
 
 #[test]
-fn remote_facts_report_why_they_are_unavailable() {
-    let Ok(outside) = tempfile::tempdir() else {
-        return;
-    };
+fn remote_facts_report_why_they_are_unavailable() -> TestResult {
+    let outside = tempfile::tempdir()?;
     assert_eq!(
         remote_facts(&outside.path().join("a.txt")).err().as_deref(),
         Some("not in a git repository")
     );
-    let Some((_dir, root)) = repo_with_commits(1) else {
-        return;
+    let Some((_dir, root)) = repo_with_commits(1)? else {
+        // Skip: `git` is not on PATH.
+        return Ok(());
     };
     assert_eq!(
         remote_facts(&root.join("a.txt")).err().as_deref(),
         Some("no origin remote configured")
     );
+    Ok(())
 }
 
 #[test]
-fn remote_facts_describe_a_tracked_and_an_untracked_file() {
-    let Some((_dir, root)) = repo_with_commits(1) else {
-        return;
+fn remote_facts_describe_a_tracked_and_an_untracked_file() -> TestResult {
+    let Some((_dir, root)) = repo_with_commits(1)? else {
+        // Skip: `git` is not on PATH.
+        return Ok(());
     };
-    if git(
+    git(
         &root,
         &["remote", "add", "origin", "https://example.com/o/r.git"],
-    )
-    .is_none()
-        || std::fs::create_dir_all(root.join("sub")).is_err()
-        || std::fs::write(root.join("sub/new.txt"), "x\n").is_err()
-    {
-        return;
-    }
+    )?;
+    std::fs::create_dir_all(root.join("sub"))?;
+    std::fs::write(root.join("sub/new.txt"), "x\n")?;
     let tracked = remote_facts(&root.join("a.txt"));
     assert!(
         tracked
@@ -297,10 +310,11 @@ fn remote_facts_describe_a_tracked_and_an_untracked_file() {
         },
     );
     assert!(cancelled.is_empty(), "{cancelled:?}");
+    Ok(())
 }
 
 #[test]
-fn prepare_changes_gives_up_once_cancelled() {
+fn prepare_changes_gives_up_once_cancelled() -> TestResult {
     let hub = CancellationHub::default();
     let cancel = hub.register(RequestId(1));
     assert_eq!(
@@ -308,21 +322,19 @@ fn prepare_changes_gives_up_once_cancelled() {
         Some(0)
     );
     hub.cancel(RequestId(1));
-    let Some((_dir, root)) = repo_with_commits(1) else {
-        return;
+    let Some((_dir, root)) = repo_with_commits(1)? else {
+        // Skip: `git` is not on PATH.
+        return Ok(());
     };
-    if std::fs::write(root.join("a.txt"), "changed\n").is_err() {
-        return;
-    }
-    let changes = repository(&Some(root))
-        .and_then(|repo| {
-            repo.changes(Selection::Unstaged, None)
-                .map_err(|e| e.to_string())
-        })
-        .unwrap_or_default();
+    std::fs::write(root.join("a.txt"), "changed\n")?;
+    let changes = repository(&Some(root)).and_then(|repo| {
+        repo.changes(Selection::Unstaged, None)
+            .map_err(|e| e.to_string())
+    })?;
     assert_eq!(changes.len(), 1);
     assert!(
         prepare_changes(changes, false, &cancel).is_none(),
         "a cancelled request prepares nothing"
     );
+    Ok(())
 }

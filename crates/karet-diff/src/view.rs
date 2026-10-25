@@ -14,9 +14,7 @@ use ratatui::text::Line;
 use ratatui::text::Span;
 use unicode_width::UnicodeWidthStr;
 
-use crate::HighlightedPair;
 use crate::align_hunk;
-use crate::compute_highlights;
 use crate::intraline::Segment;
 use crate::model::DiffLine;
 use crate::model::FileDiff;
@@ -134,7 +132,9 @@ pub fn side_by_side_lines(
         right.push(Line::default());
         return (left, right);
     }
-    for hunk in &prepared.diff.hunks {
+    let empty = Vec::new();
+    for (hunk_index, hunk) in prepared.diff.hunks.iter().enumerate() {
+        let intraline = prepared.intraline.get(hunk_index).unwrap_or(&empty);
         if let Some(scope) = &hunk.scope {
             left.push(scope_line(scope, palette));
             right.push(scope_line(hunk.right_scope().unwrap_or(scope), palette));
@@ -142,25 +142,17 @@ pub fn side_by_side_lines(
         left.push(header_line(&hunk.header, palette));
         right.push(header_line(&hunk.right_header(), palette));
 
+        // `align_hunk` pairs removes with adds exactly as `PreparedDiff` paired
+        // them for `intraline`, so each cell reads its own row's prepared pair.
+        let pair_of = |cell: Option<&crate::Cell>| {
+            cell.and_then(|cell| intraline.get(cell.hunk_line_idx))
+                .and_then(Option::as_ref)
+        };
         for row in align_hunk(&hunk.lines) {
-            let pair: Option<HighlightedPair> = match (&row.left, &row.right) {
-                (Some(l), Some(r)) if l.kind == LineKind::Remove && r.kind == LineKind::Add => {
-                    Some(compute_highlights(&l.content, &r.content))
-                },
-                _ => None,
-            };
-            left.push(cell_line(
-                prepared,
-                palette,
-                row.left.as_ref(),
-                pair.as_ref().map(|p| p.old_segments.as_slice()),
-            ));
-            right.push(cell_line(
-                prepared,
-                palette,
-                row.right.as_ref(),
-                pair.as_ref().map(|p| p.new_segments.as_slice()),
-            ));
+            let old = pair_of(row.left.as_ref()).map(|pair| pair.old_segments.as_slice());
+            let new = pair_of(row.right.as_ref()).map(|pair| pair.new_segments.as_slice());
+            left.push(cell_line(prepared, palette, row.left.as_ref(), old));
+            right.push(cell_line(prepared, palette, row.right.as_ref(), new));
         }
     }
     left.push(Line::default());
@@ -659,6 +651,65 @@ mod tests {
             side_by_side_lines(&prepared("a\nb\nc\n", "a\nB\nc\n"), &palette(&token_fg));
         assert_eq!(left.len(), right.len());
         assert!(!left.is_empty());
+    }
+
+    /// The `(text, row)` of every span in `lines` painted on `emphasis_bg`.
+    fn emphasis(lines: &[Line<'static>], emphasis_bg: Color) -> Vec<(String, usize)> {
+        lines
+            .iter()
+            .enumerate()
+            .flat_map(|(row, line)| {
+                line.spans
+                    .iter()
+                    .filter(move |s| s.style.bg == Some(emphasis_bg))
+                    .map(move |s| (s.content.to_string(), row))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn side_by_side_emphasis_comes_from_the_prepared_pairs() {
+        let token_fg = |_: TokenId| Color::White;
+        let palette = palette(&token_fg);
+        let mut prep = prepared("a\nold b\nc\n", "a\nnew b\nc\n");
+        let (left, right) = side_by_side_lines(&prep, &palette);
+        assert_eq!(emphasis(&left, Color::LightRed), [("old".to_string(), 2)]);
+        assert_eq!(
+            emphasis(&right, Color::LightGreen),
+            [("new".to_string(), 2)]
+        );
+
+        // With the prepared pairs dropped, the painter recomputes nothing.
+        for rows in &mut prep.intraline {
+            rows.iter_mut().for_each(|pair| *pair = None);
+        }
+        let (left, right) = side_by_side_lines(&prep, &palette);
+        assert!(emphasis(&left, Color::LightRed).is_empty());
+        assert!(emphasis(&right, Color::LightGreen).is_empty());
+    }
+
+    #[test]
+    fn side_by_side_emphasises_only_the_paired_rows_of_a_ragged_run() {
+        let token_fg = |_: TokenId| Color::White;
+        let palette = palette(&token_fg);
+        // Two removals against one addition: only the first pair is emphasised,
+        // exactly as the unified painter shows it.
+        let prep = prepared("a\nr1 x\nr2 y\nz\n", "a\nn1 x\nz\n");
+        let (left, right) = side_by_side_lines(&prep, &palette);
+        let unified = unified_lines(&prep, &palette);
+        let texts = |spans: Vec<(String, usize)>| -> Vec<String> {
+            spans.into_iter().map(|(text, _)| text).collect()
+        };
+        assert_eq!(emphasis(&left, Color::LightRed), [("r1".to_string(), 2)]);
+        assert_eq!(emphasis(&right, Color::LightGreen), [("n1".to_string(), 2)]);
+        assert_eq!(
+            texts(emphasis(&unified, Color::LightRed)),
+            texts(emphasis(&left, Color::LightRed))
+        );
+        assert_eq!(
+            texts(emphasis(&unified, Color::LightGreen)),
+            texts(emphasis(&right, Color::LightGreen))
+        );
     }
 
     #[test]

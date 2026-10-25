@@ -90,9 +90,12 @@ impl NotebookKernels {
             .is_some_and(|active| active.path == path && !active.jobs.is_closed());
         if !alive {
             self.active = None;
-            let Ok(connection) = kernel::local_connection() else {
-                self.notify("no loopback port for a kernel connection");
-                return None;
+            let connection = match kernel::local_connection() {
+                Ok(connection) => connection,
+                Err(error) => {
+                    self.notify(&format!("could not set up a kernel connection: {error}"));
+                    return None;
+                },
             };
             let (jobs_tx, jobs_rx) = mpsc::unbounded_channel();
             let task = KernelTask {
@@ -232,7 +235,9 @@ async fn kernel_task(ctx: KernelTask, mut jobs: mpsc::UnboundedReceiver<Job>) {
     };
 
     status(Severity::Information, &format!("starting {}", spec.name));
-    let Some((mut client, _child, connection_file)) =
+    // `_child` and `_connection_file` are held, not discarded: dropping the
+    // child kills the kernel, and dropping the guard deletes its key file.
+    let Some((mut client, mut _child, mut _connection_file)) =
         boot(&ctx, spec, &ctx.connection, &notify).await
     else {
         status(Severity::Error, "kernel failed to start");
@@ -259,13 +264,25 @@ async fn kernel_task(ctx: KernelTask, mut jobs: mpsc::UnboundedReceiver<Job>) {
                     return;
                 };
                 client = fresh;
-                let _ = (child, file);
+                // Replacing them drops the old kernel's child and deletes its
+                // connection file; the new ones live until the next restart.
+                _child = child;
+                _connection_file = file;
                 status(Severity::Information, "ready");
             },
         }
     }
     let _ = client.shutdown().await;
-    let _ = std::fs::remove_file(connection_file);
+}
+
+/// A written connection file, deleted when dropped: it holds the kernel's
+/// signing key, so every path out of a boot or restart removes it.
+struct ConnectionFile(PathBuf);
+
+impl Drop for ConnectionFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
 }
 
 /// Spawn the kernel process (through the supervisor when available) and wait
@@ -275,9 +292,14 @@ async fn boot(
     spec: &kernel::KernelSpec,
     connection: &kernel::ConnectionInfo,
     notify: &impl Fn(String),
-) -> Option<(KernelClient<ZmqTransport>, tokio::process::Child, PathBuf)> {
+) -> Option<(
+    KernelClient<ZmqTransport>,
+    tokio::process::Child,
+    ConnectionFile,
+)> {
+    // Guarded from here on, so a failed boot below deletes the file too.
     let connection_file = match kernel::write_connection_file(connection) {
-        Ok(path) => path,
+        Ok(path) => ConnectionFile(path),
         Err(error) => {
             notify(format!(
                 "notebook: could not write the connection file: {error}"
@@ -285,7 +307,7 @@ async fn boot(
             return None;
         },
     };
-    let argv = kernel::substitute_argv(&spec.argv, &connection_file.to_string_lossy());
+    let argv = kernel::substitute_argv(&spec.argv, &connection_file.0.to_string_lossy());
     let (program, args) = argv.split_first()?;
     let mut command = match &ctx.supervisor {
         Some(supervisor) => {
@@ -509,7 +531,7 @@ mod tests {
 
     /// A notebook of markdown, code, raw, code cells -- the second code cell
     /// already run once.
-    fn mixed_notebook() -> Option<Notebook> {
+    fn mixed_notebook() -> Result<Notebook, karet_notebook::NotebookError> {
         karet_notebook::parse(
             r##"{"nbformat": 4, "nbformat_minor": 5, "metadata": {}, "cells": [
                 {"cell_type": "markdown", "metadata": {}, "source": "# title"},
@@ -520,14 +542,14 @@ mod tests {
                  "outputs": [{"output_type": "stream", "name": "stdout", "text": "2\n"}]}
             ]}"##,
         )
-        .ok()
     }
 
+    /// A missing or wrong answer is an `Err`, so a test fails instead of passing.
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
     #[test]
-    fn a_run_selects_code_cells_only() {
-        let Some(notebook) = mixed_notebook() else {
-            return;
-        };
+    fn a_run_selects_code_cells_only() -> TestResult {
+        let notebook = mixed_notebook()?;
         assert_eq!(
             runnable(&notebook, None),
             vec![1, 3],
@@ -546,13 +568,12 @@ mod tests {
             runnable(&notebook, Some(9)).is_empty(),
             "past the end runs nothing"
         );
+        Ok(())
     }
 
     #[test]
-    fn mark_stale_clears_code_cell_results_and_leaves_other_cells_alone() {
-        let Some(mut notebook) = mixed_notebook() else {
-            return;
-        };
+    fn mark_stale_clears_code_cell_results_and_leaves_other_cells_alone() -> TestResult {
+        let mut notebook = mixed_notebook()?;
         let before: Vec<_> = notebook
             .cells
             .iter()
@@ -571,21 +592,20 @@ mod tests {
                 );
             }
         }
+        Ok(())
     }
 
     #[tokio::test]
-    async fn run_without_an_installed_kernel_diagnoses() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
+    async fn run_without_an_installed_kernel_diagnoses() -> TestResult {
+        let dir = tempfile::tempdir()?;
         let dir = dir.path();
         let path = dir.join("empty.ipynb");
-        let _ = std::fs::write(
+        std::fs::write(
             &path,
             r#"{"nbformat": 4, "nbformat_minor": 5, "metadata": {},
                "cells": [{"cell_type": "code", "metadata": {}, "execution_count": null,
                           "source": "1", "outputs": []}]}"#,
-        );
+        )?;
         let (events_tx, mut events_rx) = mpsc::unbounded_channel();
         let mut kernels = NotebookKernels::new(None, events_tx);
         kernels.spec_dirs = Some(vec![dir.join("no-kernels-here")]);
@@ -601,15 +621,14 @@ mod tests {
             }
         };
         assert!(message.contains("no installed kernel"), "{message}");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn a_broken_notebook_diagnoses_the_parse() {
-        let Ok(dir) = tempfile::tempdir() else {
-            return;
-        };
+    async fn a_broken_notebook_diagnoses_the_parse() -> TestResult {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("bad.ipynb");
-        let _ = std::fs::write(&path, "not json");
+        std::fs::write(&path, "not json")?;
         let (events_tx, mut events_rx) = mpsc::unbounded_channel();
         let mut kernels = NotebookKernels::new(None, events_tx);
         kernels.spec_dirs = Some(Vec::new());
@@ -625,6 +644,24 @@ mod tests {
             }
         };
         assert!(message.contains("notebook:"), "{message}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_dropped_connection_file_guard_deletes_the_key_file() -> std::io::Result<()> {
+        // A restart swaps the guard and a failed boot drops it, so this drop
+        // is what keeps key-bearing files from piling up in the temp dir.
+        let info = kernel::local_connection()?;
+        let path = kernel::write_connection_file(&info)?;
+        let mut held = ConnectionFile(path.clone());
+        assert!(held.0.exists());
+        let next = kernel::write_connection_file(&info)?;
+        held = ConnectionFile(next.clone());
+        assert!(!path.exists(), "the replaced file outlived its restart");
+        assert!(next.exists(), "the live kernel's file was deleted");
+        drop(held);
+        assert!(!next.exists(), "the last file outlived the task");
+        Ok(())
     }
 
     #[tokio::test]

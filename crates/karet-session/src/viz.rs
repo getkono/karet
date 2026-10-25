@@ -104,6 +104,8 @@ fn build_view(resolved: &dependable_core::ResolvedLockfile) -> GraphView {
 mod tests {
     use super::*;
 
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
     const LOCK: &str = r#"
 version = 3
 
@@ -123,21 +125,15 @@ version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 "#;
 
-    fn scratch_lock(dir: &Path) -> bool {
-        std::fs::write(dir.join("Cargo.lock"), LOCK).is_ok()
+    fn scratch_lock(dir: &Path) -> std::io::Result<()> {
+        std::fs::write(dir.join("Cargo.lock"), LOCK)
     }
 
     #[test]
-    fn builds_a_package_graph_from_cargo_lock() {
-        let Some(tmp) = tempfile::tempdir().ok() else {
-            return;
-        };
-        if !scratch_lock(tmp.path()) {
-            return;
-        }
-        let Ok(view) = dependency_graph(tmp.path()) else {
-            return;
-        };
+    fn builds_a_package_graph_from_cargo_lock() -> TestResult {
+        let tmp = tempfile::tempdir()?;
+        scratch_lock(tmp.path())?;
+        let view = dependency_graph(tmp.path())?;
         assert_eq!(view.nodes.len(), 3);
         // Local crates are roots; serde (registry) is not.
         assert!(view.roots.iter().any(|r| r.starts_with("app ")));
@@ -150,16 +146,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
         let serde = view.nodes.iter().find(|n| n.label == "serde");
         assert_eq!(serde.map(|n| n.kind), Some(GraphNodeKind::External));
         assert_eq!(serde.and_then(|n| n.badge.as_deref()), Some("1.0.0"));
+        Ok(())
     }
 
     #[test]
-    fn missing_lockfile_is_reported() {
-        let Some(tmp) = tempfile::tempdir().ok() else {
-            return;
-        };
+    fn missing_lockfile_is_reported() -> TestResult {
+        let tmp = tempfile::tempdir()?;
         assert!(matches!(
             dependency_graph(tmp.path()),
             Err(VizError::NoLockfile)
         ));
+        Ok(())
     }
 }
