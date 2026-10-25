@@ -305,3 +305,46 @@ pub fn known_subtypes(lens: Lens) -> Vec<String> {
     out.dedup();
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::closest;
+    use super::edit_distance;
+
+    fn names(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn edit_distance_counts_insertions_deletions_and_substitutions() {
+        assert_eq!(edit_distance("abc", "abc"), 0);
+        assert_eq!(edit_distance("", "abc"), 3);
+        assert_eq!(edit_distance("abc", ""), 3);
+        assert_eq!(edit_distance("abc", "ab"), 1);
+        assert_eq!(edit_distance("ab", "abc"), 1);
+        assert_eq!(edit_distance("abc", "axc"), 1);
+        assert_eq!(edit_distance("kitten", "sitting"), 3);
+        assert_eq!(edit_distance("flaw", "lawn"), 2);
+    }
+
+    #[test]
+    fn a_one_way_prefix_outranks_a_substring() {
+        // `lens` is a prefix of the typed `lensx`; `alensxa` merely contains it.
+        assert_eq!(
+            closest("lensx", &names(&["alensxa", "lens"])),
+            ["lens", "alensxa"]
+        );
+    }
+
+    #[test]
+    fn a_one_way_substring_outranks_a_near_miss() {
+        // `lens` contains the typed `ens`; `ans` is one edit away from it.
+        assert_eq!(closest("ens", &names(&["ans", "lens"])), ["lens", "ans"]);
+    }
+
+    #[test]
+    fn suggestions_stop_at_three_edits() {
+        assert_eq!(closest("abc", &names(&["xyz"])), ["xyz"]);
+        assert!(closest("abcd", &names(&["wxyz"])).is_empty());
+    }
+}

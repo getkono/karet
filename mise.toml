@@ -200,8 +200,8 @@ cargo mutants --package karet-cbor --all-features \
   --exclude-re 'replace < with <= in format_float'"""
 
 [tasks.mutants-seam]
-description = "Opt-in: mutation-test karet-seam's query language, cfg predicates, ids, regroup and rollup (cap 40m)"
-timeout = "40m"
+description = "Opt-in: mutation-test karet-seam's query language, cfg predicates, ids, regroup and rollup (cap 60m)"
+timeout = "60m"
 # Equivalent mutants, excluded with their argument:
 # - id.rs `i + 1` -> `i * 1` (the end of the last `}`) in `parse_segment`: the
 #   `#` search then starts at the `}` itself instead of just past it, and a

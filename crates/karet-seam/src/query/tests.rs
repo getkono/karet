@@ -659,6 +659,29 @@ fn a_cfg_term_finds_gated_nodes() -> TestResult {
 }
 
 #[test]
+fn a_cfg_term_finds_configured_out_gated_nodes_whatever_their_predicate() -> TestResult {
+    let mut index = SeamIndex::new();
+    add(&mut index, "pkg", NodeKind::Package, None, vec![]);
+    let gate = || vec![facet(Lens::Variation, "cfg").with_detail("unix")];
+    // Gated with a predicate that does not mention the term, but configured out.
+    let inactive = add(&mut index, "pkg::inactive", NodeKind::Module, None, gate());
+    // Configured out without any gate of its own (an ancestor's gate excluded it).
+    let ungated = add(&mut index, "pkg::ungated", NodeKind::Module, None, vec![]);
+    // Gated, active, and the predicate does not mention the term.
+    add(&mut index, "pkg::active", NodeKind::Module, None, gate());
+    for id in [inactive, ungated] {
+        if let Some(node) = index.node(id).cloned() {
+            index.insert(Node {
+                membership: ConfigMembership::Inactive,
+                ..node
+            });
+        }
+    }
+    assert_eq!(run(&index, "cfg:feature")?, ["pkg::inactive"]);
+    Ok(())
+}
+
+#[test]
 fn evaluation_leaves_the_index_untouched() -> TestResult {
     let index = fixture();
     let before = index.len();
