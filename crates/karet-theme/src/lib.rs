@@ -58,6 +58,10 @@ impl Rgba {
     #[must_use]
     pub fn from_hex(s: &str) -> Option<Self> {
         let hex = s.strip_prefix('#').unwrap_or(s);
+        // `from_str_radix` accepts a leading `+`, so `#+f+f+f` would otherwise parse.
+        if !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
         let byte = |i: usize| u8::from_str_radix(hex.get(i..i + 2)?, 16).ok();
         let nibble = |i: usize| {
             u8::from_str_radix(hex.get(i..i + 1)?, 16)
@@ -334,6 +338,16 @@ mod tests {
         );
         assert_eq!(Rgba::from_hex("#xyz"), None);
         assert_eq!(Rgba::from_hex("#12345"), None);
+    }
+
+    #[test]
+    fn rgba_from_hex_rejects_sign_characters() {
+        // `from_str_radix` alone accepts a leading `+` per component.
+        assert_eq!(Rgba::from_hex("#+f+f+f"), None);
+        assert_eq!(Rgba::from_hex("+ff"), None);
+        assert_eq!(Rgba::from_hex("#+1+2+3+4"), None);
+        assert_eq!(Rgba::from_hex("#-1-2-3"), None);
+        assert_eq!(Rgba::from_hex("# ff"), None);
     }
 
     #[test]

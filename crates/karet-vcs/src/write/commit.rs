@@ -40,7 +40,6 @@ use std::io::BufRead;
 use std::io::BufReader;
 use std::io::Read;
 use std::path::Path;
-use std::process::Command;
 use std::process::ExitStatus;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -391,13 +390,9 @@ impl Repository {
 
     /// Start `git commit` in its own process group, pipes captured, stdin closed.
     fn spawn_commit(&self, message: &str) -> Result<GroupChild, VcsError> {
-        Command::new("git")
+        // The same non-interactive environment every other write runs under.
+        self.git_command()?
             .args([OsStr::new("commit"), OsStr::new("-m"), OsStr::new(message)])
-            .current_dir(self.commit_workdir()?)
-            // The same non-interactive environment every other write runs under.
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .env("GIT_EDITOR", "true")
-            .env("GIT_SEQUENCE_EDITOR", "true")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

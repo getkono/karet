@@ -66,14 +66,13 @@ fn advance(frontier: &[PathBuf], component: &str) -> Vec<PathBuf> {
         .collect()
 }
 
-/// A directory's immediate children, sorted by name.
+/// A directory's immediate subdirectories, sorted by name.
+///
+/// Nothing is skipped: a member pattern names what Cargo builds, hidden or `build`
+/// directories included. Files are dropped here because a pattern can only ever expand
+/// to directories, so a file could never survive [`expand`]'s final filter anyway.
 fn children(base: &Path) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(base) else {
-        return Vec::new();
-    };
-    let mut out: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
-    out.sort();
-    out
+    super::scan::subdirs(base, |_| false)
 }
 
 /// `base` and every directory beneath it, to [`RECURSIVE_DEPTH`].
@@ -81,11 +80,7 @@ fn descendants(base: &Path) -> Vec<PathBuf> {
     let mut out = vec![base.to_path_buf()];
     let mut level = vec![base.to_path_buf()];
     for _ in 0..RECURSIVE_DEPTH {
-        let next: Vec<PathBuf> = level
-            .iter()
-            .flat_map(|dir| children(dir))
-            .filter(|path| path.is_dir())
-            .collect();
+        let next: Vec<PathBuf> = level.iter().flat_map(|dir| children(dir)).collect();
         if next.is_empty() {
             break;
         }
