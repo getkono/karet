@@ -85,6 +85,7 @@ fn a_single_location_opens_the_file_and_lands_on_the_range_start() {
             }],
         },
     );
+    fill_reserved_tabs(&mut app);
 
     assert_eq!(app.tabs[app.active].path(), Some(other.as_path()));
     // The caret lands on the definition's start, as a bare caret — the end of the
@@ -227,6 +228,7 @@ fn several_locations_open_a_picker_with_workspace_relative_rows() {
     );
 
     app.overlay_accept();
+    fill_reserved_tabs(&mut app);
     assert_eq!(app.tabs[app.active].path(), Some(other.as_path()));
     assert_eq!(app.tabs[app.active].editor.cursor(), LineCol::new(0, 7));
 }
@@ -249,6 +251,7 @@ fn jumped(name: &str) -> (App, PathBuf, PathBuf) {
             }],
         },
     );
+    fill_reserved_tabs(&mut app);
     (app, origin, other)
 }
 
@@ -780,6 +783,7 @@ fn a_single_reference_still_opens_the_picker() {
     assert_ne!(app.tabs[app.active].path(), Some(other.as_path()));
 
     app.overlay_accept();
+    fill_reserved_tabs(&mut app);
     assert_eq!(app.tabs[app.active].path(), Some(other.as_path()));
     assert_eq!(app.tabs[app.active].editor.cursor(), LineCol::new(0, 7));
 }
@@ -800,6 +804,7 @@ fn a_single_implementation_is_jumped_to() {
             }],
         },
     );
+    fill_reserved_tabs(&mut app);
 
     assert!(app.overlay.is_none());
     assert_eq!(app.tabs[app.active].path(), Some(other.as_path()));

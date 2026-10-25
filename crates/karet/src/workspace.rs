@@ -13,6 +13,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use std::path::PathBuf;
 
+use karet_core::LineCol;
 #[cfg(feature = "images")]
 use karet_fileview::image;
 use karet_fileview::viewer::FileKind;
@@ -20,7 +21,6 @@ use karet_fileview::viewer::{self};
 use karet_syntax::FoldRegions;
 use karet_syntax::Highlights;
 use karet_syntax::SemanticBlocks;
-use karet_text::TextBuffer;
 use karet_text::TextSnapshot;
 use karet_treesitter::language_name_from_path;
 
@@ -42,12 +42,15 @@ pub(crate) const HEAD_BYTES: usize = 8192;
 /// larger than the [size guard](viewer::SIZE_GUARD) route to a too-large
 /// placeholder; [`open_file_ignoring_size`] bypasses that guard. Failures degrade
 /// gracefully to a placeholder rather than erroring.
+///
+/// Only the leading [`HEAD_BYTES`] and the length are read to classify. Editable
+/// text is not read here at all: its tab is reserved empty and the session's
+/// document snapshot fills it, so the file is loaded once, off the UI thread.
 #[must_use]
 pub fn open_file(path: &Path) -> Tab {
-    let (bytes, len) = read_file(path);
-    let head = &bytes[..bytes.len().min(HEAD_BYTES)];
-    let kind = viewer::classify(path, head, len);
-    open_classified(path, kind, bytes, len)
+    let (head, len) = read_head(path);
+    let kind = viewer::classify(path, &head, len);
+    open_classified(path, kind, len)
 }
 
 /// Open `path`, bypassing the [size guard](viewer::SIZE_GUARD) so an over-large
@@ -55,10 +58,9 @@ pub fn open_file(path: &Path) -> Tab {
 /// placeholder). Backs the TUI "open anyway" override on a too-large placeholder.
 #[must_use]
 pub fn open_file_ignoring_size(path: &Path) -> Tab {
-    let (bytes, len) = read_file(path);
-    let head = &bytes[..bytes.len().min(HEAD_BYTES)];
-    let kind = viewer::classify_ignoring_size(path, head);
-    open_classified(path, kind, bytes, len)
+    let (head, len) = read_head(path);
+    let kind = viewer::classify_ignoring_size(path, &head);
+    open_classified(path, kind, len)
 }
 
 /// Open `path` as an editable code tab whatever its file type, its buffer
@@ -72,28 +74,43 @@ pub fn open_as_text(path: &Path) -> Tab {
     open_pending_code(path, language_name_from_path(path).unwrap_or("plaintext"))
 }
 
-/// Read `path`'s bytes (empty on error) and its length, the shared inputs to both
-/// open paths.
-fn read_file(path: &Path) -> (Vec<u8>, u64) {
+/// Read at most [`HEAD_BYTES`] leading bytes of `path` (empty on error) and its
+/// length: everything classification needs, without reading the rest.
+fn read_head(path: &Path) -> (Vec<u8>, u64) {
+    use std::io::Read as _;
     let len = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-    let bytes = std::fs::read(path).unwrap_or_default();
-    (bytes, len)
+    let mut head = Vec::new();
+    if let Ok(file) = std::fs::File::open(path) {
+        // `HEAD_BYTES` is a small constant; the conversion cannot truncate.
+        let _ = file.take(HEAD_BYTES as u64).read_to_end(&mut head);
+    }
+    (head, len)
 }
 
-/// Route an already-classified file to its renderer tab.
-fn open_classified(path: &Path, kind: FileKind, bytes: Vec<u8>, len: u64) -> Tab {
+/// Route an already-classified file to its renderer tab. Only the presentation
+/// media the app renders itself (images, PDF pages, hex bytes) read the whole
+/// file, and only once their kind is known.
+fn open_classified(path: &Path, kind: FileKind, len: u64) -> Tab {
+    let read = || std::fs::read(path).unwrap_or_default();
     match kind {
-        FileKind::Text | FileKind::Markdown => open_text(path, &bytes),
+        // The session loads and decodes the text once the document registers;
+        // the tab is reserved empty and fills from the first snapshot. Invalid
+        // UTF-8 past the sampled head answers `NotUtf8`, which converts the tab
+        // to the hex fallback.
+        FileKind::Text | FileKind::Markdown => open_as_text(path),
         #[cfg(feature = "images")]
-        FileKind::Image => match image::decode(&bytes) {
-            Ok(img) => Tab::new(
-                title(path),
-                TabKind::Image {
-                    path: path.to_path_buf(),
-                    image: img,
-                },
-            ),
-            Err(_) => placeholder(path, kind, &bytes, len),
+        FileKind::Image => {
+            let bytes = read();
+            match image::decode(&bytes) {
+                Ok(img) => Tab::new(
+                    title(path),
+                    TabKind::Image {
+                        path: path.to_path_buf(),
+                        image: img,
+                    },
+                ),
+                Err(_) => placeholder(path, kind, &bytes, len),
+            }
         },
         // The backend decodes CBOR authoritatively once the document registers;
         // the tab is reserved empty and fills from the first snapshot. A corrupt
@@ -103,12 +120,12 @@ fn open_classified(path: &Path, kind: FileKind, bytes: Vec<u8>, len: u64) -> Tab
             title(path),
             TabKind::Hex {
                 path: path.to_path_buf(),
-                bytes,
+                bytes: read(),
                 scroll: 0,
             },
         ),
         #[cfg(feature = "pdf")]
-        FileKind::Pdf => open_document(path, bytes, len),
+        FileKind::Pdf => open_document(path, read(), len),
         // The backend converts DOCX to markdown (`Command::ConvertDocument`);
         // the preview tab is reserved immediately and fills when it answers.
         #[cfg(feature = "docx")]
@@ -116,52 +133,21 @@ fn open_classified(path: &Path, kind: FileKind, bytes: Vec<u8>, len: u64) -> Tab
         // Same conversion seam: the backend renders the notebook to markdown.
         #[cfg(feature = "notebook")]
         FileKind::Notebook => Tab::document_converting(path.to_path_buf()),
-        FileKind::TooLarge { .. } => placeholder(path, kind, &bytes, len),
+        // The placeholder needs the bytes only to size an undecodable image
+        // (handled above), so a too-large file is never read past its head.
+        FileKind::TooLarge { .. } => placeholder(path, kind, &[], len),
         // DOCX/PDF (without their features) and any future `#[non_exhaustive]`
         // kind route to a placeholder describing them.
-        _ => placeholder(path, kind, &bytes, len),
+        _ => placeholder(path, kind, &[], len),
     }
 }
 
-/// Build a code/text tab with highlighting deferred to the session worker.
-fn open_text(path: &Path, bytes: &[u8]) -> Tab {
-    let Ok(buffer) = TextBuffer::from_bytes(bytes) else {
-        return Tab::new(
-            title(path),
-            TabKind::Hex {
-                path: path.to_path_buf(),
-                bytes: bytes.to_vec(),
-                scroll: 0,
-            },
-        );
-    };
-    let text = buffer.text_snapshot();
-    let language = language_name_from_path(path).unwrap_or("plaintext");
-    Tab::new(
-        title(path),
-        TabKind::Code {
-            path: path.to_path_buf(),
-            language,
-            doc: None,
-            next_version: 0,
-            buffer: buffer.into(),
-            text,
-            highlights: Highlights::default(),
-            semantic_blocks: SemanticBlocks::default(),
-            folds: FoldRegions::default(),
-            folded: BTreeSet::new(),
-            decos: Vec::new(),
-            search_decos: Vec::new(),
-            syntax_errors: Vec::new(),
-        },
-    )
-}
-
-/// Reserve an editable code tab whose content the session decodes (CBOR →
-/// diagnostic notation): the buffer starts empty and fills from the session's
-/// first snapshot once the document registers.
+/// Reserve an editable code tab whose content the session loads and decodes
+/// (text as is, CBOR → diagnostic notation): the buffer starts empty and fills
+/// from the session's first snapshot once the document registers, with
+/// highlighting deferred to the session worker.
 fn open_pending_code(path: &Path, language: &'static str) -> Tab {
-    Tab::new(
+    let mut tab = Tab::new(
         title(path),
         TabKind::Code {
             path: path.to_path_buf(),
@@ -178,7 +164,9 @@ fn open_pending_code(path: &Path, language: &'static str) -> Tab {
             search_decos: Vec::new(),
             syntax_errors: Vec::new(),
         },
-    )
+    );
+    tab.fill_caret = Some(LineCol::default());
+    tab
 }
 
 /// Open a PDF as a document tab whose pages rasterize on demand (via `karet-pdf`),
@@ -345,31 +333,55 @@ mod tests {
     }
 
     #[test]
-    fn code_opens_with_text_and_defers_highlighting() {
+    fn text_opens_as_a_pending_code_tab_the_session_will_fill() {
         let dir = temp_dir();
         let file = dir.path.join("notes.md");
         let _ = std::fs::write(&file, "```rust\nfn main() {}\n```\n");
         let tab = open_file(&file);
+        assert_eq!(tab.fill_caret, Some(LineCol::default()));
         let TabKind::Code {
-            text, highlights, ..
+            language,
+            text,
+            doc,
+            highlights,
+            ..
         } = tab.kind
         else {
             panic!("expected a code tab");
         };
-        assert_eq!(text, "```rust\nfn main() {}\n```\n");
-        assert!(
-            highlights.all().is_empty(),
-            "the session worker supplies syntax after the tab opens"
-        );
+        assert_eq!(language, "Markdown");
+        // Not decoded here: the session loads the file once and its first
+        // snapshot supplies the text and, later, the syntax.
+        assert!(text.is_empty());
+        assert!(doc.is_none());
+        assert!(highlights.all().is_empty());
     }
 
     #[test]
-    fn invalid_utf8_text_opens_as_hex() {
+    fn invalid_utf8_past_the_head_opens_pending_for_the_session_to_reject() {
         let dir = temp_dir();
         let file = dir.path.join("bad.rs");
-        let _ = std::fs::write(&file, b"fn main() {}\n\xff");
+        // Clean UTF-8 for the whole sampled head, so it classifies as text; the
+        // session's decode answers `NotUtf8` and the app falls back to hex.
+        let mut bytes = vec![b'a'; HEAD_BYTES];
+        bytes.push(0xff);
+        let _ = std::fs::write(&file, bytes);
         let tab = open_file(&file);
-        assert!(matches!(tab.kind, TabKind::Hex { .. }));
+        assert!(matches!(tab.kind, TabKind::Code { doc: None, .. }));
+    }
+
+    #[test]
+    fn read_head_samples_only_the_leading_bytes_and_reports_the_length() {
+        let dir = temp_dir();
+        let file = dir.path.join("long.txt");
+        let _ = std::fs::write(&file, vec![b'x'; HEAD_BYTES * 3]);
+        let (head, len) = read_head(&file);
+        assert_eq!(head.len(), HEAD_BYTES);
+        assert_eq!(len, (HEAD_BYTES * 3) as u64);
+
+        let (head, len) = read_head(&dir.path.join("missing.txt"));
+        assert!(head.is_empty());
+        assert_eq!(len, 0);
     }
 
     #[test]

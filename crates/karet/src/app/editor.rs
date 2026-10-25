@@ -895,6 +895,9 @@ impl App {
                 },
             editor,
             view,
+            // A tab still waiting for its text holds an empty placeholder, not
+            // the document: a change built against it never lands.
+            fill_caret: None,
             ..
         }) = self.tabs.get_mut(idx)
         {

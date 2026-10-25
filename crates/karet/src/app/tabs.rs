@@ -104,6 +104,11 @@ impl App {
         };
         if let (Some(buffer), Some(tab)) = (buffer, self.tabs.get_mut(self.active)) {
             tab.editor.goto(&buffer, position);
+            // A tab still waiting for its text would clamp the jump to the top
+            // of the empty buffer; the first snapshot places the caret instead.
+            if tab.fill_caret.is_some() {
+                tab.fill_caret = Some(position);
+            }
         }
     }
 

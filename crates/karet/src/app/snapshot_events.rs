@@ -78,6 +78,20 @@ impl App {
                 if snap.version >= buffer.version() {
                     let old_version = buffer.version();
                     advanced |= snap.version > old_version;
+                    // A reserved tab's first fill is the file loading, not an
+                    // edit: its caret goes where the open asked for, rather
+                    // than riding the insertion of the whole text to its end.
+                    let fill = tab.fill_caret.take();
+                    if fill.is_some() {
+                        // The empty placeholder and the loaded text can share a
+                        // version (a file with no restored history loads at the
+                        // placeholder's), so what was drawn from the placeholder
+                        // under that version is dropped rather than kept as fresh.
+                        tab.conflict_decorations = None;
+                        if let Some(preview) = tab.markdown_preview.as_mut() {
+                            preview.rendered = None;
+                        }
+                    }
                     // What turned this view's text into the snapshot's: the
                     // change it did not make itself (another view's edit, a
                     // formatter, a reload, an undo). Recovered only when
@@ -89,7 +103,7 @@ impl App {
                         .filter(|_| restore_in == Some(tab.view));
                     let want_carried = carried.is_none() && wanted_versions.contains(&old_version);
                     let change = (snap.version > old_version
-                        && (restore.is_none() || want_carried))
+                        && ((restore.is_none() && fill.is_none()) || want_carried))
                         .then(|| super::inlay::diff_edit(text, &snap_text))
                         .flatten();
                     if want_carried && snap.version > old_version {
@@ -97,18 +111,19 @@ impl App {
                     }
                     *buffer = std::sync::Arc::clone(&snap_buffer);
                     *text = snap_text.clone();
-                    match restore {
-                        Some(cursor) => tab.editor.set_cursor_state(buffer, cursor.clone()),
+                    match (fill, restore) {
+                        (Some(position), _) => tab.editor.goto(buffer, position),
+                        (None, Some(cursor)) => tab.editor.set_cursor_state(buffer, cursor.clone()),
                         // Every caret follows the text it sat in, and none is
                         // left past the end of a line or of the buffer. A
                         // republish of the version on screen changed nothing.
-                        None if snap.version > old_version => {
+                        (None, None) if snap.version > old_version => {
                             tab.editor.map_cursors(buffer, |pos| match &change {
                                 Some(edit) => map_caret(pos, edit),
                                 None => pos,
                             });
                         },
-                        None => {},
+                        (None, None) => {},
                     }
                 }
                 *highlights = (*snap.highlights).clone();
@@ -172,6 +187,9 @@ impl App {
         // anchor; re-validate it.
         self.reconcile_completion();
         self.request_live_blame();
+        // A first snapshot is what fills a reserved tab, so queued `--command`
+        // work waiting on its text becomes servable here.
+        self.run_startup_commands_when_ready();
     }
 }
 

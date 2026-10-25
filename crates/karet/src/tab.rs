@@ -481,6 +481,14 @@ pub struct Tab {
     pub(crate) markdown_preview: Option<MarkdownPreviewState>,
     /// Dedicated three-way conflict presentation for this editable code document.
     pub(crate) merge_conflict: Option<MergeConflictState>,
+    /// Where the caret goes once a reserved code tab first fills, or `None`
+    /// once it holds the document's text. A code tab opened before its content
+    /// arrives starts empty (see [`crate::workspace::open_file`]); the first
+    /// document snapshot replaces that empty buffer with the whole file, which
+    /// is a load, not an edit, so the caret is placed here rather than carried
+    /// through the insertion. Edits are refused while this is set, since they
+    /// would be built against the empty placeholder rather than the document.
+    pub(crate) fill_caret: Option<karet_core::LineCol>,
 }
 
 impl Tab {
@@ -504,6 +512,7 @@ impl Tab {
             markdown_table_lines: std::sync::Arc::default(),
             markdown_preview: None,
             merge_conflict: None,
+            fill_caret: None,
         }
     }
 

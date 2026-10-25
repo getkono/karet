@@ -825,6 +825,7 @@ fn conflicted_change_opens_editable_merged_view_with_read_only_sides() {
             incoming: "fn incoming() {}\n".to_string(),
         },
     );
+    fill_reserved_tabs(&mut app);
 
     let painted = screen(&mut app, 120, 12).join("\n");
     assert!(painted.contains("CURRENT · read-only"));
