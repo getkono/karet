@@ -8,9 +8,8 @@
 //! [`FileKind`](viewer::FileKind) from `karet-filetype` so a consumer can route
 //! a path to the right primitive.
 //!
-//! These primitives were relocated here from `karet-widgets` so an external
-//! consumer can render files without pulling the full editor toolkit (fuzzy
-//! matching, the file tree, LSP popups). Composition — which primitive draws
+//! An external consumer can render files with this crate without pulling the
+//! full editor toolkit (fuzzy matching, the file tree, LSP popups). Composition — which primitive draws
 //! which `FileKind`, and how text is highlighted — is the consumer's choice.
 
 pub mod hex;

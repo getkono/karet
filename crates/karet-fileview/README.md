@@ -20,10 +20,10 @@ use karet_fileview::viewer::{classify, FileKind, Placeholder};
 use karet_fileview::HexView;
 
 let bytes = std::fs::read(path)?;
-match classify(path, bytes.len() as u64, &bytes) {
+match classify(path, &bytes, bytes.len() as u64) {
     FileKind::Binary => { /* render HexView::new(&bytes) */ },
-    FileKind::Image => { /* render image::ImageWidget (feature `images`) */ },
-    FileKind::TooLarge => { /* render Placeholder */ },
+    FileKind::Image => { /* render image::ImageWidget (feature `raster`) */ },
+    FileKind::TooLarge { .. } => { /* render Placeholder */ },
     _ => { /* your text/editor rendering */ },
 }
 ```

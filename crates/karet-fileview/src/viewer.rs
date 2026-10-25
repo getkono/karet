@@ -5,8 +5,9 @@
 //! ratatui [`Placeholder`] widget. The application opens a file by
 //! [`classify`]ing it and then choosing a renderer: [`FileKind::Text`] /
 //! [`FileKind::Markdown`] → the editor widget, [`FileKind::Image`] → the image
-//! widget, [`FileKind::Binary`] → the hex view, and [`FileKind::Pdf`] /
-//! [`FileKind::TooLarge`] (or an image that fails to decode) → a [`Placeholder`].
+//! widget, [`FileKind::Binary`] → the hex view, [`FileKind::Pdf`] → the
+//! consumer's document renderer, and [`FileKind::TooLarge`] (or an image or
+//! document that fails to render) → a [`Placeholder`].
 
 use std::path::Path;
 

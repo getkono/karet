@@ -1,16 +1,18 @@
 //! Terminal image rendering: the Kitty graphics protocol with a truecolor
-//! halfblock fallback (merged from the former `karet-image` crate).
+//! halfblock fallback.
 //!
 //! [`ImageWidget`] renders halfblocks straight into the ratatui buffer, which
 //! works on any truecolor terminal. On a Kitty-graphics-capable terminal the
 //! application instead reserves the area and flushes [`Image::kitty_escape`] to
 //! the terminal after drawing, since the cell buffer cannot carry pixels. The
 //! placement lifecycle across scroll/resize is intentionally minimal (active tab
-//! only) for now; Sixel/iTerm2 protocols and PDF rasterization are out of scope.
+//! only) for now; Sixel/iTerm2 protocols are out of scope. PDF pages are
+//! rasterized by the consumer (karet uses `karet-pdf`) and can then be drawn
+//! through [`Image`].
 //!
 //! Pixel work sits behind two features so a lean build pulls no codec tree: the
 //! shared primitives ([`Image`], [`ImageWidget`]) and their built-in resampler
-//! (area-averaging when shrinking, bilinear when enlarging) require `raster` (enabled by both `images` and `pdf`), while the
+//! (area-averaging when shrinking, bilinear when enlarging) require `raster` (enabled by `images`), while the
 //! image-file decoders ([`decode`], [`dimensions`]) require `images`. Gamut owns
 //! every supported codec. Protocol detection ([`GraphicsProtocol`],
 //! [`detect_protocol`], [`fit_rect`]) carries no codec dependency and is always
