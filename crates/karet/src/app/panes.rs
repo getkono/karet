@@ -495,8 +495,11 @@ impl App {
         self.set_active(front.active);
         self.find_open = false;
         // Resuming work: the keyboard goes to the restored editor, as it does
-        // for any file the user opens, not to the startup sidebar panel.
-        self.show_editor();
+        // for any file the user opens, not to the startup sidebar panel. An
+        // explicit `--view` or `--focus` was applied first and keeps its say.
+        if !self.startup_surface_requested {
+            self.show_editor();
+        }
     }
 
     /// The live tree for a saved `node`, opening each pane's tabs into `panes`.

@@ -731,6 +731,9 @@ pub struct App {
     /// Two-file diffs from the `--diff` flag, opened as loading tabs before the
     /// backend attaches; their `PrepareDiff` commands are sent on attach.
     pending_startup_diffs: Vec<(ViewId, PathBuf, String, String)>,
+    /// Whether the command line asked for a startup view or focus (`--view`,
+    /// `--focus`), which a restored workspace layout must leave in place.
+    startup_surface_requested: bool,
     /// In-flight commit-graph history pages, each owned by the exact view that asked.
     /// Keyed this way so an answering [`SessionEvent::VcsLog`] fills that view rather
     /// than the sidebar log — or, with several graph views open, the wrong one.

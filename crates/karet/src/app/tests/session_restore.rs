@@ -161,6 +161,78 @@ fn attaching_registers_the_tabs_of_every_pane() {
 }
 
 #[test]
+fn a_requested_startup_view_or_focus_outlasts_the_restored_layout() {
+    let (root, state) = workspace("restore-view-focus");
+    assert!(
+        two_pane_session(&root)
+            .save_workspace_layout(&state)
+            .is_ok()
+    );
+
+    // `--view github`: the tabs come back behind the GitHub view.
+    let mut github = fresh(&root);
+    github.apply_startup_view(crate::cli::ViewChoice::Github);
+    github.restore_workspace_layout(&state);
+    assert_eq!(github.layout.pane_count(), 2, "the layout is restored");
+    assert!(matches!(github.view, View::GitHub), "the GitHub view stays");
+
+    // `--focus sidebar`: the keyboard stays in the sidebar.
+    let mut sidebar = fresh(&root);
+    sidebar.sidebar_visible = true;
+    sidebar.apply_startup_focus(crate::cli::FocusChoice::Sidebar);
+    sidebar.restore_workspace_layout(&state);
+    assert_eq!(sidebar.layout.pane_count(), 2, "the layout is restored");
+    assert!(
+        matches!(sidebar.focus, Focus::Sidebar),
+        "the sidebar keeps focus"
+    );
+    cleanup(&[&root, &state]);
+}
+
+#[test]
+fn restored_scroll_is_clamped_and_a_pane_keeps_one_preview_tab() {
+    let (root, state) = workspace("restore-clamp-preview");
+    let mut app = fresh(&root);
+    app.open_initial(&root.join("a.rs"));
+    app.tabs[app.active].editor.scroll_line = 8;
+    app.open_initial(&root.join("b.rs"));
+    app.open_initial(&root.join("c.rs"));
+    for tab in &mut app.tabs[1..] {
+        tab.is_preview = true;
+    }
+    assert!(app.save_workspace_layout(&state).is_ok());
+    let saved = karet_session::backup::read_layout(&state, &root).map(|layout| layout.root);
+    let previews = match &saved {
+        Some(karet_session::backup::LayoutNode::Pane(pane)) => {
+            pane.tabs.iter().filter(|tab| tab.preview).count()
+        },
+        _ => 0,
+    };
+    assert_eq!(previews, 2, "both preview tabs are saved as previews");
+
+    // `a.rs` shrinks to three lines (the last is the empty one after the
+    // final newline) while karet is closed.
+    write_file(&root, "a.rs", b"one\ntwo\n");
+    let mut after = fresh(&root);
+    after.restore_workspace_layout(&state);
+    assert_eq!(
+        tab_paths(&after.tabs),
+        vec![root.join("a.rs"), root.join("b.rs"), root.join("c.rs")]
+    );
+    assert_eq!(
+        after.tabs[0].editor.scroll_line, 2,
+        "the scroll is clamped to the shortened file's last line"
+    );
+    let flags: Vec<bool> = after.tabs.iter().map(|tab| tab.is_preview).collect();
+    assert_eq!(
+        flags,
+        vec![false, true, false],
+        "only the first saved preview keeps the pane's one preview slot"
+    );
+    cleanup(&[&root, &state]);
+}
+
+#[test]
 fn a_file_opened_at_startup_keeps_the_saved_layout_out() {
     let (root, state) = workspace("restore-explicit");
     assert!(
