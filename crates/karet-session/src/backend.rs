@@ -76,7 +76,11 @@ pub enum BackendError {
 ///   and `UndeclineLanguageServer`.
 /// - **Answered only when there is something to say**: `RecoverSwaps` answers
 ///   through the documents it reopens, and `FetchCommitVerification` only with
-///   a fetched verdict.
+///   a fetched verdict. `Undo` and `Redo` answer nothing when the history has
+///   nothing to undo or redo or the document is unknown, and `CloseDocument`
+///   answers [`Event::Closed`](crate::api::Event::Closed) only when it drops
+///   the last reference: closing a document still open elsewhere, or one that
+///   is unknown, answers nothing.
 /// - **Withdrawn**: a request cancelled with `Cancel`, one superseded by a
 ///   newer request of the same kind (a seam index, query or node; an AI commit
 ///   message), and a `Blame` for a buffer version that has since moved on
