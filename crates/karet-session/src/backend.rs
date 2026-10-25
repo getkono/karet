@@ -49,6 +49,39 @@ pub enum BackendError {
 /// `save cancelled` notification), not assume the write is done once `send`
 /// returns. While it waits on the formatter, such a save
 /// can be withdrawn with [`Command::Cancel`](crate::api::Command::Cancel).
+///
+/// # Which commands answer
+///
+/// A command that asks for something — a result, a read, or a change whose
+/// outcome the client waits on — is answered by at least one event tagged with
+/// its [`RequestId`]: the result, an empty result, or an error. That holds when
+/// the session has no workspace root or no repository too. For example, with no
+/// root [`Command::IndexSeams`](crate::api::Command::IndexSeams) answers
+/// [`Event::SeamIndexFailed`](crate::api::Event::SeamIndexFailed) and
+/// [`Command::DependencyGraph`](crate::api::Command::DependencyGraph) answers an
+/// error notification. With no repository the index writes
+/// ([`Command::Stage`](crate::api::Command::Stage) and its siblings) answer an
+/// error notification, and [`Command::RefreshVcs`](crate::api::Command::RefreshVcs)
+/// answers an empty [`Event::VcsStatus`](crate::api::Event::VcsStatus).
+///
+/// The exceptions are deliberate:
+///
+/// - **Fire-and-forget**, never answered: `Cancel`, `SetCursor`,
+///   `DiscardSwaps`, `RefreshManifestHints`, `RestartLanguageServer`,
+///   `CancelLanguageServerWork`, `AnswerLanguageServerMessage`, `DebugStart`,
+///   `DebugStop`, the debugger's run controls and `DebugSetBreakpoints`, and
+///   the notebook execution commands. These report through untagged state
+///   events, if at all.
+/// - **Answered only on failure**: `SetBlameEnabled`, `DeclineLanguageServer`
+///   and `UndeclineLanguageServer`.
+/// - **Answered only when there is something to say**: `RecoverSwaps` answers
+///   through the documents it reopens, and `FetchCommitVerification` only with
+///   a fetched verdict.
+/// - **Withdrawn**: a request cancelled with `Cancel`, one superseded by a
+///   newer request of the same kind (a seam index, query or node; an AI commit
+///   message), and a `Blame` for a buffer version that has since moved on
+///   answer nothing. A cancelled save is the one cancellation that still
+///   answers, with the `save cancelled` notification described above.
 pub trait Backend: Send + Sync {
     /// Submit `command`, tagged with `id` so its answering event can be correlated.
     ///

@@ -30,8 +30,16 @@ pub(super) fn run_status(
     last_status: &mut Option<Status>,
     id: Option<RequestId>,
 ) {
-    let Ok(repo) = repository(root) else {
-        return;
+    let repo = match repository(root) {
+        Ok(repo) => repo,
+        // A requested refresh answers even when the repository has gone away
+        // since the session opened it; a spontaneous one has nobody to tell.
+        Err(message) => {
+            if let Some(id) = id {
+                notify(events, id, message);
+            }
+            return;
+        },
     };
     let status = compute_status(&repo);
     if id.is_none() && last_status.as_ref() == Some(&status) {
