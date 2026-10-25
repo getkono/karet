@@ -24,11 +24,6 @@ use crate::StagedDiff;
 use crate::VcsError;
 
 impl Repository {
-    /// The worktree root, for the streaming commit runner in [`commit`].
-    pub(crate) fn commit_workdir(&self) -> Result<&Path, VcsError> {
-        self.workdir()
-    }
-
     /// The `.git` directory, for the streaming commit runner's lock check.
     pub(crate) fn commit_git_dir(&self) -> &Path {
         self.inner.path()
@@ -40,17 +35,26 @@ impl Repository {
             .ok_or_else(|| VcsError::Git("repository has no working directory".to_string()))
     }
 
+    /// A `git` command rooted at the worktree under the non-interactive
+    /// environment every write runs with: no credential prompt, and an editor
+    /// that accepts whatever message or todo list it is handed.
+    pub(crate) fn git_command(&self) -> Result<Command, VcsError> {
+        let mut command = Command::new("git");
+        command
+            .current_dir(self.workdir()?)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("GIT_EDITOR", "true")
+            .env("GIT_SEQUENCE_EDITOR", "true");
+        Ok(command)
+    }
+
     pub(crate) fn git_output<I, S>(&self, args: I) -> Result<Output, VcsError>
     where
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
-        Command::new("git")
+        self.git_command()?
             .args(args)
-            .current_dir(self.workdir()?)
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .env("GIT_EDITOR", "true")
-            .env("GIT_SEQUENCE_EDITOR", "true")
             .output()
             .map_err(|error| VcsError::GitUnavailable(error.to_string()))
     }
@@ -66,16 +70,8 @@ impl Repository {
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
-        let mut command = Command::new("git");
-        command
-            .args(args)
-            .current_dir(self.workdir()?)
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .env("GIT_EDITOR", "true")
-            .env("GIT_SEQUENCE_EDITOR", "true");
-        for (key, value) in env {
-            command.env(key, value);
-        }
+        let mut command = self.git_command()?;
+        command.args(args).envs(env.iter().copied());
         let output = command
             .output()
             .map_err(|error| VcsError::GitUnavailable(error.to_string()))?;
@@ -96,17 +92,7 @@ impl Repository {
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
-        let output = self.git_output(args)?;
-        if output.status.success() {
-            Ok(output)
-        } else {
-            let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            Err(VcsError::Git(if message.is_empty() {
-                format!("git exited with {}", output.status)
-            } else {
-                message
-            }))
-        }
+        self.git_checked_with_env(args, &[])
     }
 
     fn has_head(&self) -> Result<bool, VcsError> {
@@ -233,10 +219,9 @@ impl Repository {
         if reverse {
             args.push("--reverse");
         }
-        let mut child = Command::new("git")
+        let mut child = self
+            .git_command()?
             .args(&args)
-            .current_dir(self.workdir()?)
-            .env("GIT_TERMINAL_PROMPT", "0")
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -309,6 +294,29 @@ mod tests {
 
     fn init_repo() -> Result<TestRepo, VcsError> {
         crate::test_support::init("write")
+    }
+
+    /// `git_checked` is `git_checked_with_env` with no overrides, so both carry
+    /// the hardened editor, an override still wins, and a refusal surfaces
+    /// git's own stderr.
+    #[test]
+    fn checked_git_runs_hardened_and_reports_stderr() -> Result<(), VcsError> {
+        let repo = init_repo()?;
+        let r = Repository::discover(&repo.0)?;
+        let editor = |output: std::process::Output| {
+            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        };
+        assert_eq!(editor(r.git_checked(["var", "GIT_EDITOR"])?), "true");
+        assert_eq!(
+            editor(r.git_checked_with_env(["var", "GIT_EDITOR"], &[("GIT_EDITOR", "vi")])?),
+            "vi"
+        );
+        let refused = r.git_checked(["rev-parse", "--verify", "nope"]);
+        assert!(
+            matches!(&refused, Err(VcsError::Git(message)) if message.starts_with("fatal:")),
+            "{refused:?}"
+        );
+        Ok(())
     }
 
     #[test]

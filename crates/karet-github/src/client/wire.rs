@@ -5,7 +5,6 @@ use serde::Deserialize;
 
 use crate::models::Label;
 use crate::models::PullRequestSummary;
-use crate::models::RateLimit;
 use crate::models::Workflow;
 use crate::models::WorkflowRun;
 
@@ -13,8 +12,6 @@ use crate::models::WorkflowRun;
 pub(super) struct SearchResponse<T> {
     pub(super) total_count: u64,
     pub(super) items: Vec<T>,
-    #[serde(skip, default)]
-    pub(super) rate_limit: RateLimit,
 }
 
 #[derive(Deserialize)]

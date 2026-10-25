@@ -134,19 +134,10 @@ fn package_names(directory: &Path) -> Vec<String> {
 
 /// A directory's importable subdirectories, sorted by name.
 fn subdirectories(directory: &Path) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(directory) else {
-        return Vec::new();
-    };
-    let mut out: Vec<PathBuf> = entries
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.is_dir() && !crate::discover::skipped(path))
-        .collect();
-    out.sort();
-    out
+    crate::discover::subdirs(directory, crate::discover::skipped)
 }
 
-/// Whether a directory holds an importable module anywhere beneath it.
+/// Whether a directory directly holds a `.py` module or a package subdirectory.
 fn holds_modules(directory: &Path) -> bool {
     let Ok(entries) = std::fs::read_dir(directory) else {
         return false;

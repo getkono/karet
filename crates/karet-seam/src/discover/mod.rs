@@ -31,6 +31,7 @@ mod scan;
 mod trees;
 
 pub(crate) use scan::skipped;
+pub(crate) use scan::subdirs;
 
 /// Which ecosystem's rules apply to a discovered package.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

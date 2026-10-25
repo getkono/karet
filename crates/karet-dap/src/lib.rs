@@ -1,7 +1,7 @@
 //! `karet-dap` — an async Debug Adapter Protocol client for karet.
 //!
 //! Headless: drives one debug adapter over the Content-Length framing shared
-//! with `karet-lsp` ([`karet_lsp::codec`]), exposing typed requests and a
+//! with `karet-lsp` ([`karet_jsonrpc::framing::content_length`]), exposing typed requests and a
 //! broadcast of adapter events. Presentation and orchestration live with the
 //! consumer (the karet backend); this crate speaks protocol only.
 //!

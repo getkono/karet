@@ -2,32 +2,29 @@
 //!
 //! This is the *only* module in `karet-supervisor` allowed to know what an LSP
 //! message means, and the only one that may name `karet_lsp`. Everything the
-//! skeleton needs from it arrives through [`BrokerProtocol`] and [`Framing`]:
+//! skeleton needs from it arrives through [`BrokerProtocol`] and its `Framing`:
 //! `initialize` de-duplication, `didOpen`/`didClose` reference counting,
 //! `shutdown`/`exit` interception, `Content-Length` framing, and the
 //! server-to-client routing policy.
 
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::io;
 use std::path::Path;
 use std::pin::pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 
+use karet_jsonrpc::framing::content_length::ContentLength;
 use karet_lsp::LspSpec;
 use serde_json::Value;
 use serde_json::json;
-use tokio::io::AsyncBufRead;
-use tokio::io::AsyncWrite;
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tokio::sync::Notify;
 
 use crate::broker::BrokerError;
 use crate::broker::endpoint;
-use crate::broker::framing::Framing;
 use crate::broker::key::Launch;
 use crate::broker::lease;
 use crate::broker::protocol::BrokerProtocol;
@@ -66,26 +63,6 @@ pub enum LspRequest {
     Plain,
     /// The single `initialize` whose result every other client shares.
     Initialize,
-}
-
-/// `Content-Length` framing, delegating to `karet-lsp`'s codec.
-#[derive(Clone, Copy, Debug)]
-pub struct ContentLength;
-
-impl Framing for ContentLength {
-    async fn read_message<R>(reader: &mut R) -> io::Result<Option<Value>>
-    where
-        R: AsyncBufRead + Unpin + Send,
-    {
-        read_message(reader).await
-    }
-
-    async fn write_message<W>(writer: &mut W, message: &Value) -> io::Result<()>
-    where
-        W: AsyncWrite + Unpin + Send,
-    {
-        write_message(writer, message).await
-    }
 }
 
 impl BrokerProtocol for LspBroker {
@@ -322,26 +299,6 @@ async fn close_client_documents(link: &ClientLink<'_, LspBroker>) {
     }
 }
 
-/// Read one framed JSON-RPC message, delegating framing (and the shared size
-/// cap) to `karet-lsp`'s codec — the one Content-Length implementation.
-async fn read_message<R: AsyncBufRead + Unpin>(reader: &mut R) -> io::Result<Option<Value>> {
-    let Some(body) = karet_lsp::codec::read_frame(reader)
-        .await
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?
-    else {
-        return Ok(None);
-    };
-    serde_json::from_slice(&body)
-        .map(Some)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
-}
-
-async fn write_message<W: AsyncWrite + Unpin>(writer: &mut W, message: &Value) -> io::Result<()> {
-    let body = serde_json::to_vec(message)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    karet_lsp::codec::write_frame(writer, &body).await
-}
-
 fn launch(spec: &LspSpec, root: &Path) -> Launch {
     Launch {
         command: spec.command.clone(),
@@ -387,6 +344,7 @@ pub fn managed_payload_in_use(state_root: &Path, payload: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::io;
     use std::time::Duration;
 
     use tokio::io::BufReader;
@@ -394,6 +352,7 @@ mod tests {
     use super::*;
     use crate::broker::key;
     use crate::broker::serve::Core;
+    use crate::broker::serve::read_message;
 
     type BoxError = Box<dyn std::error::Error>;
 
@@ -484,7 +443,7 @@ mod tests {
     async fn framing_rejects_oversized_messages() -> Result<(), Box<dyn std::error::Error>> {
         let input = b"Content-Length: 70000000\r\n\r\n";
         let mut reader = BufReader::new(&input[..]);
-        let error = read_message(&mut reader)
+        let error = read_message::<ContentLength, _>(&mut reader)
             .await
             .err()
             .ok_or("expected error")?;
