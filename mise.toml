@@ -225,16 +225,62 @@ cargo mutants --package karet-seam --all-features \
   --exclude-re 'eval\\.rs:53:\\d+: replace < with <= in evaluate'"""
 
 [tasks.mutants-editor]
-description = "Opt-in: mutation-test karet-editor's text, bracket, conflict and editing models (cap 40m)"
-timeout = "40m"
+description = "Opt-in: mutation-test karet-editor's text, bracket, conflict and editing models (cap 120m)"
+timeout = "120m"
+# `--lib`: every karet-editor test is a unit test (the crate has no `tests/`
+# directory and no runnable doctests), so building the doctest harness for
+# each of the ~800 mutants would only add time.
+#
+# Equivalent mutants, excluded with their argument:
+# - conflict.rs `conflict.end + 1` -> `* 1` / `- 1` in `conflict_decorations`:
+#   the scan resumes one or two lines early, on the conflict's own closing
+#   lines. A complete conflict holds no start marker after its first line
+#   (one would have made it nested, not complete), so those lines are skipped
+#   as non-starts and the scan reaches `end + 1` anyway.
+# - conflict.rs `end + 1` -> `* 1` / `- 1` (the resume past a nested set) in
+#   `parse_conflict`: line `end` is an end marker, and line `end - 1` can only
+#   be a start marker of a different width (one of the same width would have
+#   kept the nesting depth above zero at `end`), whose next line is then an
+#   end marker of the wrong width, which abandons it at once. Either way the
+#   scan resumes at `end + 1` with nothing decorated in between.
+# - text.rs `end < runs.len()` -> `<=` in `word_at`, `end < runs.len()` ->
+#   `<=` in `class_run`, and the three `i < runs.len()` -> `<=` in
+#   `next_word_boundary`: one step past the last cluster the lookup yields no
+#   word char, no class, or the `' '` sentinel, which is whitespace, so every
+#   loop and branch stops exactly where it would have.
+# - text.rs `at + 1` -> `at * 1` in `class_run`: `end` then starts at `at`,
+#   whose class is `class` by definition, so the loop's first step sets it to
+#   `at + 1` anyway.
+# - text.rs the `(_, true)` arm deleted, or `r.start < from` -> `<=`, in
+#   `find_next`: on the wrapped revisit of `from`'s line the extra matches are
+#   the ones at or after `from`, every one of which the first visit already
+#   offered to `taken` and had rejected. `taken` is a pure predicate (the one
+#   caller, `EditorState`, passes a lookup over the current selections), so it
+#   rejects them again, and matches before `from` still come first.
+# - text.rs `chars.len() < cap` -> `>` in `row_window`: it only decides
+#   whether a line shorter than the window returns at once or doubles on until
+#   another bound stops it; every pass then reads the same whole short line,
+#   so the chars returned are identical.
+# - editing/comment.rs `pos.col > e.col` -> `>=` (twice) in `map`: equality
+#   reaches the first branch when the edit removes nothing, and otherwise
+#   `pos.col < end`, where the inside-a-removal branch subtracts zero.
 run = """trap 'test $? -eq 3 && exit 0' EXIT
 export CARGO_MUTANTS_JOBS="${CARGO_MUTANTS_JOBS:-4}"
-cargo mutants --package karet-editor --all-features \
+cargo mutants --package karet-editor --all-features --cargo-test-arg=--lib \
   --file 'crates/karet-editor/src/text.rs' \
   --file 'crates/karet-editor/src/bracket.rs' \
   --file 'crates/karet-editor/src/conflict.rs' \
   --file 'crates/karet-editor/src/editing.rs' \
-  --file 'crates/karet-editor/src/editing/*.rs'"""
+  --file 'crates/karet-editor/src/editing/*.rs' \
+  --exclude-re 'conflict\\.rs:62:\\d+: replace \\+ with [*-] in conflict_decorations' \
+  --exclude-re 'conflict\\.rs:104:85: replace \\+ with [*-] in parse_conflict' \
+  --exclude-re 'text\\.rs:58:\\d+: replace < with <= in word_at' \
+  --exclude-re 'text\\.rs:109:\\d+: replace \\+ with \\* in class_run' \
+  --exclude-re 'text\\.rs:110:\\d+: replace < with <= in class_run' \
+  --exclude-re 'text\\.rs:168:\\d+: (delete match arm \\(_, true\\)|replace < with <=) in find_next' \
+  --exclude-re 'text\\.rs:28[479]:\\d+: replace < with <= in next_word_boundary' \
+  --exclude-re 'text\\.rs:461:24: replace < with > in row_window' \
+  --exclude-re 'comment\\.rs:38[68]:\\d+: replace > with >= in map'"""
 
 [tasks.mutants-session-pure]
 description = "Opt-in: mutation-test karet-session's pure helpers: semantic-token delta, hint flight, archive, config load, cancellation, highlight merge, linediff, backup (cap 60m)"
