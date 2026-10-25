@@ -10,6 +10,11 @@
         })
     }
 
+    /// Any event at all: for rows that only need to prove the id is resolved.
+    fn any_answer(_: &Event) -> bool {
+        true
+    }
+
     /// Every root- or repository-dependent request, with the answer it must get.
     #[allow(clippy::type_complexity)] // A table of (label, command, check) rows.
     fn rootless_requests() -> Vec<(&'static str, Command, fn(&Event) -> bool)> {
@@ -92,6 +97,45 @@
                     path: PathBuf::from("a.txt"),
                     skip: 0,
                     limit: 10,
+                },
+                is_error_notice,
+            ),
+            // Rows whose answer shape other tests pin; here only that one arrives.
+            (
+                "Commit",
+                Command::Commit {
+                    message: "c".to_owned(),
+                },
+                any_answer,
+            ),
+            (
+                "PrepareChange",
+                Command::PrepareChange {
+                    path: PathBuf::from("a.txt"),
+                    staged: false,
+                },
+                |event| matches!(event, Event::ChangePrepared { result: Err(_), .. }),
+            ),
+            (
+                "MergeConflict",
+                Command::MergeConflict {
+                    path: PathBuf::from("a.txt"),
+                },
+                any_answer,
+            ),
+            (
+                "NestedRepositoryStatus",
+                Command::NestedRepositoryStatus {
+                    path: PathBuf::from("nested"),
+                },
+                is_error_notice,
+            ),
+            (
+                "PullRequests",
+                Command::PullRequests {
+                    remote: "origin".to_owned(),
+                    page: 1,
+                    per_page: 10,
                 },
                 is_error_notice,
             ),
