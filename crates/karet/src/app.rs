@@ -110,6 +110,7 @@ use crossterm::event::PopKeyboardEnhancementFlags;
 use crossterm::event::PushKeyboardEnhancementFlags;
 use crossterm::event::{self};
 use crossterm::terminal::SetTitle;
+pub(crate) use definition::is_markdown;
 pub(crate) use drag::DragGranularity;
 pub(crate) use drag::EditorDrag;
 pub(crate) use editor::column::ColumnSelect;

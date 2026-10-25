@@ -264,6 +264,15 @@ impl App {
             self.focus_pane_switch(pane);
             self.focus = Focus::Editor;
         }
+        self.activate_link(&target)
+    }
+
+    /// Open the link `target`, as written in the active tab's file, the way a
+    /// Ctrl/Cmd+click does: a URL with the desktop's opener, a workspace file
+    /// in karet, a file outside the workspace only after a confirmation, and
+    /// anything else refused with a notice. `false` when the active tab has no
+    /// file for a relative target to resolve against.
+    pub(in crate::app) fn activate_link(&mut self, target: &str) -> bool {
         let Some(source) = self
             .tabs
             .get(self.active)
@@ -273,7 +282,7 @@ impl App {
             return false;
         };
 
-        match crate::links::resolve(&target, &source, &self.root) {
+        match crate::links::resolve(target, &source, &self.root) {
             Ok(crate::links::LinkTarget::ExternalUrl(url)) => {
                 if let Err(error) = crate::links::open_external(&url) {
                     self.notify(

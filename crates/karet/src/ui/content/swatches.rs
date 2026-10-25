@@ -282,6 +282,118 @@ pub(super) fn inlay_hits(
         .collect()
 }
 
+/// The source text an editor viewport shows: its buffer, the file it is
+/// (Markdown or not, and what relative link targets resolve against), and the
+/// workspace root that bounds them.
+pub(super) struct LinkSource<'a> {
+    /// The document's text.
+    pub(super) buffer: &'a TextBuffer,
+    /// The document's file.
+    pub(super) path: &'a std::path::Path,
+    /// The workspace root.
+    pub(super) root: &'a std::path::Path,
+}
+
+/// Paint the links written in the source that the editor just drew in `area`
+/// as OSC 8 hyperlinks, so the terminal's own link handling (Cmd+click in
+/// most macOS terminals) opens them too.
+///
+/// Only a target [`crate::links::LinkTarget::osc8_uri`] admits is painted: a
+/// link that resolves outside the workspace stays plain, so the confirmation
+/// karet's own Ctrl/Cmd+click asks for cannot be bypassed. The scan covers the
+/// lines the viewport can show, skipping collapsed folds; each link's cells
+/// come from the editor's own geometry, so a link scrolled half out of view,
+/// or wrapped across rows, links exactly the cells it occupies.
+pub(super) fn source_link_osc8(
+    buf: &mut ratatui::buffer::Buffer,
+    source: &LinkSource,
+    editor: &EditorState,
+    folds: &[karet_editor::Fold],
+    area: Rect,
+) {
+    let markdown = crate::app::is_markdown(source.path);
+    let mut line = editor.scroll_line;
+    let mut shown = 0;
+    while shown < area.height {
+        if let Some(fold) = folds
+            .iter()
+            .find(|fold| fold.collapsed && fold.start < line && line <= fold.end)
+        {
+            line = fold.end.saturating_add(1);
+            continue;
+        }
+        let Some(text) = source.buffer.line(line as usize) else {
+            break;
+        };
+        for link in crate::autolink::source_links(&text, markdown) {
+            let Ok(target) = crate::links::resolve(&link.target, source.path, source.root) else {
+                continue;
+            };
+            let Some(uri) = target.osc8_uri().and_then(crate::links::safe_external) else {
+                continue;
+            };
+            for (y, start, end) in
+                link_runs(source.buffer, editor, folds, area, line, &text, link.range)
+            {
+                super::super::osc8::link_row(buf, y, start, end, uri);
+            }
+        }
+        shown += 1;
+        line = line.saturating_add(1);
+    }
+}
+
+/// The screen runs `(row, first column, end column)` the characters of
+/// `range` (bytes of `text`, which is line `line`) occupy in the editor drawn
+/// in `area`: one run normally, one per row where the link wraps, and none
+/// for what is scrolled out of view.
+fn link_runs(
+    buffer: &TextBuffer,
+    editor: &EditorState,
+    folds: &[karet_editor::Fold],
+    area: Rect,
+    line: u32,
+    text: &str,
+    range: std::ops::Range<usize>,
+) -> Vec<(u16, u16, u16)> {
+    use unicode_width::UnicodeWidthChar;
+    let Some(slice) = text.get(range.clone()) else {
+        return Vec::new();
+    };
+    let Ok(first) = u32::try_from(text[..range.start].chars().count()) else {
+        return Vec::new();
+    };
+    let cell =
+        |col: u32| editor.screen_cell(area, buffer, folds, karet_core::LineCol::new(line, col));
+    let width = |ch: char| u16::try_from(ch.width().unwrap_or(1).max(1)).unwrap_or(1);
+    let count = u32::try_from(slice.chars().count()).unwrap_or(0);
+    let last_char = slice.chars().next_back();
+    // The common case, in two lookups: both ends on one row, so everything
+    // between them is too.
+    if let (Some((x0, y0)), Some((x1, y1)), Some(last)) = (
+        cell(first),
+        cell(first + count.saturating_sub(1)),
+        last_char,
+    ) && y0 == y1
+        && x0 <= x1
+    {
+        return vec![(y0, x0, x1.saturating_add(width(last)))];
+    }
+    // Wrapped or clipped: walk the characters, one run per row.
+    let mut runs: Vec<(u16, u16, u16)> = Vec::new();
+    for (ch, col) in slice.chars().zip(first..) {
+        let Some((x, y)) = cell(col) else {
+            continue;
+        };
+        let end = x.saturating_add(width(ch));
+        match runs.last_mut() {
+            Some((row, start, stop)) if *row == y && x >= *start => *stop = (*stop).max(end),
+            _ => runs.push((y, x, end)),
+        }
+    }
+    runs
+}
+
 #[cfg(test)]
 mod diagnostic_text_tests {
     use karet_core::EolAlign;

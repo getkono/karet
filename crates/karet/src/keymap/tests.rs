@@ -409,6 +409,14 @@ fn every_swallowable_gesture_has_a_bound_keyboard_path() {
             "{modifiers:?}+{code:?}"
         );
     }
+    // Ctrl/Super+click on a link written in the source: open it.
+    let ctx = Context::focus(FocusTarget::Editor);
+    let ctrl_k = KeyChord::from_event(key(Char('k'), ctrl));
+    let enter = KeyChord::from_event(key(Enter, none));
+    assert_eq!(
+        resolve(ctx, &[ctrl_k, enter]),
+        Resolved::Command(Command::OpenLinkAtCaret)
+    );
 }
 
 #[test]

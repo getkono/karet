@@ -210,7 +210,7 @@ of a wide character or of a tab's cells resolves to after it.
 | Click at a wrap boundary | The caret stays on the visual row that was clicked. | harness (`vertical_motion.rs`) |
 | Shift+click | Extend the primary selection from its anchor to the click; drop the other carets. | harness (forward and backward) |
 | Ctrl+click (Super+click where the terminal reports it) | Go to the definition of the identifier under the pointer. On anything else (whitespace, past the line end, the gutter) nothing happens. | — (needs a language server); non-identifiers by a recording backend in `tests/definition.rs` |
-| Ctrl+click on a link written in the source | Open the link instead of going to a definition: a bare `http`/`https` URL in any file, and in Markdown an inline `[text](target)` (or `![alt](src)`) link anywhere from its `[` to its `)`. A URL opens with the desktop's opener; a relative file target opens in karet, and one that resolves outside the workspace asks first; any other target is refused with a notice. Holding Ctrl (or Super) over a link underlines it, whether or not a language server is running; the underline shows in the focused split only, but a Ctrl+click on a link in an unfocused split focuses that split and opens the link. Ctrl+Alt and Ctrl+Shift keep their editor meanings. | `tests/source_links.rs`; scanning in `autolink.rs` |
+| Ctrl+click on a link written in the source | Open the link instead of going to a definition: a bare `http`/`https` URL in any file, and in Markdown an inline `[text](target)` (or `![alt](src)`) link anywhere from its `[` to its `)`. A URL opens with the desktop's opener; a relative file target opens in karet, and one that resolves outside the workspace asks first; any other target is refused with a notice. Holding Ctrl (or Super) over a link underlines it, whether or not a language server is running; the underline shows in the focused split only, but a Ctrl+click on a link in an unfocused split focuses that split and opens the link. Ctrl+Alt and Ctrl+Shift keep their editor meanings. The keyboard path is Open Link at Caret (Ctrl+K Enter, or the command palette), which opens the link the primary caret is in or ends against. A link that would open without asking (a URL, or a file inside the workspace) is also painted as a terminal hyperlink (OSC 8), so a terminal's own Cmd+click opens it; one that resolves outside the workspace is not, so it keeps its confirmation. | `tests/source_links.rs`; scanning in `autolink.rs` |
 | Click in an unfocused split | Focus that split and place its caret; the other split's carets do not move. | harness |
 | Click while the find bar is open | The editor takes keyboard focus; the find bar stays open. Esc from the text then closes it; a click in its field takes the keys back. | harness |
 | Right click | Move the caret to the click if it is outside the selection, then open the context menu (Cut, Copy, Paste, spelling suggestions). | harness (caret, menu, unfocused split; `pointer_routing.rs`); spelling suggestions in `tests/spellcheck.rs` |
@@ -230,8 +230,7 @@ keyboard path that always works.
 Deviation, source links: Alt+click adds a caret, so it cannot also open a
 link; links share Ctrl+click with Go to Definition, and a link wins where both
 apply. Links are found per line, blind to code fences and inline code, and
-reference-style links (`[text][ref]`) are not resolved. Opening a link has no
-keyboard path yet.
+reference-style links (`[text][ref]`) are not resolved.
 
 ## Multi-click
 
@@ -285,8 +284,9 @@ does not write it.
 
 | Gesture | Often lost on | Keyboard path |
 |---|---|---|
-| Super/Cmd + click | Every terminal under SGR mouse reporting | Ctrl+click, F12 |
+| Super/Cmd + click | Every terminal under SGR mouse reporting | Ctrl+click, F12 (Ctrl+K Enter on a source link) |
 | Ctrl+click | macOS terminals (sent as a right click) | F12 |
+| Ctrl+click on a source link | macOS terminals (sent as a right click) | Ctrl+K Enter |
 | Alt/Option + click | macOS terminals, Linux window managers that move windows on Alt+drag | Ctrl+Alt+Up/Down, Ctrl+D |
 | Shift+click | Terminals that reserve Shift for native selection | Shift+arrows |
 | Shift+wheel | Terminals that reserve Shift for native selection | The horizontal wheel; Left/Right, which the view follows |
@@ -297,6 +297,6 @@ a modifier reaching karet; a keymap test
 (`every_swallowable_gesture_has_a_bound_keyboard_path`) checks each chord in
 the table. Where the chord's own modifiers are lost too, as Option is in some
 macOS terminals, each of these commands is also in the command palette
-(Ctrl+Shift+P, or F1), under the names Go to Definition, Add Cursor Above, Add
+(Ctrl+Shift+P, or F1), under the names Go to Definition, Open Link at Caret, Add Cursor Above, Add
 Cursor Below, Add Cursor to Next Occurrence and Column Select Up / Down / Left
 / Right.

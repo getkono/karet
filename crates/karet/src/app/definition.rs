@@ -347,6 +347,44 @@ impl App {
         source_link_in(tab, frame.editor_rect, point).map(|(_, target)| target)
     }
 
+    /// The target of the link written in the active code tab's source under
+    /// the primary caret, as written. A caret just past a link's last
+    /// character still touches it, so the caret a typed or pasted URL leaves
+    /// behind opens that URL.
+    pub(crate) fn source_link_at_caret(&self) -> Option<String> {
+        let tab = self.tabs.get(self.active)?;
+        let TabKind::Code { buffer, path, .. } = &tab.kind else {
+            return None;
+        };
+        let pos = tab.editor.cursor();
+        let line = buffer.line(pos.line as usize)?;
+        let byte = line
+            .char_indices()
+            .nth(pos.col as usize)
+            .map_or(line.len(), |(byte, _)| byte);
+        let links = crate::autolink::source_links(&line, is_markdown(path));
+        // A link the caret is inside wins over one it merely ends against.
+        let inside = links.iter().position(|link| link.range.contains(&byte));
+        let index = inside.or_else(|| links.iter().position(|link| link.range.end == byte))?;
+        links.into_iter().nth(index).map(|link| link.target)
+    }
+
+    /// Open the link under the primary caret as Ctrl/Cmd+click on it would
+    /// (see [`Self::activate_link`]): the keyboard path for that gesture.
+    pub(crate) fn open_link_at_caret(&mut self) {
+        let Some(target) = self.source_link_at_caret() else {
+            self.notify(
+                Report::Refusal,
+                NotificationKind::System,
+                "open link: no link at the caret",
+            );
+            return;
+        };
+        // Only a code tab yields a link, and a code tab always has the file a
+        // relative target resolves against, so activation always answers.
+        self.activate_link(&target);
+    }
+
     /// The identifier the pointer at `point` is on in the active code tab, drawn
     /// in the editor viewport `area`: the position under the pointer and the
     /// identifier's range. `None` over whitespace, punctuation, the gutter, past
@@ -396,9 +434,8 @@ fn source_link_in(tab: &Tab, area: Rect, point: (u16, u16)) -> Option<(Range, St
         return None;
     };
     let line = buffer.line(pos.line as usize)?;
-    let markdown = karet_filetype::file_type_for_path(path).name() == "Markdown";
     let (byte, _) = line.char_indices().nth(pos.col as usize)?;
-    let link = crate::autolink::source_links(&line, markdown)
+    let link = crate::autolink::source_links(&line, is_markdown(path))
         .into_iter()
         .find(|link| link.range.contains(&byte))?;
     let col = |byte: usize| u32::try_from(line[..byte].chars().count()).ok();
@@ -407,6 +444,12 @@ fn source_link_in(tab: &Tab, area: Rect, point: (u16, u16)) -> Option<(Range, St
         end: LineCol::new(pos.line, col(link.range.end)?),
     };
     Some((range, link.target))
+}
+
+/// Whether the file at `path` is Markdown, whose inline `[text](target)`
+/// links count as source links alongside bare URLs.
+pub(crate) fn is_markdown(path: &Path) -> bool {
+    karet_filetype::file_type_for_path(path).name() == "Markdown"
 }
 
 /// The character the pointer at `point` is on in code tab `tab`, drawn in the

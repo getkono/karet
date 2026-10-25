@@ -423,6 +423,9 @@ pub enum Command {
     CommitGraphCopyIssueUrls,
     /// Jump to the definition of the symbol at the caret (F12).
     GoToDefinition,
+    /// Open the link written in the source under the primary caret: the
+    /// keyboard path for Ctrl/Cmd+click on a link (Ctrl+K Enter).
+    OpenLinkAtCaret,
     /// Jump to the declaration of the symbol at the caret.
     GoToDeclaration,
     /// Jump to the definition of the type of the symbol at the caret.
@@ -1026,6 +1029,7 @@ impl Command {
             Self::CommitUnfoldFileTree => "Commit: Unfold All Directories",
             Self::CommitGraphCopyIssueUrls => "Commit Graph: Copy Issue URLs",
             Self::GoToDefinition => "Go to Definition",
+            Self::OpenLinkAtCaret => "Open Link at Caret",
             Self::GoToDeclaration => "Go to Declaration",
             Self::GoToTypeDefinition => "Go to Type Definition",
             Self::GoToImplementation => "Go to Implementation",
