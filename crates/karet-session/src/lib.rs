@@ -167,3 +167,61 @@ pub use lsp::CHANGE_DEBOUNCE as LSP_CHANGE_DEBOUNCE;
 pub use session::EventRx;
 pub use session::Session;
 pub use session::SessionConfig;
+
+/// Ascend from `start` to the nearest directory holding a `Cargo.lock` and return
+/// that file's path. A workspace member has no lockfile of its own — the workspace
+/// root holds it — so both the dependency graph (`viz`) and the manifest hints
+/// (`deps`) look upward rather than only beside the manifest.
+#[cfg(any(feature = "viz", feature = "deps"))]
+pub(crate) fn find_cargo_lock(start: &std::path::Path) -> Option<std::path::PathBuf> {
+    start
+        .ancestors()
+        .map(|dir| dir.join("Cargo.lock"))
+        .find(|candidate| candidate.is_file())
+}
+
+#[cfg(all(test, any(feature = "viz", feature = "deps")))]
+mod tests {
+    use super::find_cargo_lock;
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    #[test]
+    fn a_member_directory_finds_the_workspace_lockfile() -> TestResult {
+        let tmp = tempfile::tempdir()?;
+        let member = tmp.path().join("crates").join("member");
+        std::fs::create_dir_all(&member)?;
+        std::fs::write(tmp.path().join("Cargo.lock"), "version = 3\n")?;
+        assert_eq!(
+            find_cargo_lock(&member),
+            Some(tmp.path().join("Cargo.lock"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_nearest_lockfile_wins() -> TestResult {
+        let tmp = tempfile::tempdir()?;
+        let nested = tmp.path().join("nested");
+        std::fs::create_dir_all(&nested)?;
+        std::fs::write(tmp.path().join("Cargo.lock"), "version = 3\n")?;
+        std::fs::write(nested.join("Cargo.lock"), "version = 3\n")?;
+        assert_eq!(find_cargo_lock(&nested), Some(nested.join("Cargo.lock")));
+        Ok(())
+    }
+
+    #[test]
+    fn a_directory_named_cargo_lock_is_not_a_lockfile() -> TestResult {
+        let tmp = tempfile::tempdir()?;
+        std::fs::create_dir_all(tmp.path().join("Cargo.lock"))?;
+        assert_eq!(find_cargo_lock(tmp.path()), None);
+        Ok(())
+    }
+
+    #[test]
+    fn no_lockfile_anywhere_is_none() -> TestResult {
+        let tmp = tempfile::tempdir()?;
+        assert_eq!(find_cargo_lock(tmp.path()), None);
+        Ok(())
+    }
+}

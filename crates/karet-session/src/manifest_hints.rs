@@ -32,7 +32,8 @@ pub(crate) struct HintJob {
     pub version: u64,
     /// The manifest text (the live buffer).
     pub manifest: String,
-    /// The sibling `Cargo.lock`, when present on disk.
+    /// The governing `Cargo.lock` (beside the manifest, or the workspace root's
+    /// above it), when present on disk.
     pub lockfile: Option<String>,
 }
 
