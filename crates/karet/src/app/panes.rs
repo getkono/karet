@@ -291,9 +291,9 @@ impl App {
             .then(|| self.workspace_layout())
             .flatten();
         match layout {
-            Some(layout) => backup::write_layout(dir, &self.root, &layout),
+            Some(layout) => backup::write_layout(dir, &self.layout_root(), &layout),
             None => {
-                backup::remove_layout(dir, &self.root);
+                backup::remove_layout(dir, &self.layout_root());
                 Ok(())
             },
         }
@@ -305,8 +305,26 @@ impl App {
         if !self.settings.workbench.restore_layout || !self.startup_is_pristine() {
             return;
         }
-        if let Some(layout) = backup::read_layout(dir, &self.root) {
+        if let Some(layout) = backup::read_layout(dir, &self.layout_root()) {
             self.apply_workspace_layout(layout);
+        }
+    }
+
+    /// The root a saved layout is keyed by: the workspace root made absolute.
+    /// The root as given is usually the default `.`, which would key every
+    /// directory karet is started in to one shared layout.
+    fn layout_root(&self) -> PathBuf {
+        workspace::absolute(&self.root)
+    }
+
+    /// A saved (absolute) tab path in the form this session's own tabs use: a
+    /// file under the root is joined onto the root as given, as startup and the
+    /// explorer open it, so the same file never shows up under two spellings.
+    fn session_path(&self, saved: &Path) -> PathBuf {
+        let saved = workspace::absolute(saved);
+        match saved.strip_prefix(self.layout_root()) {
+            Ok(rel) => self.root.join(rel),
+            Err(_) => saved,
         }
     }
 
@@ -420,12 +438,9 @@ impl App {
         if tab.is_diff() {
             return None;
         }
-        let path = tab.path()?;
-        let path = if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            self.root.join(path)
-        };
+        // A relative tab path is relative to the current directory (the root
+        // as given is joined onto it), so it is made absolute the same way.
+        let path = workspace::absolute(tab.path()?);
         let (cursors, scroll_line, scroll_col) = match &tab.kind {
             TabKind::Code { .. } => (
                 tab.editor.cursors().clone(),
@@ -541,10 +556,11 @@ impl App {
         let mut active = 0;
         let mut has_preview = false;
         for (index, entry) in saved.tabs.into_iter().enumerate() {
-            if !entry.path.is_file() {
+            let path = self.session_path(&entry.path);
+            if !path.is_file() {
                 continue;
             }
-            let mut tab = workspace::open_file(&entry.path);
+            let mut tab = workspace::open_file(&path);
             tab.view = self.alloc_view();
             // One preview slot per pane.
             tab.is_preview = entry.preview && !has_preview;

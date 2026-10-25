@@ -97,6 +97,35 @@ fn a_clean_exit_layout_reopens_its_panes_tabs_and_cursors() {
 }
 
 #[test]
+fn a_layout_is_keyed_by_the_absolute_root_and_reopens_in_its_spelling() {
+    let (root, state) = workspace("restore-spelling");
+    let other = test_dir("restore-spelling-other");
+    assert!(
+        two_pane_session(&root)
+            .save_workspace_layout(&state)
+            .is_ok()
+    );
+
+    // Another directory has no saved layout, even with the same file names.
+    for file in ["a.rs", "b.rs", "c.rs"] {
+        write_file(&other, file, b"x\n");
+    }
+    let mut elsewhere = fresh(&other);
+    elsewhere.restore_workspace_layout(&state);
+    assert_eq!(elsewhere.layout.pane_count(), 1);
+
+    // The same root spelled another way finds it, and its tabs take that
+    // spelling, as the tabs it opens itself would.
+    let _ = std::fs::create_dir_all(root.join("sub"));
+    let spelled = root.join("sub").join("..");
+    let mut app = fresh(&spelled);
+    app.restore_workspace_layout(&state);
+    assert_eq!(app.layout.pane_count(), 2);
+    assert_eq!(tab_paths(&app.tabs), vec![spelled.join("c.rs")]);
+    cleanup(&[&root, &state, &other]);
+}
+
+#[test]
 fn attaching_registers_the_tabs_of_every_pane() {
     let (root, state) = workspace("restore-register");
     let mut app = two_pane_session(&root);
