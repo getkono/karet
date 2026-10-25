@@ -69,13 +69,18 @@
         let runtime = tokio::runtime::Runtime::new()?;
         let (mut session, mut events) = runtime.block_on(async { ai_session(root) });
 
-        runtime.block_on(async {
-            session.handle(RequestId(1), Command::GenerateCommitMessage);
-            // The diff read is a blocking task; give it a moment to answer.
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        });
-
-        let (id, message) = failure(&drain(&mut events)).ok_or("nothing staged is a failure")?;
+        // The diff read is a blocking task; await its answer rather than guessing
+        // how long it takes.
+        let (id, message) = runtime
+            .block_on(async {
+                session.handle(RequestId(1), Command::GenerateCommitMessage);
+                next_event(&mut events, EVENT_DEADLINE, |id, event| match event {
+                    Event::CommitMessageFailed { message } => Some((id, message)),
+                    _ => None,
+                })
+                .await
+            })
+            .ok_or("nothing staged is a failure")?;
         assert_eq!(id, Some(RequestId(1)));
         assert!(message.contains("stage changes first"), "{message}");
         Ok(())
