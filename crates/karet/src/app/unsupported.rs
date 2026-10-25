@@ -27,6 +27,8 @@ fn feature_label(feature: ServerFeature) -> &'static str {
         ServerFeature::RangeFormatting => "formatting a selection",
         ServerFeature::CodeAction => "code actions",
         ServerFeature::LinkedEditingRange => "linked editing",
+        ServerFeature::CallHierarchy => "the call hierarchy",
+        ServerFeature::TypeHierarchy => "the type hierarchy",
         _ => "this request",
     }
 }
@@ -70,6 +72,8 @@ impl App {
             // "none available" to a notice that already says why.
             self.refuse_code_actions(id);
             self.refuse_linked_editing(id);
+            // An empty answer follows; this notice already says why.
+            self.refuse_hierarchy(id);
         }
         self.notify(
             Report::Refusal,

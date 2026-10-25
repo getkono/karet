@@ -13,6 +13,8 @@ use karet_core::CompletionList;
 use karet_core::CompletionOptions;
 use karet_core::CompletionTrigger;
 use karet_core::Diagnostic;
+use karet_core::HierarchyDirection;
+use karet_core::HierarchyItem;
 use karet_core::Hover;
 use karet_core::InlayHint;
 use karet_core::LineCol;
@@ -241,6 +243,14 @@ pub(crate) enum ServerCmd {
         path: PathBuf,
         ask: EditingAsk,
     },
+    /// A call- or type-hierarchy request; always answered with an
+    /// [`LspUpdate::Hierarchy`].
+    Hierarchy {
+        /// The originating request, echoed on the answer.
+        request: RequestId,
+        direction: HierarchyDirection,
+        ask: HierarchyAsk,
+    },
     /// One step of listing or running code actions; always answered with an
     /// [`LspUpdate::CodeAction`].
     CodeAction(CodeActionCmd),
@@ -403,6 +413,15 @@ pub(crate) struct SelectionRangesAnswer {
     /// One chain per position asked, innermost first, in UTF-16 columns; an
     /// empty chain where the server had none or could not be asked.
     pub(crate) chains: Vec<Vec<Range>>,
+}
+
+/// What a [`ServerCmd::Hierarchy`] asks the server.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum HierarchyAsk {
+    /// The items at `position` in `path`, already in UTF-16 columns.
+    Prepare { path: PathBuf, position: LineCol },
+    /// The items one level from this one, which the server produced.
+    Children(HierarchyItem),
 }
 
 /// A server's document highlights, as a [`ServerCmd::DocumentHighlights`]
@@ -652,6 +671,14 @@ pub(crate) enum LspUpdate {
     Editing {
         generation: u64,
         answer: EditingAnswer,
+    },
+    /// The answer to a [`ServerCmd::Hierarchy`], in UTF-16 columns: empty
+    /// when no server could answer it.
+    Hierarchy {
+        generation: u64,
+        request: RequestId,
+        direction: HierarchyDirection,
+        items: Vec<HierarchyItem>,
     },
     /// The answer to a [`ServerCmd::CodeAction`]; ranges in UTF-16 columns.
     CodeAction {
