@@ -90,7 +90,11 @@ async fn an_open_document_is_pulled_at_every_version_it_is_sent() -> TestResult 
 }
 
 /// A server that never offered pull diagnostics is never asked for them.
-#[tokio::test]
+///
+/// On tokio's virtual clock, so the silence window proves absence: pulls run on
+/// spawned tasks against an in-process server, and idle time advances only once
+/// every one of them has run, so a pull already launched reaches the wire first.
+#[tokio::test(start_paused = true)]
 async fn a_server_without_pull_diagnostics_is_not_asked() -> TestResult {
     let path = crate::lsp::absolute_path(Path::new("/tmp/unpulled.rs"));
     let (observed_tx, mut observed_rx) = mpsc::unbounded_channel();
@@ -146,7 +150,11 @@ async fn a_dynamic_registration_pulls_the_documents_already_open() -> TestResult
 /// copy is behind, so an answer stamped with the sent version would describe
 /// other text. The change that resyncs it is pulled at its version. Falsified
 /// by dropping the `resync` skip in `Pulls::launch_ready`.
-#[tokio::test]
+///
+/// On tokio's virtual clock, for the reason
+/// `a_server_without_pull_diagnostics_is_not_asked` gives: its silence window
+/// closes only once every launched pull has had its turn.
+#[tokio::test(start_paused = true)]
 async fn a_document_awaiting_resync_is_not_pulled_until_a_change_resyncs_it() -> TestResult {
     use super::super::commands::OpenDocument;
     use super::super::commands::remember_document;

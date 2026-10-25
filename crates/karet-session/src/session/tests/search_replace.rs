@@ -2,23 +2,15 @@
     // files on disk, so its reach (every root, never an excluded path) and its
     // answer (`SearchReplaced` counts) are pinned at the seam.
 
-    /// Wait (5s) for the `SearchReplaced` answering `id`.
+    /// The `SearchReplaced` answering `id`, or `None` past [`EVENT_DEADLINE`].
     fn wait_replaced(events: &mut EventRx, id: RequestId) -> Option<(usize, usize)> {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while std::time::Instant::now() < deadline {
-            match events.try_recv() {
-                Some((
-                    tag,
-                    Event::SearchReplaced {
-                        files_changed,
-                        replacements,
-                    },
-                )) if tag == Some(id) => return Some((files_changed, replacements)),
-                Some(_) => {},
-                None => std::thread::sleep(std::time::Duration::from_millis(5)),
-            }
-        }
-        None
+        await_event(events, EVENT_DEADLINE, |tag, event| match event {
+            Event::SearchReplaced {
+                files_changed,
+                replacements,
+            } if tag == Some(id) => Some((files_changed, replacements)),
+            _ => None,
+        })
     }
 
     fn replace_all(pattern: &str, replacement: &str) -> Command {

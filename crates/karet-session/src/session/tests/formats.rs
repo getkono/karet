@@ -49,17 +49,11 @@
         std::fs::write(&path, &bytes)?;
         let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
         session.handle(RequestId(1), Command::ConvertDocument { path: path.clone() });
-        // The conversion runs on its own thread; poll with a deadline.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        let markdown = loop {
-            if let Some((_, Event::DocumentConverted { markdown, .. })) = events.try_recv() {
-                break Some(markdown);
-            }
-            if std::time::Instant::now() > deadline {
-                break None;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        };
+        // The conversion runs on its own thread; await its answer.
+        let markdown = await_event(&mut events, EVENT_DEADLINE, |_, event| match event {
+            Event::DocumentConverted { markdown, .. } => Some(markdown),
+            _ => None,
+        });
         assert_eq!(markdown, Some(Ok("# Report".to_string())));
         Ok(())
     }

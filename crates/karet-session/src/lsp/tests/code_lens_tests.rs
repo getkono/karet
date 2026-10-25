@@ -172,15 +172,17 @@ async fn a_lens_runs_its_command_and_a_foreign_one_is_refused() -> TestResult {
     let applied = ran(&mut events, run).await.ok_or("no answer")?;
     assert!(applied.result.applied, "{applied:?}");
     assert_eq!(applied.label.as_deref(), Some("Run"));
-    let mut command = None;
-    while let Ok(Some(msg)) =
-        tokio::time::timeout(Duration::from_millis(500), observed_rx.recv()).await
-    {
+    // The server answered, so it has already received the command: await that
+    // message itself instead of waiting out a silence window for it.
+    let command = loop {
+        let msg = tokio::time::timeout(Duration::from_secs(10), observed_rx.recv())
+            .await
+            .map_err(|_elapsed| "the command never reached the server")?
+            .ok_or("the server stream ended before the command ran")?;
         if msg["method"] == "workspace/executeCommand" {
-            command = Some(msg["params"].clone());
+            break msg["params"].clone();
         }
-    }
-    let command = command.ok_or("the command ran")?;
+    };
     assert_eq!(command["command"], "double.run");
     assert_eq!(command["arguments"], json!([1]));
 

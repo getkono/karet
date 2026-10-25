@@ -30,31 +30,27 @@
     /// streaming itself is covered separately, below.
     fn await_seam_event(events: &mut crate::session::EventRx) -> Option<Event> {
         let mut streamed: Vec<(usize, Vec<crate::api::SeamNodeView>)> = Vec::new();
-        for _ in 0..400 {
-            while let Some((_, event)) = events.try_recv() {
-                match event {
-                    Event::SeamPackageIndexed { order, nodes, .. } => {
-                        streamed.push((order, nodes));
-                    },
-                    Event::SeamIndexFinished { summary, .. } => {
-                        // Sorted back into discovery order, which is what the view does
-                        // with the `order` each package carries.
-                        streamed.sort_by_key(|(order, _)| *order);
-                        return Some(Event::SeamIndexed {
-                            summary,
-                            nodes: streamed.into_iter().flat_map(|(_, nodes)| nodes).collect(),
-                        });
-                    },
-                    Event::SeamIndexed { .. }
-                    | Event::SeamIndexFailed { .. }
-                    | Event::SeamQueryResult { .. }
-                    | Event::SeamNodeDetail { .. } => return Some(event),
-                    _ => {},
-                }
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        None
+        await_event(events, EVENT_DEADLINE, |_, event| match event {
+            Event::SeamPackageIndexed { order, nodes, .. } => {
+                streamed.push((order, nodes));
+                None
+            },
+            Event::SeamIndexFinished { summary, .. } => {
+                // Sorted back into discovery order, which is what the view does
+                // with the `order` each package carries.
+                let mut packages = std::mem::take(&mut streamed);
+                packages.sort_by_key(|(order, _)| *order);
+                Some(Event::SeamIndexed {
+                    summary,
+                    nodes: packages.into_iter().flat_map(|(_, nodes)| nodes).collect(),
+                })
+            },
+            Event::SeamIndexed { .. }
+            | Event::SeamIndexFailed { .. }
+            | Event::SeamQueryResult { .. }
+            | Event::SeamNodeDetail { .. } => Some(event),
+            _ => None,
+        })
     }
 
     /// [`await_seam_event`], with a missing answer as an error naming what was awaited.
@@ -82,30 +78,26 @@
     /// Collect a whole index run as it actually arrives, event by event.
     fn await_index_stream(events: &mut crate::session::EventRx) -> Option<StreamedIndex> {
         let mut packages = Vec::new();
-        for _ in 0..400 {
-            while let Some((_, event)) = events.try_recv() {
-                match event {
-                    Event::SeamPackageIndexed {
-                        order, root, nodes, ..
-                    } => packages.push(StreamedPackage {
-                        order,
-                        root,
-                        nodes: nodes.len(),
-                    }),
-                    Event::SeamIndexFinished { parsed, files, .. } => {
-                        return Some(StreamedIndex {
-                            packages,
-                            parsed,
-                            files,
-                        });
-                    },
-                    Event::SeamIndexFailed { .. } => return None,
-                    _ => {},
-                }
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        None
+        await_event(events, EVENT_DEADLINE, |_, event| match event {
+            Event::SeamPackageIndexed {
+                order, root, nodes, ..
+            } => {
+                packages.push(StreamedPackage {
+                    order,
+                    root,
+                    nodes: nodes.len(),
+                });
+                None
+            },
+            Event::SeamIndexFinished { parsed, files, .. } => Some(Some(StreamedIndex {
+                packages: std::mem::take(&mut packages),
+                parsed,
+                files,
+            })),
+            Event::SeamIndexFailed { .. } => Some(None),
+            _ => None,
+        })
+        .flatten()
     }
 
     /// What an index-stream test awaits; `await_index_stream` yields `None` on failure too.

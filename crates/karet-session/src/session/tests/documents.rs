@@ -10,6 +10,52 @@
     /// instead of returning early to a pass. Shared by every file `tests.rs` includes.
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+    /// How long a test waits for an answer from one of the session's worker threads.
+    ///
+    /// It bounds only a failure: [`await_event`] returns the moment the answer arrives,
+    /// so a generous bound costs nothing on a pass and keeps a loaded machine from
+    /// turning a slow answer into a missing one.
+    const EVENT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
+    /// The first event `pick` accepts, with the request it answers, or `None` once
+    /// `deadline` passes or the stream ends. Shared by every file `tests.rs` includes.
+    ///
+    /// `pick` sees every event in arrival order, so one that folds a stream (search
+    /// hits, a commit's output) keeps its own state and yields once the stream closes.
+    /// Async, for a test already inside a runtime; [`await_event`] is the blocking form.
+    async fn next_event<T>(
+        events: &mut EventRx,
+        deadline: std::time::Duration,
+        mut pick: impl FnMut(Option<RequestId>, Event) -> Option<T>,
+    ) -> Option<T> {
+        let accepted = async {
+            while let Some((id, event)) = events.recv().await {
+                if let Some(value) = pick(id, event) {
+                    return Some(value);
+                }
+            }
+            None
+        };
+        tokio::time::timeout(deadline, accepted).await.ok().flatten()
+    }
+
+    /// [`next_event`] for a synchronous test: blocks on the event stream itself rather
+    /// than polling it, so the answer is taken the moment a worker thread sends it.
+    ///
+    /// Panics if called inside a Tokio runtime (it starts its own); an async test
+    /// awaits [`next_event`] instead.
+    fn await_event<T>(
+        events: &mut EventRx,
+        deadline: std::time::Duration,
+        pick: impl FnMut(Option<RequestId>, Event) -> Option<T>,
+    ) -> Option<T> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .ok()?;
+        runtime.block_on(next_event(events, deadline, pick))
+    }
+
     fn write_temp(name: &str, body: &str) -> Option<(tempfile::TempDir, PathBuf)> {
         let dir = tempfile::tempdir().ok()?;
         let path = dir.path().join(name);
@@ -27,23 +73,47 @@
         found
     }
 
+    /// `Session::new` leaves the tree walk to [`Session::start`]: the initial status,
+    /// a full `git status` over every file, is not computed or queued on the caller's
+    /// thread, and arrives only once the session is started.
+    ///
+    /// Observed through the event stream rather than a stopwatch, which a loaded
+    /// machine could fail on a correct build: the VCS worker runs its jobs in order,
+    /// so a status queued by `Session::new` would arrive before the answer to a
+    /// snapshot requested after it. Falsified by emitting the initial status from
+    /// `Session::new`.
     #[test]
     fn session_new_does_not_walk_large_tree_on_caller_thread() -> TestResult {
-        let dir = tempfile::tempdir()?;
+        let Some((_dir, root, _file)) = init_git_repo()? else {
+            // Skip: `git` is not on PATH.
+            return Ok(());
+        };
         for i in 0..1200 {
-            std::fs::create_dir_all(dir.path().join(format!("src/{i}/nested")))?;
+            std::fs::create_dir_all(root.join(format!("src/{i}/nested")))?;
         }
 
-        let started = std::time::Instant::now();
-        let (_session, _events, _snaps) = Session::new(SessionConfig {
-            roots: vec![dir.path().to_path_buf()],
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig {
+            roots: vec![root],
             ..SessionConfig::default()
         });
 
+        // A sentinel behind anything `Session::new` queued on the VCS worker.
+        session.handle(RequestId(1), Command::RepositorySnapshot);
+        let mut walked = false;
+        await_event(&mut events, EVENT_DEADLINE, |id, event| {
+            walked |= matches!(event, Event::VcsStatus { .. });
+            (id == Some(RequestId(1))).then_some(())
+        })
+        .ok_or("the snapshot sentinel was never answered")?;
         assert!(
-            started.elapsed() < std::time::Duration::from_secs(1),
-            "Session::new must not synchronously enumerate large trees"
+            !walked,
+            "Session::new must not walk the tree for the initial status"
         );
+        session.start();
+        await_event(&mut events, EVENT_DEADLINE, |_, event| {
+            matches!(event, Event::VcsStatus { .. }).then_some(())
+        })
+        .ok_or("start() never delivered the initial status")?;
         Ok(())
     }
 
