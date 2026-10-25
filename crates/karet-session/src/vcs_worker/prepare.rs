@@ -33,10 +33,20 @@ pub(super) fn run_status(
     let repo = match repository(root) {
         Ok(repo) => repo,
         // A requested refresh answers even when the repository has gone away
-        // since the session opened it; a spontaneous one has nobody to tell.
-        Err(message) => {
-            if let Some(id) = id {
-                notify(events, id, message);
+        // since the session opened it, with an empty status -- the same answer a
+        // session with no repository gives (`Session::emit_vcs_status`), and not
+        // a notification, which would toast on every explorer refresh. A
+        // spontaneous refresh has nobody to tell.
+        Err(_) => {
+            if id.is_some() {
+                *last_status = Some((Vec::new(), Vec::new()));
+                let _ = events.send((
+                    id,
+                    Event::VcsStatus {
+                        staged: Vec::new(),
+                        working: Vec::new(),
+                    },
+                ));
             }
             return;
         },

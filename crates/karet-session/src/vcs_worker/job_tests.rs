@@ -173,6 +173,32 @@ fn a_log_without_a_repository_notifies_and_a_cancelled_one_stays_silent() {
     );
 }
 
+#[test]
+fn a_status_without_a_repository_answers_empty_and_a_spontaneous_one_stays_silent() {
+    // No root reaches the same branch as a repository that vanished after the
+    // session opened it: `repository` fails, and the refresh must still answer.
+    let requested = dispatch(
+        None,
+        VcsJob::Status {
+            id: Some(RequestId(1)),
+        },
+    );
+    assert!(
+        matches!(
+            requested.as_slice(),
+            [(Some(RequestId(1)), Event::VcsStatus { staged, working })]
+                if staged.is_empty() && working.is_empty()
+        ),
+        "an empty status, not a notification that would toast: {requested:?}"
+    );
+
+    let spontaneous = dispatch(None, VcsJob::Status { id: None });
+    assert!(
+        spontaneous.is_empty(),
+        "a spontaneous refresh has nobody to answer: {spontaneous:?}"
+    );
+}
+
 /// The prepared diff a `DiffWithRev` answered with.
 fn diff_with_rev(
     path: &Path,
