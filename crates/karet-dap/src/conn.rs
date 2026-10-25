@@ -1,5 +1,6 @@
 //! The DAP connection actor: two I/O tasks and request/response correlation,
-//! mirroring `karet-lsp`'s connection over the same shared `karet-jsonrpc` codec.
+//! mirroring `karet-lsp`'s connection. The two share only the `Content-Length`
+//! framing from `karet-jsonrpc`; the message layer above it is DAP's own.
 //!
 //! DAP is not JSON-RPC: every message carries a `seq` and a `type` of
 //! `request`/`response`/`event`. Responses resolve the pending request with
