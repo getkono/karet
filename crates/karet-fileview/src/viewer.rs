@@ -123,8 +123,9 @@ impl Widget for Placeholder {
 fn describe(kind: FileKind) -> &'static str {
     match kind {
         FileKind::Image => "Image preview unavailable",
-        // Shown only when PDF rendering is not compiled in (the `pdf` feature); when
-        // it is, a PDF either renders or shows the requires-Kitty placeholder.
+        // Shown only when the consumer has no PDF renderer (the `karet` app's `pdf`
+        // feature is off, say); when it has one, a PDF either renders or shows the
+        // requires-Kitty placeholder.
         FileKind::Pdf => "PDF document",
         FileKind::Docx => "DOCX rendering is not available yet",
         FileKind::Notebook => "Notebook rendering is not available yet",
