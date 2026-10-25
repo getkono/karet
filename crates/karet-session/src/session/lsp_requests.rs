@@ -5,6 +5,8 @@
 //! per-file code line ceiling. Everything here has one shape: resolve the
 //! document, hand the request to the LSP manager, emit the answer.
 
+use karet_core::HierarchyDirection;
+use karet_core::HierarchyItem;
 use karet_core::InlayHint;
 use karet_core::Location;
 use karet_core::WorkspaceSymbol;
@@ -22,6 +24,7 @@ use crate::api::LocationKind;
 use crate::api::RenameTarget;
 use crate::lsp::DocumentHighlightsAnswer;
 use crate::lsp::FormattingScope;
+use crate::lsp::HierarchyAsk;
 use crate::lsp::LspUpdate;
 use crate::lsp::RenameAnswer;
 use crate::lsp::SelectionRangesAnswer;
@@ -399,6 +402,9 @@ impl Session {
             },
             LspUpdate::CodeLens { answer, .. } => self.adopt_code_lens(answer.fenced()),
             LspUpdate::Editing { answer, .. } => self.settle_retired_editing(answer),
+            LspUpdate::Hierarchy {
+                request, direction, ..
+            } => self.adopt_hierarchy(request, direction, Vec::new()),
             _ => {},
         }
     }
@@ -489,6 +495,67 @@ impl Session {
         {
             self.emit(Some(id), locations_event(kind, Vec::new()));
         }
+    }
+
+    /// Answer a [`Command::PrepareHierarchy`]: forward it, or answer it with
+    /// no items when no server serves the document.
+    pub(super) fn prepare_hierarchy(
+        &mut self,
+        id: RequestId,
+        doc_id: DocumentId,
+        position: LineCol,
+        direction: HierarchyDirection,
+    ) {
+        let Some(doc) = Self::doc_or_report(&self.store, &self.events, id, doc_id) else {
+            return;
+        };
+        let ask = HierarchyAsk::Prepare {
+            path: doc.path.clone(),
+            position: utf16_caret(doc, position),
+        };
+        let path = doc.path.clone();
+        if !self
+            .lsp
+            .hierarchy(doc.language_selector, (id, direction), &path, ask)
+        {
+            self.adopt_hierarchy(id, direction, Vec::new());
+        }
+    }
+
+    /// Answer a [`Command::ExpandHierarchy`] by asking the server of the
+    /// document the hierarchy was opened from, or with no items when there is
+    /// none.
+    pub(super) fn expand_hierarchy(
+        &mut self,
+        id: RequestId,
+        doc_id: DocumentId,
+        item: HierarchyItem,
+        direction: HierarchyDirection,
+    ) {
+        let Some(doc) = Self::doc_or_report(&self.store, &self.events, id, doc_id) else {
+            return;
+        };
+        let (language, path) = (doc.language_selector, doc.path.clone());
+        let ask = HierarchyAsk::Children(item);
+        if !self.lsp.hierarchy(language, (id, direction), &path, ask) {
+            self.adopt_hierarchy(id, direction, Vec::new());
+        }
+    }
+
+    /// Emit [`Event::Hierarchy`] for `items`, moved from the server's UTF-16
+    /// columns to buffer columns, each against its own file.
+    ///
+    /// Never dropped for an edit since the request, as a navigation answer
+    /// is: the client is waiting on this to fill in its tree, and every item
+    /// is anchored in the file it names, not in the document asked from.
+    pub(super) fn adopt_hierarchy(
+        &mut self,
+        id: RequestId,
+        direction: HierarchyDirection,
+        mut items: Vec<HierarchyItem>,
+    ) {
+        self.locations_to_buffer_columns(items.iter_mut().map(|item| &mut item.location));
+        self.emit(Some(id), Event::Hierarchy { direction, items });
     }
 
     pub(super) fn workspace_symbols(&mut self, id: RequestId, query: String) {

@@ -98,6 +98,14 @@ async fn an_unadvertised_capability_is_refused_without_issuing_a_request() -> Te
         })
     ));
     assert!(matches!(
+        client
+            .prepare_hierarchy(karet_core::HierarchyDirection::OutgoingCalls, doc, pos)
+            .await,
+        Err(LspError::Unsupported {
+            method: "textDocument/prepareCallHierarchy"
+        })
+    ));
+    assert!(matches!(
         client.prepare_rename(doc, pos).await,
         Err(LspError::Unsupported {
             method: "textDocument/prepareRename"

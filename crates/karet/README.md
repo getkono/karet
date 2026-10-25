@@ -146,6 +146,15 @@ and *Go to Type Definition* are in the palette. Each jumps straight to a lone an
 (references excepted) and offers the picker for several; a server that does not
 offer one says so.
 
+**Editor — call and type hierarchies.** `Shift+Alt+H` (*Show Incoming Calls*) opens
+a tree of the callers of the function at the caret; *Show Outgoing Calls*, *Show
+Supertypes* and *Show Subtypes* are in the palette. The tree opens at once and fills
+in when the language server answers, its first item already expanded. `→` expands
+the selected item, asking the server for its next level only the first time, `←`
+collapses it (or, on a collapsed item or a leaf, selects its parent), and `Enter`
+opens the item where it is named. A server that does not offer the hierarchy says
+so.
+
 **Editor — rename symbol.** `F2` (palette: *Rename Symbol*) opens an inline prompt
 under the symbol at the caret, its current name selected so typing replaces it; the
 language server's `prepareRename` answer corrects the span and the suggested name,

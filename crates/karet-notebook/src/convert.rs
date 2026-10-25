@@ -15,7 +15,7 @@ use crate::Source;
 /// Render `notebook` as one markdown document.
 #[must_use]
 pub fn to_markdown(notebook: &Notebook) -> String {
-    let language = notebook.language();
+    let language = info_string(notebook.language());
     let mut out = String::new();
     for cell in &notebook.cells {
         if !out.is_empty() {
@@ -23,19 +23,14 @@ pub fn to_markdown(notebook: &Notebook) -> String {
         }
         match cell.kind {
             CellKind::Markdown => out.push_str(cell.source.text().trim_end()),
-            CellKind::Raw => {
-                out.push_str("```\n");
-                out.push_str(cell.source.text().trim_end());
-                out.push_str("\n```");
-            },
+            CellKind::Raw => push_fence(&mut out, "", &cell.source.text()),
             CellKind::Code => {
                 let counter = match cell.execution_count {
                     Some(Some(count)) => format!("In [{count}]"),
                     _ => "In [ ]".to_owned(),
                 };
-                out.push_str(&format!("_{counter}:_\n\n```{language}\n"));
-                out.push_str(cell.source.text().trim_end());
-                out.push_str("\n```");
+                out.push_str(&format!("_{counter}:_\n\n"));
+                push_fence(&mut out, &language, &cell.source.text());
                 for output in cell.outputs.as_deref().unwrap_or_default() {
                     out.push_str("\n\n");
                     push_output(&mut out, output);
@@ -97,13 +92,36 @@ fn push_mime_bundle(out: &mut String, data: &serde_json::Map<String, Value>) {
     out.push_str("*\\[unrenderable output\\]*");
 }
 
+/// The fence info string for a notebook's `language`, which comes verbatim
+/// from notebook metadata: only its first whitespace-delimited token, with
+/// every backtick dropped, so a newline cannot end the opening fence line and
+/// a backtick cannot make the info string invalid.
+fn info_string(language: &str) -> String {
+    language
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .replace('`', "")
+}
+
 /// Append `text` as a fenced block (empty text still fences, keeping the
 /// "this cell produced output" shape).
 fn push_fenced(out: &mut String, text: &str, stderr: bool) {
-    let info = if stderr { "stderr" } else { "text" };
-    out.push_str(&format!("```{info}\n"));
-    out.push_str(text.trim_end());
-    out.push_str("\n```");
+    push_fence(out, if stderr { "stderr" } else { "text" }, text);
+}
+
+/// Append `body` (trailing whitespace trimmed) as a fenced code block tagged
+/// `info`. The fence is one backtick longer than the longest backtick run in
+/// `body` (minimum three), so no line of the body can close it early.
+fn push_fence(out: &mut String, info: &str, body: &str) {
+    let body = body.trim_end();
+    let longest_run = body
+        .split(|ch| ch != '`')
+        .map(str::len)
+        .max()
+        .unwrap_or_default();
+    let fence = "`".repeat(longest_run.saturating_add(1).max(3));
+    out.push_str(&format!("{fence}{info}\n{body}\n{fence}"));
 }
 
 /// Drop ANSI escape sequences (CSI and OSC), keeping the plain text.
@@ -213,6 +231,56 @@ mod tests {
             "_In [ ]:_\n\n```julia\n\n```\n",
         );
         assert_eq!(to_markdown(&notebook), expected);
+        Ok(())
+    }
+
+    #[test]
+    fn a_fence_outgrows_every_backtick_run_in_its_body() -> TestResult {
+        // Each cell or output carries a "```" line (or a longer run) that a
+        // fixed three-backtick fence would treat as its close.
+        let notebook = crate::parse(
+            r#"{"nbformat": 4, "nbformat_minor": 5, "metadata": {},
+                "cells": [
+                  {"cell_type": "raw", "metadata": {}, "source": "a\n```\nb\n"},
+                  {"cell_type": "code", "metadata": {}, "execution_count": 1,
+                   "source": "s = \"\"\"\n```\n\"\"\"\n", "outputs": [
+                     {"output_type": "stream", "name": "stdout", "text": "```\nout\n"},
+                     {"output_type": "execute_result", "execution_count": 1,
+                      "metadata": {}, "data": {"text/plain": "`````\nv"}},
+                     {"output_type": "error", "ename": "E", "evalue": "v",
+                      "traceback": ["```", "t"]}
+                   ]},
+                  {"cell_type": "code", "metadata": {}, "execution_count": 2,
+                   "source": "x = `a` + ``b``", "outputs": []}
+                ]}"#,
+        )?;
+        assert_eq!(
+            to_markdown(&notebook),
+            concat!(
+                "````\na\n```\nb\n````\n\n",
+                "_In [1]:_\n\n````python\ns = \"\"\"\n```\n\"\"\"\n````\n\n",
+                "````text\n```\nout\n````\n\n",
+                "``````text\n`````\nv\n``````\n\n",
+                "**E**: v\n\n````text\n```\nt\n````\n\n",
+                // Runs shorter than three keep the minimum fence.
+                "_In [2]:_\n\n```python\nx = `a` + ``b``\n```\n",
+            )
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_metadata_language_cannot_break_the_opening_fence() -> TestResult {
+        let notebook = crate::parse(
+            r#"{"nbformat": 4, "nbformat_minor": 5,
+                "metadata": {"language_info": {"name": "py`thon\n# injected\n```"}},
+                "cells": [{"cell_type": "code", "metadata": {}, "execution_count": 1,
+                           "source": "1", "outputs": []}]}"#,
+        )?;
+        assert_eq!(to_markdown(&notebook), "_In [1]:_\n\n```python\n1\n```\n");
+        assert_eq!(info_string("  rust  extra"), "rust");
+        assert_eq!(info_string("```"), "");
+        assert_eq!(info_string(""), "");
         Ok(())
     }
 

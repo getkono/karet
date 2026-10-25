@@ -186,6 +186,7 @@ pub(crate) fn initialize_params(root: &Path) -> Result<lsp_types::InitializePara
             }),
             definition: Some(goto),
             implementation: Some(goto),
+            call_hierarchy: Some(dynamic),
             type_hierarchy: Some(dynamic),
             document_symbol: Some(lsp_types::DocumentSymbolClientCapabilities {
                 dynamic_registration: Some(true),

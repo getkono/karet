@@ -69,6 +69,7 @@ pub(crate) use message::EditingAsk;
 pub(crate) use message::EditingReply;
 pub(crate) use message::FormattingAsk;
 pub(crate) use message::FormattingScope;
+pub(crate) use message::HierarchyAsk;
 pub(crate) use message::LspUpdate;
 pub(crate) use message::RenameAnswer;
 pub(crate) use message::SelectionRangesAnswer;
@@ -312,6 +313,7 @@ impl LspManager {
             | LspUpdate::SelectionRanges { generation, .. }
             | LspUpdate::DocumentHighlights { generation, .. }
             | LspUpdate::Editing { generation, .. }
+            | LspUpdate::Hierarchy { generation, .. }
             | LspUpdate::Unsupported { generation, .. }
             | LspUpdate::Definitions { generation, .. }
             | LspUpdate::WorkspaceSymbols { generation, .. }

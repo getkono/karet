@@ -23,6 +23,7 @@ mod editor;
 mod explorer;
 pub(crate) mod github;
 mod graphics;
+pub(crate) mod hierarchy;
 mod history;
 mod hit;
 mod hover;

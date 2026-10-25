@@ -89,6 +89,22 @@ impl Session {
                 self.document_highlights(id, *doc, *position);
                 return true;
             },
+            Command::PrepareHierarchy {
+                doc,
+                position,
+                direction,
+            } => {
+                self.prepare_hierarchy(id, *doc, *position, *direction);
+                return true;
+            },
+            Command::ExpandHierarchy {
+                doc,
+                item,
+                direction,
+            } => {
+                self.expand_hierarchy(id, *doc, (**item).clone(), *direction);
+                return true;
+            },
             Command::LinkedEditingRanges { doc, position } => {
                 self.linked_editing_ranges(id, *doc, *position);
                 return true;
