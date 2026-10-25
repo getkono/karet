@@ -202,6 +202,16 @@ cargo mutants --package karet-cbor --all-features \
 [tasks.mutants-seam]
 description = "Opt-in: mutation-test karet-seam's query language, cfg predicates, ids, regroup and rollup (cap 40m)"
 timeout = "40m"
+# Equivalent mutants, excluded with their argument:
+# - id.rs `i + 1` -> `i * 1` (the end of the last `}`) in `parse_segment`: the
+#   `#` search then starts at the `}` itself instead of just past it, and a
+#   `}` is never a `#`, so `rfind` lands on the same byte either way.
+# - regroup.rs `at < pending.len()` -> `<=` in `apply`: at `at == len` the
+#   `pending.get(at)` that follows is `None` and the loop breaks, so the extra
+#   iteration does nothing.
+# - query/eval.rs `candidates.len() < index.len()` -> `<=` in `evaluate`: when
+#   the two are equal every node is already a candidate, so the orphan pass
+#   finds none and appends nothing.
 run = """trap 'test $? -eq 3 && exit 0' EXIT
 export CARGO_MUTANTS_JOBS="${CARGO_MUTANTS_JOBS:-4}"
 cargo mutants --package karet-seam --all-features \
@@ -209,7 +219,10 @@ cargo mutants --package karet-seam --all-features \
   --file 'crates/karet-seam/src/config/predicate.rs' \
   --file 'crates/karet-seam/src/id.rs' \
   --file 'crates/karet-seam/src/regroup.rs' \
-  --file 'crates/karet-seam/src/rollup.rs'"""
+  --file 'crates/karet-seam/src/rollup.rs' \
+  --exclude-re 'id\\.rs:251:\\d+: replace \\+ with \\* in parse_segment' \
+  --exclude-re 'regroup\\.rs:43:\\d+: replace < with <= in apply' \
+  --exclude-re 'eval\\.rs:53:\\d+: replace < with <= in evaluate'"""
 
 [tasks.mutants-editor]
 description = "Opt-in: mutation-test karet-editor's text, bracket, conflict and editing models (cap 40m)"
