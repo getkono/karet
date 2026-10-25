@@ -280,6 +280,8 @@ impl Worker {
         self.preview = Some(preview::PreviewSource::adopt(path, text));
         // A file that will not parse leaves the previous tree standing rather than
         // emptying the view mid-edit -- and that standing tree is the answer.
+        // `reindex_file` detects every failure before it removes the file's old
+        // nodes, so on `Err` the tree really is the one that stood before.
         if karet_seam::reindex_file(index, &mut self.pool, path, text).is_ok() {
             self.apply_configuration();
         }
