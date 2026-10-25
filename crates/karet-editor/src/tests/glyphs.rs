@@ -338,6 +338,28 @@ fn bracket_depths_restart_after_a_jump_past_the_scan_bound() {
 }
 
 #[test]
+fn bracket_depths_keep_their_stack_for_a_step_of_exactly_the_scan_bound() {
+    // Line 0 opens a bracket; its closer sits on line `SCAN_LINES + 1`.
+    let bound = bracket::SCAN_LINES;
+    let text = format!("(\n{})\n", "\n".repeat(bound));
+    let buffer = TextBuffer::from_text(&text);
+    let mut depths = bracket::BracketDepths::new(&buffer, None);
+    // Asking for line 1 consumes line 0, so the stack holds its `(`.
+    assert_eq!(depths.line(1, u32::MAX), [] as [Option<usize>; 0]);
+    let last = u32::try_from(bound + 1).unwrap_or(u32::MAX);
+    assert_eq!(
+        depths.line(last, u32::MAX),
+        [Some(0)],
+        "a step of exactly the bound walks on instead of restarting"
+    );
+    assert_eq!(
+        depths.line(last, u32::MAX),
+        [Some(0)],
+        "a repeated line reuses the stack instead of rescanning a shorter lookback"
+    );
+}
+
+#[test]
 fn trailing_whitespace_longer_than_the_tail_window_is_all_marked() {
     let text = format!("ab c{}\n", " ".repeat(70));
     let buffer = TextBuffer::from_text(&text);
