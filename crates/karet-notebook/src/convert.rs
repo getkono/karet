@@ -15,7 +15,7 @@ use crate::Source;
 /// Render `notebook` as one markdown document.
 #[must_use]
 pub fn to_markdown(notebook: &Notebook) -> String {
-    let language = notebook.language();
+    let language = info_string(notebook.language());
     let mut out = String::new();
     for cell in &notebook.cells {
         if !out.is_empty() {
@@ -30,7 +30,7 @@ pub fn to_markdown(notebook: &Notebook) -> String {
                     _ => "In [ ]".to_owned(),
                 };
                 out.push_str(&format!("_{counter}:_\n\n"));
-                push_fence(&mut out, language, &cell.source.text());
+                push_fence(&mut out, &language, &cell.source.text());
                 for output in cell.outputs.as_deref().unwrap_or_default() {
                     out.push_str("\n\n");
                     push_output(&mut out, output);
@@ -90,6 +90,18 @@ fn push_mime_bundle(out: &mut String, data: &serde_json::Map<String, Value>) {
         return;
     }
     out.push_str("*\\[unrenderable output\\]*");
+}
+
+/// The fence info string for a notebook's `language`, which comes verbatim
+/// from notebook metadata: only its first whitespace-delimited token, with
+/// every backtick dropped, so a newline cannot end the opening fence line and
+/// a backtick cannot make the info string invalid.
+fn info_string(language: &str) -> String {
+    language
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .replace('`', "")
 }
 
 /// Append `text` as a fenced block (empty text still fences, keeping the
@@ -254,6 +266,21 @@ mod tests {
                 "_In [2]:_\n\n```python\nx = `a` + ``b``\n```\n",
             )
         );
+        Ok(())
+    }
+
+    #[test]
+    fn a_metadata_language_cannot_break_the_opening_fence() -> TestResult {
+        let notebook = crate::parse(
+            r#"{"nbformat": 4, "nbformat_minor": 5,
+                "metadata": {"language_info": {"name": "py`thon\n# injected\n```"}},
+                "cells": [{"cell_type": "code", "metadata": {}, "execution_count": 1,
+                           "source": "1", "outputs": []}]}"#,
+        )?;
+        assert_eq!(to_markdown(&notebook), "_In [1]:_\n\n```python\n1\n```\n");
+        assert_eq!(info_string("  rust  extra"), "rust");
+        assert_eq!(info_string("```"), "");
+        assert_eq!(info_string(""), "");
         Ok(())
     }
 
