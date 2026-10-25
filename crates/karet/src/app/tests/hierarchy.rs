@@ -263,7 +263,7 @@ fn no_roots_names_the_server_state() {
         app.update_language_server_runtime(
             LanguageServerId::RustAnalyzer,
             PathBuf::from("/workspace"),
-            runtime.clone(),
+            runtime,
             None,
         );
         app.dispatch(Command::ShowSupertypes);
