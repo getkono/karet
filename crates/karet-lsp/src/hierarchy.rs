@@ -118,9 +118,9 @@ impl LspClient {
     /// # Errors
     /// Returns [`LspError::Unsupported`] **without issuing a request** when the
     /// server did not advertise the capability, else [`LspError::Server`],
-    /// [`LspError::Timeout`], [`LspError::Protocol`] for an unconvertible path
-    /// or a result that does not decode, or [`LspError::Closed`] if the
-    /// connection is gone.
+    /// [`LspError::Timeout`], [`LspError::Protocol`] for an unconvertible
+    /// path, a request that does not encode, a full outbound queue or a result
+    /// that does not decode, or [`LspError::Closed`] if the connection is gone.
     pub async fn supertypes(&self, doc: &Path, pos: LineCol) -> Result<Vec<Location>, LspError> {
         let direction = HierarchyDirection::Supertypes;
         let roots = self.prepare_hierarchy(direction, doc, pos).await?;

@@ -855,9 +855,9 @@ impl LspClient {
     /// # Errors
     /// Returns [`LspError::Unsupported`] **without issuing a request** when the
     /// server did not advertise the capability, else [`LspError::Server`],
-    /// [`LspError::Timeout`], [`LspError::Protocol`] for an unconvertible path
-    /// or a result that does not decode, or [`LspError::Closed`] if the
-    /// connection is gone.
+    /// [`LspError::Timeout`], [`LspError::Protocol`] for an unconvertible
+    /// path, a request that does not encode, a full outbound queue or a result
+    /// that does not decode, or [`LspError::Closed`] if the connection is gone.
     pub async fn hover(&self, doc: &Path, pos: LineCol) -> Result<Option<Hover>, LspError> {
         self.require_for(ServerFeature::Hover, "textDocument/hover", doc)?;
         let params = lsp_types::HoverParams {
@@ -874,9 +874,9 @@ impl LspClient {
     /// # Errors
     /// Returns [`LspError::Unsupported`] **without issuing a request** when the
     /// server did not advertise the capability, else [`LspError::Server`],
-    /// [`LspError::Timeout`], [`LspError::Protocol`] for an unconvertible path
-    /// or a result that does not decode, or [`LspError::Closed`] if the
-    /// connection is gone.
+    /// [`LspError::Timeout`], [`LspError::Protocol`] for an unconvertible
+    /// path, a request that does not encode, a full outbound queue or a result
+    /// that does not decode, or [`LspError::Closed`] if the connection is gone.
     pub async fn document_symbols(&self, doc: &Path) -> Result<Vec<Symbol>, LspError> {
         self.require_for(
             ServerFeature::DocumentSymbol,
@@ -901,8 +901,9 @@ impl LspClient {
     /// # Errors
     /// Returns [`LspError::Unsupported`] **without issuing a request** when the
     /// server did not advertise the capability, else [`LspError::Server`],
-    /// [`LspError::Timeout`], [`LspError::Protocol`] when the result does not
-    /// decode, or [`LspError::Closed`] if the connection is gone.
+    /// [`LspError::Timeout`], [`LspError::Protocol`] for a request that does
+    /// not encode, a full outbound queue or a result that does not decode, or
+    /// [`LspError::Closed`] if the connection is gone.
     pub async fn workspace_symbols(&self, query: &str) -> Result<Vec<WorkspaceSymbol>, LspError> {
         self.require(ServerFeature::WorkspaceSymbol, "workspace/symbol")?;
         let params = lsp_types::WorkspaceSymbolParams {
@@ -924,9 +925,9 @@ impl LspClient {
     /// # Errors
     /// Returns [`LspError::Unsupported`] **without issuing a request** when the
     /// server did not advertise the capability, else [`LspError::Server`],
-    /// [`LspError::Timeout`], [`LspError::Protocol`] for an unconvertible path
-    /// or a result that does not decode, or [`LspError::Closed`] if the
-    /// connection is gone.
+    /// [`LspError::Timeout`], [`LspError::Protocol`] for an unconvertible
+    /// path, a request that does not encode, a full outbound queue or a result
+    /// that does not decode, or [`LspError::Closed`] if the connection is gone.
     pub async fn implementations(
         &self,
         doc: &Path,
@@ -954,9 +955,9 @@ impl LspClient {
     /// # Errors
     /// Returns [`LspError::Unsupported`] **without issuing a request** when the
     /// server did not advertise the capability, else [`LspError::Server`],
-    /// [`LspError::Timeout`], [`LspError::Protocol`] for an unconvertible path
-    /// or a result that does not decode, or [`LspError::Closed`] if the
-    /// connection is gone.
+    /// [`LspError::Timeout`], [`LspError::Protocol`] for an unconvertible
+    /// path, a request that does not encode, a full outbound queue or a result
+    /// that does not decode, or [`LspError::Closed`] if the connection is gone.
     pub async fn definition(&self, doc: &Path, pos: LineCol) -> Result<Vec<Location>, LspError> {
         self.require_for(ServerFeature::Definition, "textDocument/definition", doc)?;
         let params = lsp_types::GotoDefinitionParams {
@@ -975,9 +976,10 @@ impl LspClient {
     /// # Errors
     /// Returns [`LspError::Unsupported`] **without issuing a request** when the
     /// server did not advertise the capability, else [`LspError::Server`],
-    /// [`LspError::Timeout`], [`LspError::Protocol`] for an unconvertible path,
-    /// a result that does not decode or an edit naming a URI that is not a
-    /// file, or [`LspError::Closed`] if the connection is gone.
+    /// [`LspError::Timeout`], [`LspError::Protocol`] for an unconvertible
+    /// path, a request that does not encode, a full outbound queue, a result
+    /// that does not decode or an edit naming a URI that is not a file, or
+    /// [`LspError::Closed`] if the connection is gone.
     pub async fn rename(
         &self,
         doc: &Path,
@@ -1005,8 +1007,9 @@ impl LspClient {
     /// Returns [`LspError::Unsupported`] **without issuing a request** when the
     /// server did not advertise `prepareProvider`, else [`LspError::Server`]
     /// (servers commonly explain a refusal this way), [`LspError::Timeout`],
-    /// [`LspError::Protocol`] for an unconvertible path or a result that does
-    /// not decode, or [`LspError::Closed`] if the connection is gone.
+    /// [`LspError::Protocol`] for an unconvertible path, a request that does
+    /// not encode, a full outbound queue or a result that does not decode, or
+    /// [`LspError::Closed`] if the connection is gone.
     pub async fn prepare_rename(
         &self,
         doc: &Path,
@@ -1044,9 +1047,9 @@ impl LspClient {
     /// # Errors
     /// Returns [`LspError::Unsupported`] **without issuing a request** when the
     /// server did not advertise the capability, else [`LspError::Server`],
-    /// [`LspError::Timeout`], [`LspError::Protocol`] for an unconvertible path
-    /// or a result that does not decode, or [`LspError::Closed`] if the
-    /// connection is gone.
+    /// [`LspError::Timeout`], [`LspError::Protocol`] for an unconvertible
+    /// path, a request that does not encode, a full outbound queue or a result
+    /// that does not decode, or [`LspError::Closed`] if the connection is gone.
     pub async fn signature_help(
         &self,
         doc: &Path,
@@ -1079,9 +1082,9 @@ impl LspClient {
     /// # Errors
     /// Returns [`LspError::Unsupported`] **without issuing a request** when the
     /// server did not advertise the capability, else [`LspError::Server`],
-    /// [`LspError::Timeout`], [`LspError::Protocol`] for an unconvertible path
-    /// or a result that does not decode, or [`LspError::Closed`] if the
-    /// connection is gone.
+    /// [`LspError::Timeout`], [`LspError::Protocol`] for an unconvertible
+    /// path, a request that does not encode, a full outbound queue or a result
+    /// that does not decode, or [`LspError::Closed`] if the connection is gone.
     pub async fn formatting(
         &self,
         doc: &Path,
@@ -1119,9 +1122,9 @@ impl LspClient {
     /// # Errors
     /// Returns [`LspError::Unsupported`] **without issuing a request** when the
     /// server did not advertise the capability, else [`LspError::Server`],
-    /// [`LspError::Timeout`], [`LspError::Protocol`] for an unconvertible path
-    /// or a result that does not decode, or [`LspError::Closed`] if the
-    /// connection is gone.
+    /// [`LspError::Timeout`], [`LspError::Protocol`] for an unconvertible
+    /// path, a request that does not encode, a full outbound queue or a result
+    /// that does not decode, or [`LspError::Closed`] if the connection is gone.
     pub async fn range_formatting(
         &self,
         doc: &Path,
