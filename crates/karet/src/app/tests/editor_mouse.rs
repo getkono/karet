@@ -72,7 +72,12 @@ fn markdown_table_formatting_is_one_undoable_document_edit() {
         .lock()
         .map(|sent| {
             sent.iter()
-                .filter(|(_, command)| matches!(command, SessionCommand::Document(DocumentCommand::ApplyChange { .. })))
+                .filter(|(_, command)| {
+                    matches!(
+                        command,
+                        SessionCommand::Document(DocumentCommand::ApplyChange { .. })
+                    )
+                })
                 .count()
         })
         .unwrap_or_default();

@@ -25,7 +25,11 @@ fn sent<T>(
 
 fn prepare_ids(backend: &RecordingBackend) -> Vec<RequestId> {
     sent(backend, |id, command| {
-        matches!(command, SessionCommand::Lsp(LspCommand::PrepareRename { .. })).then_some(id)
+        matches!(
+            command,
+            SessionCommand::Lsp(LspCommand::PrepareRename { .. })
+        )
+        .then_some(id)
     })
 }
 
@@ -401,8 +405,11 @@ fn the_prompt_copies_cuts_and_pastes_its_own_field() {
     assert_eq!(field(&app).0, "");
     assert!(app.rename.as_ref().is_some_and(|prompt| prompt.touched));
     let edits = sent(&backend, |_, command| {
-        matches!(command, SessionCommand::Document(DocumentCommand::ApplyChange { .. }))
-            .then_some(())
+        matches!(
+            command,
+            SessionCommand::Document(DocumentCommand::ApplyChange { .. })
+        )
+        .then_some(())
     });
     assert!(edits.is_empty(), "the buffer under the prompt is untouched");
     // With nothing selected in the field, Ctrl+C copies nothing -- not the

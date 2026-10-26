@@ -135,9 +135,7 @@ fn answers(backend: &RecordingBackend) -> Vec<(LanguageServerMessageId, Option<u
             SessionCommand::LanguageServer(LanguageServerCommand::AnswerMessage {
                 request,
                 action,
-            }) => {
-                Some((request, action))
-            },
+            }) => Some((request, action)),
             _ => None,
         })
         .collect()

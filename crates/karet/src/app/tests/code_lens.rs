@@ -24,7 +24,9 @@ fn lens_requests(backend: &RecordingBackend) -> Vec<(RequestId, (u32, u32))> {
         .map(|sent| {
             sent.iter()
                 .filter_map(|(id, command)| match command {
-                    SessionCommand::Lsp(LspCommand::CodeLenses { lines, .. }) => Some((*id, *lines)),
+                    SessionCommand::Lsp(LspCommand::CodeLenses { lines, .. }) => {
+                        Some((*id, *lines))
+                    },
                     _ => None,
                 })
                 .collect()
@@ -224,7 +226,9 @@ fn a_failed_run_is_reported_under_its_title() {
         .and_then(|sent| {
             sent.iter()
                 .rev()
-                .find(|(_, command)| matches!(command, SessionCommand::Lsp(LspCommand::RunCodeLens { .. })))
+                .find(|(_, command)| {
+                    matches!(command, SessionCommand::Lsp(LspCommand::RunCodeLens { .. }))
+                })
                 .map(|(id, _)| *id)
         })
         .unwrap_or(RequestId(0));

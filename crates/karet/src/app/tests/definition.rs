@@ -16,7 +16,9 @@ fn definition_requests(backend: &RecordingBackend) -> Vec<(RequestId, LineCol)> 
         .map(|sent| {
             sent.iter()
                 .filter_map(|(id, command)| match command {
-                    SessionCommand::Lsp(LspCommand::Definition { position, .. }) => Some((*id, *position)),
+                    SessionCommand::Lsp(LspCommand::Definition { position, .. }) => {
+                        Some((*id, *position))
+                    },
                     _ => None,
                 })
                 .collect()

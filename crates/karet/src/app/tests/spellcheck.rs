@@ -290,7 +290,12 @@ fn accepting_a_spelling_suggestion_is_one_atomic_edit() {
         .lock()
         .map(|sent| {
             sent.iter()
-                .filter(|(_, command)| matches!(command, SessionCommand::Document(DocumentCommand::ApplyChange { .. })))
+                .filter(|(_, command)| {
+                    matches!(
+                        command,
+                        SessionCommand::Document(DocumentCommand::ApplyChange { .. })
+                    )
+                })
                 .count()
         })
         .unwrap_or_default();

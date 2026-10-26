@@ -106,7 +106,11 @@ fn a_range_request_reserves_its_tab_and_the_answer_fills_it_in_place() {
         .map(|sent| {
             sent.iter()
                 .filter(|(id, command)| {
-                    *id == RequestId(1) && matches!(command, SessionCommand::Vcs(VcsCommand::RangeChanges { .. }))
+                    *id == RequestId(1)
+                        && matches!(
+                            command,
+                            SessionCommand::Vcs(VcsCommand::RangeChanges { .. })
+                        )
                 })
                 .count()
         })

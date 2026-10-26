@@ -296,21 +296,13 @@ fn ctrl_r_refreshes_every_github_page_that_loads_remote_data() {
             page: 1,
         }))
     );
-    assert!(
-        commands.contains(&std::mem::discriminant(&GithubCommand::Issue {
-            number: 4
-        }))
-    );
+    assert!(commands.contains(&std::mem::discriminant(&GithubCommand::Issue { number: 4 })));
     assert!(
         commands.contains(&std::mem::discriminant(&GithubCommand::PullRequest {
             number: 5
         }))
     );
-    assert!(
-        commands.contains(&std::mem::discriminant(&GithubCommand::Actions {
-            page: 1
-        }))
-    );
+    assert!(commands.contains(&std::mem::discriminant(&GithubCommand::Actions { page: 1 })));
 }
 
 #[test]
@@ -852,8 +844,9 @@ fn reopening_an_issue_focuses_it_without_orphaning_a_request() {
     assert_eq!(app.github.pages().len(), 2, "focused, not stacked");
     assert_eq!(app.github.active(), 1);
     let issued = backend.sent.lock().is_ok_and(|sent| {
-        sent.iter()
-            .any(|(_, command)| matches!(command, SessionCommand::Github(GithubCommand::Issue { .. })))
+        sent.iter().any(|(_, command)| {
+            matches!(command, SessionCommand::Github(GithubCommand::Issue { .. }))
+        })
     });
     assert!(!issued, "no request without a page to own its reply");
 }

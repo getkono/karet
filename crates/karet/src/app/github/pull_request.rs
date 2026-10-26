@@ -144,12 +144,8 @@ impl App {
             return;
         }
         let command = match editor {
-            GithubPullRequestEditor::Body => {
-                GithubCommand::UpdatePullRequestBody { number, body }
-            },
-            GithubPullRequestEditor::Comment => {
-                GithubCommand::CommentPullRequest { number, body }
-            },
+            GithubPullRequestEditor::Body => GithubCommand::UpdatePullRequestBody { number, body },
+            GithubPullRequestEditor::Comment => GithubCommand::CommentPullRequest { number, body },
         };
         let request = self.send(command);
         if let Some(GithubViewState::PullRequest(view)) = self.github.active_page_mut() {

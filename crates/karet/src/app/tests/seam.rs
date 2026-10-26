@@ -513,8 +513,12 @@ fn clicking_the_configuration_marker_cycles_it() {
     }
     press(&mut app, 31, 0);
     let cycled = backend.sent.lock().is_ok_and(|sent| {
-        sent.iter()
-            .any(|(_, c)| matches!(c, SessionCommand::Seam(SeamCommand::SetConfiguration { .. })))
+        sent.iter().any(|(_, c)| {
+            matches!(
+                c,
+                SessionCommand::Seam(SeamCommand::SetConfiguration { .. })
+            )
+        })
     });
     assert!(
         cycled,

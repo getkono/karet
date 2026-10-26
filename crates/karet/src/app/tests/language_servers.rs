@@ -21,7 +21,12 @@ fn language_server_manager_is_a_singleton_and_requests_inventory() {
         .lock()
         .map(|sent| {
             sent.iter()
-                .filter(|(_, command)| matches!(command, SessionCommand::LanguageServer(LanguageServerCommand::Status)))
+                .filter(|(_, command)| {
+                    matches!(
+                        command,
+                        SessionCommand::LanguageServer(LanguageServerCommand::Status)
+                    )
+                })
                 .count()
         })
         .unwrap_or_default();
@@ -170,7 +175,12 @@ fn language_server_manager_mouse_selects_rows_and_runs_toolbar_actions() {
         .lock()
         .map(|sent| {
             sent.iter()
-                .filter(|(_, command)| matches!(command, SessionCommand::LanguageServer(LanguageServerCommand::Status)))
+                .filter(|(_, command)| {
+                    matches!(
+                        command,
+                        SessionCommand::LanguageServer(LanguageServerCommand::Status)
+                    )
+                })
                 .count()
         })
         .unwrap_or_default();

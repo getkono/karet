@@ -200,7 +200,9 @@ fn the_inspection_waterfall_is_lazy_and_stale_answers_drop() {
         .ok()
         .and_then(|sent| {
             sent.iter()
-                .find(|(_, c)| matches!(c, SessionCommand::Debug(DebugCommand::Scopes { frame: 41 })))
+                .find(|(_, c)| {
+                    matches!(c, SessionCommand::Debug(DebugCommand::Scopes { frame: 41 }))
+                })
                 .map(|(id, _)| *id)
         })
         .unwrap_or(RequestId(0));
@@ -232,7 +234,12 @@ fn the_inspection_waterfall_is_lazy_and_stale_answers_drop() {
         .ok()
         .and_then(|sent| {
             sent.iter()
-                .find(|(_, c)| matches!(c, SessionCommand::Debug(DebugCommand::Variables { reference: 11 })))
+                .find(|(_, c)| {
+                    matches!(
+                        c,
+                        SessionCommand::Debug(DebugCommand::Variables { reference: 11 })
+                    )
+                })
                 .map(|(id, _)| *id)
         })
         .unwrap_or(RequestId(0));

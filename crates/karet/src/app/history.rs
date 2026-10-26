@@ -478,8 +478,7 @@ impl App {
         {
             return;
         }
-        if let Some(request) =
-            self.send(VcsCommand::FetchCommitVerification { hash: hash.clone() })
+        if let Some(request) = self.send(VcsCommand::FetchCommitVerification { hash: hash.clone() })
         {
             self.pending_commit_verification
                 .insert(request, (view, hash));

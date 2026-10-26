@@ -39,9 +39,11 @@ fn accepts(backend: &RecordingBackend) -> Vec<(String, String)> {
         .map(|sent| {
             sent.iter()
                 .filter_map(|(_, command)| match command {
-                    SessionCommand::Lsp(LspCommand::AcceptInlineCompletion { server, item, .. }) => {
-                        Some((server.key().to_owned(), item.insert_text.clone()))
-                    },
+                    SessionCommand::Lsp(LspCommand::AcceptInlineCompletion {
+                        server,
+                        item,
+                        ..
+                    }) => Some((server.key().to_owned(), item.insert_text.clone())),
                     _ => None,
                 })
                 .collect()
