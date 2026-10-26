@@ -432,14 +432,8 @@ impl DebugManager {
     }
 
     fn notify(&self, severity: Severity, message: &str) {
-        self.events.emit(
-            None,
-            Event::Notification {
-                severity,
-                kind: NotificationKind::System,
-                message: message.to_owned(),
-            },
-        );
+        self.events
+            .notify(None, severity, NotificationKind::System, message);
     }
 }
 
