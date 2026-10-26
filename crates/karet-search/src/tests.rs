@@ -218,7 +218,13 @@ fn zero_width_pattern_terminates() {
     assert_eq!(spans, [(0, 0), (1, 1), (2, 2), (3, 3)]);
 }
 
+use std::ops::ControlFlow;
+use std::path::Path;
+
 use tempfile::TempDir;
+
+use crate::walk::BINARY_SNIFF_BYTES;
+use crate::walk::MAX_FILE_BYTES;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
