@@ -409,9 +409,18 @@ run = [
 
 [tasks.coverage]
 description = "Generate the CI coverage artifact and print its summary"
+# `--failure-mode all`: skip a profile that cannot be merged (with a warning)
+# rather than fail the whole gate on it; still fail if none merges. Every test
+# has already passed by the time profiles merge, and an instrumented process
+# killed while writing its profile leaves a half-written `.profraw` -- which
+# production code does on purpose: the hidden supervisor `SIGKILL`s its child's
+# group when its parent goes, and a child seeing that EOF may already be
+# exiting. Losing that one process's counts is a smaller coverage signal, not
+# a reason to fail the merge gate (issue #623). Both commands merge, so both
+# carry the flag.
 run = [
-  "cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info",
-  "cargo llvm-cov report --summary-only",
+  "cargo llvm-cov --workspace --all-features --failure-mode all --lcov --output-path lcov.info",
+  "cargo llvm-cov report --failure-mode all --summary-only",
 ]
 
 [tasks.verify]
