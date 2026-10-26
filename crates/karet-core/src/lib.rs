@@ -113,6 +113,7 @@ pub use model::Hover;
 pub use model::InlayHint;
 pub use model::InlayHintKind;
 pub use model::InlayHintLabelPart;
+pub use model::InlineAsk;
 pub use model::InlineCompletionItem;
 pub use model::InlineCompletionTrigger;
 pub use model::InlineGhost;

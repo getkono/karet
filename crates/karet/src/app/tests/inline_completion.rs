@@ -194,6 +194,26 @@ fn tab_accepts_the_ghost_over_the_text_it_replaces_and_tells_the_server() {
     assert!(app.inline_ghost().is_none());
 }
 
+/// Regression: a caret move types nothing, so Left then Tab still replaces
+/// the `)` the item spans, and Right then Tab eats nothing after it.
+#[test]
+fn moving_the_caret_then_tab_replaces_only_what_the_item_spans() {
+    let (backend, mut app, now) = ghost_app("call() + x\n", LineCol::new(0, 5));
+    let id = type_and_ask(&mut app, &backend, 'a', now);
+    answer(&mut app, id, vec![item("call(a, b)", 0, (0, 7))]);
+    send_key(&mut app, KeyCode::Left, KeyModifiers::NONE);
+    assert_eq!(ghost_text(&app).as_deref(), Some("a, b)"));
+    send_key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+    assert_eq!(code_tab_text(&app), "call(a, b) + x\n");
+
+    let (backend, mut app, now) = ghost_app("call() + x\n", LineCol::new(0, 5));
+    let id = type_and_ask(&mut app, &backend, 'a', now);
+    answer(&mut app, id, vec![item("call(a, b)", 0, (0, 7))]);
+    send_key(&mut app, KeyCode::Right, KeyModifiers::NONE);
+    assert_eq!(ghost_text(&app), None, "past the `)` nothing still applies");
+    assert_eq!(code_tab_text(&app), "call(a) + x\n");
+}
+
 /// Without a ghost, Tab is Tab, Esc is Esc and Ctrl+Right moves by word.
 #[test]
 fn keys_keep_their_meaning_while_no_ghost_is_shown() {

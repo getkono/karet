@@ -33,6 +33,7 @@ pub use hierarchy::HierarchyItem;
 pub use inlay::InlayHint;
 pub use inlay::InlayHintKind;
 pub use inlay::InlayHintLabelPart;
+pub use inline_completion::InlineAsk;
 pub use inline_completion::InlineCompletionItem;
 pub use inline_completion::InlineCompletionTrigger;
 pub use inline_completion::InlineGhost;

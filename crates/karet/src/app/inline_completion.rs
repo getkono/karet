@@ -15,6 +15,7 @@
 
 use std::time::Duration;
 
+use karet_core::InlineAsk;
 use karet_core::InlineCompletionItem;
 use karet_core::InlineCompletionTrigger;
 use karet_core::InlineGhost;
@@ -32,6 +33,19 @@ pub(crate) struct InlineKey {
     doc: DocumentId,
     version: u64,
     caret: LineCol,
+    /// The caret line's length in characters, which the edits made after an
+    /// ask are measured against.
+    line_len: u32,
+}
+
+impl InlineKey {
+    /// The ask made here, as [`InlineCompletionItem::ghost`] takes it.
+    fn ask(self) -> InlineAsk {
+        InlineAsk {
+            line: self.caret.line,
+            len: self.line_len,
+        }
+    }
 }
 
 /// The items one ask brought back, each with the server that proposed it.
@@ -98,12 +112,14 @@ impl App {
         }
         let caret = selection.head;
         let line = buffer.line(caret.line as usize).unwrap_or_default();
+        let line = line.trim_end_matches(['\n', '\r']).to_owned();
         let key = InlineKey {
             doc: *doc,
             version: buffer.version(),
             caret,
+            line_len: InlineAsk::new(caret.line, &line).len,
         };
-        Some((key, line.trim_end_matches(['\n', '\r']).to_owned()))
+        Some((key, line))
     }
 
     /// Keep the ask in step with the active editor, once per frame: schedule
@@ -184,7 +200,7 @@ impl App {
         }
         let fresh = items
             .into_iter()
-            .filter(|item| item.ghost(&line, asked.caret, key.caret).is_some())
+            .filter(|item| item.ghost(&line, asked.ask(), key.caret).is_some())
             .map(|item| (server.clone(), item));
         let state = &mut self.inline_completion;
         match &mut state.shown {
@@ -215,7 +231,7 @@ impl App {
         }
         let (server, item) = shown.items.get(shown.index)?;
         Some((
-            item.ghost(&line, shown.asked.caret, key.caret)?,
+            item.ghost(&line, shown.asked.ask(), key.caret)?,
             server,
             item,
         ))
@@ -268,7 +284,7 @@ impl App {
                 } else {
                     (shown.index + len - step) % len
                 };
-                let asked = shown.asked.caret;
+                let asked = shown.asked.ask();
                 if shown.items[index]
                     .1
                     .ghost(&line, asked, key.caret)
