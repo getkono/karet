@@ -290,6 +290,34 @@ fn a_partial_or_failed_replace_is_reported_as_a_failure() {
             "replace stopped: invalid search pattern".to_owned()
         ))
     );
+
+    // More unwritten files than the body shows: the first five are listed and
+    // the rest are counted, so a read-only tree cannot fill the screen.
+    let failures = (0..7)
+        .map(|i| karet_search::WriteFailure {
+            path: root.join(format!("f{i}.rs")),
+            error: "Read-only file system".to_owned(),
+        })
+        .collect();
+    app.on_backend_event(
+        Some(RequestId(3)),
+        SessionEvent::SearchReplaced {
+            files_changed: 0,
+            replacements: 0,
+            failures,
+            error: None,
+        },
+    );
+    let note = app.notifications.active().first().cloned();
+    assert_eq!(
+        note.as_ref().map(|n| n.title.as_str()),
+        Some("replaced 0 occurrence(s) in 0 file(s); 7 file(s) could not be written")
+    );
+    let expected: Vec<String> = (0..5)
+        .map(|i| format!("f{i}.rs: Read-only file system"))
+        .chain(std::iter::once("…and 2 more".to_owned()))
+        .collect();
+    assert_eq!(note.and_then(|n| n.body.clone()), Some(expected.join("\n")));
 }
 
 #[test]
