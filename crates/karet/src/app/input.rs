@@ -459,6 +459,7 @@ impl App {
             OverlayEvent::AcceptWorkspace(root) => self.reopen_on_workspace(root),
             OverlayEvent::AcceptSeamRoot(root) => self.open_seam_view_at(root),
             OverlayEvent::AcceptTheme(choice) => self.accept_theme(choice),
+            OverlayEvent::AcceptTask { label, .. } => self.run_task(&label),
             OverlayEvent::AcceptLocation { path, position }
             | OverlayEvent::AcceptSymbol { path, position, .. } => {
                 self.jump_to_location(&path, position);

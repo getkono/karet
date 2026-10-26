@@ -148,15 +148,32 @@ impl App {
             })
     }
 
-    /// Start a shell in the workspace root in a new tab of the focused pane.
-    pub(super) fn new_terminal(&mut self) {
-        let (columns, rows) = self
-            .pane_frames
+    /// The grid a new terminal in the focused pane starts on: the pane's content
+    /// area, or a default before the first paint has measured it.
+    pub(super) fn terminal_grid_size(&self) -> (u16, u16) {
+        self.pane_frames
             .iter()
             .find(|frame| frame.pane == self.focus_pane())
             .map(|frame| (frame.content_rect.width, frame.content_rect.height))
             .filter(|(columns, rows)| *columns > 0 && *rows > 0)
-            .unwrap_or(DEFAULT_SIZE);
+            .unwrap_or(DEFAULT_SIZE)
+    }
+
+    /// The pane and index of terminal `id`'s tab, wherever it is.
+    pub(super) fn terminal_tab(&self, id: crate::terminal::TerminalId) -> Option<(PaneId, usize)> {
+        let shows = |tab: &Tab| matches!(&tab.kind, TabKind::Terminal(pane) if pane.id() == id);
+        std::iter::once((self.focus_pane(), self.tabs.as_slice()))
+            .chain(
+                self.stored
+                    .iter()
+                    .map(|(pane, stored)| (*pane, stored.tabs.as_slice())),
+            )
+            .find_map(|(pane, tabs)| tabs.iter().position(shows).map(|index| (pane, index)))
+    }
+
+    /// Start a shell in the workspace root in a new tab of the focused pane.
+    pub(super) fn new_terminal(&mut self) {
+        let (columns, rows) = self.terminal_grid_size();
         match self.terminals.spawn(&self.root, columns, rows) {
             Ok(pane) => self.push_tab(Tab::terminal(pane)),
             Err(error) => self.notify(
@@ -349,9 +366,11 @@ impl App {
     /// more output, and wakes nothing, until it is shown again.
     pub(super) fn on_terminal_event(&mut self, event: TerminalEvent, now: Instant) -> bool {
         if event.kind == TerminalEventKind::Output {
+            self.task_output(event.id, now);
             return self.terminal_visible(event.id) && self.terminal_frame.output(now);
         }
         let mut copied = None;
+        let mut exited = None;
         for tab in self.all_tabs_mut() {
             let TabKind::Terminal(pane) = &mut tab.kind else {
                 continue;
@@ -367,13 +386,20 @@ impl App {
                 // Not echoed: a toast per `\a` from a shell's tab completion would
                 // bury every other notification.
                 TerminalEventKind::Bell => {},
-                TerminalEventKind::Exited(status) => pane.mark_exited(status.clone()),
+                TerminalEventKind::Exited(status) => {
+                    pane.mark_exited(status.clone());
+                    exited = pane.exit_status().map(str::to_owned);
+                },
             }
             tab.title = crate::tab::terminal_title(pane);
             break;
         }
         if let Some(text) = copied {
             self.copy_to_clipboard(text, "terminal selection");
+        }
+        if let TerminalEventKind::Exited(_) = &event.kind {
+            // Also when no tab showed it: a closed task terminal is forgotten.
+            self.task_exited(event.id, exited.as_deref());
         }
         // A title, an exit or a copy notice shows at once; the bell shows nothing.
         event.kind != TerminalEventKind::Bell

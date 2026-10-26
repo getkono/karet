@@ -48,8 +48,9 @@ mermaid = ["karet-markdown/mermaid"]
 aicommit = ["karet-session/aicommit"]
 # The integrated terminal pane: a shell on a pure-Rust PTY (`portable-pty`)
 # emulated by `alacritty_terminal`. Neither links a system C library; a lean
-# build drops both.
-terminal = ["dep:portable-pty", "dep:alacritty_terminal", "dep:filedescriptor"]
+# build drops both. Tasks run in it, so their problem matchers (`regex`) ride
+# along.
+terminal = ["dep:portable-pty", "dep:alacritty_terminal", "dep:filedescriptor", "dep:regex"]
 
 [dependencies]
 # Presentation/client half + the headless backend it drives through the Command/Event seam.
@@ -83,6 +84,7 @@ karet-fileview.workspace = true       # read-only "render any file" primitives (
 karet-pdf = { workspace = true, optional = true }  # rasterize PDF pages (pure-Rust hayro); behind the `pdf` feature
 portable-pty = { workspace = true, optional = true }       # integrated terminal PTY; behind `terminal`
 alacritty_terminal = { workspace = true, optional = true } # integrated terminal VT emulation; behind `terminal`
+regex = { workspace = true, optional = true }              # task problem matchers over terminal output; behind `terminal`
 # External (app-level orchestration: runtime, CLI, plus the merged clipboard/input modules).
 ratatui.workspace = true
 crossterm.workspace = true

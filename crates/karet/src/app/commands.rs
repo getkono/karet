@@ -80,6 +80,7 @@ impl App {
             | Command::TerminalScrollPageDown
             | Command::TerminalScrollToTop
             | Command::TerminalScrollToBottom => self.terminal_command(command),
+            Command::RunTask => self.open_task_picker(),
             Command::DismissNotification => self.notifications.dismiss_latest(),
             Command::DismissAllNotifications => self.notifications.dismiss_all(),
             Command::MarkdownPreviewSide => self.open_markdown_preview_side(),

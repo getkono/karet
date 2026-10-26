@@ -35,6 +35,7 @@ static PALETTE: &[Command] = &[
     Command::TerminalPaste,
     Command::TerminalScrollToTop,
     Command::TerminalScrollToBottom,
+    Command::RunTask,
     Command::OpenFind,
     Command::OpenGlobalSearch,
     Command::TriggerCompletion,

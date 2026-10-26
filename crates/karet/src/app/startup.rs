@@ -149,6 +149,8 @@ impl App {
             terminals: crate::terminal::TerminalHost::default(),
             #[cfg(feature = "terminal")]
             terminal_frame: super::terminal::TerminalFrame::default(),
+            #[cfg(feature = "terminal")]
+            tasks: super::tasks::TaskRuns::default(),
             shown_image: None,
             shown_page: 0,
             shown_graphics_caret: None,
