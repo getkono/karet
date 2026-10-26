@@ -97,6 +97,7 @@ pub(crate) fn layer_changes(old: &[SyntaxTree], new: &[SyntaxTree], edited: &[Sp
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tests::point_of;
 
     fn span(start: usize, end: usize) -> Span {
         Span {
@@ -129,14 +130,6 @@ mod tests {
         let edits = vec![edit(0, 0, 1); MAX_TRACKED_EDITS + 1];
         assert_eq!(edited_ranges(&edits), None);
         assert!(edited_ranges(&edits[..MAX_TRACKED_EDITS]).is_some());
-    }
-
-    /// The `(row, byte-column)` of `byte` in `text`.
-    fn point_of(text: &str, byte: usize) -> karet_core::BytePoint {
-        let before = text.get(..byte).unwrap_or("");
-        let row = before.matches('\n').count();
-        let col = before.rfind('\n').map_or(byte, |i| byte - i - 1);
-        karet_core::BytePoint::new(row, col)
     }
 
     /// Replace `old[start..end]` with `with`, returning the new text and its edit.

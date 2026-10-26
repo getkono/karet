@@ -54,12 +54,6 @@ pub fn language_id_from_injection_name(name: &str) -> Option<LanguageId> {
         .map(|g| g.id)
 }
 
-/// Lowercased extension of `path`, without the dot (test helper).
-#[cfg(test)]
-fn extension(path: &Path) -> Option<String> {
-    path.extension()?.to_str().map(str::to_ascii_lowercase)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -321,7 +315,6 @@ mod tests {
 
     #[test]
     fn extension_is_case_insensitive() {
-        assert_eq!(extension(Path::new("X.MD")).as_deref(), Some("md"));
         assert_eq!(
             language_name_from_path(Path::new("README.MD")),
             Some("Markdown")
