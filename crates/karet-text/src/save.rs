@@ -35,8 +35,14 @@ impl TextBuffer {
     ///
     /// Returns the on-disk [`SavedState`] fingerprint (also stored on the buffer).
     ///
+    /// The write goes to a same-directory temp file that is then renamed over
+    /// `path`. If that rename fails (e.g. across filesystems), it falls back to a
+    /// direct, **non-atomic** overwrite of `path`.
+    ///
     /// # Errors
-    /// Returns [`TextError::Io`] if the file cannot be written.
+    /// Returns [`TextError::Conflict`] if the file changed on disk since it was
+    /// last read or saved (nothing is written in that case), or
+    /// [`TextError::Io`] if the file cannot be written.
     pub fn save(&mut self, path: &Path) -> Result<SavedState, TextError> {
         let bytes = self.serialize();
         self.save_bytes(path, &bytes)
@@ -61,7 +67,8 @@ impl TextBuffer {
     /// Unlike [`save`](Self::save), this does **not** serialize the rope — the
     /// caller has produced the on-disk bytes itself. Use it for documents whose
     /// on-disk form differs from the edit buffer (e.g. a binary format decoded to
-    /// editable text and re-encoded on save).
+    /// editable text and re-encoded on save). Like [`save`](Self::save), it falls
+    /// back to a direct, non-atomic overwrite if the temp-file rename fails.
     ///
     /// # Errors
     /// Returns [`TextError::Io`] if the file cannot be written, or

@@ -73,7 +73,9 @@ pub enum LoadError {
     /// The bytes are not valid UTF-8; `offset` is the first invalid byte.
     #[error("not valid utf-8 at byte {offset}")]
     NotUtf8 {
-        /// Byte offset of the first invalid sequence.
+        /// Byte offset of the first invalid sequence, counted from the start of
+        /// the content after any leading UTF-8 BOM (so it is 3 less than the
+        /// file offset when the file starts with a BOM).
         offset: usize,
     },
     /// An I/O error while reading the file.
@@ -138,6 +140,11 @@ impl TextBuffer {
     /// building a buffer from text whose on-disk form you already have — e.g. a
     /// binary format decoded into an editable buffer, where the disk bytes are the
     /// undecoded original.
+    ///
+    /// If `path`'s metadata cannot be read, this silently records nothing and
+    /// leaves any earlier fingerprint in place. A buffer that never had one then
+    /// stays without it, so a later [`save`](Self::save) or
+    /// [`save_bytes`](Self::save_bytes) skips its on-disk conflict check.
     pub fn record_disk_state(&mut self, path: &Path, disk_bytes: &[u8]) {
         if let Ok(meta) = std::fs::metadata(path) {
             self.saved_state = Some(SavedState {
