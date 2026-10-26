@@ -148,19 +148,6 @@ fn record_owner(lease: &mut File, pid: u32) {
     let _ = lease.flush();
 }
 
-/// Connect to the shared broker for `launch`, starting it when absent.
-///
-/// The returned stream has already completed the authentication prelude.
-pub(crate) async fn connect<P: BrokerProtocol>(
-    executable: &Path,
-    state_root: &Path,
-    launch: &Launch,
-) -> Result<TcpStream, BrokerError> {
-    connect_observed::<P>(executable, state_root, launch)
-        .await
-        .map(|(stream, _broker)| stream)
-}
-
 /// The registry directory a protocol's brokers publish under.
 fn state_directory<P: BrokerProtocol>(state_root: &Path) -> PathBuf {
     state_root.join(P::STATE_DIR)
@@ -183,7 +170,10 @@ pub(crate) fn reported<P: BrokerProtocol>(
     (report.pid == pid).then_some(report)
 }
 
-/// Connect as [`connect`] does, and say which broker answered.
+/// Connect to the shared broker for `launch`, starting it when absent, and
+/// say which broker answered.
+///
+/// The returned stream has already completed the authentication prelude.
 pub(crate) async fn connect_observed<P: BrokerProtocol>(
     executable: &Path,
     state_root: &Path,
@@ -454,7 +444,7 @@ mod tests {
         }
     }
 
-    /// The registry paths `connect` derives for [`launch`].
+    /// The registry paths `connect_observed` derives for [`launch`].
     struct Registry {
         directory: PathBuf,
         metadata: PathBuf,
@@ -490,7 +480,9 @@ mod tests {
     }
 
     async fn connect_to(state_root: &Path) -> Result<TcpStream, BrokerError> {
-        connect::<TestProtocol>(Path::new(UNSPAWNABLE), state_root, &launch()).await
+        connect_observed::<TestProtocol>(Path::new(UNSPAWNABLE), state_root, &launch())
+            .await
+            .map(|(stream, _broker)| stream)
     }
 
     /// A listener that accepts and closes without a word.

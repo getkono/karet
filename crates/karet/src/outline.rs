@@ -63,7 +63,7 @@ pub fn flatten(entries: &[OutlineEntry]) -> Vec<OutlineRow> {
 pub fn from_markdown(source: &str) -> Vec<OutlineEntry> {
     let document = karet_markdown::parse(source);
     let headings: Vec<(u8, OutlineEntry)> = document
-        .blocks
+        .blocks()
         .iter()
         .enumerate()
         .filter_map(|(index, block)| {

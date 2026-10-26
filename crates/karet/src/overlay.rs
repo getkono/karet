@@ -346,6 +346,10 @@ impl RebaseTodoForm {
 /// The quick-open picker's title, which is also how it is told apart.
 const QUICK_OPEN_TITLE: &str = "Go to File";
 
+/// The Seam start-point picker's title, which is also how its rows are recognised when
+/// discovery fills them in.
+const SEAM_ROOTS_TITLE: &str = "Open Seam View at";
+
 impl Overlay {
     /// Build a quick-open overlay over `(display, path)` pairs, in rank order.
     #[must_use]
@@ -405,7 +409,37 @@ impl Overlay {
             .into_iter()
             .map(|(label, root)| (label, OverlayEvent::AcceptSeamRoot(root)))
             .collect();
-        Self::Picker(Picker::new("Open Seam View at", items))
+        Self::Picker(Picker::new(SEAM_ROOTS_TITLE, items))
+    }
+
+    /// Replace a Seam start-point picker's rows with ones that arrived after it opened,
+    /// keeping the query and the highlighted start point where it is still offered. Any
+    /// other overlay is left alone.
+    pub fn set_seam_roots(&mut self, items: Vec<(String, PathBuf)>) {
+        let Self::Picker(picker) = self else {
+            return;
+        };
+        if picker.title() != SEAM_ROOTS_TITLE {
+            return;
+        }
+        let highlighted = match picker.accepted() {
+            Some(OverlayEvent::AcceptSeamRoot(root)) => Some(root.clone()),
+            _ => None,
+        };
+        picker.set_items(
+            items
+                .into_iter()
+                .map(|(label, root)| (label, OverlayEvent::AcceptSeamRoot(root)))
+                .collect(),
+        );
+        let row = highlighted.and_then(|highlighted| {
+            picker.values().iter().position(
+                |event| matches!(event, OverlayEvent::AcceptSeamRoot(root) if *root == highlighted),
+            )
+        });
+        for _ in 0..row.unwrap_or_default() {
+            picker.select_down();
+        }
     }
 
     /// Build the picker offered when navigation (definitions, references, …)
