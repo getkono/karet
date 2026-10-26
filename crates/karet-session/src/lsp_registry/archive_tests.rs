@@ -316,6 +316,46 @@ fn a_tarred_bundle_keeps_its_executable_bit() -> TestResult {
     Ok(())
 }
 
+/// A hard link shares its target's inode, so the link entry's own header mode
+/// must not be applied: it would rewrite the mode of the file it links to.
+#[cfg(unix)]
+#[test]
+fn a_tarred_hard_link_leaves_its_targets_mode_alone() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let mut builder = tar::Builder::new(Vec::new());
+    let mut file = tar::Header::new_gnu();
+    file.set_size(6);
+    file.set_mode(0o755);
+    file.set_cksum();
+    builder.append_data(&mut file, "bin/tool", &b"binary"[..])?;
+    let mut link = tar::Header::new_gnu();
+    link.set_size(0);
+    link.set_mode(0o600);
+    link.set_entry_type(tar::EntryType::Link);
+    builder.append_link(&mut link, "bin/alias", "bin/tool")?;
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    encoder.write_all(&builder.into_inner()?)?;
+    extract_archive(&encoder.finish()?, Archive::TarGzip, dir.path(), true)?;
+    assert!(dir.path().join("bin/alias").is_file());
+    assert_eq!(mode_of(&dir.path().join("bin/tool")), 0o755);
+    Ok(())
+}
+
+/// Extracting for a single executable (`all_files` off) still writes every
+/// regular file of a zip.
+#[test]
+fn a_zip_extracted_for_one_executable_still_writes_its_files() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    extract_archive(
+        &zip_with("bin/server", 0o755)?,
+        Archive::Zip,
+        dir.path(),
+        false,
+    )?;
+    assert!(dir.path().join("bin/server").is_file());
+    Ok(())
+}
+
 #[test]
 fn a_single_executable_is_extracted_and_made_runnable() -> TestResult {
     let dir = tempfile::tempdir()?;

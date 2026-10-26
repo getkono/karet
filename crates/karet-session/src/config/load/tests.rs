@@ -480,6 +480,25 @@ fn load_reads_the_project_layer_of_a_workspace() -> TestResult {
 }
 
 #[test]
+fn an_explicitly_empty_object_is_an_explicit_setting() -> TestResult {
+    let (_dir, path) = scratch("setting.jsonc", r#"{ "lsp": { "servers": {} } }"#)?;
+    let report = load_layer_reports([(ConfigLayer::Project, path)]);
+    assert_eq!(
+        report.explicit.get("lsp.servers"),
+        Some(&ConfigLayer::Project)
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn the_system_layer_is_a_karet_file_under_a_config_dir() {
+    // `$XDG_CONFIG_DIRS`' first entry, else `/etc/xdg`: either way the file
+    // name and its directory are karet's.
+    assert!(system_config_path().is_some_and(|path| path.ends_with("karet/setting.jsonc")));
+}
+
+#[test]
 fn layers_have_stable_labels() {
     assert_eq!(ConfigLayer::System.label(), "system");
     assert_eq!(ConfigLayer::User.label(), "user");

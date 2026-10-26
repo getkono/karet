@@ -579,6 +579,30 @@ mod tests {
     }
 
     #[test]
+    fn a_full_parse_or_a_new_language_never_reuses_the_retained_tree() {
+        let Some(rust) = karet_treesitter::language_id_from_injection_name("rust") else {
+            return; // rust grammar not compiled in; nothing to test
+        };
+        let mut trees = HashMap::new();
+        assert!(compute_spans(&mut trees, rust, "fn a() { let x = 1; }\n", None).is_some());
+        // A full parse (no edits) of text the retained tree knows nothing about.
+        let rewritten = "/// Doc.\nconst S: &str = \"x\";\n";
+        assert_eq!(
+            compute_spans(&mut trees, rust, rewritten, None),
+            compute_spans(&mut HashMap::new(), rust, rewritten, None),
+        );
+        // Edits against a tree of another language cannot be applied to it.
+        let Some(python) = karet_treesitter::language_id_from_injection_name("python") else {
+            return; // python grammar not compiled in
+        };
+        let script = "def f():\n    return \"s\"  # note\n";
+        assert_eq!(
+            compute_spans(&mut trees, python, script, Some(Vec::new())),
+            compute_spans(&mut HashMap::new(), python, script, None),
+        );
+    }
+
+    #[test]
     fn two_merged_edits_publish_what_a_cold_highlight_would() {
         let Some(rust) = karet_treesitter::language_id_from_injection_name("rust") else {
             return; // rust grammar not compiled in; nothing to test
@@ -811,8 +835,19 @@ mod tests {
         let huge = TextBuffer::from_text(&format!("a\n  b\n{}", " ".repeat(INDENT_FOLD_MAX_BYTES)));
         let settings = crate::config::Settings::default();
         assert!(indent_folds(&settings, None, &huge).regions().is_empty());
-        // The bound is 4 MiB: a 2 MiB document still folds.
+        // The bound is 4 MiB inclusive: a 2 MiB document, and one of exactly
+        // the bound, still fold.
         let large = TextBuffer::from_text(&format!("a\n  b\n{}", " ".repeat(2 * 1024 * 1024)));
         assert!(!indent_folds(&settings, None, &large).regions().is_empty());
+        let at_bound = TextBuffer::from_text(&format!(
+            "a\n  b\n{}",
+            " ".repeat(INDENT_FOLD_MAX_BYTES - "a\n  b\n".len())
+        ));
+        assert_eq!(at_bound.len_bytes(), INDENT_FOLD_MAX_BYTES);
+        assert!(
+            !indent_folds(&settings, None, &at_bound)
+                .regions()
+                .is_empty()
+        );
     }
 }
