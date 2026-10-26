@@ -84,7 +84,7 @@ impl App {
     /// `editor.inlineCompletion` on for its language.
     fn inline_target(&self) -> Option<(InlineKey, String)> {
         if !self.editor_owns_keyboard()
-            || self.completion.is_some()
+            || self.completion.popup.is_some()
             || !matches!(self.vi_editing(), Editing::Modeless | Editing::Insert)
         {
             return None;

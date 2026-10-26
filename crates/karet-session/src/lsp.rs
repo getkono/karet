@@ -633,8 +633,11 @@ impl LspManager {
     fn inline_companion(&self) -> Option<LanguageServerId> {
         let copilot = LanguageServerId::new(catalog::COPILOT);
         let opted_in = self.settings.servers.contains_key(copilot.key())
-            || crate::lsp_registry::installed_version(self.registry_root.as_deref(), &copilot)
-                .is_some();
+            || crate::lsp_registry::store::installed_version(
+                self.registry_root.as_deref(),
+                &copilot,
+            )
+            .is_some();
         opted_in.then_some(copilot)
     }
 
