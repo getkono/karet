@@ -7,7 +7,8 @@
 //! lists the staged and working-tree changes (each opens as a diff tab).
 //!
 //! Editing, language intelligence, and source control route through the headless
-//! `karet-session` backend; the remaining direct engine call (diff rendering) is
+//! `karet-session` backend; the remaining direct engine calls (diff rendering via
+//! `karet-diff`, and in-file find, occurrences and replace via `karet-search`) are
 //! being migrated behind the same seam.
 
 mod app;

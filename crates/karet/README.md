@@ -59,7 +59,7 @@ top; the find bar is a one-line strip above the main area.
 
 ### File-type dispatch (the code window)
 
-Opening a file classifies it (`karet-fileview::classify`) and picks a renderer —
+Opening a file classifies it (`karet-fileview::viewer::classify`) and picks a renderer —
 everything unsupported fails gracefully. Text and code open in the editable
 `karet-editor` with tree-sitter highlights; the other kinds and their renderers are
 listed in [docs/file-formats.md](../../docs/file-formats.md#non-text-renderers).
@@ -261,7 +261,8 @@ a few files, so there is one place to read or change each behavior:
 ## Architecture notes
 
 - Editing, language intelligence, and source control route through the headless
-  `karet-session` backend; the remaining direct engine call (diff rendering) is
+  `karet-session` backend; the remaining direct engine calls (diff rendering via
+  `karet-diff`, and in-file find, occurrences and replace via `karet-search`) are
   being migrated behind the same seam.
 - `render.rs` presents a backend-prepared diff: the session diffs and highlights
   off the UI thread, and the app only paints the result.
