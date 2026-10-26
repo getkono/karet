@@ -72,7 +72,6 @@ mod todo_scan;
 mod toml_format;
 #[cfg(feature = "toml-lsp")]
 mod toml_lsp;
-pub mod ts_errors;
 mod vcs_worker;
 #[cfg(feature = "viz")]
 mod viz;
