@@ -61,7 +61,6 @@ use github::GithubJob;
 use karet_core::BytePos;
 use karet_core::Change;
 use karet_core::CursorState;
-use karet_core::Decoration;
 use karet_core::LineCol;
 use karet_core::NotificationKind;
 use karet_core::Range;
@@ -256,7 +255,6 @@ struct Document {
     /// The semantic-token owner's last overlay, translated across edits like
     /// [`highlights`](Self::highlights) (see [`semantic_tokens`]).
     semantic_tokens: Option<semantic_tokens::SemanticLayer>,
-    decorations: Vec<Decoration>,
     /// Open reference count (a path opened in N views shares one document).
     refs: u32,
     /// When the buffer first became dirty (session-clock ms), or `None` when clean.
