@@ -322,63 +322,203 @@ async fn an_edit_re_pulls_only_its_own_document_without_inter_file_dependencies(
     Ok(())
 }
 
-/// `workspace/diagnostic/refresh` wakes the pulls and forgets what was asked,
-/// so every open document is pulled again at the version it already had.
-/// Falsified by not waking on the refresh, or by waking without forgetting
+/// A client connected to a double serving `behavior`, and the stream of what
+/// the double observed.
+async fn connected(
+    behavior: Behavior,
+) -> Result<
+    (Arc<karet_lsp::LspClient>, mpsc::UnboundedReceiver<Value>),
+    Box<dyn std::error::Error + Send + Sync>,
+> {
+    let (observed_tx, observed) = mpsc::unbounded_channel();
+    let connector = test_connector(behavior, Some(observed_tx), Arc::new(AtomicUsize::new(0)));
+    let spec = LspSpec::new("double", Vec::new(), vec!["rust".into()]);
+    Ok((
+        Arc::new(connector(spec, PathBuf::from("/tmp")).await?),
+        observed,
+    ))
+}
+
+/// Open `name` under `/tmp` on `client` at version 1, and record it in
+/// `documents` as the server task would. Returns its path.
+async fn open_at_one(
+    client: &karet_lsp::LspClient,
+    documents: &mut HashMap<PathBuf, super::super::commands::OpenDocument>,
+    name: &str,
+) -> Result<PathBuf, Box<dyn std::error::Error + Send + Sync>> {
+    let path = crate::lsp::absolute_path(&Path::new("/tmp").join(name));
+    client.did_open(&path, "rust", 1, "fn main() {}\n").await?;
+    documents.insert(
+        path.clone(),
+        super::super::commands::OpenDocument {
+            language: "rust".into(),
+            version: 1,
+            text: "fn main() {}\n".into(),
+            lines_agree: true,
+            resync: false,
+        },
+    );
+    Ok(path)
+}
+
+/// Wait until the double has been asked to pull every file in `names`.
+async fn pulled_all(observed: &mut mpsc::UnboundedReceiver<Value>, names: &[&str]) -> Option<()> {
+    let mut unpulled = names.to_vec();
+    while !unpulled.is_empty() {
+        let message = tokio::time::timeout(Duration::from_secs(5), observed.recv())
+            .await
+            .ok()
+            .flatten()?;
+        if let Some(pulled) = pulled_uri(&message) {
+            unpulled.retain(|name| *name != pulled);
+        }
+    }
+    Some(())
+}
+
+/// `workspace/diagnostic/refresh` wakes the pulls and marks what was asked
+/// stale, so every open document is pulled again at the version it already
+/// had. Falsified by not waking on the refresh, or by waking without marking
 /// (nothing would be pulled: no version moved).
 #[tokio::test]
 async fn a_diagnostic_refresh_re_pulls_every_open_document() -> TestResult {
-    use super::super::commands::OpenDocument;
     use super::super::pull::Pulls;
 
-    let (observed_tx, mut observed) = mpsc::unbounded_channel();
-    let connector = test_connector(
-        Behavior::RefreshesPulls,
-        Some(observed_tx),
-        Arc::new(AtomicUsize::new(0)),
-    );
-    let spec = LspSpec::new("double", Vec::new(), vec!["rust".into()]);
-    let client = Arc::new(connector(spec, PathBuf::from("/tmp")).await?);
+    let (client, mut observed) = connected(Behavior::RefreshesPulls).await?;
     let mut documents = HashMap::new();
-    for name in ["one.rs", "two.rs"] {
-        let path = crate::lsp::absolute_path(&Path::new("/tmp").join(name));
-        client.did_open(&path, "rust", 1, "fn main() {}\n").await?;
-        documents.insert(
-            path,
-            OpenDocument {
-                language: "rust".into(),
-                version: 1,
-                text: "fn main() {}\n".into(),
-                lines_agree: true,
-                resync: false,
-            },
-        );
-    }
+    let one = open_at_one(&client, &mut documents, "one.rs").await?;
+    open_at_one(&client, &mut documents, "two.rs").await?;
     let (updates_tx, _updates) = mpsc::unbounded_channel();
     let key = SlotKey::new(crate::api::LanguageServerId::new("rust"), "/tmp");
     let slot = (&updates_tx, &key, SlotToken::default());
     let mut pulls = Pulls::default();
-    let pulls_seen = async |observed: &mut mpsc::UnboundedReceiver<Value>| {
-        let mut count = 0;
-        while count < 2 {
-            let message = tokio::time::timeout(Duration::from_secs(5), observed.recv())
-                .await
-                .ok()
-                .flatten()?;
-            count += usize::from(pulled_uri(&message).is_some());
-        }
-        Some(count)
-    };
     pulls.launch_ready(&client, &documents, None, slot);
-    pulls_seen(&mut observed).await.ok_or("never pulled")?;
+    pulled_all(&mut observed, &["one.rs", "two.rs"])
+        .await
+        .ok_or("never pulled")?;
 
-    let saved = documents.keys().next().cloned().ok_or("no document")?;
-    client.did_save(&saved, None).await?;
+    client.did_save(&one, None).await?;
     tokio::time::timeout(Duration::from_secs(5), pulls.woken()).await?;
     pulls.launch_ready(&client, &documents, None, slot);
-    pulls_seen(&mut observed)
+    pulled_all(&mut observed, &["one.rs", "two.rs"])
         .await
         .ok_or("the refresh pulled nothing again")?;
+    pulls.shutdown().await;
+    Ok(())
+}
+
+/// A refresh that lands while an edit to an `interFileDependencies` document
+/// is still buffered does not lose that edit: once it is flushed, every
+/// other open document is pulled again, since its diagnostics were computed
+/// against the text before the edit. Falsified by a refresh forgetting the
+/// versions asked, which makes the flushed edit read as a first open.
+#[tokio::test]
+async fn an_edit_buffered_across_a_refresh_still_re_pulls_its_dependents() -> TestResult {
+    use super::super::pull::Pulls;
+
+    let (client, mut observed) = connected(Behavior::RefreshesPulls).await?;
+    let mut documents = HashMap::new();
+    let one = open_at_one(&client, &mut documents, "one.rs").await?;
+    let two = open_at_one(&client, &mut documents, "two.rs").await?;
+    let (updates_tx, _updates) = mpsc::unbounded_channel();
+    let key = SlotKey::new(crate::api::LanguageServerId::new("rust"), "/tmp");
+    let slot = (&updates_tx, &key, SlotToken::default());
+    let mut pulls = Pulls::default();
+    pulls.launch_ready(&client, &documents, None, slot);
+    pulled_all(&mut observed, &["one.rs", "two.rs"])
+        .await
+        .ok_or("never pulled")?;
+
+    // `one.rs` is edited, but the edit is still buffered when the refresh
+    // arrives: only `two.rs` can be pulled then.
+    if let Some(document) = documents.get_mut(&one) {
+        document.version = 2;
+    }
+    client.did_save(&two, None).await?;
+    tokio::time::timeout(Duration::from_secs(5), pulls.woken()).await?;
+    pulls.launch_ready(&client, &documents, Some(&one), slot);
+    pulled_all(&mut observed, &["two.rs"])
+        .await
+        .ok_or("the refresh did not re-pull the document it could")?;
+
+    client
+        .did_change(&one, 2, "// edited\nfn main() {}\n")
+        .await?;
+    pulls.launch_ready(&client, &documents, None, slot);
+    pulled_all(&mut observed, &["one.rs", "two.rs"])
+        .await
+        .ok_or("the flushed edit did not re-pull its dependents")?;
+    pulls.shutdown().await;
+    Ok(())
+}
+
+/// Opening a document on an `interFileDependencies` server pulls only that
+/// document: an open changes no other file's text (Decision 4). Falsified by
+/// treating a document never pulled as edited, which would pull `one.rs`
+/// again.
+///
+/// On tokio's virtual clock, for the reason
+/// `a_server_without_pull_diagnostics_is_not_asked` gives.
+#[tokio::test(start_paused = true)]
+async fn a_first_open_does_not_re_pull_the_other_documents() -> TestResult {
+    use super::super::pull::Pulls;
+
+    let (client, mut observed) = connected(Behavior::PullsAcrossFiles).await?;
+    let mut documents = HashMap::new();
+    open_at_one(&client, &mut documents, "one.rs").await?;
+    let (updates_tx, _updates) = mpsc::unbounded_channel();
+    let key = SlotKey::new(crate::api::LanguageServerId::new("rust"), "/tmp");
+    let slot = (&updates_tx, &key, SlotToken::default());
+    let mut pulls = Pulls::default();
+    pulls.launch_ready(&client, &documents, None, slot);
+    pulled_all(&mut observed, &["one.rs"])
+        .await
+        .ok_or("never pulled")?;
+
+    open_at_one(&client, &mut documents, "two.rs").await?;
+    pulls.launch_ready(&client, &documents, None, slot);
+    let mut pulled = Vec::new();
+    while let Ok(Some(message)) =
+        tokio::time::timeout(Duration::from_millis(500), observed.recv()).await
+    {
+        pulled.extend(pulled_uri(&message));
+    }
+    assert_eq!(pulled, vec!["two.rs".to_owned()]);
+    pulls.shutdown().await;
+    Ok(())
+}
+
+/// A refresh of something other than diagnostics (here inlay hints) does not
+/// wake the pulls. Falsified by waking on every refresh, which would re-run
+/// `launch_ready` for nothing. The refresh is seen arriving on a receiver of
+/// the test's own, so the silence is not a refresh that never came.
+///
+/// On tokio's virtual clock, for the reason
+/// `a_server_without_pull_diagnostics_is_not_asked` gives.
+#[tokio::test(start_paused = true)]
+async fn a_refresh_of_another_feature_does_not_wake_the_pulls() -> TestResult {
+    use super::super::pull::Pulls;
+
+    let (client, _observed) = connected(Behavior::RefreshesHints).await?;
+    let documents = HashMap::new();
+    let (updates_tx, _updates) = mpsc::unbounded_channel();
+    let key = SlotKey::new(crate::api::LanguageServerId::new("rust"), "/tmp");
+    let slot = (&updates_tx, &key, SlotToken::default());
+    let mut pulls = Pulls::default();
+    // Subscribes the pulls to the connection's refreshes.
+    pulls.launch_ready(&client, &documents, None, slot);
+    let mut seen = client.refreshes();
+
+    // The double asks for an inlay-hint refresh on every open.
+    client
+        .did_open(Path::new("/tmp/hinted.rs"), "rust", 1, "fn main() {}\n")
+        .await?;
+    let woke = tokio::time::timeout(Duration::from_millis(500), pulls.woken()).await;
+    assert!(woke.is_err(), "an inlay-hint refresh woke the pulls");
+    assert!(
+        matches!(seen.try_recv(), Ok(karet_lsp::ServerRefresh::InlayHints)),
+        "the double's refresh never arrived"
+    );
     pulls.shutdown().await;
     Ok(())
 }

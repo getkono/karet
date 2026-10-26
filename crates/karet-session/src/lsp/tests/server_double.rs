@@ -119,8 +119,9 @@ pub(super) enum Behavior {
     RegistersPulls,
     /// Pull like [`Behavior::Pulls`], with `interFileDependencies` declared.
     PullsAcrossFiles,
-    /// Pull like [`Behavior::Pulls`], and ask the client to pull everything
-    /// again (`workspace/diagnostic/refresh`) whenever a document is saved.
+    /// Pull like [`Behavior::PullsAcrossFiles`], and ask the client to pull
+    /// everything again (`workspace/diagnostic/refresh`) whenever a document
+    /// is saved.
     RefreshesPulls,
     /// Serve normally, and offer semantic tokens with deltas: a whole answer
     /// classifies UTF-16 columns 2..4 of line 0 as a `macro`, and a delta
@@ -193,14 +194,14 @@ fn advertised_capabilities(behavior: Behavior) -> Value {
     if matches!(behavior, Behavior::Incremental) {
         capabilities["textDocumentSync"] = json!({"openClose": true, "change": 2});
     }
-    if matches!(
-        behavior,
-        Behavior::Pulls | Behavior::PushesAndPulls | Behavior::RefreshesPulls
-    ) {
+    if matches!(behavior, Behavior::Pulls | Behavior::PushesAndPulls) {
         capabilities["diagnosticProvider"] =
             json!({"interFileDependencies": false, "workspaceDiagnostics": false});
     }
-    if matches!(behavior, Behavior::PullsAcrossFiles) {
+    if matches!(
+        behavior,
+        Behavior::PullsAcrossFiles | Behavior::RefreshesPulls
+    ) {
         capabilities["diagnosticProvider"] =
             json!({"interFileDependencies": true, "workspaceDiagnostics": false});
     }
