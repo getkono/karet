@@ -307,6 +307,30 @@ fn kitty_split(escapes: &str) -> (Vec<String>, Vec<u8>) {
     (keys, bytes)
 }
 
+#[cfg(feature = "raster")]
+#[test]
+fn a_multi_chunk_kitty_escape_continues_with_bare_m_keys() {
+    let image = noisy(64, 48);
+    for (escapes, first) in [
+        (image.kitty_escape(8, 4), "a=T,f=32,s=64,v=48,c=8,r=4,m=1"),
+        (
+            image.kitty_escape_with_id(5, 8, 4),
+            "a=T,i=5,f=32,s=64,v=48,c=8,r=4,q=2,m=1",
+        ),
+    ] {
+        let (keys, rgba) = kitty_split(&escapes);
+        assert!(
+            keys.len() > 2,
+            "a payload past two chunks has middle chunks"
+        );
+        assert_eq!(keys.first().map(String::as_str), Some(first));
+        // Continuation chunks carry `m` alone, exactly as before `kitty_chunks`.
+        assert!(keys[1..keys.len() - 1].iter().all(|k| k == "m=1"));
+        assert_eq!(keys.last().map(String::as_str), Some("m=0"));
+        assert_eq!(rgba, image.rgba());
+    }
+}
+
 /// A `width`×`height` image of xorshift noise, which zlib cannot shrink much, so
 /// its compressed transmission still spans several chunks.
 #[cfg(feature = "raster")]
