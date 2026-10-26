@@ -6,6 +6,51 @@ const SAVE_CANCELLED_CLOSED: &str = "save cancelled: document closed";
 /// Answer to a save abandoned by a [`Command::Cancel`] naming it.
 const SAVE_CANCELLED_REQUESTED: &str = "save cancelled";
 
+/// Every language identity a document carries, resolved together so the
+/// highlighter, the display name, per-language settings, and the language server
+/// never disagree about what the document is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct DocumentLanguage {
+    /// The tree-sitter grammar that parses the document, when one is compiled in.
+    pub(super) lang_id: Option<LanguageId>,
+    /// The display name (e.g. `"Rust"`).
+    pub(super) name: Option<&'static str>,
+    /// The per-language configuration and server-routing selector.
+    pub(super) selector: Option<&'static str>,
+    /// The protocol `languageId` announced to the language server.
+    pub(super) lsp_id: Option<&'static str>,
+}
+
+impl DocumentLanguage {
+    /// The language `path` is detected as.
+    pub(super) fn for_path(path: &Path) -> Self {
+        Self {
+            lang_id: language_id_from_path(path),
+            name: language_name_for_path(path),
+            selector: language_selector_for_path(path),
+            lsp_id: lsp_language_id_for_path(path),
+        }
+    }
+
+    /// The language an explicit `id` names (an LSP language id such as
+    /// `"typescriptreact"`, a configuration selector such as `"c++"`, or a display
+    /// name such as `"Rust"`), falling back to detection from `path` when `id` is
+    /// `None` or names no known language.
+    pub(super) fn resolve(path: &Path, id: Option<&str>) -> Self {
+        let Some(file_type) = id.and_then(karet_filetype::file_type_for_language) else {
+            return Self::for_path(path);
+        };
+        Self {
+            lang_id: file_type
+                .grammar()
+                .and_then(karet_treesitter::language_id_from_injection_name),
+            name: Some(file_type.name()),
+            selector: file_type.config_selector(),
+            lsp_id: file_type.lsp_language_id(),
+        }
+    }
+}
+
 impl Document {
     /// Reconcile the backup bookkeeping with the buffer's dirty state after an edit:
     /// arm `dirty_since` on the clean→dirty transition, and disarm (dropping any
@@ -105,12 +150,14 @@ impl Session {
                 return;
             },
         };
-        let lang_id = language_id_from_path(&path);
-        let language = language
-            .and_then(name_for_language)
-            .or_else(|| language_name_for_path(&path));
-        let language_selector = language_selector_for_path(&path);
-        let lsp_language_id = lsp_language_id_for_path(&path);
+        // An explicit id the registry knows overrides detection; anything else,
+        // including an id it does not know, falls back to the path.
+        let DocumentLanguage {
+            lang_id,
+            name: language,
+            selector: language_selector,
+            lsp_id: lsp_language_id,
+        } = DocumentLanguage::resolve(&path, language);
         let (document_settings, editorconfig_error) =
             resolve_document_settings(&path, language_selector, &self.config.settings);
         apply_serialization_settings(&mut buffer, document_settings);
@@ -732,11 +779,13 @@ impl Session {
         let old_language = doc.language_selector;
         self.store.by_path.remove(&old);
         doc.path = path.clone();
-        doc.lang_id = language_id_from_path(&path);
-        doc.language = language_name_for_path(&path);
-        doc.language_selector = language_selector_for_path(&path);
         let old_lsp_language = doc.lsp_language_id;
-        doc.lsp_language_id = lsp_language_id_for_path(&path);
+        // The new path decides the language, as it would on a fresh open.
+        let detected = DocumentLanguage::for_path(&path);
+        doc.lang_id = detected.lang_id;
+        doc.language = detected.name;
+        doc.language_selector = detected.selector;
+        doc.lsp_language_id = detected.lsp_id;
         // A new language is served by another server, or none: the old one's
         // overlay does not describe it, and the version did not move, so
         // `update_syntax` would keep it.

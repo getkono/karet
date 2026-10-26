@@ -347,6 +347,16 @@ pub enum Command {
         /// The file path to open.
         path: PathBuf,
         /// An explicit language id, or `None` to detect from the path.
+        ///
+        /// Matched against the file-type registry
+        /// ([`karet_filetype::file_type_for_language`]): an LSP language id
+        /// (`"typescriptreact"`), a configuration selector (`"c++"`), or a display
+        /// name (`"Rust"`). A known id sets the document's grammar, display name,
+        /// settings selector, and language-server id together; an unknown id is
+        /// ignored and the language is detected from the path. It applies when the
+        /// document is first opened: opening an already-open path reuses that
+        /// document as it is, and [`Command::RetargetDocument`] re-detects from the
+        /// new path.
         language: Option<String>,
     },
     /// Close a document.
