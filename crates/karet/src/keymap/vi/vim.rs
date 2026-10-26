@@ -232,7 +232,14 @@ impl Engine {
                 } else {
                     1
                 };
-                let planned = ops::shift(doc, first, last, snap.indent, count, op == Op::Outdent);
+                let planned = ops::shift(
+                    doc,
+                    (first, last),
+                    snap.indent,
+                    snap.indent_width(),
+                    count,
+                    op == Op::Outdent,
+                );
                 if planned.edits.is_empty() {
                     self.sel = Sel::at(planned.cursor);
                     return Done::Motion;
@@ -247,7 +254,19 @@ impl Engine {
                 };
                 let at = match span {
                     Span::Chars(range) => range.start,
-                    Span::Lines(first, last) if (first..=last).contains(&cursor.line) => cursor,
+                    Span::Lines(first, last) if (first..=last).contains(&cursor.line) => {
+                        // The cursor's column once the text before it is
+                        // re-cased, which can change its length.
+                        let line_start = LineCol::new(cursor.line, 0);
+                        let before = Range {
+                            start: line_start,
+                            end: cursor,
+                        };
+                        let col = ops::case(doc, before, case).map_or(cursor.col, |edit| {
+                            u32::try_from(edit.new_text.chars().count()).unwrap_or(cursor.col)
+                        });
+                        LineCol::new(cursor.line, col)
+                    },
                     Span::Lines(first, _) => LineCol::new(first, 0),
                 };
                 let Some(edit) = ops::case(doc, range, case) else {
@@ -353,10 +372,15 @@ impl Engine {
                 let next = doc.clamp_char(end);
                 match ops::case(doc, Range { start: at, end }, Case::Toggle) {
                     Some(edit) => {
+                        // After the rewritten text, which can be longer than
+                        // what it replaced (`ß` → `SS`).
+                        let written = u32::try_from(edit.new_text.chars().count()).unwrap_or(0);
+                        let len = doc.len(at.line) - (end.col - at.col) + written;
+                        let col = (at.col + written).min(len.saturating_sub(1));
                         self.apply(
                             ops::Planned {
                                 edits: vec![edit],
-                                cursor: next,
+                                cursor: LineCol::new(at.line, col),
                             },
                             EditCause::Replace,
                             fx,

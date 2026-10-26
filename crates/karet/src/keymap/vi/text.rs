@@ -1,7 +1,8 @@
 //! A read-only, character-addressed view of a [`TextBuffer`] for the modal
 //! grammars: positions are `(line, char column)` and every line but the last
 //! ends in a virtual `'\n'` at column `len`, so a motion can walk the whole
-//! document one character at a time.
+//! document one character at a time. A file's final line break ends its last
+//! line, as in vim: the empty "line" after it is not one the grammars visit.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -41,21 +42,29 @@ pub(super) fn class(c: char, big: bool) -> Class {
 /// motion asks for the same line many times in a row.
 pub(super) struct Doc<'a> {
     buffer: &'a TextBuffer,
+    last_line: u32,
     cache: RefCell<Option<(u32, Rc<[char]>)>>,
 }
 
 impl<'a> Doc<'a> {
     /// A view of `buffer`.
     pub(super) fn new(buffer: &'a TextBuffer) -> Self {
+        let count = buffer.line_count();
+        // A trailing line break ends the last line rather than starting an
+        // empty one, so the rope's final, empty line is not counted.
+        let phantom = count > 1 && buffer.line(count - 1).is_some_and(|line| line.is_empty());
+        let last = count.saturating_sub(if phantom { 2 } else { 1 });
         Self {
             buffer,
+            last_line: u32::try_from(last).unwrap_or(u32::MAX),
             cache: RefCell::new(None),
         }
     }
 
-    /// The index of the last line (a buffer always has at least one).
+    /// The index of the last line (a buffer always has at least one). The
+    /// empty line after a final line break is not counted.
     pub(super) fn last_line(&self) -> u32 {
-        u32::try_from(self.buffer.line_count().saturating_sub(1)).unwrap_or(u32::MAX)
+        self.last_line
     }
 
     /// The characters of `line`, without its break; empty past the end.
@@ -110,10 +119,29 @@ impl<'a> Doc<'a> {
         }
     }
 
-    /// `p` clamped into the document, allowing the end-of-line column.
+    /// `p` clamped into the document, allowing the end-of-line column and,
+    /// past the last line, [`Self::end_of_doc`].
     pub(super) fn clamp(&self, p: LineCol) -> LineCol {
-        let line = p.line.min(self.last_line());
-        LineCol::new(line, p.col.min(self.len(line)))
+        if p.line > self.last_line() {
+            return self.end_of_doc();
+        }
+        LineCol::new(p.line, p.col.min(self.len(p.line)))
+    }
+
+    /// The position after the whole document: past the final line break
+    /// when the file ends in one, else the last line's end.
+    pub(super) fn end_of_doc(&self) -> LineCol {
+        let last = self.last_line();
+        if self.trailing_break() {
+            LineCol::new(last + 1, 0)
+        } else {
+            self.line_end(last)
+        }
+    }
+
+    /// Whether the document ends in a line break.
+    fn trailing_break(&self) -> bool {
+        (self.last_line as usize) + 1 < self.buffer.line_count()
     }
 
     /// `p` clamped onto a character, as Normal mode keeps the cursor: never

@@ -171,17 +171,22 @@ impl App {
                 // The completion popup is a light key layer over the editor:
                 // it consumes only its navigation/accept/dismiss keys and lets
                 // everything else (typing, movement) fall through.
+                // A key a popup takes means something else without it, so
+                // modal editing's `.` and macros do not replay it.
                 if self.completion_key(key) {
+                    self.vi_popup_took(key);
                     return;
                 }
                 // The signature popup under it takes only Esc, and Up/Down
                 // when there are overloads to cycle.
                 if self.signature_key(key) {
+                    self.vi_popup_took(key);
                     return;
                 }
                 // A snippet session under them takes Tab, Shift+Tab and Esc
                 // while the caret is in the snippet.
                 if self.snippet_key(key) {
+                    self.vi_popup_took(key);
                     return;
                 }
                 // A find bar left open behind the editor still closes on Esc

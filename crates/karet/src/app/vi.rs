@@ -21,6 +21,7 @@ use crate::keymap::vi::Mode;
 use crate::keymap::vi::Outcome;
 use crate::keymap::vi::Scroll;
 use crate::keymap::vi::Snapshot;
+use crate::keymap::vi::Typed;
 
 /// How deeply macros and `.` may replay into each other before the replay is
 /// abandoned (a macro that runs itself).
@@ -41,6 +42,9 @@ pub(crate) struct ViState {
     depth: u8,
     /// The find-bar query last handed to the grammar for `n`/`N`.
     find_query: String,
+    /// Set while a commit character accepts a completion: the character is
+    /// typed after the completion's text, though it was noted first.
+    pub(super) committing: bool,
 }
 
 /// The system clipboard as the `+`/`*` registers see it.
@@ -223,6 +227,10 @@ impl App {
         f: impl FnOnce(&mut Engine, &Snapshot, &mut crate::clipboard::Clipboard) -> R,
     ) -> Option<R> {
         let indent = self.active_indentation();
+        let tab_width = self
+            .tabs
+            .get(self.active)
+            .map_or(4, |tab| u32::from(self.tab_width_for(tab)));
         let (buffer, selection, selections, top, height) = match self.tabs.get(self.active) {
             Some(Tab {
                 kind: TabKind::Code { buffer, .. },
@@ -247,6 +255,7 @@ impl App {
             selection,
             selections,
             indent: &indent,
+            tab_width,
             top,
             height,
         };
@@ -364,7 +373,7 @@ impl App {
     }
 
     /// Replay keys through the whole input path (a macro, or `.`).
-    fn vi_replay(&mut self, keys: Vec<KeyEvent>, dot: bool) {
+    fn vi_replay(&mut self, keys: Vec<Typed>, dot: bool) {
         if self.vi.depth >= MAX_REPLAY_DEPTH {
             self.notify(
                 Report::Refusal,
@@ -377,12 +386,65 @@ impl App {
         if dot {
             self.vi.engine.set_replaying_dot(true);
         }
-        for key in keys {
-            self.handle_key(key);
+        for step in keys {
+            match step {
+                Typed::Key(key) => self.handle_key(key),
+                Typed::Text { back, ahead, text } => self.vi_type(back, ahead, &text),
+            }
         }
         if dot {
             self.vi.engine.set_replaying_dot(false);
         }
         self.vi.depth -= 1;
+    }
+
+    /// Replay text a completion inserted: replace `back` characters before
+    /// each caret and `ahead` after it with `text`. Noted as part of the
+    /// change it belongs to, as the completion was.
+    pub(super) fn vi_type(&mut self, back: u32, ahead: u32, text: &str) {
+        let Some(multi) = self.compose_edit(|caret, _, buffer, base| {
+            let len = buffer
+                .line(caret.line as usize)
+                .map_or(0, |line| line.chars().count());
+            let len = u32::try_from(len).unwrap_or(u32::MAX);
+            let range = karet_core::Range {
+                start: LineCol::new(caret.line, caret.col.saturating_sub(back)),
+                end: LineCol::new(caret.line, caret.col.saturating_add(ahead).min(len)),
+            };
+            Some(editing::Edit {
+                change: karet_core::Change::new(
+                    base,
+                    vec![karet_core::TextEdit {
+                        range,
+                        new_text: text.to_string(),
+                    }],
+                ),
+                caret: crate::completion::caret_after_insert(range.start, text),
+            })
+        }) else {
+            return;
+        };
+        self.submit_multi_edit(karet_core::EditCause::Replace, multi);
+        self.vi_note_text(back, ahead, text);
+    }
+
+    /// Note text a completion inserted, for `.` and the macro being recorded.
+    pub(super) fn vi_note_text(&mut self, back: u32, ahead: u32, text: &str) {
+        let typed = Typed::Text {
+            back,
+            ahead,
+            text: text.to_string(),
+        };
+        let recorded = self.vi.depth == 0;
+        self.vi
+            .engine
+            .observe_text(typed, self.vi.committing, recorded);
+    }
+
+    /// A popup (completion, signature help, a snippet) took `key`: it is not
+    /// part of what `.` or the macro being recorded replays.
+    pub(super) fn vi_popup_took(&mut self, key: KeyEvent) {
+        let recorded = self.vi.depth == 0;
+        self.vi.engine.forget(key, recorded);
     }
 }

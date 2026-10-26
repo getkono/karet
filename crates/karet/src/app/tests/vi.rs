@@ -79,6 +79,32 @@ fn macros_and_dot_replay_through_the_input_path() {
 }
 
 #[test]
+fn dot_replays_a_completion_as_its_text() {
+    let mut rig = rig(KeymapPreset::Vim, "|a\nb");
+    typed(&mut rig, "A.x");
+    // What accepting `xyz` for the typed `x` does to the change.
+    rig.app.vi_type(1, 0, "xyz");
+    assert_eq!(rig.marked(), "a.xyz|\nb");
+    rig.step(key(KeyCode::Esc));
+    typed(&mut rig, "j.");
+    assert_eq!(rig.marked(), "a.xyz\nb.xy|z");
+}
+
+#[test]
+fn a_key_a_popup_took_is_not_replayed() {
+    let mut rig = rig(KeymapPreset::Vim, "|a\nb");
+    typed(&mut rig, "A.");
+    rig.step(key(KeyCode::Enter));
+    // As though the completion popup had taken that Enter to accept.
+    rig.app
+        .vi_popup_took(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    rig.app.vi_type(0, 0, "x");
+    rig.step(key(KeyCode::Esc));
+    typed(&mut rig, "G.");
+    assert!(rig.marked().ends_with("b.|x"), "{}", rig.marked());
+}
+
+#[test]
 fn a_macro_that_runs_itself_stops() {
     let mut rig = rig(KeymapPreset::Vim, "|abcdefghijklmnopqrstuvwxyz");
     typed(&mut rig, "qwx@wq");
@@ -109,6 +135,31 @@ fn modified_chords_still_reach_the_global_layer() {
         rig.app.overlay.is_some(),
         "Ctrl+P opens quick open from Normal mode"
     );
+}
+
+#[test]
+fn a_chord_from_the_layers_below_takes_its_second_key_from_normal_mode() {
+    let mut rig = rig(KeymapPreset::Vim, "|abc");
+    let outline = rig.app.outline.visible;
+    // `Ctrl+K O` is the global layer's: its plain second key goes to the
+    // chord, not to the grammar (where `o` would open a line).
+    rig.step(Step::Key(KeyCode::Char('k'), CTRL));
+    typed(&mut rig, "o");
+    assert_eq!(
+        rig.app.outline.visible, !outline,
+        "Ctrl+K O toggled the outline"
+    );
+    assert_eq!(rig.marked(), "|abc");
+    assert_eq!(rig.app.vi.engine.mode(), Mode::Normal);
+    // A second key no chord names ends the chord without reaching the
+    // grammar either.
+    rig.step(Step::Key(KeyCode::Char('k'), CTRL));
+    typed(&mut rig, "x");
+    assert_eq!(rig.marked(), "|abc");
+    assert!(rig.app.pending.is_empty());
+    // The next key is the grammar's again.
+    typed(&mut rig, "x");
+    assert_eq!(rig.marked(), "|bc");
 }
 
 #[test]

@@ -11,6 +11,7 @@ use super::Effect;
 use super::Engine;
 use super::Key;
 use super::Mode;
+use super::Op;
 use super::Scroll;
 use super::Search;
 use super::Sel;
@@ -291,8 +292,9 @@ impl Engine {
                     forward,
                     word: true,
                 });
-                let from = if forward { at } else { start };
-                match motion::repeat_opt(doc, from, n, |d, p| {
+                // From the word's start, so the word under (or after) the
+                // caret is never its own match.
+                match motion::repeat_opt(doc, start, n, |d, p| {
                     motion::search(d, p, &word, forward, true)
                 }) {
                     Some(pos) => Target::new(pos, Kind::Exclusive),
@@ -337,6 +339,9 @@ impl Engine {
         match self.pending.op {
             Some(op) => match self.span_for(doc, self.sel.cursor, target) {
                 Some(span) => self.operate(op, span, doc, snap, clip, fx),
+                // Nothing to change (`C`, `s` or `cw` on an empty line): the
+                // change still enters Insert mode, so what follows types.
+                None if op == Op::Change => self.insert_at(self.sel.cursor.min(target.pos)),
                 None => Done::Motion,
             },
             None => {
@@ -358,7 +363,13 @@ impl Engine {
             fx.push(Effect::Scroll(Scroll::Lines(target.scroll)));
         }
         if matches!(self.mode, Mode::Visual | Mode::VisualLine) {
-            self.sel.cursor = pos;
+            // `$` in Visual mode (and a vertical move after it) takes in the
+            // line break, so `v$d` joins the next line on.
+            self.sel.cursor = if self.goal == Some(u32::MAX) {
+                doc.line_end(pos.line)
+            } else {
+                pos
+            };
         } else {
             self.sel = Sel::at(pos);
         }
@@ -383,7 +394,15 @@ impl Engine {
             Kind::Exclusive => {
                 let mut end = end;
                 if target.word && end.line > start.line {
-                    end = doc.line_end(start.line);
+                    // The last word moved over ended its line (the target is
+                    // the next line's first word): stop at that line's end.
+                    let before = doc.chars(end.line);
+                    let opens_line = before
+                        .get(..end.col as usize)
+                        .is_none_or(|lead| lead.iter().all(|c| c.is_whitespace()));
+                    if opens_line {
+                        end = doc.line_end(end.line - 1);
+                    }
                 } else if end.col == 0 && end.line > start.line && !target.word {
                     end = doc.line_end(end.line - 1);
                     if start.col <= doc.first_non_blank(start.line).col {

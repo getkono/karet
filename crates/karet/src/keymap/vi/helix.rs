@@ -5,6 +5,7 @@
 use karet_core::EditCause;
 use karet_core::LineCol;
 use karet_core::Range;
+use karet_core::Selection;
 use karet_core::TextEdit;
 use karet_editor::editing::map_position;
 
@@ -110,13 +111,11 @@ impl Engine {
                 Done::Motion
             },
             Key::Char('%') => {
-                let last = doc.last_line();
+                // Through the final line break, where the file has one.
+                let end = doc.end_of_doc();
                 self.sel = Sel {
                     anchor: LineCol::new(0, 0),
-                    cursor: doc
-                        .prev(doc.line_end(last))
-                        .filter(|_| doc.len(last) > 0)
-                        .unwrap_or(doc.line_end(last)),
+                    cursor: doc.prev(end).unwrap_or(end),
                 };
                 Done::Motion
             },
@@ -154,8 +153,15 @@ impl Engine {
             Key::Alt('`') => self.helix_case(doc, Case::Upper, fx),
             Key::Char(c @ ('>' | '<')) => {
                 let (first, last) = (self.sel.start().line, self.sel.end().line);
-                let planned = ops::shift(doc, first, last, snap.indent, n, c == '<');
-                self.helix_edit(planned.edits, EditCause::Replace, false, fx)
+                let planned = ops::shift(
+                    doc,
+                    (first, last),
+                    snap.indent,
+                    snap.indent_width(),
+                    n,
+                    c == '<',
+                );
+                self.helix_edit(doc, planned.edits, EditCause::Replace, false, fx)
             },
             Key::Char('J') => {
                 let (first, last) = (self.sel.start().line, self.sel.end().line);
@@ -333,7 +339,9 @@ impl Engine {
                 Some(c) => {
                     let range = self.helix_range(doc);
                     match ops::replace_chars(doc, range, c) {
-                        Some(edit) => self.helix_edit(vec![edit], EditCause::Replace, true, fx),
+                        Some(edit) => {
+                            self.helix_edit(doc, vec![edit], EditCause::Replace, true, fx)
+                        },
                         None => Done::Motion,
                     }
                 },
@@ -456,11 +464,18 @@ impl Engine {
         Done::Motion
     }
 
-    /// The selection as an exclusive range.
+    /// The selection as an exclusive range. Helix's selection can hold the
+    /// file's final line break, which ends the last line.
     fn helix_range(&self, doc: &Doc) -> Range {
+        let end = self.sel.end();
+        let last = doc.line_end(doc.last_line());
         Range {
             start: self.sel.start(),
-            end: doc.after(self.sel.end()),
+            end: if end == last {
+                doc.end_of_doc()
+            } else {
+                doc.after(end)
+            },
         }
     }
 
@@ -626,10 +641,48 @@ impl Engine {
 
     fn helix_case(&mut self, doc: &Doc, case: Case, fx: &mut Vec<Effect>) -> Done {
         let range = self.helix_range(doc);
-        match ops::case(doc, range, case) {
-            Some(edit) => self.helix_edit(vec![edit], EditCause::Replace, true, fx),
-            None => Done::Motion,
+        let Some(edit) = ops::case(doc, range, case) else {
+            return Done::Motion;
+        };
+        if edit.new_text.chars().count() == doc.text(range).chars().count() {
+            return self.helix_edit(doc, vec![edit], EditCause::Replace, true, fx);
         }
+        // A case change that alters the length (`ß` → `SS`): the selection
+        // covers the rewritten text, keeping its direction.
+        let start = range.start;
+        let last = last_of_insert(start, &edit.new_text);
+        let end = end_of_insert(start, &edit.new_text);
+        let forward = self.sel.cursor >= self.sel.anchor;
+        (self.sel, self.after_edit) = if forward {
+            (
+                Sel {
+                    anchor: start,
+                    cursor: last,
+                },
+                Some(Selection {
+                    anchor: start,
+                    head: last,
+                }),
+            )
+        } else {
+            (
+                Sel {
+                    anchor: last,
+                    cursor: start,
+                },
+                Some(Selection {
+                    anchor: end,
+                    head: start,
+                }),
+            )
+        };
+        fx.push(Effect::Edit {
+            edits: vec![edit],
+            cause: EditCause::Replace,
+            anchor: start,
+            head: start,
+        });
+        Done::Change
     }
 
     /// Push `edits`, carrying the selection through them. `in_place` edits
@@ -637,6 +690,7 @@ impl Engine {
     /// selection stays exactly where it is.
     fn helix_edit(
         &mut self,
+        doc: &Doc,
         edits: Vec<TextEdit>,
         cause: EditCause,
         in_place: bool,
@@ -647,6 +701,8 @@ impl Engine {
         }
         if in_place {
             let (anchor, head) = (self.sel.anchor, self.sel.cursor);
+            // Positions are unchanged, so the document the key saw shows it.
+            self.after_edit = Some(self.display(doc));
             fx.push(Effect::Edit {
                 edits,
                 cause,
@@ -665,10 +721,25 @@ impl Engine {
                 p
             }
         };
+        let old = self.sel;
         self.sel = Sel {
-            anchor: pin(anchor, self.sel.anchor),
-            cursor: pin(cursor, self.sel.cursor),
+            anchor: pin(anchor, old.anchor),
+            cursor: pin(cursor, old.cursor),
         };
+        // A backward selection shows from the character after its anchor,
+        // which is the next line's start when the anchor is a line break:
+        // found in the document the key saw, then carried through the edit.
+        self.after_edit = Some(if self.sel.cursor >= self.sel.anchor {
+            Selection {
+                anchor: self.sel.anchor,
+                head: self.sel.cursor,
+            }
+        } else {
+            Selection {
+                anchor: map(doc.after(old.anchor)),
+                head: self.sel.cursor,
+            }
+        });
         fx.push(Effect::Edit {
             edits,
             cause,
@@ -685,4 +756,30 @@ fn helix_register(text: String) -> Register {
         linewise: text.ends_with('\n'),
         text,
     }
+}
+
+/// The last character of `text` once inserted at `start` (its final line
+/// break, when it ends in one), or `start` for empty text.
+fn last_of_insert(start: LineCol, text: &str) -> LineCol {
+    let end = end_of_insert(start, text);
+    if end.col > 0 {
+        return LineCol::new(end.line, end.col - 1);
+    }
+    if end.line == start.line {
+        return start;
+    }
+    // `text` ends in a line break: the last character is that break, at the
+    // end of the line before `end`.
+    let segments: Vec<&str> = text.split('\n').collect();
+    let index = segments.len().saturating_sub(2);
+    let len = segments
+        .get(index)
+        .map_or(0, |segment| segment.chars().count());
+    let len = u32::try_from(len).unwrap_or(u32::MAX);
+    let col = if index == 0 {
+        start.col.saturating_add(len)
+    } else {
+        len
+    };
+    LineCol::new(end.line - 1, col)
 }

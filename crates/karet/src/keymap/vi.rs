@@ -90,10 +90,22 @@ pub(crate) struct Snapshot<'a> {
     pub(crate) selections: usize,
     /// One level of indentation (`>`/`<`).
     pub(crate) indent: &'a str,
+    /// How many columns a tab spans.
+    pub(crate) tab_width: u32,
     /// The first visible line.
     pub(crate) top: u32,
     /// How many lines the viewport shows.
     pub(crate) height: u32,
+}
+
+impl Snapshot<'_> {
+    /// How many columns one level of indentation spans.
+    fn indent_width(&self) -> u32 {
+        self.indent
+            .chars()
+            .map(|c| if c == '\t' { self.tab_width.max(1) } else { 1 })
+            .sum()
+    }
 }
 
 /// How to scroll the viewport.
@@ -137,10 +149,30 @@ pub(crate) enum Effect {
     Command(Command),
     /// Feed these keys back through the input path (a macro, or `.`).
     Replay {
-        /// The keys.
-        keys: Vec<KeyEvent>,
+        /// The keys, and the text completions inserted between them.
+        keys: Vec<Typed>,
         /// A `.` repeat, which must not record itself as the last change.
         dot: bool,
+    },
+}
+
+/// One step of a recorded macro or change: a key, or text a completion put
+/// in. A completion arrives asynchronously and is accepted by a key whose
+/// meaning depends on the popup being open (Enter, Tab), so the key alone
+/// cannot replay it; the text it inserted can.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Typed {
+    /// A key, fed back through the input path.
+    Key(KeyEvent),
+    /// Replace the `back` characters before the caret and the `ahead` after
+    /// it (on its line) with `text`, leaving the caret after it.
+    Text {
+        /// Characters before the caret the text replaces.
+        back: u32,
+        /// Characters after the caret the text replaces.
+        ahead: u32,
+        /// The text.
+        text: String,
     },
 }
 
@@ -322,20 +354,23 @@ pub(crate) struct Engine {
     mode: Mode,
     sel: Sel,
     displayed: Option<Selection>,
+    /// The editor selection an edit this key made leaves, in post-edit
+    /// coordinates, where the edit worked it out itself.
+    after_edit: Option<Selection>,
     goal: Option<u32>,
     pending: Pending,
     registers: Registers,
     last_find: Option<CharSearch>,
     search: Option<Search>,
-    macros: HashMap<char, Vec<KeyEvent>>,
-    recording: Option<(char, Vec<KeyEvent>)>,
+    macros: HashMap<char, Vec<Typed>>,
+    recording: Option<(char, Vec<Typed>)>,
     last_macro: Option<char>,
     /// The keys of the last change, for `.`.
-    dot: Option<Vec<KeyEvent>>,
+    dot: Option<Vec<Typed>>,
     /// The keys of the command being typed.
     keys: Vec<KeyEvent>,
     /// The keys of a change still in Insert mode.
-    change: Option<Vec<KeyEvent>>,
+    change: Option<Vec<Typed>>,
     /// Set while a `.` replays, so the replay does not become the last change.
     replaying_dot: bool,
 }
@@ -386,7 +421,7 @@ impl Engine {
     /// key the user types, before handling it.
     pub(crate) fn record(&mut self, key: KeyEvent) {
         if let Some((_, keys)) = self.recording.as_mut() {
-            keys.push(key);
+            keys.push(Typed::Key(key));
         }
     }
 
@@ -394,7 +429,46 @@ impl Engine {
     /// entered it.
     pub(crate) fn observe_insert(&mut self, key: KeyEvent) {
         if let Some(change) = self.change.as_mut() {
-            change.push(key);
+            change.push(Typed::Key(key));
+        }
+    }
+
+    /// Drop the last `key` from the change in Insert mode (and, with
+    /// `recorded`, from the macro being recorded): a popup took it (Enter
+    /// accepting a completion, Up choosing one), so replayed without the
+    /// popup it would mean something else.
+    pub(crate) fn forget(&mut self, key: KeyEvent, recorded: bool) {
+        let drop_last = |steps: &mut Vec<Typed>| {
+            if let Some(at) = steps.iter().rposition(|step| *step == Typed::Key(key)) {
+                steps.remove(at);
+            }
+        };
+        if let Some(change) = self.change.as_mut() {
+            drop_last(change);
+        }
+        if recorded && let Some((_, keys)) = self.recording.as_mut() {
+            drop_last(keys);
+        }
+    }
+
+    /// Note text a completion inserted in Insert mode, for the change (and,
+    /// with `recorded`, the macro being recorded). `before_last` puts it
+    /// ahead of the key just noted: the commit character that accepted the
+    /// completion is typed after its text.
+    pub(crate) fn observe_text(&mut self, text: Typed, before_last: bool, recorded: bool) {
+        let push = |steps: &mut Vec<Typed>| {
+            let at = if before_last {
+                steps.len().saturating_sub(1)
+            } else {
+                steps.len()
+            };
+            steps.insert(at, text.clone());
+        };
+        if let Some(change) = self.change.as_mut() {
+            push(change);
+        }
+        if recorded && let Some((_, keys)) = self.recording.as_mut() {
+            push(keys);
         }
     }
 
@@ -470,12 +544,13 @@ impl Engine {
             Done::Change => {
                 let keys = std::mem::take(&mut self.keys);
                 if !self.replaying_dot {
-                    self.dot = Some(keys);
+                    self.dot = Some(keys.into_iter().map(Typed::Key).collect());
                 }
                 Outcome::Handled
             },
             Done::Insert => {
-                self.change = Some(std::mem::take(&mut self.keys));
+                let keys = std::mem::take(&mut self.keys);
+                self.change = Some(keys.into_iter().map(Typed::Key).collect());
                 Outcome::Handled
             },
             Done::Motion => {
@@ -534,8 +609,12 @@ impl Engine {
         let edited = fx
             .iter()
             .any(|effect| matches!(effect, Effect::Edit { .. }));
+        let after_edit = self.after_edit.take();
         let display = if edited {
-            self.display_after_edit()
+            // An edit moves the cursor sideways: the next `j` steers from
+            // where it is, not from a column remembered before the edit.
+            self.goal = None;
+            after_edit.unwrap_or_else(|| self.display_after_edit())
         } else {
             self.display(doc)
         };
@@ -555,11 +634,11 @@ impl Engine {
                 anchor: display.anchor,
                 head: display.head,
             };
-            // A command (opening a line, say) acts from the selection, so the
-            // selection goes first.
+            // A command (opening a line, say) and a replay (`@q`, `.`) act
+            // from the selection, so the selection goes first.
             let at = fx
                 .iter()
-                .position(|effect| matches!(effect, Effect::Command(_)))
+                .position(|effect| matches!(effect, Effect::Command(_) | Effect::Replay { .. }))
                 .unwrap_or(fx.len());
             fx.insert(at, select);
         }
@@ -598,19 +677,14 @@ impl Engine {
     }
 
     /// [`Self::display`] for a selection in post-edit coordinates, where the
-    /// document the key saw no longer applies.
+    /// document the key saw no longer applies. An edit that leaves a backward
+    /// selection sets [`Engine::after_edit`] instead, since showing one needs
+    /// the position after its anchor in the edited document.
     fn display_after_edit(&self) -> Selection {
         let Sel { anchor, cursor } = self.sel;
-        if anchor == cursor || cursor >= anchor {
-            Selection {
-                anchor,
-                head: cursor,
-            }
-        } else {
-            Selection {
-                anchor: LineCol::new(anchor.line, anchor.col + 1),
-                head: cursor,
-            }
+        Selection {
+            anchor,
+            head: cursor,
         }
     }
 
@@ -633,7 +707,15 @@ impl Engine {
             keys.pop();
             self.macros.insert(name, keys);
         } else if let Some(name) = name {
-            self.recording = Some((name.to_ascii_lowercase(), Vec::new()));
+            // An uppercase register (`qA`) appends to the macro already in
+            // its lowercase one.
+            let lower = name.to_ascii_lowercase();
+            let keys = if name.is_ascii_uppercase() {
+                self.macros.get(&lower).cloned().unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            self.recording = Some((lower, keys));
         }
     }
 
@@ -649,7 +731,7 @@ impl Engine {
             return Done::Motion;
         };
         self.last_macro = Some(name);
-        let keys = keys.repeat(count.clamp(1, 1000) as usize);
+        let keys = repeated(keys, count);
         fx.push(Effect::Replay { keys, dot: false });
         Done::Motion
     }
@@ -658,7 +740,7 @@ impl Engine {
     fn repeat_change(&mut self, count: u32, fx: &mut Vec<Effect>) -> Done {
         if let Some(keys) = &self.dot {
             fx.push(Effect::Replay {
-                keys: keys.repeat(count.clamp(1, 1000) as usize),
+                keys: repeated(keys, count),
                 dot: true,
             });
         }
@@ -677,4 +759,15 @@ impl Engine {
             });
         }
     }
+}
+
+/// `steps` repeated `count` times (at least once, at most 1000).
+fn repeated(steps: &[Typed], count: u32) -> Vec<Typed> {
+    let times = count.clamp(1, 1000) as usize;
+    steps
+        .iter()
+        .cycle()
+        .take(steps.len().saturating_mul(times))
+        .cloned()
+        .collect()
 }

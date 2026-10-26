@@ -162,7 +162,8 @@ to the editor's and global bindings. So `Ctrl+P`, `Ctrl+S`, `Ctrl+B`, `Ctrl+F` a
 `Ctrl+K` chords work as usual, while a plain key nothing takes is ignored. The grammar
 claims only the `Ctrl` keys vim cannot do without: `Ctrl+D`/`Ctrl+U` (half page),
 `Ctrl+E`/`Ctrl+Y` (scroll), `Ctrl+A`/`Ctrl+X` (increment/decrement the number at the
-cursor); `Ctrl+R` is redo in vim.
+cursor: decimal, `0x` hexadecimal or `0b` binary, keeping its width); `Ctrl+R` is
+redo in vim.
 
 **vim** supports:
 
@@ -171,8 +172,8 @@ cursor); `Ctrl+R` is redo in vim.
   (with a count, that line), `f t F T` with `;` and `,`, `%` (and `N%`), `{ }`,
   `H M L`, `+ - Enter`, `n N * #`, `Ctrl+D Ctrl+U PageDown PageUp`.
 - **Operators** over a motion or text object, or doubled for whole lines: `d c y > <`
-  and `gu gU g~`. `cw` changes to the word's end; `dw` on a line's last word stops at
-  the line's end.
+  and `gu gU g~`. `cw` changes to the word's end; a `dw` (or `d3w`) whose last word
+  ends a line stops at the line's end.
 - **Text objects** after `i` (inner) or `a` (around): `w W p`, `" ' \``, `( ) b`,
   `[ ]`, `{ } B`, `< >`, and `t` (an XML/HTML element). An inner block whose braces
   sit on their own lines is the lines between them.
@@ -183,9 +184,11 @@ cursor); `Ctrl+R` is redo in vim.
   last yank), `1`–`9` (recent multi-line deletes), `-` (the last small delete), `_`
   (discards), and `+`/`*` (the system clipboard; text ending in a line break pastes
   as a line). Visual `p` swaps the selection with the register; `P` keeps it.
-- **Macros:** `q{a-z}` records every key until `q`, `@{a-z}` replays (with a count),
-  `@@` replays the last one. A macro that ends up running itself is stopped after 16
-  nested replays, with a notification.
+- **Macros:** `q{a-z}` records every key until `q` (`q{A-Z}` appends), `@{a-z}`
+  replays (with a count), `@@` replays the last one. A completion accepted while
+  recording (or within the change `.` repeats) replays as the text it inserted. A
+  macro that ends up running itself is stopped after 16 nested replays, with a
+  notification.
 - **Search:** `/` and `?` open the find bar; `Enter` jumps to the match and hands the
   keys back, so `n`/`N` step through the query (smart case: a lower-case query matches
   either case). `*`/`#` search for the word under the cursor.

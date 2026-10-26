@@ -137,16 +137,18 @@ pub(super) fn change(doc: &Doc, span: Span) -> Planned {
 }
 
 /// Indent (or, with `outdent`, dedent) lines `first..=last` by `count`
-/// levels of `unit`. Blank lines are left alone when indenting.
+/// levels of `unit`, which spans `width` columns: dedenting a level removes
+/// a leading tab, or up to that many leading spaces. Blank lines are left
+/// alone when indenting.
 pub(super) fn shift(
     doc: &Doc,
-    first: u32,
-    last: u32,
+    (first, last): (u32, u32),
     unit: &str,
+    width: u32,
     count: u32,
     outdent: bool,
 ) -> Planned {
-    let width = unit.chars().filter(|c| *c == ' ').count().max(1);
+    let width = (width as usize).max(1);
     let mut edits = Vec::new();
     let mut cursor_col = 0;
     for line in first..=last.min(doc.last_line()) {
@@ -238,6 +240,9 @@ pub(super) fn join(doc: &Doc, first: u32, last: u32, spaces: bool) -> Option<Pla
     let mut edits = Vec::new();
     let mut joined_len = doc.len(first);
     let mut cursor_col = 0;
+    // The last character of the text joined so far: an empty line joined on
+    // leaves it as it was, so `a`, ``, `b` joins to `a b`.
+    let mut tail = doc.chars(first).last().copied();
     for line in first..last {
         let next = line + 1;
         let next_chars = doc.chars(next);
@@ -247,13 +252,15 @@ pub(super) fn join(doc: &Doc, first: u32, last: u32, spaces: bool) -> Option<Pla
             0
         };
         let rest_empty = lead >= next_chars.len();
-        let current = doc.chars(line);
-        let ends_blank = current.last().is_none_or(|c| c.is_whitespace());
+        let ends_blank = tail.is_none_or(char::is_whitespace);
         let sep = if !spaces || rest_empty || ends_blank || next_chars.get(lead) == Some(&')') {
             ""
         } else {
             " "
         };
+        if let Some(c) = next_chars.last().filter(|_| !rest_empty) {
+            tail = Some(*c);
+        }
         edits.push(edit(
             Range {
                 start: doc.line_end(line),
@@ -356,29 +363,104 @@ pub(super) fn paste(doc: &Doc, cursor: LineCol, reg: &Register, put: Put, count:
     }
 }
 
+/// A number on a line, as `Ctrl+A` reads it.
+struct Number {
+    /// Its first character (the `-` of a negative decimal, the `0` of `0x`).
+    from: usize,
+    /// The first of its digits.
+    digits: usize,
+    /// One past its last digit.
+    end: usize,
+    /// 16 for `0x`, 2 for `0b`, else 10.
+    radix: u32,
+}
+
+/// The numbers on a line, in order: `0x`/`0X` hexadecimal and `0b`/`0B`
+/// binary (as vim's default `nrformats=bin,hex`), else decimal digit runs,
+/// a `-` before one making it negative.
+fn numbers(chars: &[char]) -> Vec<Number> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if !chars.get(i).is_some_and(char::is_ascii_digit) {
+            i += 1;
+            continue;
+        }
+        let prefixed = |radix: u32| {
+            let marker = chars.get(i + 1).map(char::to_ascii_lowercase);
+            let wanted = if radix == 16 { 'x' } else { 'b' };
+            chars.get(i) == Some(&'0')
+                && marker == Some(wanted)
+                && chars.get(i + 2).is_some_and(|c| c.is_digit(radix))
+        };
+        let radix = [16, 2].into_iter().find(|&radix| prefixed(radix));
+        let (digits, radix) = radix.map_or((i, 10), |radix| (i + 2, radix));
+        let mut end = digits;
+        while chars.get(end).is_some_and(|c| c.is_digit(radix)) {
+            end += 1;
+        }
+        let negative = radix == 10 && i > 0 && chars.get(i - 1) == Some(&'-');
+        out.push(Number {
+            from: if negative { i - 1 } else { i },
+            digits,
+            end,
+            radix,
+        });
+        i = end;
+    }
+    out
+}
+
+/// `number` plus `delta`, written as it was: the same base and prefix, at
+/// least the same width (in hexadecimal and binary, and in a decimal with
+/// leading zeros), and (hexadecimal) the case of its letters. Hexadecimal and binary wrap around as unsigned 64-bit values,
+/// as vim's do; a decimal that would overflow is left alone.
+fn add(chars: &[char], number: &Number, delta: i64) -> Option<String> {
+    let digits: String = chars.get(number.digits..number.end)?.iter().collect();
+    let width = digits.chars().count();
+    // Vim keeps the digit count of a hexadecimal or binary number, and of a
+    // decimal one written with leading zeros.
+    let keep_width = number.radix != 10 || digits.starts_with('0');
+    let padded = |text: String| {
+        if keep_width && text.len() < width {
+            format!("{}{text}", "0".repeat(width - text.len()))
+        } else {
+            text
+        }
+    };
+    if number.radix != 10 {
+        let value = u64::from_str_radix(&digits, number.radix).ok()?;
+        let next = value.wrapping_add_signed(delta);
+        let text = if number.radix == 2 {
+            format!("{next:b}")
+        } else if digits.chars().any(|c| c.is_ascii_uppercase()) {
+            format!("{next:X}")
+        } else {
+            format!("{next:x}")
+        };
+        let prefix: String = chars.get(number.from..number.digits)?.iter().collect();
+        return Some(format!("{prefix}{}", padded(text)));
+    }
+    let magnitude: i64 = digits.parse().ok()?;
+    let value = if number.from < number.digits {
+        -magnitude
+    } else {
+        magnitude
+    };
+    let next = value.checked_add(delta)?;
+    let sign = if next < 0 { "-" } else { "" };
+    Some(format!("{sign}{}", padded(next.unsigned_abs().to_string())))
+}
+
 /// Increment (or decrement) the number at or after `p` on its line by
 /// `delta` (`Ctrl+A`/`Ctrl+X`), leaving the cursor on its last digit.
 pub(super) fn increment(doc: &Doc, p: LineCol, delta: i64) -> Option<Planned> {
     let chars = doc.chars(p.line);
     let at = p.col as usize;
-    // The digit run under the cursor, or the first after it.
-    let mut start = (at..chars.len()).find(|&i| chars.get(i).is_some_and(char::is_ascii_digit))?;
-    if chars.get(at).is_some_and(char::is_ascii_digit) {
-        start = at;
-        while start > 0 && chars.get(start - 1).is_some_and(char::is_ascii_digit) {
-            start -= 1;
-        }
-    }
-    let mut end = start;
-    while chars.get(end).is_some_and(char::is_ascii_digit) {
-        end += 1;
-    }
-    let negative = start > 0 && chars.get(start - 1) == Some(&'-');
-    let from = if negative { start - 1 } else { start };
-    let digits: String = chars.get(start..end)?.iter().collect();
-    let value: i64 = digits.parse().ok()?;
-    let value = if negative { -value } else { value };
-    let next = value.checked_add(delta)?.to_string();
+    // The number under the cursor, or the first after it.
+    let number = numbers(&chars).into_iter().find(|n| n.end > at)?;
+    let next = add(&chars, &number, delta)?;
+    let (from, end) = (number.from, number.end);
     let range = Range {
         start: LineCol::new(p.line, col(from)),
         end: LineCol::new(p.line, col(end)),

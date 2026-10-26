@@ -3,6 +3,7 @@
 //! selection, `o`'s newline, Insert-mode typing, replays — so each case reads
 //! as keys in, text and cursor out.
 
+mod edges;
 mod helix;
 mod objects;
 mod registers;
@@ -27,6 +28,7 @@ use super::Mode;
 use super::Outcome;
 use super::Scroll;
 use super::Snapshot;
+use super::Typed;
 use crate::command::Command;
 
 /// A clipboard held in memory.
@@ -53,6 +55,8 @@ struct Ed {
     scrolls: Vec<Scroll>,
     commands: Vec<Command>,
     outcomes: Vec<Outcome>,
+    /// One level of indentation, as the language settings give it.
+    indent: &'static str,
 }
 
 /// The position of the first `|` in `marked`, and the text without it.
@@ -133,6 +137,7 @@ impl Ed {
             scrolls: Vec::new(),
             commands: Vec::new(),
             outcomes: Vec::new(),
+            indent: "    ",
         }
     }
 
@@ -163,7 +168,8 @@ impl Ed {
             buffer: &self.buffer,
             selection: self.selection,
             selections: 1,
-            indent: "    ",
+            indent: self.indent,
+            tab_width: 4,
             top: 0,
             height: 20,
         };
@@ -180,7 +186,8 @@ impl Ed {
                     buffer: &self.buffer,
                     selection: self.selection,
                     selections: 1,
-                    indent: "    ",
+                    indent: self.indent,
+                    tab_width: 4,
                     top: 0,
                     height: 20,
                 };
@@ -199,6 +206,35 @@ impl Ed {
             },
             _ => {},
         }
+    }
+
+    /// Accept a completion as the app does: replace `back` characters before
+    /// the caret and `ahead` after it with `text`, and note it (ahead of the
+    /// key just noted with `before_last`; in the macro being recorded with
+    /// `recorded`).
+    fn complete(
+        &mut self,
+        (back, ahead): (u32, u32),
+        text: &str,
+        before_last: bool,
+        recorded: bool,
+    ) {
+        let head = self.selection.head;
+        let start = LineCol::new(head.line, head.col.saturating_sub(back));
+        self.edit(vec![TextEdit {
+            range: Range {
+                start,
+                end: LineCol::new(head.line, head.col + ahead),
+            },
+            new_text: text.to_string(),
+        }]);
+        self.selection = Selection::caret(karet_editor::editing::caret_after_insert(start, text));
+        let typed = Typed::Text {
+            back,
+            ahead,
+            text: text.to_string(),
+        };
+        self.engine.observe_text(typed, before_last, recorded);
     }
 
     fn insert_text(&mut self, at: LineCol, text: &str) {
@@ -242,8 +278,13 @@ impl Ed {
                 Effect::Command(command) => self.commands.push(command),
                 Effect::Replay { keys, dot } => {
                     self.engine.set_replaying_dot(dot);
-                    for key in keys {
-                        self.key(key);
+                    for step in keys {
+                        match step {
+                            Typed::Key(key) => self.key(key),
+                            Typed::Text { back, ahead, text } => {
+                                self.complete((back, ahead), &text, false, false);
+                            },
+                        }
                     }
                     self.engine.set_replaying_dot(false);
                 },

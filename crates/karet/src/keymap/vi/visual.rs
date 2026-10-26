@@ -119,13 +119,13 @@ impl Engine {
             return Done::Motion;
         }
         match cmd {
-            Cmd::Key(Key::Esc | Key::Ctrl('c')) => self.leave_visual(),
+            Cmd::Key(Key::Esc | Key::Ctrl('c')) => self.leave_visual(doc),
             Cmd::Key(Key::Char('v')) if line_mode => {
                 self.mode = Mode::Visual;
                 Done::Motion
             },
-            Cmd::Key(Key::Char('v')) => self.leave_visual(),
-            Cmd::Key(Key::Char('V')) if line_mode => self.leave_visual(),
+            Cmd::Key(Key::Char('v')) => self.leave_visual(doc),
+            Cmd::Key(Key::Char('V')) if line_mode => self.leave_visual(doc),
             Cmd::Key(Key::Char('V')) => {
                 self.mode = Mode::VisualLine;
                 Done::Motion
@@ -161,10 +161,11 @@ impl Engine {
         }
     }
 
-    /// Back to Normal mode with the cursor where it is.
-    fn leave_visual(&mut self) -> Done {
+    /// Back to Normal mode with the cursor where it is (off a line break
+    /// `$` took in).
+    fn leave_visual(&mut self, doc: &Doc) -> Done {
         self.mode = Mode::Normal;
-        self.sel = Sel::at(self.sel.cursor);
+        self.sel = Sel::at(doc.clamp_char(self.sel.cursor));
         Done::Motion
     }
 
@@ -201,7 +202,7 @@ impl Engine {
         fx: &mut Vec<Effect>,
     ) -> Done {
         let Some(reg) = self.fetch(clip) else {
-            return self.leave_visual();
+            return self.leave_visual(doc);
         };
         let replaced = ops::yank(doc, span);
         let (range, text) = match span {
