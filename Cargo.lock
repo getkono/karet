@@ -3579,7 +3579,6 @@ dependencies = [
  "crossterm",
  "directories",
  "filedescriptor",
- "flate2",
  "gix",
  "ignore",
  "jsonc-parser",
@@ -3695,6 +3694,7 @@ name = "karet-fileview"
 version = "0.7.1"
 dependencies = [
  "base64 0.22.1",
+ "flate2",
  "gamut",
  "karet-core",
  "karet-filetype",
