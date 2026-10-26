@@ -405,7 +405,9 @@ impl WorkspaceSearch {
 /// or half-written: the bytes go to a temp file in the same directory, which is
 /// flushed to disk and renamed over `path` only once complete. Any error before
 /// the rename (a full disk, a read-only directory) leaves `path` untouched and
-/// removes the temp file. The original's permissions are carried over.
+/// removes the temp file. The original's permissions are carried over. Where the
+/// rename itself is refused (a bind-mounted file), the complete bytes are written
+/// in place instead, which is not atomic.
 ///
 /// A file the caller may not write is refused rather than replaced, even though
 /// the directory would allow the rename: a read-only file stays read-only.
@@ -423,8 +425,17 @@ fn write_replacing(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     tmp.write_all(bytes)?;
     tmp.as_file().sync_all()?;
     std::fs::set_permissions(tmp.path(), permissions)?;
-    tmp.persist(path).map_err(|error| error.error)?;
-    Ok(())
+    match tmp.persist(path) {
+        Ok(_) => Ok(()),
+        // The rename alone can fail where a write would not: `path` is a bind
+        // mount (EBUSY) or sits on another filesystem (EXDEV). The file was
+        // probed writable and the complete bytes are in hand, so write it in
+        // place, as karet-text's save does. Dropping the error removes the temp.
+        Err(error) => {
+            drop(error);
+            std::fs::write(path, bytes)
+        },
+    }
 }
 
 /// Walk `root` gitignore-aware and hand every readable text file to `sink`.
