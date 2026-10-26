@@ -492,6 +492,41 @@ fn md037_still_reports_padded_emphasis() {
     assert_eq!(apply_fixes(text, &issues), "this is **padded** emphasis\n");
 }
 
+/// A blank inserted before a line and a fix of that same line both land
+/// (#649). Falsified by applying the insert first: the line shifts down, the
+/// fix overwrites the new blank, and the unfixed original survives beside a
+/// fixed copy.
+#[test]
+fn a_blank_insert_and_a_line_fix_on_one_line_both_apply() {
+    // MD022 blank below the heading + MD009 on line 1.
+    assert_eq!(fixed("## h\nx \n"), "## h\n\nx\n");
+    // MD032 blank above the list + MD009 on line 2.
+    assert_eq!(fixed("# T\ntext\n- a \n"), "# T\n\ntext\n\n- a\n");
+}
+
+/// A `Delete` and a blank insert on one line leave the blank where the line
+/// was, whichever order the issues arrive in. Falsified by inserting first:
+/// the delete then removes the new blank and the line it named survives.
+#[test]
+fn a_delete_and_a_blank_insert_on_one_line_both_apply() {
+    let issue = |fix: Fix| Issue {
+        line: 1,
+        col: 0,
+        len: 1,
+        rule: "TEST",
+        alias: "test",
+        message: String::new(),
+        severity: LintSeverity::Error,
+        fix: Some(fix),
+    };
+    let insert = issue(Fix::InsertBlankBefore { line: 1 });
+    let delete = issue(Fix::Delete { line: 1 });
+    let text = "a\nb\nc\n";
+    let both = [insert.clone(), delete.clone()];
+    assert_eq!(apply_fixes(text, &both), "a\n\nc\n");
+    assert_eq!(apply_fixes(text, &[delete, insert]), "a\n\nc\n");
+}
+
 /// Fence delimiters are never interior; a delimiter of the other character,
 /// or one shorter than the opener, is interior rather than a closer.
 #[test]
