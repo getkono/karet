@@ -50,10 +50,13 @@ use karet_lsp::LspError;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 
+use super::account::FollowUpTask;
 use super::code_actions::ProbeFlight;
 use super::code_lens::LensFlight;
 use super::health::FailureTally;
+use super::inline_completion;
 use super::inline_completion::InlineFlight;
+use super::inline_completion::InlineStep;
 use super::message::LspUpdate;
 use super::slot::SlotKey;
 use super::slot::SlotToken;
@@ -154,9 +157,27 @@ pub(super) struct Flights {
     pub(super) lenses: LensFlight,
     /// The inline-completion asks.
     pub(super) inline: InlineFlight,
+    /// The running completing request of the last sign-in, which the next
+    /// account step supersedes (see `account`).
+    sign_in: FollowUpTask,
 }
 
 impl Flights {
+    /// Run an inline-completion step that is not a background ask (see
+    /// [`inline_completion::serve`]), holding the sign-in completing request
+    /// it may start, so the next account step can supersede it.
+    pub(super) async fn run(
+        &mut self,
+        client: &Option<Arc<LspClient>>,
+        step: InlineStep,
+        slot: (&SlotKey, SlotToken),
+        updates: &mpsc::UnboundedSender<LspUpdate>,
+        generation: u64,
+    ) {
+        let sinks = (updates, &mut self.sign_in);
+        inline_completion::serve(client, step, slot, sinks, generation).await;
+    }
+
     /// [`Flight::launch_ready`] for every kind.
     pub(super) fn launch_ready(&mut self, client: &Arc<LspClient>, pending: Option<&Path>) {
         self.hints.launch_ready(client, pending);

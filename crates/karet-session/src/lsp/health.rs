@@ -122,6 +122,7 @@ pub(super) async fn next_wake(
         probes,
         lenses,
         inline,
+        ..
     } = flights;
     let busy = hints.is_busy();
     let probing = probes.is_busy();
