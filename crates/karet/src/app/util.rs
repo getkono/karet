@@ -235,3 +235,97 @@ pub(super) fn load_theme(name: &str) -> Result<Theme, String> {
     let text = String::from_utf8(bytes).map_err(|e| format!("theme `{name}`: {e}"))?;
     Theme::load_vscode(&text).map_err(|e| format!("theme `{name}`: {e}"))
 }
+
+/// Build the lane layout for `commits` (newest first). Lane assignment is sequential
+/// from the tip, so callers cache this and recompute only when the commit list changes.
+pub(crate) fn commit_rails(commits: &[karet_vcs::Commit]) -> Vec<karet_graph::RailRow> {
+    let inputs: Vec<karet_graph::LaneInput> = commits
+        .iter()
+        .enumerate()
+        .map(|(i, commit)| karet_graph::LaneInput {
+            id: commit.hash.clone(),
+            parents: commit.parents.clone(),
+            head: i == 0,
+        })
+        .collect();
+    karet_graph::assign_lanes(&inputs)
+}
+
+/// Scroll `offset` the minimum distance that brings row `cursor` inside a viewport of
+/// `height` rows. The three commit lists and the change list all need exactly this.
+#[must_use]
+pub(crate) fn keep_visible(cursor: usize, offset: usize, height: usize) -> usize {
+    if cursor < offset {
+        cursor
+    } else if height > 0 && cursor >= offset + height {
+        cursor + 1 - height
+    } else {
+        offset
+    }
+}
+
+/// A terse `git log`-style relative time (e.g. `3d ago`) for a Unix timestamp.
+pub(crate) fn relative_time(secs: i64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|d| i64::try_from(d.as_secs()).ok())
+        .unwrap_or(0);
+    relative_time_at(secs, now)
+}
+
+/// [`relative_time`] as seen at `now` (seconds since the Unix epoch).
+fn relative_time_at(secs: i64, now: i64) -> String {
+    let delta = now - secs;
+    if delta < 0 {
+        return "just now".to_string();
+    }
+    let (n, unit) = if delta < 60 {
+        (delta, "s")
+    } else if delta < 3600 {
+        (delta / 60, "m")
+    } else if delta < 86_400 {
+        (delta / 3600, "h")
+    } else if delta < 86_400 * 7 {
+        (delta / 86_400, "d")
+    } else if delta < 86_400 * 30 {
+        (delta / (86_400 * 7), "w")
+    } else if delta < 86_400 * 365 {
+        (delta / (86_400 * 30), "mo")
+    } else {
+        (delta / (86_400 * 365), "y")
+    };
+    format!("{n}{unit} ago")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The clamp only moves the viewport when the cursor is actually outside it, and
+    /// then by the minimum distance.
+    #[test]
+    fn keep_visible_scrolls_the_minimum_distance() {
+        // Already inside: unchanged.
+        assert_eq!(keep_visible(5, 3, 10), 3);
+        // Above the viewport: the cursor becomes the top row.
+        assert_eq!(keep_visible(1, 4, 10), 1);
+        // Below the viewport: the cursor becomes the bottom row.
+        assert_eq!(keep_visible(20, 4, 10), 11);
+        // A zero-height viewport can't scroll anywhere.
+        assert_eq!(keep_visible(20, 4, 0), 4);
+    }
+
+    #[test]
+    fn relative_time_uses_compact_git_style_units() {
+        let now = 40_000_000;
+        assert_eq!(relative_time_at(now + 1, now), "just now");
+        assert_eq!(relative_time_at(now - 42, now), "42s ago");
+        assert_eq!(relative_time_at(now - 120, now), "2m ago");
+        assert_eq!(relative_time_at(now - 10_800, now), "3h ago");
+        assert_eq!(relative_time_at(now - 172_800, now), "2d ago");
+        assert_eq!(relative_time_at(now - 1_209_600, now), "2w ago");
+        assert_eq!(relative_time_at(now - 5_184_000, now), "2mo ago");
+        assert_eq!(relative_time_at(now - 63_072_000, now), "2y ago");
+    }
+}

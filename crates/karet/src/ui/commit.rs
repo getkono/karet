@@ -12,7 +12,6 @@ pub(in crate::ui) use graph::CommitGraphScroll;
 pub(in crate::ui) use graph::draw_commit_graph;
 pub(in crate::ui) use list::CommitListEntry;
 pub(in crate::ui) use list::commit_list_items;
-pub(crate) use list::relative_time;
 pub(super) use responsive::draw_commit;
 pub(super) use responsive::draw_compare;
 

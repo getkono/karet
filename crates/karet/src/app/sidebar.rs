@@ -324,7 +324,7 @@ impl App {
             return;
         }
         let row = self.scm_cursor_display_row();
-        self.scm_ui.offset = crate::ui::commit::list::keep_visible(row, self.scm_ui.offset, h);
+        self.scm_ui.offset = crate::app::keep_visible(row, self.scm_ui.offset, h);
     }
 
     /// Scroll the changes region by `delta` rows, clamped to its content.
