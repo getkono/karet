@@ -362,6 +362,11 @@ impl WorkspaceSearch {
     /// changed. Regex capture substitutions (`$1`, `${name}`) apply when
     /// [`SearchQuery::regex`] is set.
     ///
+    /// A file that cannot be written back does not stop the walk: the other files
+    /// are still rewritten, and the one that failed is listed in
+    /// [`ReplaceSummary::failures`] (and counted nowhere else), so the caller can
+    /// tell a partial replace from a complete one.
+    ///
     /// # Errors
     /// Returns [`SearchError::InvalidPattern`] if the pattern or a glob is invalid.
     pub fn replace(
@@ -379,9 +384,15 @@ impl WorkspaceSearch {
             let plan = matcher.plan(&text, replacement, query.regex);
             if !plan.is_empty() {
                 let updated = apply_replacements(&text, &plan);
-                if std::fs::write(path, updated).is_ok() {
-                    summary.files_changed += 1;
-                    summary.replacements += plan.len();
+                match std::fs::write(path, updated) {
+                    Ok(()) => {
+                        summary.files_changed += 1;
+                        summary.replacements += plan.len();
+                    },
+                    Err(error) => summary.failures.push(WriteFailure {
+                        path: path.to_path_buf(),
+                        error: error.to_string(),
+                    }),
                 }
             }
             ControlFlow::Continue(())
@@ -422,13 +433,26 @@ pub fn walk_text_files(
 }
 
 /// The result of a workspace [`replace`](WorkspaceSearch::replace).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ReplaceSummary {
     /// The number of files written.
     pub files_changed: usize,
-    /// The total number of replacements applied.
+    /// The total number of replacements applied (in the files written).
     pub replacements: usize,
+    /// The files that had matches but could not be written back, left as they
+    /// were; empty when every write succeeded.
+    pub failures: Vec<WriteFailure>,
+}
+
+/// A file a workspace [`replace`](WorkspaceSearch::replace) could not write back.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct WriteFailure {
+    /// The file that was not written.
+    pub path: PathBuf,
+    /// Why the write failed, as the operating system reported it.
+    pub error: String,
 }
 
 /// Build the gitignore-aware workspace walk (shared by every walking entry point).
@@ -950,6 +974,38 @@ mod tests {
             std::fs::read_to_string(dir.path().join("ignored.txt"))?,
             "needle\n"
         );
+        assert!(summary.failures.is_empty());
+        Ok(())
+    }
+
+    /// Mark `path` read-only, and report whether a write to it now fails (it does
+    /// not for a privileged user, whom a read-only bit does not stop).
+    fn make_unwritable(path: &Path) -> std::io::Result<bool> {
+        let mut perms = std::fs::metadata(path)?.permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(path, perms)?;
+        Ok(std::fs::OpenOptions::new().write(true).open(path).is_err())
+    }
+
+    /// A file that cannot be written back is reported, not silently skipped, and
+    /// does not stop the other files from being rewritten.
+    #[test]
+    fn workspace_replace_reports_a_file_it_could_not_write() -> TestResult {
+        let dir = temp_dir()?;
+        write(dir.path(), "a.txt", b"needle\n")?;
+        write(dir.path(), "locked.txt", b"needle needle\n")?;
+        let locked = dir.path().join("locked.txt");
+        if !make_unwritable(&locked)? {
+            return Ok(());
+        }
+
+        let summary = WorkspaceSearch::new().replace(dir.path(), &literal("needle"), "pin")?;
+        assert_eq!((summary.files_changed, summary.replacements), (1, 1));
+        let failed: Vec<&Path> = summary.failures.iter().map(|f| f.path.as_path()).collect();
+        assert_eq!(failed, [locked.as_path()]);
+        assert!(summary.failures.iter().all(|f| !f.error.is_empty()));
+        assert_eq!(std::fs::read_to_string(dir.path().join("a.txt"))?, "pin\n");
+        assert_eq!(std::fs::read_to_string(&locked)?, "needle needle\n");
         Ok(())
     }
 
