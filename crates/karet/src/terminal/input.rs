@@ -281,6 +281,12 @@ mod tests {
         assert_eq!(ctrl(' '), Some(vec![0x00]));
         assert_eq!(ctrl('_'), Some(vec![0x1f]));
         assert_eq!(ctrl('`'), None, "no control byte: nothing is sent");
+        assert_eq!(ctrl('\\'), Some(vec![0x1c]));
+        assert_eq!(ctrl(']'), Some(vec![0x1d]));
+        assert_eq!(ctrl('^'), Some(vec![0x1e]));
+        assert_eq!(ctrl('?'), Some(vec![0x7f]));
+        assert_eq!(ctrl('4'), Some(vec![0x1c]));
+        assert_eq!(ctrl('8'), Some(vec![0x7f]));
     }
 
     #[test]
@@ -324,6 +330,8 @@ mod tests {
         assert_eq!(plain(KeyCode::Esc), Some(vec![0x1b]));
         assert_eq!(plain(KeyCode::Delete), Some(b"\x1b[3~".to_vec()));
         assert_eq!(plain(KeyCode::PageUp), Some(b"\x1b[5~".to_vec()));
+        assert_eq!(plain(KeyCode::Insert), Some(b"\x1b[2~".to_vec()));
+        assert_eq!(plain(KeyCode::PageDown), Some(b"\x1b[6~".to_vec()));
     }
 
     #[test]
@@ -341,6 +349,20 @@ mod tests {
             "a modified arrow always carries its parameter"
         );
         assert_eq!(plain(KeyCode::Home), Some(b"\x1b[H".to_vec()));
+        assert_eq!(plain(KeyCode::Down), Some(b"\x1b[B".to_vec()));
+        assert_eq!(plain(KeyCode::Right), Some(b"\x1b[C".to_vec()));
+        assert_eq!(plain(KeyCode::End), Some(b"\x1b[F".to_vec()));
+    }
+
+    #[test]
+    fn modifier_parameters_add_shift_alt_and_ctrl() {
+        let up = |mods| encode_key(key(KeyCode::Up, mods), TermMode::default());
+        assert_eq!(up(KeyModifiers::SHIFT), Some(b"\x1b[1;2A".to_vec()));
+        assert_eq!(up(KeyModifiers::ALT), Some(b"\x1b[1;3A".to_vec()));
+        assert_eq!(
+            up(KeyModifiers::SHIFT | KeyModifiers::ALT | KeyModifiers::CONTROL),
+            Some(b"\x1b[1;8A".to_vec())
+        );
     }
 
     #[test]
@@ -456,6 +478,49 @@ mod tests {
             ),
             None,
             "past column 223 the legacy encoding cannot address the cell"
+        );
+        assert_eq!(
+            encode_mouse(
+                report(MouseAction::Press(MouseButtonKind::Left), 222, 222),
+                mode
+            ),
+            Some(vec![0x1b, b'[', b'M', 32, 255, 255]),
+            "column and row 223 are the last the encoding addresses"
+        );
+        assert_eq!(
+            encode_mouse(
+                report(MouseAction::Press(MouseButtonKind::Left), 0, 223),
+                mode
+            ),
+            None,
+            "nor past row 223"
+        );
+    }
+
+    #[test]
+    fn mouse_modifiers_add_to_the_button_code() {
+        let sgr = TermMode::MOUSE_REPORT_CLICK | TermMode::SGR_MOUSE;
+        let with = |modifiers, action| MouseReport {
+            modifiers,
+            ..report(action, 0, 0)
+        };
+        let press = MouseAction::Press(MouseButtonKind::Left);
+        assert_eq!(
+            encode_mouse(with(KeyModifiers::SHIFT, press), sgr),
+            Some(b"\x1b[<4;1;1M".to_vec())
+        );
+        assert_eq!(
+            encode_mouse(with(KeyModifiers::ALT, press), sgr),
+            Some(b"\x1b[<8;1;1M".to_vec())
+        );
+        // A legacy release keeps the modifier bits and names no button.
+        let release = MouseAction::Release(MouseButtonKind::Middle);
+        assert_eq!(
+            encode_mouse(
+                with(KeyModifiers::SHIFT, release),
+                TermMode::MOUSE_REPORT_CLICK
+            ),
+            Some(vec![0x1b, b'[', b'M', 32 + 7, 33, 33])
         );
     }
 }

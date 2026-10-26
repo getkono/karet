@@ -224,6 +224,14 @@ mod tests {
         assert!(!s.is_empty());
         assert!(s.contains(BytePos(2)));
         assert!(!s.contains(BytePos(5)));
+        assert!(Span::default().is_empty());
+        assert!(
+            Span {
+                start: BytePos(4),
+                end: BytePos(4),
+            }
+            .is_empty()
+        );
         assert_eq!(Span::new(BytePos(2), BytePos(5)), Ok(s));
         assert_eq!(
             Span::new(BytePos(5), BytePos(2)),
@@ -239,6 +247,16 @@ mod tests {
         };
         assert!(r.contains(LineCol::new(2, 99)));
         assert!(!r.contains(LineCol::new(3, 4)));
+        assert!(!r.is_empty());
+        assert!(Range::default().is_empty());
+        let caret = LineCol::new(2, 7);
+        assert!(
+            Range {
+                start: caret,
+                end: caret,
+            }
+            .is_empty()
+        );
         assert_eq!(Range::new(LineCol::new(1, 0), LineCol::new(3, 4)), Ok(r));
         assert_eq!(
             Range::new(LineCol::new(3, 0), LineCol::new(1, 0)),

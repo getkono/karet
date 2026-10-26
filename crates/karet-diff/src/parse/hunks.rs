@@ -144,6 +144,15 @@ mod tests {
     }
 
     #[test]
+    fn lines_before_the_first_hunk_header_are_skipped() -> Result<(), DiffError> {
+        let hunks = parse_hunks(&["junk", "more junk", "@@ -1 +1 @@", "-a", "+b"])?;
+        assert_eq!(hunks.len(), 1);
+        assert_eq!(hunks[0].lines.len(), 2);
+        assert_eq!(hunks[0].lines[0].content, "a");
+        Ok(())
+    }
+
+    #[test]
     fn malformed_headers_error() {
         assert!(parse_hunk_header("@@ bogus @@").is_err());
         assert!(parse_hunk_header("@@ -1,5 @@").is_err());

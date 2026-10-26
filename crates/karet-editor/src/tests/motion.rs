@@ -359,3 +359,12 @@ fn only_row_motions_are_vertical() {
         );
     }
 }
+
+#[test]
+fn a_word_left_skips_the_whitespace_before_the_caret_first() {
+    let buffer = TextBuffer::from_text("foo  bar\n  baz");
+    // Back over the two spaces, then over `foo`.
+    assert_eq!(previous_word_boundary(&buffer, at(0, 5)), at(0, 0));
+    // Only whitespace before the caret: the line start.
+    assert_eq!(previous_word_boundary(&buffer, at(1, 2)), at(1, 0));
+}

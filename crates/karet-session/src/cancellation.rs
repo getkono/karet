@@ -146,6 +146,19 @@ mod tests {
         );
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn an_uncancelled_token_keeps_its_reader_waiting() {
+        let hub = CancellationHub::default();
+        let token = hub.register(RequestId(10));
+        // The paused clock jumps straight to the deadline once nothing else can run.
+        let waited =
+            tokio::time::timeout(std::time::Duration::from_secs(60), token.cancelled()).await;
+        assert!(
+            waited.is_err(),
+            "nothing cancelled it, so it must not return"
+        );
+    }
+
     /// A counter and a hook that bumps it.
     fn counting_hook() -> (
         Arc<std::sync::atomic::AtomicUsize>,

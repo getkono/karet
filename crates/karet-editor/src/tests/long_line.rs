@@ -132,6 +132,15 @@ fn a_row_of_many_char_clusters_paints_to_the_right_edge() {
 }
 
 #[test]
+fn a_row_window_stops_growing_once_its_chars_cover_the_room() {
+    // Plain ASCII: the first window, twice the room plus the lookahead,
+    // already covers the seventeen cells, so it is not doubled further.
+    let buffer = TextBuffer::from_text(&"a".repeat(10_000));
+    let (chars, _) = row_window(&buffer, 0, 0, 17);
+    assert_eq!(chars.len(), 17 * 2 + 32);
+}
+
+#[test]
 fn a_zero_width_line_caps_its_row_window() {
     // A million zero-width spaces never cover a cell, so an uncapped window
     // would double until it held the whole line.

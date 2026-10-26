@@ -219,6 +219,15 @@ mod tests {
     }
 
     #[test]
+    fn a_hard_tab_after_text_advances_only_to_its_own_stop() {
+        // With tabs 6 wide, `a` then a tab reaches column 6, so the caret after
+        // `b` sits at 7 and the next 4-stop is one space away.
+        let set = cursors(&[(at(0, 3), at(0, 3))]);
+        let (text, _) = run("a\tb", |b| indent(b, &set, 0, "    ", 6));
+        assert_eq!(text, "a\tb ");
+    }
+
+    #[test]
     fn hard_tab_indentation_inserts_itself_at_the_caret() {
         let set = cursors(&[(at(0, 1), at(0, 1))]);
         let (text, sel) = run("ab", |b| indent(b, &set, 0, "\t", 4));
