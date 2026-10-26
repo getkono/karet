@@ -7,8 +7,8 @@
 //! lists the staged and working-tree changes (each opens as a diff tab).
 //!
 //! Editing, language intelligence, and source control route through the headless
-//! `karet-session` backend; the remaining direct engine calls (diff rendering,
-//! workspace search, remote-URL reads) are being migrated behind the same seam.
+//! `karet-session` backend; the remaining direct engine call (diff rendering) is
+//! being migrated behind the same seam.
 
 mod app;
 mod autolink;

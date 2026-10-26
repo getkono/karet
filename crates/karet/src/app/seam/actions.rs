@@ -110,8 +110,8 @@ impl App {
     /// the surface being opened, so rows arriving after it would move the selection under
     /// the reader's fingers, and withholding it until they arrived would be exactly the
     /// delayed surface a picker must never be. Discovery only reads manifests and lists
-    /// directories, and it is bounded — the app already runs a heavier walk than this
-    /// synchronously to open the quick-open picker.
+    /// directories, and it is bounded. (Quick-open's heavier file walk, by contrast,
+    /// runs off the UI thread through `FileIndex`.)
     pub(crate) fn open_seam_view_picker(&mut self) {
         let items = self.seam_root_candidates();
         self.overlay = Some(crate::overlay::Overlay::seam_roots(items));
