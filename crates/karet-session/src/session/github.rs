@@ -19,6 +19,7 @@ use crate::api::GithubIssue;
 use crate::api::GithubLabel;
 use crate::api::GithubNewIssue;
 use crate::api::GithubNewPullRequest;
+use crate::api::GithubOperation;
 use crate::api::GithubPage;
 use crate::api::GithubPullRequest;
 use crate::api::GithubPullRequestActivity;
@@ -155,7 +156,7 @@ impl Session {
                     let _ = events.send((
                         None,
                         Event::GithubError {
-                            operation: "authentication".to_string(),
+                            operation: GithubOperation::Authentication,
                             message: error.to_string(),
                         },
                     ));
@@ -186,7 +187,7 @@ impl Session {
                             let _ = events.send((
                                 Some(id),
                                 Event::GithubError {
-                                    operation: "sign in".to_string(),
+                                    operation: GithubOperation::SignIn,
                                     message: error.to_string(),
                                 },
                             ));
@@ -213,7 +214,7 @@ impl Session {
             self.emit(
                 Some(id),
                 Event::GithubError {
-                    operation: "eligibility".to_string(),
+                    operation: GithubOperation::Eligibility,
                     message: "the workspace root is not an eligible github.com worktree"
                         .to_string(),
                 },
@@ -391,30 +392,30 @@ async fn run_job(
     let event = match result {
         Ok(event) => event,
         Err(error) => Event::GithubError {
-            operation: operation.to_string(),
+            operation,
             message: error.to_string(),
         },
     };
     let _ = events.send((Some(id), event));
 }
 
-fn operation_name(job: &GithubJob) -> &'static str {
+fn operation_name(job: &GithubJob) -> GithubOperation {
     match job {
-        GithubJob::Refresh => "refresh",
-        GithubJob::Login { .. } => "sign in",
-        GithubJob::Issues { .. } => "issues",
-        GithubJob::PullRequests { .. } => "pull requests",
-        GithubJob::Actions { .. } => "actions",
-        GithubJob::Issue { .. } => "issue detail",
-        GithubJob::PullRequest { .. } => "pull request detail",
-        GithubJob::UpdatePullRequestBody { .. } => "update pull request body",
-        GithubJob::CommentPullRequest { .. } => "comment on pull request",
-        GithubJob::MergePullRequest { .. } => "merge pull request",
-        GithubJob::SetPullRequestDraft { .. } => "update pull request readiness",
-        GithubJob::IssueMetadata => "issue metadata",
-        GithubJob::CreateIssue { .. } => "create issue",
-        GithubJob::CreatePullRequest { .. } => "create pull request",
-        GithubJob::Verification { .. } => "commit verification",
+        GithubJob::Refresh => GithubOperation::Refresh,
+        GithubJob::Login { .. } => GithubOperation::SignIn,
+        GithubJob::Issues { .. } => GithubOperation::Issues,
+        GithubJob::PullRequests { .. } => GithubOperation::PullRequests,
+        GithubJob::Actions { .. } => GithubOperation::Actions,
+        GithubJob::Issue { .. } => GithubOperation::IssueDetail,
+        GithubJob::PullRequest { .. } => GithubOperation::PullRequestDetail,
+        GithubJob::UpdatePullRequestBody { .. } => GithubOperation::UpdatePullRequestBody,
+        GithubJob::CommentPullRequest { .. } => GithubOperation::CommentPullRequest,
+        GithubJob::MergePullRequest { .. } => GithubOperation::MergePullRequest,
+        GithubJob::SetPullRequestDraft { .. } => GithubOperation::UpdatePullRequestReadiness,
+        GithubJob::IssueMetadata => GithubOperation::IssueMetadata,
+        GithubJob::CreateIssue { .. } => GithubOperation::CreateIssue,
+        GithubJob::CreatePullRequest { .. } => GithubOperation::CreatePullRequest,
+        GithubJob::Verification { .. } => GithubOperation::CommitVerification,
     }
 }
 

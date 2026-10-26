@@ -1,27 +1,33 @@
 //! Application of asynchronous GitHub backend results.
 
+use karet_session::GithubOperation;
+
 use super::*;
 
-/// The `operation` label the session gives a commit-signature lookup.
-const VERIFICATION_OPERATION: &str = "commit verification";
-
-fn human_github_error(operation: &str, message: &str) -> String {
+fn human_github_error(operation: GithubOperation, message: &str) -> String {
     let action = match operation {
-        "actions" => "Could not load GitHub Actions",
-        "authentication" | "sign in" => "Could not sign in to GitHub",
-        "create issue" => "Could not create the issue",
-        "create pull request" => "Could not create the pull request",
-        "issue detail" => "Could not load the issue",
-        "issue metadata" => "Could not load issue options",
-        "issues" => "Could not load issues",
-        "pull request detail" => "Could not load the pull request",
-        "update pull request body" => "Could not update the pull request description",
-        "comment on pull request" => "Could not add the pull request comment",
-        "merge pull request" => "Could not merge the pull request",
-        "update pull request readiness" => "Could not update the pull request readiness",
-        "pull requests" => "Could not load pull requests",
-        "refresh" => "Could not refresh GitHub",
-        _ => "GitHub request failed",
+        GithubOperation::Actions => "Could not load GitHub Actions",
+        GithubOperation::Authentication | GithubOperation::SignIn => "Could not sign in to GitHub",
+        GithubOperation::CreateIssue => "Could not create the issue",
+        GithubOperation::CreatePullRequest => "Could not create the pull request",
+        GithubOperation::IssueDetail => "Could not load the issue",
+        GithubOperation::IssueMetadata => "Could not load issue options",
+        GithubOperation::Issues => "Could not load issues",
+        GithubOperation::PullRequestDetail => "Could not load the pull request",
+        GithubOperation::UpdatePullRequestBody => "Could not update the pull request description",
+        GithubOperation::CommentPullRequest => "Could not add the pull request comment",
+        GithubOperation::MergePullRequest => "Could not merge the pull request",
+        GithubOperation::UpdatePullRequestReadiness => {
+            "Could not update the pull request readiness"
+        },
+        GithubOperation::PullRequests => "Could not load pull requests",
+        GithubOperation::Refresh => "Could not refresh GitHub",
+        // The session's message already names why the request was refused (an
+        // ineligible worktree, or a build without GitHub support); a failed
+        // signature lookup is kept quiet (see `apply_github_error`).
+        GithubOperation::Eligibility
+        | GithubOperation::FeatureDisabled
+        | GithubOperation::CommitVerification => "GitHub request failed",
     };
     format!("{action}. {message}")
 }
@@ -225,10 +231,10 @@ impl App {
     pub(crate) fn apply_github_error(
         &mut self,
         id: Option<RequestId>,
-        operation: String,
+        operation: GithubOperation,
         message: String,
     ) {
-        let full = human_github_error(&operation, &message);
+        let full = human_github_error(operation, &message);
         let mut applied = false;
         for open in self.github.pages_mut() {
             match open {
@@ -287,7 +293,7 @@ impl App {
             // unpushed, on a fork, or in a repository with no GitHub remote —
             // is an ordinary outcome, and the detail pane reads fine without a
             // verdict, so it must not raise an error the user cannot act on.
-            if operation == VERIFICATION_OPERATION {
+            if operation == GithubOperation::CommitVerification {
                 return;
             }
             self.notify(Report::Failure, NotificationKind::System, full);

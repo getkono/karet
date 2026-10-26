@@ -105,6 +105,7 @@ pub use api::GithubIssue;
 pub use api::GithubLabel;
 pub use api::GithubNewIssue;
 pub use api::GithubNewPullRequest;
+pub use api::GithubOperation;
 pub use api::GithubPage;
 pub use api::GithubPullRequest;
 pub use api::GithubPullRequestActivity;
