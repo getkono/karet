@@ -193,8 +193,12 @@ pub struct Matcher {
     line_bounded: bool,
 }
 
-/// A compiled query: a literal needle (fast-path) or a regex.
+/// A compiled query: nothing at all, a literal needle (fast-path), or a regex.
 enum MatcherKind {
+    /// An empty pattern, which matches nothing whatever the query's options:
+    /// compiled as a regex it would match at every position (or at every word
+    /// boundary, for a whole-word query).
+    Never,
     /// An exact, case-sensitive substring search.
     Literal(String),
     /// A compiled regular expression.
@@ -207,7 +211,12 @@ impl Matcher {
     /// # Errors
     /// Returns [`SearchError::InvalidPattern`] for a malformed regex.
     pub fn new(query: &SearchQuery) -> Result<Self, SearchError> {
-        if !query.regex && query.case_sensitive && !query.whole_word {
+        if query.pattern.is_empty() {
+            Ok(Self {
+                kind: MatcherKind::Never,
+                line_bounded: true,
+            })
+        } else if !query.regex && query.case_sensitive && !query.whole_word {
             Ok(Self {
                 kind: MatcherKind::Literal(query.pattern.clone()),
                 line_bounded: !query.pattern.contains('\n'),
@@ -222,11 +231,12 @@ impl Matcher {
 
     /// Find every match in `text`.
     ///
-    /// An empty pattern never matches, matching [`search_in_file`]'s behavior.
+    /// An empty pattern never matches, whatever the query's options, matching
+    /// [`search_in_file`]'s behavior.
     #[must_use]
     pub fn find(&self, text: &str) -> Vec<Match> {
         match &self.kind {
-            MatcherKind::Literal(needle) if needle.is_empty() => Vec::new(),
+            MatcherKind::Never => Vec::new(),
             MatcherKind::Literal(needle) => literal_matches(text, needle),
             MatcherKind::Regex(re) => regex_matches(text, re),
         }
@@ -238,7 +248,7 @@ impl Matcher {
     /// (so a literal or whole-word query never mis-reads a `$` in the replacement).
     fn plan(&self, text: &str, replacement: &str, expand: bool) -> Vec<Replacement> {
         match &self.kind {
-            MatcherKind::Literal(needle) if needle.is_empty() => Vec::new(),
+            MatcherKind::Never => Vec::new(),
             MatcherKind::Literal(needle) => literal_matches(text, needle)
                 .into_iter()
                 .map(|m| Replacement {
@@ -352,6 +362,11 @@ impl WorkspaceSearch {
     /// changed. Regex capture substitutions (`$1`, `${name}`) apply when
     /// [`SearchQuery::regex`] is set.
     ///
+    /// A file that cannot be written back does not stop the walk: the other files
+    /// are still rewritten, and the one that failed is listed in
+    /// [`ReplaceSummary::failures`] (and counted nowhere else), so the caller can
+    /// tell a partial replace from a complete one.
+    ///
     /// # Errors
     /// Returns [`SearchError::InvalidPattern`] if the pattern or a glob is invalid.
     pub fn replace(
@@ -369,14 +384,57 @@ impl WorkspaceSearch {
             let plan = matcher.plan(&text, replacement, query.regex);
             if !plan.is_empty() {
                 let updated = apply_replacements(&text, &plan);
-                if std::fs::write(path, updated).is_ok() {
-                    summary.files_changed += 1;
-                    summary.replacements += plan.len();
+                match write_replacing(path, updated.as_bytes()) {
+                    Ok(()) => {
+                        summary.files_changed += 1;
+                        summary.replacements += plan.len();
+                    },
+                    Err(error) => summary.failures.push(WriteFailure {
+                        path: path.to_path_buf(),
+                        error: error.to_string(),
+                    }),
                 }
             }
             ControlFlow::Continue(())
         })?;
         Ok(summary)
+    }
+}
+
+/// Write `bytes` over the existing file at `path` without ever leaving it empty
+/// or half-written: the bytes go to a temp file in the same directory, which is
+/// flushed to disk and renamed over `path` only once complete. Any error before
+/// the rename (a full disk, a read-only directory) leaves `path` untouched and
+/// removes the temp file. The original's permissions are carried over. Where the
+/// rename itself is refused (a bind-mounted file), the complete bytes are written
+/// in place instead, which is not atomic.
+///
+/// A file the caller may not write is refused rather than replaced, even though
+/// the directory would allow the rename: a read-only file stays read-only.
+fn write_replacing(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let dir = match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    // Opening for write without truncating probes write permission and leaves
+    // the contents alone.
+    drop(std::fs::OpenOptions::new().write(true).open(path)?);
+    let permissions = std::fs::metadata(path)?.permissions();
+    let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
+    tmp.write_all(bytes)?;
+    tmp.as_file().sync_all()?;
+    std::fs::set_permissions(tmp.path(), permissions)?;
+    match tmp.persist(path) {
+        Ok(_) => Ok(()),
+        // The rename alone can fail where a write would not: `path` is a bind
+        // mount (EBUSY) or sits on another filesystem (EXDEV). The file was
+        // probed writable and the complete bytes are in hand, so write it in
+        // place, as karet-text's save does. Dropping the error removes the temp.
+        Err(error) => {
+            drop(error);
+            std::fs::write(path, bytes)
+        },
     }
 }
 
@@ -412,13 +470,26 @@ pub fn walk_text_files(
 }
 
 /// The result of a workspace [`replace`](WorkspaceSearch::replace).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ReplaceSummary {
     /// The number of files written.
     pub files_changed: usize,
-    /// The total number of replacements applied.
+    /// The total number of replacements applied (in the files written).
     pub replacements: usize,
+    /// The files that had matches but could not be written back, left as they
+    /// were; empty when every write succeeded.
+    pub failures: Vec<WriteFailure>,
+}
+
+/// A file a workspace [`replace`](WorkspaceSearch::replace) could not write back.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct WriteFailure {
+    /// The file that was not written.
+    pub path: PathBuf,
+    /// Why the write failed, as the operating system reported it.
+    pub error: String,
 }
 
 /// Build the gitignore-aware workspace walk (shared by every walking entry point).
@@ -516,538 +587,4 @@ pub fn apply_replacements(text: &str, replacements: &[Replacement]) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn query_defaults() {
-        let q = SearchQuery::default();
-        assert!(!q.regex);
-        assert!(q.includes.is_empty());
-    }
-
-    #[test]
-    fn error_displays() {
-        assert_eq!(
-            SearchError::InvalidPattern.to_string(),
-            "invalid search pattern"
-        );
-    }
-
-    fn literal(pattern: &str) -> SearchQuery {
-        SearchQuery {
-            pattern: pattern.to_string(),
-            case_sensitive: true,
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn literal_finds_all_occurrences() {
-        let m = search_in_file("foo bar foo", &literal("foo")).unwrap_or_default();
-        assert_eq!(m.len(), 2);
-        assert_eq!((m[0].start, m[0].end, m[0].col), (0, 3, 0));
-        assert_eq!((m[1].start, m[1].end, m[1].col), (8, 11, 8));
-    }
-
-    #[test]
-    fn case_insensitive_matches() {
-        let q = SearchQuery {
-            pattern: "FOO".into(),
-            ..Default::default()
-        };
-        let m = search_in_file("a foo b", &q).unwrap_or_default();
-        assert_eq!(m.len(), 1);
-        assert_eq!(m[0].start, 2);
-    }
-
-    #[test]
-    fn regex_matches() {
-        let q = SearchQuery {
-            pattern: "f.o".into(),
-            regex: true,
-            case_sensitive: true,
-            ..Default::default()
-        };
-        let m = search_in_file("foo fao fxo", &q).unwrap_or_default();
-        assert_eq!(m.len(), 3);
-    }
-
-    #[test]
-    fn whole_word_excludes_substrings() {
-        let q = SearchQuery {
-            pattern: "cat".into(),
-            whole_word: true,
-            case_sensitive: true,
-            ..Default::default()
-        };
-        let m = search_in_file("cat category cat", &q).unwrap_or_default();
-        assert_eq!(m.len(), 2);
-        assert_eq!(m[0].start, 0);
-        assert_eq!(m[1].start, 13);
-    }
-
-    #[test]
-    fn line_and_col_are_tracked() {
-        // Both the literal fast-path and the regex path must agree on line/col.
-        let lit = search_in_file("ab\ncd ef\ncd", &literal("cd")).unwrap_or_default();
-        let re = SearchQuery {
-            pattern: "cd".into(),
-            regex: true,
-            case_sensitive: true,
-            ..Default::default()
-        };
-        let rex = search_in_file("ab\ncd ef\ncd", &re).unwrap_or_default();
-        for m in [&lit, &rex] {
-            assert_eq!(m.len(), 2);
-            assert_eq!((m[0].line, m[0].col), (1, 0));
-            assert_eq!((m[1].line, m[1].col), (2, 0));
-        }
-    }
-
-    /// The whole point of the public matcher: compile once, run many. A reused
-    /// matcher must agree with the one-shot `search_in_file` on every buffer.
-    #[test]
-    fn a_reused_matcher_agrees_with_search_in_file() {
-        for query in [
-            literal("foo"),
-            SearchQuery {
-                pattern: "fo+".into(),
-                regex: true,
-                ..Default::default()
-            },
-            SearchQuery {
-                pattern: "foo".into(),
-                whole_word: true,
-                ..Default::default()
-            },
-            SearchQuery {
-                pattern: "FOO".into(),
-                ..Default::default()
-            },
-        ] {
-            let matcher = match Matcher::new(&query) {
-                Ok(matcher) => matcher,
-                Err(_) => continue,
-            };
-            for text in ["foo bar foo", "nothing", "foofoo", "a foo\nfoo b", ""] {
-                assert_eq!(
-                    matcher.find(text),
-                    search_in_file(text, &query).unwrap_or_default(),
-                    "pattern {:?} over {text:?}",
-                    query.pattern,
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn a_matcher_rejects_an_invalid_regex() {
-        let q = SearchQuery {
-            pattern: "(".into(),
-            regex: true,
-            ..Default::default()
-        };
-        assert!(Matcher::new(&q).is_err());
-    }
-
-    /// An empty pattern never matches, so a caller that reuses one matcher over a
-    /// whole tree cannot accidentally report every file as a hit.
-    #[test]
-    fn a_matcher_built_from_an_empty_pattern_never_matches() {
-        let matcher = Matcher::new(&literal(""));
-        assert_eq!(
-            matcher.map(|m| m.find("anything at all").len()).ok(),
-            Some(0)
-        );
-    }
-
-    #[test]
-    fn invalid_regex_errors() {
-        let q = SearchQuery {
-            pattern: "(".into(),
-            regex: true,
-            ..Default::default()
-        };
-        assert_eq!(search_in_file("x", &q), Err(SearchError::InvalidPattern));
-    }
-
-    #[test]
-    fn empty_pattern_returns_nothing() {
-        assert!(
-            search_in_file("abc", &literal(""))
-                .unwrap_or_default()
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn zero_width_pattern_terminates() {
-        let q = SearchQuery {
-            pattern: "x*".into(),
-            regex: true,
-            case_sensitive: true,
-            ..Default::default()
-        };
-        // Iterating zero-width matches terminates, yielding one empty match at
-        // every char boundary (the regex crate's documented semantics).
-        let m = search_in_file("abc", &q).unwrap_or_default();
-        let spans: Vec<(usize, usize)> = m.iter().map(|m| (m.start, m.end)).collect();
-        assert_eq!(spans, [(0, 0), (1, 1), (2, 2), (3, 3)]);
-    }
-
-    use tempfile::TempDir;
-
-    type TestResult = Result<(), Box<dyn std::error::Error>>;
-
-    /// Create a fresh temp directory, removed on drop.
-    fn temp_dir() -> std::io::Result<TempDir> {
-        TempDir::new()
-    }
-
-    /// Write `contents` to `dir/rel`, creating parent directories.
-    fn write(dir: &Path, rel: &str, contents: &[u8]) -> std::io::Result<()> {
-        let path = dir.join(rel);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(path, contents)
-    }
-
-    /// Collect every hit from a workspace search into a path-sorted vector.
-    fn collect(root: &Path, query: &SearchQuery) -> Vec<FileHit> {
-        let mut hits = Vec::new();
-        let _ = WorkspaceSearch::new().run(root, query, |hit| hits.push(hit));
-        hits.sort_by(|a, b| a.path.cmp(&b.path));
-        hits
-    }
-
-    #[test]
-    fn workspace_search_finds_matching_files() -> TestResult {
-        let dir = temp_dir()?;
-        write(dir.path(), "a.txt", b"needle here\nand again needle\n")?;
-        write(dir.path(), "sub/b.txt", b"needle in subdir\n")?;
-        write(dir.path(), "c.txt", b"nothing of interest\n")?;
-
-        let hits = collect(dir.path(), &literal("needle"));
-        assert_eq!(hits.len(), 2);
-        // a.txt has two matches; the subdir file one.
-        let total: usize = hits.iter().map(|h| h.matches.len()).sum();
-        assert_eq!(total, 3);
-        Ok(())
-    }
-
-    #[test]
-    fn workspace_search_respects_gitignore() -> TestResult {
-        let dir = temp_dir()?;
-        write(dir.path(), ".gitignore", b"ignored.txt\n")?;
-        write(dir.path(), "kept.txt", b"needle\n")?;
-        write(dir.path(), "ignored.txt", b"needle\n")?;
-
-        let hits = collect(dir.path(), &literal("needle"));
-        assert_eq!(hits.len(), 1);
-        assert!(hits[0].path.ends_with("kept.txt"));
-        Ok(())
-    }
-
-    #[test]
-    fn workspace_search_prunes_ignored_dirs_without_a_gitignore() -> TestResult {
-        let dir = temp_dir()?;
-        write(dir.path(), "kept.txt", b"needle\n")?;
-        // No .gitignore anywhere: pruning must come from IGNORED_DIRS itself.
-        write(dir.path(), "target/debug/build.log", b"needle\n")?;
-        write(dir.path(), "node_modules/pkg/index.js", b"needle\n")?;
-
-        let hits = collect(dir.path(), &literal("needle"));
-        assert_eq!(hits.len(), 1);
-        assert!(hits[0].path.ends_with("kept.txt"));
-        Ok(())
-    }
-
-    #[test]
-    fn workspace_search_skips_binary_files() -> TestResult {
-        let dir = temp_dir()?;
-        write(dir.path(), "text.txt", b"needle\n")?;
-        write(dir.path(), "blob.bin", b"needle\x00\x01needle")?;
-
-        let hits = collect(dir.path(), &literal("needle"));
-        assert_eq!(hits.len(), 1);
-        assert!(hits[0].path.ends_with("text.txt"));
-        Ok(())
-    }
-
-    #[test]
-    fn workspace_search_applies_include_globs() -> TestResult {
-        let dir = temp_dir()?;
-        write(dir.path(), "keep.rs", b"needle\n")?;
-        write(dir.path(), "skip.md", b"needle\n")?;
-
-        let query = SearchQuery {
-            pattern: "needle".into(),
-            case_sensitive: true,
-            includes: vec!["*.rs".into()],
-            ..Default::default()
-        };
-        let hits = collect(dir.path(), &query);
-        assert_eq!(hits.len(), 1);
-        assert!(hits[0].path.ends_with("keep.rs"));
-        Ok(())
-    }
-
-    #[test]
-    fn literal_replace_plans_and_applies() {
-        let text = "foo bar foo";
-        let plan = plan_replacements(text, &literal("foo"), "baz").unwrap_or_default();
-        assert_eq!(plan.len(), 2);
-        assert_eq!(apply_replacements(text, &plan), "baz bar baz");
-    }
-
-    #[test]
-    fn regex_replace_expands_capture_groups() {
-        let q = SearchQuery {
-            pattern: r"(\w+)=(\d+)".into(),
-            regex: true,
-            case_sensitive: true,
-            ..Default::default()
-        };
-        let plan = plan_replacements("a=1 b=2", &q, "$2=$1").unwrap_or_default();
-        assert_eq!(apply_replacements("a=1 b=2", &plan), "1=a 2=b");
-    }
-
-    #[test]
-    fn non_regex_replacement_is_literal_even_with_dollar() {
-        // A whole-word (non-regex) query compiles to a regex internally, but a `$1`
-        // in the replacement must be inserted verbatim, not treated as a capture.
-        let q = SearchQuery {
-            pattern: "x".into(),
-            whole_word: true,
-            case_sensitive: true,
-            ..Default::default()
-        };
-        let plan = plan_replacements("x y x", &q, "$1").unwrap_or_default();
-        assert_eq!(apply_replacements("x y x", &plan), "$1 y $1");
-    }
-
-    #[test]
-    fn apply_is_offset_safe_for_length_changing_edits() {
-        // Replacements of differing lengths must not corrupt neighbours (right-to-left).
-        let text = "aa bb aa";
-        let plan = plan_replacements(text, &literal("aa"), "wide").unwrap_or_default();
-        assert_eq!(apply_replacements(text, &plan), "wide bb wide");
-    }
-
-    fn rep(start: usize, end: usize, text: &str) -> Replacement {
-        Replacement {
-            start,
-            end,
-            text: text.to_owned(),
-        }
-    }
-
-    #[test]
-    fn apply_is_independent_of_the_input_order() {
-        // A caller may hand spans in any order; they are applied right-to-left
-        // against the original offsets either way.
-        let forward = [rep(0, 1, "XYZ"), rep(4, 5, "")];
-        let backward = [rep(4, 5, ""), rep(0, 1, "XYZ")];
-        assert_eq!(apply_replacements("a b c", &forward), "XYZ b ");
-        assert_eq!(apply_replacements("a b c", &backward), "XYZ b ");
-    }
-
-    #[test]
-    fn apply_skips_invalid_spans_and_keeps_valid_ones() {
-        // "héllo": `é` occupies bytes 1..3, so byte 2 is not a char boundary.
-        let text = "héllo";
-        let plan = [
-            rep(2, 3, "!"),   // splits `é`: skipped
-            rep(10, 12, "!"), // past the end: skipped
-            rep(3, 1, "!"),   // inverted: skipped
-            rep(5, 9, "!"),   // end past the end: skipped
-            rep(0, 0, "<"),   // empty span: a pure insertion
-            rep(5, 6, "O"),   // valid
-        ];
-        assert_eq!(apply_replacements(text, &plan), "<héllO");
-        assert_eq!(apply_replacements(text, &[]), text);
-    }
-
-    #[test]
-    fn empty_pattern_plans_nothing() {
-        assert!(
-            plan_replacements("abc", &literal(""), "z")
-                .unwrap_or_default()
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn workspace_replace_writes_matching_files_only() -> TestResult {
-        let dir = temp_dir()?;
-        write(dir.path(), "a.txt", b"needle and needle\n")?;
-        write(dir.path(), "b.txt", b"nothing\n")?;
-        write(dir.path(), ".gitignore", b"ignored.txt\n")?;
-        write(dir.path(), "ignored.txt", b"needle\n")?;
-
-        let summary = WorkspaceSearch::new().replace(dir.path(), &literal("needle"), "pin")?;
-        assert_eq!(summary.files_changed, 1);
-        assert_eq!(summary.replacements, 2);
-        assert_eq!(
-            std::fs::read_to_string(dir.path().join("a.txt"))?,
-            "pin and pin\n"
-        );
-        // The gitignored file is untouched.
-        assert_eq!(
-            std::fs::read_to_string(dir.path().join("ignored.txt"))?,
-            "needle\n"
-        );
-        Ok(())
-    }
-
-    /// Collect every file the walk visits, as root-relative path + contents.
-    fn walked(root: &Path, includes: &[String], excludes: &[String]) -> Vec<(String, String)> {
-        let mut files = Vec::new();
-        let _ = walk_text_files(root, includes, excludes, |path, text| {
-            let rel = path
-                .strip_prefix(root)
-                .unwrap_or(path)
-                .to_string_lossy()
-                .replace('\\', "/");
-            files.push((rel, text));
-            ControlFlow::Continue(())
-        });
-        files.sort();
-        files
-    }
-
-    #[test]
-    fn walk_visits_text_files_and_honors_gitignore() -> TestResult {
-        let dir = temp_dir()?;
-        write(dir.path(), "a.txt", b"alpha\n")?;
-        write(dir.path(), "sub/b.txt", b"beta\n")?;
-        write(dir.path(), ".gitignore", b"ignored.txt\n")?;
-        write(dir.path(), "ignored.txt", b"gamma\n")?;
-
-        let files = walked(dir.path(), &[], &[]);
-        let names: Vec<&str> = files.iter().map(|(rel, _)| rel.as_str()).collect();
-        assert!(names.contains(&"a.txt"), "{names:?}");
-        assert!(names.contains(&"sub/b.txt"), "{names:?}");
-        assert!(!names.contains(&"ignored.txt"), "{names:?}");
-        assert_eq!(
-            files.iter().find(|(rel, _)| rel == "a.txt").map(|(_, t)| t),
-            Some(&"alpha\n".to_owned()),
-            "the walk hands the sink the full file contents"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn walk_prunes_heavyweight_dirs_and_binary_files() -> TestResult {
-        let dir = temp_dir()?;
-        write(dir.path(), "keep.txt", b"text\n")?;
-        // Pruned by IGNORED_DIRS even with no .gitignore mentioning them.
-        write(dir.path(), "target/built.txt", b"artifact\n")?;
-        write(dir.path(), "node_modules/dep.txt", b"vendored\n")?;
-        // A NUL byte in the head marks the file binary.
-        write(dir.path(), "blob.bin", b"pre\0post\n")?;
-
-        assert_eq!(walked_names(dir.path()), ["keep.txt"]);
-        Ok(())
-    }
-
-    /// The root-relative names the unfiltered walk visits.
-    fn walked_names(root: &Path) -> Vec<String> {
-        walked(root, &[], &[])
-            .into_iter()
-            .map(|(rel, _)| rel)
-            .collect()
-    }
-
-    #[test]
-    fn walk_skips_non_utf8_files_without_a_nul() -> TestResult {
-        let dir = temp_dir()?;
-        write(dir.path(), "keep.txt", b"text\n")?;
-        // Latin-1 `é` (0xE9) is invalid UTF-8 but carries no NUL byte, so only
-        // the UTF-8 decode rejects it.
-        write(dir.path(), "latin1.txt", b"caf\xe9\n")?;
-        assert_eq!(walked_names(dir.path()), ["keep.txt"]);
-        Ok(())
-    }
-
-    #[test]
-    fn walk_reads_a_file_at_the_size_cap_and_skips_one_past_it() -> TestResult {
-        let dir = temp_dir()?;
-        // Text up front (so the binary sniff passes), then sparse NUL padding
-        // past the sniff window: NUL is valid UTF-8, so size is the only skip.
-        for (name, len) in [
-            ("at_cap.txt", MAX_FILE_BYTES),
-            ("over_cap.txt", MAX_FILE_BYTES + 1),
-        ] {
-            write(dir.path(), name, &[b'a'; BINARY_SNIFF_BYTES])?;
-            std::fs::OpenOptions::new()
-                .write(true)
-                .open(dir.path().join(name))?
-                .set_len(len)?;
-        }
-        assert_eq!(walked_names(dir.path()), ["at_cap.txt"]);
-        Ok(())
-    }
-
-    #[test]
-    fn walk_applies_include_and_exclude_globs() -> TestResult {
-        let dir = temp_dir()?;
-        write(dir.path(), "a.rs", b"rust\n")?;
-        write(dir.path(), "b.md", b"markdown\n")?;
-        write(dir.path(), "skip.rs", b"rust\n")?;
-
-        let names: Vec<String> = walked(dir.path(), &["*.rs".to_owned()], &["skip.rs".to_owned()])
-            .into_iter()
-            .map(|(rel, _)| rel)
-            .collect();
-        assert_eq!(names, vec!["a.rs".to_owned()]);
-        Ok(())
-    }
-
-    #[test]
-    fn walk_stops_early_on_break() -> TestResult {
-        let dir = temp_dir()?;
-        for i in 0..5 {
-            write(dir.path(), &format!("f{i}.txt"), b"x\n")?;
-        }
-        let mut seen = 0_usize;
-        walk_text_files(dir.path(), &[], &[], |_, _| {
-            seen += 1;
-            // A result cap / cancelled request stops the walk mid-tree.
-            if seen == 2 {
-                ControlFlow::Break(())
-            } else {
-                ControlFlow::Continue(())
-            }
-        })?;
-        assert_eq!(seen, 2);
-        Ok(())
-    }
-
-    #[test]
-    fn walk_surfaces_an_invalid_glob() -> TestResult {
-        let dir = temp_dir()?;
-        write(dir.path(), "a.txt", b"x\n")?;
-        let result = walk_text_files(dir.path(), &["[".to_owned()], &[], |_, _| {
-            ControlFlow::Continue(())
-        });
-        assert_eq!(result, Err(SearchError::InvalidPattern));
-        Ok(())
-    }
-
-    #[test]
-    fn workspace_search_surfaces_invalid_pattern() -> TestResult {
-        let dir = temp_dir()?;
-        write(dir.path(), "a.txt", b"x\n")?;
-        let query = SearchQuery {
-            pattern: "(".into(),
-            regex: true,
-            ..Default::default()
-        };
-        let result = WorkspaceSearch::new().run(dir.path(), &query, |_| {});
-        assert_eq!(result, Err(SearchError::InvalidPattern));
-        Ok(())
-    }
-}
+mod tests;

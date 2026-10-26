@@ -611,8 +611,15 @@ pub enum Event {
     SearchReplaced {
         /// The number of files written.
         files_changed: usize,
-        /// The total number of replacements applied.
+        /// The total number of replacements applied (in the files written).
         replacements: usize,
+        /// The files that had matches but could not be written back, left as
+        /// they were. Empty when every write succeeded.
+        failures: Vec<karet_search::WriteFailure>,
+        /// Why the replace stopped before visiting every root: an invalid regex,
+        /// an invalid glob, or no search worker to run it on. `None` on every
+        /// ordinary outcome, "nothing matched" included.
+        error: Option<String>,
     },
     /// A package's seams were indexed, answering [`Command::IndexSeams`],
     /// [`Command::ReindexSeams`], or [`Command::SetSeamConfiguration`].

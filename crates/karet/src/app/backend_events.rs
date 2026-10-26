@@ -630,16 +630,9 @@ impl App {
             SessionEvent::SearchReplaced {
                 files_changed,
                 replacements,
-            } => {
-                self.notify(
-                    Report::Outcome,
-                    NotificationKind::System,
-                    format!("replaced {replacements} occurrence(s) in {files_changed} file(s)"),
-                );
-                // Refresh so the (now empty, unless the replacement re-matches)
-                // results reflect the edited files.
-                self.run_global_search();
-            },
+                failures,
+                error,
+            } => self.search_replaced(files_changed, replacements, &failures, error),
             // Events answering commands this client never sends fall through
             // here until the corresponding UI exists.
             _ => {},
@@ -727,5 +720,56 @@ impl App {
             ],
         ));
         self.pending_swaps = Some(swaps);
+    }
+
+    /// Report a finished replace-all, then refresh the results so they reflect
+    /// the edited files (now empty, unless the replacement re-matches).
+    ///
+    /// A replace that stopped on an error, or left files it could not write, is
+    /// a failure the user must see: a bare count would read as complete.
+    fn search_replaced(
+        &mut self,
+        files_changed: usize,
+        replacements: usize,
+        failures: &[karet_search::WriteFailure],
+        error: Option<String>,
+    ) {
+        let done = format!("replaced {replacements} occurrence(s) in {files_changed} file(s)");
+        if let Some(error) = error {
+            self.notify_detailed(
+                Report::Failure,
+                NotificationKind::System,
+                format!("replace stopped: {error}"),
+                done,
+            );
+        } else if failures.is_empty() {
+            self.notify(Report::Outcome, NotificationKind::System, done);
+        } else {
+            self.notify_detailed(
+                Report::Failure,
+                NotificationKind::Io,
+                format!("{done}; {} file(s) could not be written", failures.len()),
+                self.write_failure_lines(failures),
+            );
+        }
+        self.run_global_search();
+    }
+
+    /// One `path: reason` line per unwritten file, root-relative, capped so a
+    /// read-only tree cannot fill the screen.
+    fn write_failure_lines(&self, failures: &[karet_search::WriteFailure]) -> String {
+        const SHOWN: usize = 5;
+        let mut lines: Vec<String> = failures
+            .iter()
+            .take(SHOWN)
+            .map(|f| {
+                let path = f.path.strip_prefix(&self.root).unwrap_or(&f.path);
+                format!("{}: {}", path.display(), f.error)
+            })
+            .collect();
+        if failures.len() > SHOWN {
+            lines.push(format!("…and {} more", failures.len() - SHOWN));
+        }
+        lines.join("\n")
     }
 }
