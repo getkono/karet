@@ -310,8 +310,8 @@ mod tests {
         assert_eq!(idx.line_col(text, BytePos(2)), LineCol::new(0, 1));
         assert_eq!(idx.line_col(text, BytePos(3)), LineCol::new(0, 1));
         assert_eq!(idx.line_col(text, BytePos(4)), LineCol::new(0, 2));
-        // Past the end of a text ending mid-row: the end of that row, matching
-        // karet-seam's clamping of the same case.
+        // Past the end of a text ending mid-row: the end of that row, the
+        // column just after its last char.
         assert_eq!(idx.line_col(text, BytePos(999)), LineCol::new(0, 3));
         // A text ending in a multi-byte char: past the end counts that char.
         let tail = "xé";
