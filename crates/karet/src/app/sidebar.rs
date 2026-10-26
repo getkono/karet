@@ -30,23 +30,33 @@ impl App {
 
     /// The flattened outline rows for the active tab, or empty when it has none.
     pub(crate) fn active_outline_rows(&self) -> Vec<OutlineRow> {
-        match self.tabs.get(self.active).map(|t| &t.kind) {
-            Some(TabKind::Code { language, text, .. })
-                if language.eq_ignore_ascii_case("markdown") =>
-            {
-                crate::outline::flatten(&crate::outline::from_markdown(text))
-            },
-            Some(TabKind::Code { doc: Some(doc), .. }) => self
+        let Some(tab) = self.tabs.get(self.active) else {
+            return Vec::new();
+        };
+        match &tab.kind {
+            TabKind::Code {
+                language,
+                buffer,
+                text,
+                ..
+            } if language.eq_ignore_ascii_case("markdown") => self.outline.markdown.rows(
+                tab.view,
+                buffer.version(),
+                std::iter::once(text.as_str()),
+            ),
+            TabKind::Code { doc: Some(doc), .. } => self
                 .docs
                 .symbols
                 .get(doc)
                 .map(|symbols| crate::outline::flatten(&crate::outline::from_symbols(symbols)))
                 .unwrap_or_default(),
-            Some(TabKind::MarkdownPreview { buffer, .. }) => {
-                crate::outline::flatten(&crate::outline::from_markdown(&buffer.text()))
+            TabKind::MarkdownPreview { buffer, .. } => {
+                self.outline
+                    .markdown
+                    .rows(tab.view, buffer.version(), buffer.chunks())
             },
             #[cfg(feature = "pdf")]
-            Some(TabKind::Document { outline, .. }) => {
+            TabKind::Document { outline, .. } => {
                 crate::outline::flatten(&crate::outline::from_pdf(outline))
             },
             _ => Vec::new(),

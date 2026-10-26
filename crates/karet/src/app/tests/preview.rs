@@ -627,3 +627,104 @@ fn editing_the_source_re_renders_the_preview_on_the_next_draw() {
         "the preview must re-render once the document version moves:\n{after}"
     );
 }
+
+/// The labels of the active tab's outline rows.
+fn outline_labels(app: &App) -> Vec<String> {
+    app.active_outline_rows()
+        .into_iter()
+        .map(|row| row.label)
+        .collect()
+}
+
+/// Asking for a Markdown outline again, as every frame does, reuses the rows
+/// built the first time instead of parsing the document again.
+#[test]
+fn markdown_outline_is_reused_while_the_text_is_unchanged() {
+    let app = markdown_app("# Title\n\n## Part\n");
+    assert_eq!(outline_labels(&app), ["Title", "Part"]);
+    assert_eq!(outline_labels(&app), ["Title", "Part"]);
+    let _ = app.active_outline_rows();
+    assert_eq!(app.outline.markdown.builds(), 1, "parsed once, then reused");
+}
+
+/// An edit moves the buffer version, so the next ask parses the new text.
+#[test]
+fn markdown_outline_refreshes_after_an_edit() {
+    let mut app = markdown_app("# before\n");
+    assert_eq!(outline_labels(&app), ["before"]);
+
+    let mut edited = karet_text::TextBuffer::from_text("# before\n");
+    let change = karet_core::Change::new(
+        edited.version(),
+        vec![karet_core::TextEdit {
+            range: Range {
+                start: LineCol::new(0, 2),
+                end: LineCol::new(0, 8),
+            },
+            new_text: "after".to_string(),
+        }],
+    );
+    edited.apply_simple(&change).expect("apply the edit");
+    if let TabKind::Code { buffer, text, .. } = &mut app.tabs[app.active].kind {
+        *buffer = edited.content_snapshot().into();
+        *text = edited.text_snapshot();
+    }
+
+    assert_eq!(outline_labels(&app), ["after"]);
+    assert_eq!(outline_labels(&app), ["after"]);
+    assert_eq!(app.outline.markdown.builds(), 2, "one parse per text");
+}
+
+/// A version can repeat over different text — a reserved tab's placeholder and
+/// the loaded file share one — so text replaced at the same version is parsed
+/// again rather than served from the stale entry.
+#[test]
+fn markdown_outline_refreshes_when_text_changes_at_the_same_version() {
+    let mut app = markdown_app("");
+    assert!(outline_labels(&app).is_empty());
+
+    if let TabKind::Code { buffer, text, .. } = &mut app.tabs[app.active].kind {
+        let loaded = karet_text::TextBuffer::from_text("# Loaded\n");
+        assert_eq!(loaded.version(), buffer.version());
+        *text = loaded.text_snapshot();
+        *buffer = loaded.into();
+    }
+
+    assert_eq!(outline_labels(&app), ["Loaded"]);
+}
+
+/// Switching tabs keys the cache on the newly active view, so each tab shows its
+/// own headings even where both buffers sit at the same version.
+#[test]
+fn markdown_outline_follows_the_active_tab() {
+    let mut app = markdown_app("# First\n");
+    let mut second = text_tab("other.md", "# Second\n");
+    if let TabKind::Code { language, .. } = &mut second.kind {
+        *language = "Markdown";
+    }
+    app.push_tab(second);
+    assert_eq!(outline_labels(&app), ["Second"]);
+    app.prev_tab();
+    assert_eq!(outline_labels(&app), ["First"]);
+}
+
+/// A standalone rendered preview reads its outline through the same cache, and
+/// a regenerated preview (a kernel re-render restarts the buffer at version 0)
+/// shows the new headings.
+#[test]
+fn markdown_preview_outline_is_cached_and_refreshed() {
+    let mut app = app();
+    app.push_tab(Tab::document_preview(
+        PathBuf::from("run.ipynb"),
+        "# Out 1\n",
+    ));
+    assert_eq!(outline_labels(&app), ["Out 1"]);
+    assert_eq!(outline_labels(&app), ["Out 1"]);
+    assert_eq!(app.outline.markdown.builds(), 1);
+
+    if let TabKind::MarkdownPreview { buffer, .. } = &mut app.tabs[app.active].kind {
+        *buffer = karet_text::TextBuffer::from_text("# Out 2\n");
+    }
+    assert_eq!(outline_labels(&app), ["Out 2"]);
+    assert_eq!(app.outline.markdown.builds(), 2);
+}
