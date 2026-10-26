@@ -337,8 +337,14 @@ impl App {
         });
     }
 
-    /// Apply every markdownlint autofix in one undoable edit, honoring the
-    /// workspace's `.markdownlint.json` when present.
+    /// Apply every markdownlint autofix in one undoable edit: ask the session,
+    /// which fixes under the same workspace `.markdownlint.json(c)` its
+    /// diagnostics layer lints with, off the UI thread.
+    ///
+    /// The fixes come back as an ordinary snapshot, so they undo as one step
+    /// and every caret follows the text it sat in; the count arrives as
+    /// [`SessionEvent::MarkdownLintFixed`], read by
+    /// [`Self::markdown_lint_fixed`].
     pub(super) fn markdown_lint_fix_all(&mut self) {
         if !self.active_is_markdown() {
             self.notify(
@@ -348,24 +354,20 @@ impl App {
             );
             return;
         }
-        let Some(tab) = self.tabs.get(self.active) else {
+        let Some(Tab {
+            kind: TabKind::Code { doc: Some(doc), .. },
+            ..
+        }) = self.tabs.get(self.active)
+        else {
             return;
         };
-        let TabKind::Code { buffer, .. } = &tab.kind else {
-            return;
-        };
-        let original = buffer.text();
-        let config = [".markdownlint.json", ".markdownlint.jsonc"]
-            .iter()
-            .find_map(|name| {
-                let text = std::fs::read_to_string(self.root.join(name)).ok()?;
-                karet_markdown::lint::Config::from_json(&text).ok()
-            })
-            .unwrap_or_default();
-        let issues = karet_markdown::lint::lint(&original, &config);
-        let fixable = issues.iter().filter(|i| i.fix.is_some()).count();
-        let fixed = karet_markdown::lint::apply_fixes(&original, &issues);
-        if fixable == 0 || fixed == original {
+        let doc = *doc;
+        let _ = self.send(SessionCommand::FixMarkdownLint { doc });
+    }
+
+    /// Report how many lint issues a [`SessionCommand::FixMarkdownLint`] fixed.
+    pub(super) fn markdown_lint_fixed(&mut self, fixed: usize) {
+        if fixed == 0 {
             self.notify(
                 Report::Refusal,
                 NotificationKind::System,
@@ -373,25 +375,12 @@ impl App {
             );
             return;
         }
-        let primary = tab.editor.cursor();
-        let cursors = tab.editor.cursors().clone();
-        self.submit_edit(move |caret, _selection, buffer, base| {
-            (caret == primary).then(|| editing::replace_document(buffer, fixed.clone(), base))
-        });
-        if let Some(Tab {
-            kind: TabKind::Code { buffer, .. },
-            editor,
-            ..
-        }) = self.tabs.get_mut(self.active)
-        {
-            editor.set_cursor_state(buffer, cursors);
-        }
         self.notify(
             Report::Outcome,
             NotificationKind::System,
             format!(
-                "fixed {fixable} lint issue{}",
-                if fixable == 1 { "" } else { "s" }
+                "fixed {fixed} lint issue{}",
+                if fixed == 1 { "" } else { "s" }
             ),
         );
     }

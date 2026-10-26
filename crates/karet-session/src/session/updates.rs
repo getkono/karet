@@ -934,4 +934,17 @@ pub(super) fn utf16_caret(doc: &Document, position: LineCol) -> LineCol {
 impl Session {
     /// Without the `mdlint` feature there is no markdown lint layer.
     pub(crate) fn refresh_markdown_lint(&mut self, _doc: crate::api::DocumentId) {}
+
+    /// Without the `mdlint` feature there is no linter to fix with: the
+    /// request is answered with a notice rather than left outstanding.
+    pub(super) fn fix_markdown_lint(&mut self, id: RequestId, _doc: crate::api::DocumentId) {
+        self.emit(
+            Some(id),
+            Event::Notification {
+                severity: Severity::Warning,
+                kind: NotificationKind::System,
+                message: "markdown lint is not available in this build".to_owned(),
+            },
+        );
+    }
 }

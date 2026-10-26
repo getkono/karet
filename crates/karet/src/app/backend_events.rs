@@ -610,6 +610,7 @@ impl App {
             SessionEvent::DocumentConverted { path, markdown } => {
                 self.apply_document_converted(id, &path, markdown);
             },
+            SessionEvent::MarkdownLintFixed { fixed, .. } => self.markdown_lint_fixed(fixed),
             SessionEvent::DictionaryWordAdded { word, path } => {
                 self.dictionary_word_added(&word, &path);
             },
