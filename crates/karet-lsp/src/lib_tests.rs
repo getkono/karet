@@ -663,6 +663,33 @@ async fn custom_request_round_trips_an_untyped_method() -> TestResult {
     Ok(())
 }
 
+/// The caller's bound replaces the standard one in both directions: a reply
+/// inside it arrives, and silence past it is a timeout.
+#[tokio::test]
+async fn custom_request_with_is_bounded_by_its_own_timeout() -> TestResult {
+    let ((read, write), mut server) = wire();
+    let server_task = tokio::spawn(async move {
+        server.handshake().await;
+        let first = server.recv().await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        server.respond(&first["id"], json!("late")).await;
+        // The second request is never answered.
+        let _second = server.recv().await;
+        server
+    });
+    let client = LspClient::connect(read, write, Path::new("/tmp/ws")).await?;
+    let reply: String = client
+        .custom_request_with("test/slow", Value::Null, Duration::from_secs(30))
+        .await?;
+    assert_eq!(reply, "late");
+    let silent = client
+        .custom_request_with::<_, Value>("test/silent", Value::Null, Duration::from_millis(50))
+        .await;
+    assert!(matches!(silent, Err(LspError::Timeout)), "got {silent:?}");
+    drop(server_task.await?);
+    Ok(())
+}
+
 #[tokio::test]
 async fn custom_notify_reaches_the_server_verbatim() -> TestResult {
     let ((read, write), mut server) = wire();

@@ -1240,6 +1240,28 @@ impl LspClient {
         self.conn.request(method, params).await
     }
 
+    /// [`custom_request`](Self::custom_request), bounded by `timeout` instead
+    /// of the standard request timeout: for a request the server answers only
+    /// once something slower than a round trip has happened, such as a user
+    /// confirming a device code in their browser.
+    ///
+    /// # Errors
+    ///
+    /// As [`custom_request`](Self::custom_request), with
+    /// [`LspError::Timeout`] once `timeout` has passed unanswered.
+    pub async fn custom_request_with<P, T>(
+        &self,
+        method: &str,
+        params: P,
+        timeout: std::time::Duration,
+    ) -> Result<T, LspError>
+    where
+        P: serde::Serialize,
+        T: serde::de::DeserializeOwned,
+    {
+        self.conn.request_with(method, params, timeout).await
+    }
+
     /// Send an arbitrary notification (fire-and-forget), `method` verbatim.
     ///
     /// # Errors
