@@ -787,15 +787,16 @@ pub(super) fn caret_cell(
     at: LineCol,
 ) -> Option<(u16, u16)> {
     let line_count = buffer.line_count() as u32;
-    let gutter = gutter_width(line_count, state.last_line_numbers, state.last_change_lane);
+    let frame = &state.frame;
+    let gutter = gutter_width(line_count, frame.line_numbers, frame.change_lane);
     let content_x = area.x.saturating_add(gutter);
-    let content_y = area.y.saturating_add(state.sticky_height);
-    let content_height = area.height.saturating_sub(state.sticky_height);
+    let content_y = area.y.saturating_add(frame.sticky_height);
+    let content_height = area.height.saturating_sub(frame.sticky_height);
     if content_x >= area.right() || content_height == 0 {
         return None;
     }
     let content_width = area.right().saturating_sub(content_x);
-    let wrap = state.last_word_wrap;
+    let wrap = frame.word_wrap;
     let chars = line_chars(buffer, at.line);
     // Off the buffer, past the line's end, or (unwrapped) scrolled off to
     // the left: not on screen. Drawing it pinned to an edge would show it
@@ -830,7 +831,7 @@ pub(super) fn caret_cell(
                 &chars,
                 range.start,
                 at.col,
-                state.last_tab_width,
+                frame.tab_width,
                 layout.hints_on(at.line),
             )
             .saturating_add(range.indent);

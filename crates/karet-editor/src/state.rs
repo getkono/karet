@@ -1,5 +1,4 @@
 use std::cell::Cell;
-use std::ops::RangeInclusive;
 
 use karet_core::CursorState;
 use karet_core::Highlights;
@@ -9,23 +8,21 @@ use karet_core::Selection;
 use karet_text::TextBuffer;
 use ratatui::layout::Rect;
 
-use super::hint::BlockIndex;
-use super::hint::HintIndex;
 use super::hint::LineHints;
 use super::text::*;
 use super::visual::*;
-use crate::LineNumbers;
-use crate::WrappingIndent;
 use crate::line_span;
 use crate::next_word_boundary;
 use crate::previous_word_boundary;
 use crate::view::gutter_width;
 
 mod caret_ops;
+mod frame;
 mod gutter;
 mod motion;
 mod syntax_select;
 
+pub(crate) use frame::FrameGeometry;
 pub use gutter::GutterHit;
 pub use gutter::GutterLane;
 pub use motion::Motion;
@@ -92,44 +89,12 @@ pub struct EditorState {
     /// ([`collapse_to_original`](Self::collapse_to_original)). Followed through
     /// every sort and merge, and reset whenever the set becomes one caret.
     pub(super) original: usize,
-    /// The viewport height captured at the last render.
-    pub(super) last_height: u16,
     /// The continuation row within [`scroll_line`](Self::scroll_line) at the top of
     /// a soft-wrapped viewport.
     pub(super) scroll_subrow: u32,
-    /// The content width (after the gutter) captured at the last render.
-    pub(super) last_content_width: u16,
-    /// The gutter numbering the last render used, which sets the gutter's
-    /// width for hit-testing and caret placement.
-    pub(super) last_line_numbers: LineNumbers,
-    /// Whether the last render reserved the gutter's change lane, which
-    /// widens the gutter by one column.
-    pub(super) last_change_lane: bool,
-    /// The keyboard reveal's vertical margin the last render was given.
-    pub(super) last_scroll_off: u16,
-    /// The buffer's last line at the last render, where a margin stops.
-    pub(super) last_line: u32,
-    /// Whether the last render used soft wrapping.
-    pub(super) last_word_wrap: bool,
-    /// The wrap column the last render capped soft wrapping at.
-    pub(super) last_wrap_column: Option<u32>,
-    /// How the last render indented soft-wrapped continuation rows.
-    pub(super) last_wrapping_indent: WrappingIndent,
-    /// Hard-tab width captured at the last render.
-    pub(super) last_tab_width: u16,
-    /// Logical-line ranges exempted from soft wrapping at the last render.
-    pub(super) last_unwrapped_lines: Vec<RangeInclusive<u32>>,
-    /// Virtual text captured at the last render, indexed for lookup.
-    ///
-    /// Cached rather than recomputed because a mouse click resolves outside a
-    /// render, and it must land against the geometry actually on screen. A
-    /// click resolved against hints the frame did not paint would select the
-    /// wrong character.
-    pub(super) last_hints: HintIndex,
-    /// Virtual lines captured at the last render, for the same reason as
-    /// [`last_hints`](Self::last_hints): the rows a click counts are the rows
-    /// that frame painted.
-    pub(super) last_blocks: BlockIndex,
+    /// The geometry the last render laid out and painted, replaced whole by
+    /// [`record_frame`](Self::record_frame).
+    pub(crate) frame: FrameGeometry,
     /// Whether the next render should reveal a cursor moved by an editor
     /// command rather than preserve a manually-scrolled viewport.
     pub(super) follow_cursor: bool,
@@ -142,17 +107,6 @@ pub struct EditorState {
     ///
     /// [`scroll_to`]: Self::scroll_to
     pub(super) follow_col: Option<(LineCol, Reveal)>,
-    /// The collapsed folds the last render hid lines behind, so a reveal made
-    /// between renders counts rows, not buffer lines.
-    pub(super) last_folds: Vec<Fold>,
-    /// Source lines currently occupying the sticky-scroll rows, outermost first.
-    pub(super) sticky_rows: Vec<u32>,
-    /// Rows reserved above the live document viewport by the last render.
-    pub(super) sticky_height: u16,
-    /// Distinct buffer lines the last render painted — see [`visible_lines`].
-    ///
-    /// [`visible_lines`]: EditorState::visible_lines
-    pub(super) last_visible_lines: u32,
     /// High-water mark of the longest line seen — see [`longest_col`].
     ///
     /// [`longest_col`]: EditorState::longest_col
@@ -178,18 +132,6 @@ pub struct EditorState {
     /// ([`set_caret`](Self::set_caret), [`extend_to`](Self::extend_to)) can
     /// keep the caret on that row. A `Cell` because hit-testing is `&self`.
     pub(super) pointer_upstream: Cell<Option<LineCol>>,
-    /// Where the last render painted each virtual text, keyed by its index
-    /// in the slice given to `Editor::virtual_text` — see
-    /// [`virtual_text_rect`](Self::virtual_text_rect).
-    pub(super) last_virtual_text: Vec<(usize, Rect)>,
-    /// The row the last render painted each virtual line on, keyed by its
-    /// index in the slice given to `Editor::virtual_lines` — see
-    /// [`virtual_line_at`](Self::virtual_line_at).
-    pub(super) last_virtual_lines: Vec<(usize, Rect)>,
-    /// Where the last render painted each collapsed fold header's ` ⋯`,
-    /// with that header's line — see
-    /// [`fold_ellipsis_at`](Self::fold_ellipsis_at).
-    pub(super) last_fold_ellipses: Vec<(Rect, u32)>,
     /// The selection set the last whole-word `Ctrl+D` press left — see
     /// [`add_next_occurrence`](Self::add_next_occurrence). The next press keeps
     /// matching whole words only while the set is still exactly this one.
@@ -209,34 +151,15 @@ impl Default for EditorState {
             scroll_col: 0,
             cursors: CursorState::single(Selection::caret(LineCol::new(0, 0))),
             original: 0,
-            last_height: 0,
             scroll_subrow: 0,
-            last_content_width: 0,
-            last_line_numbers: LineNumbers::Absolute,
-            last_change_lane: false,
-            last_scroll_off: 0,
-            last_line: u32::MAX,
-            last_word_wrap: false,
-            last_wrap_column: None,
-            last_wrapping_indent: WrappingIndent::None,
-            last_tab_width: 4,
-            last_unwrapped_lines: Vec::new(),
-            last_hints: HintIndex::default(),
-            last_blocks: BlockIndex::default(),
+            frame: FrameGeometry::default(),
             follow_cursor: false,
             follow_col: None,
-            last_folds: Vec::new(),
-            sticky_rows: Vec::new(),
-            sticky_height: 0,
-            last_visible_lines: 0,
             last_longest_col: 0,
             extents: ExtentCache::default(),
             upstream: Vec::new(),
             goals: None,
             pointer_upstream: Cell::new(None),
-            last_virtual_text: Vec::new(),
-            last_virtual_lines: Vec::new(),
-            last_fold_ellipses: Vec::new(),
             word_occurrences: None,
             syntax_steps: Vec::new(),
             caret_history: Vec::new(),
@@ -280,7 +203,7 @@ impl EditorState {
     /// [`reveal`](Self::reveal), which resolves both axes now.
     pub fn scroll_to(&mut self, pos: LineCol) {
         self.follow_col = Some((pos, Reveal::Margin));
-        self.scroll_vertically_to(pos, self.last_line);
+        self.scroll_vertically_to(pos, self.frame.last_line);
     }
 
     /// Scroll so that `pos` is within the viewport, resolving both axes
@@ -323,15 +246,15 @@ impl EditorState {
         // unwrapped one. Set first, as it decides the vertical margin.
         self.follow_col = Some((pos, reveal));
         self.scroll_vertically_to(pos, last_line(buffer));
-        if self.last_word_wrap || self.last_content_width == 0 {
+        if self.frame.word_wrap || self.frame.content_width == 0 {
             return;
         }
         self.scroll_col = reveal_column(
             &line_chars(buffer, pos.line),
             self.scroll_col,
             pos.col,
-            u32::from(self.last_content_width),
-            self.last_tab_width,
+            u32::from(self.frame.content_width),
+            self.frame.tab_width,
             self.hints_on(pos.line),
             reveal,
         );
@@ -341,30 +264,45 @@ impl EditorState {
     /// the cursor.
     fn scroll_vertically_to(&mut self, pos: LineCol, last: u32) {
         self.follow_cursor = true;
-        let height = u32::from(self.last_height.max(1));
+        let height = u32::from(self.frame.height.max(1));
         // A wrapped line, or a line with virtual lines, takes several rows, so
         // a margin counted in lines could scroll further than the rows the
         // margin asks for; the render keeps it in rows instead.
-        let off = if self.last_word_wrap || !self.last_blocks.is_empty() {
+        let off = if self.frame.word_wrap || !self.frame.blocks.is_empty() {
             0
         } else {
-            self.reveal_margin()
+            self.reveal_margin(self.frame.scroll_off)
         };
         let margin = (off, last);
-        let top = reveal_line(&self.last_folds, self.scroll_line, pos.line, height, margin);
+        let top = reveal_line(
+            &self.frame.folds,
+            self.scroll_line,
+            pos.line,
+            height,
+            margin,
+        );
         if top != self.scroll_line {
             self.scroll_line = top;
             self.scroll_subrow = 0;
         }
     }
 
-    /// The vertical margin the pending reveal keeps: the editor's
-    /// `scroll_off` for a keyboard reveal, none for a pointer-originated one.
-    pub(super) fn reveal_margin(&self) -> u32 {
+    /// The vertical margin the pending reveal keeps: `scroll_off` for a
+    /// keyboard reveal, none for a pointer-originated one.
+    pub(super) fn reveal_margin(&self, scroll_off: u16) -> u32 {
         match self.follow_col {
             Some((_, Reveal::Minimal)) => 0,
-            _ => u32::from(self.last_scroll_off),
+            _ => u32::from(scroll_off),
         }
+    }
+
+    /// Replace the last frame's geometry with `frame`, the one a render has
+    /// just laid out and painted.
+    ///
+    /// The only way a render hands its geometry over, so everything read
+    /// between renders describes one frame.
+    pub(crate) fn record_frame(&mut self, frame: FrameGeometry) {
+        self.frame = frame;
     }
 
     /// The geometry of the last render at `width` content columns, soft
@@ -373,19 +311,19 @@ impl EditorState {
     pub(super) fn row_layout(&self, width: u32, wrap: bool) -> Layout<'_> {
         Layout {
             width,
-            tab_width: self.last_tab_width,
-            unwrapped_lines: &self.last_unwrapped_lines,
-            hints: &self.last_hints,
-            blocks: &self.last_blocks,
+            tab_width: self.frame.tab_width,
+            unwrapped_lines: &self.frame.unwrapped_lines,
+            hints: &self.frame.hints,
+            blocks: &self.frame.blocks,
             wrap,
-            wrap_column: self.last_wrap_column,
-            wrapping_indent: self.last_wrapping_indent,
+            wrap_column: self.frame.wrap_column,
+            wrapping_indent: self.frame.wrapping_indent,
         }
     }
 
     /// The inline virtual text the last render painted on `line`.
     pub(super) fn hints_on(&self, line: u32) -> LineHints<'_> {
-        self.last_hints.line(line)
+        self.frame.hints.line(line)
     }
 
     /// Scroll the viewport vertically by display rows.
@@ -402,7 +340,7 @@ impl EditorState {
         delta: i32,
     ) {
         self.follow_cursor = false;
-        let width = u32::from(self.last_content_width.max(1));
+        let width = u32::from(self.frame.content_width.max(1));
         let layout = self.row_layout(width, word_wrap);
         let mut anchor = VisualAnchor {
             line: self.scroll_line.min(last_line(buffer)),
@@ -428,20 +366,20 @@ impl EditorState {
     /// Soft-wrapped views always remain at column zero.
     pub fn scroll_columns(&mut self, buffer: &TextBuffer, delta: i32) {
         self.follow_cursor = false;
-        if self.last_word_wrap {
+        if self.frame.word_wrap {
             self.scroll_col = 0;
             return;
         }
-        let width = u32::from(self.last_content_width.max(1));
+        let width = u32::from(self.frame.content_width.max(1));
         let mut longest = 0;
         for line in 0..buffer.line_count() as u32 {
-            let hints = self.last_hints.line(line);
+            let hints = self.frame.hints.line(line);
             let extent = line_extent(
                 &mut self.extents,
                 buffer,
                 line,
                 width,
-                self.last_tab_width,
+                self.frame.tab_width,
                 hints,
             );
             longest = longest.max(extent);
@@ -478,7 +416,7 @@ impl EditorState {
     /// [`scroll_columns`](Self::scroll_columns).
     pub fn scroll_to_column(&mut self, col: u32) {
         self.follow_cursor = false;
-        self.scroll_col = if self.last_word_wrap { 0 } else { col };
+        self.scroll_col = if self.frame.word_wrap { 0 } else { col };
     }
 
     /// How many distinct buffer lines the last render showed.
@@ -490,7 +428,7 @@ impl EditorState {
     /// the wrap depends on the width and the buffer changes on every keystroke.
     #[must_use]
     pub const fn visible_lines(&self) -> u32 {
-        self.last_visible_lines
+        self.frame.visible_lines
     }
 
     /// The text width the last render had after the line-number gutter, in cells.
@@ -500,7 +438,7 @@ impl EditorState {
     /// which never scrolls.
     #[must_use]
     pub const fn content_width(&self) -> u16 {
-        self.last_content_width
+        self.frame.content_width
     }
 
     /// The longest line seen so far — the horizontal scroll extent, in the
@@ -523,7 +461,7 @@ impl EditorState {
     /// The currently-visible line range `[top, top + height)`.
     #[must_use]
     pub fn viewport(&self) -> Range {
-        let height = u32::from(self.last_height.max(1));
+        let height = u32::from(self.frame.height.max(1));
         Range {
             start: LineCol::new(self.scroll_line, 0),
             end: LineCol::new(self.scroll_line + height, 0),
@@ -574,7 +512,8 @@ impl EditorState {
     /// any inline text or fold marker the line ends with.
     #[must_use]
     pub fn virtual_text_rect(&self, index: usize) -> Option<Rect> {
-        self.last_virtual_text
+        self.frame
+            .virtual_text
             .iter()
             .find_map(|&(painted, rect)| (painted == index).then_some(rect))
     }
@@ -583,7 +522,7 @@ impl EditorState {
     /// read-only viewer centering a search match. The scroll is clamped to the
     /// buffer at render time.
     pub fn center_on(&mut self, line: u32) {
-        let height = u32::from(self.last_height.max(1));
+        let height = u32::from(self.frame.height.max(1));
         self.scroll_line = line.saturating_sub(height / 2);
     }
 
@@ -591,13 +530,13 @@ impl EditorState {
     /// paging for a pager/viewer. The scroll is clamped to the buffer at render
     /// time.
     pub fn scroll_page_down(&mut self) {
-        let height = u32::from(self.last_height.max(1));
+        let height = u32::from(self.frame.height.max(1));
         self.scroll_line = self.scroll_line.saturating_add(height);
     }
 
     /// Scroll the viewport up one page without moving the cursor (read-only paging).
     pub fn scroll_page_up(&mut self) {
-        let height = u32::from(self.last_height.max(1));
+        let height = u32::from(self.frame.height.max(1));
         self.scroll_line = self.scroll_line.saturating_sub(height);
     }
 
@@ -1088,11 +1027,12 @@ impl EditorState {
     ) -> LineCol {
         let line_count = buffer.line_count().max(1) as u32;
         let mut rel_row = u32::from(row.saturating_sub(area.y));
-        let gutter = gutter_width(line_count, self.last_line_numbers, self.last_change_lane);
+        let gutter = gutter_width(line_count, self.frame.line_numbers, self.frame.change_lane);
         let content_x = area.x.saturating_add(gutter);
         let rel_col = u32::from(col.saturating_sub(content_x));
-        if rel_row < u32::from(self.sticky_height) {
+        if rel_row < u32::from(self.frame.sticky_height) {
             let line = self
+                .frame
                 .sticky_rows
                 .get(rel_row as usize)
                 .copied()
@@ -1108,15 +1048,15 @@ impl EditorState {
                     self.scroll_col,
                     chars.len() as u32,
                     rel_col,
-                    self.last_tab_width,
+                    self.frame.tab_width,
                     self.hints_on(line),
                     snap,
                 ),
             );
         }
-        rel_row = rel_row.saturating_sub(u32::from(self.sticky_height));
+        rel_row = rel_row.saturating_sub(u32::from(self.frame.sticky_height));
         let width = u32::from(area.width.saturating_sub(gutter).max(1));
-        let layout = self.row_layout(width, self.last_word_wrap);
+        let layout = self.row_layout(width, self.frame.word_wrap);
         let (anchor, below_end) = self.row_at(buffer, folds, layout, rel_row);
         // Below the last row: the end of the document, as shown.
         if below_end {
@@ -1145,7 +1085,7 @@ impl EditorState {
                 range.start,
                 range.end,
                 rel_col.saturating_sub(range.indent),
-                self.last_tab_width,
+                self.frame.tab_width,
                 layout.hints_on(anchor.line),
                 snap,
             ),
@@ -1190,7 +1130,8 @@ impl EditorState {
     #[must_use]
     pub fn virtual_line_at(&self, col: u16, row: u16) -> Option<usize> {
         let at = ratatui::layout::Position { x: col, y: row };
-        self.last_virtual_lines
+        self.frame
+            .virtual_lines
             .iter()
             .find_map(|&(index, rect)| rect.contains(at).then_some(index))
     }
@@ -1201,7 +1142,8 @@ impl EditorState {
     /// (scrolled off, or hidden in a collapsed fold).
     #[must_use]
     pub fn virtual_line_rect(&self, index: usize) -> Option<Rect> {
-        self.last_virtual_lines
+        self.frame
+            .virtual_lines
             .iter()
             .find_map(|&(painted, rect)| (painted == index).then_some(rect))
     }

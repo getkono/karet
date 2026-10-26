@@ -17,7 +17,7 @@ fn span(line: u32, start: u32, end: u32) -> Range {
 /// A state with a viewport, so reveals have somewhere to scroll.
 fn state_at(line: u32, col: u32) -> EditorState {
     let mut state = EditorState::new();
-    state.last_height = 4;
+    state.frame.height = 4;
     state.place_caret(LineCol::new(line, col));
     state
 }

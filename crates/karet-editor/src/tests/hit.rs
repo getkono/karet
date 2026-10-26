@@ -28,7 +28,11 @@ fn a_click_on_a_sticky_row_counts_its_tabs_as_painted() {
         .semantic_blocks(&blocks)
         .sticky_scroll(true)
         .render(area, &mut target, &mut state);
-    assert_eq!(state.sticky_rows, vec![0], "line 0 is the sticky header");
+    assert_eq!(
+        state.frame.sticky_rows,
+        vec![0],
+        "line 0 is the sticky header"
+    );
 
     // The tab expands to four cells, so `Foo`'s `F` (column 13) paints at
     // content cell 16, not 13.

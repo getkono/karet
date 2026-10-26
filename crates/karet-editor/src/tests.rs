@@ -293,7 +293,7 @@ fn token_style_applies_markup_emphasis() {
 #[test]
 fn scroll_to_keeps_cursor_in_view() {
     let mut state = EditorState::new();
-    state.last_height = 10;
+    state.frame.height = 10;
     state.scroll_to(LineCol::new(25, 0));
     let vp = state.viewport();
     assert!(vp.start.line <= 25 && 25 < vp.end.line);
@@ -305,7 +305,7 @@ fn scroll_to_keeps_cursor_in_view() {
 fn motions_clamp_to_buffer() {
     let buffer = TextBuffer::from_text("ab\ncde\nf");
     let mut state = EditorState::new();
-    state.last_height = 4;
+    state.frame.height = 4;
     state.extend_down(&buffer);
     state.extend_down(&buffer);
     state.extend_down(&buffer); // past the end clamps to the last line
@@ -318,7 +318,7 @@ fn motions_clamp_to_buffer() {
 fn pos_at_accounts_for_gutter_and_scroll() {
     let buffer = TextBuffer::from_text("alpha\nbeta\ngamma");
     let mut state = EditorState::new();
-    state.last_height = 3;
+    state.frame.height = 3;
     let area = Rect::new(0, 0, 20, 3);
     // gutter = marker(1) + 1 digit + space = 3; column 5 -> content col 2.
     assert_eq!(state.pos_at(area, &buffer, &[], 5, 0), LineCol::new(0, 2));
@@ -333,7 +333,7 @@ fn pos_at_accounts_for_gutter_and_scroll() {
 fn pos_at_skips_collapsed_fold_interiors() {
     let buffer = TextBuffer::from_text("l0\nl1\nl2\nl3\nl4");
     let mut state = EditorState::new();
-    state.last_height = 5;
+    state.frame.height = 5;
     let area = Rect::new(0, 0, 20, 5);
     // Collapse lines 1..=3 under a fold headered on line 0. Visible order is now
     // l0, l4 — so screen row 1 maps to buffer line 4, not line 1.
@@ -486,7 +486,7 @@ fn overflow_caret_scrolled_off_either_side_is_hidden() {
 fn selection_range_normalizes_and_clears() {
     let buffer = TextBuffer::from_text("alpha\nbeta\ngamma");
     let mut state = EditorState::new();
-    state.last_height = 3;
+    state.frame.height = 3;
     assert_eq!(state.selection_range(), None);
     state.set_caret(&buffer, LineCol::new(0, 2));
     assert_eq!(
@@ -590,7 +590,7 @@ fn diagnostics_render_as_severity_colored_underlines() {
 fn line_word_and_doc_motions() {
     let buffer = TextBuffer::from_text("foo bar\nbaz");
     let mut state = EditorState::new();
-    state.last_height = 4;
+    state.frame.height = 4;
     state.extend_line_end(&buffer);
     assert_eq!(state.cursor(), LineCol::new(0, 7));
     state.extend_line_start(&buffer);
@@ -640,7 +640,7 @@ fn public_word_boundaries_cover_whitespace_punctuation_and_lines() {
 fn select_all_spans_the_whole_buffer() {
     let buffer = TextBuffer::from_text("ab\ncde");
     let mut state = EditorState::new();
-    state.last_height = 4;
+    state.frame.height = 4;
     state.select_all(&buffer);
     assert_eq!(
         state.selection_range(),
@@ -740,8 +740,8 @@ fn disabled_sticky_scroll_preserves_the_original_viewport() {
         .map(|x| buf[(x, 0)].symbol().chars().next().unwrap_or(' '))
         .collect();
     assert!(first.contains("two"));
-    assert!(state.sticky_rows.is_empty());
-    assert_eq!(state.last_height, area.height);
+    assert!(state.frame.sticky_rows.is_empty());
+    assert_eq!(state.frame.height, area.height);
 }
 
 #[test]
@@ -772,15 +772,15 @@ fn a_tiny_viewport_keeps_the_deepest_header_and_one_content_row() {
         .semantic_blocks(&blocks)
         .sticky_scroll(true)
         .render(area, &mut buf, &mut state);
-    assert_eq!(state.sticky_rows, [2]);
-    assert_eq!(state.last_height, 1);
+    assert_eq!(state.frame.sticky_rows, [2]);
+    assert_eq!(state.frame.height, 1);
     assert_eq!(state.primary_caret_cell(area, &buffer, &[]), None);
 }
 
 #[test]
 fn center_on_and_scroll_paging_move_viewport_only() {
     let mut state = EditorState::new();
-    state.last_height = 10;
+    state.frame.height = 10;
     state.center_on(50);
     assert_eq!(state.scroll_line, 45, "line centered in a 10-row viewport");
     // Scroll-only paging moves the viewport without touching the cursor.

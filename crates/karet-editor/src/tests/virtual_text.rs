@@ -254,7 +254,11 @@ fn a_sticky_row_paints_its_inline_text_and_a_click_counts_it() {
         .sticky_scroll(true)
         .virtual_text(&texts)
         .render(area, &mut target, &mut state);
-    assert_eq!(state.sticky_rows, vec![0], "line 0 is the sticky header");
+    assert_eq!(
+        state.frame.sticky_rows,
+        vec![0],
+        "line 0 is the sticky header"
+    );
 
     assert!(
         row(&target, 0).starts_with(" 1 fn f(n: a) {"),

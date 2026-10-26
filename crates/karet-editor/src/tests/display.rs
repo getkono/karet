@@ -174,7 +174,11 @@ fn a_sticky_header_is_numbered_in_the_active_mode() {
             .sticky_scroll(true)
             .line_numbers(numbers)
             .render(area, &mut target, &mut state);
-        assert_eq!(state.sticky_rows, vec![0], "line 0 is the sticky header");
+        assert_eq!(
+            state.frame.sticky_rows,
+            vec![0],
+            "line 0 is the sticky header"
+        );
         row_text(&target, 0, 0, 10)
     };
     assert_eq!(render(LineNumbers::Absolute), "  1 line 0");

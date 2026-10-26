@@ -165,7 +165,7 @@ fn a_sticky_header_that_appears_does_not_hide_the_caret() {
             state.primary_caret_cell(area, &buffer, &[]).is_some(),
             "caret on line {line} hidden: top {}, sticky {:?}",
             state.scroll_line,
-            state.sticky_rows
+            state.frame.sticky_rows
         );
     }
 }
