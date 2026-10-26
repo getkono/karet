@@ -231,7 +231,7 @@ fn closing_a_document_forgets_what_is_held_for_it() {
     let (_, mut app) = answered(Some(Vec::new()), Some(vec![red(span(0, 11, 18))]));
     app.forget_links_and_colors(DOC);
     assert!(held_colors(&app).is_empty());
-    assert!(app.links_colors.links.get(&DOC).is_none());
+    assert!(!app.links_colors.links.contains_key(&DOC));
 }
 
 /// A server's state change makes every document worth asking again, though
