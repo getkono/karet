@@ -39,11 +39,11 @@ impl App {
                 buffer,
                 text,
                 ..
-            } if language.eq_ignore_ascii_case("markdown") => self.outline.markdown.rows(
-                tab.view,
-                buffer.version(),
-                std::iter::once(text.as_str()),
-            ),
+            } if language.eq_ignore_ascii_case("markdown") => {
+                self.outline.markdown.rows(tab.view, buffer.version(), || {
+                    std::iter::once(text.as_str())
+                })
+            },
             TabKind::Code { doc: Some(doc), .. } => self
                 .docs
                 .symbols
@@ -53,7 +53,7 @@ impl App {
             TabKind::MarkdownPreview { buffer, .. } => {
                 self.outline
                     .markdown
-                    .rows(tab.view, buffer.version(), buffer.chunks())
+                    .rows(tab.view, buffer.version(), || buffer.chunks())
             },
             #[cfg(feature = "pdf")]
             TabKind::Document { outline, .. } => {

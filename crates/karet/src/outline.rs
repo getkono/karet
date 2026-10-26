@@ -119,24 +119,23 @@ struct CachedOutline {
 
 impl MarkdownOutlineCache {
     /// The flattened Markdown outline of `view` at `version`, whose text is the
-    /// concatenation of `chunks`: the cached rows when the view, version, and
-    /// text all match the last build, otherwise a fresh parse that replaces it.
+    /// concatenation of the pieces `chunks` yields (it is called once to compare
+    /// and once more to copy on a miss): the cached rows when the view, version,
+    /// and text all match the last build, otherwise a fresh parse that replaces it.
     #[must_use]
-    pub fn rows<'a>(
-        &self,
-        view: ViewId,
-        version: u64,
-        chunks: impl Iterator<Item = &'a str> + Clone,
-    ) -> Vec<OutlineRow> {
+    pub fn rows<'a, I>(&self, view: ViewId, version: u64, chunks: impl Fn() -> I) -> Vec<OutlineRow>
+    where
+        I: Iterator<Item = &'a str>,
+    {
         let mut entry = self.entry.borrow_mut();
         if let Some(cached) = entry.as_ref()
             && cached.view == view
             && cached.version == version
-            && same_text(&cached.source, chunks.clone())
+            && same_text(&cached.source, chunks())
         {
             return cached.rows.clone();
         }
-        let source: String = chunks.collect();
+        let source: String = chunks().collect();
         let rows = flatten(&from_markdown(&source));
         self.builds.set(self.builds.get() + 1);
         *entry = Some(CachedOutline {
@@ -325,7 +324,7 @@ mod tests {
     #[test]
     fn markdown_cache_rebuilds_for_another_view_or_version() {
         let cache = MarkdownOutlineCache::default();
-        let rows = |view, version| cache.rows(ViewId(view), version, ["# H\n"].into_iter());
+        let rows = |view, version| cache.rows(ViewId(view), version, || ["# H\n"].into_iter());
         assert_eq!(rows(1, 0).len(), 1);
         assert_eq!(rows(1, 0).len(), 1);
         assert_eq!(cache.builds(), 1);
