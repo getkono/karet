@@ -458,12 +458,14 @@ fn text_hash(rope: &ropey::Rope) -> u64 {
     })
 }
 
-/// The number of `char`s in `line`, excluding a trailing `\n` or `\r\n`.
+/// The number of `char`s in `line`, excluding its trailing line break: any
+/// break the rope splits on ([`lines::is_break`]), with `\r\n` as one break.
 fn line_content_chars(line: ropey::RopeSlice<'_>) -> usize {
     let mut end = line.len_chars();
-    if end > 0 && line.char(end - 1) == '\n' {
+    if end > 0 && lines::is_break(line.char(end - 1)) {
+        let last = line.char(end - 1);
         end -= 1;
-        if end > 0 && line.char(end - 1) == '\r' {
+        if last == '\n' && end > 0 && line.char(end - 1) == '\r' {
             end -= 1;
         }
     }
@@ -666,8 +668,15 @@ mod tests {
 
     #[test]
     fn line_accessors_on_each_break_type() {
-        // `\n` and `\r\n` are stripped from a line's content.
-        for (text, break_len) in [("a\nb", 1), ("a\r\nb", 2)] {
+        // Every break the rope splits on is stripped from a line's content,
+        // `\r\n` as one break, so a clamped end-of-line position sits before
+        // the break rather than at the next line's start.
+        for brk in [
+            "\n", "\r\n", "\r", "\u{0B}", "\u{0C}", "\u{85}", "\u{2028}", "\u{2029}",
+        ] {
+            let text = format!("a{brk}b");
+            let text = text.as_str();
+            let break_len = brk.len();
             let b = TextBuffer::from_text(text);
             assert_eq!(b.line_count(), 2, "for {text:?}");
             assert_eq!(b.line(0).as_deref(), Some("a"), "for {text:?}");
@@ -686,32 +695,22 @@ mod tests {
                 Ok(BytePos(1 + break_len))
             );
             assert_eq!(b.line(1).as_deref(), Some("b"), "for {text:?}");
+            assert_eq!(b.line_col_to_utf16(LineCol::new(0, 9)), 1, "for {text:?}");
+            // `lines` splits on the same break and agrees with `line`.
+            assert_eq!(lines(text).collect::<Vec<_>>(), vec!["a", "b"]);
         }
-        // Current behaviour for every other break the rope recognises: it
-        // splits the line, but the accessors keep the break as content, so a
-        // clamped end-of-line position is the next line's start. Filed as #633;
-        // pinned here so the fix changes it deliberately.
-        for brk in ['\r', '\u{0B}', '\u{0C}', '\u{85}', '\u{2028}', '\u{2029}'] {
-            let text = format!("a{brk}b");
-            let end = 1 + brk.len_utf8();
-            let b = TextBuffer::from_text(&text);
-            assert_eq!(b.line_count(), 2, "for {brk:?}");
-            assert_eq!(b.line(0), Some(format!("a{brk}")), "for {brk:?}");
-            assert_eq!(
-                b.line_to_byte_range(0),
-                Some(Span {
-                    start: BytePos(0),
-                    end: BytePos(end),
-                }),
-                "for {brk:?}"
-            );
-            assert_eq!(b.clamp(LineCol::new(0, 9)), LineCol::new(0, 2));
-            assert_eq!(b.line_col_to_byte(LineCol::new(0, 9)), Ok(BytePos(end)));
-            assert_eq!(b.line_col_to_byte(LineCol::new(1, 0)), Ok(BytePos(end)));
-            assert_eq!(b.line(1).as_deref(), Some("b"), "for {brk:?}");
-            // `lines` splits on the same break, without the terminator.
-            assert_eq!(lines(&text).collect::<Vec<_>>(), vec!["a", "b"]);
-        }
+        // A `\r` not followed by `\n` is its own break: `"a\r\rb"` is three
+        // lines, the middle one empty, and neither `\r` is content.
+        let b = TextBuffer::from_text("a\r\rb");
+        assert_eq!(b.line_count(), 3);
+        assert_eq!(b.line(0).as_deref(), Some("a"));
+        assert_eq!(b.line(1).as_deref(), Some(""));
+        assert_eq!(b.clamp(LineCol::new(1, 9)), LineCol::new(1, 0));
+        assert_eq!(b.line_col_to_byte(LineCol::new(1, 9)), Ok(BytePos(2)));
+        // `"\n\r"` is two breaks, not a reversed `\r\n`.
+        let b = TextBuffer::from_text("a\n\rb");
+        assert_eq!(b.line_count(), 3);
+        assert_eq!(b.line(1).as_deref(), Some(""));
     }
 
     #[test]
