@@ -237,6 +237,10 @@ mod tests {
         );
         let document_end = chord(true, false, false, KeyCode::End);
         assert!(document_end.matches(ev(KeyCode::Down, KeyModifiers::SUPER)));
+        let line_end = chord(false, false, false, KeyCode::End);
+        assert!(line_end.matches(ev(KeyCode::Right, KeyModifiers::SUPER)));
+        let document_start = chord(true, false, false, KeyCode::Home);
+        assert!(document_start.matches(ev(KeyCode::Up, KeyModifiers::SUPER)));
         let cut = chord(true, false, false, KeyCode::Char('x'));
         assert!(cut.matches(ev(KeyCode::Char('x'), KeyModifiers::SUPER)));
         assert_eq!(

@@ -298,15 +298,25 @@ cargo mutants --package karet-session --all-features \
   --file 'crates/karet-session/src/backup.rs'"""
 
 [tasks.mutants-app]
-description = "Opt-in: mutation-test the app's chord resolver, terminal input, CLI and command resolution (cap 60m)"
-timeout = "60m"
+description = "Opt-in: mutation-test the app's chord resolver, terminal input, CLI and command resolution (cap 120m)"
+timeout = "120m"
+# Equivalent mutants, excluded with their argument:
+# - terminal/input.rs `MOUSE_MOTION | MOUSE_DRAG` -> `^` in `encode_mouse`:
+#   the two are distinct single bits (1 << 6 and 1 << 13 in
+#   alacritty_terminal), so XOR builds the same mask as OR.
+# - terminal/input.rs `column > 223 || row > 223` -> `&&` in `encode_mouse`:
+#   the guard restates what `byte` already enforces, since `32 + value` fits a
+#   `u8` only up to 223. A coordinate past 223 on either axis still returns
+#   `None`, from `byte` instead of from the guard.
 run = """trap 'test $? -eq 3 && exit 0' EXIT
 export CARGO_MUTANTS_JOBS="${CARGO_MUTANTS_JOBS:-4}"
 cargo mutants --package karet --all-features \
   --file 'crates/karet/src/keymap/chord.rs' \
   --file 'crates/karet/src/terminal/input.rs' \
   --file 'crates/karet/src/cli.rs' \
-  --file 'crates/karet/src/command/resolve.rs'"""
+  --file 'crates/karet/src/command/resolve.rs' \
+  --exclude-re 'input\\.rs:203:\\d+: replace \\| with \\^ in encode_mouse' \
+  --exclude-re 'input\\.rs:230:21: replace \\|\\| with && in encode_mouse'"""
 
 [tasks.mutants-all]
 description = "Opt-in: run every pure-module mutation scope in turn (cap is the sum of theirs)"
