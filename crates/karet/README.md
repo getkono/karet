@@ -261,9 +261,11 @@ a few files, so there is one place to read or change each behavior:
 ## Architecture notes
 
 - Editing, language intelligence, and source control route through the headless
-  `karet-session` backend; the remaining direct engine calls (diff rendering via
-  `karet-diff`, and in-file find, occurrences and replace via `karet-search`) are
-  being migrated behind the same seam.
+  `karet-session` backend. The app still calls some engines directly, and those
+  calls are being migrated behind the same seam; among them are diff rendering via
+  `karet-diff`, in-file find, occurrences and replace via `karet-search`, markdown
+  editing, table formatting and lint via `karet-markdown`, and Seam package
+  discovery via `karet_seam::discover`.
 - `render.rs` presents a backend-prepared diff: the session diffs and highlights
   off the UI thread, and the app only paints the result.
 ```
