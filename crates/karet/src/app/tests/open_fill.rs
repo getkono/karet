@@ -414,3 +414,86 @@ fn a_split_made_before_the_open_is_answered_asks_for_its_own_document() {
     assert_eq!(code_text(&app), "one\ntwo\n", "the copy fills");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// How many active notifications read exactly `title`.
+fn cards(app: &App, title: &str) -> usize {
+    app.notifications
+        .active()
+        .iter()
+        .filter(|note| note.title == title)
+        .count()
+}
+
+/// A split made before the open is answered sends a second open, so a file
+/// that cannot open fails twice: once per view, but as one card either way.
+#[test]
+fn a_split_made_before_a_failed_open_shows_the_failure_once() {
+    let dir = test_dir("fill-split-failed");
+    write_file(&dir, "notes.md", b"text\n");
+    let backend = Arc::new(RecordingBackend::new());
+    let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+    app.backend = Some(backend.clone());
+    app.open_path(&dir.join("notes.md"));
+    app.split_focused(SplitDir::Right);
+    let both = opens(&backend);
+    assert_eq!(both.len(), 2, "each view asked for its own document");
+
+    let message = "could not open notes.md: denied";
+    for open in &both {
+        let failed = SessionEvent::Notification {
+            severity: Severity::Error,
+            kind: NotificationKind::Io,
+            message: message.to_string(),
+        };
+        app.on_backend_event(Some(*open), failed);
+    }
+    assert!(app.pending_open.is_empty(), "both opens are answered");
+    let failed_views = app
+        .all_tabs()
+        .filter(|tab| tab.fill_error.as_deref() == Some(message))
+        .count();
+    assert_eq!(failed_views, 2, "both views show why");
+    assert_eq!(cards(&app, message), 1, "one card for one file");
+
+    // A failure that answers no open is not an open's, and stays its own card.
+    let unrelated = SessionEvent::Notification {
+        severity: Severity::Error,
+        kind: NotificationKind::Io,
+        message: message.to_string(),
+    };
+    app.on_backend_event(None, unrelated);
+    assert_eq!(cards(&app, message), 2);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The same for a file that turns out not to be UTF-8: both views fall back to
+/// the hex view, under one card.
+#[test]
+fn a_split_made_before_a_non_utf8_open_shows_the_fallback_once() {
+    let dir = test_dir("fill-split-not-utf8");
+    // Text in the sampled head, so it opens as a code tab; the session's full
+    // decode is what answers `NotUtf8`, simulated below.
+    write_file(&dir, "blob.txt", b"text\n");
+    let path = dir.join("blob.txt");
+    let backend = Arc::new(RecordingBackend::new());
+    let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+    app.backend = Some(backend.clone());
+    app.open_path(&path);
+    app.split_focused(SplitDir::Right);
+    let both = opens(&backend);
+    assert_eq!(both.len(), 2, "each view asked for its own document");
+
+    for open in &both {
+        let not_utf8 = SessionEvent::NotUtf8 { path: path.clone() };
+        app.on_backend_event(Some(*open), not_utf8);
+    }
+    assert!(app.pending_open.is_empty(), "both opens are answered");
+    let hex_views = app
+        .all_tabs()
+        .filter(|tab| matches!(tab.kind, TabKind::Hex { .. }))
+        .count();
+    assert_eq!(hex_views, 2, "both views fall back to hex");
+    let title = format!("opened {} read-only: not valid UTF-8", path.display());
+    assert_eq!(cards(&app, &title), 1, "one card for one file");
+    let _ = std::fs::remove_dir_all(&dir);
+}

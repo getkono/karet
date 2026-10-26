@@ -40,11 +40,13 @@ impl App {
     /// An open the session answered with an error rather than a document: the
     /// requesting tab's text will never arrive, so it stops waiting and shows
     /// why. No `Opened` follows, so the request is forgotten here.
-    pub(super) fn on_open_failed(&mut self, request: RequestId, message: &str) {
+    ///
+    /// Returns the notification tag the failure reports under when the request
+    /// was a pending open, so the caller's toast collapses with any other failed
+    /// open of the same path.
+    pub(super) fn on_open_failed(&mut self, request: RequestId, message: &str) -> Option<String> {
         self.abandoned_open.remove(&request);
-        let Some(pending) = self.pending_open.remove(&request) else {
-            return;
-        };
+        let pending = self.pending_open.remove(&request)?;
         for tab in self.all_tabs_mut() {
             if tab.view == pending.view
                 && tab.fill_caret.is_some()
@@ -54,6 +56,16 @@ impl App {
                 tab.fill_error = Some(message.to_string());
             }
         }
+        Some(Self::open_failure_tag(&pending.path))
+    }
+
+    /// The notification tag every failed open of `path` shares.
+    ///
+    /// A split made before its source's open is answered sends a second
+    /// `OpenDocument` for the same path, so a file that cannot open fails twice;
+    /// sharing one tag per path collapses the two into one card.
+    fn open_failure_tag(path: &Path) -> String {
+        format!("io.open-failed:{}", path.display())
     }
 
     /// Merge a published diagnostic layer over the retained LaTeX layer.
@@ -156,10 +168,11 @@ impl App {
                 tab.markdown_preview = None;
             }
         }
-        self.notify(
+        self.notify_tagged(
             Report::Alert,
             NotificationKind::Io,
             format!("opened {} read-only: not valid UTF-8", path.display()),
+            Some(Self::open_failure_tag(&path)),
         );
     }
 }

@@ -125,11 +125,12 @@ impl App {
             self.pending_blame = None;
             self.failed_blame = Some((pending.1, pending.2, pending.3));
         }
+        let mut tag = None;
         if let Some(req) = id {
             // An open fails with an error notification and nothing else; its
             // warnings (a bad `.editorconfig`) still end in `Opened`.
             if severity == Severity::Error {
-                self.on_open_failed(req, &message);
+                tag = self.on_open_failed(req, &message);
             }
             self.fail_pending_commit_detail(req, &message);
             // A range diff has no failure event of its own: it answers with this
@@ -155,7 +156,7 @@ impl App {
             }
         }
         if !language_server_operation_failed {
-            self.notify(Report::from_severity(severity), kind, message);
+            self.notify_tagged(Report::from_severity(severity), kind, message, tag);
         }
     }
 }
