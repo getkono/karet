@@ -116,10 +116,20 @@ impl Gate {
     /// Whether `feature` is available for the document at `doc`: advertised,
     /// or registered with a selector that covers it.
     pub(crate) fn supports_for(&self, feature: ServerFeature, doc: &Path) -> bool {
+        self.supports_as(feature, doc, self.languages.get(doc).map(String::as_str))
+    }
+
+    /// Whether `feature` is available for the document at `doc` were it open
+    /// as `language`, whatever it is open as now, or whether it is open.
+    pub(crate) fn supports_as(
+        &self,
+        feature: ServerFeature,
+        doc: &Path,
+        language: Option<&str>,
+    ) -> bool {
         if self.advertised.supports(feature) {
             return true;
         }
-        let language = self.languages.get(doc).map(String::as_str);
         self.registrations.values().any(|registration| {
             registration.feature == feature
                 && registration

@@ -185,6 +185,27 @@ async fn a_closed_document_no_longer_matches_by_language() -> TestResult {
 }
 
 #[tokio::test]
+async fn a_closed_document_is_still_asked_about_as_the_language_it_was() -> TestResult {
+    let (client, mut server) = connect(json!({})).await?;
+    let doc = Path::new("/w/a.go");
+    client.did_open(doc, "go", 1, "").await?;
+    register(
+        &mut server,
+        "go",
+        "textDocument/definition",
+        json!({"documentSelector": [{"language": "go"}]}),
+    )
+    .await;
+    client.did_close(doc).await?;
+    let feature = ServerFeature::Definition;
+    assert!(client.supports_for_language(feature, doc, "go"));
+    assert!(!client.supports_for_language(feature, doc, "rust"));
+    unregister(&mut server, "go", "textDocument/definition").await;
+    assert!(!client.supports_for_language(feature, doc, "go"));
+    Ok(())
+}
+
+#[tokio::test]
 async fn unregistering_never_disables_an_advertised_feature() -> TestResult {
     // A server may advertise a feature and also register it, scoped; taking
     // the registration back must not take back what the handshake promised.

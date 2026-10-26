@@ -77,7 +77,11 @@ pub(super) struct Pulls {
     /// open or not: a closed document's related reports may still be shown
     /// on the documents they named. Kept across a reconnect, so a successor
     /// that does not offer pulls clears what its predecessor answered.
-    pulled: HashSet<PathBuf>,
+    ///
+    /// Each keeps the language it was pulled as: closing a document drops
+    /// its language from the client, and a registration filtered by language
+    /// would otherwise read every close as a withdrawal.
+    pulled: HashMap<PathBuf, String>,
     /// Serialises relaying an answer against clearing the pulled layer, and
     /// counts the clears: a pull relays only while the count is still the
     /// one it was launched under, so an answer racing its own abort cannot
@@ -115,11 +119,9 @@ impl Pulls {
             }
             open && !handle.is_finished()
         });
-        if self
-            .pulled
-            .iter()
-            .any(|path| !client.supports_for(ServerFeature::PullDiagnostics, path))
-        {
+        if self.pulled.iter().any(|(path, language)| {
+            !client.supports_for_language(ServerFeature::PullDiagnostics, path, language)
+        }) {
             self.withdraw(client, (updates, key, token));
         }
         let clears = *self.clears.lock().unwrap_or_else(PoisonError::into_inner);
@@ -150,7 +152,7 @@ impl Pulls {
             }
             self.asked.insert(path.clone(), document.version);
             self.refreshed.remove(path);
-            self.pulled.insert(path.clone());
+            self.pulled.insert(path.clone(), document.language.clone());
             if let Some(superseded) = self.in_flight.remove(path) {
                 superseded.abort();
             }
@@ -196,6 +198,14 @@ impl Pulls {
         self.refreshed.retain(|path| self.asked.contains_key(path));
         self.refreshed.extend(self.asked.keys().cloned());
         self.pulled.clear();
+    }
+
+    /// The clear count a pull launched now is launched under, with the lock
+    /// it is read through, for a test to launch one outside these pulls.
+    #[cfg(test)]
+    pub(super) fn clears(&self) -> (Arc<Mutex<u64>>, u64) {
+        let launched = *self.clears.lock().unwrap_or_else(PoisonError::into_inner);
+        (Arc::clone(&self.clears), launched)
     }
 
     /// Stop every pull and forget what was asked: the connection they were
@@ -298,7 +308,7 @@ enum PullWake {
 /// Pull `path`'s diagnostics at `version` and relay what the server said,
 /// unless the pulled layer was cleared since `launched` (see
 /// [`Pulls::withdraw`]).
-async fn pull(
+pub(super) async fn pull(
     client: Arc<LspClient>,
     path: PathBuf,
     version: i32,

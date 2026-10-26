@@ -739,3 +739,117 @@ async fn withdrawn_pull_diagnostics_leave_every_document() -> TestResult {
     }
     Ok(())
 }
+
+/// Closing a document is not a withdrawal, under a registration that covers
+/// documents by language too: the client forgets a closed document's
+/// language, so asked about as it is now, every close would read as one,
+/// clearing the slot's pulled layer and re-pulling every open document. The
+/// real withdrawal still clears it. Falsified by asking whether a closed
+/// document is covered without the language it was pulled as.
+///
+/// On tokio's virtual clock, for the reason
+/// `a_server_without_pull_diagnostics_is_not_asked` gives.
+#[tokio::test(start_paused = true)]
+async fn closing_a_document_under_a_language_filter_withdraws_nothing() -> TestResult {
+    use super::super::pull::Pulls;
+
+    let (client, mut observed) = connected(Behavior::RegistersRustPulls).await?;
+    let mut documents = HashMap::new();
+    let one = open_at_one(&client, &mut documents, "one.rs").await?;
+    let two = open_at_one(&client, &mut documents, "two.rs").await?;
+    let (updates_tx, mut updates) = mpsc::unbounded_channel();
+    let key = SlotKey::new(crate::api::LanguageServerId::new("rust"), "/tmp");
+    let slot = (&updates_tx, &key, SlotToken::default());
+    let mut pulls = Pulls::default();
+    pulls.launch_ready(&client, &documents, None, slot);
+    registered(&mut pulls, &client, &two)
+        .await
+        .ok_or("the double never registered pulls")?;
+    pulls.launch_ready(&client, &documents, None, slot);
+    pulled_all(&mut observed, &["one.rs", "two.rs"])
+        .await
+        .ok_or("never pulled")?;
+
+    client.did_close(&one).await?;
+    documents.remove(&one);
+    pulls.launch_ready(&client, &documents, None, slot);
+    while let Ok(Some(message)) =
+        tokio::time::timeout(Duration::from_millis(500), observed.recv()).await
+    {
+        assert_eq!(pulled_uri(&message), None, "a close re-pulled a document");
+    }
+    while let Ok(update) = updates.try_recv() {
+        assert!(
+            !matches!(update, LspUpdate::PulledDiagnosticsWithdrawn { .. }),
+            "a close cleared the pulled layer"
+        );
+    }
+
+    client.did_save(&two, None).await?;
+    tokio::time::timeout(Duration::from_secs(5), pulls.woken()).await?;
+    pulls.launch_ready(&client, &documents, None, slot);
+    match next_clear(&mut updates).await {
+        Some(LspUpdate::PulledDiagnosticsWithdrawn { server, .. }) => assert_eq!(server, key),
+        _ => return Err("the withdrawal cleared nothing".into()),
+    }
+    pulls.shutdown().await;
+    Ok(())
+}
+
+/// A pull answered after the withdrawal it raced relays nothing behind the
+/// clear. Aborting a pull does not stop one already running on another
+/// worker, so the clear count is what keeps its stale set off the screen.
+/// The double holds every answer past the unregistration, and the raced pull
+/// runs outside [`Pulls`](super::super::pull::Pulls), where no abort reaches
+/// it, standing in for the one an abort missed. Falsified by relaying
+/// without checking the count.
+#[tokio::test(start_paused = true)]
+async fn a_pull_answered_after_a_withdrawal_relays_nothing() -> TestResult {
+    use super::super::pull::Pulls;
+    use super::super::pull::pull;
+
+    let (client, mut observed) = connected(Behavior::RegistersPullsLate).await?;
+    let mut documents = HashMap::new();
+    let one = open_at_one(&client, &mut documents, "one.rs").await?;
+    let (updates_tx, mut updates) = mpsc::unbounded_channel();
+    let key = SlotKey::new(crate::api::LanguageServerId::new("rust"), "/tmp");
+    let slot = (&updates_tx, &key, SlotToken::default());
+    let mut pulls = Pulls::default();
+    pulls.launch_ready(&client, &documents, None, slot);
+    registered(&mut pulls, &client, &one)
+        .await
+        .ok_or("the double never registered pulls")?;
+    let relay = (updates_tx.clone(), key.clone(), SlotToken::default());
+    let raced = tokio::spawn(pull(
+        Arc::clone(&client),
+        one.clone(),
+        1,
+        relay,
+        pulls.clears(),
+    ));
+    pulls.launch_ready(&client, &documents, None, slot);
+    // Both pulls are on the wire before the withdrawal refuses another.
+    for _ in 0..2 {
+        pulled_all(&mut observed, &["one.rs"])
+            .await
+            .ok_or("never pulled")?;
+    }
+
+    client.did_save(&one, None).await?;
+    tokio::time::timeout(Duration::from_secs(5), pulls.woken()).await?;
+    pulls.launch_ready(&client, &documents, None, slot);
+    match next_clear(&mut updates).await {
+        Some(LspUpdate::PulledDiagnosticsWithdrawn { server, .. }) => assert_eq!(server, key),
+        _ => return Err("the withdrawal cleared nothing".into()),
+    }
+
+    // Closing releases the held answers.
+    client.did_close(&one).await?;
+    tokio::time::timeout(Duration::from_secs(5), raced).await??;
+    assert!(
+        updates.try_recv().is_err(),
+        "an answer that raced the withdrawal was relayed after it"
+    );
+    pulls.shutdown().await;
+    Ok(())
+}
