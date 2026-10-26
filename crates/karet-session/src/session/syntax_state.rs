@@ -113,58 +113,127 @@ impl SyntaxState {
 
 #[cfg(test)]
 mod tests {
+    use karet_core::FoldRegion;
+    use karet_core::HighlightSpan;
+    use karet_core::SemanticBlock;
+    use karet_core::Span;
     use karet_core::SymbolKind;
+    use karet_core::TokenId;
 
     use super::*;
 
-    /// A state as a parse of a Markdown file with an outline, a syntax error
-    /// and a table leaves it.
-    fn parsed() -> SyntaxState {
-        let mut state = SyntaxState::default();
-        state.adopt(HighlightResult {
+    fn highlight(start: usize, end: usize, token: u16) -> HighlightSpan {
+        HighlightSpan {
+            span: Span {
+                start: BytePos(start),
+                end: BytePos(end),
+            },
+            token: TokenId(token),
+        }
+    }
+
+    fn block(header_start: u32, scope_end: u32) -> SemanticBlock {
+        SemanticBlock {
+            header_start,
+            header_end: header_start,
+            scope_end,
+        }
+    }
+
+    fn symbol(name: &str) -> Symbol {
+        Symbol {
+            name: name.to_owned(),
+            kind: SymbolKind::Module,
+            detail: None,
+            range: Range::default(),
+            selection_range: Range::default(),
+            container_name: None,
+            children: Vec::new(),
+        }
+    }
+
+    /// A worker answer for version 1 of a Markdown file with an outline, a
+    /// syntax error and a table: every part is non-empty.
+    fn first_answer() -> HighlightResult {
+        HighlightResult {
             doc: DocumentId(0),
             version: 1,
-            highlights: Arc::default(),
-            folds: Arc::default(),
-            semantic_blocks: Arc::default(),
-            symbols: Arc::new(vec![Symbol {
-                name: "Heading".to_owned(),
-                kind: SymbolKind::Module,
-                detail: None,
-                range: Range::default(),
-                selection_range: Range::default(),
-                container_name: None,
-                children: Vec::new(),
-            }]),
+            highlights: Arc::new(Highlights::from_sorted_spans(vec![
+                highlight(0, 4, 1),
+                highlight(10, 14, 2),
+            ])),
+            folds: Arc::new(FoldRegions::from_sorted_regions(vec![FoldRegion::new(
+                0, 5,
+            )])),
+            semantic_blocks: Arc::new(SemanticBlocks::new(vec![block(0, 5)])),
+            symbols: Arc::new(vec![symbol("Heading")]),
             error_lines: Arc::new(vec![(3, 4)]),
             table_lines: Arc::new(vec![6..=8]),
-        });
+        }
+    }
+
+    /// The state the first answer leaves.
+    fn parsed() -> SyntaxState {
+        let mut state = SyntaxState::default();
+        state.adopt(first_answer());
         state
     }
 
     #[test]
     fn adopting_an_answer_replaces_every_part() {
-        let state = parsed();
+        let mut state = parsed();
+        state.adopt(HighlightResult {
+            doc: DocumentId(0),
+            version: 2,
+            highlights: Arc::new(Highlights::from_sorted_spans(vec![highlight(20, 22, 3)])),
+            folds: Arc::new(FoldRegions::from_sorted_regions(vec![FoldRegion::new(
+                9, 12,
+            )])),
+            semantic_blocks: Arc::new(SemanticBlocks::new(vec![block(9, 12)])),
+            symbols: Arc::new(vec![symbol("Other")]),
+            error_lines: Arc::new(vec![(11, 11)]),
+            table_lines: Arc::new(Vec::new()),
+        });
+        assert_eq!(state.highlights().all(), [highlight(20, 22, 3)]);
+        assert_eq!(state.folds().regions(), [FoldRegion::new(9, 12)]);
+        assert_eq!(state.semantic_blocks().blocks(), [block(9, 12)]);
         assert_eq!(state.symbols().len(), 1);
-        assert_eq!(**state.error_lines(), [(3, 4)]);
-        assert_eq!(**state.table_lines(), [6..=8]);
+        assert_eq!(state.symbols()[0].name, "Other");
+        assert_eq!(**state.error_lines(), [(11, 11)]);
+        assert!(state.table_lines().is_empty());
     }
 
     #[test]
-    fn clearing_leaves_nothing_a_previous_grammar_produced() {
+    fn clearing_keeps_only_the_given_folds() {
         let mut state = parsed();
-        state.clear(Arc::default());
+        state.clear(Arc::new(FoldRegions::from_sorted_regions(vec![
+            FoldRegion::new(2, 3),
+        ])));
+        assert_eq!(state.folds().regions(), [FoldRegion::new(2, 3)]);
+        assert!(state.highlights().all().is_empty());
+        assert!(state.semantic_blocks().blocks().is_empty());
         assert!(state.symbols().is_empty());
         assert!(state.error_lines().is_empty());
         assert!(state.table_lines().is_empty());
-        assert!(state.highlights().all().is_empty());
     }
 
     #[test]
-    fn translating_hides_the_outline_and_keeps_line_ranges() {
+    fn translating_shifts_highlights_hides_line_based_parts_and_keeps_line_ranges() {
         let mut state = parsed();
-        state.translate(&[]);
+        // Insert two bytes at 6, between the two highlighted spans.
+        state.translate(&[AppliedEdit {
+            start_byte: 6,
+            old_end_byte: 6,
+            new_end_byte: 8,
+            ..AppliedEdit::default()
+        }]);
+        assert_eq!(
+            state.highlights().all(),
+            [highlight(0, 4, 1), highlight(12, 16, 2)]
+        );
+        assert!(state.semantic_blocks().blocks().is_empty());
         assert!(state.symbols().is_empty());
+        assert_eq!(state.folds().regions(), [FoldRegion::new(0, 5)]);
         assert_eq!(**state.error_lines(), [(3, 4)]);
         assert_eq!(**state.table_lines(), [6..=8]);
     }
