@@ -271,18 +271,20 @@ impl Worker {
     ) {
         let Some(index) = self.index.as_mut() else {
             // Unreachable from the editor, which only re-indexes a file the index is
-            // known to hold. Nothing to rebuild and nothing to say about it.
+            // known to hold. Nothing to rebuild, but the request still answers.
+            self.emit_index(Some(id), events);
             return;
         };
         // Adopted rather than dropped: `Reindex` carries the caller's text, which may be
         // an unsaved buffer, and the pane must quote what the index actually read.
         self.preview = Some(preview::PreviewSource::adopt(path, text));
-        if karet_seam::reindex_file(index, &mut self.pool, path, text).is_err() {
-            // A file that will not parse leaves the previous tree standing rather than
-            // emptying the view mid-edit.
-            return;
+        // A file that will not parse leaves the previous tree standing rather than
+        // emptying the view mid-edit -- and that standing tree is the answer.
+        // `reindex_file` detects every failure before it removes the file's old
+        // nodes, so on `Err` the tree really is the one that stood before.
+        if karet_seam::reindex_file(index, &mut self.pool, path, text).is_ok() {
+            self.apply_configuration();
         }
-        self.apply_configuration();
         self.emit_index(Some(id), events);
     }
 
@@ -420,13 +422,20 @@ impl Worker {
         karet_seam::config::apply(index, configuration);
     }
 
-    /// Emit the whole tree plus its summary.
+    /// Emit the whole tree plus its summary, or -- with no index built yet -- say so,
+    /// so a request that expected a tree is still answered.
     fn emit_index(
         &self,
         id: Option<RequestId>,
         events: &tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
     ) {
         let Some(index) = self.index.as_ref() else {
+            let _ = events.send((
+                id,
+                Event::SeamIndexFailed {
+                    message: "no seam index has been built".to_owned(),
+                },
+            ));
             return;
         };
         // Walked from the roots rather than iterated out of the arena's map: the order

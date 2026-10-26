@@ -98,6 +98,14 @@ impl Session {
     #[cfg(feature = "viz")]
     pub(super) fn emit_dependency_graph(&mut self, id: RequestId) {
         let Some(root) = self.config.roots.first() else {
+            self.emit(
+                Some(id),
+                Event::Notification {
+                    severity: Severity::Error,
+                    kind: NotificationKind::System,
+                    message: "dependency graph: no workspace root is open".to_string(),
+                },
+            );
             return;
         };
         match crate::viz::dependency_graph(root) {
