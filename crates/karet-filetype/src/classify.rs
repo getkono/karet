@@ -10,6 +10,16 @@ use std::path::Path;
 /// Files larger than this are classified [`FileKind::TooLarge`] (10 MiB).
 pub const SIZE_GUARD: u64 = 10 * 1024 * 1024;
 
+/// The extensions that route to [`FileKind::Markdown`], shared with the
+/// registry's Markdown entry so the two cannot drift.
+pub(crate) const MARKDOWN_EXTENSIONS: &[&str] = &["md", "markdown", "mdown", "mkd"];
+
+/// The extensions that route to [`FileKind::Image`], shared with the
+/// registry's Image entry so the two cannot drift.
+pub(crate) const IMAGE_EXTENSIONS: &[&str] = &[
+    "png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "tiff", "tif",
+];
+
 /// The renderer a file should be opened with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -94,12 +104,12 @@ fn classify_content(path: &Path, head: &[u8]) -> FileKind {
     // Markdown is text-shaped (unlike image/PDF/DOCX/CBOR below), so its extension
     // alone must not skip the binary sniff below — a non-UTF-8 `.md` file needs to
     // still route to `Binary`, not silently open as broken editable text.
-    let is_markdown_ext = matches!(ext.as_deref(), Some("md" | "markdown" | "mdown" | "mkd"));
+    let is_markdown_ext = ext
+        .as_deref()
+        .is_some_and(|ext| MARKDOWN_EXTENSIONS.contains(&ext));
     if let Some(ext) = ext.as_deref() {
         match ext {
-            "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico" | "tiff" | "tif" => {
-                return FileKind::Image;
-            },
+            _ if IMAGE_EXTENSIONS.contains(&ext) => return FileKind::Image,
             "pdf" => return FileKind::Pdf,
             // DOCX is a ZIP container (`PK\x03\x04`, ambiguous with any archive), so it is
             // routed by extension only — there is no cheap magic-byte signal in the head.
@@ -166,6 +176,28 @@ fn looks_binary(head: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Routing and the registry agree: a path the registry names Markdown or
+    /// Image opens in that renderer, whatever the extension's case.
+    #[test]
+    fn registry_markdown_and_image_extensions_route_to_their_renderer() {
+        for (ext, kind) in MARKDOWN_EXTENSIONS
+            .iter()
+            .map(|e| (*e, FileKind::Markdown))
+            .chain(IMAGE_EXTENSIONS.iter().map(|e| (*e, FileKind::Image)))
+        {
+            for name in [format!("a.{ext}"), format!("a.{}", ext.to_uppercase())] {
+                let path = Path::new(&name);
+                let expected = if kind == FileKind::Markdown {
+                    "Markdown"
+                } else {
+                    "Image"
+                };
+                assert_eq!(crate::file_type_for_path(path).name(), expected, "{name}");
+                assert_eq!(classify(path, b"plain", 5), kind, "{name}");
+            }
+        }
+    }
 
     #[test]
     fn classifies_by_extension() {
