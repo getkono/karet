@@ -634,33 +634,18 @@ fn production_connector() -> Connector {
             let Some(supervisor) = launch.supervisor else {
                 return Err(DapError::Launch("no process supervisor".to_owned()));
             };
-            match launch.spec.transport {
-                DapTransport::Tcp => {
-                    let port = karet_dap::free_port()
-                        .map_err(|e| DapError::Launch(format!("no free port: {e}")))?;
-                    let args = karet_dap::substitute_port(&launch.spec.args, port);
-                    let command = karet_supervisor::supervisor::command(
-                        &supervisor,
-                        launch.spec.command.clone(),
-                        args,
-                        &launch.root,
-                    )
-                    .map_err(|e| DapError::Launch(e.to_string()))?;
-                    DapClient::spawn_command_tcp(command, port).await
-                },
-                // Stdio, and (non-exhaustive) any future transport this build
-                // does not know: launch over pipes, the protocol's default.
-                _ => {
-                    let command = karet_supervisor::supervisor::command(
-                        &supervisor,
-                        launch.spec.command.clone(),
-                        launch.spec.args.clone(),
-                        &launch.root,
-                    )
-                    .map_err(|e| DapError::Launch(e.to_string()))?;
-                    DapClient::spawn_command(command)
-                },
-            }
+            // karet-dap owns transport dispatch and stdio; this only wraps the
+            // (port-substituted) adapter command in the supervisor.
+            DapClient::spawn_with(&launch.spec, |spec| {
+                karet_supervisor::supervisor::command(
+                    &supervisor,
+                    spec.command.clone(),
+                    spec.args.clone(),
+                    &launch.root,
+                )
+                .map_err(|e| DapError::Launch(e.to_string()))
+            })
+            .await
         })
     })
 }
