@@ -787,6 +787,24 @@ mod tests {
     }
 
     #[test]
+    fn a_layout_file_well_under_the_bound_is_read() -> TestResult {
+        // The bound is 4 MiB: a valid record padded to 2 MiB with trailing
+        // whitespace (which JSON ignores) still reads back.
+        let dir = tempfile::tempdir()?;
+        let root = Path::new("/work");
+        let record = LayoutRecord {
+            schema: LAYOUT_SCHEMA_VERSION,
+            workspace: Cow::Borrowed(root),
+            layout: Cow::Owned(sample_layout()),
+        };
+        let mut bytes = serde_json::to_vec(&record)?;
+        bytes.resize(2 * 1024 * 1024, b' ');
+        std::fs::write(layout_path(dir.path(), root), bytes)?;
+        assert_eq!(read_layout(dir.path(), root), Some(sample_layout()));
+        Ok(())
+    }
+
+    #[test]
     fn remove_undo_deletes_it() -> TestResult {
         let dir = tempfile::tempdir()?;
         let store = SwapStore::with_dir(dir.path().to_path_buf(), 1);
