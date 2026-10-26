@@ -11,7 +11,8 @@
 //! buffer held in pieces, such as a rope, with no whole-text copy) and
 //! [`plan_replacements`]/[`apply_replacements`]/[`WorkspaceSearch::replace`]. The
 //! walk itself is also public as [`walk_text_files`], for consumers that want the
-//! same filtered corpus without a pattern. The workspace walk is currently
+//! same filtered corpus without a pattern, and as [`walk_files`] for consumers
+//! that want only the file paths (a file picker). The workspace walk is currently
 //! single-threaded (a parallel walk is a deferred optimization).
 
 use regex::Regex;
@@ -28,6 +29,7 @@ pub use walk::IGNORED_DIRS;
 pub use walk::ReplaceSummary;
 pub use walk::WorkspaceSearch;
 pub use walk::WriteFailure;
+pub use walk::walk_files;
 pub use walk::walk_text_files;
 
 /// Errors produced by search/replace.

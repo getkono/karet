@@ -194,6 +194,29 @@ pub fn walk_text_files(
     Ok(())
 }
 
+/// Walk `root` gitignore-aware and yield the path of every regular file in it.
+///
+/// The walk prunes exactly what [`walk_text_files`] does — `.gitignore` and
+/// hidden-file conventions (ignore files above `root` included, and honored even
+/// outside a git repository) and the [`IGNORED_DIRS`] — and never follows
+/// symlinks, so a link cycle cannot stall it and a link is never listed. Unlike
+/// [`walk_text_files`] it reads no contents: binary, oversize and non-UTF-8 files
+/// are yielded too, which suits a file picker that lists every file it could open.
+///
+/// The iterator is lazy and single-threaded; entries the walk cannot read (a
+/// directory without permission) are skipped. Paths are yielded in walk order,
+/// so a consumer wanting a stable listing sorts them.
+pub fn walk_files(root: &Path) -> impl Iterator<Item = PathBuf> {
+    // With no include/exclude globs there is nothing to compile, so the build
+    // cannot fail; an `Err` would yield an empty walk rather than a panic.
+    build_walk(root, &[], &[])
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| entry.file_type().is_some_and(|t| t.is_file()))
+        .map(ignore::DirEntry::into_path)
+}
+
 /// The result of a workspace [`replace`](WorkspaceSearch::replace).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
