@@ -334,6 +334,8 @@ impl Command {
             | Self::Bottom
             | Self::InsertChar(_)
             | Self::TriggerCompletion
+            | Self::NextInlineCompletion
+            | Self::PrevInlineCompletion
             | Self::Hover
             | Self::SignatureHelp
             | Self::ToggleInlayHints

@@ -39,6 +39,7 @@ mod hover;
 mod indent;
 mod inlay;
 mod inlay_pointer;
+mod inline_completion;
 mod inline_macros;
 mod keystroke_copies;
 mod language_server_badge;

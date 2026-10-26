@@ -215,6 +215,8 @@ command_ids! {
     StageHunk => "stageHunk",
     UnstageHunk => "unstageHunk",
     TriggerCompletion => "triggerCompletion",
+    NextInlineCompletion => "nextInlineCompletion",
+    PrevInlineCompletion => "prevInlineCompletion",
     Hover => "hover",
     SignatureHelp => "signatureHelp",
     ToggleInlayHints => "toggleInlayHints",

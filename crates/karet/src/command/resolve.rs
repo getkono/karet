@@ -38,6 +38,8 @@ static PALETTE: &[Command] = &[
     Command::OpenFind,
     Command::OpenGlobalSearch,
     Command::TriggerCompletion,
+    Command::NextInlineCompletion,
+    Command::PrevInlineCompletion,
     Command::Hover,
     Command::SignatureHelp,
     Command::ToggleInlayHints,

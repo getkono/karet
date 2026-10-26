@@ -188,6 +188,8 @@ impl App {
             Command::PrevChangedFile => self.step_changed_file(-1),
             Command::OpenDiffFile => self.open_diff_file(),
             Command::TriggerCompletion => self.trigger_completion(true),
+            Command::NextInlineCompletion => self.cycle_inline_completion(true),
+            Command::PrevInlineCompletion => self.cycle_inline_completion(false),
             Command::Hover => self.request_hover(),
             Command::SignatureHelp => self.request_signature_help(true),
             Command::ToggleInlayHints => self.toggle_inlay_hints(),

@@ -33,6 +33,8 @@ impl App {
         let code_lens = self.code_lens_next_wake(now);
         // Likewise the lightbulb probe, once the caret has settled.
         let code_actions = self.code_action_next_wake(now);
+        // And the ghost-text ask, once typing has paused.
+        let inline_completion = self.inline_completion_next_wake(now);
         // And the occurrence highlight, once the caret has rested on a word.
         let occurrences = self.occurrence_next_wake(now);
         // Likewise a workspace-symbol query, once typing pauses.
@@ -68,6 +70,7 @@ impl App {
             inlay,
             code_lens,
             code_actions,
+            inline_completion,
             occurrences,
             workspace_symbols,
             ai_commit,
@@ -184,6 +187,9 @@ impl App {
                 version,
                 hints,
             } => self.on_inlay_hints(id, doc, version, hints),
+            SessionEvent::InlineCompletions {
+                doc, server, items, ..
+            } => self.on_inline_completions(id, doc, server, items),
             SessionEvent::InlayHintsFailed { doc, version } => {
                 self.on_inlay_hints_failed(id, doc, version);
             },

@@ -29,6 +29,7 @@ mod hit;
 mod hover;
 mod indent;
 mod inlay;
+mod inline_completion;
 mod inline_macros;
 mod input;
 mod language_servers;
@@ -580,6 +581,9 @@ pub struct App {
     /// The quick-fix menu's pending request, the action being run, and the
     /// gutter lightbulb's probe.
     pub(crate) code_actions: code_actions::CodeActions,
+    /// Ghost text: the pending ask and what is on offer (see
+    /// [`inline_completion`]).
+    pub(crate) inline_completion: inline_completion::InlineCompletions,
     /// The occurrence-highlight probe and what it found (see [`occurrences`]).
     pub(crate) occurrences: occurrences::Occurrences,
     /// Each pane's Go Back / Go Forward history, keyed by the pane it navigates.

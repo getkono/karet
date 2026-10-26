@@ -128,6 +128,7 @@ impl App {
             rename: None,
             pending_rename: None,
             code_actions: code_actions::CodeActions::default(),
+            inline_completion: inline_completion::InlineCompletions::default(),
             occurrences: occurrences::Occurrences::default(),
             nav_history: HashMap::new(),
             definition_hover: None,

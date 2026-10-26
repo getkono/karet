@@ -244,7 +244,13 @@ pub(super) fn frame_virtual_text(
     // `App::handle_code_lens_mouse` rebuilds them to find a click's lens.
     let lenses = doc.and_then(|doc| ctx.code_lenses.get(&doc));
     let rows = lenses.map(|lenses| crate::app::code_lens_rows(lenses, buffer, ctx.tab_width));
-    let lines = rows.into_iter().flatten().map(|row| row.line).collect();
+    let mut lines: Vec<_> = rows.into_iter().flatten().map(|row| row.line).collect();
+    // Ghost text last of both, so every index above stays what it was: its
+    // first line after the caret, its further lines as rows below it.
+    if let Some((text, rows)) = ctx.inline_ghost.clone() {
+        out.extend(text);
+        lines.extend(rows);
+    }
     (out, inlay_parts, blame, lines)
 }
 
