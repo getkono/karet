@@ -963,9 +963,11 @@ impl App {
             // replacement for this version arrives.
             self.shift_inlay_hints(doc, base, version, &change.edits);
             self.shift_code_lenses(doc, base, version, &change.edits);
+            self.shift_links_and_colors(doc, base, version, &change.edits);
             self.shift_navigation(doc, base, version, &change.edits);
             self.note_inlay_edit(doc, Instant::now());
             self.note_code_lens_edit(doc, Instant::now());
+            self.note_link_color_edit(doc, Instant::now());
             self.schedule_auto_save(doc, version, Instant::now());
         }
     }

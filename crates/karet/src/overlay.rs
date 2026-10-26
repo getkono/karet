@@ -15,7 +15,6 @@ use karet_vcs::BranchTarget;
 use karet_vcs::CreateBranchOptions;
 use karet_vcs::StashOptions;
 
-use crate::app::hierarchy::HierarchyTree;
 use crate::command::Command;
 use crate::command::{self};
 use crate::keymap;
@@ -297,8 +296,6 @@ pub enum Overlay {
     AiCommit(aicommit::AiCommitForm),
     /// Single-value follow-up prompt.
     Text(TextPrompt),
-    /// A call or type hierarchy, expanded one level at a time.
-    Hierarchy(Box<HierarchyTree>),
 }
 
 /// The interactive-rebase plan being edited: one row per commit, oldest
@@ -655,7 +652,6 @@ impl Overlay {
             Self::StashForm(_) => "Stash changes · ↑↓ fields · Space toggles",
             Self::AiCommit(_) => "AI commit options · ↑↓ fields · Space cycles · Enter saves",
             Self::Text(prompt) => &prompt.title,
-            Self::Hierarchy(tree) => tree.title(),
         }
     }
 
@@ -667,7 +663,6 @@ impl Overlay {
             Self::RebaseTodo(_) => "oldest first, as git applies them",
             Self::CreateBranch(_) | Self::StashForm(_) | Self::AiCommit(_) => "Edit selected field",
             Self::Text(prompt) => &prompt.text,
-            Self::Hierarchy(tree) => tree.query(),
         }
     }
 
@@ -680,7 +675,6 @@ impl Overlay {
             Self::CreateBranch(form) => form.rows.iter().map(String::as_str).collect(),
             Self::StashForm(form) => form.rows.iter().map(String::as_str).collect(),
             Self::AiCommit(form) => form.rows().iter().map(String::as_str).collect(),
-            Self::Hierarchy(tree) => tree.rows(),
             Self::Text(_) => Vec::new(),
         }
     }
@@ -706,7 +700,6 @@ impl Overlay {
             Self::CreateBranch(form) => form.rows.iter().map(|_| None).collect(),
             Self::StashForm(form) => form.rows.iter().map(|_| None).collect(),
             Self::AiCommit(form) => form.rows().iter().map(|_| None).collect(),
-            Self::Hierarchy(tree) => tree.row_hints(),
             Self::Text(_) => Vec::new(),
         }
     }
@@ -720,7 +713,6 @@ impl Overlay {
             Self::CreateBranch(form) => form.selected,
             Self::StashForm(form) => form.selected,
             Self::AiCommit(form) => form.selected(),
-            Self::Hierarchy(tree) => tree.selected(),
             Self::Text(_) => 0,
         }
     }
@@ -738,7 +730,6 @@ impl Overlay {
             Self::CreateBranch(form) => form.selected = form.selected.saturating_sub(1),
             Self::StashForm(form) => form.selected = form.selected.saturating_sub(1),
             Self::AiCommit(form) => form.select_up(),
-            Self::Hierarchy(tree) => tree.select_up(),
             Self::Text(_) => {},
         }
     }
@@ -758,7 +749,6 @@ impl Overlay {
             },
             Self::StashForm(form) => form.selected = (form.selected + 1).min(StashForm::LAST_ROW),
             Self::AiCommit(form) => form.select_down(),
-            Self::Hierarchy(tree) => tree.select_down(),
             Self::Text(_) => {},
         }
     }
@@ -785,7 +775,6 @@ impl Overlay {
             Self::StashForm(form) => form.push_char(c),
             Self::AiCommit(form) => form.push_char(c),
             Self::Text(prompt) => prompt.text.push(c),
-            Self::Hierarchy(_) => {},
         }
     }
 
@@ -793,7 +782,7 @@ impl Overlay {
     pub fn pop_char(&mut self) {
         match self {
             Self::Picker(p) => p.pop_char(),
-            Self::RebaseTodo(_) | Self::Hierarchy(_) => {},
+            Self::RebaseTodo(_) => {},
             Self::CreateBranch(form) => form.pop_char(),
             Self::StashForm(form) => {
                 if form.selected == 0 {
@@ -812,7 +801,7 @@ impl Overlay {
     pub fn push_str(&mut self, text: &str) {
         match self {
             Self::Picker(p) => p.push_str(text),
-            Self::RebaseTodo(_) | Self::Hierarchy(_) => {},
+            Self::RebaseTodo(_) => {},
             Self::CreateBranch(form) => {
                 for character in text.chars() {
                     form.push_char(character);
@@ -854,7 +843,6 @@ impl Overlay {
             Self::CreateBranch(form) => OverlayEvent::AcceptCreateBranch(form.options()),
             Self::StashForm(form) => OverlayEvent::AcceptStash(form.options()),
             Self::AiCommit(form) => OverlayEvent::AcceptAiCommit(Box::new(form.options())),
-            Self::Hierarchy(tree) => tree.accept(),
             Self::Text(prompt) => OverlayEvent::AcceptText {
                 purpose: prompt.purpose.clone(),
                 text: prompt.text.clone(),

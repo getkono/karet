@@ -52,6 +52,7 @@ pub mod config;
 mod dap;
 mod diff_prepare;
 mod editorconfig;
+mod event_tx;
 mod highlight;
 mod latex;
 pub mod local;

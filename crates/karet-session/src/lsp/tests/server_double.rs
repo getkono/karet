@@ -139,6 +139,9 @@ pub(super) enum Behavior {
     /// Offer semantic tokens like [`Behavior::SemanticTokens`], but cancel
     /// the first request (`ServerCancelled`, `-32802`) and answer the rest.
     CancelsSemanticTokensOnce,
+    /// Serve normally, and offer folding ranges (see
+    /// `folding_tests::double_reply`).
+    Folds,
 }
 
 /// What the scripted server advertises at the handshake.
@@ -171,8 +174,11 @@ fn advertised_capabilities(behavior: Behavior) -> Value {
         "renameProvider": true,
         "documentRangeFormattingProvider": true,
         "codeActionProvider": {"resolveProvider": true},
-        "executeCommandProvider": {"commands": ["double.fix", "double.run"]},
+        "executeCommandProvider": {"commands": ["double.fix", "double.run", "double.accept"]},
+        "inlineCompletionProvider": {},
         "codeLensProvider": {"resolveProvider": true},
+        "documentLinkProvider": {"resolveProvider": true},
+        "colorProvider": true,
         "signatureHelpProvider": {
             "triggerCharacters": ["("],
             "retriggerCharacters": [","]
@@ -222,12 +228,12 @@ fn advertised_capabilities(behavior: Behavior) -> Value {
             "full": {"delta": true}
         });
     }
+    if matches!(behavior, Behavior::Folds) {
+        capabilities["foldingRangeProvider"] = json!(true);
+    }
     capabilities
 }
 
-/// The double's answer to `textDocument/diagnostic`: one error on line 0
-/// naming `version`, linked to its documentation and related to line 1 of the
-/// asking file, beside a full report for `elsewhere.rs`.
 /// Whether `behavior` registers pulls on `didOpen` and withdraws them on
 /// `didSave`.
 fn registers_pulls(behavior: Behavior) -> bool {
@@ -237,6 +243,9 @@ fn registers_pulls(behavior: Behavior) -> bool {
     )
 }
 
+/// The double's answer to `textDocument/diagnostic`: one error on line 0
+/// naming `version`, linked to its documentation and related to line 1 of the
+/// asking file, beside a full report for `elsewhere.rs`.
 fn pull_reply(msg: &Value, version: &Value) -> Value {
     let asking = msg["params"]["textDocument"]["uri"]
         .as_str()
@@ -508,6 +517,23 @@ pub(super) fn test_connector(
                             write_msg(
                                 &mut server_write,
                                 &json!({"jsonrpc": "2.0", "id": msg["id"], "result": item}),
+                            )
+                            .await;
+                        },
+                        Some("textDocument/inlineCompletion") => {
+                            // One item replacing UTF-16 characters 0..4 of
+                            // line 0 -- buffer columns 0..3 once the emoji
+                            // is accounted for -- with an acceptance command.
+                            let result = json!({"items": [{
+                                "insertText": "😀ab = 1;",
+                                "range": {"start": {"line": 0, "character": 0},
+                                          "end": {"line": 0, "character": 4}},
+                                "command": {"title": "", "command": "double.accept",
+                                            "arguments": [1]}
+                            }]});
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": result}),
                             )
                             .await;
                         },
@@ -862,6 +888,19 @@ pub(super) fn test_connector(
                             )
                             .await;
                         },
+                        Some(
+                            "textDocument/documentLink"
+                            | "documentLink/resolve"
+                            | "textDocument/documentColor"
+                            | "textDocument/foldingRange",
+                        ) => {
+                            let result = super::link_color_tests::double_reply(&msg);
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": result}),
+                            )
+                            .await;
+                        },
                         Some("textDocument/didSave") if registers_pulls(behavior) => {
                             write_msg(
                                 &mut server_write,
@@ -888,6 +927,18 @@ pub(super) fn test_connector(
                             write_msg(
                                 &mut server_write,
                                 &json!({"jsonrpc": "2.0", "id": msg["id"], "result": null}),
+                            )
+                            .await;
+                        },
+                        // Copilot's sign-in: a device code, and the command
+                        // that completes it.
+                        Some("signIn") => {
+                            let result = json!({"userCode": "ABCD-EFGH",
+                                "command": {"title": "Sign in", "command": "double.run",
+                                            "arguments": [2]}});
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": result}),
                             )
                             .await;
                         },

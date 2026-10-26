@@ -770,10 +770,11 @@ fn bstr_to_path(location: &gix::bstr::BStr) -> PathBuf {
     gix::path::from_bstr(location).into_owned()
 }
 
-/// Classify `bytes` as `(is_binary, text)`: binary if a NUL byte appears in the first
-/// 8 KiB or the content is not valid UTF-8. The returned text is empty when binary.
+/// Classify `bytes` as `(is_binary, text)`: binary if the toolkit's shared sniff
+/// ([`karet_filetype::looks_binary`], a NUL in the first 8000 bytes) fires or the
+/// content is not valid UTF-8. The returned text is empty when binary.
 fn classify(bytes: &[u8]) -> (bool, String) {
-    if bytes.iter().take(8000).any(|&b| b == 0) {
+    if karet_filetype::looks_binary(bytes) {
         return (true, String::new());
     }
     match std::str::from_utf8(bytes) {

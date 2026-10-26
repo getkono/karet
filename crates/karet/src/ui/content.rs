@@ -142,7 +142,7 @@ pub(super) fn draw_pane_content(
                 // fields (so closing/rerunning one can't wipe the other) and
                 // combined only here, at render time.
                 let mut frame_decos =
-                    swatches::frame_decorations(ctx, buffer, tab.editor.scroll_line(), area);
+                    swatches::frame_decorations(ctx, *doc, buffer, tab.editor.scroll_line(), area);
                 frame_decos.extend(swatches::debug_decorations(ctx, path));
                 // The lightbulb shares the marker lane too: after a breakpoint,
                 // which is state the user set.

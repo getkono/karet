@@ -13,6 +13,7 @@
 //! in the frames before the worker answers.
 
 mod code_actions;
+mod columns;
 mod completion;
 mod debug;
 mod docfile;
@@ -28,6 +29,7 @@ mod edit_requests;
 #[cfg(feature = "github")]
 mod github;
 mod hints;
+mod inline_completion;
 mod lifecycle;
 mod lsp_commands;
 mod lsp_registry_updates;
@@ -43,8 +45,10 @@ mod reload;
 mod retirement;
 mod search;
 mod semantic_tokens;
+mod server_folds;
 mod spelling;
 mod streams;
+mod syntax_state;
 mod updates;
 mod vcs;
 mod viz;
@@ -59,6 +63,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
+use columns::Columns;
 #[cfg(feature = "github")]
 use github::GithubJob;
 use karet_core::BytePos;
@@ -71,7 +76,9 @@ use karet_core::Selection;
 use karet_core::Severity;
 use karet_core::Symbol;
 use karet_core::TextEdit;
+#[cfg(feature = "cbor")]
 use karet_filetype::FileKind;
+#[cfg(feature = "cbor")]
 use karet_filetype::classify_ignoring_size;
 use karet_syntax::FoldRegions;
 use karet_syntax::Highlights;
@@ -91,8 +98,8 @@ use karet_vcs::Repository;
 use karet_vcs::VcsError;
 use karet_watch::FsEvent;
 use karet_watch::Watcher;
+use syntax_state::SyntaxState;
 use tokio::sync::mpsc;
-use workspace_edit::Columns;
 
 use crate::api::Command;
 use crate::api::DocumentEncoding;
@@ -110,6 +117,7 @@ use crate::backup::SwapStore;
 use crate::backup::discard;
 use crate::backup::scan;
 use crate::config::load::ConfigManager;
+use crate::event_tx::EventTx;
 use crate::highlight::HighlightJob;
 use crate::highlight::HighlightRequest;
 use crate::highlight::HighlightResult;
@@ -191,6 +199,12 @@ enum DocumentLoadError {
     /// A known binary format whose decode-to-text failed (corrupt CBOR): the
     /// client should fall back to a read-only byte view, like non-UTF-8 text.
     #[error("file is not decodable to text")]
+    // Only CBOR has a decode step today; the variant stays ungated so the
+    // open path's match arm in `documents.rs` reads the same in every build.
+    #[cfg_attr(
+        not(feature = "cbor"),
+        expect(dead_code, reason = "constructed only by the cbor decode path")
+    )]
     Undecodable,
     #[error(transparent)]
     Load(#[from] LoadError),
@@ -213,20 +227,9 @@ struct Document {
     must_create: bool,
     /// Per-path behavior after application settings and EditorConfig resolution.
     settings: DocumentSettings,
-    /// The last highlights the worker produced, translated across any edits applied
-    /// since. The parsed trees themselves live on the worker, not here.
-    highlights: Arc<Highlights>,
-    folds: Arc<FoldRegions>,
-    /// Semantic block scopes produced by the syntax worker for this version.
-    semantic_blocks: Arc<SemanticBlocks>,
-    /// Grammar-backed outline used when LSP supplies no symbols.
-    syntax_symbols: Arc<Vec<Symbol>>,
-    /// Syntax-error line ranges from the worker's last parse (see
-    /// [`DocSnapshot::syntax_error_lines`]).
-    error_lines: Arc<Vec<(u32, u32)>>,
-    /// GFM table line ranges from the worker's last parse (see
-    /// [`DocSnapshot::table_lines`]).
-    table_lines: Arc<Vec<std::ops::RangeInclusive<u32>>>,
+    /// What the syntax worker last derived, translated across any edits
+    /// applied since.
+    syntax: SyntaxState,
     /// Last spell-check diagnostics emitted for this exact document state.
     spell_diagnostics: Vec<karet_core::Diagnostic>,
     /// Last markdown-lint diagnostics (empty for non-Markdown documents or
@@ -244,6 +247,9 @@ struct Document {
     /// The semantic-token owner's last overlay, translated across edits like
     /// [`highlights`](Self::highlights) (see [`semantic_tokens`]).
     semantic_tokens: Option<semantic_tokens::SemanticLayer>,
+    /// The primary server's folding ranges, preferred over the grammar's folds
+    /// on every snapshot while held (see [`server_folds`]).
+    server_folds: Option<server_folds::ServerFolds>,
     /// Open reference count (a path opened in N views shares one document).
     refs: u32,
     /// When the buffer first became dirty (session-clock ms), or `None` when clean.
@@ -281,7 +287,7 @@ pub struct Session {
     config: SessionConfig,
     /// Cached configuration layers used for targeted live reloads.
     config_manager: Option<ConfigManager>,
-    events: mpsc::UnboundedSender<(Option<RequestId>, Event)>,
+    events: EventTx,
     snapshots: mpsc::UnboundedSender<(DocumentId, Arc<DocSnapshot>)>,
     store: DocumentStore,
     /// Jobs for the background highlight worker (see [`crate::highlight`]). Layered
@@ -796,9 +802,15 @@ impl Session {
             | Command::FormatOnType { .. }
             | Command::CodeLenses { .. }
             | Command::RunCodeLens { .. }
+            | Command::LinksAndColors { .. }
+            | Command::ResolveDocumentLink { .. }
             | Command::RestartLanguageServer { .. }
             | Command::CancelLanguageServerWork { .. }
             | Command::AnswerLanguageServerMessage { .. }
+            | Command::InlineCompletion { .. }
+            | Command::AcceptInlineCompletion { .. }
+            | Command::SignInLanguageServer { .. }
+            | Command::SignOutLanguageServer { .. }
             | Command::LanguageServerLog { .. } => {},
         }
     }
@@ -868,33 +880,22 @@ fn update_syntax(
     edits: Option<&[AppliedEdit]>,
 ) -> bool {
     doc.translate_semantic_tokens(edits);
+    doc.translate_server_folds(edits);
     let Some(lang) = doc.lang_id else {
         // Plaintext: nothing to parse, and no worker round-trip to wait for.
-        doc.highlights = Arc::new(Highlights::default());
-        doc.folds = crate::highlight::indent_folds(settings, doc.language_selector, &doc.buffer);
-        doc.semantic_blocks = Arc::new(SemanticBlocks::default());
-        doc.syntax_symbols = Arc::default();
-        // No worker result will replace these, so ranges from a previous grammar
+        // No worker result will replace this, so ranges from a previous grammar
         // (a Markdown file saved as `.txt`) would otherwise linger on the snapshot.
-        doc.error_lines = Arc::default();
-        doc.table_lines = Arc::default();
+        doc.syntax.clear(crate::highlight::indent_folds(
+            settings,
+            doc.language_selector,
+            &doc.buffer,
+        ));
         return true;
     };
 
-    // Keep the spans we already have usable until the worker answers. Rendering them
-    // unshifted would smear color across the text the edit moved.
+    // Keep the spans we already have usable until the worker answers.
     if let Some(edits) = edits {
-        // Block scopes are line-based and cannot be translated safely across an
-        // arbitrary edit. Hide them briefly rather than render stale source context.
-        doc.semantic_blocks = Arc::new(SemanticBlocks::default());
-        doc.syntax_symbols = Arc::default();
-        for ae in edits {
-            doc.highlights = Arc::new(doc.highlights.translate(
-                BytePos(ae.start_byte),
-                BytePos(ae.old_end_byte),
-                BytePos(ae.new_end_byte),
-            ));
-        }
+        doc.syntax.translate(edits);
     }
 
     let request = HighlightRequest {

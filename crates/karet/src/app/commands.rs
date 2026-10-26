@@ -21,6 +21,11 @@ impl App {
                 if panel == SidebarPanel::Todos && !self.todos_available() {
                     return;
                 }
+                // The Hierarchy panel shows a tree a hierarchy command grew;
+                // with none yet there is nothing to show.
+                if panel == SidebarPanel::Hierarchy && !self.show_hierarchy() {
+                    return;
+                }
                 self.sidebar_panel = panel;
                 self.sidebar_visible = true;
                 self.focus = Focus::Sidebar;
@@ -188,6 +193,10 @@ impl App {
             Command::PrevChangedFile => self.step_changed_file(-1),
             Command::OpenDiffFile => self.open_diff_file(),
             Command::TriggerCompletion => self.trigger_completion(true),
+            Command::NextInlineCompletion => self.cycle_inline_completion(true),
+            Command::PrevInlineCompletion => self.cycle_inline_completion(false),
+            Command::CopilotSignIn => self.copilot_account(true),
+            Command::CopilotSignOut => self.copilot_account(false),
             Command::Hover => self.request_hover(),
             Command::SignatureHelp => self.request_signature_help(true),
             Command::ToggleInlayHints => self.toggle_inlay_hints(),
@@ -267,6 +276,7 @@ impl App {
             Command::ShowOutgoingCalls => self.open_hierarchy(HierarchyDirection::OutgoingCalls),
             Command::ShowSupertypes => self.open_hierarchy(HierarchyDirection::Supertypes),
             Command::ShowSubtypes => self.open_hierarchy(HierarchyDirection::Subtypes),
+            Command::HierarchyExpand => self.hierarchy_expand(),
             Command::RenameSymbol => self.start_rename(),
             Command::RenameSubmit => self.rename_submit(),
             Command::RenameCancel => self.rename_cancel(),

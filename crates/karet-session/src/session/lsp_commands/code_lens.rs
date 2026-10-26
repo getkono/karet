@@ -9,8 +9,8 @@
 use karet_core::ApplyWorkspaceEditResult;
 use karet_core::CodeLens;
 
+use super::super::columns::utf16_range_to_buffer;
 use super::super::lsp_requests::NO_SERVER;
-use super::super::updates::utf16_range_to_buffer;
 use super::*;
 use crate::api::AppliedWorkspaceEdit;
 use crate::lsp::CodeLensAnswer;

@@ -132,6 +132,7 @@ impl App {
                 self.on_open_failed(req, &message);
             }
             self.fail_pending_commit_detail(req, &message);
+            self.fail_hierarchy_request(req);
             // A range diff has no failure event of its own: it answers with this
             // notification, which carries its request id.
             self.fail_pending_compare(req, &message);

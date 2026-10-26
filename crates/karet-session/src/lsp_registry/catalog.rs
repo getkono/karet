@@ -166,6 +166,16 @@ const MANAGED_RECIPES: &[ManagedRecipe] = &[
             binary: "docker-langserver",
         },
     },
+    // Inline completions (ghost text); signing in to GitHub is the server's
+    // own `signIn` flow.
+    ManagedRecipe {
+        server: "copilot-language-server",
+        source: ManagedSource::Npm {
+            package: "@github/copilot-language-server",
+            companion: None,
+            binary: "copilot-language-server",
+        },
+    },
     ManagedRecipe {
         server: "graphql-lsp",
         source: ManagedSource::Npm {

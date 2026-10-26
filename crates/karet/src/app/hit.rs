@@ -170,6 +170,8 @@ pub(crate) enum ScrollSurface {
     TodoResults,
     /// The Problems results list.
     ProblemResults,
+    /// The Hierarchy panel's tree.
+    HierarchyResults,
     /// The Debug panel's section list.
     DebugResults,
     /// A commit or compare view's changed-file rail, which scrolls independently of

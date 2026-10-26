@@ -26,11 +26,14 @@ mod icon;
 mod pairs;
 mod registry;
 
+pub use classify::BINARY_SNIFF_LEN;
 pub use classify::FileKind;
 pub use classify::SIZE_GUARD;
 pub use classify::classify;
 pub use classify::classify_ignoring_size;
 pub use classify::classify_with_guard;
+pub use classify::is_utf8_text;
+pub use classify::looks_binary;
 pub use comment::CommentTokens;
 pub use generated::BANNER_GUARD;
 pub use generated::Generated;

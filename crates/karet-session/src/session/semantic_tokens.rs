@@ -54,10 +54,10 @@ impl Document {
     pub(super) fn display_highlights(&self) -> Arc<Highlights> {
         match &self.semantic_tokens {
             Some(layer) => Arc::new(crate::highlight::overlay_semantic(
-                &self.highlights,
+                self.syntax.highlights(),
                 &layer.spans,
             )),
-            None => Arc::clone(&self.highlights),
+            None => Arc::clone(self.syntax.highlights()),
         }
     }
 }

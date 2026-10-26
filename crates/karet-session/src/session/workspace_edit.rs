@@ -23,18 +23,9 @@ use karet_core::DocumentEdit;
 use karet_core::FileOptions;
 use karet_core::WorkspaceEdit;
 
-use super::updates::utf16_range_to_buffer;
+use super::columns::edits_to_buffer_columns;
 use super::*;
 use crate::api::AppliedWorkspaceEdit;
-
-/// Which column encoding an edit's ranges count in.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Columns {
-    /// UTF-16 code units: anything a language server produced.
-    Utf16,
-    /// Buffer (character) columns: anything a client produced.
-    Buffer,
-}
 
 /// Each document's version before an edit's first step reached it, keyed by
 /// document so a rename between steps cannot lose it; `None` for a document
@@ -68,20 +59,6 @@ fn steps(edit: WorkspaceEdit) -> Vec<Step> {
             change,
         });
     unordered.chain(ordered).collect()
-}
-
-/// Convert `edits` to buffer columns against `buffer`.
-fn to_buffer_columns(
-    buffer: &TextBuffer,
-    mut edits: Vec<TextEdit>,
-    columns: Columns,
-) -> Vec<TextEdit> {
-    if columns == Columns::Utf16 {
-        for edit in &mut edits {
-            edit.range = utf16_range_to_buffer(buffer, edit.range);
-        }
-    }
-    edits
 }
 
 /// Why a file cannot be edited as text, in words for the user.
@@ -224,7 +201,7 @@ impl Session {
             let Some(buffer) = scratch.get_mut(&edit.path) else {
                 continue;
             };
-            let edits = to_buffer_columns(buffer, edit.edits.clone(), columns);
+            let edits = edits_to_buffer_columns(buffer, edit.edits.clone(), columns);
             buffer
                 .apply_simple(&Change::new(buffer.version(), edits))
                 .map_err(|error| fail(format!("cannot edit {}: {error}", edit.path.display())))?;
@@ -318,7 +295,7 @@ impl Session {
             let Some(doc) = self.store.docs.get_mut(&doc_id) else {
                 return Ok(());
             };
-            let edits = to_buffer_columns(&doc.buffer, edits, columns);
+            let edits = edits_to_buffer_columns(&doc.buffer, edits, columns);
             let change = Change::new(doc.buffer.version(), edits);
             // The caret the client last reported, so undoing the edit puts the
             // user back where they were rather than at its first change.

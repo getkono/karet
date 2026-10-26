@@ -290,6 +290,42 @@ fn an_id_scoped_kitty_escape_is_deletable_by_that_id_alone() {
     );
 }
 
+#[test]
+fn a_pre_encoded_payload_chunks_at_the_kitty_limit_without_raster() {
+    let payload: String = (0..2 * KITTY_CHUNK + 5)
+        .map(|i| char::from(b'A' + (i % 26) as u8))
+        .collect();
+    let escapes = kitty_chunked(&payload, "a=T,z=1,C=1", ",q=2");
+    let parts: Vec<(&str, &str)> = escapes
+        .split_terminator("\x1b\\")
+        .map(|escape| {
+            let body = escape.strip_prefix("\x1b_G").unwrap_or_default();
+            body.split_once(';').unwrap_or_default()
+        })
+        .collect();
+    let keys: Vec<&str> = parts.iter().map(|(keys, _)| *keys).collect();
+    assert_eq!(keys, ["a=T,z=1,C=1,m=1", "m=1,q=2", "m=0,q=2"]);
+    assert!(parts.iter().all(|(_, data)| data.len() <= KITTY_CHUNK));
+    assert_eq!(
+        parts.iter().map(|(_, data)| *data).collect::<String>(),
+        payload
+    );
+}
+
+#[test]
+fn a_payload_that_fits_one_chunk_is_a_single_final_escape() {
+    assert_eq!(
+        kitty_chunked("QUJD", "a=T", ",q=2"),
+        "\x1b_Ga=T,m=0;QUJD\x1b\\"
+    );
+    let full = "A".repeat(KITTY_CHUNK);
+    assert_eq!(
+        kitty_chunked(&full, "a=T", ""),
+        format!("\x1b_Ga=T,m=0;{full}\x1b\\")
+    );
+    assert_eq!(kitty_chunked("", "a=T", ""), "");
+}
+
 /// The keys of each escape in `escapes`, and the base64 payload they carry, joined.
 #[cfg(feature = "raster")]
 fn kitty_split(escapes: &str) -> (Vec<String>, Vec<u8>) {

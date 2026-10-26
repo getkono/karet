@@ -61,9 +61,16 @@ impl Document {
                 self.dirty_since = Some(tick);
             }
         } else {
-            self.dirty_since = None;
-            self.backed_up_version = None;
+            self.mark_saved();
         }
+    }
+
+    /// Disarm the backup bookkeeping because the buffer matches what is on
+    /// disk: either a save just wrote it or an edit returned it to the save
+    /// point. The next edit that dirties it starts the backup clock afresh.
+    pub(super) fn mark_saved(&mut self) {
+        self.dirty_since = None;
+        self.backed_up_version = None;
     }
 }
 
@@ -189,16 +196,12 @@ impl Session {
             format,
             must_create,
             settings: document_settings,
-            highlights: Arc::new(Highlights::default()),
-            folds: Arc::new(FoldRegions::default()),
-            semantic_blocks: Arc::new(SemanticBlocks::default()),
-            syntax_symbols: Arc::default(),
-            error_lines: Arc::default(),
-            table_lines: Arc::default(),
+            syntax: SyntaxState::default(),
             spell_diagnostics: Vec::new(),
             lint_diagnostics: Vec::new(),
             lsp_diagnostics: HashMap::new(),
             semantic_tokens: None,
+            server_folds: None,
             refs: 1,
             dirty_since: None,
             backed_up_version: None,
@@ -265,7 +268,7 @@ impl Session {
             let settings = &self.config.settings;
             let lsp = &mut self.lsp;
             let Some(doc) = self.store.docs.get_mut(&doc_id) else {
-                self.events.send((Some(id), unknown_document(doc_id))).ok();
+                self.events.emit(Some(id), unknown_document(doc_id));
                 return;
             };
             let ctx = edit_context(tick, cause, doc, change);
@@ -620,8 +623,7 @@ impl Session {
             Some(Ok(_)) => {
                 // The file is safely on disk: drop the backup and disarm the clock.
                 if let Some(doc) = self.store.docs.get_mut(&doc_id) {
-                    doc.dirty_since = None;
-                    doc.backed_up_version = None;
+                    doc.mark_saved();
                     let path = doc.path.clone();
                     if let Some(store) = self.swaps.as_ref() {
                         store.remove(&path);
@@ -704,8 +706,7 @@ impl Session {
         match result {
             Some(Ok(())) => {
                 if let Some(doc) = self.store.docs.get_mut(&doc_id) {
-                    doc.dirty_since = None;
-                    doc.backed_up_version = None;
+                    doc.mark_saved();
                     if let Some(store) = self.swaps.as_ref() {
                         store.remove(&doc.path);
                     }
@@ -790,6 +791,7 @@ impl Session {
         // `update_syntax` would keep it.
         if doc.language_selector != old_language || doc.lsp_language_id != old_lsp_language {
             doc.semantic_tokens = None;
+            doc.server_folds = None;
         }
         // The language may have changed with the extension; re-highlight from scratch.
         let spell_without_syntax =
@@ -861,7 +863,7 @@ impl Session {
         let events = self.events.clone();
         std::thread::spawn(move || {
             let markdown = convert_document_file(&path);
-            let _ = events.send((Some(id), Event::DocumentConverted { path, markdown }));
+            events.emit(Some(id), Event::DocumentConverted { path, markdown });
         });
     }
 
