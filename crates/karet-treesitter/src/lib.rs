@@ -1,8 +1,8 @@
 //! `karet-treesitter` — the shared tree-sitter parse host for the karet toolkit.
 //!
-//! Owns parser pooling, tree caching and query execution so that `karet-syntax`,
-//! `karet-diff`, and (via syntax) the editor all reuse a single parse of each
-//! buffer. Tree-sitter is karet's *sole* syntax backend — there is deliberately no
+//! Owns parser pooling, tree caching and query execution so that `karet-syntax`
+//! and (via syntax) the editor reuse a single parse of each buffer. (`karet-diff`
+//! is purely textual today and does not depend on this crate.) Tree-sitter is karet's *sole* syntax backend — there is deliberately no
 //! second backend to abstract over. Grammars are compiled in behind `lang-*`
 //! features; [`language_id_from_path`] / [`language_name_from_path`] map a file to
 //! one (or to a plaintext fallback).
@@ -868,7 +868,8 @@ fn covers_same_text(parent: &SyntaxTree, ranges: &[Span], lang: LanguageId) -> b
 /// merge the results without translating coordinates.
 pub struct LayeredTree {
     root: SyntaxTree,
-    /// Injected layers, innermost first within each branch of the descent.
+    /// Injected layers in breadth-first order: every layer the root injects
+    /// directly, then every layer those inject, and so on (shallowest first).
     children: Vec<SyntaxTree>,
 }
 
@@ -879,7 +880,8 @@ impl LayeredTree {
         &self.root
     }
 
-    /// The injected layers, excluding the root.
+    /// The injected layers, excluding the root, in breadth-first order
+    /// (shallowest first).
     #[must_use]
     pub fn children(&self) -> &[SyntaxTree] {
         &self.children

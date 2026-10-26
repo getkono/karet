@@ -3,8 +3,8 @@
 > Shared tree-sitter parse host (incremental parsing, tree cache, query running) for karet.
 
 A single, reusable tree-sitter front end — parser pooling, incremental re-parsing, and query
-execution — so syntax highlighting, diffing and structural navigation all share one parse of
-each buffer. Tree-sitter is the sole syntax backend, by design.
+execution — so syntax highlighting and structural navigation share one parse of each buffer.
+(Diffing in `karet-diff` is purely textual and does not use it.) Tree-sitter is the sole syntax backend, by design.
 
 It also resolves **language injection**: `LayeredParser` parses a document as a root tree
 plus one tree per embedded region, so a markdown code fence is parsed as the language it
