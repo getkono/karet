@@ -301,11 +301,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     draw_diagnostic_view(f, app, &theme, area);
 
     if let Some(overlay) = &app.overlay {
-        // Quick-open over a first walk (or a symbol request), or a hierarchy
-        // waiting on its server, that is taking a while says so.
+        // Quick-open over a first walk (or a symbol request) that is taking a
+        // while says so.
         let loading = app
             .quick_open_loading()
-            .or_else(|| app.hierarchy_loading())
             .is_some_and(|pending| pending.visible());
         draw_overlay(f, overlay, loading, &theme, area);
     }

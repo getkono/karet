@@ -87,6 +87,8 @@ impl App {
             todos_ui: TodosChrome::default(),
             problems: ProblemsPanel::default(),
             problems_ui: ProblemsChrome::default(),
+            hierarchy: hierarchy::HierarchyPanel::default(),
+            hierarchy_ui: hierarchy::HierarchyChrome::default(),
             notifications: NotificationCenter::default(),
             toast_hits: Vec::new(),
             sidebar_rect: Rect::default(),
@@ -269,6 +271,11 @@ impl App {
         let decorations_turned_on = settings.git.decorations && !self.settings.git.decorations;
         if !settings.git.decorations {
             self.forget_line_changes(None);
+        }
+        // Changed `lsp` settings reconfigure the language servers, so what a
+        // document's old server said it formats on no longer holds.
+        if settings.lsp != self.settings.lsp {
+            self.forget_on_type_triggers();
         }
         self.settings = settings;
         if inlay_changed {

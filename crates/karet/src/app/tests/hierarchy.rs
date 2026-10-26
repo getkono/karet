@@ -1,5 +1,6 @@
-//! The call and type hierarchy tree: opened at once, filled by the roots,
-//! grown one level per expansion, and walked with the arrows.
+//! The call and type hierarchy panel: opened at once, filled by the roots,
+//! grown one level per expansion, walked with the arrows, and left standing
+//! when an item is opened.
 
 use karet_core::HierarchyDirection;
 use karet_core::HierarchyItem;
@@ -8,8 +9,10 @@ use karet_core::Range;
 use karet_core::ServerFeature;
 use karet_core::SymbolKind;
 use karet_session::LanguageServerId;
+use ratatui::style::Modifier;
 
 use super::support::*;
+use crate::app::hierarchy::HierarchyTree;
 use crate::app::*;
 
 /// The hierarchy requests a backend received, in order.
@@ -52,10 +55,15 @@ fn answer(app: &mut App, id: RequestId, items: Vec<HierarchyItem>) {
 }
 
 fn rows(app: &App) -> Vec<String> {
-    app.overlay
+    app.hierarchy
+        .tree
         .as_ref()
-        .map(|overlay| overlay.rows().into_iter().map(str::to_owned).collect())
+        .map(|tree| tree.rows().into_iter().map(str::to_owned).collect())
         .unwrap_or_default()
+}
+
+fn selected(app: &App) -> Option<usize> {
+    app.hierarchy.tree.as_ref().map(HierarchyTree::selected)
 }
 
 fn key(app: &mut App, code: KeyCode) {
@@ -77,8 +85,8 @@ fn workspace(name: &str) -> (Arc<RecordingBackend>, App, PathBuf) {
     (backend, app, root)
 }
 
-/// Each command asks for its own direction at the caret, and the tree opens
-/// at once -- empty, titled -- rather than when the server answers.
+/// Each command asks for its own direction at the caret, and the panel opens
+/// at once -- empty, titled, focused -- rather than when the server answers.
 #[test]
 fn each_command_opens_its_tree_at_once_asking_at_the_caret() {
     for (command, direction, title) in [
@@ -114,8 +122,12 @@ fn each_command_opens_its_tree_at_once_asking_at_the_caret() {
             ),
             "{command:?}: {requests:?}"
         );
-        let overlay = app.overlay.as_ref().map(Overlay::title).unwrap_or_default();
-        assert!(overlay.starts_with(title), "{overlay}");
+        let shown = app.hierarchy.tree.as_ref().map(HierarchyTree::title);
+        assert_eq!(shown, Some(title));
+        assert!(app.overlay.is_none(), "the tree is a panel, not an overlay");
+        assert_eq!(app.sidebar_panel, SidebarPanel::Hierarchy);
+        assert!(app.sidebar_visible);
+        assert_eq!(app.focus, Focus::Sidebar);
         assert!(rows(&app).is_empty(), "nothing is shown before the answer");
     }
 }
@@ -152,16 +164,18 @@ fn the_roots_fill_the_tree_and_the_first_is_expanded() {
     answer(&mut app, expand, vec![item("caller", &lib, 2)]);
     assert_eq!(rows(&app), vec!["▾ main", "  ▸ caller", "▸ other"]);
     let hints = app
-        .overlay
+        .hierarchy
+        .tree
         .as_ref()
-        .map(Overlay::row_hints)
+        .map(HierarchyTree::row_hints)
         .unwrap_or_default();
     assert_eq!(hints[1].as_deref(), Some("lib.rs:3"));
 }
 
 /// Right expands the selected node, asking only the first time; Left
 /// collapses it, and on a collapsed node climbs to its parent; Enter opens
-/// the selected item where it is named.
+/// the selected item where it is named and leaves the panel, its selection
+/// and its expansion as they were, so Ctrl+8 lands back on the same row.
 #[test]
 fn the_arrows_walk_the_tree_and_enter_opens_the_item() {
     let (backend, mut app, root) = workspace("hierarchy-walk");
@@ -188,7 +202,7 @@ fn the_arrows_walk_the_tree_and_enter_opens_the_item() {
     assert_eq!(rows(&app), vec!["▾ main", "  · caller"], "none: a leaf");
 
     key(&mut app, KeyCode::Left);
-    assert_eq!(app.overlay.as_ref().map(Overlay::selected), Some(0));
+    assert_eq!(selected(&app), Some(0));
     key(&mut app, KeyCode::Left);
     assert_eq!(rows(&app), vec!["▸ main"]);
     key(&mut app, KeyCode::Right);
@@ -201,22 +215,167 @@ fn the_arrows_walk_the_tree_and_enter_opens_the_item() {
 
     key(&mut app, KeyCode::Down);
     key(&mut app, KeyCode::Enter);
-    assert!(app.overlay.is_none());
     assert_eq!(app.tabs[app.active].path(), Some(lib.as_path()));
+    assert_eq!(app.focus, Focus::Editor, "the opened item takes the keys");
     // The opened tab waits for its text; the caret lands once it arrives.
     fill_reserved_tabs(&mut app);
     assert_eq!(app.tabs[app.active].editor.cursor(), LineCol::new(2, 3));
+
+    // The panel is still there, as it was left.
+    assert_eq!(app.sidebar_panel, SidebarPanel::Hierarchy);
+    assert!(app.sidebar_visible);
+    assert_eq!(rows(&app), vec!["▾ main", "  · caller"]);
+    assert_eq!(selected(&app), Some(1));
+    app.handle_key(KeyEvent::new(KeyCode::Char('8'), KeyModifiers::CONTROL));
+    assert_eq!(app.focus, Focus::Sidebar);
+    assert_eq!(app.sidebar_panel, SidebarPanel::Hierarchy);
+    key(&mut app, KeyCode::Up);
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(
+        app.tabs[app.active].path(),
+        Some(root.join("main.rs").as_path())
+    );
+    assert_eq!(rows(&app), vec!["▾ main", "  · caller"]);
+    assert_eq!(sent(&backend).len(), 3, "opening asks the server nothing");
 }
 
-/// No roots closes the tree and says why, in terms of the server when
-/// there is none to ask.
+/// Space toggles the selected node, `l` expands like Right, and `h`
+/// collapses like Left.
+#[test]
+fn space_toggles_and_the_letter_keys_walk_like_the_arrows() {
+    let (backend, mut app, root) = workspace("hierarchy-letters");
+    let lib = root.join("lib.rs");
+    app.dispatch(Command::ShowIncomingCalls);
+    let prepare = sent(&backend)[0].0;
+    answer(
+        &mut app,
+        prepare,
+        vec![item("main", &root.join("main.rs"), 0)],
+    );
+    let expand = sent(&backend)[1].0;
+    answer(&mut app, expand, vec![item("caller", &lib, 2)]);
+
+    key(&mut app, KeyCode::Char(' '));
+    assert_eq!(rows(&app), vec!["▸ main"]);
+    key(&mut app, KeyCode::Char(' '));
+    assert_eq!(rows(&app), vec!["▾ main", "  ▸ caller"]);
+    key(&mut app, KeyCode::Char('h'));
+    assert_eq!(rows(&app), vec!["▸ main"]);
+    key(&mut app, KeyCode::Char('l'));
+    assert_eq!(rows(&app), vec!["▾ main", "  ▸ caller"]);
+    assert_eq!(
+        sent(&backend).len(),
+        2,
+        "known children are not asked again"
+    );
+}
+
+/// A click on a row's marker folds or unfolds it; a click elsewhere on the
+/// row opens the item, and the tree stays.
+#[test]
+fn clicking_a_marker_toggles_and_clicking_a_row_opens() {
+    let (backend, mut app, root) = workspace("hierarchy-click");
+    let lib = root.join("lib.rs");
+    app.dispatch(Command::ShowIncomingCalls);
+    let prepare = sent(&backend)[0].0;
+    answer(
+        &mut app,
+        prepare,
+        vec![item("main", &root.join("main.rs"), 0)],
+    );
+    let expand = sent(&backend)[1].0;
+    answer(&mut app, expand, vec![item("caller", &lib, 2)]);
+    let painted = screen(&mut app, 100, 12);
+    let rect = app.hierarchy_ui.results_rect;
+    assert!(rect.height > 0, "{painted:?}");
+
+    // Row 0 is `▾ main`: its marker sits one cell in from the panel edge.
+    app.hierarchy_click(rect.x + 1, rect.y);
+    assert_eq!(rows(&app), vec!["▸ main"]);
+    app.hierarchy_click(rect.x + 2, rect.y);
+    assert_eq!(rows(&app), vec!["▾ main", "  ▸ caller"]);
+
+    // Row 1's marker is two cells further in; past it, the click opens.
+    app.hierarchy_click(rect.x + 8, rect.y + 1);
+    assert_eq!(app.tabs[app.active].path(), Some(lib.as_path()));
+    assert_eq!(app.sidebar_panel, SidebarPanel::Hierarchy);
+    assert_eq!(rows(&app), vec!["▾ main", "  ▸ caller"]);
+    assert_eq!(selected(&app), Some(1));
+    // Below the last row, a click does nothing.
+    app.hierarchy_click(rect.x + 8, rect.y + 5);
+    assert_eq!(selected(&app), Some(1));
+}
+
+/// The panel paints which way the tree grows, each row with its location,
+/// and the switcher shows its button while a tree is held.
+#[test]
+fn the_panel_paints_its_rows_with_their_locations() {
+    let (backend, mut app, root) = workspace("hierarchy-paint");
+    let lib = root.join("lib.rs");
+    app.dispatch(Command::ShowIncomingCalls);
+    let prepare = sent(&backend)[0].0;
+    answer(
+        &mut app,
+        prepare,
+        vec![item("main", &root.join("main.rs"), 0)],
+    );
+    let expand = sent(&backend)[1].0;
+    answer(&mut app, expand, vec![item("caller", &lib, 2)]);
+    let painted = screen(&mut app, 120, 12).join("\n");
+    assert!(painted.contains("CALL HIERARCHY"), "{painted}");
+    assert!(painted.contains("Incoming Calls"), "{painted}");
+    assert!(!painted.contains("loading…"), "{painted}");
+    assert!(painted.contains("▾ main  main.rs:1"), "{painted}");
+    assert!(painted.contains("  ▸ caller  lib.rs:3"), "{painted}");
+    assert!(
+        app.panel_hits
+            .iter()
+            .any(|&(_, _, panel)| panel == SidebarPanel::Hierarchy)
+    );
+}
+
+/// The selected row is painted with the selection background, so the row
+/// Enter would open is the one that stands out.
+#[test]
+fn the_selected_row_is_highlighted() {
+    let (backend, mut app, root) = workspace("hierarchy-highlight");
+    app.dispatch(Command::ShowSupertypes);
+    let prepare = sent(&backend)[0].0;
+    answer(
+        &mut app,
+        prepare,
+        vec![
+            item("Base", &root.join("main.rs"), 0),
+            item("Other", &root.join("lib.rs"), 0),
+        ],
+    );
+    key(&mut app, KeyCode::Down);
+    let buffer = frame(&mut app, 120, 12);
+    let rect = app.hierarchy_ui.results_rect;
+    let selection = app.theme.role(ThemeRole::Selection).to_ratatui();
+    let first = &buffer[(rect.x + 3, rect.y)];
+    let second = &buffer[(rect.x + 3, rect.y + 1)];
+    assert_eq!(second.symbol(), "O");
+    assert_eq!(second.bg, selection);
+    assert!(second.modifier.contains(Modifier::BOLD));
+    assert_ne!(first.bg, selection);
+}
+
+/// No roots drops the tree, hands the sidebar and the keys back to what the
+/// panel replaced, and says why, in terms of the server when there is none
+/// to ask.
 #[test]
 fn no_roots_closes_the_tree_and_says_why() {
     let (backend, mut app) = completion_app("fn main() {}\n", LineCol::new(0, 4));
+    app.sidebar_panel = SidebarPanel::Problems;
+    app.sidebar_visible = false;
     app.dispatch(Command::ShowSubtypes);
     let prepare = sent(&backend)[0].0;
     answer(&mut app, prepare, Vec::new());
-    assert!(app.overlay.is_none());
+    assert!(app.hierarchy.tree.is_none());
+    assert_eq!(app.sidebar_panel, SidebarPanel::Problems);
+    assert!(!app.sidebar_visible);
+    assert_eq!(app.focus, Focus::Editor);
     let titles: Vec<_> = app
         .notifications
         .active()
@@ -271,7 +430,7 @@ fn no_roots_names_the_server_state() {
         app.dispatch(Command::ShowSupertypes);
         let prepare = sent(&backend)[0].0;
         answer(&mut app, prepare, Vec::new());
-        assert!(app.overlay.is_none(), "{runtime:?}");
+        assert!(app.hierarchy.tree.is_none(), "{runtime:?}");
         let titles: Vec<_> = app
             .notifications
             .active()
@@ -342,8 +501,10 @@ fn an_unsupported_hierarchy_is_reported_once() {
             feature: ServerFeature::CallHierarchy,
         },
     );
+    assert!(app.hierarchy.tree.is_none());
+    assert_ne!(app.sidebar_panel, SidebarPanel::Hierarchy);
     answer(&mut app, prepare, Vec::new());
-    assert!(app.overlay.is_none());
+    assert!(app.hierarchy.tree.is_none());
     let titles: Vec<_> = app
         .notifications
         .active()
@@ -357,7 +518,7 @@ fn an_unsupported_hierarchy_is_reported_once() {
     );
 }
 
-/// An answer for a tree the user has closed, or for a request the tree
+/// An answer for a tree the user has replaced, or for a request the tree
 /// does not wait on, changes nothing.
 #[test]
 fn a_stale_answer_changes_nothing() {
@@ -371,14 +532,215 @@ fn a_stale_answer_changes_nothing() {
     );
     assert!(rows(&app).is_empty());
 
-    app.overlay = None;
+    // A second hierarchy replaces the first; the first one's roots are late.
+    app.dispatch(Command::ShowSupertypes);
     answer(&mut app, prepare, vec![item("x", Path::new("/x.rs"), 0)]);
-    assert!(app.overlay.is_none());
-    assert_eq!(sent(&backend).len(), 1, "nothing was expanded");
+    assert!(rows(&app).is_empty());
+    let shown = app.hierarchy.tree.as_ref().map(HierarchyTree::title);
+    assert_eq!(shown, Some("Supertypes"));
+    assert_eq!(sent(&backend).len(), 2, "nothing was expanded");
+}
+
+/// A late child answer for a node of a replaced tree is dropped too, and
+/// so is an answer that has no request id at all.
+#[test]
+fn a_late_child_answer_for_a_replaced_tree_changes_nothing() {
+    let (backend, mut app, root) = workspace("hierarchy-late-child");
+    app.dispatch(Command::ShowIncomingCalls);
+    let prepare = sent(&backend)[0].0;
+    answer(
+        &mut app,
+        prepare,
+        vec![item("main", &root.join("main.rs"), 0)],
+    );
+    let expand = sent(&backend)[1].0;
+    app.dispatch(Command::ShowOutgoingCalls);
+    let second = sent(&backend)[2].0;
+    answer(
+        &mut app,
+        second,
+        vec![item("callee", &root.join("lib.rs"), 2)],
+    );
+    let before = rows(&app);
+    answer(
+        &mut app,
+        expand,
+        vec![item("caller", &root.join("lib.rs"), 2)],
+    );
+    app.on_backend_event(
+        None,
+        SessionEvent::Hierarchy {
+            direction: HierarchyDirection::OutgoingCalls,
+            items: vec![item("stray", &root.join("lib.rs"), 0)],
+        },
+    );
+    assert_eq!(rows(&app), before);
+}
+
+/// Replacing a tree on show keeps what the first one replaced: when the
+/// second comes back empty, the sidebar returns there, not to an empty
+/// Hierarchy panel.
+#[test]
+fn an_empty_replacement_returns_to_what_the_first_tree_replaced() {
+    let (backend, mut app, root) = workspace("hierarchy-replace-empty");
+    app.sidebar_panel = SidebarPanel::Todos;
+    app.sidebar_visible = true;
+    app.dispatch(Command::ShowIncomingCalls);
+    let prepare = sent(&backend)[0].0;
+    answer(
+        &mut app,
+        prepare,
+        vec![item("main", &root.join("main.rs"), 0)],
+    );
+    app.dispatch(Command::ShowSubtypes);
+    let second = sent(&backend)[2].0;
+    answer(&mut app, second, Vec::new());
+    assert!(app.hierarchy.tree.is_none());
+    assert_eq!(app.sidebar_panel, SidebarPanel::Todos);
+    assert_eq!(app.focus, Focus::Editor);
+}
+
+/// A sidebar the user hid while the roots were on their way stays hidden
+/// when they come back empty; only its panel goes back to what the
+/// Hierarchy panel replaced.
+#[test]
+fn an_empty_answer_leaves_a_sidebar_hidden_meanwhile_hidden() {
+    let (backend, mut app) = completion_app("fn main() {}\n", LineCol::new(0, 4));
+    app.sidebar_panel = SidebarPanel::Problems;
+    app.sidebar_visible = true;
+    app.dispatch(Command::ShowSubtypes);
+    let prepare = sent(&backend)[0].0;
+    app.sidebar_visible = false;
+    app.focus = Focus::Editor;
+    answer(&mut app, prepare, Vec::new());
+    assert!(app.hierarchy.tree.is_none());
+    assert_eq!(app.sidebar_panel, SidebarPanel::Problems);
+    assert!(!app.sidebar_visible, "the hidden sidebar is not reopened");
+    assert_eq!(app.focus, Focus::Editor);
+}
+
+/// A tree with one level answered: `main` (in `main.rs`) expanded onto
+/// `caller` (in `lib.rs`), with `caller` selected.
+fn answered_tree(name: &str) -> (Arc<RecordingBackend>, App, PathBuf) {
+    let (backend, mut app, root) = workspace(name);
+    app.dispatch(Command::ShowIncomingCalls);
+    let prepare = sent(&backend)[0].0;
+    answer(
+        &mut app,
+        prepare,
+        vec![item("main", &root.join("main.rs"), 0)],
+    );
+    let expand = sent(&backend)[1].0;
+    answer(
+        &mut app,
+        expand,
+        vec![item("caller", &root.join("lib.rs"), 2)],
+    );
+    key(&mut app, KeyCode::Down);
+    (backend, app, root)
+}
+
+/// Stand in for the tab the tree was asked from having closed: the only
+/// code tab left is open on `path` as `doc`, or holds no document at all.
+fn only_tab_open_on(app: &mut App, path: PathBuf, doc: Option<DocumentId>) {
+    let active = app.active;
+    if let TabKind::Code {
+        path: shown,
+        doc: held,
+        ..
+    } = &mut app.tabs[active].kind
+    {
+        *shown = path;
+        *held = doc;
+    }
+}
+
+/// Once the document the tree was asked from has closed, an expansion is
+/// grown through a document still open on a file the tree names, not sent
+/// for the closed one -- the session would answer that only with an error.
+#[test]
+fn an_expansion_after_the_origin_closes_goes_through_an_open_document() {
+    let (backend, mut app, root) = answered_tree("hierarchy-retarget");
+    only_tab_open_on(&mut app, root.join("lib.rs"), Some(DocumentId(12)));
+    key(&mut app, KeyCode::Right);
+    let requests = sent(&backend);
+    assert!(
+        matches!(
+            requests.get(2),
+            Some((_, SessionCommand::ExpandHierarchy { doc, .. })) if *doc == DocumentId(12)
+        ),
+        "{requests:?}"
+    );
+    assert_eq!(rows(&app), vec!["▾ main", "  ▾ caller"]);
+}
+
+/// With no document open on any file the tree names, an expansion asks
+/// nothing, leaves no node loading, and says how to grow the tree again.
+#[test]
+fn an_expansion_with_no_open_document_says_so_and_waits_on_nothing() {
+    let (backend, mut app, root) = answered_tree("hierarchy-no-doc");
+    only_tab_open_on(&mut app, root.join("main.rs"), None);
+    key(&mut app, KeyCode::Right);
+    assert_eq!(
+        sent(&backend).len(),
+        2,
+        "nothing is sent for a closed document"
+    );
+    assert_eq!(rows(&app), vec!["▾ main", "  ▸ caller"]);
+    assert!(app.hierarchy_loading().is_none());
+    let titles: Vec<_> = app
+        .notifications
+        .active()
+        .iter()
+        .map(|note| note.title.clone())
+        .collect();
+    assert_eq!(
+        titles,
+        vec!["call hierarchy: open lib.rs again to expand it further".to_owned()]
+    );
+}
+
+/// An expansion the session answers with an error (its document closed in
+/// the meantime) puts the node back as never asked for, so no loading note
+/// lingers and the next Right asks again; a root request answered that way
+/// drops the tree.
+#[test]
+fn an_error_answer_settles_the_request_it_answers() {
+    let (backend, mut app, _root) = answered_tree("hierarchy-error");
+    key(&mut app, KeyCode::Right);
+    let expand = sent(&backend)[2].0;
+    let unknown = || SessionEvent::Notification {
+        severity: Severity::Error,
+        kind: NotificationKind::System,
+        message: "unknown document 9".to_owned(),
+    };
+    app.on_backend_event(Some(expand), unknown());
+    assert_eq!(rows(&app), vec!["▾ main", "  ▸ caller"]);
+    assert!(app.hierarchy_loading().is_none());
+    key(&mut app, KeyCode::Right);
+    assert_eq!(sent(&backend).len(), 4, "the next expansion asks again");
+
+    app.dispatch(Command::ShowSupertypes);
+    let prepare = sent(&backend)[4].0;
+    app.on_backend_event(Some(prepare), unknown());
+    assert!(app.hierarchy.tree.is_none());
+    assert_ne!(app.sidebar_panel, SidebarPanel::Hierarchy);
+}
+
+/// With no tree, the panel cannot be selected: Ctrl+8 says how to get one
+/// and leaves the sidebar as it was.
+#[test]
+fn selecting_the_panel_without_a_tree_refuses() {
+    let (_backend, mut app) = completion_app("fn main() {}\n", LineCol::new(0, 4));
+    app.handle_key(KeyEvent::new(KeyCode::Char('8'), KeyModifiers::CONTROL));
+    assert_ne!(app.sidebar_panel, SidebarPanel::Hierarchy);
+    assert_eq!(app.focus, Focus::Editor);
+    assert_eq!(app.notifications.active().len(), 1);
 }
 
 /// A tree waiting on its server schedules the wake that reveals the
-/// loading note, and the note names no quick-open work.
+/// loading note while its panel is on screen, and paints the note once the
+/// reveal delay has passed; with the panel hidden, no wake is scheduled.
 #[test]
 fn a_slow_answer_reveals_the_loading_note() {
     let (_backend, mut app) = completion_app("fn main() {}\n", LineCol::new(0, 4));
@@ -390,6 +752,21 @@ fn a_slow_answer_reveals_the_loading_note() {
             .iter()
             .any(|pending| Some(*pending) == loading)
     );
-    let note = app.overlay.as_ref().map(Overlay::loading_note);
-    assert_eq!(note, Some("loading…"));
+    let painted = screen(&mut app, 120, 12).join("\n");
+    assert!(!painted.contains("loading…"), "too soon: {painted}");
+
+    if let Some(tree) = app.hierarchy.tree.as_mut() {
+        tree.reveal_loading();
+    }
+    let painted = screen(&mut app, 120, 12).join("\n");
+    assert!(painted.contains("Incoming Calls · loading…"), "{painted}");
+    assert!(painted.contains("  loading…"), "{painted}");
+
+    app.sidebar_visible = false;
+    let loading = app.hierarchy_loading();
+    assert!(
+        !app.pendings()
+            .iter()
+            .any(|pending| Some(*pending) == loading)
+    );
 }
