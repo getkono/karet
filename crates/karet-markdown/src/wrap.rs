@@ -210,7 +210,14 @@ pub(crate) fn wrap_with(
         if index > 0 {
             lines.push(WrappedLine::default());
         }
-        if let Some(source_line) = doc.block_line(index) {
+        // Two blocks can share a source line (a mermaid note and the fence it explains):
+        // only the first anchors it, so the projection lands on the note and the anchors
+        // stay strictly ascending on the source axis.
+        if let Some(source_line) = doc.block_line(index)
+            && anchors
+                .last()
+                .is_none_or(|a: &Anchor| a.source_line < source_line)
+        {
             anchors.push(Anchor {
                 source_line,
                 wrapped_line: lines.len(),
