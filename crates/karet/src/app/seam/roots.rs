@@ -28,8 +28,9 @@ use tokio::sync::mpsc;
 pub(crate) struct Discovery {
     /// The root the walk covered, so a result for another root is dropped.
     root: PathBuf,
-    /// What discovery found there, in the order it found them.
-    packages: Vec<Discovered>,
+    /// What discovery found there, in the order it found them; `None` when the walk
+    /// panicked, so the worker still reports that it ended.
+    packages: Option<Vec<Discovered>>,
 }
 
 /// The reader's context when the picker opened, kept until the discovery answering it
@@ -104,7 +105,12 @@ impl RootDiscovery {
         let started = std::thread::Builder::new()
             .name("karet-seam-discovery".to_owned())
             .spawn(move || {
-                let packages = karet_seam::discover(&root, karet_seam::DiscoveryOptions::default());
+                // A panicking walk must still answer, or `running` stays set and no later
+                // picker ever starts another discovery.
+                let packages = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    karet_seam::discover(&root, karet_seam::DiscoveryOptions::default())
+                }))
+                .ok();
                 // The receiver is gone only when the app is shutting down.
                 let _ = tx.send(Discovery { root, packages });
             });
@@ -116,7 +122,8 @@ impl RootDiscovery {
     }
 
     /// Adopt a finished discovery under `root`, returning the rows the picker that asked
-    /// for it should now show. `None` when it covered another root, or no picker asked.
+    /// for it should now show. `None` when it covered another root, no picker asked, or
+    /// the walk failed: the open picker then keeps the rows it opened with.
     pub(crate) fn accept(
         &mut self,
         root: &Path,
@@ -126,13 +133,18 @@ impl RootDiscovery {
         if discovery.root != root {
             return None;
         }
-        self.known = Some((discovery.root, discovery.packages.clone()));
+        let Some(packages) = discovery.packages else {
+            tracing::warn!("seam: package discovery failed under {}", root.display());
+            self.awaiting = None;
+            return None;
+        };
+        self.known = Some((discovery.root, packages.clone()));
         let context = self.awaiting.take()?;
         Some(candidates(
             root,
             context.current_file_dir,
             context.explorer_dir,
-            discovery.packages,
+            packages,
         ))
     }
 }
@@ -394,7 +406,7 @@ mod tests {
     fn discovery(root: &str, packages: Vec<Discovered>) -> Discovery {
         Discovery {
             root: PathBuf::from(root),
-            packages,
+            packages: Some(packages),
         }
     }
 
@@ -454,6 +466,23 @@ mod tests {
                 .accept(Path::new("/repo"), discovery("/repo", Vec::new()))
                 .is_none()
         );
+    }
+
+    #[test]
+    fn a_failed_discovery_ends_the_walk_and_keeps_what_was_known() {
+        // A panicked walk reports `None`: the next picker must be free to start another,
+        // and the packages found before must survive it.
+        let found = vec![package("a", "/repo/crates/a")];
+        let mut discoveries = awaiting(None);
+        discoveries.known = Some((PathBuf::from("/repo"), found.clone()));
+        let failed = Discovery {
+            root: PathBuf::from("/repo"),
+            packages: None,
+        };
+        assert!(discoveries.accept(Path::new("/repo"), failed).is_none());
+        assert!(!discoveries.running);
+        assert!(discoveries.awaiting.is_none());
+        assert_eq!(discoveries.known(Path::new("/repo")), found);
     }
 
     #[test]
