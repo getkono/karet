@@ -196,8 +196,8 @@ export CARGO_MUTANTS_JOBS="${CARGO_MUTANTS_JOBS:-4}"
 cargo mutants --package karet-cbor --all-features \
   --file 'crates/karet-cbor/src/diag.rs' \
   --file 'crates/karet-cbor/src/diag/*.rs' \
-  --exclude-re 'replace \\| with \\^ in Parser::parse_bytes' \
-  --exclude-re 'replace < with <= in format_float'"""
+  --exclude-re 'parse\\.rs:276:\\d+: replace \\| with \\^ in Parser::parse_bytes' \
+  --exclude-re 'print\\.rs:49:\\d+: replace < with <= in format_float'"""
 
 [tasks.mutants-seam]
 description = "Opt-in: mutation-test karet-seam's query language, cfg predicates, ids, regroup and rollup (cap 60m)"
@@ -304,10 +304,6 @@ timeout = "180m"
 #   and every section is `#[serde(default)]` over that same `Default`, whose
 #   maps and lists are empty, so a layer's partial section deserializes to the
 #   same value whether or not the defaults were merged under it.
-# - lsp/hint_flight.rs the `is_cancellation` guard made `false` in `deliver`:
-#   a cancelled request then takes the generic-error arm, which also charges
-#   nothing and reports the request failed. The two arms differ only in the
-#   level of the log line they write.
 run = """trap 'test $? -eq 3 && exit 0' EXIT
 export CARGO_MUTANTS_JOBS="${CARGO_MUTANTS_JOBS:-4}"
 cargo mutants --package karet-session --all-features --cargo-test-arg=--lib \
@@ -321,8 +317,7 @@ cargo mutants --package karet-session --all-features --cargo-test-arg=--lib \
   --file 'crates/karet-session/src/backup.rs' \
   --exclude-re 'load\\.rs:488:\\d+: (delete !|replace match guard !prefix\\.is_empty\\(\\) with (true|false)) in mark_explicit' \
   --exclude-re 'load\\.rs:491:\\d+: replace match guard !prefix\\.is_empty\\(\\) with true in mark_explicit' \
-  --exclude-re 'load\\.rs:50[01]:\\d+: (replace to_object -> Map<String, Value> with Default::default\\(\\)|delete match arm Ok\\(Value::Object\\(map\\)\\) in to_object)' \
-  --exclude-re 'hint_flight\\.rs:383:\\d+: replace match guard is_cancellation\\(&error\\) with false in deliver'"""
+  --exclude-re 'load\\.rs:50[01]:\\d+: (replace to_object -> Map<String, Value> with Default::default\\(\\)|delete match arm Ok\\(Value::Object\\(map\\)\\) in to_object)'"""
 
 [tasks.mutants-app]
 description = "Opt-in: mutation-test the app's chord resolver, terminal input, CLI and command resolution (cap 180m)"
