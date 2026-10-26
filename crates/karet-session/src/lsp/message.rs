@@ -447,7 +447,7 @@ pub(crate) struct DocumentHighlightsAnswer {
     pub(crate) version: u64,
     /// The occurrences, in UTF-16 columns; `None` when no server answered
     /// (none could be asked, it does not offer highlights, or it failed).
-    pub(crate) highlights: Option<Vec<karet_lsp::DocumentHighlight>>,
+    pub(crate) highlights: Option<Vec<karet_core::DocumentHighlight>>,
 }
 
 /// A result flowing from a server task back to the session actor.

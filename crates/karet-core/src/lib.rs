@@ -19,8 +19,8 @@
 //! - Blame: [`BlameAttribution`], [`BlameCommit`].
 //! - Text coordinates: [`BytePos`], [`LineCol`], [`Span`], [`Range`], [`LineIndex`].
 //! - Neutral models: [`Diagnostic`], [`Decoration`], [`Symbol`], [`WorkspaceSymbol`],
-//!   [`CompletionItem`], [`Hover`], [`InlayHint`], [`VirtualText`], [`SignatureHelp`],
-//!   [`CodeAction`], ….
+//!   [`CompletionItem`], [`Hover`], [`DocumentHighlight`], [`InlayHint`], [`VirtualText`],
+//!   [`SignatureHelp`], [`CodeAction`], ….
 //! - Graph: [`GraphView`] and its nodes/edges, for visualizations.
 //! - Edits & cursors: [`TextEdit`], [`Change`], [`AppliedEdit`], [`EditCause`],
 //!   [`Selection`], [`CursorState`].
@@ -104,10 +104,12 @@ pub use model::DecorationKind;
 pub use model::Diagnostic;
 pub use model::DiagnosticTag;
 pub use model::DocumentColor;
+pub use model::DocumentHighlight;
 pub use model::DocumentLink;
 pub use model::EolAlign;
 pub use model::HierarchyDirection;
 pub use model::HierarchyItem;
+pub use model::HighlightKind;
 pub use model::Hover;
 pub use model::InlayHint;
 pub use model::InlayHintKind;

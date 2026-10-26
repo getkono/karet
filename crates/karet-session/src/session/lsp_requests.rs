@@ -18,7 +18,6 @@ use crate::api::AppliedWorkspaceEdit;
 use crate::api::DocumentHighlight;
 use crate::api::FormatRequest;
 use crate::api::FormatScope;
-use crate::api::HighlightKind;
 use crate::api::LocationKind;
 use crate::api::RenameTarget;
 use crate::lsp::DocumentHighlightsAnswer;
@@ -220,11 +219,7 @@ impl Session {
                     .into_iter()
                     .map(|highlight| DocumentHighlight {
                         range: utf16_range_to_buffer(&document.buffer, highlight.range),
-                        kind: match highlight.kind {
-                            karet_lsp::HighlightKind::Text => HighlightKind::Text,
-                            karet_lsp::HighlightKind::Read => HighlightKind::Read,
-                            karet_lsp::HighlightKind::Write => HighlightKind::Write,
-                        },
+                        kind: highlight.kind,
                     })
                     .collect()
             }),

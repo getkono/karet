@@ -64,6 +64,13 @@ pub use aicommit::*;
 pub use debug::*;
 pub use event::Event;
 pub use github::*;
+/// One occurrence of the symbol a [`Command::DocumentHighlights`] asked
+/// about, as [`Event::DocumentHighlights`] carries it: its range in buffer
+/// columns. Re-exported from [`karet_core`], which defines it once.
+pub use karet_core::DocumentHighlight;
+/// How a [`DocumentHighlight`] uses its symbol; re-exported from
+/// [`karet_core`].
+pub use karet_core::HighlightKind;
 pub use language_servers::*;
 pub use navigation::*;
 pub use refactor::*;
@@ -71,31 +78,6 @@ pub use seam::*;
 pub use search::*;
 pub use server_window::*;
 pub use vcs::*;
-
-/// How a [`DocumentHighlight`] uses the symbol it is an occurrence of.
-#[derive(
-    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
-)]
-pub enum HighlightKind {
-    /// A textual occurrence, neither a read nor a write as far as the server
-    /// says.
-    #[default]
-    Text,
-    /// A read of the symbol.
-    Read,
-    /// A write to the symbol, such as an assignment or its declaration.
-    Write,
-}
-
-/// One occurrence of the symbol a [`Command::DocumentHighlights`] asked
-/// about.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct DocumentHighlight {
-    /// The occurrence, in buffer columns.
-    pub range: Range,
-    /// How the occurrence uses the symbol.
-    pub kind: HighlightKind,
-}
 
 /// Per-document editing and serialization behavior after application settings and
 /// matching EditorConfig files have been resolved.
