@@ -491,3 +491,21 @@ fn md037_still_reports_padded_emphasis() {
     assert!(issues.iter().any(|i| i.rule == "MD037"), "{issues:?}");
     assert_eq!(apply_fixes(text, &issues), "this is **padded** emphasis\n");
 }
+
+/// Fence delimiters are never interior; a delimiter of the other character,
+/// or one shorter than the opener, is interior rather than a closer.
+#[test]
+fn the_context_marks_fence_delimiters_apart_from_their_interior() {
+    let text = "a\n```\n~~~\n````\nb\n~~~~\n~~~\n~~~~~\n";
+    let lines: Vec<&str> = text.lines().collect();
+    let config = Config::default();
+    let cx = rules::Context::new(text, &lines, &config);
+    assert_eq!(
+        cx.in_fence,
+        [false, false, true, false, false, false, true, false]
+    );
+    assert_eq!(
+        cx.is_fence_line,
+        [false, true, false, true, false, true, false, true]
+    );
+}
