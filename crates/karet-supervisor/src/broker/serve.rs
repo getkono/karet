@@ -468,7 +468,6 @@ where
                     let _ = tx.send(message.clone()).await;
                 }
             },
-            ServerRoute::Discard => {},
         }
     }
     core.upstream_closed.store(true, Ordering::Release);

@@ -15,8 +15,9 @@
 //!   owns each `(server launch, repository root)` pair; editor windows connect
 //!   over an authenticated loopback socket so several karet instances share one
 //!   expensive server process. Its process-management skeleton is generic over
-//!   [`broker::BrokerProtocol`], so another persistent daemon can reuse the
-//!   election, endpoint and fanout machinery without inheriting LSP semantics.
+//!   a crate-private `BrokerProtocol` seam, so the election, endpoint and
+//!   fanout machinery is written and tested without LSP semantics; only the
+//!   LSP entry points are public.
 //!
 //! The composition root checks [`broker::requested`] / [`supervisor::requested`]
 //! first thing in `main()` and hands off to the matching `run_from_env`.

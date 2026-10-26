@@ -19,11 +19,9 @@ use karet_jsonrpc::framing::content_length::ContentLength;
 use karet_lsp::LspSpec;
 use serde_json::Value;
 use serde_json::json;
-use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tokio::sync::Notify;
 
-use crate::broker::BrokerError;
 use crate::broker::endpoint;
 use crate::broker::key::Launch;
 use crate::broker::lease;
@@ -35,7 +33,7 @@ use crate::broker::protocol::ServerLink;
 use crate::broker::protocol::ServerRoute;
 
 /// Environment flag selecting the hidden LSP-broker entry point.
-pub const MODE_ENV: &str = "KARET_INTERNAL_LSP_BROKER";
+const MODE_ENV: &str = "KARET_INTERNAL_LSP_BROKER";
 const SPEC_ENV: &str = "KARET_INTERNAL_LSP_BROKER_SPEC";
 const PRELUDE: &str = "KARET-LSP-BROKER ";
 const PROTOCOL_VERSION: &str = "1";
@@ -299,11 +297,21 @@ async fn close_client_documents(link: &ClientLink<'_, LspBroker>) {
     }
 }
 
-fn launch(spec: &LspSpec, root: &Path) -> Launch {
-    Launch {
-        command: spec.command.clone(),
-        args: spec.args.clone(),
-        root: root.to_path_buf(),
+impl Launch {
+    /// The broker's description of a language-server launch: `spec`'s command
+    /// and arguments, rooted at `root`.
+    ///
+    /// The one way a connector names an LSP launch, so the value it hands to
+    /// [`crate::broker::connect_observed`] and
+    /// [`crate::broker::reported_failure`] derives the same broker key the
+    /// hidden broker does.
+    #[must_use]
+    pub fn for_lsp(spec: &LspSpec, root: &Path) -> Self {
+        Self {
+            command: spec.command.clone(),
+            args: spec.args.clone(),
+            root: root.to_path_buf(),
+        }
     }
 }
 
@@ -317,23 +325,6 @@ pub fn requested() -> bool {
 #[must_use]
 pub fn run_from_env() -> i32 {
     lease::run_from_env::<LspBroker>()
-}
-
-/// Connect to the shared broker for `spec` and `root`, starting it when absent.
-///
-/// The returned stream has already completed the broker authentication prelude
-/// and can be passed directly to `karet_lsp::LspClient::connect`.
-///
-/// # Errors
-/// Returns [`BrokerError`] if the state directory, hidden process, or loopback
-/// connection cannot be established before the startup deadline.
-pub async fn connect(
-    executable: &Path,
-    state_root: &Path,
-    spec: &LspSpec,
-    root: &Path,
-) -> Result<TcpStream, BrokerError> {
-    lease::connect::<LspBroker>(executable, state_root, &launch(spec, root)).await
 }
 
 /// Whether a live shared broker still references a managed immutable payload.
@@ -359,7 +350,7 @@ mod tests {
     /// Keeps the moved tests' call shape: identity is derived from the launch
     /// description, which for LSP is a spec plus a repository root.
     fn broker_key(spec: &LspSpec, root: &Path) -> String {
-        key::broker_key(PRELUDE, PROTOCOL_VERSION, &launch(spec, root))
+        key::broker_key(PRELUDE, PROTOCOL_VERSION, &Launch::for_lsp(spec, root))
     }
 
     /// The document-lease tests only touch [`LspState`]; the channel keeps the
@@ -436,6 +427,29 @@ mod tests {
         assert_ne!(
             broker_key(&spec, Path::new("/a")),
             broker_key(&other, Path::new("/a"))
+        );
+    }
+
+    /// The launch is what runs and where, nothing more: the language ids a spec
+    /// serves must not partition brokers, or two windows that registered the
+    /// same server for different languages would each start their own.
+    #[test]
+    fn an_lsp_launch_is_the_command_its_arguments_and_the_root() {
+        let spec = LspSpec::new(
+            "rust-analyzer",
+            vec!["--stdio".to_owned()],
+            vec!["rust".to_owned()],
+        );
+        let launch = Launch::for_lsp(&spec, Path::new("/workspace"));
+        assert_eq!(launch.command, "rust-analyzer");
+        assert_eq!(launch.args, ["--stdio"]);
+        assert_eq!(launch.root, Path::new("/workspace"));
+
+        let mut other_languages = spec.clone();
+        other_languages.languages = vec!["toml".to_owned()];
+        assert_eq!(
+            broker_key(&spec, Path::new("/workspace")),
+            broker_key(&other_languages, Path::new("/workspace"))
         );
     }
 
