@@ -111,7 +111,9 @@ fn hunk_body(hunk: &Hunk) -> String {
 /// Reconstruct a valid unified-diff patch for a single `hunk` of `file`.
 ///
 /// The output is suitable for piping to `git apply --cached`. Pass a hunk from
-/// `file.hunks`; the `file` supplies the path/status header.
+/// `file.hunks`; the `file` supplies the path/status header. An added or removed
+/// file whose mode is unknown is written as a regular file (`100644`), so git
+/// creates or deletes the path.
 #[must_use]
 pub fn format_hunk_patch(file: &FileDiff, hunk: &Hunk) -> String {
     let mut out = file_header(file);
