@@ -1,5 +1,29 @@
 use std::ops::RangeInclusive;
 
+use karet_core::Decoration;
+use karet_core::DecorationKind;
+use karet_core::Diagnostic;
+use karet_core::HighlightSpan;
+use karet_core::Highlights;
+use karet_core::LineCol;
+use karet_core::Range;
+use karet_core::SemanticBlock;
+use karet_core::SemanticBlocks;
+use karet_core::ThemeRole;
+use karet_core::VirtualLine;
+use karet_core::VirtualText;
+use karet_core::VirtualTextPlacement;
+use karet_text::TextBuffer;
+use karet_theme::Rgba;
+use karet_theme::Theme;
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
+use ratatui::style::Modifier;
+use ratatui::style::Style;
+use ratatui::text::Line;
+use ratatui::text::Span;
+use ratatui::widgets::StatefulWidget;
+
 use super::hint::BlockIndex;
 use super::hint::EolItem;
 use super::hint::HintIndex;
@@ -11,7 +35,13 @@ use super::hint::text_width;
 use super::hint::truncate;
 use super::text::*;
 use super::visual::*;
-use super::*;
+use crate::EditorState;
+use crate::Fold;
+use crate::WrappingIndent;
+use crate::cluster_bounds;
+use crate::cluster_widths;
+use crate::diagnostic;
+use crate::state::FrameGeometry;
 
 mod decorate;
 mod display;
@@ -562,12 +592,12 @@ impl Editor<'_> {
             line,
             theme,
             default_fg,
-            (VisualRange::new(state.scroll_col, u32::MAX), room),
+            (VisualRange::new(state.scroll_col(), u32::MAX), room),
             selections,
             index.line(line),
             None,
         );
-        if state.scroll_col <= line_len(self.buffer, line) {
+        if state.scroll_col() <= line_len(self.buffer, line) {
             // The multi-line header's `…` takes the last cell.
             let marker = u32::from(block.has_multiline_header());
             let room = row_room(area, &spans).saturating_sub(marker);
@@ -592,10 +622,8 @@ impl StatefulWidget for Editor<'_> {
     type State = EditorState;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut EditorState) {
-        state.last_virtual_text.clear();
-        state.last_virtual_lines.clear();
-        state.last_fold_ellipses.clear();
         if area.width == 0 || area.height == 0 {
+            state.frame.forget_painted();
             return;
         }
         let fallback;
@@ -616,23 +644,9 @@ impl StatefulWidget for Editor<'_> {
         let gutter = gutter_width(line_count, self.line_numbers, self.change_lane);
         let content_width = area.width.saturating_sub(gutter).max(1);
 
-        // Clamp scroll to the buffer and record horizontal geometry. The vertical
-        // content height is resolved after semantic sticky rows are selected.
-        state.last_content_width = content_width;
-        state.last_line_numbers = self.line_numbers;
-        state.last_change_lane = self.change_lane;
-        state.last_scroll_off = self.scroll_off;
-        state.last_line = line_count.saturating_sub(1);
-        state.last_word_wrap = self.word_wrap;
-        state.last_wrap_column = self.wrap_column.map(u32::from);
-        state.last_wrapping_indent = self.wrapping_indent;
-        state.last_tab_width = self.tab_width;
-        state.last_unwrapped_lines = self.unwrapped_lines.to_vec();
-        state.scroll_line = state.scroll_line.min(line_count.saturating_sub(1));
-        if self.word_wrap {
-            state.scroll_col = 0;
-        }
-
+        // The geometry this frame lays out is handed to `state` whole once
+        // it has been painted (`record_frame`).
+        let wrap_column = self.wrap_column.map(u32::from);
         let width = u32::from(content_width);
         // Indexed once per frame and handed to `state` after the row loop, so
         // a later mouse click resolves against the virtual text and lines
@@ -647,34 +661,12 @@ impl StatefulWidget for Editor<'_> {
             hints: &hint_index,
             blocks: &block_index,
             wrap: self.word_wrap,
-            wrap_column: state.last_wrap_column,
+            wrap_column,
             wrapping_indent: self.wrapping_indent,
         };
-        if !self.word_wrap
-            && state.follow_cursor
-            && let Some((target, reveal)) = state.follow_col
-        {
-            // Re-resolved against the width this frame paints: the reveal's
-            // own estimate used the last frame's, or had none to use.
-            state.scroll_col = reveal_column(
-                &line_chars(self.buffer, target.line),
-                state.scroll_col,
-                target.col,
-                width,
-                self.tab_width,
-                layout.hints_on(target.line),
-                reveal,
-            );
-        }
-        let mut anchor = normalize_visual_anchor(
-            self.buffer,
-            self.folds,
-            layout,
-            VisualAnchor {
-                line: state.scroll_line,
-                subrow: state.scroll_subrow,
-            },
-        );
+        state.clamp_scroll_to_frame(self.buffer, layout);
+        let mut anchor =
+            normalize_visual_anchor(self.buffer, self.folds, layout, state.top_anchor());
         // A wrap affinity outlives only the caret it was set for.
         if self.word_wrap {
             let heads = &state.cursors.selections;
@@ -686,7 +678,7 @@ impl StatefulWidget for Editor<'_> {
         }
         let upstream = state.upstream.contains(&state.cursor());
         let mut sticky = self.sticky_blocks(anchor, layout.above(anchor.line), area.height);
-        let off = state.reveal_margin();
+        let off = state.reveal_margin(self.scroll_off);
         if state.follow_cursor {
             // Revealing moves the top, the top decides which headers stick,
             // and the headers decide how many rows are left for the caret. So
@@ -714,18 +706,9 @@ impl StatefulWidget for Editor<'_> {
                 sticky = self.sticky_blocks(anchor, layout.above(anchor.line), area.height);
             }
         }
-        state.scroll_line = anchor.line;
-        state.scroll_subrow = anchor.subrow;
-        state.follow_cursor = false;
-        state.follow_col = None;
-        state.last_folds.clear();
-        state
-            .last_folds
-            .extend(self.folds.iter().copied().filter(|fold| fold.collapsed));
-
-        state.sticky_rows = sticky.iter().map(|block| block.header_start).collect();
-        state.sticky_height = u16::try_from(sticky.len()).unwrap_or(u16::MAX);
-        state.last_height = area.height.saturating_sub(state.sticky_height);
+        state.settle_scroll(anchor);
+        let sticky_height = u16::try_from(sticky.len()).unwrap_or(u16::MAX);
+        let height = area.height.saturating_sub(sticky_height);
 
         // Snapshot the cursor set for painting: every non-empty selection's range and
         // the line of every caret (each caret's line gets the cursor-line emphasis).
@@ -740,7 +723,11 @@ impl StatefulWidget for Editor<'_> {
         // Base background for the whole editor area (covers rows past end-of-file).
         buf.set_style(area, Style::default().bg(background.to_ratatui()));
 
-        let mut rects = Vec::new();
+        // Where this frame paints each clickable affordance, recorded with
+        // the rest of its geometry once the rows are painted.
+        let mut virtual_text = Vec::new();
+        let mut virtual_lines = Vec::new();
+        let mut fold_ellipses = Vec::new();
         for (row, block) in sticky.iter().copied().enumerate() {
             let y = area
                 .y
@@ -756,10 +743,9 @@ impl StatefulWidget for Editor<'_> {
                 digits,
                 &selections,
                 &hint_index,
-                &mut rects,
+                &mut virtual_text,
             );
         }
-        state.last_virtual_text = rects;
 
         // Measured as the row loop walks anchors, so the scrollbar extents cost a
         // couple of comparisons per painted row rather than a second pass.
@@ -768,18 +754,15 @@ impl StatefulWidget for Editor<'_> {
         let mut glyph_frame = self
             .draws_glyphs()
             .then(|| self.glyph_frame(theme, Some(state.cursor())));
-        for row in 0..state.last_height {
+        for row in 0..height {
             if anchor.line >= line_count {
                 break;
             }
             let l = anchor.line;
             last_painted = Some(l);
-            let y = area
-                .y
-                .saturating_add(state.sticky_height)
-                .saturating_add(row);
+            let y = area.y.saturating_add(sticky_height).saturating_add(row);
             let next = next_visual_anchor(self.buffer, self.folds, layout, anchor);
-            let ranges = layout.text_rows(self.buffer, l, state.scroll_col);
+            let ranges = layout.text_rows(self.buffer, l, state.scroll_col());
             let (range_index, block) = match layout.kind(l, anchor.subrow, ranges.len() as u32) {
                 RowKind::Text(index) => (index as usize, None),
                 RowKind::Above(n) => (0, Some(block_index.above(l).get(n as usize))),
@@ -787,8 +770,8 @@ impl StatefulWidget for Editor<'_> {
             };
             if let Some(block) = block {
                 if let Some(&(_, source)) = block {
-                    let rects = &mut state.last_virtual_lines;
-                    let col = state.scroll_col;
+                    let rects = &mut virtual_lines;
+                    let col = state.scroll_col();
                     self.draw_virtual_line(buf, area, y, gutter, source, col, theme, rects);
                 }
                 if next == anchor {
@@ -872,7 +855,7 @@ impl StatefulWidget for Editor<'_> {
                     > usize::from(area.width);
             // A collapsed header hints at the hidden lines it conceals.
             if fold.is_some_and(|f| f.collapsed) && range_index + 1 == ranges.len() {
-                display::record_fold_ellipsis(&mut state.last_fold_ellipses, area, y, &spans, l);
+                display::record_fold_ellipsis(&mut fold_ellipses, area, y, &spans, l);
                 spans.push(Span::styled(
                     " \u{22ef}", // ⋯
                     Style::default().fg(theme.role(ThemeRole::LineNumber).to_ratatui()),
@@ -893,7 +876,7 @@ impl StatefulWidget for Editor<'_> {
                     guide_limit = area.right().saturating_sub(room);
                 }
             }
-            record_virtual_text(&mut state.last_virtual_text, area, y, &spans, &painted);
+            record_virtual_text(&mut virtual_text, area, y, &spans, &painted);
             buf.set_line(area.x, y, &Line::from(spans), area.width);
             if let Some(glyphs) = &glyphs
                 && ranges.len() == 1
@@ -918,10 +901,29 @@ impl StatefulWidget for Editor<'_> {
             }
             anchor = next;
         }
-        state.last_hints = hint_index;
-        state.last_blocks = block_index;
-        state.last_visible_lines =
-            last_painted.map_or(0, |last: u32| last.saturating_sub(state.scroll_line) + 1);
+        state.record_frame(FrameGeometry {
+            height,
+            content_width,
+            line_numbers: self.line_numbers,
+            change_lane: self.change_lane,
+            scroll_off: self.scroll_off,
+            last_line: line_count.saturating_sub(1),
+            word_wrap: self.word_wrap,
+            wrap_column,
+            wrapping_indent: self.wrapping_indent,
+            tab_width: self.tab_width,
+            unwrapped_lines: self.unwrapped_lines.to_vec(),
+            hints: hint_index,
+            blocks: block_index,
+            folds: self.folds.iter().copied().filter(|f| f.collapsed).collect(),
+            sticky_rows: sticky.iter().map(|block| block.header_start).collect(),
+            sticky_height,
+            visible_lines: last_painted
+                .map_or(0, |last: u32| last.saturating_sub(state.scroll_line()) + 1),
+            virtual_text,
+            virtual_lines,
+            fold_ellipses,
+        });
         if !self.word_wrap {
             // Raise the high-water mark by what this frame could see. The right-edge
             // term keeps the extent from ever claiming the caret has scrolled past
@@ -929,7 +931,7 @@ impl StatefulWidget for Editor<'_> {
             state.last_longest_col = state
                 .last_longest_col
                 .max(widest_visible)
-                .max(state.scroll_col.saturating_add(u32::from(content_width)));
+                .max(state.scroll_col().saturating_add(u32::from(content_width)));
         }
 
         let content = Rect {
@@ -939,7 +941,7 @@ impl StatefulWidget for Editor<'_> {
         };
         let plain = [background, cursor_line_bg];
         let ruler = theme.role(ThemeRole::IndentGuide);
-        self.paint_rulers(buf, content, state.scroll_col, plain, ruler);
+        self.paint_rulers(buf, content, state.scroll_col(), plain, ruler);
         diagnostic::finish_underlines(buf, area, self.undercurl);
 
         // Draw a reversed caret cell for every head when focused and editable.

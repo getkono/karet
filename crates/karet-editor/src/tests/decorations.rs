@@ -4,7 +4,7 @@
 use karet_core::TextModifiers;
 use ratatui::style::Color;
 
-use crate::*;
+use super::*;
 
 /// The text column `col` of row 0 sits after the two-cell gutter (marker and
 /// fold columns) `LineNumbers::Off` leaves.

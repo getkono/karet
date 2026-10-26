@@ -102,7 +102,7 @@ fn the_first_fill_puts_back_a_held_view_and_a_jump_replaces_it() {
         "both carets come back"
     );
     assert_eq!(
-        (tab.editor.scroll_line, tab.editor.scroll_col),
+        (tab.editor.scroll_line(), tab.editor.scroll_col()),
         (4, 1),
         "the scroll is clamped to the loaded text's last line"
     );

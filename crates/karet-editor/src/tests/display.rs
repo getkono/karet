@@ -2,7 +2,7 @@
 //! rulers, the keyboard reveal's vertical margin (`scroll_off`), and the
 //! soft-wrap geometry: the wrap column and continuation-row indentation.
 
-use crate::*;
+use super::*;
 
 /// `count` numbered lines.
 fn lines(count: u32) -> TextBuffer {
@@ -144,7 +144,7 @@ fn a_ruler_moves_with_horizontal_scroll_and_leaves_with_it() {
         .theme(&theme)
         .rulers(&[6, 2])
         .render(area, &mut target, &mut state);
-    assert_eq!(state.scroll_col, 4);
+    assert_eq!(state.scroll_col(), 4);
     let tinted: Vec<u16> = (0..13).filter(|&x| target[(x, 0)].bg == ruler).collect();
     assert_eq!(
         tinted,
@@ -167,14 +167,18 @@ fn a_sticky_header_is_numbered_in_the_active_mode() {
     let render = |numbers: LineNumbers| {
         let mut state = EditorState::new();
         state.place_caret(LineCol::new(6, 0));
-        state.scroll_line = 4;
+        state.scroll_to_line(4);
         let mut target = Buffer::empty(area);
         Editor::new(&buffer)
             .semantic_blocks(&blocks)
             .sticky_scroll(true)
             .line_numbers(numbers)
             .render(area, &mut target, &mut state);
-        assert_eq!(state.sticky_rows, vec![0], "line 0 is the sticky header");
+        assert_eq!(
+            state.frame.sticky_rows,
+            vec![0],
+            "line 0 is the sticky header"
+        );
         row_text(&target, 0, 0, 10)
     };
     assert_eq!(render(LineNumbers::Absolute), "  1 line 0");
@@ -210,23 +214,27 @@ fn scroll_off_keeps_rows_below_and_above_a_keyboard_caret() {
             state.extend_down(&buffer);
         }
         paint(&buffer, &mut state, wrap);
-        assert_eq!(state.scroll_line, 0, "line 6 has three rows below it");
+        assert_eq!(state.scroll_line(), 0, "line 6 has three rows below it");
         state.extend_down(&buffer);
         if !wrap {
             // A wrapped view leaves the margin to the render, in rows.
-            assert_eq!(state.scroll_line, 1, "resolved by the motion");
+            assert_eq!(state.scroll_line(), 1, "resolved by the motion");
         }
         paint(&buffer, &mut state, wrap);
-        assert_eq!(state.scroll_line, 1, "and kept by the render");
+        assert_eq!(state.scroll_line(), 1, "and kept by the render");
 
         state.goto(&buffer, LineCol::new(20, 0));
         paint(&buffer, &mut state, wrap);
-        assert_eq!(state.scroll_line, 14, "line 20 three rows from the bottom");
+        assert_eq!(
+            state.scroll_line(),
+            14,
+            "line 20 three rows from the bottom"
+        );
         for _ in 0..4 {
             state.extend_up(&buffer);
         }
         paint(&buffer, &mut state, wrap);
-        assert_eq!(state.scroll_line, 13, "line 16 three rows from the top");
+        assert_eq!(state.scroll_line(), 13, "line 16 three rows from the top");
     }
 }
 
@@ -248,18 +256,18 @@ fn a_wrapped_margin_counts_rows_not_lines() {
     paint(&mut state);
     state.goto(&buffer, LineCol::new(3, 0));
     paint(&mut state);
-    assert_eq!(state.scroll_line, 0, "row 6 has three rows below it");
+    assert_eq!(state.scroll_line(), 0, "row 6 has three rows below it");
     state.goto(&buffer, LineCol::new(4, 0));
     paint(&mut state);
     assert_eq!(
-        (state.scroll_line, state.scroll_subrow),
+        (state.scroll_line(), state.scroll_subrow),
         (1, 0),
         "row 8 scrolls two rows, not three lines"
     );
     state.goto(&buffer, LineCol::new(2, 0));
     paint(&mut state);
     assert_eq!(
-        (state.scroll_line, state.scroll_subrow),
+        (state.scroll_line(), state.scroll_subrow),
         (0, 1),
         "three rows above: line 0's second row on top"
     );
@@ -274,10 +282,10 @@ fn scroll_off_stops_at_either_end_of_the_buffer() {
         paint(&buffer, &mut state, wrap);
         state.extend_doc_end(&buffer);
         paint(&buffer, &mut state, wrap);
-        assert_eq!(state.scroll_line, 21, "the last line on the bottom row");
+        assert_eq!(state.scroll_line(), 21, "the last line on the bottom row");
         state.extend_doc_start(&buffer);
         paint(&buffer, &mut state, wrap);
-        assert_eq!(state.scroll_line, 0);
+        assert_eq!(state.scroll_line(), 0);
     }
 }
 
@@ -288,7 +296,7 @@ fn a_click_inside_the_margin_does_not_scroll() {
     paint(&buffer, &mut state, false);
     state.set_caret(&buffer, LineCol::new(9, 0));
     paint(&buffer, &mut state, false);
-    assert_eq!(state.scroll_line, 0, "the bottom row stays put");
+    assert_eq!(state.scroll_line(), 0, "the bottom row stays put");
 }
 
 #[test]
@@ -307,10 +315,10 @@ fn scroll_off_is_capped_to_what_a_short_viewport_can_spare() {
     state.extend_down(&buffer);
     state.extend_down(&buffer);
     paint(&mut state);
-    assert_eq!(state.scroll_line, 0, "line 2 has a row below it");
+    assert_eq!(state.scroll_line(), 0, "line 2 has a row below it");
     state.extend_down(&buffer);
     paint(&mut state);
-    assert_eq!(state.scroll_line, 1);
+    assert_eq!(state.scroll_line(), 1);
 }
 
 /// The one-line buffer the wrapping-indent tests share: two leading spaces,

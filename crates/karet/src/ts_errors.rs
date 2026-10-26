@@ -10,8 +10,27 @@
 //! code) is composed by the surfaces that already label raw diagnostics.
 
 use karet_core::Diagnostic;
-use karet_core::DiagnosticFormatter;
-use karet_core::FormattedDiagnostic;
+
+/// A diagnostic message re-rendered as markdown by a [`DiagnosticFormatter`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct FormattedDiagnostic {
+    /// The markdown replacing the raw message text wherever richer rendering
+    /// is available (hover popups, detail views). The raw
+    /// [`message`](Diagnostic::message) remains the fallback everywhere else.
+    pub(crate) markdown: String,
+}
+
+/// Re-renders a tool's raw diagnostic message as richer markdown.
+///
+/// Implementations are keyed on [`Diagnostic::source`] (a TypeScript formatter
+/// ignores rustc output) and are pure: same diagnostic in, same markdown out.
+/// Renderers stay decoupled — they receive the formatted markdown, never the
+/// formatter.
+pub(crate) trait DiagnosticFormatter {
+    /// Format `diagnostic`'s message; `None` when this formatter does not
+    /// apply, letting the raw message stand.
+    fn format(&self, diagnostic: &Diagnostic) -> Option<FormattedDiagnostic>;
+}
 
 /// The built-in [`DiagnosticFormatter`] for tsserver-family diagnostics.
 pub(crate) struct TsErrorFormatter;

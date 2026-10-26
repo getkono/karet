@@ -1,7 +1,16 @@
+use karet_core::HighlightSpan;
+use karet_core::LineCol;
+use karet_core::Range;
+use karet_core::TokenId;
+use karet_text::TextBuffer;
+use karet_theme::Rgba;
+use karet_theme::Theme;
+use ratatui::style::Style;
 use unicode_segmentation::UnicodeSegmentation;
 
 use super::hint::LineHints;
-use super::*;
+use crate::Fold;
+use crate::cluster_widths;
 
 /// Whether the cell at line `l`, column `col` lies within any of `selections`.
 pub(super) fn in_any(selections: &[Range], l: u32, col: u32) -> bool {

@@ -4,8 +4,8 @@
 //! view that mirrors this editor's offset (the merge-conflict side panes) reads
 //! it before the editor paints.
 
+use super::*;
 use crate::visual::*;
-use crate::*;
 
 /// One line, a 3-cell gutter, so a 33-cell area leaves 30 content cells.
 const AREA: Rect = Rect::new(0, 0, 33, 1);
@@ -43,18 +43,19 @@ fn a_hinted_line_reveals_leftward_by_display_cells_before_any_render() {
     let _ = paint(editor(), &buffer, &mut target, &mut state);
 
     state.extend_line_end(&buffer);
-    assert_eq!(state.scroll_col, 21, "right reveal leaves 10 cells after");
+    assert_eq!(state.scroll_col(), 21, "right reveal leaves 10 cells after");
     for _ in 0..14 {
         state.extend_left(&buffer);
     }
     assert_eq!(state.cursor(), LineCol::new(0, 22));
     assert_eq!(
-        state.scroll_col, 20,
+        state.scroll_col(),
+        20,
         "resolved by the motion, not the render"
     );
 
     let painted = paint(editor(), &buffer, &mut target, &mut state);
-    assert_eq!(state.scroll_col, 20, "the render does not revise it");
+    assert_eq!(state.scroll_col(), 20, "the render does not revise it");
     assert_eq!(painted, Some((GUTTER + MARGIN, "w".to_owned())));
 }
 
@@ -73,13 +74,17 @@ fn a_tabbed_line_reveals_leftward_by_display_cells() {
         state.extend_left(&buffer);
     }
     assert_eq!(state.cursor(), LineCol::new(0, 16));
-    let revealed = state.scroll_col;
+    let revealed = state.scroll_col();
     assert!(revealed > 0, "the tabs leave room to stay scrolled");
 
     let Some((x, glyph)) = paint(editor(), &buffer, &mut target, &mut state) else {
         unreachable!("a revealed caret is on screen");
     };
-    assert_eq!(state.scroll_col, revealed, "the render does not revise it");
+    assert_eq!(
+        state.scroll_col(),
+        revealed,
+        "the render does not revise it"
+    );
     assert_eq!(glyph, "n", "the caret is drawn over its own character");
     assert!(
         (GUTTER + MARGIN..AREA.width - MARGIN).contains(&x),
@@ -97,9 +102,9 @@ fn a_wrapped_view_never_scrolls_horizontally() {
     editor().render(area, &mut target, &mut state);
 
     state.extend_line_end(&buffer);
-    assert_eq!(state.scroll_col, 0);
+    assert_eq!(state.scroll_col(), 0);
     editor().render(area, &mut target, &mut state);
-    assert_eq!(state.scroll_col, 0);
+    assert_eq!(state.scroll_col(), 0);
 }
 
 #[test]
@@ -113,12 +118,12 @@ fn scroll_to_without_a_buffer_is_resolved_by_the_next_render() {
     Editor::new(&buffer).render(area, &mut target, &mut state);
 
     state.scroll_to(LineCol::new(0, 15));
-    assert_eq!(state.scroll_col, 0);
+    assert_eq!(state.scroll_col(), 0);
     Editor::new(&buffer).render(area, &mut target, &mut state);
-    assert_eq!(state.scroll_col, 4);
+    assert_eq!(state.scroll_col(), 4);
 
     state.reveal(&buffer, LineCol::new(0, 2));
-    assert_eq!(state.scroll_col, 0);
+    assert_eq!(state.scroll_col(), 0);
 }
 
 #[test]
@@ -126,12 +131,16 @@ fn a_reveal_before_the_first_render_waits_for_its_geometry() {
     let buffer = TextBuffer::from_text("abcdefghijklmnopqrstuvwxyz");
     let mut state = EditorState::new();
     state.reveal(&buffer, LineCol::new(0, 15));
-    assert_eq!(state.scroll_col, 0, "no viewport width to measure against");
+    assert_eq!(
+        state.scroll_col(),
+        0,
+        "no viewport width to measure against"
+    );
 
     let area = Rect::new(0, 0, 25, 1);
     let mut target = Buffer::empty(area);
     Editor::new(&buffer).render(area, &mut target, &mut state);
-    assert_eq!(state.scroll_col, 4);
+    assert_eq!(state.scroll_col(), 4);
 }
 
 #[test]
@@ -165,7 +174,7 @@ fn a_reveal_is_rechecked_against_a_narrower_next_frame() {
     Editor::new(&buffer).render(wide, &mut target, &mut state);
 
     state.goto(&buffer, LineCol::new(0, 150));
-    assert_eq!(state.scroll_col, 0, "column 150 fits the wide frame");
+    assert_eq!(state.scroll_col(), 0, "column 150 fits the wide frame");
 
     let narrow = Rect::new(0, 0, 43, 1);
     let mut target = Buffer::empty(narrow);

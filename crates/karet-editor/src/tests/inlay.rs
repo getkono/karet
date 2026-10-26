@@ -336,7 +336,7 @@ fn a_trailing_hint_stays_off_a_line_scrolled_past_its_end() {
     // margin, floating over nothing.
     let buffer = TextBuffer::from_text("fn f()\na_very_long_line_of_text_here\n");
     let mut state = EditorState::new();
-    state.scroll_col = 20;
+    state.scroll_to_column(20);
     let area = Rect::new(0, 0, 40, 2);
     let mut target = Buffer::empty(area);
     Editor::new(&buffer)
@@ -401,7 +401,7 @@ fn hints_before_the_caret_scroll_it_into_view_over_its_own_glyph() {
     let at = LineCol::new(0, 15);
     let (state, buffer, target) = revealed("abcdefghijklmnopqrstuvwxyz\n", &hints, at, 33);
 
-    assert!(state.scroll_col > 0, "the view did not scroll");
+    assert!(state.scroll_col() > 0, "the view did not scroll");
     let area = Rect::new(0, 0, 33, 1);
     let Some((x, y)) = caret_cell(area, &buffer, &[], &state, at) else {
         unreachable!("a revealed caret is on screen");
@@ -447,7 +447,7 @@ fn a_hinted_tail_is_reachable_by_scrolling() {
 
     // The clamp and the extent agree, so a scrollbar built on them ends here.
     assert_eq!(
-        state.scroll_col,
+        state.scroll_col(),
         state.longest_col() + 1 - u32::from(state.content_width())
     );
     Editor::new(&buffer)

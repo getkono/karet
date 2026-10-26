@@ -28,7 +28,7 @@
 //!   [`FoldKind`], [`FoldRegions`], plus the span helpers [`shift_span`] and
 //!   [`merge_spans`].
 //! - Server capabilities: [`Capabilities`], [`ServerFeature`], [`PositionEncoding`].
-//! - Interop traits: [`SymbolProvider`], [`DiagnosticFormatter`].
+//! - Interop traits: [`SymbolProvider`].
 //! - Theme vocabulary: [`TokenId`], [`StandardToken`], [`ThemeRole`], [`Emphasis`].
 //! - Semantic tokens: [`SemanticToken`], [`SemanticTokenType`],
 //!   [`SemanticTokenModifiers`], carried as a semantic [`TokenId`].
@@ -91,11 +91,8 @@ pub use highlight::SemanticBlock;
 pub use highlight::SemanticBlocks;
 pub use highlight::merge_spans;
 pub use highlight::shift_span;
-pub use model::CODE_LENS_SEPARATOR;
 pub use model::CodeAction;
 pub use model::CodeLens;
-pub use model::CodeLensRow;
-pub use model::CodeLensSpan;
 pub use model::CommandId;
 pub use model::CompletionItem;
 pub use model::CompletionKind;
@@ -139,8 +136,6 @@ pub use notify::Notification;
 pub use notify::NotificationId;
 pub use notify::NotificationKind;
 pub use notify::severity_role;
-pub use provider::DiagnosticFormatter;
-pub use provider::FormattedDiagnostic;
 pub use provider::SymbolProvider;
 pub use semantic_token::SemanticToken;
 pub use semantic_token::SemanticTokenModifiers;

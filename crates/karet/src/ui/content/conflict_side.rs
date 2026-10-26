@@ -39,7 +39,7 @@ pub(super) fn draw_conflict_side(
                 ScrollbarStyles::from_theme(theme),
                 ScrollExtent::new(
                     buffer.line_count(),
-                    editor.scroll_line as usize,
+                    editor.scroll_line() as usize,
                     editor.visible_lines() as usize,
                 ),
                 ScrollExtent::default(),

@@ -361,7 +361,7 @@ impl App {
             .viewport()
             .end
             .line
-            .saturating_sub(tab.editor.scroll_line);
+            .saturating_sub(tab.editor.scroll_line());
         match scroll {
             Scroll::Center => tab.editor.center_on(line),
             Scroll::Top => tab.editor.scroll_to_line(line),
