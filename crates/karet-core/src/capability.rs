@@ -105,6 +105,10 @@ pub enum ServerFeature {
     PullDiagnostics,
     /// Pulling diagnostics for the whole workspace at once.
     WorkspacePullDiagnostics,
+    /// Pulled diagnostics that depend on other files
+    /// (`diagnosticProvider.interFileDependencies`): an edit to one document
+    /// can change another's, so every open document is pulled again.
+    InterFileDiagnostics,
     /// Running a server-provided command.
     ExecuteCommand,
     /// Edits the server supplies on save, before the write.

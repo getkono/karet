@@ -206,6 +206,16 @@ fn pull_diagnostics_separate_document_scope_from_workspace_scope() {
     }}));
     assert!(caps.supports(ServerFeature::PullDiagnostics));
     assert!(!caps.supports(ServerFeature::WorkspacePullDiagnostics));
+    assert!(caps.supports(ServerFeature::InterFileDiagnostics));
+}
+
+#[test]
+fn pull_diagnostics_without_inter_file_dependencies_pull_only_the_edited_file() {
+    for provider in [json!(true), json!({"interFileDependencies": false})] {
+        let caps = parse(&json!({"capabilities": {"diagnosticProvider": provider}}));
+        assert!(caps.supports(ServerFeature::PullDiagnostics));
+        assert!(!caps.supports(ServerFeature::InterFileDiagnostics));
+    }
 }
 
 #[test]

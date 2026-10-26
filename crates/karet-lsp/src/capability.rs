@@ -179,6 +179,10 @@ pub(crate) fn parse(result: &Value) -> Capabilities {
         ServerFeature::WorkspacePullDiagnostics,
         flag(caps.get("diagnosticProvider"), "workspaceDiagnostics"),
     );
+    out.set(
+        ServerFeature::InterFileDiagnostics,
+        flag(caps.get("diagnosticProvider"), "interFileDependencies"),
+    );
 
     parse_semantic_tokens(caps, &mut out);
     parse_text_sync(caps, &mut out);

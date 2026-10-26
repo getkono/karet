@@ -16,8 +16,9 @@
 //! server→client requests a headless client must not leave hanging
 //! (`workspace/configuration` from the consumer's [`ConnectOptions::settings`],
 //! `client/registerCapability`, `window/workDoneProgress/create`,
-//! `workspace/inlayHint/refresh`, `workspace/semanticTokens/refresh` -- the
-//! last two also surfaced through [`LspClient::refreshes`]). The server requests that must wait on the
+//! `workspace/inlayHint/refresh`, `workspace/semanticTokens/refresh`,
+//! `workspace/diagnostic/refresh` -- the last three also surfaced through
+//! [`LspClient::refreshes`]). The server requests that must wait on the
 //! editor, `workspace/applyEdit` and `window/showMessageRequest`, are handed
 //! out through [`LspClient::apply_edit_requests`] and
 //! [`LspClient::message_requests`] instead. File watchers a server registers
@@ -327,6 +328,11 @@ pub enum ServerRefresh {
     /// that finished loading, a dependency that resolved) reclassified names
     /// in files nobody edited.
     SemanticTokens,
+    /// `workspace/diagnostic/refresh`: every document's pulled diagnostics
+    /// from this server may now be stale -- a project-wide change (a
+    /// dependency edit, a configuration reload) changed what it would report
+    /// for files nobody edited, so each open document is pulled again.
+    Diagnostics,
 }
 
 /// An async client for a single language server.
@@ -582,7 +588,9 @@ impl LspClient {
         if let Some(settings) = &options.settings {
             conn.set_settings(settings.clone());
         }
-        let result: Value = conn.request("initialize", params).await?;
+        let result: Value = conn
+            .request("initialize", handshake::to_wire(params)?)
+            .await?;
         // Seeded into the gate the handler already owns. Registrations are kept
         // apart from the advertised set, so one that arrives between here and
         // the first request survives the seeding.

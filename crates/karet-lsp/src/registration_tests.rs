@@ -218,3 +218,30 @@ async fn a_registration_or_its_withdrawal_marks_the_registrations_receiver() -> 
     assert!(registrations.has_changed()?);
     Ok(())
 }
+
+#[tokio::test]
+async fn a_pull_registration_carries_its_inter_file_dependencies_and_withdraws_them() -> TestResult
+{
+    let (client, mut server) = connect(json!({})).await?;
+    let rust = Path::new("/w/a.rs");
+    let toml = Path::new("/w/Cargo.toml");
+    register(
+        &mut server,
+        "pull",
+        "textDocument/diagnostic",
+        json!({"documentSelector": [{"pattern": "**/*.rs"}], "interFileDependencies": true}),
+    )
+    .await;
+    assert!(client.supports_for(ServerFeature::InterFileDiagnostics, rust));
+    assert!(!client.supports_for(ServerFeature::InterFileDiagnostics, toml));
+
+    // A second registration without the flag adds pulls, not dependencies.
+    register(&mut server, "plain", "textDocument/diagnostic", json!({})).await;
+    assert!(client.supports_for(ServerFeature::PullDiagnostics, toml));
+    assert!(!client.supports_for(ServerFeature::InterFileDiagnostics, toml));
+
+    unregister(&mut server, "pull", "textDocument/diagnostic").await;
+    assert!(!client.supports_for(ServerFeature::InterFileDiagnostics, rust));
+    assert!(client.supports_for(ServerFeature::PullDiagnostics, rust));
+    Ok(())
+}
