@@ -196,9 +196,9 @@ fn an_answer_from_a_retired_generation_still_answers_none() -> TestResult {
             request: RequestId(2),
             doc,
             version,
-            highlights: Some(vec![karet_lsp::DocumentHighlight {
+            highlights: Some(vec![DocumentHighlight {
                 range: range((0, 0), (0, 1)),
-                kind: karet_lsp::HighlightKind::Read,
+                kind: HighlightKind::Read,
             }]),
         },
     });
