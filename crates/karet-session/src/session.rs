@@ -797,6 +797,10 @@ impl Session {
             | Command::RestartLanguageServer { .. }
             | Command::CancelLanguageServerWork { .. }
             | Command::AnswerLanguageServerMessage { .. }
+            | Command::InlineCompletion { .. }
+            | Command::AcceptInlineCompletion { .. }
+            | Command::SignInLanguageServer { .. }
+            | Command::SignOutLanguageServer { .. }
             | Command::LanguageServerLog { .. } => {},
         }
     }
