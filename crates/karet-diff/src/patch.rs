@@ -83,6 +83,46 @@ fn mode_metadata(file: &FileDiff) -> String {
     }
 }
 
+/// Whether `hunk` only removes lines, the last of them the file's unterminated
+/// final line, and keeps at least one line before them.
+///
+/// `git apply --unidiff-zero` places such a hunk by its new-side start alone,
+/// trying the line *before* the deletion first, and accepts it there when that
+/// line holds the same text with a terminator: removing `c` from `c\nc` then
+/// leaves `c` rather than `c\n`.
+fn removes_unterminated_end(hunk: &Hunk) -> bool {
+    hunk.new_count == 0
+        && hunk.new_start > 0
+        && hunk
+            .lines
+            .last()
+            .is_some_and(|line| line.kind == LineKind::Remove && line.no_newline)
+}
+
+/// The `@@` line written for `hunk`.
+///
+/// This is the hunk's own header, except for the shape
+/// [`removes_unterminated_end`] names: there the new-side start is written one
+/// past the line the deletion follows, so git's first guess is the removed line
+/// itself rather than its terminated neighbour. Any section text after the
+/// closing `@@` is kept.
+fn hunk_header(hunk: &Hunk) -> String {
+    if !removes_unterminated_end(hunk) {
+        return hunk.header.clone();
+    }
+    let section = hunk
+        .header
+        .strip_prefix("@@ ")
+        .and_then(|ranges| ranges.split_once(" @@"))
+        .map_or("", |(_, section)| section);
+    format!(
+        "@@ -{},{} +{},0 @@{section}",
+        hunk.old_start,
+        hunk.old_count,
+        hunk.new_start + 1
+    )
+}
+
 /// The hunk header line plus its prefixed content lines.
 ///
 /// Each line is re-emitted with its original terminator, so a CRLF file stays CRLF
@@ -90,7 +130,7 @@ fn mode_metadata(file: &FileDiff) -> String {
 /// rewrite either.
 fn hunk_body(hunk: &Hunk) -> String {
     let mut out = String::new();
-    out.push_str(&hunk.header);
+    out.push_str(&hunk_header(hunk));
     out.push('\n');
     for line in &hunk.lines {
         let prefix = match line.kind {
@@ -114,6 +154,13 @@ fn hunk_body(hunk: &Hunk) -> String {
 /// `file.hunks`; the `file` supplies the path/status header. An added or removed
 /// file whose mode is unknown is written as a regular file (`100644`), so git
 /// creates or deletes the path.
+///
+/// A zero-context hunk needs `git apply --unidiff-zero`, which places it by its
+/// line numbers. One that only removes lines ending at the file's unterminated
+/// last line is written with its new-side start one higher than the hunk's
+/// (`@@ -7,1 +7,0 @@` where the hunk says `+6,0`), because git otherwise
+/// removes a preceding line that differs from it only by its terminator.
+/// Parsing such a patch back yields that higher start.
 #[must_use]
 pub fn format_hunk_patch(file: &FileDiff, hunk: &Hunk) -> String {
     let mut out = file_header(file);
@@ -622,6 +669,17 @@ mod tests {
         }
     }
 
+    /// `hunk` as a patch carries it: itself, except that a hunk
+    /// [`removes_unterminated_end`] names has its new-side start one higher.
+    fn as_written(hunk: &Hunk) -> Hunk {
+        let mut written = hunk.clone();
+        if removes_unterminated_end(hunk) {
+            written.header = hunk_header(hunk);
+            written.new_start += 1;
+        }
+        written
+    }
+
     #[test]
     fn seeded_hunks_apply_and_round_trip_through_parse() -> Result<(), crate::DiffError> {
         assert_eq!(shapes_reached(0..2_000), [true; 6]);
@@ -633,16 +691,17 @@ mod tests {
                 Some(new.as_str()),
                 "seed {seed}: {old:?} -> {new:?} at ctx {context}"
             );
-            for hunk in &file.hunks {
+            let written: Vec<Hunk> = file.hunks.iter().map(as_written).collect();
+            for (hunk, expected) in file.hunks.iter().zip(&written) {
                 let reparsed = crate::parse(&format_hunk_patch(&file, hunk))?;
                 let hunks: Vec<&Hunk> = reparsed.files.iter().flat_map(|f| &f.hunks).collect();
-                assert_eq!(hunks, [hunk], "seed {seed}: single-hunk patch");
+                assert_eq!(hunks, [expected], "seed {seed}: single-hunk patch");
             }
             let mut staging = Staging::new();
             (0..file.hunks.len()).for_each(|i| staging.stage(i));
             let reparsed = crate::parse(&staging.staged_patch(&file))?;
             let hunks: Vec<Hunk> = reparsed.files.into_iter().flat_map(|f| f.hunks).collect();
-            assert_eq!(hunks, file.hunks, "seed {seed}: combined patch");
+            assert_eq!(hunks, written, "seed {seed}: combined patch");
         }
         Ok(())
     }
@@ -740,10 +799,10 @@ mod tests {
         if !has_git() {
             return Ok(());
         }
-        // `[crlf, no_newline, ctx 0, multi-hunk, added, removed]` among the cases
-        // this runs.
-        let mut seen = [false; 6];
-        for seed in 0..80 {
+        // `[crlf, no_newline, ctx 0, multi-hunk, added, removed, renumbered]`
+        // among the cases this runs.
+        let mut seen = [false; 7];
+        for seed in 0..200 {
             let (old, new, context) = gen_case(seed);
             // Each seed's change, plus the creation of its new text and the
             // deletion of its old one.
@@ -760,6 +819,7 @@ mod tests {
                 seen[3] |= file.hunks.len() > 1;
                 seen[4] |= file.status == FileStatus::Added;
                 seen[5] |= file.status == FileStatus::Removed;
+                seen[6] |= file.hunks.iter().any(removes_unterminated_end);
 
                 // An added file has no old side in the index at all.
                 let before = (file.status != FileStatus::Added).then_some(old);
@@ -785,8 +845,53 @@ mod tests {
                 );
             }
         }
-        assert_eq!(seen, [true; 6], "the seeds reach every shape");
+        assert_eq!(seen, [true; 7], "the seeds reach every shape");
         Ok(())
+    }
+
+    /// Removing a file's unterminated last line after a line holding the same
+    /// text, terminated, at zero context: with the header git itself writes
+    /// (`+1,0`), `git apply --unidiff-zero` removes the terminated line
+    /// instead, so the patch names the removed line's own position.
+    #[test]
+    fn git_removes_the_unterminated_line_not_its_twin() -> Result<(), String> {
+        for (old, new) in [("c\nc", "c\n"), ("c\r\nc", "c\r\n"), ("c\nc\nc", "c\n")] {
+            let file = diff_text(old, new, &opts(0));
+            let patch = format_hunk_patch(&file, &file.hunks[0]);
+            assert!(patch.contains(" +2,0 @@\n"), "{patch}");
+            if !has_git() {
+                continue;
+            }
+            let repo = repo_with(Some(old))?;
+            let staged = apply_to_index(repo.path(), &patch, true, false)?;
+            assert_eq!(staged.as_deref(), Some(new), "{old:?} -> {new:?}\n{patch}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn only_a_pure_removal_of_the_unterminated_end_is_renumbered() {
+        let mut hunk = one_hunk_file("f.txt", None, FileStatus::Modified)
+            .hunks
+            .remove(0);
+        hunk.lines[1].no_newline = true;
+        // It also adds a line, so git places it by that line, which it names.
+        assert_eq!(hunk_header(&hunk), hunk.header);
+        hunk.lines.truncate(1);
+        hunk.lines[0].no_newline = true;
+        hunk.new_count = 0;
+        hunk.new_start = 0;
+        hunk.header = "@@ -1,1 +0,0 @@".into();
+        // Nothing precedes the removal, so git's guess is already the line.
+        assert_eq!(hunk_header(&hunk), hunk.header);
+        hunk.old_start = 2;
+        hunk.new_start = 1;
+        hunk.header = "@@ -2,1 +1,0 @@ fn f".into();
+        // The section text after the ranges survives the renumbering.
+        assert_eq!(hunk_header(&hunk), "@@ -2,1 +2,0 @@ fn f");
+        hunk.lines[0].no_newline = false;
+        // A terminated line matches only its own text, so it is left alone.
+        assert_eq!(hunk_header(&hunk), hunk.header);
     }
 
     /// A file that still exists but went empty, or an empty file that gained
