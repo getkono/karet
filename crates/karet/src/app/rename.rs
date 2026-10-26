@@ -69,7 +69,7 @@ fn local_identifier(buffer: &TextBuffer, pos: LineCol) -> Option<(Range, String)
     } else {
         return None;
     };
-    let (start, end) = word_at(buffer, at);
+    let (start, end) = karet_editor::word_bounds(buffer, at);
     let name: String = line
         .get(start.col as usize..end.col as usize)?
         .iter()

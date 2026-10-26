@@ -252,7 +252,7 @@ impl App {
                 skipped += 1;
                 continue;
             }
-            if source.is_dir() && path_contains_or_equals(source, &dest_dir) {
+            if source.is_dir() && path_under(source, &dest_dir) {
                 failed += 1;
                 first_error.get_or_insert_with(|| {
                     format!(

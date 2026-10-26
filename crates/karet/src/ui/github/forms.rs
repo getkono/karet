@@ -55,9 +55,14 @@ pub(super) fn draw_issue_form(
         ThemeRole::IndentGuide
     };
     let description = if form.preview {
-        let wrapped =
-            karet_markdown::parse(&form.body).wrap(editor[1].width.saturating_sub(2).max(1));
-        karet_markdown::view::to_ratatui(&wrapped, theme)
+        let mut rendered = Vec::new();
+        append_rendered_markdown(
+            &mut rendered,
+            &form.body,
+            editor[1].width.saturating_sub(2),
+            theme,
+        );
+        rendered
     } else if form.body.is_empty() {
         vec![muted_line("Add your description in Markdown…", theme)]
     } else {
@@ -267,8 +272,7 @@ fn append_markdown_editor(
     theme: &Theme,
 ) {
     if preview {
-        let wrapped = karet_markdown::parse(source).wrap(width.max(1));
-        lines.extend(karet_markdown::view::to_ratatui(&wrapped, theme));
+        append_rendered_markdown(lines, source, width, theme);
     } else {
         lines.extend(source.lines().map(|line| Line::raw(line.to_string())));
     }

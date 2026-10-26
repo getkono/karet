@@ -128,6 +128,9 @@ pub(crate) struct BranchForm {
 }
 
 impl BranchForm {
+    /// The index of the form's last row, "Set upstream".
+    const LAST_ROW: usize = 4;
+
     fn new(remotes: Vec<String>) -> Self {
         let mut form = Self {
             name: String::new(),
@@ -206,6 +209,9 @@ pub(crate) struct StashForm {
 }
 
 impl StashForm {
+    /// The index of the form's last row, "Keep index".
+    const LAST_ROW: usize = 2;
+
     fn new() -> Self {
         let mut form = Self {
             message: String::new(),
@@ -251,6 +257,7 @@ pub(crate) struct TextPrompt {
     purpose: TextPurpose,
 }
 
+/// A boolean form row's value.
 fn yes_no(value: bool) -> &'static str {
     if value { "yes" } else { "no" }
 }
@@ -712,8 +719,10 @@ impl Overlay {
                     .saturating_add_signed(1)
                     .min(form.steps.len().saturating_sub(1));
             },
-            Self::CreateBranch(form) => form.selected = (form.selected + 1).min(4),
-            Self::StashForm(form) => form.selected = (form.selected + 1).min(2),
+            Self::CreateBranch(form) => {
+                form.selected = (form.selected + 1).min(BranchForm::LAST_ROW);
+            },
+            Self::StashForm(form) => form.selected = (form.selected + 1).min(StashForm::LAST_ROW),
             Self::AiCommit(form) => form.select_down(),
             Self::Hierarchy(tree) => tree.select_down(),
             Self::Text(_) => {},

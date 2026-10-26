@@ -114,6 +114,7 @@ pub(crate) use drag::DragGranularity;
 pub(crate) use drag::EditorDrag;
 pub(crate) use editor::column::ColumnSelect;
 pub(crate) use editor::column::ColumnStep;
+use graphics::GraphicsCaret;
 pub(crate) use hit::*;
 pub(crate) use inlay::InlayHintHit;
 use karet_core::BlameAttribution;
@@ -230,10 +231,10 @@ use util::close_prompt_choices;
 use util::copy_path_recursive;
 pub(crate) use util::effective_word_wrap;
 use util::human_bytes;
+pub(crate) use util::is_markdown;
 use util::load_theme;
 use util::move_path;
 use util::parse_rev_range;
-use util::path_contains_or_equals;
 use util::path_under;
 use util::rebase_path;
 use util::rect_contains;
@@ -243,12 +244,9 @@ use util::same_path;
 use util::tab_at;
 pub(crate) use util::tab_language;
 use util::unique_child_path;
-use util::word_at;
 
 use crate::clipboard::Clipboard;
 use crate::command::Command;
-use crate::compat;
-use crate::compat::GraphicsCaret;
 use crate::keymap::Context;
 use crate::keymap::EditorTab;
 use crate::keymap::Focus;
@@ -338,6 +336,9 @@ pub(crate) const COMMIT_REVEAL: Duration = Duration::from_secs(5);
 /// Delay before rendering non-blocking loading text. Fast operations can complete
 /// without visual churn; slower ones get an explicit, stable placeholder.
 pub(crate) const LOADING_REVEAL_DELAY: Duration = Duration::from_millis(200);
+/// How soon a press must follow the last one to continue its multi-click streak,
+/// in the editor, the shell's other surfaces, and the terminal grid alike.
+pub(crate) const MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(400);
 /// Maximum graceful wait for a repository mutation during application shutdown.
 const OPERATION_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(60);
 

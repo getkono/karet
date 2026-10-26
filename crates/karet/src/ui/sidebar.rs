@@ -415,11 +415,7 @@ pub(super) fn root_header_label(root: &Path, max_width: u16) -> String {
     if cell_width(&compact) <= max_width {
         return compact;
     }
-    truncate_left(&full, max_width)
-}
-
-pub(super) fn truncate_left(text: &str, max_width: u16) -> String {
-    karet_widgets::text::fit_start(text, usize::from(max_width))
+    karet_widgets::text::fit_start(&full, usize::from(max_width))
 }
 
 pub(super) fn draw_spelling_panel(

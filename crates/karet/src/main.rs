@@ -16,7 +16,6 @@ mod cli;
 mod clipboard;
 mod color_depth;
 mod command;
-mod compat;
 mod completion;
 mod desktop;
 mod doctor;
@@ -314,32 +313,35 @@ fn strip_home(absolute: &Path, home: &Path) -> Option<PathBuf> {
         return Some(rest.to_path_buf());
     }
     let real_home = std::fs::canonicalize(home).ok()?;
-    let (real, unborn) = canonicalize_existing_ancestor(absolute)?;
-    let mut rest = real.strip_prefix(real_home).ok()?.to_path_buf();
-    // A path that does not exist yet contributes its tail verbatim; `extend` (not
-    // `join`) so an empty tail cannot append a trailing separator.
-    rest.extend(unborn.iter().rev());
-    Some(rest)
+    // A path that does not exist yet contributes its tail verbatim, so a workspace
+    // root the user is about to create still abbreviates.
+    canonical_nearest(absolute)
+        .strip_prefix(real_home)
+        .ok()
+        .map(Path::to_path_buf)
 }
 
-/// Resolve the longest existing ancestor of `path`, plus the components below it in
-/// reverse order.
+/// Resolve `path` through symlinks, even when its leaf does not exist yet.
 ///
-/// `fs::canonicalize` needs every component to exist, but a workspace root may be a
-/// directory the user is about to create. Returns `None` only when nothing along the
-/// path resolves — a path with no readable ancestor cannot be compared through
-/// symlinks at all.
-fn canonicalize_existing_ancestor(path: &Path) -> Option<(PathBuf, Vec<&std::ffi::OsStr>)> {
-    let mut unborn = Vec::new();
-    let mut probe = path;
-    loop {
-        if let Ok(real) = std::fs::canonicalize(probe) {
-            return Some((real, unborn));
-        }
-        // `file_name` is `None` at a root or bare prefix, ending the walk.
-        unborn.push(probe.file_name()?);
-        probe = probe.parent()?;
+/// `fs::canonicalize` needs every component to exist, so for a missing leaf this
+/// resolves the nearest existing ancestor and appends the unresolved suffix. That
+/// keeps symlinks from disguising where a path really points (macOS `/var` →
+/// `/private/var`, a `/mnt` → `/var/mnt` link) before a new file or workspace root
+/// is created. A path with no resolvable ancestor is returned unchanged.
+pub(crate) fn canonical_nearest(path: &Path) -> PathBuf {
+    if let Ok(resolved) = std::fs::canonicalize(path) {
+        return resolved;
     }
+    for ancestor in path.ancestors().skip(1) {
+        let Ok(resolved) = std::fs::canonicalize(ancestor) else {
+            continue;
+        };
+        let Ok(suffix) = path.strip_prefix(ancestor) else {
+            continue;
+        };
+        return resolved.join(suffix);
+    }
+    path.to_path_buf()
 }
 
 /// Resolve `.` and `..` components without touching the filesystem.

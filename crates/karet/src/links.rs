@@ -7,6 +7,8 @@ use std::process::Command;
 use thiserror::Error;
 use url::Url;
 
+use crate::canonical_nearest;
+
 /// A validated link target with its workspace boundary made explicit.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum LinkTarget {
@@ -153,23 +155,6 @@ fn absolute(path: &Path) -> std::io::Result<PathBuf> {
     } else {
         std::env::current_dir().map(|cwd| cwd.join(path))
     }
-}
-
-/// Resolve the nearest existing ancestor so symlinks cannot disguise an escape.
-fn canonical_nearest(path: &Path) -> PathBuf {
-    if let Ok(resolved) = std::fs::canonicalize(path) {
-        return resolved;
-    }
-    for ancestor in path.ancestors().skip(1) {
-        let Ok(resolved) = std::fs::canonicalize(ancestor) else {
-            continue;
-        };
-        let Ok(suffix) = path.strip_prefix(ancestor) else {
-            continue;
-        };
-        return resolved.join(suffix);
-    }
-    path.to_path_buf()
 }
 
 #[cfg(test)]

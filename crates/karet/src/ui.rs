@@ -111,6 +111,7 @@ use crate::app::TabDrag;
 use crate::app::TabHit;
 use crate::app::TextFieldState;
 use crate::app::ToastHit;
+use crate::app::is_markdown;
 use crate::command::Command;
 use crate::keymap::ChordStyle;
 use crate::keymap::Context;
@@ -692,9 +693,7 @@ fn draw_pane_tabs(
 
 fn pane_actions(tab: &Tab) -> Vec<(UiIcon, Command, bool)> {
     match &tab.kind {
-        TabKind::Code { path, .. }
-            if karet_filetype::file_type_for_path(path).name() == "Markdown" =>
-        {
+        TabKind::Code { path, .. } if is_markdown(path) => {
             vec![
                 (
                     UiIcon::Preview,
