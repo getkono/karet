@@ -83,14 +83,84 @@ fn mode_metadata(file: &FileDiff) -> String {
     }
 }
 
+/// Whether `hunk` only removes lines, the last of them the file's unterminated
+/// final line.
+///
+/// `git apply --unidiff-zero` places such a hunk by its new-side start alone,
+/// trying the line *before* the deletion first, and accepts it there when that
+/// line holds the same text with a terminator: removing `c` from `c\nc` then
+/// leaves `c` rather than `c\n`.
+fn removes_unterminated_end(hunk: &Hunk) -> bool {
+    hunk.new_count == 0
+        && hunk
+            .lines
+            .last()
+            .is_some_and(|line| line.kind == LineKind::Remove && line.no_newline)
+}
+
+/// The new-side start a patch writes for `hunk` when it differs from the
+/// hunk's own, or `None` when the hunk's header stands as it is.
+///
+/// `shift` is how many lines the hunks written before it in the same patch add
+/// minus how many they remove. The start is counted in the text git patches
+/// rather than in the full new file, because `git apply --unidiff-zero` places
+/// a context-free hunk by that start: a hunk applied without the ones before it
+/// lands where those hunks were never applied. A hunk that keeps or adds lines
+/// starts at its first line there; one that only removes lines starts at the
+/// line before them (`0` when nothing precedes them), except for the shape
+/// [`removes_unterminated_end`] names, which starts at the removed block's own
+/// first line so git's first guess is that line rather than its terminated
+/// neighbour.
+fn written_new_start(hunk: &Hunk, shift: i64) -> Option<u32> {
+    let old_start = i64::from(hunk.old_start);
+    // The first line the hunk touches, counted in the patched text.
+    let first = if hunk.old_count == 0 {
+        old_start + 1
+    } else {
+        old_start
+    } + shift;
+    let start = if hunk.new_count > 0 || (first > 1 && removes_unterminated_end(hunk)) {
+        first
+    } else {
+        (first - 1).max(0)
+    };
+    let start = u32::try_from(start).unwrap_or(u32::MAX);
+    (start != hunk.new_start).then_some(start)
+}
+
+/// How many lines `hunk` adds minus how many it removes.
+fn line_shift(hunk: &Hunk) -> i64 {
+    i64::from(hunk.new_count) - i64::from(hunk.old_count)
+}
+
+/// The `@@` line written for `hunk`, with `shift` as [`written_new_start`]
+/// takes it.
+///
+/// This is the hunk's own header, unless [`written_new_start`] gives another
+/// new-side start. Any section text after the closing `@@` is kept.
+fn hunk_header(hunk: &Hunk, shift: i64) -> String {
+    let Some(new_start) = written_new_start(hunk, shift) else {
+        return hunk.header.clone();
+    };
+    let section = hunk
+        .header
+        .strip_prefix("@@ ")
+        .and_then(|ranges| ranges.split_once(" @@"))
+        .map_or("", |(_, section)| section);
+    format!(
+        "@@ -{},{} +{new_start},{} @@{section}",
+        hunk.old_start, hunk.old_count, hunk.new_count
+    )
+}
+
 /// The hunk header line plus its prefixed content lines.
 ///
 /// Each line is re-emitted with its original terminator, so a CRLF file stays CRLF
 /// and a missing final newline stays missing — applying the result cannot silently
 /// rewrite either.
-fn hunk_body(hunk: &Hunk) -> String {
+fn hunk_body(hunk: &Hunk, shift: i64) -> String {
     let mut out = String::new();
-    out.push_str(&hunk.header);
+    out.push_str(&hunk_header(hunk, shift));
     out.push('\n');
     for line in &hunk.lines {
         let prefix = match line.kind {
@@ -114,10 +184,21 @@ fn hunk_body(hunk: &Hunk) -> String {
 /// `file.hunks`; the `file` supplies the path/status header. An added or removed
 /// file whose mode is unknown is written as a regular file (`100644`), so git
 /// creates or deletes the path.
+///
+/// A zero-context hunk needs `git apply --unidiff-zero`, which places it by its
+/// line numbers, so the new-side start is written as counted in the old text:
+/// the patch holds no other hunk, and git applies it to a text the earlier
+/// hunks never touched (`@@ -9,1 +9,1 @@` where the hunk says `+6,1` because
+/// earlier hunks removed three lines). One that only removes lines ending at
+/// the file's unterminated last line is written with its new-side start at the
+/// removed line itself rather than the line before (`@@ -7,1 +7,0 @@` where the
+/// hunk says `+6,0`), since git otherwise removes a preceding line that differs
+/// from it only by its terminator. Parsing such a patch back yields the start
+/// as written.
 #[must_use]
 pub fn format_hunk_patch(file: &FileDiff, hunk: &Hunk) -> String {
     let mut out = file_header(file);
-    out.push_str(&hunk_body(hunk));
+    out.push_str(&hunk_body(hunk, 0));
     out
 }
 
@@ -170,15 +251,21 @@ impl Staging {
     /// Emits one file header followed by the staged hunk bodies in order. A staged
     /// index with no matching hunk in `file` is silently skipped, so the result is
     /// an empty string when nothing is staged or no staged index is in range.
+    ///
+    /// Each hunk's new-side start is counted as [`format_hunk_patch`] counts
+    /// it, against the staged hunks before it alone, since the unstaged ones
+    /// are not applied.
     #[must_use]
     pub fn staged_patch(&self, file: &FileDiff) -> String {
         let mut out = String::new();
+        let mut shift = 0;
         for &idx in &self.staged {
             if let Some(hunk) = file.hunks.get(idx) {
                 if out.is_empty() {
                     out.push_str(&file_header(file));
                 }
-                out.push_str(&hunk_body(hunk));
+                out.push_str(&hunk_body(hunk, shift));
+                shift += line_shift(hunk);
             }
         }
         out
@@ -622,6 +709,36 @@ mod tests {
         }
     }
 
+    /// `hunk` as a patch carries it, with `shift` as [`written_new_start`]
+    /// takes it: itself, renumbered on the new side to the start that gives.
+    fn as_written(hunk: &Hunk, shift: i64) -> Hunk {
+        let mut written = hunk.clone();
+        if let Some(new_start) = written_new_start(hunk, shift) {
+            written.header = hunk_header(hunk, shift);
+            written.new_start = new_start;
+            let moved = i64::from(new_start) - i64::from(hunk.new_start);
+            for line in &mut written.lines {
+                line.new_lineno = line
+                    .new_lineno
+                    .and_then(|n| u32::try_from(i64::from(n) + moved).ok());
+            }
+        }
+        written
+    }
+
+    /// Each of `hunks` as one patch carrying all of them writes it.
+    fn all_written(hunks: &[Hunk]) -> Vec<Hunk> {
+        let mut shift = 0;
+        hunks
+            .iter()
+            .map(|hunk| {
+                let written = as_written(hunk, shift);
+                shift += line_shift(hunk);
+                written
+            })
+            .collect()
+    }
+
     #[test]
     fn seeded_hunks_apply_and_round_trip_through_parse() -> Result<(), crate::DiffError> {
         assert_eq!(shapes_reached(0..2_000), [true; 6]);
@@ -636,13 +753,15 @@ mod tests {
             for hunk in &file.hunks {
                 let reparsed = crate::parse(&format_hunk_patch(&file, hunk))?;
                 let hunks: Vec<&Hunk> = reparsed.files.iter().flat_map(|f| &f.hunks).collect();
-                assert_eq!(hunks, [hunk], "seed {seed}: single-hunk patch");
+                let expected = as_written(hunk, 0);
+                assert_eq!(hunks, [&expected], "seed {seed}: single-hunk patch");
             }
+            let written = all_written(&file.hunks);
             let mut staging = Staging::new();
             (0..file.hunks.len()).for_each(|i| staging.stage(i));
             let reparsed = crate::parse(&staging.staged_patch(&file))?;
             let hunks: Vec<Hunk> = reparsed.files.into_iter().flat_map(|f| f.hunks).collect();
-            assert_eq!(hunks, file.hunks, "seed {seed}: combined patch");
+            assert_eq!(hunks, written, "seed {seed}: combined patch");
         }
         Ok(())
     }
@@ -705,22 +824,18 @@ mod tests {
     }
 
     /// Apply `patch` to the index of `dir` with the flags
-    /// `Repository::apply_index_patch` passes — `--check` only when `check` —
-    /// and return what the index then holds for `f.txt` (`None`: no entry).
+    /// `Repository::apply_index_patch` passes, and return what the index then
+    /// holds for `f.txt` (`None`: no entry).
     fn apply_to_index(
         dir: &std::path::Path,
         patch: &str,
         zero_context: bool,
-        check: bool,
     ) -> Result<Option<String>, String> {
         let mut apply = vec!["apply", "--cached", "--whitespace=nowarn"];
         // git refuses a context-free hunk unless told it is one, since nothing
         // anchors it.
         if zero_context {
             apply.push("--unidiff-zero");
-        }
-        if check {
-            apply.push("--check");
         }
         apply.push("-");
         git(dir, &apply, patch).map_err(|e| format!("{e}\n{patch}"))?;
@@ -740,10 +855,10 @@ mod tests {
         if !has_git() {
             return Ok(());
         }
-        // `[crlf, no_newline, ctx 0, multi-hunk, added, removed]` among the cases
-        // this runs.
-        let mut seen = [false; 6];
-        for seed in 0..80 {
+        // `[crlf, no_newline, ctx 0, multi-hunk, added, removed, renumbered]`
+        // among the cases this runs.
+        let mut seen = [false; 7];
+        for seed in 0..200 {
             let (old, new, context) = gen_case(seed);
             // Each seed's change, plus the creation of its new text and the
             // deletion of its old one.
@@ -760,20 +875,46 @@ mod tests {
                 seen[3] |= file.hunks.len() > 1;
                 seen[4] |= file.status == FileStatus::Added;
                 seen[5] |= file.status == FileStatus::Removed;
+                seen[6] |= file.hunks.iter().any(removes_unterminated_end);
 
                 // An added file has no old side in the index at all.
                 let before = (file.status != FileStatus::Added).then_some(old);
                 let repo = repo_with(before)?;
                 let dir = repo.path();
-                for hunk in &file.hunks {
+                // Each hunk applied alone, and every hunk but the first staged
+                // together, leave the old text with just those hunks applied.
+                let mut partial = Staging::new();
+                (1..file.hunks.len()).for_each(|i| partial.stage(i));
+                let alone = file.hunks.iter().enumerate().map(|(i, hunk)| {
                     let patch = format_hunk_patch(&file, hunk);
-                    apply_to_index(dir, &patch, context == 0, true)
-                        .map_err(|e| format!("seed {seed}: {e}"))?;
+                    (patch, std::slice::from_ref(hunk), format!("hunk {i} alone"))
+                });
+                let rest = (file.hunks.len() > 1).then(|| {
+                    let patch = partial.staged_patch(&file);
+                    (patch, &file.hunks[1..], "all but hunk 0".to_owned())
+                });
+                for (patch, hunks, what) in alone.chain(rest) {
+                    let staged = apply_to_index(dir, &patch, context == 0)
+                        .map_err(|e| format!("seed {seed}: {what}: {e}"))?;
+                    let expected = match file.status {
+                        FileStatus::Removed => None,
+                        _ => apply_hunks(old, hunks),
+                    };
+                    assert_eq!(
+                        staged, expected,
+                        "seed {seed}: {what}: what the index holds\n{patch}"
+                    );
+                    // Put the old text back in the index for the next patch.
+                    if before.is_some() {
+                        git(dir, &["add", "f.txt"], "")?;
+                    } else {
+                        git(dir, &["rm", "-q", "--cached", "--", "f.txt"], "")?;
+                    }
                 }
                 let mut staging = Staging::new();
                 (0..file.hunks.len()).for_each(|i| staging.stage(i));
                 let patch = staging.staged_patch(&file);
-                let staged = apply_to_index(dir, &patch, context == 0, false)
+                let staged = apply_to_index(dir, &patch, context == 0)
                     .map_err(|e| format!("seed {seed}: {e}"))?;
                 // A removal leaves no entry; anything else leaves the new text,
                 // byte for byte.
@@ -785,8 +926,81 @@ mod tests {
                 );
             }
         }
-        assert_eq!(seen, [true; 6], "the seeds reach every shape");
+        assert_eq!(seen, [true; 7], "the seeds reach every shape");
         Ok(())
+    }
+
+    /// Removing a file's unterminated last line after a line holding the same
+    /// text, terminated, at zero context: with the header git itself writes
+    /// (`+1,0`), `git apply --unidiff-zero` removes the terminated line
+    /// instead, so the patch names the removed line's own position.
+    #[test]
+    fn git_removes_the_unterminated_line_not_its_twin() -> Result<(), String> {
+        for (old, new) in [("c\nc", "c\n"), ("c\r\nc", "c\r\n"), ("c\nc\nc", "c\n")] {
+            let file = diff_text(old, new, &opts(0));
+            let patch = format_hunk_patch(&file, &file.hunks[0]);
+            assert!(patch.contains(" +2,0 @@\n"), "{patch}");
+            if !has_git() {
+                continue;
+            }
+            let repo = repo_with(Some(old))?;
+            let staged = apply_to_index(repo.path(), &patch, true)?;
+            assert_eq!(staged.as_deref(), Some(new), "{old:?} -> {new:?}\n{patch}");
+        }
+        Ok(())
+    }
+
+    /// The same removal applied without the hunk before it, which removed a
+    /// line: the patch counts its start in the text git patches, so the
+    /// unterminated `c` goes and its twin keeps its newline.
+    #[test]
+    fn git_removes_the_unterminated_line_without_the_hunks_before_it() -> Result<(), String> {
+        let (old, wanted) = ("x\nc\nc", "x\nc\n");
+        let file = diff_text(old, "c\n", &opts(0));
+        assert_eq!(file.hunks.len(), 2, "{:?}", file.hunks);
+        // In the full new file the removal follows line 1; alone, line 2.
+        assert_eq!(file.hunks[1].new_start, 1);
+        let alone = format_hunk_patch(&file, &file.hunks[1]);
+        let mut staging = Staging::new();
+        staging.stage(1);
+        assert_eq!(staging.staged_patch(&file), alone);
+        assert!(alone.contains("@@ -3,1 +3,0 @@\n"), "{alone}");
+        if !has_git() {
+            return Ok(());
+        }
+        let repo = repo_with(Some(old))?;
+        let staged = apply_to_index(repo.path(), &alone, true)?;
+        assert_eq!(staged.as_deref(), Some(wanted), "{alone}");
+        Ok(())
+    }
+
+    #[test]
+    fn only_a_pure_removal_of_the_unterminated_end_is_renumbered() {
+        let mut hunk = one_hunk_file("f.txt", None, FileStatus::Modified)
+            .hunks
+            .remove(0);
+        hunk.lines[1].no_newline = true;
+        // It also adds a line, so git places it by that line, which it names.
+        assert_eq!(hunk_header(&hunk, 0), hunk.header);
+        hunk.lines.truncate(1);
+        hunk.lines[0].no_newline = true;
+        hunk.new_count = 0;
+        hunk.new_start = 0;
+        hunk.header = "@@ -1,1 +0,0 @@".into();
+        // Nothing precedes the removal, so git's guess is already the line.
+        assert_eq!(hunk_header(&hunk, 0), hunk.header);
+        hunk.old_start = 2;
+        hunk.new_start = 1;
+        hunk.header = "@@ -2,1 +1,0 @@ fn f".into();
+        // The section text after the ranges survives the renumbering.
+        assert_eq!(hunk_header(&hunk, 0), "@@ -2,1 +2,0 @@ fn f");
+        // Earlier hunks in the same patch move it by what they add or remove;
+        // once they removed everything before it, nothing precedes it.
+        assert_eq!(hunk_header(&hunk, 3), "@@ -2,1 +5,0 @@ fn f");
+        assert_eq!(hunk_header(&hunk, -1), "@@ -2,1 +0,0 @@ fn f");
+        hunk.lines[0].no_newline = false;
+        // A terminated line matches only its own text, so it is left alone.
+        assert_eq!(hunk_header(&hunk, 0), hunk.header);
     }
 
     /// A file that still exists but went empty, or an empty file that gained
@@ -804,7 +1018,7 @@ mod tests {
             let repo = repo_with(Some(old))?;
             let patch = format_hunk_patch(&file, &file.hunks[0]);
             assert!(!patch.contains("file mode"), "{patch}");
-            let staged = apply_to_index(repo.path(), &patch, false, false)?;
+            let staged = apply_to_index(repo.path(), &patch, false)?;
             assert_eq!(staged.as_deref(), Some(new), "{old:?} -> {new:?}");
         }
         Ok(())

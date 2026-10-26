@@ -514,7 +514,6 @@ fn badge_hit_spans_the_badge_and_reveal_explains_it() {
     };
     let detail = CommitDetail {
         hash: "a".repeat(40),
-        short_hash: "aaaaaaa".to_string(),
         summary: "subject".to_string(),
         body: String::new(),
         author: id(),
@@ -819,7 +818,20 @@ fn the_activity_switcher_reserves_a_cell_pair_for_every_panel()
     );
     app.settings.editor.semantic_comments.enabled = true;
     app.settings.spellcheck.enabled = true;
-    let _ = header(&mut app);
+    // The Hierarchy button appears, last, only while there is a tree to
+    // return to.
+    app.hierarchy.tree = Some(crate::app::hierarchy::HierarchyTree::new(
+        karet_core::HierarchyDirection::IncomingCalls,
+        DocumentId(1),
+        dir.clone(),
+        RequestId(1),
+    ));
+    assert_eq!(
+        header(&mut app).last(),
+        Some(&SidebarPanel::Hierarchy),
+        "{:?}",
+        app.panel_hits
+    );
     // Two cells each, marching left to right and staying inside the header.
     for window in app.panel_hits.windows(2) {
         assert_eq!(window[1].0, window[0].1, "{:?}", app.panel_hits);

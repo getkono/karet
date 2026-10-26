@@ -182,18 +182,47 @@ pub(super) fn debug_decorations(ctx: &PaneCtx, path: &std::path::Path) -> Vec<De
 }
 
 /// The per-frame decorations content assembles fresh each draw: color
-/// swatches over the visible slice.
+/// swatches over the visible slice -- the language server's colours for
+/// `doc`, then the literals the built-in detector finds that no server colour
+/// already covers, so a colour both know is swatched once.
 pub(super) fn frame_decorations(
     ctx: &PaneCtx,
+    doc: Option<DocumentId>,
     buffer: &TextBuffer,
     scroll_line: u32,
     area: Rect,
 ) -> Vec<Decoration> {
-    if ctx.color_highlight {
-        color_swatch_decorations(buffer, scroll_line, area.height)
-    } else {
-        Vec::new()
+    if !ctx.color_highlight {
+        return Vec::new();
     }
+    let served = doc.map_or(&[][..], |doc| {
+        crate::app::current_items(ctx.document_colors, doc, buffer.version())
+    });
+    let local = color_swatch_decorations(buffer, scroll_line, area.height);
+    merge_swatches(served, scroll_line, area.height, local)
+}
+
+/// The swatches of `served` on the lines a viewport of `height` rows from
+/// `first_line` can show (doubled for wrap slack, as the detector's), then
+/// each of `local` that overlaps none of them.
+fn merge_swatches(
+    served: &[karet_core::DocumentColor],
+    first_line: u32,
+    height: u16,
+    local: Vec<Decoration>,
+) -> Vec<Decoration> {
+    let last = first_line.saturating_add(u32::from(height) * 2);
+    let mut out: Vec<Decoration> = served
+        .iter()
+        .filter(|colour| colour.range.end.line >= first_line && colour.range.start.line <= last)
+        .map(karet_core::DocumentColor::swatch)
+        .collect();
+    out.extend(
+        local
+            .into_iter()
+            .filter(|swatch| !served.iter().any(|colour| colour.overlaps(swatch.range))),
+    );
+    out
 }
 
 /// The virtual text content assembles fresh each draw, in one slice: the
@@ -244,7 +273,13 @@ pub(super) fn frame_virtual_text(
     // `App::handle_code_lens_mouse` rebuilds them to find a click's lens.
     let lenses = doc.and_then(|doc| ctx.code_lenses.get(&doc));
     let rows = lenses.map(|lenses| crate::app::code_lens_rows(lenses, buffer, ctx.tab_width));
-    let lines = rows.into_iter().flatten().map(|row| row.line).collect();
+    let mut lines: Vec<_> = rows.into_iter().flatten().map(|row| row.line).collect();
+    // Ghost text last of both, so every index above stays what it was: its
+    // first line after the caret, its further lines as rows below it.
+    if let Some((text, rows)) = ctx.inline_ghost.clone() {
+        out.extend(text);
+        lines.extend(rows);
+    }
     (out, inlay_parts, blame, lines)
 }
 
@@ -423,6 +458,70 @@ mod diagnostic_text_tests {
             assert!(DIAGNOSTIC_EOL_PRIORITY > MANIFEST_EOL_PRIORITY);
             assert!(DIAGNOSTIC_EOL_PRIORITY > crate::app::LiveBlame::BLAME_EOL_PRIORITY);
         }
+    }
+}
+
+#[cfg(test)]
+mod swatch_tests {
+    use karet_core::DocumentColor;
+    use karet_core::LineCol;
+
+    use super::*;
+
+    fn span(line: u32, start: u32, end: u32) -> karet_core::Range {
+        karet_core::Range {
+            start: LineCol::new(line, start),
+            end: LineCol::new(line, end),
+        }
+    }
+
+    fn colour(range: karet_core::Range, rgba: [u8; 4]) -> DocumentColor {
+        DocumentColor { range, rgba }
+    }
+
+    /// The swatches' spans and colours, in order.
+    fn swatches(decorations: &[Decoration]) -> Vec<(karet_core::Range, [u8; 4])> {
+        decorations
+            .iter()
+            .filter_map(|decoration| match decoration.kind {
+                karet_core::DecorationKind::ColorSwatch { rgba } => Some((decoration.range, rgba)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A literal both the server and the detector know is swatched once, in
+    /// the server's colour; the detector's other finds and the server's
+    /// colours the detector cannot see (a Tailwind class) are each kept.
+    #[test]
+    fn a_server_colour_replaces_the_detector_s_swatch_it_overlaps() {
+        let buffer = TextBuffer::from_text("a: #ff0000;\nb: #00ff00;\nbg-red-500\n");
+        let served = [
+            colour(span(0, 3, 10), [250, 0, 0, 255]),
+            colour(span(2, 0, 10), [239, 68, 68, 255]),
+        ];
+        let local = color_swatch_decorations(&buffer, 0, 10);
+        let merged = merge_swatches(&served, 0, 10, local);
+        assert_eq!(
+            swatches(&merged),
+            [
+                (span(0, 3, 10), [250, 0, 0, 255]),
+                (span(2, 0, 10), [239, 68, 68, 255]),
+                (span(1, 3, 10), [0, 255, 0, 255]),
+            ]
+        );
+    }
+
+    /// Only the server colours a viewport can show are drawn.
+    #[test]
+    fn server_colours_off_the_viewport_are_not_drawn() {
+        let served = [
+            colour(span(0, 0, 1), [1, 2, 3, 255]),
+            colour(span(5, 0, 1), [4, 5, 6, 255]),
+            colour(span(50, 0, 1), [7, 8, 9, 255]),
+        ];
+        let merged = merge_swatches(&served, 4, 3, Vec::new());
+        assert_eq!(swatches(&merged), [(span(5, 0, 1), [4, 5, 6, 255])]);
     }
 }
 

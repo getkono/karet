@@ -788,6 +788,9 @@ impl App {
     ) {
         self.lsp_runtime.finish_operation(request, Some(&server));
         self.sync_language_server_toast();
+        // A first install reopens documents under the new server, which may
+        // format on characters the server they had before did not.
+        self.forget_on_type_triggers();
         // Untagged: an outcome must survive another operation's next progress
         // tick (see `fail_language_server_operation`).
         self.notify(
@@ -823,6 +826,9 @@ impl App {
     ) {
         self.lsp_runtime.finish_operation(request, Some(&server));
         self.sync_language_server_toast();
+        // The session reopens the removed server's documents under whatever
+        // server resolves for them now, if any.
+        self.forget_on_type_triggers();
         if let Some(status) = self
             .lsp_runtime
             .servers

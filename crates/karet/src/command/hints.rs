@@ -54,6 +54,7 @@ impl Command {
             Self::SelectPanel(SidebarPanel::Todos) => "todos",
             Self::SelectPanel(SidebarPanel::Debug) => "debug",
             Self::SelectPanel(SidebarPanel::Problems) => "problems",
+            Self::SelectPanel(SidebarPanel::Hierarchy) => "hierarchy",
             Self::TodoScan | Self::TodoToggleGrouping => "todos",
             Self::NextProblem => "next problem",
             Self::PrevProblem => "prev problem",
@@ -71,6 +72,7 @@ impl Command {
             Self::ShowOutgoingCalls => "callees",
             Self::ShowSupertypes => "supertypes",
             Self::ShowSubtypes => "subtypes",
+            Self::HierarchyExpand => "expand",
             Self::RenameSymbol | Self::RenameSubmit => "rename",
             Self::RenameCancel => "cancel",
             Self::FormatDocument | Self::FormatSelection => "format",
@@ -334,6 +336,10 @@ impl Command {
             | Self::Bottom
             | Self::InsertChar(_)
             | Self::TriggerCompletion
+            | Self::NextInlineCompletion
+            | Self::PrevInlineCompletion
+            | Self::CopilotSignIn
+            | Self::CopilotSignOut
             | Self::Hover
             | Self::SignatureHelp
             | Self::ToggleInlayHints

@@ -101,6 +101,9 @@ pub enum ServerFeature {
     InlayHintResolve,
     /// Values shown inline while debugging.
     InlineValue,
+    /// Text proposed at the caret, shown as ghost text to accept or type over
+    /// (LSP 3.18 `textDocument/inlineCompletion`).
+    InlineCompletion,
     /// Diagnostics the client pulls, rather than the server pushing them.
     PullDiagnostics,
     /// Pulling diagnostics for the whole workspace at once.

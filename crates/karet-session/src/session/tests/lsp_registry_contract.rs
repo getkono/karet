@@ -130,7 +130,7 @@
         let dir = tempfile::tempdir()?;
         let (mut session, mut events) = registry_session(dir.path());
         let declined =
-            || crate::lsp_registry::read_declined(Some(dir.path()), &LanguageServerId::Pyright);
+            || crate::lsp_registry::store::read_declined(Some(dir.path()), &LanguageServerId::Pyright);
 
         session.handle(
             RequestId(1),
@@ -140,7 +140,7 @@
         );
         assert!(declined().is_some(), "the refusal is on disk");
         assert!(
-            crate::lsp_registry::read_declined(Some(dir.path()), &LanguageServerId::Ruff).is_none(),
+            crate::lsp_registry::store::read_declined(Some(dir.path()), &LanguageServerId::Ruff).is_none(),
             "and scoped to the provider declined"
         );
 

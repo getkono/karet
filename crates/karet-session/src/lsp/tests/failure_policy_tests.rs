@@ -115,6 +115,7 @@ fn spawn_task(
         connector,
         generation: 0,
         semantic: tokio::sync::watch::channel(false).1,
+        primary: true,
     }));
     (tx, observed)
 }

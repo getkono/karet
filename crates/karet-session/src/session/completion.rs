@@ -7,8 +7,7 @@ use karet_core::CompletionItem;
 use karet_core::CompletionOptions;
 use karet_core::CompletionTrigger;
 
-use super::updates::utf16_caret;
-use super::updates::utf16_range_to_buffer;
+use super::columns::utf16_caret;
 use super::*;
 
 impl Session {
@@ -120,24 +119,6 @@ impl Session {
                 self.emit(Some(request), Event::CompletionResolved { doc, resolved });
             },
             _ => {},
-        }
-    }
-
-    /// Convert every range `item` carries -- its edit, its replace range, its
-    /// additional edits -- from the server's UTF-16 columns to `doc`'s buffer
-    /// columns. A closed document leaves them as they are.
-    fn completion_to_buffer_columns(&self, doc: DocumentId, item: &mut CompletionItem) {
-        let Some(open) = self.store.docs.get(&doc) else {
-            return;
-        };
-        let ranges = item
-            .edit
-            .iter_mut()
-            .chain(item.additional_edits.iter_mut())
-            .map(|edit| &mut edit.range)
-            .chain(item.replace_range.as_mut());
-        for range in ranges {
-            *range = utf16_range_to_buffer(&open.buffer, *range);
         }
     }
 }

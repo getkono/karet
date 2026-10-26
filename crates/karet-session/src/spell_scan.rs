@@ -24,17 +24,16 @@ use karet_syntax::Highlights;
 use karet_syntax::LayeredHighlighter;
 use karet_treesitter::LayeredParser;
 use spellbook::Dictionary;
-use tokio::sync::mpsc as tokio_mpsc;
 
 use crate::api::Event;
 use crate::api::RequestId;
 use crate::api::SpellingHit;
 use crate::api::SpellingLanguage;
 use crate::cancellation::Cancellation;
+use crate::event_tx::EventTx;
 use crate::scan_walk::BatchedScan;
 use crate::scan_walk::Walk;
 use crate::scan_walk::resolve_path;
-use crate::scan_walk::send;
 use crate::spell::check::LineIndex;
 use crate::spell::check::SpellInput;
 use crate::spell::check::word_in_line;
@@ -65,9 +64,7 @@ pub(crate) struct SpellScanJob {
 
 /// Start the worker; the session sends [`SpellScanJob`]s and answers arrive on the
 /// shared event stream.
-pub(crate) fn spawn(
-    events: tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
-) -> Sender<SpellScanJob> {
+pub(crate) fn spawn(events: EventTx) -> Sender<SpellScanJob> {
     let (jobs_tx, jobs_rx) = std::sync::mpsc::channel();
     let _ = std::thread::Builder::new()
         .name("karet-spell-scan".to_owned())
@@ -75,10 +72,7 @@ pub(crate) fn spawn(
     jobs_tx
 }
 
-fn run(
-    jobs: &Receiver<SpellScanJob>,
-    events: &tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
-) {
+fn run(jobs: &Receiver<SpellScanJob>, events: &EventTx) {
     // The parse host and dictionary cache outlive individual scans: a re-scan of the
     // same workspace re-uses every compiled grammar and the loaded dictionary.
     let mut host = ScanHost {
@@ -149,11 +143,7 @@ impl BatchedScan for SpellScan<'_> {
 }
 
 /// Resolve the job's dictionary (cached for the worker's lifetime), then walk.
-fn execute(
-    job: SpellScanJob,
-    host: &mut ScanHost,
-    events: &tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
-) -> ControlFlow<()> {
+fn execute(job: SpellScanJob, host: &mut ScanHost, events: &EventTx) -> ControlFlow<()> {
     // Load the workspace's own dictionary first: a missing one is the user's
     // environment, not a bug, and saying so once beats a silently empty scan.
     // Per-file EditorConfig locales are resolved lazily during the walk.
@@ -162,18 +152,16 @@ fn execute(
         .entry(job.spelling_language)
         .or_insert_with(|| crate::spell::load_dictionary(job.spelling_language));
     if let Err(error) = dictionary {
-        send(
-            events,
-            job.id,
+        events.try_emit(
+            Some(job.id),
             Event::Notification {
                 severity: Severity::Warning,
                 kind: NotificationKind::System,
                 message: error.clone(),
             },
         )?;
-        return send(
-            events,
-            job.id,
+        return events.try_emit(
+            Some(job.id),
             Event::SpellingScanFinished {
                 files_scanned: 0,
                 truncated: false,
@@ -185,11 +173,7 @@ fn execute(
 }
 
 /// Walk the workspace, streaming batches as it goes.
-fn scan(
-    job: &SpellScanJob,
-    host: &mut ScanHost,
-    events: &tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
-) -> ControlFlow<()> {
+fn scan(job: &SpellScanJob, host: &mut ScanHost, events: &EventTx) -> ControlFlow<()> {
     let mut scan = SpellScan {
         job,
         host,
@@ -207,9 +191,8 @@ fn scan(
     // A walk error is a bad exclude glob from the settings; the scan has never
     // reported one, and finishes as an empty scan instead.
     let walked = crate::scan_walk::walk_batched(&walk, &mut scan, job.id, events, Vec::new())?;
-    send(
-        events,
-        job.id,
+    events.try_emit(
+        Some(job.id),
         Event::SpellingScanFinished {
             files_scanned: walked.files_scanned,
             truncated: walked.truncated,
@@ -362,7 +345,7 @@ mod tests {
         // `ParseDictionaryError` is not a `std::error::Error`, so carry its message.
         let dictionary = Dictionary::new(AFF, DIC)
             .map_err(|err| format!("the fixture dictionary does not parse: {err}"))?;
-        let (tx, mut rx) = tokio_mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::event_tx::EventTx::channel();
         let hub = CancellationHub::default();
         let mut settings = crate::config::Settings::default();
         settings.spellcheck.enabled = true;

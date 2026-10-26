@@ -53,6 +53,7 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(Global, true,  false, false, Char('5'), Command::SelectPanel(SidebarPanel::Todos)),
     b(Global, true,  false, false, Char('6'), Command::SelectPanel(SidebarPanel::Debug)),
     b(Global, true,  false, false, Char('7'), Command::SelectPanel(SidebarPanel::Problems)),
+    b(Global, true,  false, false, Char('8'), Command::SelectPanel(SidebarPanel::Hierarchy)),
     // Next / previous problem in the active file (VS Code parity). Global, so the
     // walk also works from the Problems panel, which hands focus to the editor.
     b(Global, false, false, false, F(8),      Command::NextProblem),
@@ -171,6 +172,11 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(ProblemsFilter, false, false, false, Esc,   Command::ProblemsFilterCancel),
     b(ProblemsFilter, true,  false, false, Char('v'), Command::Paste),
 
+    // Hierarchy panel. Right and `l` grow the tree, where the shared sidebar verbs
+    // would open the row; Enter still opens it, and Left/`h` collapse or climb.
+    b(Hierarchy, false, false, false, Right,     Command::HierarchyExpand),
+    b(Hierarchy, false, false, false, Char('l'), Command::HierarchyExpand),
+
     // Sidebar focus. Selection verbs are shared across every list panel (explorer
     // and source control) — they route to the focused panel's selection in dispatch.
     b(Sidebar, false, true,  false, Down,      Command::SelectExtendDown),
@@ -274,6 +280,12 @@ pub(super) static BINDINGS: &[Binding] = &[
     // Ctrl+Space asks the language server for completions (bypasses the
     // syntax-error auto-trigger gate).
     b(Editor, true,  false, false, Char(' '), Command::TriggerCompletion),
+    // Alt+] / Alt+[ cycle the ghost-text proposals, asking for some when none
+    // is on show (VS Code parity). Tab, Ctrl+Right and Esc act on the ghost
+    // only while one is on show, so they are taken ahead of the keymap
+    // (`App::inline_completion_key`) rather than bound here.
+    b(Editor, false, false, true,  Char(']'), Command::NextInlineCompletion),
+    b(Editor, false, false, true,  Char('['), Command::PrevInlineCompletion),
     // Ctrl+Shift+Space shows the parameter hints (VS Code parity). Only a
     // terminal that reports Shift with Space (kitty protocol) can send it;
     // the palette reaches it everywhere.

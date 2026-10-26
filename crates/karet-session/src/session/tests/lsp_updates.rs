@@ -385,8 +385,8 @@
         use crate::api::Event;
         use crate::api::LanguageServerId;
         use crate::lsp::LspUpdate;
-        use crate::lsp_registry::Declined;
-        use crate::lsp_registry::write_declined;
+        use crate::lsp_registry::store::Declined;
+        use crate::lsp_registry::store::write_declined;
         use crate::session::Session;
         use crate::session::SessionConfig;
 

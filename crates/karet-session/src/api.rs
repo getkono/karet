@@ -16,10 +16,14 @@ use karet_core::CompletionOptions;
 use karet_core::CompletionTrigger;
 use karet_core::CursorState;
 use karet_core::Diagnostic;
+use karet_core::DocumentColor;
+use karet_core::DocumentLink;
 use karet_core::HierarchyDirection;
 use karet_core::HierarchyItem;
 use karet_core::Hover;
 use karet_core::InlayHint;
+use karet_core::InlineCompletionItem;
+use karet_core::InlineCompletionTrigger;
 use karet_core::LineCol;
 use karet_core::Location;
 use karet_core::NotificationKind;
@@ -60,6 +64,13 @@ pub use aicommit::*;
 pub use debug::*;
 pub use event::Event;
 pub use github::*;
+/// One occurrence of the symbol a [`Command::DocumentHighlights`] asked
+/// about, as [`Event::DocumentHighlights`] carries it: its range in buffer
+/// columns. Re-exported from [`karet_core`], which defines it once.
+pub use karet_core::DocumentHighlight;
+/// How a [`DocumentHighlight`] uses its symbol; re-exported from
+/// [`karet_core`].
+pub use karet_core::HighlightKind;
 pub use language_servers::*;
 pub use navigation::*;
 pub use refactor::*;
@@ -67,31 +78,6 @@ pub use seam::*;
 pub use search::*;
 pub use server_window::*;
 pub use vcs::*;
-
-/// How a [`DocumentHighlight`] uses the symbol it is an occurrence of.
-#[derive(
-    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
-)]
-pub enum HighlightKind {
-    /// A textual occurrence, neither a read nor a write as far as the server
-    /// says.
-    #[default]
-    Text,
-    /// A read of the symbol.
-    Read,
-    /// A write to the symbol, such as an assignment or its declaration.
-    Write,
-}
-
-/// One occurrence of the symbol a [`Command::DocumentHighlights`] asked
-/// about.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct DocumentHighlight {
-    /// The occurrence, in buffer columns.
-    pub range: Range,
-    /// How the occurrence uses the symbol.
-    pub kind: HighlightKind,
-}
 
 /// Per-document editing and serialization behavior after application settings and
 /// matching EditorConfig files have been resolved.
@@ -448,6 +434,56 @@ pub enum Command {
         /// included.
         hint: InlayHint,
     },
+    /// Ask for ghost text at a position: every language server attached to
+    /// the document is asked, not only the language's primary, since inline
+    /// completions usually come from a companion such as Copilot.
+    ///
+    /// Answered by one [`Event::InlineCompletions`] per server that has
+    /// something to propose, and by nothing at all when none has -- no
+    /// server, none offering inline completions, or nothing to say. Whether
+    /// to ask at all (`editor.inlineCompletion`) is the client's to read, as
+    /// it reads `editor.completion` before a [`Command::Completion`]. A client shows
+    /// no ghost text while it waits, which is also what "nothing" shows, so
+    /// there is no empty answer to wait for. A client debounces this itself:
+    /// a newer ask for the same document replaces one a server has not yet
+    /// been sent.
+    InlineCompletion {
+        /// The target document.
+        doc: DocumentId,
+        /// The caret, in buffer columns.
+        position: LineCol,
+        /// Whether the user asked, or the editor asked on its own.
+        trigger: InlineCompletionTrigger,
+    },
+    /// Sign in to the account a language server proposes for -- GitHub, for
+    /// `copilot-language-server` -- through the server's own `signIn` flow.
+    /// Answered by [`Event::LanguageServerAccount`], always; a device code
+    /// ([`AccountOutcome::DeviceCode`](crate::api::AccountOutcome::DeviceCode)) is followed by a second one, with the
+    /// same request id, once the server says whether the sign-in landed --
+    /// unless a later sign-in or sign-out for the same server supersedes it
+    /// first or the server stops, in which case that sign-in gets no second
+    /// outcome.
+    SignInLanguageServer {
+        /// The server, which must be running (attached to an open document).
+        server: LanguageServerId,
+    },
+    /// Sign out of that account (`signOut`). Answered by
+    /// [`Event::LanguageServerAccount`], always.
+    SignOutLanguageServer {
+        /// The server, which must be running.
+        server: LanguageServerId,
+    },
+    /// Tell the server that proposed `item` that the user accepted it, after
+    /// the client applied its edit -- so the server runs whatever the item
+    /// asked to have run on acceptance. Unanswered: nothing waits on it.
+    AcceptInlineCompletion {
+        /// The document the item was proposed for.
+        doc: DocumentId,
+        /// The server that proposed it, as [`Event::InlineCompletions`] named.
+        server: LanguageServerId,
+        /// The item as delivered, payload included.
+        item: InlineCompletionItem,
+    },
     /// Request a document's code lenses from its primary server, resolving
     /// the ones on `lines` it deferred. Answered by [`Event::CodeLenses`], or
     /// by [`Event::CodeLensesFailed`] when the server failed to answer.
@@ -471,6 +507,22 @@ pub enum Command {
         doc: DocumentId,
         /// The lens, as the answer listed it.
         lens: CodeLens,
+    },
+    /// Request a document's links and colours from its primary server
+    /// (`textDocument/documentLink` and `textDocument/documentColor`, asked
+    /// together). Answered by [`Event::LinksAndColors`].
+    LinksAndColors {
+        /// The target document.
+        doc: DocumentId,
+    },
+    /// Fill in the target of a link from an [`Event::LinksAndColors`] answer
+    /// that arrived without one (`documentLink/resolve`). Answered by
+    /// [`Event::DocumentLinkResolved`].
+    ResolveDocumentLink {
+        /// The document the link was listed for.
+        doc: DocumentId,
+        /// The link, as the answer listed it.
+        link: DocumentLink,
     },
     /// Request hover information at a position.
     Hover {

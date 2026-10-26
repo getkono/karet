@@ -117,6 +117,22 @@ fn binary_file_is_marked_binary() -> Result<(), VcsError> {
     Ok(())
 }
 
+/// The sniff is the shared `karet_filetype` window: a NUL on its last byte is
+/// binary, a NUL one byte past it is text, as diff and search decide.
+#[test]
+fn classify_uses_the_shared_binary_sniff_window() {
+    let len = karet_filetype::BINARY_SNIFF_LEN;
+    let mut inside = vec![b'a'; len + 16];
+    inside[len - 1] = 0;
+    assert!(super::classify(&inside).0);
+
+    let mut past = vec![b'a'; len + 16];
+    past[len] = 0;
+    let (is_binary, text) = super::classify(&past);
+    assert!(!is_binary);
+    assert_eq!(text.len(), len + 16);
+}
+
 #[test]
 fn clean_repo_has_no_default_selection() -> Result<(), VcsError> {
     let repo = init_repo()?;

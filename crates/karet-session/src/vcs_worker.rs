@@ -9,7 +9,6 @@ use karet_vcs::Repository;
 use karet_vcs::Selection;
 use karet_vcs::SyncOutcome;
 use karet_vcs::VcsError;
-use tokio::sync::mpsc::UnboundedSender;
 
 use crate::api::DocumentId;
 use crate::api::Event;
@@ -20,6 +19,7 @@ use crate::api::RequestId;
 use crate::api::VcsAction;
 use crate::api::VcsOutcome;
 use crate::cancellation::Cancellation;
+use crate::event_tx::EventTx;
 
 mod blame;
 mod commit;
@@ -174,10 +174,7 @@ pub(crate) enum VcsJob {
 }
 
 /// Start the one-per-session ordered repository worker.
-pub(crate) fn spawn(
-    root: Option<PathBuf>,
-    events: UnboundedSender<(Option<RequestId>, Event)>,
-) -> mpsc::Sender<VcsJob> {
+pub(crate) fn spawn(root: Option<PathBuf>, events: EventTx) -> mpsc::Sender<VcsJob> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let mut blame_cache = BlameCache::new();
@@ -192,7 +189,7 @@ pub(crate) fn spawn(
 
 fn run(
     root: &Option<PathBuf>,
-    events: &UnboundedSender<(Option<RequestId>, Event)>,
+    events: &EventTx,
     blame_cache: &mut BlameCache,
     last_status: &mut Option<Status>,
     job: VcsJob,
@@ -225,9 +222,8 @@ fn run(
             });
             let result =
                 result.map(|change| Box::new(crate::diff_prepare::prepare_change(change, syntax)));
-            emit_cancellable(
-                events,
-                id,
+            events.emit_if_live(
+                Some(id),
                 &cancel,
                 Event::ChangePrepared {
                     path,
@@ -251,9 +247,8 @@ fn run(
                 false,
                 syntax,
             ));
-            emit_cancellable(
-                events,
-                id,
+            events.emit_if_live(
+                Some(id),
                 &cancel,
                 Event::DiffPrepared {
                     path,
@@ -270,19 +265,18 @@ fn run(
             cancel,
         } => {
             let result = run_diff_with_rev(&path, &rev, live, syntax);
-            emit_cancellable(events, id, &cancel, Event::DiffPrepared { path, result });
+            events.emit_if_live(Some(id), &cancel, Event::DiffPrepared { path, result });
         },
         VcsJob::Snapshot { id, cancel } => {
             match repository(root).and_then(|repo| snapshot(&repo)) {
-                Ok(snapshot) => emit_cancellable(
-                    events,
-                    id,
+                Ok(snapshot) => events.emit_if_live(
+                    Some(id),
                     &cancel,
                     Event::RepositorySnapshot {
                         snapshot: Box::new(snapshot),
                     },
                 ),
-                Err(message) => notify_cancellable(events, id, &cancel, message),
+                Err(message) => events.emit_if_live(Some(id), &cancel, vcs_failure(message)),
             }
         },
         VcsJob::NestedRepositoryStatus { id, path, cancel } => {
@@ -292,18 +286,16 @@ fn run(
             let result = nested_repository(root, &path)
                 .and_then(|repository| repository.summary().map_err(|error| error.to_string()));
             match result {
-                Ok(summary) => emit_cancellable(
-                    events,
-                    id,
+                Ok(summary) => events.emit_if_live(
+                    Some(id),
                     &cancel,
                     Event::NestedRepositoryStatus { path, summary },
                 ),
                 Err(message) => {
-                    notify_cancellable(
-                        events,
-                        id,
+                    events.emit_if_live(
+                        Some(id),
                         &cancel,
-                        format!("repository status: {message}"),
+                        vcs_failure(format!("repository status: {message}")),
                     );
                 },
             }
@@ -323,17 +315,15 @@ fn run(
             match result {
                 Ok((outcome, snapshot, (staged, working))) => {
                     *last_status = Some((staged.clone(), working.clone()));
-                    emit(events, id, Event::VcsStatus { staged, working });
-                    emit(
-                        events,
-                        id,
+                    events.emit(Some(id), Event::VcsStatus { staged, working });
+                    events.emit(
+                        Some(id),
                         Event::RepositorySnapshot {
                             snapshot: Box::new(snapshot),
                         },
                     );
-                    emit(
-                        events,
-                        id,
+                    events.emit(
+                        Some(id),
                         Event::VcsOperationFinished {
                             action,
                             outcome: Some(outcome),
@@ -341,9 +331,8 @@ fn run(
                         },
                     );
                 },
-                Err(error) => emit(
-                    events,
-                    id,
+                Err(error) => events.emit(
+                    Some(id),
                     Event::VcsOperationFinished {
                         action,
                         outcome: None,
@@ -359,9 +348,8 @@ fn run(
             per_page,
             cancel,
         } => match pull_requests(root, &remote, page, per_page) {
-            Ok((items, next_page)) => emit_cancellable(
-                events,
-                id,
+            Ok((items, next_page)) => events.emit_if_live(
+                Some(id),
                 &cancel,
                 Event::PullRequests {
                     remote,
@@ -369,7 +357,7 @@ fn run(
                     next_page,
                 },
             ),
-            Err(message) => notify_cancellable(events, id, &cancel, message),
+            Err(message) => events.emit_if_live(Some(id), &cancel, vcs_failure(message)),
         },
         VcsJob::Blame {
             id,
@@ -380,9 +368,8 @@ fn run(
             line,
             cancel,
         } => match blame(blame_cache, root, doc, version, &path, &text, line) {
-            Ok(attribution) => emit_cancellable(
-                events,
-                id,
+            Ok(attribution) => events.emit_if_live(
+                Some(id),
                 &cancel,
                 Event::BlameResult {
                     doc,
@@ -392,7 +379,7 @@ fn run(
                 },
             ),
             Err(message) => {
-                notify_cancellable(events, id, &cancel, format!("blame: {message}"));
+                events.emit_if_live(Some(id), &cancel, vcs_failure(format!("blame: {message}")));
             },
         },
         VcsJob::LineChanges {
@@ -407,9 +394,8 @@ fn run(
                 return;
             }
             let markers = linediff::line_changes(&path, &text);
-            emit_cancellable(
-                events,
-                id,
+            events.emit_if_live(
+                Some(id),
                 &cancel,
                 Event::LineChanges {
                     doc,
@@ -420,7 +406,7 @@ fn run(
         },
         VcsJob::RemoteFacts { id, path, cancel } => {
             let facts = remote_facts(&path);
-            emit_cancellable(events, id, &cancel, Event::RemoteFacts { path, facts });
+            events.emit_if_live(Some(id), &cancel, Event::RemoteFacts { path, facts });
         },
         VcsJob::Log {
             id,
@@ -627,41 +613,13 @@ fn pull_requests(
     Err("GitHub integration is disabled in this build".to_string())
 }
 
-fn emit(events: &UnboundedSender<(Option<RequestId>, Event)>, id: RequestId, event: Event) {
-    let _ = events.send((Some(id), event));
-}
-
-fn emit_cancellable(
-    events: &UnboundedSender<(Option<RequestId>, Event)>,
-    id: RequestId,
-    cancel: &Cancellation,
-    event: Event,
-) {
-    if !cancel.is_cancelled() {
-        emit(events, id, event);
-    }
-}
-
-fn notify(events: &UnboundedSender<(Option<RequestId>, Event)>, id: RequestId, message: String) {
-    emit(
-        events,
-        id,
-        Event::Notification {
-            severity: karet_core::Severity::Error,
-            kind: karet_core::NotificationKind::Vcs,
-            message,
-        },
-    );
-}
-
-fn notify_cancellable(
-    events: &UnboundedSender<(Option<RequestId>, Event)>,
-    id: RequestId,
-    cancel: &Cancellation,
-    message: String,
-) {
-    if !cancel.is_cancelled() {
-        notify(events, id, message);
+/// The answer to a git job that failed: an error notification carrying
+/// `message`.
+fn vcs_failure(message: String) -> Event {
+    Event::Notification {
+        severity: karet_core::Severity::Error,
+        kind: karet_core::NotificationKind::Vcs,
+        message,
     }
 }
 

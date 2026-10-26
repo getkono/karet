@@ -102,7 +102,7 @@ impl App {
         }
         pendings.extend(self.active_outline_loading());
         pendings.extend(self.quick_open_loading());
-        pendings.extend(self.hierarchy_loading());
+        pendings.extend(self.visible_hierarchy_loading());
         for tab in self.all_tabs() {
             if let Some(conflict) = tab
                 .merge_conflict

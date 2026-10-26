@@ -2,15 +2,14 @@
 //!
 //! Repository reads stay in-process through `gix`. Mutations use the user's Git so
 //! worktree/index semantics, hooks, identities, and configuration match the command
-//! line without adding a C-backed library dependency. No operation invokes a shell.
+//! line without adding a C-backed library dependency. They run it through the
+//! hardened runners in [`crate::subprocess`]; no operation invokes a shell.
 
 use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
-use std::process::Command;
-use std::process::Output;
 
 mod commit;
 
@@ -27,72 +26,6 @@ impl Repository {
     /// The `.git` directory, for the streaming commit runner's lock check.
     pub(crate) fn commit_git_dir(&self) -> &Path {
         self.inner.path()
-    }
-
-    fn workdir(&self) -> Result<&Path, VcsError> {
-        self.inner
-            .workdir()
-            .ok_or_else(|| VcsError::Git("repository has no working directory".to_string()))
-    }
-
-    /// A `git` command rooted at the worktree under the non-interactive
-    /// environment every write runs with: no credential prompt, and an editor
-    /// that accepts whatever message or todo list it is handed.
-    pub(crate) fn git_command(&self) -> Result<Command, VcsError> {
-        let mut command = Command::new("git");
-        command
-            .current_dir(self.workdir()?)
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .env("GIT_EDITOR", "true")
-            .env("GIT_SEQUENCE_EDITOR", "true");
-        Ok(command)
-    }
-
-    pub(crate) fn git_output<I, S>(&self, args: I) -> Result<Output, VcsError>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<OsStr>,
-    {
-        self.git_command()?
-            .args(args)
-            .output()
-            .map_err(|error| VcsError::GitUnavailable(error.to_string()))
-    }
-
-    /// [`git_checked`](Self::git_checked) with extra environment overrides
-    /// (e.g. a prepared `GIT_SEQUENCE_EDITOR` for interactive rebase).
-    pub(crate) fn git_checked_with_env<I, S>(
-        &self,
-        args: I,
-        env: &[(&str, &str)],
-    ) -> Result<Output, VcsError>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<OsStr>,
-    {
-        let mut command = self.git_command()?;
-        command.args(args).envs(env.iter().copied());
-        let output = command
-            .output()
-            .map_err(|error| VcsError::GitUnavailable(error.to_string()))?;
-        if output.status.success() {
-            Ok(output)
-        } else {
-            let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            Err(VcsError::Git(if message.is_empty() {
-                format!("git exited with {}", output.status)
-            } else {
-                message
-            }))
-        }
-    }
-
-    pub(crate) fn git_checked<I, S>(&self, args: I) -> Result<Output, VcsError>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<OsStr>,
-    {
-        self.git_checked_with_env(args, &[])
     }
 
     fn has_head(&self) -> Result<bool, VcsError> {
@@ -182,7 +115,7 @@ impl Repository {
     pub(crate) fn git_commit(&self, message: &str) -> Result<String, VcsError> {
         // One commit path, so hooks behave identically whether or not the caller
         // wants their output. Nothing holds the token, so nothing can cancel it.
-        match self.commit_streaming(message, &CommitCancel::new(), &mut |_| {})? {
+        match self.commit_with_output(message, &CommitCancel::new(), &mut |_| {})? {
             CommitOutcome::Created(oid) => Ok(oid),
             CommitOutcome::Cancelled => Err(VcsError::Git(
                 "commit was cancelled without a canceller".to_string(),
@@ -296,29 +229,6 @@ mod tests {
         crate::test_support::init("write")
     }
 
-    /// `git_checked` is `git_checked_with_env` with no overrides, so both carry
-    /// the hardened editor, an override still wins, and a refusal surfaces
-    /// git's own stderr.
-    #[test]
-    fn checked_git_runs_hardened_and_reports_stderr() -> Result<(), VcsError> {
-        let repo = init_repo()?;
-        let r = Repository::discover(&repo.0)?;
-        let editor = |output: std::process::Output| {
-            String::from_utf8_lossy(&output.stdout).trim().to_string()
-        };
-        assert_eq!(editor(r.git_checked(["var", "GIT_EDITOR"])?), "true");
-        assert_eq!(
-            editor(r.git_checked_with_env(["var", "GIT_EDITOR"], &[("GIT_EDITOR", "vi")])?),
-            "vi"
-        );
-        let refused = r.git_checked(["rev-parse", "--verify", "nope"]);
-        assert!(
-            matches!(&refused, Err(VcsError::Git(message)) if message.starts_with("fatal:")),
-            "{refused:?}"
-        );
-        Ok(())
-    }
-
     #[test]
     fn stage_then_commit_roundtrip() -> Result<(), VcsError> {
         let repo = init_repo()?;
@@ -410,57 +320,6 @@ mod tests {
         assert!(matches!(
             r.apply_index_patch("not a patch", false),
             Err(VcsError::Git(message)) if !message.is_empty() && !message.starts_with("git exited with")
-        ));
-        Ok(())
-    }
-
-    #[test]
-    fn git_errors_carry_stderr_or_a_status_fallback() -> Result<(), VcsError> {
-        let repo = init_repo()?;
-        let r = Repository::discover(&repo.0)?;
-        // A failing command with stderr surfaces that stderr verbatim (trimmed).
-        match r.git_checked(["rev-parse", "--verify", "no-such-rev"]) {
-            Err(VcsError::Git(message)) => {
-                assert!(message.starts_with("fatal:"), "stderr was {message:?}");
-                assert_eq!(message, message.trim());
-            },
-            other => {
-                return Err(VcsError::Git(format!(
-                    "expected a git error, got {other:?}"
-                )));
-            },
-        }
-        // A failure that writes nothing to stderr falls back to the exit status.
-        match r.git_checked(["rev-parse", "--verify", "--quiet", "no-such-rev"]) {
-            Err(VcsError::Git(message)) => {
-                assert!(message.starts_with("git exited with"), "{message:?}");
-            },
-            other => {
-                return Err(VcsError::Git(format!(
-                    "expected a git error, got {other:?}"
-                )));
-            },
-        }
-        // The env-overriding variant maps failures the same way.
-        assert!(matches!(
-            r.git_checked_with_env(["rev-parse", "--verify", "--quiet", "no-such-rev"], &[]),
-            Err(VcsError::Git(message)) if message.starts_with("git exited with")
-        ));
-        Ok(())
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_missing_git_binary_is_git_unavailable() -> Result<(), VcsError> {
-        let repo = init_repo()?;
-        let r = Repository::discover(&repo.0)?;
-        // An overridden child `PATH` is what the program lookup searches, so an
-        // empty directory makes `git` unspawnable without touching this process.
-        let empty = crate::test_support::scratch_dir("no-git")?;
-        let path = empty.0.to_string_lossy().into_owned();
-        assert!(matches!(
-            r.git_checked_with_env(["status"], &[("PATH", path.as_str())]),
-            Err(VcsError::GitUnavailable(_))
         ));
         Ok(())
     }

@@ -90,6 +90,10 @@ pub(super) enum Wake {
     Probe(Answer<Vec<karet_core::CodeAction>>),
     /// A launched code-lens listing finished.
     Lens(Answer<Vec<karet_core::CodeLens>>),
+    /// A launched inline-completion ask finished.
+    Inline(Answer<Vec<karet_core::InlineCompletionItem>>),
+    /// A launched document-link and colour listing finished.
+    LinkColor(Answer<super::link_color::Listing>),
     /// The server registered or withdrew a capability -- a document skipped
     /// for want of one may now be pulled -- or semantic highlighting was
     /// turned on or off for this slot, or the server asked for its semantic
@@ -119,10 +123,15 @@ pub(super) async fn next_wake(
         hints,
         probes,
         lenses,
+        inline,
+        links,
+        ..
     } = flights;
     let busy = hints.is_busy();
     let probing = probes.is_busy();
     let listing = lenses.is_busy();
+    let proposing = inline.is_busy();
+    let linking = links.is_busy();
     if let Some(flush_at) = flush_at {
         // A deadline rather than a timeout on the next command: the debounce
         // measures quiet since the last *edit*, and a command that does not
@@ -135,6 +144,8 @@ pub(super) async fn next_wake(
             Some(answer) = hints.next(), if busy => Wake::Hint(answer),
             Some(answer) = probes.next(), if probing => Wake::Probe(answer),
             Some(answer) = lenses.next(), if listing => Wake::Lens(answer),
+            Some(answer) = inline.next(), if proposing => Wake::Inline(answer),
+            Some(answer) = links.next(), if linking => Wake::LinkColor(answer),
             () = fetches.woken() => Wake::Registered,
             cmd = rx.recv() => Wake::Command(cmd),
         }
@@ -145,6 +156,8 @@ pub(super) async fn next_wake(
             Some(answer) = hints.next(), if busy => Wake::Hint(answer),
             Some(answer) = probes.next(), if probing => Wake::Probe(answer),
             Some(answer) = lenses.next(), if listing => Wake::Lens(answer),
+            Some(answer) = inline.next(), if proposing => Wake::Inline(answer),
+            Some(answer) = links.next(), if linking => Wake::LinkColor(answer),
             () = fetches.woken() => Wake::Registered,
             cmd = rx.recv() => Wake::Command(cmd),
         }

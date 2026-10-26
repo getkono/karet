@@ -22,15 +22,14 @@ use std::sync::mpsc::Sender;
 use karet_search::Matcher;
 use karet_search::SearchQuery;
 use karet_search::WorkspaceSearch;
-use tokio::sync::mpsc as tokio_mpsc;
 
 use crate::api::Event;
 use crate::api::RequestId;
 use crate::api::SearchHit;
 use crate::cancellation::Cancellation;
+use crate::event_tx::EventTx;
 use crate::scan_walk::BatchedScan;
 use crate::scan_walk::Walk;
-use crate::scan_walk::send;
 
 /// One unit of background search work.
 pub(crate) enum SearchJob {
@@ -74,9 +73,7 @@ impl SearchJob {
 
 /// Start the worker; the session sends [`SearchJob`]s and answers arrive on the
 /// shared event stream.
-pub(crate) fn spawn(
-    events: tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
-) -> Sender<SearchJob> {
+pub(crate) fn spawn(events: EventTx) -> Sender<SearchJob> {
     let (jobs_tx, jobs_rx) = std::sync::mpsc::channel();
     let _ = std::thread::Builder::new()
         .name("karet-search".to_owned())
@@ -84,10 +81,7 @@ pub(crate) fn spawn(
     jobs_tx
 }
 
-fn run(
-    jobs: &Receiver<SearchJob>,
-    events: &tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
-) {
+fn run(jobs: &Receiver<SearchJob>, events: &EventTx) {
     while let Ok(mut job) = jobs.recv() {
         // Coalesce: only the newest queued search matters (a replace is never
         // skipped — it mutates files).
@@ -117,13 +111,9 @@ fn run(
 }
 
 /// Answer a search that a newer one displaced before it started.
-fn superseded(
-    id: RequestId,
-    events: &tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
-) -> ControlFlow<()> {
-    send(
-        events,
-        id,
+fn superseded(id: RequestId, events: &EventTx) -> ControlFlow<()> {
+    events.try_emit(
+        Some(id),
         Event::SearchFinished {
             files_scanned: 0,
             matches_found: 0,
@@ -185,10 +175,7 @@ impl BatchedScan for SearchScan<'_> {
     }
 }
 
-fn execute(
-    job: SearchJob,
-    events: &tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
-) -> ControlFlow<()> {
+fn execute(job: SearchJob, events: &EventTx) -> ControlFlow<()> {
     match job {
         SearchJob::Search {
             id,
@@ -203,7 +190,7 @@ fn execute(
             roots,
             query,
             replacement,
-        } => send(events, id, replace_all(&roots, &query, &replacement)),
+        } => events.try_emit(Some(id), replace_all(&roots, &query, &replacement)),
     }
 }
 
@@ -246,16 +233,15 @@ fn search(
     file_limit: usize,
     match_limit: usize,
     cancel: &Cancellation,
-    events: &tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
+    events: &EventTx,
 ) -> ControlFlow<()> {
     // Compile once for the whole tree rather than per file, and surface a bad
     // pattern instead of letting it read as "no matches".
     let matcher = match Matcher::new(query) {
         Ok(matcher) => matcher,
         Err(error) => {
-            return send(
-                events,
-                id,
+            return events.try_emit(
+                Some(id),
                 Event::SearchFinished {
                     files_scanned: 0,
                     matches_found: 0,
@@ -280,9 +266,8 @@ fn search(
         cancel,
     };
     let walked = crate::scan_walk::walk_batched(&walk, &mut scan, id, events, Vec::new())?;
-    send(
-        events,
-        id,
+    events.try_emit(
+        Some(id),
         Event::SearchFinished {
             files_scanned: walked.files_scanned,
             matches_found: scan.matches_found,
@@ -298,7 +283,7 @@ mod tests {
     use super::*;
     use crate::cancellation::CancellationHub;
 
-    type Events = tokio_mpsc::UnboundedReceiver<(Option<RequestId>, Event)>;
+    type Events = tokio::sync::mpsc::UnboundedReceiver<(Option<RequestId>, Event)>;
 
     fn query(pattern: &str) -> SearchQuery {
         SearchQuery {
@@ -332,7 +317,7 @@ mod tests {
             let _ = jobs_tx.send(job);
         }
         drop(jobs_tx);
-        let (events_tx, events_rx) = tokio_mpsc::unbounded_channel();
+        let (events_tx, events_rx) = crate::event_tx::EventTx::channel();
         run(&jobs_rx, &events_tx);
         events_rx
     }

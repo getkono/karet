@@ -130,6 +130,7 @@ pub(super) fn draw_panes(
                 diagnostics: &app.docs.diagnostics,
                 inlay_hints: &app.docs.inlay_hints,
                 code_lenses: &app.code_lenses.held,
+                document_colors: &app.links_colors.colors,
                 symbols: &app.docs.symbols,
                 line_changes: app
                     .settings
@@ -145,6 +146,7 @@ pub(super) fn draw_panes(
                 blame,
                 definition_underline: app.definition_underline_decoration(),
                 code_action_bulb: app.code_action_bulb_decoration(),
+                inline_ghost: app.inline_ghost_render(),
                 occurrences: app.occurrence_decorations(),
                 blame_clickable: app
                     .live_blame
@@ -196,6 +198,7 @@ pub(super) fn draw_panes(
                 diagnostics: &app.docs.diagnostics,
                 inlay_hints: &app.docs.inlay_hints,
                 code_lenses: &app.code_lenses.held,
+                document_colors: &app.links_colors.colors,
                 symbols: &app.docs.symbols,
                 line_changes: app
                     .settings
@@ -207,6 +210,7 @@ pub(super) fn draw_panes(
                 blame: None,
                 definition_underline: None,
                 code_action_bulb: None,
+                inline_ghost: None,
                 occurrences: Vec::new(),
                 blame_clickable: false,
                 markdown_link_hover: None,

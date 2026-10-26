@@ -223,6 +223,7 @@ impl Session {
     ///
     /// The user and system layers keep the override: those are the machine
     /// owner's own files.
+    #[cfg(feature = "aicommit")]
     pub(super) fn ai_commit_options(&self) -> crate::config::schema::AiCommit {
         let mut options = self.config.settings.git.ai_commit.clone();
         let from_project = self
@@ -298,21 +299,28 @@ impl Session {
             let diff = match diff {
                 Ok(Ok(diff)) => diff,
                 Ok(Err(message)) => {
-                    fail(&events, id, &cancel, message);
+                    events.emit_if_live(Some(id), &cancel, Event::CommitMessageFailed { message });
                     return;
                 },
                 Err(error) => {
-                    fail(
-                        &events,
-                        id,
+                    events.emit_if_live(
+                        Some(id),
                         &cancel,
-                        format!("reading the staged diff: {error}"),
+                        Event::CommitMessageFailed {
+                            message: format!("reading the staged diff: {error}"),
+                        },
                     );
                     return;
                 },
             };
             if diff.file_count == 0 || diff.patch.trim().is_empty() {
-                fail(&events, id, &cancel, "stage changes first".to_string());
+                events.emit_if_live(
+                    Some(id),
+                    &cancel,
+                    Event::CommitMessageFailed {
+                        message: "stage changes first".to_string(),
+                    },
+                );
                 return;
             }
             // Reading the diff shells out to `git`, which is long enough to be
@@ -328,11 +336,9 @@ impl Session {
                 () = cancel.cancelled() => {},
                 result = crate::aicommit::generate(&diff, &cfg) => match result {
                     Ok(message) => {
-                        if !cancel.is_cancelled() {
-                            let _ = events.send((Some(id), Event::CommitMessageGenerated { message }));
-                        }
+                        events.emit_if_live(Some(id), &cancel, Event::CommitMessageGenerated { message });
                     },
-                    Err(message) => fail(&events, id, &cancel, message),
+                    Err(message) => events.emit_if_live(Some(id), &cancel, Event::CommitMessageFailed { message }),
                 },
             }
         });
@@ -408,12 +414,12 @@ impl Session {
                 agents,
                 effort_conflict,
             };
-            let _ = events.send((
+            events.emit(
                 id,
                 Event::AiCommitAvailability {
                     status: Box::new(status),
                 },
-            ));
+            );
         });
     }
 
@@ -499,21 +505,4 @@ impl Session {
             );
         }
     }
-}
-
-/// Report a generation failure, unless the request was cancelled.
-///
-/// A cancelled request answers with nothing: the client already moved on, and a
-/// late "failed" would contradict the state it is showing.
-#[cfg(feature = "aicommit")]
-fn fail(
-    events: &mpsc::UnboundedSender<(Option<RequestId>, Event)>,
-    id: RequestId,
-    cancel: &crate::cancellation::Cancellation,
-    message: String,
-) {
-    if cancel.is_cancelled() {
-        return;
-    }
-    let _ = events.send((Some(id), Event::CommitMessageFailed { message }));
 }

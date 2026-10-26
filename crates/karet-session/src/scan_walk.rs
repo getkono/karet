@@ -15,30 +15,16 @@ use std::ops::ControlFlow;
 use std::path::Path;
 use std::path::PathBuf;
 
-use tokio::sync::mpsc as tokio_mpsc;
-
 use crate::api::Event;
 use crate::api::RequestId;
 use crate::cancellation::Cancellation;
+use crate::event_tx::EventTx;
 
 /// Flush a batch after this many files, so a long stretch of files with nothing
 /// to report still advances the panel's scanned count.
 pub(crate) const FILES_PER_BATCH: usize = 200;
 /// Flush a batch once it holds this many hits.
 pub(crate) const HITS_PER_BATCH: usize = 64;
-
-/// The shared event stream every worker answers on.
-pub(crate) type Events = tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>;
-
-/// Send one event tagged with `id`, mapping a closed stream (the session is
-/// gone) to [`ControlFlow::Break`].
-pub(crate) fn send(events: &Events, id: RequestId, event: Event) -> ControlFlow<()> {
-    if events.send((Some(id), event)).is_err() {
-        ControlFlow::Break(())
-    } else {
-        ControlFlow::Continue(())
-    }
-}
 
 /// The comparable form of `path`, for matching a walked file against the open
 /// documents a scan must not re-read from disk.
@@ -100,7 +86,7 @@ pub(crate) fn walk_batched<S: BatchedScan>(
     walk: &Walk<'_>,
     scan: &mut S,
     id: RequestId,
-    events: &Events,
+    events: &EventTx,
     mut hits: Vec<S::Hit>,
 ) -> ControlFlow<(), Walked> {
     let mut walked = Walked::default();
@@ -125,7 +111,7 @@ pub(crate) fn walk_batched<S: BatchedScan>(
                     files_since_flush = 0;
                     let batch = std::mem::take(&mut hits);
                     if let Some(event) = scan.progress(batch, walked.files_scanned)
-                        && send(events, id, event).is_break()
+                        && events.try_emit(Some(id), event).is_break()
                     {
                         disconnected = true;
                         return ControlFlow::Break(());
@@ -147,7 +133,7 @@ pub(crate) fn walk_batched<S: BatchedScan>(
     if !hits.is_empty()
         && let Some(event) = scan.progress(hits, walked.files_scanned)
     {
-        send(events, id, event)?;
+        events.try_emit(Some(id), event)?;
     }
     ControlFlow::Continue(walked)
 }
@@ -213,7 +199,7 @@ mod tests {
 
     /// Each progress batch as `(hit count, files_scanned)`.
     fn batches(
-        events: &mut tokio_mpsc::UnboundedReceiver<(Option<RequestId>, Event)>,
+        events: &mut tokio::sync::mpsc::UnboundedReceiver<(Option<RequestId>, Event)>,
     ) -> Vec<(usize, usize)> {
         let mut out = Vec::new();
         while let Ok((id, event)) = events.try_recv() {
@@ -244,7 +230,7 @@ mod tests {
     ) -> (ControlFlow<(), Walked>, Vec<(usize, usize)>) {
         let hub = CancellationHub::default();
         let cancel = hub.register(ID);
-        let (tx, mut rx) = tokio_mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::event_tx::EventTx::channel();
         let walk = Walk {
             roots,
             includes: &[],
@@ -356,7 +342,7 @@ mod tests {
         let hub = CancellationHub::default();
         let cancel = hub.register(ID);
         hub.cancel(ID);
-        let (tx, mut rx) = tokio_mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::event_tx::EventTx::channel();
         let walk = Walk {
             roots: &roots,
             includes: &[],
@@ -388,7 +374,7 @@ mod tests {
         let roots = [dir.path().to_path_buf()];
         let hub = CancellationHub::default();
         let cancel = hub.register(ID);
-        let (tx, rx) = tokio_mpsc::unbounded_channel();
+        let (tx, rx) = crate::event_tx::EventTx::channel();
         drop(rx);
         let walk = Walk {
             roots: &roots,
@@ -405,9 +391,8 @@ mod tests {
         );
         assert_eq!(outcome, ControlFlow::Break(()));
         assert_eq!(
-            send(
-                &tx,
-                ID,
+            tx.try_emit(
+                Some(ID),
                 Event::TodoScanFinished {
                     files_scanned: 0,
                     truncated: false,

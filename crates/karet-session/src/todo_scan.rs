@@ -16,16 +16,15 @@ use std::sync::mpsc::Sender;
 use karet_syntax::LayeredHighlighter;
 use karet_syntax::SemanticCommentConfig;
 use karet_treesitter::LayeredParser;
-use tokio::sync::mpsc as tokio_mpsc;
 
 use crate::api::Event;
 use crate::api::RequestId;
 use crate::api::TodoHit;
 use crate::cancellation::Cancellation;
+use crate::event_tx::EventTx;
 use crate::scan_walk::BatchedScan;
 use crate::scan_walk::Walk;
 use crate::scan_walk::resolve_path;
-use crate::scan_walk::send;
 
 /// One workspace codetag scan request.
 pub(crate) struct TodoScanJob {
@@ -48,9 +47,7 @@ pub(crate) struct TodoScanJob {
 
 /// Start the worker; the session sends [`TodoScanJob`]s and answers arrive on
 /// the shared event stream.
-pub(crate) fn spawn(
-    events: tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
-) -> Sender<TodoScanJob> {
+pub(crate) fn spawn(events: EventTx) -> Sender<TodoScanJob> {
     let (jobs_tx, jobs_rx) = std::sync::mpsc::channel();
     let _ = std::thread::Builder::new()
         .name("karet-todo-scan".to_owned())
@@ -58,10 +55,7 @@ pub(crate) fn spawn(
     jobs_tx
 }
 
-fn run(
-    jobs: &Receiver<TodoScanJob>,
-    events: &tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
-) {
+fn run(jobs: &Receiver<TodoScanJob>, events: &EventTx) {
     // The parse host outlives individual scans: a re-scan reuses every
     // compiled grammar.
     let mut host = ParseHost {
@@ -119,11 +113,7 @@ impl BatchedScan for TodoScan<'_> {
 }
 
 /// Walk the workspace, streaming batches as it goes.
-fn scan(
-    job: &TodoScanJob,
-    host: &mut ParseHost,
-    events: &tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
-) -> ControlFlow<()> {
+fn scan(job: &TodoScanJob, host: &mut ParseHost, events: &EventTx) -> ControlFlow<()> {
     // Open buffers first: their live text wins over the disk copy the walk
     // would read, and skipping them below keeps every path scanned once.
     let mut hits = Vec::new();
@@ -150,9 +140,8 @@ fn scan(
     // A walk error is a bad exclude glob from the settings; the scan has never
     // reported one, and finishes with whatever the open documents held.
     let walked = crate::scan_walk::walk_batched(&walk, &mut scan, job.id, events, hits)?;
-    send(
-        events,
-        job.id,
+    events.try_emit(
+        Some(job.id),
         Event::TodoScanFinished {
             files_scanned: walked.files_scanned,
             truncated: walked.truncated,
@@ -213,7 +202,7 @@ mod tests {
     }
 
     fn scan_dir(root: &Path, hub: &CancellationHub, job: impl FnOnce(&mut TodoScanJob)) -> Scanned {
-        let (tx, mut rx) = tokio_mpsc::unbounded_channel();
+        let (tx, mut rx) = crate::event_tx::EventTx::channel();
         let mut request = TodoScanJob {
             id: RequestId(7),
             roots: vec![root.to_path_buf()],

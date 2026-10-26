@@ -177,6 +177,13 @@ impl App {
                     self.vi_popup_took(key);
                     return;
                 }
+                // Ghost text on show takes Tab, Ctrl+Right and Esc, ahead of
+                // a snippet session's Tab: accepting it is what Tab was
+                // pressed for while it is the thing on screen.
+                if self.inline_completion_key(key) {
+                    self.vi_popup_took(key);
+                    return;
+                }
                 // The signature popup under it takes only Esc, and Up/Down
                 // when there are overloads to cycle.
                 if self.signature_key(key) {
@@ -576,15 +583,6 @@ impl App {
 
     /// Edit the overlay query with an unbound key (backspace / printable).
     pub(super) fn overlay_input(&mut self, key: KeyEvent) {
-        // A hierarchy has no query to type into: the arrows walk its tree.
-        if matches!(self.overlay, Some(Overlay::Hierarchy(_))) {
-            match key.code {
-                KeyCode::Right => self.hierarchy_expand(),
-                KeyCode::Left => self.hierarchy_collapse(),
-                _ => {},
-            }
-            return;
-        }
         // A sigil typed or deleted switches quick-open's list (`@` symbols).
         self.edit_overlay_query(|overlay| match key.code {
             KeyCode::Backspace => overlay.pop_char(),

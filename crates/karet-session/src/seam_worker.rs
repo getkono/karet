@@ -19,12 +19,12 @@ use karet_seam::SeamIndex;
 use karet_seam::SeamPath;
 use karet_seam::config::Configuration;
 use karet_treesitter::ParserPool;
-use tokio::sync::mpsc as tokio_mpsc;
 
 use crate::api::Event;
 use crate::api::RequestId;
 use crate::api::SeamQueryError;
 use crate::api::SeamSync;
+use crate::event_tx::EventTx;
 use crate::seam_cache::SeamCache;
 
 mod preview;
@@ -82,10 +82,7 @@ pub(crate) enum SeamJob {
 
 /// Start the worker; the session sends [`SeamJob`]s and answers arrive on the shared
 /// event stream.
-pub(crate) fn spawn(
-    events: tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
-    cache_dir: Option<PathBuf>,
-) -> Sender<SeamJob> {
+pub(crate) fn spawn(events: EventTx, cache_dir: Option<PathBuf>) -> Sender<SeamJob> {
     let (jobs_tx, jobs_rx) = std::sync::mpsc::channel();
     let _ = std::thread::Builder::new()
         .name("karet-seam".to_owned())
@@ -108,11 +105,7 @@ struct Worker {
     preview: Option<preview::PreviewSource>,
 }
 
-fn run(
-    jobs: &Receiver<SeamJob>,
-    events: &tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
-    cache_dir: Option<PathBuf>,
-) {
+fn run(jobs: &Receiver<SeamJob>, events: &EventTx, cache_dir: Option<PathBuf>) {
     let mut worker = Worker {
         cache_dir,
         ..Worker::default()
@@ -156,11 +149,7 @@ fn supersedes(current: &SeamJob, next: &SeamJob) -> bool {
 
 impl Worker {
     /// Run one job and emit its answer.
-    fn execute(
-        &mut self,
-        job: SeamJob,
-        events: &tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
-    ) {
+    fn execute(&mut self, job: SeamJob, events: &EventTx) {
         match job {
             SeamJob::Index {
                 id,
@@ -185,7 +174,7 @@ impl Worker {
         root: &std::path::Path,
         options: IndexOptions,
         mode: SeamSync,
-        events: &tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
+        events: &EventTx,
     ) {
         if mode == SeamSync::Forced {
             // Deleted before the walk, not merely ignored: this is the recourse when the
@@ -214,14 +203,14 @@ impl Worker {
                 self.apply_configuration();
 
                 let summary = self.summary();
-                let _ = events.send((
+                events.emit(
                     Some(id),
                     Event::SeamIndexFinished {
                         summary,
                         parsed,
                         files: walked,
                     },
-                ));
+                );
                 SeamCache::save(
                     self.cache_dir.as_deref(),
                     root,
@@ -229,12 +218,12 @@ impl Worker {
                 );
             },
             Err(error) => {
-                let _ = events.send((
+                events.emit(
                     Some(id),
                     Event::SeamIndexFailed {
                         message: error.to_string(),
                     },
-                ));
+                );
             },
         }
     }
@@ -262,13 +251,7 @@ impl Worker {
     /// The re-index itself is incremental — only this file's nodes are rebuilt — but the
     /// answer carries the full tree, because the presentation layer holds a copy and a
     /// partial update would leave it inconsistent for no saving worth having.
-    fn reindex(
-        &mut self,
-        id: RequestId,
-        path: &std::path::Path,
-        text: &str,
-        events: &tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
-    ) {
+    fn reindex(&mut self, id: RequestId, path: &std::path::Path, text: &str, events: &EventTx) {
         let Some(index) = self.index.as_mut() else {
             // Unreachable from the editor, which only re-indexes a file the index is
             // known to hold. Nothing to rebuild, but the request still answers.
@@ -289,25 +272,20 @@ impl Worker {
     }
 
     /// Evaluate a query against the live index.
-    fn query(
-        &mut self,
-        id: RequestId,
-        text: &str,
-        events: &tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
-    ) {
+    fn query(&mut self, id: RequestId, text: &str, events: &EventTx) {
         let Some(index) = self.index.as_ref() else {
             // Answer anyway. An unanswered request leaves its id outstanding forever, and
             // the view goes on believing a filter is still running that never was. Not an
             // `error`, because nothing was wrong with the query — there is simply nothing
             // to evaluate it against, which the view is already saying.
-            let _ = events.send((
+            events.emit(
                 Some(id),
                 Event::SeamQueryResult {
                     nodes: Vec::new(),
                     configuration: None,
                     error: None,
                 },
-            ));
+            );
             return;
         };
         match karet_seam::query::parse(text) {
@@ -320,17 +298,17 @@ impl Worker {
                     .into_iter()
                     .filter_map(|node| index.path(node).map(ToString::to_string))
                     .collect();
-                let _ = events.send((
+                events.emit(
                     Some(id),
                     Event::SeamQueryResult {
                         nodes,
                         configuration: result.configuration,
                         error: None,
                     },
-                ));
+                );
             },
             Err(error) => {
-                let _ = events.send((
+                events.emit(
                     Some(id),
                     Event::SeamQueryResult {
                         nodes: Vec::new(),
@@ -342,7 +320,7 @@ impl Worker {
                             suggestions: error.suggestions,
                         }),
                     },
-                ));
+                );
             },
         }
     }
@@ -352,22 +330,17 @@ impl Worker {
     /// Both in one answer rather than two: they describe the same node, they are
     /// invalidated by the same keypress, and splitting them would let the pane show one
     /// node's source beneath another node's relations.
-    fn node(
-        &mut self,
-        id: RequestId,
-        path: &str,
-        events: &tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
-    ) {
+    fn node(&mut self, id: RequestId, path: &str, events: &EventTx) {
         let Some(index) = self.index.as_ref() else {
             // Empty rather than silent, matching what an unknown node already answers.
-            let _ = events.send((
+            events.emit(
                 Some(id),
                 Event::SeamNodeDetail {
                     node: path.to_owned(),
                     edges: Vec::new(),
                     preview: Err(preview::no_index()),
                 },
-            ));
+            );
             return;
         };
         let target = path
@@ -384,23 +357,18 @@ impl Worker {
             Some((file, at)) => preview::preview_for(&mut self.preview, &file, at.range, at.header),
             None => Err(preview::no_index()),
         };
-        let _ = events.send((
+        events.emit(
             Some(id),
             Event::SeamNodeDetail {
                 node: path.to_owned(),
                 edges,
                 preview,
             },
-        ));
+        );
     }
 
     /// Switch configuration and re-evaluate every node's membership.
-    fn set_configuration(
-        &mut self,
-        id: RequestId,
-        name: &str,
-        events: &tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
-    ) {
+    fn set_configuration(&mut self, id: RequestId, name: &str, events: &EventTx) {
         if let Some(found) = self
             .available
             .iter()
@@ -424,18 +392,14 @@ impl Worker {
 
     /// Emit the whole tree plus its summary, or -- with no index built yet -- say so,
     /// so a request that expected a tree is still answered.
-    fn emit_index(
-        &self,
-        id: Option<RequestId>,
-        events: &tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
-    ) {
+    fn emit_index(&self, id: Option<RequestId>, events: &EventTx) {
         let Some(index) = self.index.as_ref() else {
-            let _ = events.send((
+            events.emit(
                 id,
                 Event::SeamIndexFailed {
                     message: "no seam index has been built".to_owned(),
                 },
-            ));
+            );
             return;
         };
         // Walked from the roots rather than iterated out of the arena's map: the order
@@ -455,7 +419,7 @@ impl Worker {
             self.configuration.as_ref(),
             &self.available,
         );
-        let _ = events.send((id, Event::SeamIndexed { summary, nodes }));
+        events.emit(id, Event::SeamIndexed { summary, nodes });
     }
 }
 
