@@ -3851,6 +3851,7 @@ dependencies = [
  "karet-docx",
  "karet-filetype",
  "karet-github",
+ "karet-jsonrpc",
  "karet-lsp",
  "karet-markdown",
  "karet-notebook",

@@ -2,7 +2,7 @@
 //! in-memory adapter behind the connector seam.
 use std::time::Duration;
 
-use karet_lsp::codec;
+use karet_jsonrpc::framing::content_length as codec;
 use serde_json::Value;
 use serde_json::json;
 use tokio::io::AsyncWrite;

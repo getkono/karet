@@ -133,7 +133,7 @@
         stream: tokio::io::DuplexStream,
         seen: tokio::sync::mpsc::UnboundedSender<String>,
     ) {
-        use karet_lsp::codec;
+        use karet_jsonrpc::framing::content_length as codec;
         use serde_json::json;
         let (read, mut write) = tokio::io::split(stream);
         let mut read = tokio::io::BufReader::new(read);

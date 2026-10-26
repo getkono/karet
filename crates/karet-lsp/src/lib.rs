@@ -64,10 +64,16 @@ pub use highlight::DocumentHighlight;
 pub use highlight::HighlightKind;
 /// `Content-Length` message framing (the LSP base protocol).
 ///
-/// Re-exported from [`karet_jsonrpc::framing::content_length`], which is where
-/// the implementation now lives; the `karet_lsp::codec` path is kept because it
-/// is this crate's published surface.
-pub use karet_jsonrpc::framing::content_length as codec;
+/// Deprecated: a second public path to [`karet_jsonrpc::framing::content_length`],
+/// where the implementation lives. Use that module directly; this alias is kept
+/// for one release so existing callers keep compiling with a warning.
+#[deprecated(
+    since = "0.8.0",
+    note = "use `karet_jsonrpc::framing::content_length`, which this re-exports"
+)]
+pub mod codec {
+    pub use karet_jsonrpc::framing::content_length::*;
+}
 pub use launch::ExitReport;
 pub use launch::LaunchCause;
 pub use launch::LaunchFailure;

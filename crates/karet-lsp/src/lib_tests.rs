@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use karet_core::Severity;
+use karet_jsonrpc::framing::content_length as codec;
 use serde_json::json;
 use tokio::io::DuplexStream;
 use tokio::io::ReadHalf;
@@ -607,6 +608,18 @@ async fn spawn_missing_binary_names_the_command_and_why_it_failed() -> TestResul
     );
     assert!(failure.cause.is_permanent(), "retrying cannot find it");
     Ok(())
+}
+
+/// The deprecated `karet_lsp::codec` alias still reaches the one framing
+/// implementation, so callers migrate on a warning rather than a break.
+#[test]
+#[allow(deprecated)] // exercising the deprecated bridge is the point
+fn the_deprecated_codec_path_is_the_jsonrpc_framing() {
+    assert_eq!(
+        crate::codec::MAX_MESSAGE_BYTES,
+        karet_jsonrpc::framing::MAX_MESSAGE_BYTES
+    );
+    assert_eq!(crate::codec::ContentLength, codec::ContentLength);
 }
 
 /// A spec's builders write the one [`ConnectOptions`] it launches with, so what
