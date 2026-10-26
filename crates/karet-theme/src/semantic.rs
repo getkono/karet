@@ -187,19 +187,16 @@ pub(crate) fn fallback(ty: SemanticTokenType, modifiers: SemanticTokenModifiers)
         T::Operator => StandardToken::Operator,
         T::Decorator | T::Attribute => StandardToken::Attribute,
         T::Lifetime | T::Label => StandardToken::Label,
-        // A static readonly variable (a `static final` field, a
-        // `static const` member) is the constant a grammar paints
-        // `@constant`. Readonly alone is not enough: tsserver marks every
-        // `const` binding readonly and clangd every const-qualified local,
-        // and those camelCase locals are plain variables to a grammar.
-        T::Variable
-            if modifiers
-                .contains(SemanticTokenModifiers::READONLY | SemanticTokenModifiers::STATIC) =>
-        {
-            StandardToken::Constant
-        },
-        // An unknown variant (the enum is non-exhaustive) reads as plain
-        // code, as does a reference nobody could resolve.
+        // A variable is a variable whatever its modifiers. No modifier set
+        // tells a constant from a variable as a grammar does: tsserver and
+        // clangd mark a camelCase `const` and an ALL_CAPS one alike
+        // (`readonly`, never `static` at top level), and a grammar paints the
+        // first `@variable` and the second `@constant` by its casing alone.
+        // So the casing decision stays tree-sitter's: the session's overlay
+        // keeps a `@constant` span under a semantic variable, and every
+        // other variable falls back to the variable class here. An unknown
+        // variant (the enum is non-exhaustive) reads as plain code too, as
+        // does a reference nobody could resolve.
         _ => StandardToken::Variable,
     }
 }
@@ -369,24 +366,12 @@ mod tests {
     }
 
     #[test]
-    fn only_a_static_readonly_variable_falls_back_to_a_constant() {
+    fn a_variable_falls_back_to_a_variable_whatever_its_modifiers() {
         let readonly = SemanticTokenModifiers::READONLY;
         let stat = SemanticTokenModifiers::STATIC;
-        // A static readonly variable keeps the `@constant` colour a grammar
-        // gives an all-caps constant, whatever other modifiers ride along.
-        assert_eq!(
-            fallback(SemanticTokenType::Variable, readonly | stat),
-            StandardToken::Constant
-        );
-        assert_eq!(
-            fallback(
-                SemanticTokenType::Variable,
-                readonly | stat | SemanticTokenModifiers::DECLARATION
-            ),
-            StandardToken::Constant
-        );
         // tsserver's `const` binding and clangd's const local carry
-        // readonly alone: they stay the variable a grammar paints them.
+        // readonly alone, camelCase or ALL_CAPS: the modifiers cannot tell
+        // which a grammar paints `@constant`, so none of them repaints.
         assert_eq!(
             fallback(SemanticTokenType::Variable, readonly),
             StandardToken::Variable
@@ -398,13 +383,16 @@ mod tests {
             ),
             StandardToken::Variable
         );
-        // A static variable that may change is not a constant either.
         assert_eq!(
             fallback(SemanticTokenType::Variable, stat),
             StandardToken::Variable
         );
-        // The narrowing is the variable's: a readonly property stays a
-        // property.
+        assert_eq!(
+            fallback(SemanticTokenType::Variable, readonly | stat),
+            StandardToken::Variable
+        );
+        // A static readonly property (jdtls' `static final` field, clangd's
+        // `static const` member) stays a property.
         assert_eq!(
             fallback(SemanticTokenType::Property, readonly | stat),
             StandardToken::Property

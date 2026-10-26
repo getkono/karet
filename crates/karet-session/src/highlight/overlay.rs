@@ -17,8 +17,9 @@ use karet_syntax::Highlights;
 /// what the editor reads off the highlights -- bracket matching and
 /// auto-closing skip strings and comments -- exactly as tree-sitter decided,
 /// and keeps a comment's codetag colouring. Everywhere else, a semantic token
-/// wins, including text tree-sitter left plain; text it does not cover keeps
-/// the tree-sitter span.
+/// wins, including text tree-sitter left plain, except that a semantic
+/// `variable` token leaves a tree-sitter `@constant` span alone (see
+/// [`keeps_constant`]); text it does not cover keeps the tree-sitter span.
 pub(crate) fn overlay_semantic(base: &Highlights, semantic: &Highlights) -> Highlights {
     let base = base.all();
     let mut out: Vec<HighlightSpan> = Vec::with_capacity(base.len() + semantic.all().len());
@@ -62,7 +63,7 @@ pub(crate) fn overlay_semantic(base: &Highlights, semantic: &Highlights) -> High
             match base.get(next) {
                 Some(b) if b.span.start.0 <= at => {
                     let until = b.span.end.0.min(end);
-                    let token = if is_lexical(b.token) {
+                    let token = if is_lexical(b.token) || keeps_constant(b.token, laid.token) {
                         b.token
                     } else {
                         laid.token
@@ -95,6 +96,21 @@ fn lays(token: TokenId) -> bool {
     token
         .semantic_parts()
         .is_some_and(|(ty, _)| !matches!(ty, T::Comment | T::String | T::Regexp))
+}
+
+/// Whether a tree-sitter `@constant` span keeps its class under `laid`, a
+/// semantic `variable` token.
+///
+/// A grammar tells a constant from a variable by its casing (`MAX_RETRIES`
+/// against `maxRetries`); a server's modifiers cannot, since tsserver and
+/// clangd mark both `const` bindings alike. The theme falls a semantic
+/// variable back to the variable class, so laying it here would repaint every
+/// ALL_CAPS constant in the variable colour once semantic tokens arrive.
+fn keeps_constant(base: TokenId, laid: TokenId) -> bool {
+    base == karet_core::StandardToken::Constant.id()
+        && laid
+            .semantic_parts()
+            .is_some_and(|(ty, _)| ty == karet_core::SemanticTokenType::Variable)
 }
 
 /// Whether a tree-sitter class is lexical -- comment, string or markup text --
@@ -233,6 +249,39 @@ mod tests {
             ]
         );
         assert!(out.windows(2).all(|w| w[0].1 <= w[1].0));
+    }
+
+    /// A semantic variable, readonly or not, over a span the grammar painted
+    /// `@constant` (an ALL_CAPS `const`) keeps the constant; over a
+    /// `@variable` span (a camelCase `const`) it is laid as usual, and a
+    /// non-variable semantic type still wins over a constant.
+    #[test]
+    fn a_semantic_variable_keeps_a_syntax_constant() {
+        let constant = StandardToken::Constant.id();
+        let readonly = TokenId::semantic(T::Variable, M::READONLY | M::DECLARATION);
+        let plain = TokenId::semantic(T::Variable, M::NONE);
+        let member = TokenId::semantic(T::EnumMember, M::READONLY);
+        let base = spans(&[
+            (0, 9, constant),
+            (10, 18, VARIABLE),
+            (20, 23, constant),
+            (25, 28, constant),
+        ]);
+        let semantic = spans(&[
+            (0, 9, readonly),
+            (10, 18, readonly),
+            (20, 23, plain),
+            (25, 28, member),
+        ]);
+        assert_eq!(
+            runs(&overlay_semantic(&base, &semantic)),
+            [
+                (0, 9, constant),
+                (10, 18, readonly),
+                (20, 23, constant),
+                (25, 28, member),
+            ]
+        );
     }
 
     #[test]
