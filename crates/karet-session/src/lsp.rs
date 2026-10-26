@@ -23,6 +23,7 @@ mod commands;
 mod connector;
 mod delta;
 mod editing;
+mod folding;
 mod format;
 mod forward;
 mod health;
@@ -304,6 +305,9 @@ impl LspManager {
                 token, server: key, ..
             }
             | LspUpdate::SemanticTokens {
+                token, server: key, ..
+            }
+            | LspUpdate::FoldingRanges {
                 token, server: key, ..
             }
             | LspUpdate::SpawnFailed { token, key, .. }

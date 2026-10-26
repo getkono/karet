@@ -65,6 +65,9 @@ pub(super) struct ServerTask {
     pub(super) generation: u64,
     /// Whether this task fetches semantic tokens (see `semantic_tokens`).
     pub(super) semantic: tokio::sync::watch::Receiver<bool>,
+    /// Whether this task is its language's primary server, which alone
+    /// fetches folding ranges (see `folding`).
+    pub(super) primary: bool,
 }
 
 /// The per-language server task: serialize document sync and requests, restart
@@ -79,6 +82,7 @@ pub(super) async fn server_task(task: ServerTask) {
         connector,
         generation,
         semantic,
+        primary,
     } = task;
     // The root is a local because the connector and `SpawnFailed` want it by
     // value while `key` is still borrowed elsewhere.
@@ -105,9 +109,9 @@ pub(super) async fn server_task(task: ServerTask) {
     let mut client: Option<Arc<LspClient>> = None;
     // So does a lightbulb probe, kept off the serial path the same way.
     let mut flights = Flights::default();
-    // And so do a diagnostic pull and a semantic-token fetch (see `pull`
-    // and `semantic_tokens`).
-    let mut fetches = DocumentFetches::new(semantic);
+    // And so do a diagnostic pull, a semantic-token fetch and a folding-range
+    // fetch (see `pull`, `semantic_tokens` and `folding`).
+    let mut fetches = DocumentFetches::new(semantic, primary);
     let mut diagnostic_task: Option<tokio::task::JoinHandle<()>> = None;
     let mut documents = HashMap::<PathBuf, OpenDocument>::new();
     let mut pending: Option<PendingChange> = None;
