@@ -63,9 +63,9 @@ fn f5_starts_when_idle_and_continues_when_stopped() {
     let mut app = app();
     app.backend = Some(backend.clone());
     app.debug_start_or_continue();
-    app.debug_state = DebugSessionState::Stopped;
+    app.debugger.state = DebugSessionState::Stopped;
     app.debug_start_or_continue();
-    app.debug_state = DebugSessionState::Running;
+    app.debugger.state = DebugSessionState::Running;
     app.debug_start_or_continue();
     let sent = debug_commands(&backend);
     assert_eq!(sent.len(), 2);
@@ -85,7 +85,7 @@ fn steps_are_gated_on_the_stopped_state() {
     app.backend = Some(backend.clone());
     app.debug_step(SessionCommand::DebugStepOver);
     assert!(debug_commands(&backend).is_empty());
-    app.debug_state = DebugSessionState::Stopped;
+    app.debugger.state = DebugSessionState::Stopped;
     app.debug_step(SessionCommand::DebugStepOver);
     let sent = debug_commands(&backend);
     assert_eq!(sent.len(), 1);
@@ -150,11 +150,11 @@ fn the_status_segment_tracks_the_lifecycle() {
 fn debug_output_buffers_and_caps() {
     let mut app = app();
     app.on_debug_output("stdout".to_owned(), "one\ntwo\n".to_owned());
-    assert_eq!(app.debug_output.len(), 2);
+    assert_eq!(app.debugger.output.len(), 2);
     for _ in 0..600 {
         app.on_debug_output("stdout".to_owned(), "spam\n".to_owned());
     }
-    assert_eq!(app.debug_output.len(), 500);
+    assert_eq!(app.debugger.output.len(), 500);
 }
 
 fn frame(id: i64, name: &str, line: u32) -> karet_session::DebugFrame {
@@ -194,7 +194,7 @@ fn the_inspection_waterfall_is_lazy_and_stale_answers_drop() {
         Some(stack_id),
         vec![frame(41, "main", 3), frame(42, "callee", 9)],
     );
-    assert_eq!(app.debug_panel.selected_frame, Some(41));
+    assert_eq!(app.debugger.panel.selected_frame, Some(41));
     let scopes_id = backend
         .sent
         .lock()
@@ -222,9 +222,9 @@ fn the_inspection_waterfall_is_lazy_and_stale_answers_drop() {
             },
         ],
     );
-    assert!(app.debug_panel.expanded.contains(&11));
+    assert!(app.debugger.panel.expanded.contains(&11));
     assert!(
-        !app.debug_panel.expanded.contains(&7),
+        !app.debugger.panel.expanded.contains(&7),
         "expensive stays lazy"
     );
     let vars_id = backend
@@ -248,7 +248,7 @@ fn the_inspection_waterfall_is_lazy_and_stale_answers_drop() {
             reference: 0,
         }],
     );
-    assert!(app.debug_panel.variables.is_empty());
+    assert!(app.debugger.panel.variables.is_empty());
     app.on_debug_variables(
         Some(vars_id),
         11,
@@ -260,7 +260,7 @@ fn the_inspection_waterfall_is_lazy_and_stale_answers_drop() {
         }],
     );
     // The tree flattens: Locals expanded shows its child row.
-    assert!(app.debug_panel.rows.iter().any(|row| matches!(
+    assert!(app.debugger.panel.rows.iter().any(|row| matches!(
         row,
         crate::app::DebugRow::Variable {
             parent: 11,
@@ -274,10 +274,10 @@ fn the_inspection_waterfall_is_lazy_and_stale_answers_drop() {
         Severity::Information,
         String::new(),
     );
-    assert!(app.debug_panel.stack.is_empty());
-    assert!(app.debug_panel.variables.is_empty());
-    assert!(app.debug_panel.pending.is_empty());
-    assert_eq!(app.debug_stopped, None);
+    assert!(app.debugger.panel.stack.is_empty());
+    assert!(app.debugger.panel.variables.is_empty());
+    assert!(app.debugger.panel.pending.is_empty());
+    assert_eq!(app.debugger.stopped, None);
 }
 
 #[test]
@@ -285,7 +285,7 @@ fn evaluate_logs_the_expression_and_its_answer() {
     let backend = Arc::new(RecordingBackend::new());
     let mut app = app();
     app.backend = Some(backend.clone());
-    app.debug_state = DebugSessionState::Stopped;
+    app.debugger.state = DebugSessionState::Stopped;
     app.debug_evaluate("1 + 41".to_owned());
     let id = backend
         .sent
@@ -299,11 +299,12 @@ fn evaluate_logs_the_expression_and_its_answer() {
         .unwrap_or(RequestId(0));
     app.on_debug_evaluated(Some(id), "42".to_owned());
     assert_eq!(
-        app.debug_panel.repl,
+        app.debugger.panel.repl,
         vec!["› 1 + 41".to_owned(), "  = 42".to_owned()]
     );
     assert!(
-        app.debug_panel
+        app.debugger
+            .panel
             .rows
             .iter()
             .any(|row| matches!(row, crate::app::DebugRow::Repl(_)))
@@ -337,6 +338,42 @@ fn rebuild_rows_sections_and_console_tail() {
     assert_eq!(outputs.len(), 100);
     assert_eq!(outputs.first(), Some(&150));
     assert_eq!(outputs.last(), Some(&249));
+}
+
+/// The debugger rebuilds its panel over its own console, so no caller passes
+/// the console length: the tail follows the buffer, and clearing a stop's
+/// inspection keeps it.
+#[test]
+fn the_debugger_rebuilds_its_panel_over_its_own_console() {
+    let outputs = |debugger: &crate::app::debugging::Debugger| -> Vec<usize> {
+        debugger
+            .panel
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                crate::app::DebugRow::Output(index) => Some(*index),
+                _ => None,
+            })
+            .collect()
+    };
+    let mut debugger = crate::app::debugging::Debugger::default();
+    debugger.rebuild_rows();
+    assert!(outputs(&debugger).is_empty());
+    debugger
+        .output
+        .extend((0..3).map(|i| ("stdout".to_owned(), format!("line {i}"))));
+    debugger.panel.stack.push(karet_session::DebugFrame {
+        id: 1,
+        name: "main".to_owned(),
+        path: None,
+        line: 1,
+        column: 1,
+    });
+    debugger.rebuild_rows();
+    assert_eq!(outputs(&debugger), vec![0, 1, 2]);
+    debugger.clear_inspection();
+    assert!(debugger.panel.stack.is_empty());
+    assert_eq!(outputs(&debugger), vec![0, 1, 2]);
 }
 
 #[test]

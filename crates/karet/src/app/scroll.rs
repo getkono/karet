@@ -178,9 +178,9 @@ impl App {
                 self.problems.selection.move_to(cursor);
             },
             ScrollSurface::DebugResults => {
-                let len = self.debug_panel.rows.len();
+                let len = self.debugger.panel.rows.len();
                 let cursor = window_bottom(position, viewport, len);
-                self.debug_panel.selection.move_to(cursor);
+                self.debugger.panel.selection.move_to(cursor);
             },
             ScrollSurface::CommitFileRail => self.commit_rail_scroll_to(position),
             // Routed as a delta so the commit log keeps its lazy-loading trigger.
