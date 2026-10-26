@@ -102,6 +102,7 @@ impl Cancellation {
     }
 
     /// Wait until the owning client cancels this request.
+    #[cfg(any(feature = "github", feature = "aicommit", test))]
     pub(crate) async fn cancelled(&self) {
         while !self.is_cancelled() {
             self.state.notify.notified().await;

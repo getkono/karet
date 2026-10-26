@@ -76,7 +76,9 @@ use karet_core::Selection;
 use karet_core::Severity;
 use karet_core::Symbol;
 use karet_core::TextEdit;
+#[cfg(feature = "cbor")]
 use karet_filetype::FileKind;
+#[cfg(feature = "cbor")]
 use karet_filetype::classify_ignoring_size;
 use karet_syntax::FoldRegions;
 use karet_syntax::Highlights;
@@ -197,6 +199,12 @@ enum DocumentLoadError {
     /// A known binary format whose decode-to-text failed (corrupt CBOR): the
     /// client should fall back to a read-only byte view, like non-UTF-8 text.
     #[error("file is not decodable to text")]
+    // Only CBOR has a decode step today; the variant stays ungated so the
+    // open path's match arm in `documents.rs` reads the same in every build.
+    #[cfg_attr(
+        not(feature = "cbor"),
+        expect(dead_code, reason = "constructed only by the cbor decode path")
+    )]
     Undecodable,
     #[error(transparent)]
     Load(#[from] LoadError),
