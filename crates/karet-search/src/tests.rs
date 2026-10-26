@@ -722,7 +722,10 @@ fn walk_files_never_follows_or_lists_symlinks() -> TestResult {
     let dir = temp_dir()?;
     write(dir.path(), "real/file.txt", b"x\n")?;
     symlink(dir.path().join("real"), dir.path().join("dir_link"))?;
-    symlink(dir.path().join("real/file.txt"), dir.path().join("file_link"))?;
+    symlink(
+        dir.path().join("real/file.txt"),
+        dir.path().join("file_link"),
+    )?;
     // A link back to the root would loop forever if followed.
     symlink(dir.path(), dir.path().join("real/cycle"))?;
 
