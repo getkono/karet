@@ -469,7 +469,6 @@ fn an_edit_in_one_split_leaves_a_far_click_in_the_other_a_step_back() {
         highlights: Arc::new(karet_syntax::Highlights::default()),
         semantic_blocks: Arc::new(karet_syntax::SemanticBlocks::default()),
         folds: Arc::new(FoldRegions::default()),
-        decorations: Arc::new(Vec::new()),
         syntax_error_lines: Arc::new(Vec::new()),
         table_lines: Arc::default(),
         language: Some("Rust"),

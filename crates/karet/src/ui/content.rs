@@ -1,5 +1,6 @@
 use super::*;
 
+mod color;
 mod conflict_side;
 mod diff;
 mod overview;

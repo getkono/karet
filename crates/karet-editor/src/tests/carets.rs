@@ -769,3 +769,14 @@ fn select_lines_selects_whole_lines_either_way_without_scrolling() {
     assert_eq!(state.cursor(), LineCol::new(2, 3));
     assert!(!state.has_multiple_cursors());
 }
+
+#[test]
+fn a_multi_line_needle_must_match_every_line_it_spans() {
+    let buffer = TextBuffer::from_text("xa\nb\nc y\n");
+    let found = find_all(&buffer, "a\nb\nc", false);
+    let spans: Vec<(LineCol, LineCol)> = found.iter().map(|r| (r.start, r.end)).collect();
+    assert_eq!(spans, [(LineCol::new(0, 1), LineCol::new(2, 1))]);
+    // A middle line that differs rejects the match even though both ends agree.
+    let broken = TextBuffer::from_text("xa\nZ\nc y\n");
+    assert!(find_all(&broken, "a\nb\nc", false).is_empty());
+}

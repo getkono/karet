@@ -783,8 +783,7 @@ impl Tab {
         merge_base: bool,
         files: CommitFiles,
     ) -> Self {
-        let sep = if merge_base { "\u{2026}" } else { ".." };
-        let title = format!("\u{21c4} {base_label}{sep}{head_label}");
+        let title = compare_title(&base_label, &head_label, merge_base);
         Self::new(
             title,
             TabKind::Compare {
@@ -877,6 +876,14 @@ impl Tab {
         }
         Some(label)
     }
+}
+
+/// A compare tab's title: `⇄ base…head` for a merge-base (three-dot) diff,
+/// `⇄ base..head` for a tip-to-tip (two-dot) one.
+#[must_use]
+pub(crate) fn compare_title(base_label: &str, head_label: &str, merge_base: bool) -> String {
+    let sep = if merge_base { "\u{2026}" } else { ".." };
+    format!("\u{21c4} {base_label}{sep}{head_label}")
 }
 
 /// A terminal tab's title: the program's own title when it set one, else

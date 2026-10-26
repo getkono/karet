@@ -105,8 +105,6 @@ impl App {
     pub(in crate::app) const DEPS_CHECK_TAG: &'static str = "deps.check";
     /// The notification tag a save-many-before-X batch shares.
     pub(in crate::app) const SAVE_BATCH_TAG: &'static str = "save.batch";
-    /// The notification tag a diff computation shares.
-    pub(in crate::app) const DIFF_COMPUTE_TAG: &'static str = "diff.compute";
     /// The notification tag the debug session's own state changes share.
     pub(in crate::app) const DEBUG_SESSION_TAG: &'static str = "debug.session";
     /// The notification tag a running notebook kernel shares.

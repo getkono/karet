@@ -381,7 +381,6 @@ impl Session {
                 highlights: doc.display_highlights(),
                 folds: doc.folds.clone(),
                 semantic_blocks: doc.semantic_blocks.clone(),
-                decorations: Arc::new(doc.decorations.clone()),
                 syntax_error_lines: doc.error_lines.clone(),
                 table_lines: doc.table_lines.clone(),
                 language: doc.language,

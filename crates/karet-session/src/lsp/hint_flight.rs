@@ -817,6 +817,53 @@ mod tests {
         )));
     }
 
+    /// Records the level of every event logged while it is the default.
+    #[derive(Clone, Default)]
+    struct Levels(std::sync::Arc<std::sync::Mutex<Vec<tracing::Level>>>);
+
+    impl tracing::Subscriber for Levels {
+        fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            if let Ok(mut levels) = self.0.lock() {
+                levels.push(*event.metadata().level());
+            }
+        }
+        fn enter(&self, _: &tracing::span::Id) {}
+        fn exit(&self, _: &tracing::span::Id) {}
+    }
+
+    /// The levels of the log lines delivering one hint request with `result` writes.
+    fn logged_levels(result: Result<Vec<InlayHint>, LspError>) -> Vec<tracing::Level> {
+        let levels = Levels::default();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        tracing::subscriber::with_default(levels.clone(), || {
+            deliver_one(&mut FailureTally::default(), &mut false, &tx, result);
+        });
+        levels.0.lock().map(|l| l.clone()).unwrap_or_default()
+    }
+
+    #[test]
+    fn a_cancelled_hint_request_logs_at_debug_and_a_failed_one_warns() {
+        // Cancellation is routine while typing and must not warn; any other
+        // failure must stay visible, or a server rejecting every hint request
+        // would fail quietly forever.
+        let cancelled = LspError::Server(
+            "textDocument/inlayHint failed with code -32801: content modified".to_owned(),
+        );
+        assert_eq!(logged_levels(Err(cancelled)), [tracing::Level::DEBUG]);
+        let failed = LspError::Server(
+            "textDocument/inlayHint failed with code -32602: bad params".to_owned(),
+        );
+        assert_eq!(logged_levels(Err(failed)), [tracing::Level::WARN]);
+    }
+
     #[test]
     fn a_hint_request_on_a_closed_connection_is_still_a_death() {
         let (tx, mut rx) = mpsc::unbounded_channel();
@@ -839,5 +886,14 @@ mod tests {
         answered.sort_unstable();
         assert_eq!(answered, vec![(1, None), (2, None)]);
         assert!(!flight.is_busy());
+    }
+
+    #[test]
+    fn abandoning_every_flight_reaches_the_hint_requests() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut flights = Flights::default();
+        flights.hints.ask(ask(1, 7), &tx, 0);
+        flights.abandon(&tx, 0);
+        assert_eq!(answers(&mut rx), vec![(1, None)]);
     }
 }

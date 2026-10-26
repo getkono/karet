@@ -75,7 +75,7 @@ mod toml_lsp;
 pub mod ts_errors;
 mod vcs_worker;
 #[cfg(feature = "viz")]
-pub mod viz;
+mod viz;
 mod wakatime;
 
 pub use api::AiCommitAgentStatus;

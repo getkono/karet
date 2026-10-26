@@ -562,12 +562,8 @@ impl App {
             Command::RevInputSubmit => self.rev_submit(),
             Command::RevInputCancel => self.rev_cancel(),
             Command::ShowFileHistory => self.open_file_history(),
-            Command::DiffUnpushed => self.open_range(SessionCommand::RangeChanges {
-                spec: RangeSpec::Unpushed,
-            }),
-            Command::DiffSinceBase => self.open_range(SessionCommand::RangeChanges {
-                spec: RangeSpec::SinceBase { base: None },
-            }),
+            Command::DiffUnpushed => self.open_range(RangeSpec::Unpushed),
+            Command::DiffSinceBase => self.open_range(RangeSpec::SinceBase { base: None }),
             Command::CommitGraphMarkBase => self.graph_mark_base(),
             Command::CommitGraphCompare => self.graph_compare(),
             Command::SpellingScan => self.scan_workspace_spelling(),

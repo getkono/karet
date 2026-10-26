@@ -199,7 +199,6 @@ impl Session {
             lint_diagnostics: Vec::new(),
             lsp_diagnostics: HashMap::new(),
             semantic_tokens: None,
-            decorations: Vec::new(),
             refs: 1,
             dirty_since: None,
             backed_up_version: None,

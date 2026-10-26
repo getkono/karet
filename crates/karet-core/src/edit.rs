@@ -582,6 +582,16 @@ mod tests {
         assert_eq!(cs.selections, vec![sel(0, 0), sel(2, 2)]);
         assert_eq!(cs.primary, 0);
         assert_eq!(CursorState::default().normalize_tracking(3), 0);
+
+        // An out-of-range followed index and primary both clamp to the last
+        // selection in the input, then move with it.
+        let mut cs = CursorState {
+            selections: vec![sel(5, 5), sel(1, 1)],
+            primary: 9,
+        };
+        assert_eq!(cs.normalize_tracking(9), 0);
+        assert_eq!(cs.selections, vec![sel(1, 1), sel(5, 5)]);
+        assert_eq!(cs.primary, 0);
     }
 
     /// Whether `inner`'s range lies within `outer`'s.

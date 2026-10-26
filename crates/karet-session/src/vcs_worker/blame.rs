@@ -74,7 +74,7 @@ pub(super) fn blame(
     Ok(result)
 }
 
-pub(super) fn map_attribution(
+fn map_attribution(
     current: &[&str],
     head: &[&str],
     groups: &[blameline::BlameGroup],
@@ -118,4 +118,39 @@ pub(super) fn map_attribution(
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn commit(hash: &str) -> BlameAttribution {
+        BlameAttribution::Commit(BlameCommit {
+            hash: hash.to_string(),
+            author: "Ada".to_string(),
+            author_time: 1_773_619_200,
+        })
+    }
+
+    #[test]
+    fn current_buffer_mapping_keeps_exact_and_unique_moved_lines() {
+        let groups = vec![blameline::BlameGroup {
+            lines: blameline::LineRange { start: 1, end: 3 },
+            commit_hash: "one".to_string(),
+            message: "change".to_string(),
+            author: "Ada".to_string(),
+            date: "1773619200 +0000".to_string(),
+        }];
+        let mapped = map_attribution(&["a", "new", "c", "b"], &["a", "b", "c"], &groups);
+        assert_eq!(mapped[0], commit("one"));
+        assert_eq!(mapped[1], BlameAttribution::Uncommitted);
+        assert_eq!(mapped[2], commit("one"));
+        assert_eq!(mapped[3], commit("one"));
+    }
+
+    #[test]
+    fn ambiguous_moved_lines_are_uncommitted() {
+        let mapped = map_attribution(&["x"], &["a", "x", "x"], &[]);
+        assert_eq!(mapped, vec![BlameAttribution::Uncommitted]);
+    }
 }

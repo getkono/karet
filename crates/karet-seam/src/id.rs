@@ -410,6 +410,15 @@ mod tests {
     fn anonymous_segments_are_recognized() {
         assert!(SeamSegment::new("{impl A for B}").is_anonymous());
         assert!(!SeamSegment::new("Symbol").is_anonymous());
+        // Both braces are required: one alone is a malformed name, not a construct.
+        assert!(!SeamSegment::new("{impl A").is_anonymous());
+        assert!(!SeamSegment::new("impl A}").is_anonymous());
+    }
+
+    #[test]
+    fn only_a_path_without_segments_is_empty() {
+        assert!(SeamPath::default().is_empty());
+        assert!(!path("pkg").is_empty());
     }
 
     #[test]
@@ -439,6 +448,7 @@ mod tests {
         let mut interner = SeamInterner::new();
         assert!(interner.is_empty());
         let a = interner.intern(path("pkg::a"));
+        assert!(!interner.is_empty());
         let b = interner.intern(path("pkg::b"));
         // Re-interning the same path yields the same id.
         assert_eq!(interner.intern(path("pkg::a")), a);

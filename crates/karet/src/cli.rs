@@ -693,6 +693,32 @@ mod tests {
     }
 
     #[test]
+    fn parse_capture_size_names_a_missing_dimension_as_not_a_number() {
+        assert_eq!(
+            super::parse_capture_size("x34"),
+            Err("columns must be a number, got \"\"".to_owned())
+        );
+    }
+
+    #[test]
+    fn every_startup_panel_choice_maps_to_its_panel() {
+        use karet_session::config::schema::StartupPanel;
+
+        use super::StartupPanelChoice;
+        for (choice, panel) in [
+            (StartupPanelChoice::Explorer, StartupPanel::Explorer),
+            (StartupPanelChoice::Search, StartupPanel::Search),
+            (
+                StartupPanelChoice::SourceControl,
+                StartupPanel::SourceControl,
+            ),
+            (StartupPanelChoice::None, StartupPanel::None),
+        ] {
+            assert_eq!(StartupPanel::from(choice), panel, "{choice:?}");
+        }
+    }
+
+    #[test]
     fn parse_goto_spec_path_only() {
         let spec = super::parse_goto_spec("src/main.rs");
         assert_eq!(spec.path, PathBuf::from("src/main.rs"));
@@ -826,6 +852,14 @@ mod tests {
                 "{args:?} KARET_ICONS={env:?}"
             );
         }
+    }
+
+    #[test]
+    fn the_process_environment_reader_still_lets_the_flag_win() -> Result<(), clap::Error> {
+        // The flag outranks any `KARET_ICONS` the test process may carry.
+        let cli = Cli::try_parse_from(["karet", "--icons", "ascii"])?;
+        assert_eq!(cli.explicit_icon_style(), Some(IconStyle::Ascii));
+        Ok(())
     }
 
     #[test]

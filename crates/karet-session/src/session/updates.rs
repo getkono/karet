@@ -912,16 +912,8 @@ impl Session {
 
 pub(super) fn convert_symbol_columns(buffer: &TextBuffer, symbols: &mut [Symbol]) {
     for symbol in symbols {
-        let range = symbol.range;
-        symbol.range = Range {
-            start: buffer.utf16_to_line_col(range.start.line, range.start.col),
-            end: buffer.utf16_to_line_col(range.end.line, range.end.col),
-        };
-        let selection = symbol.selection_range;
-        symbol.selection_range = Range {
-            start: buffer.utf16_to_line_col(selection.start.line, selection.start.col),
-            end: buffer.utf16_to_line_col(selection.end.line, selection.end.col),
-        };
+        symbol.range = utf16_range_to_buffer(buffer, symbol.range);
+        symbol.selection_range = utf16_range_to_buffer(buffer, symbol.selection_range);
         convert_symbol_columns(buffer, &mut symbol.children);
     }
 }

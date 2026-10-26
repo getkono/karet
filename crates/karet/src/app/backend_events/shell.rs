@@ -97,15 +97,10 @@ impl App {
     ) {
         let language_server_operation_failed =
             id.is_some_and(|request| self.fail_language_server_operation(request, &message));
-        // A range diff has no failure event of its own — it answers with a backend
-        // notification — so its card is retired here. Clearing it on an unrelated
-        // notification only drops a "computing…" hint early, which is the harmless
-        // way to be wrong; leaving it up forever is the other one.
-        self.notifications.dismiss_tagged(Self::DIFF_COMPUTE_TAG);
-        // Likewise for a discard, the one repository write that answers with a
-        // reason instead of an outcome event: the message below carries it, so the
-        // card has done its job. Every other write ends at
-        // `on_vcs_operation_finished`, which retires its own card.
+        // A discard is the one repository write that answers with a reason instead
+        // of an outcome event: the message below carries it, so the card has done
+        // its job. Every other write ends at `on_vcs_operation_finished`, which
+        // retires its own card.
         self.notifications.dismiss_tagged(Self::VCS_DISCARD_TAG);
         if id.is_some() && id == self.commit_input.pending {
             self.commit_input.pending = None;
@@ -137,6 +132,9 @@ impl App {
                 self.on_open_failed(req, &message);
             }
             self.fail_pending_commit_detail(req, &message);
+            // A range diff has no failure event of its own: it answers with this
+            // notification, which carries its request id.
+            self.fail_pending_compare(req, &message);
             if let Some((view, _)) = self.pending_merge_conflicts.remove(&req)
                 && let Some(tab) = self.all_tabs_mut().find(|tab| tab.view == view)
                 && let Some(conflict) = tab.merge_conflict.as_mut()

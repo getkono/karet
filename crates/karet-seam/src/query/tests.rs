@@ -516,6 +516,25 @@ fn ui_narrowing_state_is_readable_back_out_of_a_query() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn a_negated_containment_is_not_the_root_and_a_facet_names_its_lens() -> TestResult {
+    let query = parse("!in:pkg::model in:pkg::provider substitution:dyn")?;
+    assert_eq!(
+        query.root().map(ToString::to_string),
+        Some("pkg::provider".to_owned()),
+        "excluding a subtree does not reroot at it"
+    );
+    assert_eq!(query.lenses(), vec![Lens::Substitution]);
+    Ok(())
+}
+
+#[test]
+fn a_query_with_only_a_term_or_only_a_configuration_is_not_empty() -> TestResult {
+    assert!(!parse("lens:api")?.is_empty());
+    assert!(!parse("config:all-features")?.is_empty());
+    Ok(())
+}
+
 // --- evaluation -------------------------------------------------------------
 
 #[test]
@@ -640,6 +659,29 @@ fn a_cfg_term_finds_gated_nodes() -> TestResult {
 }
 
 #[test]
+fn a_cfg_term_finds_configured_out_gated_nodes_whatever_their_predicate() -> TestResult {
+    let mut index = SeamIndex::new();
+    add(&mut index, "pkg", NodeKind::Package, None, vec![]);
+    let gate = || vec![facet(Lens::Variation, "cfg").with_detail("unix")];
+    // Gated with a predicate that does not mention the term, but configured out.
+    let inactive = add(&mut index, "pkg::inactive", NodeKind::Module, None, gate());
+    // Configured out without any gate of its own (an ancestor's gate excluded it).
+    let ungated = add(&mut index, "pkg::ungated", NodeKind::Module, None, vec![]);
+    // Gated, active, and the predicate does not mention the term.
+    add(&mut index, "pkg::active", NodeKind::Module, None, gate());
+    for id in [inactive, ungated] {
+        if let Some(node) = index.node(id).cloned() {
+            index.insert(Node {
+                membership: ConfigMembership::Inactive,
+                ..node
+            });
+        }
+    }
+    assert_eq!(run(&index, "cfg:feature")?, ["pkg::inactive"]);
+    Ok(())
+}
+
+#[test]
 fn evaluation_leaves_the_index_untouched() -> TestResult {
     let index = fixture();
     let before = index.len();
@@ -669,6 +711,34 @@ fn results_are_stable_across_repeated_evaluation() -> TestResult {
         evaluate(&query, &index).nodes,
         evaluate(&query, &index).nodes
     );
+    Ok(())
+}
+
+#[test]
+fn a_result_counts_what_matched() -> TestResult {
+    let index = fixture();
+    let result = evaluate(&parse("lens:substitution")?, &index);
+    assert_eq!(result.len(), 2);
+    assert!(!result.is_empty());
+    Ok(())
+}
+
+#[test]
+fn a_node_whose_parent_is_missing_is_still_selected_exactly_once() -> TestResult {
+    let mut index = fixture();
+    // Interned but never inserted: the child resolves a parent the index does not hold.
+    let ghost = index.intern("pkg::ghost".parse()?);
+    let orphan = add(
+        &mut index,
+        "pkg::ghost::Orphan",
+        NodeKind::Type,
+        None,
+        vec![],
+    );
+    assert_eq!(index.node(orphan).and_then(|node| node.parent), Some(ghost));
+    let nodes = evaluate(&Query::default(), &index).nodes;
+    assert_eq!(nodes.len(), index.len(), "every node, each once");
+    assert_eq!(nodes.last(), Some(&orphan), "orphans follow the trees");
     Ok(())
 }
 
