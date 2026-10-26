@@ -307,6 +307,84 @@ fn every_query_round_trips_through_its_text_form() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn a_value_with_whitespace_or_a_quote_is_quoted_and_reads_back() -> TestResult {
+    let impl_block: SeamPath = "pkg::{impl Render for Widget}".parse()?;
+    for (kind, text) in [
+        (
+            TermKind::In(impl_block.clone()),
+            r#"in:"pkg::{impl Render for Widget}""#,
+        ),
+        (
+            TermKind::Reach(impl_block.clone()),
+            r#"reach:"pkg::{impl Render for Widget}""#,
+        ),
+        (
+            TermKind::Callers(impl_block.clone()),
+            r#"callers:"pkg::{impl Render for Widget}""#,
+        ),
+        (
+            TermKind::Pivot {
+                edge: EdgeKind::Calls,
+                target: impl_block,
+            },
+            r#"pivot:calls:"pkg::{impl Render for Widget}""#,
+        ),
+        (
+            TermKind::Cfg("all(unix, windows)".to_owned()),
+            r#"cfg:"all(unix, windows)""#,
+        ),
+        (TermKind::Phrase(r#"a"b c"#.to_owned()), r#""a\"b c""#),
+        (TermKind::Phrase(r"a\b".to_owned()), r#""a\\b""#),
+        (TermKind::Cfg(r#"x"y"#.to_owned()), r#"cfg:"x\"y""#),
+    ] {
+        assert_eq!(kind.to_string(), text);
+        let parsed = parse(text)?;
+        let [term] = parsed.terms.as_slice() else {
+            return Err(format!("{text} is not one term").into());
+        };
+        assert_eq!(term.kind, kind, "{text}");
+    }
+
+    let query = parse(r#"config:"my config" lens:api"#)?;
+    assert_eq!(query.configuration.as_deref(), Some("my config"));
+    assert_eq!(query.to_string(), r#"config:"my config" lens:api"#);
+    Ok(())
+}
+
+#[test]
+fn a_value_that_needs_no_quoting_keeps_its_bare_form() -> TestResult {
+    // A balanced quote inside a value already tokenizes as one term, so quoting it would
+    // only rewrite text the reader typed.
+    for text in [
+        r#"cfg:feature="view""#,
+        r"cfg:a\b",
+        "in:pkg::{impl}",
+        "\"Symbol\"",
+    ] {
+        assert_eq!(parse(text)?.to_string(), text);
+    }
+    // A phrase written before escapes existed reads as it always did: a backslash before
+    // anything but a quote or a backslash, and a quote short of the end, are literal.
+    assert_eq!(
+        parse(r#""a\nb""#)?.terms[0].kind,
+        TermKind::Phrase(r"a\nb".to_owned())
+    );
+    assert_eq!(
+        parse(r#""a"b"#)?.terms[0].kind,
+        TermKind::Phrase(r#"a"b"#.to_owned())
+    );
+    Ok(())
+}
+
+#[test]
+fn an_empty_quoted_value_is_refused_like_an_empty_one() {
+    assert!(parse(r#"in:"""#).is_err());
+    assert!(parse(r#"cfg:"""#).is_err());
+    assert!(parse(r#"config:"""#).is_err());
+    assert!(parse(r#"pivot:calls:"""#).is_err());
+}
+
 /// A deterministic pseudo-random stream (an LCG), so a failure replays from its seed.
 struct Rng(u64);
 
@@ -334,17 +412,26 @@ impl Rng {
     }
 }
 
-/// Characters a value can hold and still survive its text form: no whitespace, no quote,
-/// none of the path syntax (`:`, `#`, braces), and no leading `!` — but multibyte text,
+/// Characters a bare word (a name, a plain path segment) can hold and still survive its
+/// text form, since a bare word has no quoting form: no whitespace, no quote, none of the
+/// path syntax (`:`, `#`, braces), and no leading `!` — but multibyte text,
 /// so a span that lands inside a character would show up.
 const WORD: &[&str] = &[
     "a", "z", "Q", "_", "-", ".", "0", "7", "<", ">", "(", ")", ",", "=", "é", "日", "🦀",
 ];
 
-/// A path segment: plain, numbered, or a whitespace-free anonymous `{…}` construct.
+/// Characters a quotable value can hold: [`WORD`] plus whitespace, quotes, and the
+/// backslash that escapes them, so only the quoting form can carry the value.
+const VALUE: &[&str] = &[
+    "a", "z", "Q", "_", "-", ".", "0", "7", "<", ">", "(", ")", ",", "=", "é", "日", "🦀", " ",
+    "\t", "\"", "\\",
+];
+
+/// A path segment: plain, numbered, or an anonymous `{…}` construct, which may hold
+/// whitespace and quotes as `{impl Render for Widget}` does.
 fn segment(rng: &mut Rng) -> crate::id::SeamSegment {
     let name = if rng.chance(4) {
-        format!("{{{}}}", rng.word(WORD, 1, 6))
+        format!("{{{}}}", rng.word(VALUE, 1, 6))
     } else {
         rng.word(WORD, 1, 6)
     };
@@ -379,10 +466,11 @@ fn term_kind(rng: &mut Rng) -> TermKind {
         3 => TermKind::Kind(*rng.pick(NodeKind::all())),
         4 => TermKind::In(path(rng)),
         // A predicate value may itself hold `:` and a balanced quote, as
-        // `cfg:feature="view"` does.
-        5 => TermKind::Cfg(match rng.below(3) {
+        // `cfg:feature="view"` does, or whitespace, as `all(unix, windows)` does.
+        5 => TermKind::Cfg(match rng.below(4) {
             0 => format!("{}=\"{}\"", rng.word(WORD, 1, 5), rng.word(WORD, 1, 5)),
             1 => format!("{}:{}", rng.word(WORD, 1, 5), rng.word(WORD, 1, 5)),
+            2 => rng.word(VALUE, 1, 8),
             _ => rng.word(WORD, 1, 8),
         }),
         6 => TermKind::Pivot {
@@ -392,14 +480,15 @@ fn term_kind(rng: &mut Rng) -> TermKind {
         7 => TermKind::Reach(path(rng)),
         8 => TermKind::Callers(path(rng)),
         9 => TermKind::Name(rng.word(WORD, 1, 10)),
-        // Quoted, so whitespace is part of a phrase rather than the end of it.
-        _ => TermKind::Phrase(rng.word(&[WORD, &[" ", "\t"]].concat(), 0, 10)),
+        // Quoted, so whitespace is part of a phrase rather than the end of it, and an
+        // escaped quote is part of it too.
+        _ => TermKind::Phrase(rng.word(VALUE, 0, 10)),
     }
 }
 
 /// A query of up to six terms, sometimes under a configuration.
 fn query(rng: &mut Rng) -> Query {
-    let configuration = rng.chance(3).then(|| rng.word(WORD, 1, 8));
+    let configuration = rng.chance(3).then(|| rng.word(VALUE, 1, 8));
     let terms = (0..rng.below(7))
         .map(|_| super::Term {
             negated: rng.chance(3),
@@ -455,14 +544,14 @@ fn every_generated_query_round_trips_through_its_text_form() -> TestResult {
 
 #[test]
 fn every_span_parse_reports_lands_on_the_text_that_produced_it() -> TestResult {
-    // Arbitrary text, valid or not: fragments of real syntax, stray quotes and
-    // negations, ASCII and non-ASCII whitespace, and multibyte characters. Whatever
+    // Arbitrary text, valid or not: fragments of real syntax, stray quotes,
+    // escapes and negations, ASCII and non-ASCII whitespace, and multibyte characters. Whatever
     // `parse` returns, a span must slice the input on character boundaries — the filter
     // box draws its caret from it, and a span inside a character panics that slice.
     const FRAGMENTS: &[&str] = &[
         "lens:", "api", "kind:", "type", "vis:", "public", "in:", "pkg", "::", "#2", "{", "}",
         "cfg:", "config:", "pivot:", "calls:", "reach:", "callers:", "hazard:", "x", ":", "!",
-        "\"", " ", "  ", "\t", "\n", "\u{a0}", "\u{3000}", "é", "日本", "🦀",
+        "\"", "\\", " ", "  ", "\t", "\n", "\u{a0}", "\u{3000}", "é", "日本", "🦀",
     ];
     let mut rng = Rng(0x0529_5EA4);
     for case in 0..6000 {

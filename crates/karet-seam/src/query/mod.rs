@@ -27,6 +27,14 @@
 //! | `reach:<node>` | everything the node transitively calls, through established calls |
 //! | `callers:<node>` | everything that transitively calls the node |
 //!
+//! # Quoting
+//!
+//! A value holding whitespace or a `"` is written between `"`s, with `\"` for a quote
+//! and `\\` for a backslash inside them: `in:"pkg::{impl Render for Widget}"`,
+//! `cfg:"all(unix, windows)"`, `pivot:calls:"pkg::{impl A for B}"`. A phrase uses the
+//! same escapes. Any other value is written bare, so a query that never needed quoting
+//! reads exactly as it did — `cfg:feature="view"` included, since its quotes balance.
+//!
 //! # Errors are positioned, never silent
 //!
 //! An unknown term is a parse error carrying the byte range that produced it and the
@@ -35,6 +43,7 @@
 //! wrong, which is precisely how a filter becomes untrustworthy.
 
 use std::fmt;
+use std::fmt::Write as _;
 use std::ops::Range;
 
 use crate::edge::EdgeKind;
@@ -94,18 +103,58 @@ impl fmt::Display for TermKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Lens(lens) => write!(f, "lens:{}", lens.name()),
-            Self::Facet { lens, subtype } => write!(f, "{}:{subtype}", lens.name()),
+            Self::Facet { lens, subtype } => {
+                write!(f, "{}:", lens.name())?;
+                write_value(f, subtype)
+            },
             Self::Visibility(vis) => write!(f, "vis:{}", vis.name()),
             Self::Kind(kind) => write!(f, "kind:{}", kind.name()),
-            Self::In(path) => write!(f, "in:{path}"),
-            Self::Cfg(text) => write!(f, "cfg:{text}"),
-            Self::Pivot { edge, target } => write!(f, "pivot:{}:{target}", edge.name()),
-            Self::Reach(path) => write!(f, "reach:{path}"),
-            Self::Callers(path) => write!(f, "callers:{path}"),
+            Self::In(path) => {
+                f.write_str("in:")?;
+                write_value(f, &path.to_string())
+            },
+            Self::Cfg(text) => {
+                f.write_str("cfg:")?;
+                write_value(f, text)
+            },
+            Self::Pivot { edge, target } => {
+                write!(f, "pivot:{}:", edge.name())?;
+                write_value(f, &target.to_string())
+            },
+            Self::Reach(path) => {
+                f.write_str("reach:")?;
+                write_value(f, &path.to_string())
+            },
+            Self::Callers(path) => {
+                f.write_str("callers:")?;
+                write_value(f, &path.to_string())
+            },
             Self::Name(name) => f.write_str(name),
-            Self::Phrase(phrase) => write!(f, "\"{phrase}\""),
+            Self::Phrase(phrase) => write_quoted(f, phrase),
         }
     }
+}
+
+/// Write a term's value bare when it reads back as itself that way, and in the quoting
+/// form otherwise, so a value that tokenizes cleanly keeps the text a person would type.
+fn write_value(f: &mut fmt::Formatter<'_>, value: &str) -> fmt::Result {
+    if parse::needs_quotes(value) {
+        write_quoted(f, value)
+    } else {
+        f.write_str(value)
+    }
+}
+
+/// Write `text` in the quoting form: between `"`s, with `"` and `\` escaped by a `\`.
+fn write_quoted(f: &mut fmt::Formatter<'_>, text: &str) -> fmt::Result {
+    f.write_char('"')?;
+    for c in text.chars() {
+        if matches!(c, '"' | '\\') {
+            f.write_char('\\')?;
+        }
+        f.write_char(c)?;
+    }
+    f.write_char('"')
 }
 
 /// One term of a query, with where it came from.
@@ -176,7 +225,8 @@ impl fmt::Display for Query {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut first = true;
         if let Some(configuration) = &self.configuration {
-            write!(f, "config:{configuration}")?;
+            f.write_str("config:")?;
+            write_value(f, configuration)?;
             first = false;
         }
         for term in &self.terms {
