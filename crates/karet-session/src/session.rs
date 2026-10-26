@@ -40,12 +40,15 @@ mod mdlint;
 mod notebooks;
 mod notify_text;
 mod persistence;
+mod reload;
 mod retirement;
 mod search;
 mod semantic_tokens;
 mod spelling;
+mod streams;
 mod updates;
 mod vcs;
+mod viz;
 mod workspace_edit;
 
 #[cfg(test)]

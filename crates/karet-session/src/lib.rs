@@ -61,6 +61,7 @@ mod lsp_registry;
 mod manifest_hints;
 #[cfg(feature = "notebook-kernel")]
 mod notebook_kernel;
+mod scan_walk;
 pub mod seam_cache;
 mod seam_worker;
 mod search_worker;
@@ -72,7 +73,6 @@ mod todo_scan;
 mod toml_format;
 #[cfg(feature = "toml-lsp")]
 mod toml_lsp;
-pub mod ts_errors;
 mod vcs_worker;
 #[cfg(feature = "viz")]
 mod viz;
