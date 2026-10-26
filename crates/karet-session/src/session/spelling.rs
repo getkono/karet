@@ -7,8 +7,8 @@ use std::collections::HashSet;
 use super::*;
 use crate::api::SpellingHit;
 use crate::api::SpellingLanguage;
+use crate::scan_walk::resolve_path;
 use crate::spell::check::word_in_line;
-use crate::spell_scan::resolve_path;
 
 impl Session {
     /// Spell-check the whole workspace on the scan worker, answering

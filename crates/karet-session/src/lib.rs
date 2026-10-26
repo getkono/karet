@@ -61,6 +61,7 @@ mod lsp_registry;
 mod manifest_hints;
 #[cfg(feature = "notebook-kernel")]
 mod notebook_kernel;
+mod scan_walk;
 pub mod seam_cache;
 mod seam_worker;
 mod search_worker;
