@@ -57,7 +57,8 @@ pub(crate) enum InlineCompletionCmd {
     Accept { item: Box<InlineCompletionItem> },
     /// Sign in to (or out of) the account the server proposes for -- GitHub,
     /// for Copilot -- through its own `signIn`/`signOut` flow; always
-    /// answered with an [`LspUpdate::Account`].
+    /// answered with an [`LspUpdate::Account`], and a device code with a
+    /// second once the sign-in lands or fails.
     Account {
         request: RequestId,
         server: LanguageServerId,
@@ -156,13 +157,16 @@ pub(super) async fn serve(
             server,
             sign_in,
         } => {
-            let outcome = super::account::account(client, sign_in).await;
-            let _ = updates.send(LspUpdate::Account {
-                generation,
-                request,
-                server,
-                outcome,
-            });
+            let updates = updates.clone();
+            let report = move |outcome| {
+                let _ = updates.send(LspUpdate::Account {
+                    generation,
+                    request,
+                    server: server.clone(),
+                    outcome,
+                });
+            };
+            super::account::account(client, sign_in, report).await;
         },
     }
 }

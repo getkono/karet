@@ -342,8 +342,9 @@ impl App {
     }
 
     /// Tell the user what came of a sign-in or sign-out. A device code goes
-    /// on the clipboard and stays on screen until dismissed: the user types
-    /// it into the browser page the server opens, which takes a while.
+    /// on the clipboard and stays on screen until dismissed, with the page to
+    /// enter it at: the user opens that page and types it in, which takes a
+    /// while. Whether the sign-in then landed arrives as a second outcome.
     pub(super) fn on_language_server_account(
         &mut self,
         server: &LanguageServerId,

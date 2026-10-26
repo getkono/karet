@@ -422,8 +422,10 @@ manager (a karet-managed npm install), or give it an `lsp.servers` entry --
 `{ "enabled": false }` keeps it off. Being on `PATH` alone attaches nothing.
 
 Sign in with **Copilot: Sign In** from the palette: the device code is copied
-to the clipboard and shown until dismissed, and the server opens the GitHub
-page to enter it in. **Copilot: Sign Out** signs out. Any other server that
+to the clipboard and shown until dismissed, together with the GitHub page to
+enter it at. karet does not open that page for you: open it in a browser and
+enter the code. Once you have, a second notification says whether the sign-in
+landed. **Copilot: Sign Out** signs out. Any other server that
 offers inline completions is asked too, beside the language's primary.
 
 ## Shared process lifecycle

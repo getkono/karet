@@ -2,13 +2,16 @@
 //! `copilot-language-server`, whose inline completions need it.
 //!
 //! Copilot's flow is its own, not LSP's: a `signIn` request answers a device
-//! code for the user to confirm in a browser, and the `command` it returns --
-//! run through `workspace/executeCommand` -- opens that browser and waits for
-//! the confirmation. The wait outlasts any request timeout, and the server
-//! reports the outcome through its own status notifications regardless, so
-//! the command is run on a task of its own and its answer only logged: the
-//! user is handed the code at once. A server too old to return a command is
-//! sent `signInConfirm` with the code instead, which is what it waits on.
+//! code and the page to enter it at, and the `command` it returns -- run
+//! through `workspace/executeCommand` -- waits for the user to confirm it
+//! there. karet opens no browser: the server's `window/showDocument` is
+//! refused (karet-lsp declares no support for it), so the user is handed the
+//! code and the page and opens it themselves. The wait outlasts any request
+//! timeout, so the command is run on a task of its own and the user is handed
+//! the code at once; what the command answers is reported as a second
+//! outcome of the same sign-in -- signed in, or failed and why. A server too
+//! old to return a command is sent `signInConfirm` with the code instead,
+//! which is what it waits on.
 
 use std::sync::Arc;
 
@@ -18,27 +21,44 @@ use serde_json::json;
 
 use crate::api::AccountOutcome;
 
-/// Run the server's sign-in (`sign_in`) or sign-out flow, answering what the
-/// user is to do or what came of it.
-pub(super) async fn account(client: &Arc<LspClient>, sign_in: bool) -> AccountOutcome {
+/// Run the server's sign-in (`sign_in`) or sign-out flow, handing `report`
+/// what the user is to do or what came of it. A device code's completing
+/// request then runs on a task of its own, and `report` is handed what came
+/// of that too, after the code.
+pub(super) async fn account(
+    client: &Arc<LspClient>,
+    sign_in: bool,
+    report: impl Fn(AccountOutcome) + Send + 'static,
+) {
     let method = if sign_in { "signIn" } else { "signOut" };
     let reply = client.custom_request::<_, Value>(method, json!({})).await;
-    match reply {
-        Err(error) => AccountOutcome::Failed {
-            message: error.to_string(),
+    let (outcome, follow_up) = match reply {
+        Err(error) => {
+            let message = error.to_string();
+            (AccountOutcome::Failed { message }, None)
         },
-        Ok(_) if !sign_in => AccountOutcome::SignedOut,
-        Ok(reply) => {
-            let (outcome, follow_up) = read_sign_in(&reply);
-            if let Some((method, params)) = follow_up {
-                let client = Arc::clone(client);
-                tokio::spawn(async move {
-                    if let Err(error) = client.custom_request::<_, Value>(method, params).await {
-                        tracing::debug!(%error, method, "sign-in follow-up unanswered");
-                    }
-                });
-            }
-            outcome
+        Ok(_) if !sign_in => (AccountOutcome::SignedOut, None),
+        Ok(reply) => read_sign_in(&reply),
+    };
+    report(outcome);
+    if let Some((method, params)) = follow_up {
+        let client = Arc::clone(client);
+        tokio::spawn(async move {
+            let reply = client.custom_request::<_, Value>(method, params).await;
+            report(read_completion(reply.map_err(|error| error.to_string())));
+        });
+    }
+}
+
+/// What came of a device code's completing request: a reply naming a status
+/// is read as a `signIn` status is, and any other reply means the request
+/// finished, so the account is signed in.
+fn read_completion(reply: Result<Value, String>) -> AccountOutcome {
+    match reply {
+        Err(message) => AccountOutcome::Failed { message },
+        Ok(reply) if reply.get("status").is_some() => read_sign_in(&reply).0,
+        Ok(reply) => AccountOutcome::SignedIn {
+            user: reply.get("user").and_then(Value::as_str).map(str::to_owned),
         },
     }
 }
@@ -85,8 +105,8 @@ fn read_sign_in(reply: &Value) -> (AccountOutcome, Option<(&'static str, Value)>
 mod tests {
     use super::*;
 
-    /// Today's Copilot: a code to confirm, and the command that opens the
-    /// browser and waits for it, run with its own arguments.
+    /// Today's Copilot: a code to confirm, and the command that waits for it,
+    /// run with its own arguments.
     #[test]
     fn a_device_code_comes_with_the_command_that_completes_it() {
         let (outcome, follow_up) = read_sign_in(&json!({
@@ -136,5 +156,32 @@ mod tests {
             refused,
             AccountOutcome::Failed { message } if message.contains("NotAuthorized")
         ));
+    }
+
+    /// The completing request's answer is the sign-in's last word: a status
+    /// is read as `signIn`'s is, a bare reply means it finished, and an error
+    /// is the failure the user is told.
+    #[test]
+    fn the_completing_request_says_whether_the_sign_in_landed() {
+        assert_eq!(
+            read_completion(Ok(json!({"status": "OK", "user": "octocat"}))),
+            AccountOutcome::SignedIn {
+                user: Some("octocat".to_owned()),
+            }
+        );
+        assert_eq!(
+            read_completion(Ok(Value::Null)),
+            AccountOutcome::SignedIn { user: None }
+        );
+        assert!(matches!(
+            read_completion(Ok(json!({"status": "NotAuthorized"}))),
+            AccountOutcome::Failed { message } if message.contains("NotAuthorized")
+        ));
+        assert_eq!(
+            read_completion(Err("device code expired".to_owned())),
+            AccountOutcome::Failed {
+                message: "device code expired".to_owned(),
+            }
+        );
     }
 }

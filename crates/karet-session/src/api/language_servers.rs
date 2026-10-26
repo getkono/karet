@@ -244,8 +244,10 @@ impl LanguageServerStatus {
 #[non_exhaustive]
 pub enum AccountOutcome {
     /// The user is to confirm `user_code` in a browser, at `verification_uri`
-    /// when the server named it; the server opens the browser itself, and
-    /// says when the sign-in lands through its status notifications.
+    /// when the server named it. Nothing opens the browser for them: the
+    /// client is to show both. A second outcome of the same sign-in,
+    /// [`SignedIn`](Self::SignedIn) or [`Failed`](Self::Failed), follows once
+    /// the server says whether it landed.
     DeviceCode {
         /// The code to enter.
         user_code: String,

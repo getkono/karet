@@ -200,8 +200,9 @@ async fn await_account(
         .flatten()
 }
 
-/// Signing in hands the user the device code at once, and runs the command
-/// the server returned to complete it -- the one that opens the browser.
+/// Signing in hands the user the device code at once, runs the command the
+/// server returned to complete it, and reports what that command answered as
+/// a second outcome of the same request.
 #[tokio::test]
 async fn sign_in_answers_the_device_code_and_runs_the_completing_command() -> TestResult {
     let dir = tempfile::tempdir()?;
@@ -242,6 +243,14 @@ async fn sign_in_answers_the_device_code_and_runs_the_completing_command() -> Te
     let ran = await_method(&mut observed, "workspace/executeCommand").await?;
     assert_eq!(ran["params"]["command"], json!("double.run"));
     assert_eq!(ran["params"]["arguments"], json!([2]));
+    let (_, landed) = await_account(&mut events, request)
+        .await
+        .ok_or("the completed sign-in was never reported")?;
+    assert_eq!(
+        landed,
+        crate::api::AccountOutcome::SignedIn { user: None },
+        "the completing command answered, so the sign-in landed"
+    );
     Ok(())
 }
 

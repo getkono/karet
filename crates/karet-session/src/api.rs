@@ -473,7 +473,9 @@ pub enum Command {
     },
     /// Sign in to the account a language server proposes for -- GitHub, for
     /// `copilot-language-server` -- through the server's own `signIn` flow.
-    /// Answered by [`Event::LanguageServerAccount`], always.
+    /// Answered by [`Event::LanguageServerAccount`], always; a device code
+    /// ([`AccountOutcome::DeviceCode`](crate::api::AccountOutcome::DeviceCode)) is followed by a second one, with the
+    /// same request id, once the server says whether the sign-in landed.
     SignInLanguageServer {
         /// The server, which must be running (attached to an open document).
         server: LanguageServerId,
