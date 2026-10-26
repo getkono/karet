@@ -17,8 +17,6 @@
 //! [`Indenter`] computes a new line's indentation from indent queries;
 //! [`TableFinder`] finds the lines GFM tables occupy.
 
-pub mod color;
-
 mod blocks;
 mod folding;
 mod highlight;

@@ -11,7 +11,7 @@ fn color_swatch_decorations(buffer: &TextBuffer, first_line: u32, height: u16) -
         let Some(text) = buffer.line(line as usize) else {
             break;
         };
-        for (range, rgba) in karet_syntax::color::detect(&text) {
+        for (range, rgba) in super::color::detect(&text) {
             out.push(Decoration::new(
                 karet_core::Range {
                     start: karet_core::LineCol::new(line, u32::try_from(range.start).unwrap_or(0)),

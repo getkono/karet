@@ -1,15 +1,15 @@
 //! Color-literal detection for inline swatches: hex (`#rgb`, `#rgba`,
 //! `#rrggbb`, `#rrggbbaa`), `rgb()`/`rgba()`, and `hsl()`/`hsla()` forms.
 //!
-//! Pure text-in/data-out over one line at a time — the caller (an editor)
-//! scans its visible lines each frame and turns the answers into swatch
-//! decorations. Ranges are **character** columns, matching caret coordinates.
+//! Pure text-in/data-out over one line at a time — the swatch painter
+//! (`swatches.rs`) scans the visible lines each frame and turns the answers
+//! into swatch decorations. Ranges are **character** columns, matching caret coordinates.
 
 use std::ops::Range;
 
 /// Every color literal on `line`, as `(character range, straight RGBA)`.
 #[must_use]
-pub fn detect(line: &str) -> Vec<(Range<usize>, [u8; 4])> {
+pub(super) fn detect(line: &str) -> Vec<(Range<usize>, [u8; 4])> {
     let chars: Vec<char> = line.chars().collect();
     let mut out = Vec::new();
     let mut i = 0;
