@@ -49,6 +49,14 @@ fn a_just_opened_empty_last_line_keeps_the_caret() {
         // Leaving the caret off the empty last line leaves it unvisited.
         ("a\n|b", "o<Esc>kj", "a\n|b\n"),
     ]);
+    // Helix shares the same document view, so its caret stays there too:
+    // `xd` selects the empty last line, which has no break to take, so `b`
+    // survives rather than being deleted from the line above.
+    helix(&[
+        ("a\n|b", "o<Esc>", "a\nb\n|"),
+        ("a\n|b", "o<Esc>xd", "a\nb\n|"),
+        ("a\n|b", "o<Esc>ix<Esc>", "a\nb\n|x"),
+    ]);
 }
 
 #[test]
