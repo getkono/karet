@@ -28,9 +28,10 @@ impl App {
                     break;
                 }
             }
-            if bound {
-                self.open_docs.insert(doc);
-            } else {
+            // The session counts every open, but the app holds one reference
+            // per document (`reconcile_open_docs` closes it once): a second
+            // view's open of a document already held gives its extra one back.
+            if !bound || !self.open_docs.insert(doc) {
                 self.send_command(SessionCommand::CloseDocument { doc });
             }
         }

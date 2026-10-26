@@ -284,3 +284,133 @@ fn a_failed_open_stops_the_wait_and_shows_why() {
     assert!(shown.contains("could not open notes.md: denied"), "{shown}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_split_of_a_waiting_tab_keeps_waiting_and_fills_with_its_held_view() {
+    let text = "one\ntwo\nthree\nfour\n";
+    let (mut app, _backend, dir) = reserved("fill-split", text);
+    let held = crate::tab::FillView {
+        cursors: CursorState::single(Selection::caret(LineCol::new(2, 1))),
+        scroll_line: 1,
+        scroll_col: 0,
+    };
+    app.tabs[app.active].fill_view = Some(held.clone());
+    let since = Pending::revealed();
+    app.tabs[app.active].fill_since = Some(since);
+    let source = app.tabs[app.active].view;
+
+    app.split_focused(SplitDir::Right);
+    let copy = &app.tabs[app.active];
+    assert_ne!(copy.view, source, "the split is a second view");
+    assert_eq!(copy.fill_caret, Some(LineCol::default()));
+    assert_eq!(copy.fill_since, Some(since));
+    assert!(copy.fill_view.is_some());
+    let waiting = screen(&mut app, 80, 10).join("\n");
+    assert!(waiting.contains("Loading file…"), "{waiting}");
+
+    // Typing into the copy is refused, not built against the placeholder.
+    app.focus = Focus::Editor;
+    app.dispatch(Command::InsertChar('x'));
+    assert_eq!(code_text(&app), "", "the placeholder is not edited");
+
+    app.on_snapshot(DOC, &buffer_snapshot(restored(text)));
+    let copy = &app.tabs[app.active];
+    assert_eq!(code_text(&app), text);
+    assert_eq!((copy.fill_caret, copy.fill_since), (None, None));
+    assert_eq!(
+        copy.editor.cursors(),
+        &held.cursors,
+        "the held caret comes back"
+    );
+    assert_eq!(copy.editor.scroll_line(), 1);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_split_carries_the_failed_open_it_was_made_from() {
+    let (mut app, _backend, dir) = reserved("fill-split-error", "text\n");
+    app.tabs[app.active].fill_since = None;
+    app.tabs[app.active].fill_error = Some("could not open notes.md: denied".to_string());
+
+    app.split_focused(SplitDir::Right);
+    assert_eq!(
+        app.tabs[app.active].fill_error.as_deref(),
+        Some("could not open notes.md: denied")
+    );
+    let shown = screen(&mut app, 160, 10).join("\n");
+    assert_eq!(
+        shown.matches("could not open notes.md: denied").count(),
+        2,
+        "both views show why: {shown}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The ids of every `OpenDocument` sent so far.
+fn opens(backend: &RecordingBackend) -> Vec<RequestId> {
+    backend.sent.lock().map_or_else(
+        |_| Vec::new(),
+        |sent| {
+            sent.iter()
+                .filter(|(_, command)| matches!(command, SessionCommand::OpenDocument { .. }))
+                .map(|(id, _)| *id)
+                .collect()
+        },
+    )
+}
+
+fn doc_of(tab: &Tab) -> Option<DocumentId> {
+    match &tab.kind {
+        TabKind::Code { doc, .. } => *doc,
+        _ => None,
+    }
+}
+
+#[test]
+fn a_split_made_before_the_open_is_answered_asks_for_its_own_document() {
+    let dir = test_dir("fill-split-unbound");
+    write_file(&dir, "notes.md", b"one\ntwo\n");
+    let backend = Arc::new(RecordingBackend::new());
+    let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+    app.backend = Some(backend.clone());
+    app.open_path(&dir.join("notes.md"));
+    assert_eq!(opens(&backend).len(), 1, "the source asked for its text");
+
+    app.split_focused(SplitDir::Right);
+    let copy = app.tabs[app.active].view;
+    let both = opens(&backend);
+    assert_eq!(both.len(), 2, "the copy asked for its own document");
+
+    let opened = SessionEvent::Opened {
+        doc: DOC,
+        version: 0,
+    };
+    app.on_backend_event(both.first().copied(), opened.clone());
+    app.on_backend_event(both.last().copied(), opened);
+    let copy_doc = app.all_tabs().find(|tab| tab.view == copy).and_then(doc_of);
+    assert_eq!(copy_doc, Some(DOC), "the copy is bound");
+    let code_views: Vec<_> = app
+        .all_tabs()
+        .filter(|tab| matches!(tab.kind, TabKind::Code { .. }))
+        .map(doc_of)
+        .collect();
+    assert_eq!(
+        code_views,
+        vec![Some(DOC), Some(DOC)],
+        "both views share it"
+    );
+    // The app holds one reference per document, so the second open's extra
+    // one goes straight back to the session.
+    let closes = backend.sent.lock().map_or(0, |sent| {
+        sent.iter()
+            .filter(|(_, command)| {
+                matches!(command, SessionCommand::CloseDocument { doc } if *doc == DOC)
+            })
+            .count()
+    });
+    assert_eq!(closes, 1);
+
+    app.on_snapshot(DOC, &buffer_snapshot(TextBuffer::from_text("one\ntwo\n")));
+    assert_eq!(code_text(&app), "one\ntwo\n", "the copy fills");
+    let _ = std::fs::remove_dir_all(&dir);
+}
