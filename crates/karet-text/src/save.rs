@@ -111,7 +111,6 @@ impl TextBuffer {
         };
         self.saved_state = Some(state.clone());
         self.saved_text_hash = text_hash(&self.rope);
-        self.history.mark_saved();
         Ok(state)
     }
 
@@ -121,7 +120,7 @@ impl TextBuffer {
     fn serialize(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(self.rope.len_bytes() + 3);
         if self.encoding == Encoding::Utf8Bom {
-            out.extend_from_slice(&[0xEF, 0xBB, 0xBF]);
+            out.extend_from_slice(&crate::load::BOM);
         }
         match self.eol {
             Eol::Lf => {
@@ -227,10 +226,13 @@ fn write_atomic_noclobber(dir: &Path, target: &Path, bytes: &[u8]) -> Result<(),
 /// [`crate::content_fingerprint`] so callers can recompute a file's fingerprint and
 /// compare it against a recorded one (e.g. backup/swap conflict detection).
 pub(crate) fn hash_bytes(bytes: &[u8]) -> u64 {
-    fnv1a(bytes)
+    fnv1a_extend(FNV1A_OFFSET, bytes)
 }
 
-/// FNV-1a over `bytes` — a fixed, specified algorithm.
+/// The FNV-1a offset basis: the state [`fnv1a_extend`] starts from.
+pub(crate) const FNV1A_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+
+/// Fold `bytes` into the FNV-1a state `hash` — a fixed, specified algorithm.
 ///
 /// Deliberately not `DefaultHasher`: these fingerprints are written to disk in
 /// crash-recovery swap files and recompared on a later run, and the standard
@@ -238,10 +240,9 @@ pub(crate) fn hash_bytes(bytes: &[u8]) -> u64 {
 /// releases. A toolchain upgrade would therefore make an untouched file look
 /// modified, warning the user that recovering their swap discards newer
 /// content — exactly when they can least judge it.
-pub(crate) fn fnv1a(bytes: &[u8]) -> u64 {
-    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+pub(crate) fn fnv1a_extend(hash: u64, bytes: &[u8]) -> u64 {
     const PRIME: u64 = 0x0000_0100_0000_01b3;
-    bytes.iter().fold(OFFSET, |hash, byte| {
+    bytes.iter().fold(hash, |hash, byte| {
         (hash ^ u64::from(*byte)).wrapping_mul(PRIME)
     })
 }

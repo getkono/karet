@@ -492,7 +492,7 @@ static REGISTRY: &[FileType] = &[
         config_selector: Some("markdown"),
         category: Markup,
         nerd: Some('\u{e73e}'),
-        extensions: &["md", "markdown", "mdown", "mkd"],
+        extensions: crate::classify::MARKDOWN_EXTENSIONS,
         filenames: &[],
         wrap_mode: WrapMode::Wrap,
     },
@@ -572,9 +572,7 @@ static REGISTRY: &[FileType] = &[
         "Image",
         Image,
         Some('\u{f1c5}'),
-        &[
-            "png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "tiff", "tif",
-        ],
+        crate::classify::IMAGE_EXTENSIONS,
         &[],
     ),
     // --- archives ---

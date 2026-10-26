@@ -236,77 +236,6 @@ fn sign<'a>(key: &str, frames: impl IntoIterator<Item = &'a [u8]>) -> String {
     hex
 }
 
-/// An out-of-band control connection: its own DEALER to the control port, so
-/// an interrupt reaches a kernel whose shell traffic is busy running a cell.
-pub struct KernelControl {
-    key: String,
-    socket: zeromq::DealerSocket,
-}
-
-/// How long control requests may wait for their reply.
-const CONTROL_REPLY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
-
-impl KernelControl {
-    /// Connect to the kernel's control port.
-    ///
-    /// # Errors
-    /// Returns [`KernelError::Transport`] when the socket cannot connect.
-    pub async fn connect(info: &ConnectionInfo) -> Result<Self, KernelError> {
-        let mut socket = zeromq::DealerSocket::new();
-        socket
-            .connect(&format!("tcp://{}:{}", info.ip, info.control_port))
-            .await
-            .map_err(|error| KernelError::Transport(error.to_string()))?;
-        Ok(Self {
-            key: info.key.clone(),
-            socket,
-        })
-    }
-
-    /// Interrupt the running cell (message mode).
-    ///
-    /// # Errors
-    /// Returns [`KernelError::Timeout`] if the kernel never acknowledges.
-    pub async fn interrupt(&mut self) -> Result<(), KernelError> {
-        self.request(jupyter_protocol::messaging::InterruptRequest {}.into())
-            .await
-    }
-
-    /// Ask the kernel to exit (or restart itself when `restart`).
-    ///
-    /// # Errors
-    /// Returns [`KernelError::Timeout`] if the kernel never acknowledges.
-    pub async fn shutdown(&mut self, restart: bool) -> Result<(), KernelError> {
-        self.request(jupyter_protocol::messaging::ShutdownRequest { restart }.into())
-            .await
-    }
-
-    async fn request(&mut self, content: JupyterMessageContent) -> Result<(), KernelError> {
-        let message = JupyterMessage::new(content, None);
-        let request_id = message.header.msg_id.clone();
-        let wire = encode(&message, &self.key)?;
-        self.socket
-            .send(wire)
-            .await
-            .map_err(|error| KernelError::Transport(error.to_string()))?;
-        let deadline = tokio::time::Instant::now() + CONTROL_REPLY_TIMEOUT;
-        loop {
-            let wire = tokio::time::timeout_at(deadline, self.socket.recv())
-                .await
-                .map_err(|_| KernelError::Timeout)?
-                .map_err(|error| KernelError::Transport(error.to_string()))?;
-            let reply = decode(wire, &self.key)?;
-            if reply
-                .parent_header
-                .as_ref()
-                .is_some_and(|header| header.msg_id == request_id)
-            {
-                return Ok(());
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use jupyter_protocol::messaging::KernelInfoRequest;
@@ -618,11 +547,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn kernel_control_skips_unrelated_replies_and_carries_restart() -> Result<(), KernelError>
-    {
+    async fn kernel_control_skips_unrelated_replies_and_rejects_forged_ones()
+    -> Result<(), KernelError> {
         tokio::time::timeout(LOOPBACK_BOUND, async {
             let mut kernel = loopback().await?;
-            let mut control = KernelControl::connect(&kernel.info).await?;
+            let mut control = crate::kernel::KernelControl::connect(&kernel.info).await?;
 
             // A stale reply to some other request arrives first; interrupt
             // must keep waiting for its own.
@@ -644,19 +573,9 @@ mod tests {
             interrupted?;
             assert_eq!(seen?.header.msg_type, "interrupt_request");
 
-            let (shut, seen) = tokio::join!(
-                control.shutdown(true),
-                answer(&mut kernel.control, KEY, reply_to)
-            );
-            shut?;
-            assert!(matches!(
-                seen?.content,
-                JupyterMessageContent::ShutdownRequest(request) if request.restart
-            ));
-
             // A forged reply surfaces as a transport error, not a hang.
             let (forged, seen) = tokio::join!(
-                control.shutdown(false),
+                control.interrupt(),
                 answer(&mut kernel.control, "forged-key", reply_to)
             );
             seen?;

@@ -83,7 +83,8 @@ pub enum LoadError {
     Io(String),
 }
 
-const BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
+/// The UTF-8 byte-order mark: stripped on load, re-added on save.
+pub(crate) const BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
 
 impl TextBuffer {
     /// Build a buffer from in-memory file bytes: strip a BOM, validate UTF-8

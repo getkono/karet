@@ -23,15 +23,7 @@ pub enum InlineDiagnostics {
 }
 
 /// The theme role a diagnostic of `severity` is colored in.
-#[must_use]
-pub fn severity_role(severity: Severity) -> ThemeRole {
-    match severity {
-        Severity::Error => ThemeRole::DiagnosticError,
-        Severity::Warning => ThemeRole::DiagnosticWarning,
-        Severity::Hint => ThemeRole::DiagnosticHint,
-        _ => ThemeRole::DiagnosticInfo,
-    }
-}
+pub use karet_core::severity_role;
 
 /// The one-cell gutter sign for a diagnostic of `severity`.
 #[must_use]

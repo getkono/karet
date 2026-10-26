@@ -11,243 +11,14 @@ use crate::LanguageId;
 mod outlines;
 pub(crate) use outlines::outline_query;
 pub(crate) mod programming;
+mod semantic;
 mod shells;
 mod structured;
 mod web;
 
-#[cfg(feature = "lang-rust")]
-const RUST_SEMANTIC: &str = r#"
-(function_item (block) @semantic.body) @semantic.scope
-(struct_item (field_declaration_list) @semantic.body) @semantic.scope
-(enum_item (enum_variant_list) @semantic.body) @semantic.scope
-(union_item (field_declaration_list) @semantic.body) @semantic.scope
-(trait_item (declaration_list) @semantic.body) @semantic.scope
-(impl_item (declaration_list) @semantic.body) @semantic.scope
-(mod_item (declaration_list) @semantic.body) @semantic.scope
-"#;
-
-#[cfg(feature = "lang-python")]
-const PYTHON_SEMANTIC: &str = r#"
-(class_definition body: (block) @semantic.body) @semantic.scope
-(function_definition body: (block) @semantic.body) @semantic.scope
-"#;
-
-#[cfg(feature = "lang-javascript")]
-const JAVASCRIPT_SEMANTIC: &str = r#"
-(class_declaration body: (class_body) @semantic.body) @semantic.scope
-(class body: (class_body) @semantic.body) @semantic.scope
-(function_declaration body: (statement_block) @semantic.body) @semantic.scope
-(generator_function_declaration body: (statement_block) @semantic.body) @semantic.scope
-(method_definition body: (statement_block) @semantic.body) @semantic.scope
-"#;
-
-#[cfg(feature = "lang-typescript")]
-const TYPESCRIPT_SEMANTIC: &str = r#"
-(class_declaration body: (class_body) @semantic.body) @semantic.scope
-(abstract_class_declaration body: (class_body) @semantic.body) @semantic.scope
-(function_declaration body: (statement_block) @semantic.body) @semantic.scope
-(generator_function_declaration body: (statement_block) @semantic.body) @semantic.scope
-(method_definition body: (statement_block) @semantic.body) @semantic.scope
-(interface_declaration body: (interface_body) @semantic.body) @semantic.scope
-"#;
-
-#[cfg(feature = "lang-json")]
-const JSON_SEMANTIC: &str = r#"
-(pair key: (string) @semantic.header value: [(object) (array)] @semantic.body) @semantic.scope
-"#;
-
-#[cfg(feature = "lang-go")]
-const GO_SEMANTIC: &str = r#"
-(function_declaration body: (block) @semantic.body) @semantic.scope
-(method_declaration body: (block) @semantic.body) @semantic.scope
-(type_declaration (type_spec type: [(struct_type) (interface_type)] @semantic.body)) @semantic.scope
-"#;
-
-#[cfg(feature = "lang-c")]
-const C_SEMANTIC: &str = r#"
-(function_definition body: (compound_statement) @semantic.body) @semantic.scope
-(struct_specifier body: (field_declaration_list) @semantic.body) @semantic.scope
-(union_specifier body: (field_declaration_list) @semantic.body) @semantic.scope
-(enum_specifier body: (enumerator_list) @semantic.body) @semantic.scope
-"#;
-
-#[cfg(feature = "lang-cpp")]
-const CPP_SEMANTIC: &str = r#"
-(function_definition body: (compound_statement) @semantic.body) @semantic.scope
-(class_specifier body: (field_declaration_list) @semantic.body) @semantic.scope
-(struct_specifier body: (field_declaration_list) @semantic.body) @semantic.scope
-(namespace_definition body: (declaration_list) @semantic.body) @semantic.scope
-(enum_specifier body: (enumerator_list) @semantic.body) @semantic.scope
-"#;
-
-#[cfg(feature = "lang-csharp")]
-const CSHARP_SEMANTIC: &str = r#"
-(namespace_declaration body: (declaration_list) @semantic.body) @semantic.scope
-(class_declaration body: (declaration_list) @semantic.body) @semantic.scope
-(interface_declaration body: (declaration_list) @semantic.body) @semantic.scope
-(struct_declaration body: (declaration_list) @semantic.body) @semantic.scope
-(record_declaration body: (declaration_list) @semantic.body) @semantic.scope
-(method_declaration body: (block) @semantic.body) @semantic.scope
-(constructor_declaration body: (block) @semantic.body) @semantic.scope
-"#;
-
-#[cfg(feature = "lang-java")]
-const JAVA_SEMANTIC: &str = r#"
-(class_declaration body: (class_body) @semantic.body) @semantic.scope
-(interface_declaration body: (interface_body) @semantic.body) @semantic.scope
-(enum_declaration body: (enum_body) @semantic.body) @semantic.scope
-(record_declaration body: (class_body) @semantic.body) @semantic.scope
-(method_declaration body: (block) @semantic.body) @semantic.scope
-(constructor_declaration body: (constructor_body) @semantic.body) @semantic.scope
-"#;
-
-#[cfg(feature = "lang-ruby")]
-const RUBY_SEMANTIC: &str = r#"
-(class) @semantic.scope
-(singleton_class) @semantic.scope
-(module) @semantic.scope
-(method) @semantic.scope
-(singleton_method) @semantic.scope
-"#;
-
-#[cfg(feature = "lang-php")]
-const PHP_SEMANTIC: &str = r#"
-(namespace_definition body: (compound_statement) @semantic.body) @semantic.scope
-(class_declaration body: (declaration_list) @semantic.body) @semantic.scope
-(interface_declaration body: (declaration_list) @semantic.body) @semantic.scope
-(trait_declaration body: (declaration_list) @semantic.body) @semantic.scope
-(function_definition body: (compound_statement) @semantic.body) @semantic.scope
-(method_declaration body: (compound_statement) @semantic.body) @semantic.scope
-"#;
-
-#[cfg(feature = "lang-bash")]
-const BASH_SEMANTIC: &str = r#"
-(function_definition body: (_) @semantic.body) @semantic.scope
-(if_statement) @semantic.scope
-(for_statement) @semantic.scope
-(c_style_for_statement) @semantic.scope
-(while_statement) @semantic.scope
-(case_statement) @semantic.scope
-"#;
-
-#[cfg(feature = "lang-toml")]
-const TOML_SEMANTIC: &str = r#"
-(table) @semantic.scope
-(table_array_element) @semantic.scope
-"#;
-
-#[cfg(feature = "lang-html")]
-const HTML_SEMANTIC: &str = r#"
-(element (start_tag) @semantic.header) @semantic.scope
-(script_element (start_tag) @semantic.header) @semantic.scope
-(style_element (start_tag) @semantic.header) @semantic.scope
-"#;
-
-#[cfg(feature = "lang-css")]
-const CSS_SEMANTIC: &str = r#"
-(rule_set (selectors) @semantic.header (block) @semantic.body) @semantic.scope
-(media_statement (block) @semantic.body) @semantic.scope
-(supports_statement (block) @semantic.body) @semantic.scope
-(keyframes_statement (keyframe_block_list) @semantic.body) @semantic.scope
-"#;
-
-#[cfg(feature = "lang-yaml")]
-const YAML_SEMANTIC: &str = r#"
-(block_mapping_pair
-  key: (_) @semantic.header
-  value: (block_node [(block_mapping) (block_sequence)] @semantic.body)) @semantic.scope
-"#;
-
-#[cfg(feature = "lang-markdown")]
-const MARKDOWN_SEMANTIC: &str = r#"
-(atx_heading (atx_h1_marker)) @semantic.heading.1
-(atx_heading (atx_h2_marker)) @semantic.heading.2
-(atx_heading (atx_h3_marker)) @semantic.heading.3
-(atx_heading (atx_h4_marker)) @semantic.heading.4
-(atx_heading (atx_h5_marker)) @semantic.heading.5
-(atx_heading (atx_h6_marker)) @semantic.heading.6
-(setext_heading (setext_h1_underline)) @semantic.heading.1
-(setext_heading (setext_h2_underline)) @semantic.heading.2
-"#;
-
-pub(crate) fn semantic_query(_lang: LanguageId) -> Option<&'static str> {
-    #[cfg(feature = "lang-rust")]
-    if _lang == RUST {
-        return Some(RUST_SEMANTIC);
-    }
-    #[cfg(feature = "lang-python")]
-    if _lang == PYTHON {
-        return Some(PYTHON_SEMANTIC);
-    }
-    #[cfg(feature = "lang-javascript")]
-    if _lang == JAVASCRIPT {
-        return Some(JAVASCRIPT_SEMANTIC);
-    }
-    #[cfg(feature = "lang-typescript")]
-    if _lang == TYPESCRIPT || _lang == TSX {
-        return Some(TYPESCRIPT_SEMANTIC);
-    }
-    #[cfg(feature = "lang-json")]
-    if _lang == JSON {
-        return Some(JSON_SEMANTIC);
-    }
-    #[cfg(feature = "lang-go")]
-    if _lang == GO {
-        return Some(GO_SEMANTIC);
-    }
-    #[cfg(feature = "lang-c")]
-    if _lang == C {
-        return Some(C_SEMANTIC);
-    }
-    #[cfg(feature = "lang-cpp")]
-    if _lang == CPP {
-        return Some(CPP_SEMANTIC);
-    }
-    #[cfg(feature = "lang-csharp")]
-    if _lang == CSHARP {
-        return Some(CSHARP_SEMANTIC);
-    }
-    #[cfg(feature = "lang-java")]
-    if _lang == JAVA {
-        return Some(JAVA_SEMANTIC);
-    }
-    #[cfg(feature = "lang-ruby")]
-    if _lang == RUBY {
-        return Some(RUBY_SEMANTIC);
-    }
-    #[cfg(feature = "lang-php")]
-    if _lang == PHP {
-        return Some(PHP_SEMANTIC);
-    }
-    #[cfg(feature = "lang-bash")]
-    if _lang == BASH {
-        return Some(BASH_SEMANTIC);
-    }
-    #[cfg(feature = "lang-toml")]
-    if _lang == TOML {
-        return Some(TOML_SEMANTIC);
-    }
-    #[cfg(feature = "lang-html")]
-    if _lang == HTML {
-        return Some(HTML_SEMANTIC);
-    }
-    #[cfg(feature = "lang-css")]
-    if _lang == CSS {
-        return Some(CSS_SEMANTIC);
-    }
-    #[cfg(feature = "lang-yaml")]
-    if _lang == YAML {
-        return Some(YAML_SEMANTIC);
-    }
-    #[cfg(feature = "lang-markdown")]
-    if _lang == MARKDOWN {
-        return Some(MARKDOWN_SEMANTIC);
-    }
-    #[cfg(feature = "lang-latex")]
-    if _lang == LATEX {
-        return Some(LATEX_SEMANTIC);
-    }
-    None
+/// The karet-authored semantic-block query for `lang`, if its grammar has one.
+pub(crate) fn semantic_query(lang: LanguageId) -> Option<&'static str> {
+    grammar(lang).and_then(|g| g.semantic)
 }
 
 /// Static metadata for one registered grammar.
@@ -276,6 +47,12 @@ pub(crate) struct GrammarInfo {
     /// Kept in a separate field so the grammar's own query stays pristine and the
     /// delta we add is auditable in one place.
     pub injections_extra: Option<&'static str>,
+    /// The karet-authored semantic-block query, if one ships for this grammar.
+    pub semantic: Option<&'static str>,
+    /// The karet-authored fold query (`queries/folds/*.scm`), if one ships.
+    pub folds: Option<&'static str>,
+    /// The karet-authored indent query (`queries/indents/*.scm`), if one ships.
+    pub indents: Option<&'static str>,
 }
 
 // Stable language ids — never renumber once shipped. Each is cfg-gated to its
@@ -399,11 +176,6 @@ const LATEX_HIGHLIGHTS: &str = r#"
 [(subscript) (superscript)] @punctuation.special
 "#;
 
-#[cfg(feature = "lang-latex")]
-const LATEX_SEMANTIC: &str = r#"
-[(part) (chapter) (section) (subsection) (subsubsection)] @semantic.scope
-"#;
-
 #[cfg(feature = "lang-rst")]
 const RST_HIGHLIGHTS: &str = r#"
 (title) @markup.heading
@@ -420,42 +192,6 @@ const ASCIIDOC_HIGHLIGHTS: &str = r#"
 (email) @markup.link.url
 (block_macro (target) @markup.link)
 [(listing_block) (literal_block) (ident_block)] @markup.raw.block
-"#;
-
-// tree-sitter-vue-next 0.1 publishes its queries under `queries/vue/`, while
-// its Rust binding currently looks only in `queries/`. Keep the small Karet
-// query here until the crate exposes those constants correctly.
-#[cfg(feature = "lang-vue")]
-const VUE_HIGHLIGHTS: &str = r#"
-(comment) @comment
-(doctype) @keyword
-(tag_name) @tag
-(attribute_name) @tag.attribute
-(directive_name) @tag.attribute
-(directive_value) @variable
-(attribute_value) @string
-(quoted_attribute_value) @string
-["<" ">" "</" "/>" "="] @punctuation.delimiter
-"#;
-
-#[cfg(feature = "lang-vue")]
-const VUE_INJECTIONS: &str = r#"
-((style_element
-  (start_tag
-    (attribute
-      (attribute_name) @_attr
-      (quoted_attribute_value (attribute_value) @injection.language)))
-  (raw_text) @injection.content)
- (#eq? @_attr "lang"))
-((script_element
-  (start_tag
-    (attribute
-      (attribute_name) @_attr
-      (quoted_attribute_value (attribute_value) @injection.language)))
-  (raw_text) @injection.content)
- (#eq? @_attr "lang"))
-((interpolation (raw_text) @injection.content)
- (#set! injection.language "typescript"))
 "#;
 
 /// karet's own addition to Rust's injections query: a doc comment is markdown.
@@ -502,6 +238,9 @@ pub(crate) fn all() -> &'static [GrammarInfo] {
             highlights: tree_sitter_rust::HIGHLIGHTS_QUERY,
             injections: Some(tree_sitter_rust::INJECTIONS_QUERY),
             injections_extra: Some(RUST_DOC_COMMENT_INJECTION),
+            semantic: Some(semantic::RUST),
+            folds: Some(include_str!("../queries/folds/rust.scm")),
+            indents: Some(include_str!("../queries/indents/rust.scm")),
         });
         #[cfg(feature = "lang-python")]
         v.push(GrammarInfo {
@@ -513,6 +252,9 @@ pub(crate) fn all() -> &'static [GrammarInfo] {
             highlights: tree_sitter_python::HIGHLIGHTS_QUERY,
             injections: None,
             injections_extra: None,
+            semantic: Some(semantic::PYTHON),
+            folds: Some(include_str!("../queries/folds/python.scm")),
+            indents: Some(include_str!("../queries/indents/python.scm")),
         });
         #[cfg(feature = "lang-javascript")]
         v.push(GrammarInfo {
@@ -524,6 +266,9 @@ pub(crate) fn all() -> &'static [GrammarInfo] {
             highlights: tree_sitter_javascript::HIGHLIGHT_QUERY, // singular
             injections: Some(tree_sitter_javascript::INJECTIONS_QUERY),
             injections_extra: Some(web::JS_GRAPHQL_MARKER_INJECTION),
+            semantic: Some(semantic::JAVASCRIPT),
+            folds: Some(include_str!("../queries/folds/javascript.scm")),
+            indents: Some(include_str!("../queries/indents/javascript.scm")),
         });
         #[cfg(feature = "lang-typescript")]
         v.push(GrammarInfo {
@@ -535,6 +280,9 @@ pub(crate) fn all() -> &'static [GrammarInfo] {
             highlights: tree_sitter_typescript::HIGHLIGHTS_QUERY,
             injections: None,
             injections_extra: Some(web::TS_INJECTION_EXTRA),
+            semantic: Some(semantic::TYPESCRIPT),
+            folds: Some(include_str!("../queries/folds/typescript.scm")),
+            indents: Some(include_str!("../queries/indents/typescript.scm")),
         });
         #[cfg(feature = "lang-typescript")]
         v.push(GrammarInfo {
@@ -546,6 +294,9 @@ pub(crate) fn all() -> &'static [GrammarInfo] {
             highlights: tree_sitter_typescript::HIGHLIGHTS_QUERY,
             injections: None,
             injections_extra: Some(web::TS_INJECTION_EXTRA),
+            semantic: Some(semantic::TYPESCRIPT),
+            folds: Some(include_str!("../queries/folds/typescript.scm")),
+            indents: Some(include_str!("../queries/indents/typescript.scm")),
         });
         #[cfg(feature = "lang-json")]
         v.push(GrammarInfo {
@@ -557,6 +308,9 @@ pub(crate) fn all() -> &'static [GrammarInfo] {
             highlights: tree_sitter_json::HIGHLIGHTS_QUERY,
             injections: None,
             injections_extra: None,
+            semantic: Some(semantic::JSON),
+            folds: Some(include_str!("../queries/folds/json.scm")),
+            indents: Some(include_str!("../queries/indents/json.scm")),
         });
         #[cfg(feature = "lang-go")]
         v.push(GrammarInfo {
@@ -568,6 +322,9 @@ pub(crate) fn all() -> &'static [GrammarInfo] {
             highlights: tree_sitter_go::HIGHLIGHTS_QUERY,
             injections: None,
             injections_extra: None,
+            semantic: Some(semantic::GO),
+            folds: Some(include_str!("../queries/folds/go.scm")),
+            indents: Some(include_str!("../queries/indents/go.scm")),
         });
         #[cfg(feature = "lang-c")]
         v.push(GrammarInfo {
@@ -579,6 +336,9 @@ pub(crate) fn all() -> &'static [GrammarInfo] {
             highlights: tree_sitter_c::HIGHLIGHT_QUERY, // singular
             injections: None,
             injections_extra: None,
+            semantic: Some(semantic::C),
+            folds: Some(include_str!("../queries/folds/c.scm")),
+            indents: Some(include_str!("../queries/indents/c.scm")),
         });
         #[cfg(feature = "lang-cpp")]
         v.push(GrammarInfo {
@@ -590,6 +350,9 @@ pub(crate) fn all() -> &'static [GrammarInfo] {
             highlights: tree_sitter_cpp::HIGHLIGHT_QUERY, // singular
             injections: None,
             injections_extra: None,
+            semantic: Some(semantic::CPP),
+            folds: Some(include_str!("../queries/folds/cpp.scm")),
+            indents: Some(include_str!("../queries/indents/cpp.scm")),
         });
         #[cfg(feature = "lang-csharp")]
         v.push(GrammarInfo {
@@ -603,6 +366,9 @@ pub(crate) fn all() -> &'static [GrammarInfo] {
             // but ships no `queries/injections.scm`, so the constant is gated out.
             injections: None,
             injections_extra: None,
+            semantic: Some(semantic::CSHARP),
+            folds: None,
+            indents: None,
         });
         #[cfg(feature = "lang-java")]
         v.push(GrammarInfo {
@@ -614,6 +380,9 @@ pub(crate) fn all() -> &'static [GrammarInfo] {
             highlights: tree_sitter_java::HIGHLIGHTS_QUERY,
             injections: None,
             injections_extra: None,
+            semantic: Some(semantic::JAVA),
+            folds: None,
+            indents: None,
         });
         #[cfg(feature = "lang-ruby")]
         v.push(GrammarInfo {
@@ -625,6 +394,9 @@ pub(crate) fn all() -> &'static [GrammarInfo] {
             highlights: tree_sitter_ruby::HIGHLIGHTS_QUERY,
             injections: None,
             injections_extra: None,
+            semantic: Some(semantic::RUBY),
+            folds: None,
+            indents: None,
         });
         #[cfg(feature = "lang-php")]
         v.push(GrammarInfo {
@@ -636,6 +408,9 @@ pub(crate) fn all() -> &'static [GrammarInfo] {
             highlights: tree_sitter_php::HIGHLIGHTS_QUERY,
             injections: Some(tree_sitter_php::INJECTIONS_QUERY),
             injections_extra: Some(web::PHP_HTML_INJECTION),
+            semantic: Some(semantic::PHP),
+            folds: None,
+            indents: None,
         });
         #[cfg(feature = "lang-bash")]
         v.push(GrammarInfo {
@@ -650,6 +425,9 @@ pub(crate) fn all() -> &'static [GrammarInfo] {
             highlights: tree_sitter_bash::HIGHLIGHT_QUERY, // singular
             injections: None,
             injections_extra: None,
+            semantic: Some(semantic::BASH),
+            folds: None,
+            indents: None,
         });
         #[cfg(feature = "lang-toml")]
         v.push(GrammarInfo {
@@ -661,6 +439,9 @@ pub(crate) fn all() -> &'static [GrammarInfo] {
             highlights: tree_sitter_toml_ng::HIGHLIGHTS_QUERY,
             injections: None,
             injections_extra: None,
+            semantic: Some(semantic::TOML),
+            folds: None,
+            indents: None,
         });
         #[cfg(feature = "lang-html")]
         v.push(GrammarInfo {
@@ -672,6 +453,9 @@ pub(crate) fn all() -> &'static [GrammarInfo] {
             highlights: tree_sitter_html::HIGHLIGHTS_QUERY,
             injections: Some(tree_sitter_html::INJECTIONS_QUERY),
             injections_extra: None,
+            semantic: Some(semantic::HTML),
+            folds: None,
+            indents: None,
         });
         #[cfg(feature = "lang-css")]
         v.push(GrammarInfo {
@@ -683,6 +467,9 @@ pub(crate) fn all() -> &'static [GrammarInfo] {
             highlights: tree_sitter_css::HIGHLIGHTS_QUERY,
             injections: None,
             injections_extra: None,
+            semantic: Some(semantic::CSS),
+            folds: None,
+            indents: None,
         });
         #[cfg(feature = "lang-yaml")]
         v.push(GrammarInfo {
@@ -694,6 +481,9 @@ pub(crate) fn all() -> &'static [GrammarInfo] {
             highlights: tree_sitter_yaml::HIGHLIGHTS_QUERY,
             injections: None,
             injections_extra: None,
+            semantic: Some(semantic::YAML),
+            folds: Some(include_str!("../queries/folds/yaml.scm")),
+            indents: Some(include_str!("../queries/indents/yaml.scm")),
         });
         // Markdown is two grammars. The *block* grammar is the entry point (headings,
         // fences, list markers); its injections query hands `(inline)` nodes to the
@@ -709,6 +499,9 @@ pub(crate) fn all() -> &'static [GrammarInfo] {
             highlights: tree_sitter_md::HIGHLIGHT_QUERY_BLOCK,
             injections: Some(tree_sitter_md::INJECTION_QUERY_BLOCK),
             injections_extra: None,
+            semantic: Some(semantic::MARKDOWN),
+            folds: None,
+            indents: None,
         });
         #[cfg(feature = "lang-latex")]
         v.push(GrammarInfo {
@@ -720,6 +513,9 @@ pub(crate) fn all() -> &'static [GrammarInfo] {
             highlights: LATEX_HIGHLIGHTS,
             injections: None,
             injections_extra: None,
+            semantic: Some(semantic::LATEX),
+            folds: None,
+            indents: None,
         });
         #[cfg(feature = "lang-zig")]
         v.push(GrammarInfo {
@@ -731,6 +527,9 @@ pub(crate) fn all() -> &'static [GrammarInfo] {
             highlights: tree_sitter_zig::HIGHLIGHTS_QUERY,
             injections: Some(tree_sitter_zig::INJECTIONS_QUERY),
             injections_extra: None,
+            semantic: None,
+            folds: None,
+            indents: None,
         });
         #[cfg(feature = "lang-xml")]
         v.push(GrammarInfo {
@@ -742,6 +541,9 @@ pub(crate) fn all() -> &'static [GrammarInfo] {
             highlights: tree_sitter_xml::XML_HIGHLIGHT_QUERY,
             injections: None,
             injections_extra: None,
+            semantic: None,
+            folds: None,
+            indents: None,
         });
         #[cfg(feature = "lang-svelte")]
         v.push(GrammarInfo {
@@ -753,6 +555,9 @@ pub(crate) fn all() -> &'static [GrammarInfo] {
             highlights: tree_sitter_svelte_next::HIGHLIGHTS_QUERY,
             injections: Some(tree_sitter_svelte_next::INJECTIONS_QUERY),
             injections_extra: None,
+            semantic: None,
+            folds: None,
+            indents: None,
         });
         #[cfg(feature = "lang-astro")]
         v.push(GrammarInfo {
@@ -764,6 +569,9 @@ pub(crate) fn all() -> &'static [GrammarInfo] {
             highlights: tree_sitter_astro_next::HIGHLIGHTS_QUERY,
             injections: Some(tree_sitter_astro_next::INJECTIONS_QUERY),
             injections_extra: None,
+            semantic: None,
+            folds: None,
+            indents: None,
         });
         #[cfg(feature = "lang-vue")]
         v.push(GrammarInfo {
@@ -772,9 +580,12 @@ pub(crate) fn all() -> &'static [GrammarInfo] {
             extensions: &["vue"],
             names: &["vue"],
             language: || tree_sitter_vue_next::LANGUAGE.into(),
-            highlights: VUE_HIGHLIGHTS,
-            injections: Some(VUE_INJECTIONS),
+            highlights: web::VUE_HIGHLIGHTS,
+            injections: Some(web::VUE_INJECTIONS),
             injections_extra: None,
+            semantic: None,
+            folds: None,
+            indents: None,
         });
         #[cfg(feature = "lang-sql")]
         v.push(GrammarInfo {
@@ -786,6 +597,9 @@ pub(crate) fn all() -> &'static [GrammarInfo] {
             highlights: tree_sitter_sequel::HIGHLIGHTS_QUERY,
             injections: None,
             injections_extra: None,
+            semantic: None,
+            folds: None,
+            indents: None,
         });
         #[cfg(feature = "lang-graphql")]
         v.push(GrammarInfo {
@@ -797,6 +611,9 @@ pub(crate) fn all() -> &'static [GrammarInfo] {
             highlights: GRAPHQL_HIGHLIGHTS,
             injections: None,
             injections_extra: None,
+            semantic: None,
+            folds: None,
+            indents: None,
         });
         #[cfg(feature = "lang-protobuf")]
         v.push(GrammarInfo {
@@ -808,6 +625,9 @@ pub(crate) fn all() -> &'static [GrammarInfo] {
             highlights: PROTOBUF_HIGHLIGHTS,
             injections: None,
             injections_extra: None,
+            semantic: None,
+            folds: None,
+            indents: None,
         });
         #[cfg(feature = "lang-containerfile")]
         v.push(GrammarInfo {
@@ -819,6 +639,9 @@ pub(crate) fn all() -> &'static [GrammarInfo] {
             highlights: tree_sitter_containerfile::HIGHLIGHTS_QUERY,
             injections: Some(tree_sitter_containerfile::INJECTIONS_QUERY),
             injections_extra: None,
+            semantic: None,
+            folds: None,
+            indents: None,
         });
         #[cfg(feature = "lang-make")]
         v.push(GrammarInfo {
@@ -830,6 +653,9 @@ pub(crate) fn all() -> &'static [GrammarInfo] {
             highlights: tree_sitter_make::HIGHLIGHTS_QUERY,
             injections: None,
             injections_extra: None,
+            semantic: None,
+            folds: None,
+            indents: None,
         });
         #[cfg(feature = "lang-cmake")]
         v.push(GrammarInfo {
@@ -841,6 +667,9 @@ pub(crate) fn all() -> &'static [GrammarInfo] {
             highlights: tree_sitter_cmake::HIGHLIGHTS_QUERY,
             injections: None,
             injections_extra: None,
+            semantic: None,
+            folds: None,
+            indents: None,
         });
         #[cfg(feature = "lang-rst")]
         v.push(GrammarInfo {
@@ -852,6 +681,9 @@ pub(crate) fn all() -> &'static [GrammarInfo] {
             highlights: RST_HIGHLIGHTS,
             injections: None,
             injections_extra: None,
+            semantic: None,
+            folds: None,
+            indents: None,
         });
         #[cfg(feature = "lang-asciidoc")]
         v.push(GrammarInfo {
@@ -863,6 +695,9 @@ pub(crate) fn all() -> &'static [GrammarInfo] {
             highlights: ASCIIDOC_HIGHLIGHTS,
             injections: None,
             injections_extra: None,
+            semantic: None,
+            folds: None,
+            indents: None,
         });
         shells::push(&mut v);
         programming::push(&mut v);
@@ -880,6 +715,9 @@ pub(crate) fn all() -> &'static [GrammarInfo] {
             highlights: tree_sitter_md::HIGHLIGHT_QUERY_INLINE,
             injections: Some(tree_sitter_md::INJECTION_QUERY_INLINE),
             injections_extra: None,
+            semantic: None,
+            folds: None,
+            indents: None,
         });
 
         v

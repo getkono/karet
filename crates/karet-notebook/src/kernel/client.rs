@@ -1,13 +1,13 @@
-//! The kernel client: readiness, execution, interrupt, shutdown — all
-//! correlated by parent message id, with "cell done" defined as the iopub
-//! `status: idle` whose parent is the execute request (per the protocol).
+//! The kernel client: readiness, execution, shutdown — all correlated by
+//! parent message id, with "cell done" defined as the iopub `status: idle`
+//! whose parent is the execute request (per the protocol). An interrupt goes
+//! out of band, through [`KernelControl`](super::KernelControl).
 
 use std::time::Duration;
 
 use jupyter_protocol::ExecutionState;
 use jupyter_protocol::JupyterMessage;
 use jupyter_protocol::messaging::ExecuteRequest;
-use jupyter_protocol::messaging::InterruptRequest;
 use jupyter_protocol::messaging::JupyterMessageContent;
 use jupyter_protocol::messaging::KernelInfoRequest;
 use jupyter_protocol::messaging::ShutdownRequest;
@@ -17,13 +17,12 @@ use serde_json::Value;
 use super::KernelChannel;
 use super::KernelError;
 use super::KernelTransport;
+use super::control::CONTROL_TIMEOUT;
 use crate::Output;
 use crate::Source;
 
 /// How long one cell may run before the client gives up waiting.
 const EXECUTE_TIMEOUT: Duration = Duration::from_secs(120);
-/// How long control requests (interrupt, shutdown) may take.
-const CONTROL_TIMEOUT: Duration = Duration::from_secs(10);
 /// The interval between readiness probes while the kernel boots.
 const READY_PROBE_INTERVAL: Duration = Duration::from_millis(300);
 
@@ -136,21 +135,6 @@ impl<T: KernelTransport> KernelClient<T> {
             }
         }
         Ok(outcome)
-    }
-
-    /// Interrupt the running cell over the control channel (the message
-    /// mode; signal-mode kernels are interrupted by their process owner).
-    ///
-    /// # Errors
-    /// Returns [`KernelError::Timeout`] if the kernel never acknowledges.
-    pub async fn interrupt(&mut self) -> Result<(), KernelError> {
-        let request = JupyterMessage::new(InterruptRequest {}, None);
-        let request_id = request.header.msg_id.clone();
-        self.transport.send(KernelChannel::Control, request).await?;
-        tokio::time::timeout(CONTROL_TIMEOUT, self.reply_to(&request_id))
-            .await
-            .map_err(|_| KernelError::Timeout)?
-            .map(|_| ())
     }
 
     /// Ask the kernel to exit (`restart: false`); the process owner reaps it.
@@ -432,12 +416,6 @@ mod tests {
         assert!(matches!(never, Err(KernelError::Timeout)), "{never:?}");
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn interrupt_round_trips_on_the_control_channel() -> Result<(), KernelError> {
-        let mut client = KernelClient::new(FakeTransport::default());
-        client.interrupt().await
-    }
-
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
     /// An iopub content built from its wire type and JSON body.
@@ -592,13 +570,6 @@ mod tests {
             assert!(
                 matches!(shutdown, Err(KernelError::Timeout)),
                 "{shutdown:?}"
-            );
-            assert_eq!(started.elapsed(), CONTROL_TIMEOUT);
-            let started = tokio::time::Instant::now();
-            let interrupt = client.interrupt().await;
-            assert!(
-                matches!(interrupt, Err(KernelError::Timeout)),
-                "{interrupt:?}"
             );
             assert_eq!(started.elapsed(), CONTROL_TIMEOUT);
         }

@@ -7,8 +7,12 @@
 //! then the file's prevailing indentation step, and only then the setting.
 
 use std::collections::BTreeMap;
+use std::collections::HashMap;
 
 use karet_core::BytePos;
+use karet_treesitter::LanguageId;
+use karet_treesitter::LayeredTree;
+use karet_treesitter::Query;
 use karet_treesitter::SyntaxTree;
 
 /// The longest indentation step, in spaces, counted as a nesting level rather
@@ -120,6 +124,69 @@ pub(crate) fn file_unit(text: &str, literal: impl Fn(usize) -> bool) -> Option<&
         Some("\t")
     } else {
         SPACES.get(..step.len())
+    }
+}
+
+/// Computes the indentation a new line takes from the grammars' indent queries
+/// (see [`karet_treesitter::indents_query`]), across every layer of a
+/// [`LayeredTree`] — a Rust block inside a markdown code fence indents as Rust.
+///
+/// Holds the compiled queries for one tree's languages; build it once per parse
+/// and ask it about as many line breaks as that parse serves.
+pub struct Indenter {
+    queries: HashMap<LanguageId, Query>,
+}
+
+impl Indenter {
+    /// Compile the indent query of every language in `tree` that has one.
+    #[must_use]
+    pub fn for_tree(tree: &LayeredTree) -> Self {
+        let mut queries = HashMap::new();
+        for layer in tree.layers() {
+            let lang = layer.language();
+            if queries.contains_key(&lang) {
+                continue;
+            }
+            let compiled = karet_treesitter::indents_query(lang)
+                .and_then(|source| Query::compile(lang, source).ok());
+            if let Some(query) = compiled {
+                queries.insert(lang, query);
+            }
+        }
+        Self { queries }
+    }
+
+    /// The leading whitespace for the line a break over `before..after` (an
+    /// empty range for a bare caret) opens.
+    ///
+    /// `text` is the source `tree` was parsed from, before the break. The
+    /// innermost layer at `before` whose language has an indent query and finds
+    /// an enclosing node decides. `None` when none does, so the caller keeps the
+    /// copy-the-current-line fallback.
+    ///
+    /// One level inside the enclosing node follows the file, not the setting:
+    /// the node's existing body lines (the shallowest from the line after it
+    /// opens through the caret's), else the opening line plus the file's own
+    /// commonest indentation step. `unit`, the configured level, applies only
+    /// where the file shows no step at all.
+    #[must_use]
+    pub fn newline_indent(
+        &self,
+        tree: &LayeredTree,
+        text: &str,
+        (before, after): (BytePos, BytePos),
+        unit: &str,
+    ) -> Option<String> {
+        let (layer, anchor) = tree.layers_at(before).into_iter().find_map(|layer| {
+            let query = self.queries.get(&layer.language())?;
+            Some((layer, layer.newline_indent(query, text, before, after)?))
+        })?;
+        if anchor.deeper {
+            let literal = |at: usize| in_literal(layer, BytePos(at));
+            deeper(text, anchor.line_start.0, before.0, unit, literal)
+        } else {
+            line_indent(text, anchor.line_start.0).map(str::to_owned)
+        }
     }
 }
 

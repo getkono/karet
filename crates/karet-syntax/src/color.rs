@@ -145,12 +145,8 @@ fn function_at(chars: &[char], at: usize) -> Option<(usize, [u8; 4])> {
         v[3] = alpha;
         v
     };
-    Some((at_len(name_len, close), rgba))
-}
-
-/// The literal's full character length (`name(` through `)`).
-const fn at_len(_name_len: usize, close: usize) -> usize {
-    close + 1
+    // The literal's full character length: `name(` through `)`.
+    Some((close + 1, rgba))
 }
 
 /// Standard HSL → sRGB conversion.

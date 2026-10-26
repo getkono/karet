@@ -190,18 +190,7 @@ fn non_empty(start: usize, end: usize) -> Option<Span> {
 /// injections concatenate ranges from independent matches, so overlap is possible.
 pub(crate) fn normalize(mut ranges: Vec<Span>) -> Vec<Span> {
     ranges.retain(|s| s.end.0 > s.start.0);
-    ranges.sort_by_key(|s| (s.start.0, s.end.0));
-    let mut out: Vec<Span> = Vec::with_capacity(ranges.len());
-    for span in ranges {
-        match out.last_mut() {
-            // Overlapping or touching — extend rather than emit a second range.
-            Some(last) if span.start.0 <= last.end.0 => {
-                last.end = BytePos(last.end.0.max(span.end.0));
-            },
-            _ => out.push(span),
-        }
-    }
-    out
+    karet_core::merge_spans(ranges)
 }
 
 #[cfg(test)]

@@ -20,6 +20,9 @@ pub(super) fn push(grammars: &mut Vec<GrammarInfo>) {
         highlights: tree_sitter_zsh::HIGHLIGHT_QUERY,
         injections: None,
         injections_extra: None,
+        semantic: None,
+        folds: None,
+        indents: None,
     });
     #[cfg(feature = "lang-fish")]
     grammars.push(GrammarInfo {
@@ -31,6 +34,9 @@ pub(super) fn push(grammars: &mut Vec<GrammarInfo>) {
         highlights: tree_sitter_fish::HIGHLIGHTS_QUERY,
         injections: None,
         injections_extra: None,
+        semantic: None,
+        folds: None,
+        indents: None,
     });
     #[cfg(feature = "lang-powershell")]
     grammars.push(GrammarInfo {
@@ -42,6 +48,9 @@ pub(super) fn push(grammars: &mut Vec<GrammarInfo>) {
         highlights: tree_sitter_powershell::HIGHLIGHTS_QUERY,
         injections: None,
         injections_extra: None,
+        semantic: None,
+        folds: None,
+        indents: None,
     });
     #[cfg(feature = "lang-batch")]
     grammars.push(GrammarInfo {
@@ -53,5 +62,8 @@ pub(super) fn push(grammars: &mut Vec<GrammarInfo>) {
         highlights: tree_sitter_batch::HIGHLIGHTS_QUERY,
         injections: None,
         injections_extra: None,
+        semantic: None,
+        folds: None,
+        indents: None,
     });
 }
