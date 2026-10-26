@@ -83,13 +83,27 @@ fn an_empty_frame_forgets_what_was_painted_but_keeps_the_last_geometry() {
     let buffer = TextBuffer::from_text("alpha\nbeta\n");
     let lines = [below(0, "^ here")];
     let mut state = EditorState::new();
-    frame(&buffer, &lines, &[], false, Rect::new(0, 0, 20, 5), &mut state);
+    frame(
+        &buffer,
+        &lines,
+        &[],
+        false,
+        Rect::new(0, 0, 20, 5),
+        &mut state,
+    );
     assert_eq!(state.virtual_line_at(GUTTER + 1, 1), Some(0));
     assert_eq!(state.content_width(), 20 - GUTTER);
 
     // A zero-height frame paints nothing, so nothing there can be clicked;
     // the viewport it never measured is still the last one's.
-    frame(&buffer, &lines, &[], false, Rect::new(0, 0, 20, 0), &mut state);
+    frame(
+        &buffer,
+        &lines,
+        &[],
+        false,
+        Rect::new(0, 0, 20, 0),
+        &mut state,
+    );
     assert_eq!(state.virtual_line_at(GUTTER + 1, 1), None);
     assert_eq!(state.virtual_line_rect(0), None);
     assert_eq!(state.content_width(), 20 - GUTTER);
