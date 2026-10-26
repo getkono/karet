@@ -24,6 +24,9 @@ fn center_on_and_scroll_paging_move_viewport_only() {
     assert_eq!(state.scroll_line(), 0);
 }
 
+/// A scroll that moves the viewport without moving the caret.
+type ScrollOp = fn(&mut EditorState);
+
 #[test]
 fn centering_and_paging_outlast_a_pending_caret_reveal() {
     // A caret move owes a reveal on the next render; a scroll asked for
@@ -36,7 +39,9 @@ fn centering_and_paging_outlast_a_pending_caret_reveal() {
     };
     // Each target is relative to the top the caret move left, and none
     // shows the caret on line 80.
-    let ops: [(&str, fn(&mut EditorState), fn(u32) -> u32); 3] = [
+    // The scroll and the top it should leave, given the top before it.
+    type Case = (&'static str, ScrollOp, fn(u32) -> u32);
+    let ops: [Case; 3] = [
         ("center_on", |s| s.center_on(30), |_| 25),
         ("scroll_page_down", EditorState::scroll_page_down, |top| {
             top + 10
@@ -71,7 +76,7 @@ fn centering_and_paging_start_at_the_first_row_of_the_line() {
             .render(area, &mut target, state);
         target
     };
-    let ops: [(&str, fn(&mut EditorState)); 2] = [
+    let ops: [(&str, ScrollOp); 2] = [
         ("center_on", |s| s.center_on(0)),
         ("scroll_page_up", EditorState::scroll_page_up),
     ];
