@@ -256,6 +256,7 @@ async fn event_loop(
 
     let mut decoded_images = preview_image_results(app);
     let mut file_scans = app.file_index.take_receiver();
+    let mut seam_discoveries = app.seam_discovery.take_receiver();
     let mut terminal_events = terminal_events(app);
     // Saving a `keymap.jsonc` rebinds live; the watcher lives as long as the loop.
     let keymap_paths: Vec<std::path::PathBuf> =
@@ -322,6 +323,9 @@ async fn event_loop(
             scan = recv_decoded(&mut file_scans) => if let Some(scan) = scan {
                 app.on_file_index(scan);
             },
+            discovery = recv_decoded(&mut seam_discoveries) => if let Some(discovery) = discovery {
+                app.on_seam_discovery(discovery);
+            },
             terminal = recv_decoded(&mut terminal_events) => redraw = accept_terminal(app, terminal),
             change = recv_decoded(&mut keymap_changes) => if change.is_some() {
                 // One reload covers a burst of events (an atomic-rename save).
@@ -363,6 +367,10 @@ async fn event_loop(
         while let Some(scan) = file_scans.as_mut().and_then(|rx| rx.try_recv().ok()) {
             redraw = true;
             app.on_file_index(scan);
+        }
+        while let Some(discovery) = seam_discoveries.as_mut().and_then(|rx| rx.try_recv().ok()) {
+            redraw = true;
+            app.on_seam_discovery(discovery);
         }
         while let Some(event) = terminal_events.as_mut().and_then(|rx| rx.try_recv().ok()) {
             redraw |= accept_terminal(app, Some(event));

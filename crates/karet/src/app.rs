@@ -750,6 +750,8 @@ pub struct App {
     pub(crate) seam_query_req: Option<RequestId>,
     /// The in-flight seam node-detail request.
     pub(crate) seam_node_req: Option<RequestId>,
+    /// Package discovery behind the Seam start-point picker, run off the UI thread.
+    pub(crate) seam_discovery: seam::roots::RootDiscovery,
     /// Requests cancelled because their owning view closed. Late queued events
     /// bearing these ids are ignored and cannot resurrect UI.
     cancelled_requests: HashSet<RequestId>,
