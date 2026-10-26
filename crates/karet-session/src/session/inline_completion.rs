@@ -8,8 +8,8 @@
 use karet_core::InlineCompletionItem;
 use karet_core::InlineCompletionTrigger;
 
-use super::updates::utf16_caret;
-use super::updates::utf16_range_to_buffer;
+use super::columns::utf16_caret;
+use super::columns::utf16_range_to_buffer;
 use super::*;
 use crate::api::AccountOutcome;
 use crate::api::LanguageServerId;
