@@ -144,8 +144,7 @@ pub(crate) fn heartbeat_json(beat: &Beat, time: f64) -> serde_json::Value {
 
 /// Where undelivered heartbeats wait for connectivity.
 fn queue_path() -> Option<PathBuf> {
-    directories::ProjectDirs::from("", "", "karet")
-        .map(|dirs| dirs.cache_dir().join("wakatime-queue.jsonl"))
+    crate::dirs::cache_dir().map(|dir| dir.join("wakatime-queue.jsonl"))
 }
 
 /// Start the worker; the session sends [`Beat`]s and the status-bar text

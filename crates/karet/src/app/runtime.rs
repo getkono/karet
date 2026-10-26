@@ -13,8 +13,8 @@ pub(super) fn session_config(app: &App, swap_dir: Option<std::path::PathBuf>) ->
         // Every external process is owned by a hidden copy of this executable.
         process_supervisor: std::env::current_exe().ok(),
         // Immutable installations are shared by every local karet instance.
-        lsp_registry_dir: directories::ProjectDirs::from("", "getkono", "karet")
-            .map(|dirs| dirs.data_local_dir().join("language-servers")),
+        lsp_registry_dir: karet_session::dirs::data_local_dir()
+            .map(|dir| dir.join("language-servers")),
         // The stored seam index, so opening the view a second time does not re-parse a
         // repository that has not changed. Losing it costs a rebuild and nothing else.
         seam_cache_dir: karet_session::seam_cache::default_cache_dir(),
@@ -73,6 +73,13 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
     // The session backend runs on its own Tokio runtime; the UI task selects over
     // terminal input, backend events, and document snapshots so it never blocks.
     let runtime = tokio::runtime::Runtime::new().map_err(|e| eyre!("tokio runtime: {e}"))?;
+    // Before any cache opens: bring the caches earlier releases kept under a second
+    // root (macOS/Windows only) onto the one root every store now shares.
+    match karet_session::dirs::migrate_legacy_cache() {
+        Ok(0) => {},
+        Ok(moved) => tracing::info!(moved, "moved legacy cache entries to the karet cache root"),
+        Err(error) => tracing::warn!(%error, "could not migrate the legacy karet cache"),
+    }
     // The real app persists crash-recovery swaps to the user data directory;
     // headless/test sessions leave this unset and keep no backups.
     let config = session_config(&app, karet_session::backup::default_swap_dir());

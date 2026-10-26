@@ -278,11 +278,7 @@ fn dictionary_roots() -> Vec<PathBuf> {
 }
 
 fn user_dictionary_dir() -> Option<PathBuf> {
-    Some(
-        directories::ProjectDirs::from("", "getkono", "karet")?
-            .data_local_dir()
-            .join("dictionaries"),
-    )
+    crate::dirs::data_local_dir().map(|dir| dir.join("dictionaries"))
 }
 
 #[cfg(test)]

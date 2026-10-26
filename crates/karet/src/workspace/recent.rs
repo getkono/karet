@@ -145,9 +145,7 @@ impl RecentStore {
     /// (the local data directory where there is none, as for the logs).
     #[must_use]
     pub(crate) fn default_path() -> Option<PathBuf> {
-        let dirs = directories::ProjectDirs::from("", "getkono", "karet")?;
-        let state = dirs.state_dir().unwrap_or_else(|| dirs.data_local_dir());
-        Some(state.join(FILE_NAME))
+        karet_session::dirs::state_dir().map(|state| state.join(FILE_NAME))
     }
 
     /// Load the store at `path` and write every later touch back to it.

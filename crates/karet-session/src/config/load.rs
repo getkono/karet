@@ -543,8 +543,7 @@ pub(crate) fn user_config_path() -> Option<PathBuf> {
 /// config files live.
 #[must_use]
 pub fn user_config_dir() -> Option<PathBuf> {
-    directories::ProjectDirs::from("", "getkono", "karet")
-        .map(|dirs| dirs.config_dir().to_path_buf())
+    crate::dirs::config_dir()
 }
 
 /// `<system config dir>/karet/setting.jsonc`. On Unix this is the first entry of

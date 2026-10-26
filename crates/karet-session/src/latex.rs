@@ -164,9 +164,7 @@ fn output_directory(workspace: Option<&Path>, root: &Path, settings: &Latex) -> 
         let identity = workspace.or_else(|| root.parent()).unwrap_or(root);
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         identity.hash(&mut hasher);
-        let project_cache = directories::ProjectDirs::from("", "getkono", "karet")
-            .map(|dirs| dirs.cache_dir().to_path_buf())
-            .unwrap_or_else(std::env::temp_dir);
+        let project_cache = crate::dirs::cache_dir().unwrap_or_else(std::env::temp_dir);
         return project_cache
             .join("latex")
             .join(format!("{:016x}", hasher.finish()));

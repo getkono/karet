@@ -42,10 +42,8 @@ fn now_secs() -> u64 {
 
 impl ReviewStore {
     fn path(root: &Path) -> Option<PathBuf> {
-        directories::ProjectDirs::from("", "", "karet").map(|dirs| {
-            dirs.cache_dir()
-                .join(format!("review-{:016x}.json", workspace_key(root)))
-        })
+        karet_session::dirs::cache_dir()
+            .map(|dir| dir.join(format!("review-{:016x}.json", workspace_key(root))))
     }
 
     fn ensure_loaded(&mut self, root: &Path) {

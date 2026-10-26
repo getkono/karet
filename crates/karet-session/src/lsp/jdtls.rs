@@ -74,11 +74,7 @@ fn inject_data_arg(spec: &mut LspSpec, root: &Path) {
 fn workspace_data_dir(root: &Path) -> Option<PathBuf> {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     root.hash(&mut hasher);
-    directories::ProjectDirs::from("", "", "karet").map(|dirs| {
-        dirs.cache_dir()
-            .join("jdtls")
-            .join(format!("{:016x}", hasher.finish()))
-    })
+    crate::dirs::cache_dir().map(|dir| dir.join("jdtls").join(format!("{:016x}", hasher.finish())))
 }
 
 /// The user-facing diagnosis when the JDK preflight fails; `None` when jdtls
