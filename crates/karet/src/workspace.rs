@@ -233,32 +233,14 @@ fn title(path: &Path) -> String {
 /// only ever calls this off the UI thread, through [`FileIndex`].
 #[must_use]
 pub fn list_files(root: &Path) -> Vec<(String, PathBuf)> {
-    let mut out: Vec<(String, PathBuf)> = walk(root)
+    // The workspace-search walk's own file listing, so quick-open covers the
+    // same tree a search does: symlinks never followed, ignore files applied
+    // (those above `root` included), heavyweight dirs pruned.
+    let mut out: Vec<(String, PathBuf)> = karet_search::walk_files(root)
         .map(|abs| (display_path(root, &abs), abs))
         .collect();
     out.sort_by(|a, b| a.0.cmp(&b.0));
     out
-}
-
-/// The files under `start` the quick-open list covers. Aligned with the
-/// workspace-search walk: symlinks are never followed, ignore files apply (those
-/// above `start` included), and the heavyweight dirs are pruned even without an
-/// ignore file.
-fn walk(start: &Path) -> impl Iterator<Item = PathBuf> {
-    ignore::WalkBuilder::new(start)
-        .standard_filters(true)
-        .require_git(false)
-        .follow_links(false)
-        .filter_entry(|entry| {
-            entry
-                .file_name()
-                .to_str()
-                .is_none_or(|name| !karet_search::IGNORED_DIRS.contains(&name))
-        })
-        .build()
-        .flatten()
-        .filter(|entry| entry.file_type().is_some_and(|t| t.is_file()))
-        .map(ignore::DirEntry::into_path)
 }
 
 /// `path` relative to `root` for display, or the whole path when it lies outside.
