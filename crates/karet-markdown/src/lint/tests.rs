@@ -66,6 +66,23 @@ fn bare_urls_flag_and_wrap_in_angle_brackets() {
     assert!(ids("`https://example.com`\n").is_empty());
 }
 
+/// A URL ends where adjacent HTML begins, so the fix wraps only the URL and
+/// leaves the markup intact. Falsified by `bare_urls` reading `<` as part of
+/// the URL, which turned `<!-- c -->` into `<!-->` and swallowed `<br>`.
+#[test]
+fn bare_url_stops_before_adjacent_html() {
+    assert_eq!(
+        fixed("# T\n\nhttps://example.com<!-- c -->\n"),
+        "# T\n\n<https://example.com><!-- c -->\n"
+    );
+    assert_eq!(
+        fixed("https://example.com<br>\n"),
+        "<https://example.com><br>\n"
+    );
+    // The fixed text is stable: the wrapped URL is an autolink now.
+    assert!(ids("<https://example.com><br>\n").is_empty());
+}
+
 // --- heading rules ---
 
 #[test]
@@ -449,6 +466,14 @@ fn lint_and_fix_never_panic_on_generated_markdown() {
             text.push_str(PIECES.get(rng.below(PIECES.len())).unwrap_or(&"x"));
         }
         let out = apply_fixes(&text, &checked_lint(&text, seed));
+        // An MD034 wrap never runs into adjacent HTML (seed 27 once fixed
+        // `https://example.com<br>` to `<https://example.com<br>>`); the
+        // pattern may already sit in the input, so only new ones count.
+        let runs = |s: &str| s.matches("<https://example.com<").count();
+        assert!(
+            runs(&out) <= runs(&text),
+            "seed {seed}: {text:?} -> {out:?}"
+        );
         // The fixed text must lint and fix again, too.
         let twice = apply_fixes(&out, &checked_lint(&out, seed));
         // Fixes may add a final newline, never strip one.
