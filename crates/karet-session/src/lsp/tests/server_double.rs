@@ -174,6 +174,8 @@ fn advertised_capabilities(behavior: Behavior) -> Value {
         "executeCommandProvider": {"commands": ["double.fix", "double.run", "double.accept"]},
         "inlineCompletionProvider": {},
         "codeLensProvider": {"resolveProvider": true},
+        "documentLinkProvider": {"resolveProvider": true},
+        "colorProvider": true,
         "signatureHelpProvider": {
             "triggerCharacters": ["("],
             "retriggerCharacters": [","]
@@ -874,6 +876,18 @@ pub(super) fn test_connector(
                         },
                         Some("textDocument/codeLens" | "codeLens/resolve") => {
                             let result = code_lens_reply(&msg);
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": result}),
+                            )
+                            .await;
+                        },
+                        Some(
+                            "textDocument/documentLink"
+                            | "documentLink/resolve"
+                            | "textDocument/documentColor",
+                        ) => {
+                            let result = super::link_color_tests::double_reply(&msg);
                             write_msg(
                                 &mut server_write,
                                 &json!({"jsonrpc": "2.0", "id": msg["id"], "result": result}),

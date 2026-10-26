@@ -31,6 +31,7 @@ impl App {
         // has to without another keystroke to wake the loop.
         let inlay = self.inlay_next_wake(now);
         let code_lens = self.code_lens_next_wake(now);
+        let links_colors = self.link_color_next_wake(now);
         // Likewise the lightbulb probe, once the caret has settled.
         let code_actions = self.code_action_next_wake(now);
         // And the ghost-text ask, once typing has paused.
@@ -69,6 +70,7 @@ impl App {
             nested_repositories,
             inlay,
             code_lens,
+            links_colors,
             code_actions,
             inline_completion,
             occurrences,
@@ -203,6 +205,15 @@ impl App {
             } => self.on_code_lenses(id, doc, version, lenses),
             SessionEvent::CodeLensesFailed { doc, version } => {
                 self.on_code_lenses_failed(id, doc, version);
+            },
+            SessionEvent::LinksAndColors {
+                doc,
+                version,
+                links,
+                colors,
+            } => self.on_links_and_colors(id, doc, version, (links, colors)),
+            SessionEvent::DocumentLinkResolved { doc, result } => {
+                self.on_document_link_resolved(id, doc, result);
             },
             SessionEvent::InlayHintResolved { doc, hint } => {
                 self.on_inlay_hint_resolved(id, doc, hint);
@@ -389,6 +400,7 @@ impl App {
                 // authoritative and never re-asked.
                 self.invalidate_inlay_coverage();
                 self.invalidate_code_lens_coverage();
+                self.invalidate_link_color_coverage();
             },
             SessionEvent::Saved { doc } => {
                 self.reindex_saved_seam(doc);

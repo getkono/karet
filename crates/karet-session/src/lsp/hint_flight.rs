@@ -57,6 +57,7 @@ use super::health::FailureTally;
 use super::inline_completion;
 use super::inline_completion::InlineFlight;
 use super::inline_completion::InlineStep;
+use super::link_color::LinkColorFlight;
 use super::message::LspUpdate;
 use super::slot::SlotKey;
 use super::slot::SlotToken;
@@ -144,9 +145,9 @@ pub(super) type HintAnswer = Answer<Vec<InlayHint>>;
 pub(super) type HintFlight = Flight<Hints>;
 
 /// Every background request one server task has accepted and not yet
-/// answered: its inlay-hint requests, lightbulb probes, code-lens listings
-/// and inline-completion asks, each kind capped at one running per document
-/// on its own.
+/// answered: its inlay-hint requests, lightbulb probes, code-lens listings,
+/// inline-completion asks and link-and-colour listings, each kind capped at
+/// one running per document on its own.
 #[derive(Default)]
 pub(super) struct Flights {
     /// The inlay-hint requests.
@@ -157,6 +158,8 @@ pub(super) struct Flights {
     pub(super) lenses: LensFlight,
     /// The inline-completion asks.
     pub(super) inline: InlineFlight,
+    /// The document-link and colour listings.
+    pub(super) links: LinkColorFlight,
     /// The running completing request of the last sign-in, which the next
     /// account step supersedes (see `account`).
     sign_in: FollowUpTask,
@@ -184,6 +187,7 @@ impl Flights {
         self.probes.launch_ready(client, pending);
         self.lenses.launch_ready(client, pending);
         self.inline.launch_ready(client, pending);
+        self.links.launch_ready(client, pending);
     }
 
     /// [`Flight::abandon`] for every kind.
@@ -192,6 +196,7 @@ impl Flights {
         self.probes.abandon(updates, generation);
         self.lenses.abandon(updates, generation);
         self.inline.abandon(updates, generation);
+        self.links.abandon(updates, generation);
     }
 
     /// [`Flight::shutdown`] for every kind.
@@ -204,6 +209,7 @@ impl Flights {
         self.probes.shutdown(updates, generation).await;
         self.lenses.shutdown(updates, generation).await;
         self.inline.shutdown(updates, generation).await;
+        self.links.shutdown(updates, generation).await;
     }
 }
 

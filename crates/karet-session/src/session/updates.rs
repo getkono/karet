@@ -208,6 +208,7 @@ impl Session {
             LspUpdate::ApplyEdit { request, .. } => self.adopt_server_edit(request),
             LspUpdate::CodeAction { answer, .. } => self.adopt_code_action(answer),
             LspUpdate::CodeLens { answer, .. } => self.adopt_code_lens(answer),
+            LspUpdate::LinkColor { answer, .. } => self.adopt_link_color(answer),
             LspUpdate::SelectionRanges { answer, .. } => self.adopt_selection_ranges(answer),
             LspUpdate::DocumentHighlights { answer, .. } => self.adopt_document_highlights(answer),
             // A formatting answer either answers a Format command or finishes a

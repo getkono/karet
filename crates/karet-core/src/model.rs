@@ -17,6 +17,7 @@ mod hierarchy;
 mod inlay;
 mod inline_completion;
 mod lens;
+mod link;
 mod virtual_text;
 
 pub use completion::CompletionItem;
@@ -38,6 +39,8 @@ pub use inline_completion::InlineCompletionItem;
 pub use inline_completion::InlineCompletionTrigger;
 pub use inline_completion::InlineGhost;
 pub use lens::CodeLens;
+pub use link::DocumentColor;
+pub use link::DocumentLink;
 pub use virtual_text::EolAlign;
 pub use virtual_text::VirtualLine;
 pub use virtual_text::VirtualLineSide;
