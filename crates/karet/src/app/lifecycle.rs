@@ -279,7 +279,9 @@ impl App {
             &mut requests,
             |view| *view,
         );
-        drain_view_requests(&mut self.pending_compare, views, &mut requests, |view| *view);
+        drain_view_requests(&mut self.pending_compare, views, &mut requests, |view| {
+            *view
+        });
         drain_view_requests(&mut self.latex_previews, views, &mut requests, |view| *view);
         drain_view_requests(
             &mut self.pending_prepared_diffs,

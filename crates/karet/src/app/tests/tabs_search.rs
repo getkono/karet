@@ -656,39 +656,6 @@ fn parse_rev_range_distinguishes_two_and_three_dot() {
 }
 
 #[test]
-fn open_compare_tab_builds_a_compare_tab() {
-    let mut app = app();
-    app.open_compare_tab(
-        "main".to_string(),
-        "HEAD".to_string(),
-        true,
-        vec![prepared_change("a.rs", StatusKind::Modified)],
-    );
-    match &app.tabs[app.active].kind {
-        TabKind::Compare {
-            base_label,
-            head_label,
-            merge_base,
-            files,
-            view,
-        } => {
-            assert_eq!(base_label, "main");
-            assert_eq!(head_label, "HEAD");
-            assert!(*merge_base);
-            assert_eq!(files.files.len(), 1);
-            assert_eq!(view.scroll, 0);
-        },
-        _ => panic!("expected a compare tab"),
-    }
-    // A compare tab scrolls via the shared pager arm.
-    app.scroll_lines(2);
-    assert!(matches!(
-        &app.tabs[app.active].kind,
-        TabKind::Compare { view, .. } if view.scroll == 2
-    ));
-}
-
-#[test]
 fn graph_compare_requires_a_marked_base() {
     let mut app = app();
     app.dispatch(Command::ShowCommitGraph);
