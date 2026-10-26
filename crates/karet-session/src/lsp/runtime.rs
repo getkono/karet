@@ -831,14 +831,8 @@ pub(super) async fn server_task(task: ServerTask) {
                         let answer = if dead {
                             cmd.unanswered(code_actions::UNAVAILABLE)
                         } else {
-                            let mut context = code_actions::StepContext {
-                                tally: &mut tally,
-                                dead: &mut dead,
-                                updates: &updates,
-                                key: &key,
-                                token,
-                                generation,
-                            };
+                            let health = (&mut dead, &mut tally, &updates, &key, token);
+                            let mut context = code_actions::StepContext::of(health, generation);
                             code_actions::serve(active, cmd, &mut context).await
                         };
                         let _ = updates.send(LspUpdate::CodeAction { generation, answer });
@@ -859,14 +853,8 @@ pub(super) async fn server_task(task: ServerTask) {
                             token,
                         )
                         .await;
-                        let mut context = code_actions::StepContext {
-                            tally: &mut tally,
-                            dead: &mut dead,
-                            updates: &updates,
-                            key: &key,
-                            token,
-                            generation,
-                        };
+                        let health = (&mut dead, &mut tally, &updates, &key, token);
+                        let mut context = code_actions::StepContext::of(health, generation);
                         let answer = code_lens::run(active, request, lens, &mut context).await;
                         let _ = updates.send(LspUpdate::CodeLens { generation, answer });
                     },
@@ -884,27 +872,11 @@ pub(super) async fn server_task(task: ServerTask) {
                     // A listing is background work: no flush, and no await --
                     // it launches below, as a hint request does. See `link_color`.
                     Ok(listing) => flights.links.ask(listing, &updates, generation),
+                    // A resolve hands the server its own data back and asks
+                    // nothing of the text, so it flushes nothing.
                     Err(step) => {
-                        flush_pending(
-                            active,
-                            (&mut pending, &mut documents),
-                            &mut dead,
-                            &mut tally,
-                            &updates,
-                            &key,
-                            token,
-                        )
-                        .await;
-                        let mut context = code_actions::StepContext {
-                            tally: &mut tally,
-                            dead: &mut dead,
-                            updates: &updates,
-                            key: &key,
-                            token,
-                            generation,
-                        };
-                        let answer = link_color::resolve(active, step, &mut context).await;
-                        let _ = updates.send(LspUpdate::LinkColor { generation, answer });
+                        let health = (&mut dead, &mut tally, &updates, &key, token);
+                        link_color::resolve(active, step, health, generation).await;
                     },
                 },
                 ServerCmd::Formatting {
@@ -924,14 +896,8 @@ pub(super) async fn server_task(task: ServerTask) {
                         token,
                     )
                     .await;
-                    let mut context = code_actions::StepContext {
-                        tally: &mut tally,
-                        dead: &mut dead,
-                        updates: &updates,
-                        key: &key,
-                        token,
-                        generation,
-                    };
+                    let health = (&mut dead, &mut tally, &updates, &key, token);
+                    let mut context = code_actions::StepContext::of(health, generation);
                     let asked = (request, doc, version);
                     format::answer(active, asked, &path, ask, &mut context).await;
                 },

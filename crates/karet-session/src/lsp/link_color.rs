@@ -23,6 +23,7 @@ use karet_lsp::LspClient;
 use karet_lsp::LspError;
 use tokio::sync::mpsc;
 
+use super::code_actions::Health;
 use super::code_actions::StepContext;
 use super::code_actions::UNAVAILABLE;
 use super::health::FailureTally;
@@ -275,32 +276,37 @@ fn judge<T>(
     }
 }
 
-/// Resolve a link's target on a live connection: a step the user is waiting
-/// on, so its failures are charged like any other. A connection the flush
-/// before it found dead answers why instead, and a link that comes back
-/// still without a target answers [`NO_TARGET`].
+/// Resolve a link's target on a live connection and send the answer: a step
+/// the user is waiting on, so its failures are charged like any other. A
+/// connection already found dead answers why instead, and a link that comes
+/// back still without a target answers [`NO_TARGET`].
 pub(super) async fn resolve(
     client: &LspClient,
     (request, doc, link): LinkResolve,
-    context: &mut StepContext<'_>,
-) -> LinkColorAnswer {
-    if *context.dead {
-        return LinkColorCmd::Resolve { request, doc, link }.unanswered(UNAVAILABLE);
-    }
-    let result = context
-        .settle(client.resolve_document_link(&link).await)
-        .and_then(|link| {
-            if link.is_resolved() {
-                Ok(link)
-            } else {
-                Err(NO_TARGET.to_owned())
-            }
-        });
-    LinkColorAnswer::Resolved {
-        request,
-        doc,
-        result,
-    }
+    health: Health<'_>,
+    generation: u64,
+) {
+    let updates = health.2;
+    let answer = if *health.0 {
+        LinkColorCmd::Resolve { request, doc, link }.unanswered(UNAVAILABLE)
+    } else {
+        let mut context = StepContext::of(health, generation);
+        let result = context
+            .settle(client.resolve_document_link(&link).await)
+            .and_then(|link| {
+                if link.is_resolved() {
+                    Ok(link)
+                } else {
+                    Err(NO_TARGET.to_owned())
+                }
+            });
+        LinkColorAnswer::Resolved {
+            request,
+            doc,
+            result,
+        }
+    };
+    let _ = updates.send(LspUpdate::LinkColor { generation, answer });
 }
 
 /// Answer the listing `tag` echoes with its two halves.

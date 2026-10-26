@@ -16,6 +16,35 @@ const TEXT: &str = "😀abcd\nfn main() {}\n";
 
 type Halves = (Option<Vec<DocumentLink>>, Option<Vec<DocumentColor>>);
 
+/// The server double's answer to the document-link and colour methods.
+///
+/// Listing links offers two: one to `https://example.com/` over UTF-16
+/// characters 2..4 of line 0 (buffer columns 1..3 past [`TEXT`]'s emoji),
+/// and a deferred one on line 1. Resolving targets a link `file:///w/<n>.rs`
+/// from its `data`, except `n` = 0, which it leaves without a target.
+/// Listing colours offers red over line 0's UTF-16 characters 2..4.
+pub(super) fn double_reply(msg: &Value) -> Value {
+    let on = |line: u32, from: u32, to: u32| json!({"start": {"line": line, "character": from}, "end": {"line": line, "character": to}});
+    match msg["method"].as_str() {
+        Some("textDocument/documentLink") => json!([
+            {"range": on(0, 2, 4), "target": "https://example.com/", "tooltip": "Example"},
+            {"range": on(1, 0, 2), "data": {"n": 2}}
+        ]),
+        Some("documentLink/resolve") => {
+            let mut resolved = msg["params"].clone();
+            let n = &msg["params"]["data"]["n"];
+            if n != &json!(0) {
+                resolved["target"] = json!(format!("file:///w/{n}.rs"));
+            }
+            resolved
+        },
+        Some("textDocument/documentColor") => json!([
+            {"range": on(0, 2, 4), "color": {"red": 1.0, "green": 0.0, "blue": 0.0, "alpha": 1.0}}
+        ]),
+        _ => Value::Null,
+    }
+}
+
 /// A session over `name` (holding [`TEXT`]) served by a double that behaves
 /// as `behavior`, with the document open.
 async fn opened(
