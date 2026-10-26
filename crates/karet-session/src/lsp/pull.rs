@@ -14,6 +14,14 @@
 //! an older one, whose answer could only be dropped. Their failures never
 //! count against the connection's health -- a server still computing may
 //! cancel a pull, and the next edit asks again.
+//!
+//! Two things re-pull a document whose own version has not moved. A server
+//! whose provider declares `interFileDependencies` says an edit in one file
+//! can change another's diagnostics, so a new version of any document it
+//! covers pulls every open document again. And `workspace/diagnostic/refresh`
+//! forgets which versions were asked, so every open document is pulled again
+//! -- the server saw a project-wide change (a dependency edit, a configuration
+//! reload) that no document's version records.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -22,6 +30,8 @@ use std::sync::Arc;
 
 use karet_core::ServerFeature;
 use karet_lsp::LspClient;
+use karet_lsp::ServerRefresh;
+use tokio::sync::broadcast;
 use tokio::sync::mpsc;
 use tokio::sync::watch;
 use tokio::task::AbortHandle;
@@ -47,6 +57,8 @@ pub(super) struct Pulls {
     /// a registration arriving after a document was skipped for want of one
     /// wakes the server task to ask again.
     registrations: Option<watch::Receiver<()>>,
+    /// The connection's refresh requests, subscribed on its first launch.
+    refreshes: Option<broadcast::Receiver<ServerRefresh>>,
 }
 
 impl Pulls {
@@ -68,6 +80,7 @@ impl Pulls {
         // is already in the gate or marks this receiver.
         self.registrations
             .get_or_insert_with(|| client.registrations());
+        self.refreshes.get_or_insert_with(|| client.refreshes());
         while self.tasks.try_join_next().is_some() {}
         self.asked.retain(|path, _| documents.contains_key(path));
         self.in_flight.retain(|path, handle| {
@@ -77,12 +90,26 @@ impl Pulls {
             }
             open && !handle.is_finished()
         });
-        for (path, document) in documents {
-            if pending == Some(path.as_path())
-                || document.resync
-                || self.asked.get(path) == Some(&document.version)
+        let ready = |path: &PathBuf, document: &OpenDocument| {
+            pending != Some(path.as_path())
+                && !document.resync
                 // Asked again once a registration covers it.
-                || !client.supports_for(ServerFeature::PullDiagnostics, path)
+                && client.supports_for(ServerFeature::PullDiagnostics, path)
+        };
+        // An edit -- a new version of a document already pulled, not a first
+        // open -- to a file whose diagnostics have inter-file dependencies
+        // may have changed every other open document's too.
+        let dependents_stale = documents.iter().any(|(path, document)| {
+            ready(path, document)
+                && self
+                    .asked
+                    .get(path)
+                    .is_some_and(|asked| *asked != document.version)
+                && client.supports_for(ServerFeature::InterFileDiagnostics, path)
+        });
+        for (path, document) in documents {
+            if !ready(path, document)
+                || (!dependents_stale && self.asked.get(path) == Some(&document.version))
             {
                 continue;
             }
@@ -104,30 +131,92 @@ impl Pulls {
     /// asked on is gone, and its successor is asked afresh.
     pub(super) fn abandon(&mut self) {
         self.tasks.abort_all();
-        self.asked.clear();
-        self.in_flight.clear();
-        self.registrations = None;
+        self.forget();
     }
 
     /// Stop every pull and wait until each has let go of the client.
     pub(super) async fn shutdown(&mut self) {
         self.tasks.shutdown().await;
+        self.forget();
+    }
+
+    fn forget(&mut self) {
         self.asked.clear();
         self.in_flight.clear();
         self.registrations = None;
+        self.refreshes = None;
     }
 
-    /// Resolve when the connection's registrations change; never, before the
-    /// first launch or once the connection has gone.
-    pub(super) async fn registered(&mut self) {
-        let changed = match self.registrations.as_mut() {
-            Some(registrations) => registrations.changed().await.is_ok(),
-            None => false,
-        };
-        if !changed {
-            std::future::pending::<()>().await;
+    /// Resolve when a document skipped or already pulled may need pulling
+    /// now: the connection's registrations changed, or the server asked for
+    /// a diagnostic refresh, which forgets every version asked. Never, before
+    /// the first launch or once the connection has gone.
+    ///
+    /// Cancel-safe, as the server task's `select!` needs: each arm is, and
+    /// nothing is forgotten until an arm has completed.
+    pub(super) async fn woken(&mut self) {
+        loop {
+            let wake = {
+                let Self {
+                    registrations,
+                    refreshes,
+                    ..
+                } = &mut *self;
+                let registered = async {
+                    match registrations.as_mut() {
+                        Some(registrations) => registrations.changed().await.is_ok(),
+                        None => std::future::pending().await,
+                    }
+                };
+                let refresh = async {
+                    match refreshes.as_mut() {
+                        Some(refreshes) => refreshes.recv().await,
+                        None => std::future::pending().await,
+                    }
+                };
+                tokio::select! {
+                    changed = registered => if changed {
+                        PullWake::Registered
+                    } else {
+                        PullWake::RegistrationsClosed
+                    },
+                    received = refresh => match received {
+                        // A lag lost only duplicates of signals that might
+                        // each have been this one, so it is taken as one.
+                        Ok(ServerRefresh::Diagnostics)
+                        | Err(broadcast::error::RecvError::Lagged(_)) => PullWake::Refresh,
+                        Ok(_) => PullWake::Ignore,
+                        Err(broadcast::error::RecvError::Closed) => PullWake::RefreshesClosed,
+                    },
+                }
+            };
+            match wake {
+                PullWake::Registered => return,
+                PullWake::Refresh => {
+                    self.asked.clear();
+                    return;
+                },
+                PullWake::Ignore => {},
+                // The connection's handler is gone, and every wake with it.
+                PullWake::RegistrationsClosed => self.registrations = None,
+                PullWake::RefreshesClosed => self.refreshes = None,
+            }
         }
     }
+}
+
+/// What woke [`Pulls::woken`].
+enum PullWake {
+    /// A capability was registered or withdrawn.
+    Registered,
+    /// The server asked to re-pull every document.
+    Refresh,
+    /// The server asked to refresh something else.
+    Ignore,
+    /// The registration stream ended with its connection.
+    RegistrationsClosed,
+    /// The refresh stream ended with its connection.
+    RefreshesClosed,
 }
 
 /// Pull `path`'s diagnostics at `version` and relay what the server said.

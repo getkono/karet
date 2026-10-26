@@ -117,6 +117,11 @@ pub(super) enum Behavior {
     /// (`client/registerCapability`) once a document is opened, then answer
     /// pulls like [`Behavior::Pulls`].
     RegistersPulls,
+    /// Pull like [`Behavior::Pulls`], with `interFileDependencies` declared.
+    PullsAcrossFiles,
+    /// Pull like [`Behavior::Pulls`], and ask the client to pull everything
+    /// again (`workspace/diagnostic/refresh`) whenever a document is saved.
+    RefreshesPulls,
     /// Serve normally, and offer semantic tokens with deltas: a whole answer
     /// classifies UTF-16 columns 2..4 of line 0 as a `macro`, and a delta
     /// rewrites that token to a `variable.mutable`. Each result id names the
@@ -188,9 +193,16 @@ fn advertised_capabilities(behavior: Behavior) -> Value {
     if matches!(behavior, Behavior::Incremental) {
         capabilities["textDocumentSync"] = json!({"openClose": true, "change": 2});
     }
-    if matches!(behavior, Behavior::Pulls | Behavior::PushesAndPulls) {
+    if matches!(
+        behavior,
+        Behavior::Pulls | Behavior::PushesAndPulls | Behavior::RefreshesPulls
+    ) {
         capabilities["diagnosticProvider"] =
             json!({"interFileDependencies": false, "workspaceDiagnostics": false});
+    }
+    if matches!(behavior, Behavior::PullsAcrossFiles) {
+        capabilities["diagnosticProvider"] =
+            json!({"interFileDependencies": true, "workspaceDiagnostics": false});
     }
     if matches!(
         behavior,
@@ -808,6 +820,16 @@ pub(super) fn test_connector(
                             write_msg(
                                 &mut server_write,
                                 &json!({"jsonrpc": "2.0", "id": msg["id"], "result": result}),
+                            )
+                            .await;
+                        },
+                        Some("textDocument/didSave")
+                            if matches!(behavior, Behavior::RefreshesPulls) =>
+                        {
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": "refresh-pulls",
+                                    "method": "workspace/diagnostic/refresh"}),
                             )
                             .await;
                         },

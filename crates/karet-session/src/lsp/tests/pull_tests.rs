@@ -3,6 +3,7 @@
 
 use karet_core::Diagnostic;
 use karet_text::TextBuffer;
+use serde_json::Value;
 
 use super::*;
 
@@ -212,6 +213,172 @@ async fn a_document_awaiting_resync_is_not_pulled_until_a_change_resyncs_it() ->
     let (own, version, _) = next_set(&mut updates).await.ok_or("never pulled")?;
     assert_eq!(own, path);
     assert_eq!(version, Some(3));
+    pulls.shutdown().await;
+    Ok(())
+}
+
+/// The file name a diagnostic pull the double observed asked about, if
+/// `message` is one.
+fn pulled_uri(message: &Value) -> Option<String> {
+    (message["method"] == "textDocument/diagnostic").then(|| {
+        let uri = message["params"]["textDocument"]["uri"]
+            .as_str()
+            .unwrap_or_default();
+        uri.rsplit('/').next().unwrap_or_default().to_owned()
+    })
+}
+
+/// Open `first.rs` and `second.rs` on a manager serving `behavior`, wait
+/// until each has been pulled, then edit `first.rs`. Returns the manager (to
+/// keep its server alive) and the observed stream positioned after the edit
+/// reached the server.
+async fn edit_one_of_two(
+    behavior: Behavior,
+) -> Result<(LspManager, mpsc::UnboundedReceiver<Value>), Box<dyn std::error::Error + Send + Sync>>
+{
+    let first = crate::lsp::absolute_path(Path::new("/tmp/first.rs"));
+    let second = crate::lsp::absolute_path(Path::new("/tmp/second.rs"));
+    let (observed_tx, mut observed) = mpsc::unbounded_channel();
+    let (mut manager, _updates) = LspManager::new(LspSettings::default(), None, None, None);
+    manager.set_connector(test_connector(
+        behavior,
+        Some(observed_tx),
+        Arc::new(AtomicUsize::new(0)),
+    ));
+    let mut buffer = TextBuffer::from_text("fn main() {}\n");
+    for path in [&first, &second] {
+        let text = buffer.text();
+        let _ =
+            manager.document_opened(Some("rust"), Some("rust"), path, buffer.version(), || text);
+    }
+    let mut unpulled = vec!["first.rs".to_owned(), "second.rs".to_owned()];
+    while !unpulled.is_empty() {
+        let message = tokio::time::timeout(Duration::from_secs(5), observed.recv())
+            .await?
+            .ok_or("the server went away")?;
+        if let Some(pulled) = pulled_uri(&message) {
+            unpulled.retain(|uri| *uri != pulled);
+        }
+    }
+
+    let applied = buffer
+        .apply_simple(&karet_core::Change::new(
+            buffer.version(),
+            vec![TextEdit {
+                range: Range {
+                    start: LineCol::new(0, 0),
+                    end: LineCol::new(0, 0),
+                },
+                new_text: "// edited\n".to_owned(),
+            }],
+        ))
+        .ok()
+        .ok_or("the edit did not apply")?;
+    let _ = manager.document_changed(Some("rust"), &first, &buffer, Some(&applied));
+    loop {
+        let message = tokio::time::timeout(Duration::from_secs(5), observed.recv())
+            .await?
+            .ok_or("the server went away")?;
+        if message["method"] == "textDocument/didChange" {
+            return Ok((manager, observed));
+        }
+    }
+}
+
+/// A server whose provider declares `interFileDependencies` has every open
+/// document pulled again when one is edited: the untouched file's
+/// diagnostics may depend on the edited one. Falsified by pulling only the
+/// document whose version moved.
+#[tokio::test]
+async fn an_edit_re_pulls_every_open_document_across_inter_file_dependencies() -> TestResult {
+    let (_manager, mut observed) = edit_one_of_two(Behavior::PullsAcrossFiles).await?;
+    let mut unpulled = vec!["first.rs".to_owned(), "second.rs".to_owned()];
+    while !unpulled.is_empty() {
+        let message = tokio::time::timeout(Duration::from_secs(5), observed.recv())
+            .await?
+            .ok_or("the server went away")?;
+        if let Some(pulled) = pulled_uri(&message) {
+            unpulled.retain(|uri| *uri != pulled);
+        }
+    }
+    Ok(())
+}
+
+/// Without `interFileDependencies`, an edit pulls only the edited document.
+/// Falsified by re-pulling every open document on any edit.
+///
+/// On tokio's virtual clock, for the reason
+/// `a_server_without_pull_diagnostics_is_not_asked` gives.
+#[tokio::test(start_paused = true)]
+async fn an_edit_re_pulls_only_its_own_document_without_inter_file_dependencies() -> TestResult {
+    let (_manager, mut observed) = edit_one_of_two(Behavior::Pulls).await?;
+    let mut pulled = Vec::new();
+    while let Ok(Some(message)) =
+        tokio::time::timeout(Duration::from_millis(500), observed.recv()).await
+    {
+        pulled.extend(pulled_uri(&message));
+    }
+    assert_eq!(pulled, vec!["first.rs".to_owned()]);
+    Ok(())
+}
+
+/// `workspace/diagnostic/refresh` wakes the pulls and forgets what was asked,
+/// so every open document is pulled again at the version it already had.
+/// Falsified by not waking on the refresh, or by waking without forgetting
+/// (nothing would be pulled: no version moved).
+#[tokio::test]
+async fn a_diagnostic_refresh_re_pulls_every_open_document() -> TestResult {
+    use super::super::commands::OpenDocument;
+    use super::super::pull::Pulls;
+
+    let (observed_tx, mut observed) = mpsc::unbounded_channel();
+    let connector = test_connector(
+        Behavior::RefreshesPulls,
+        Some(observed_tx),
+        Arc::new(AtomicUsize::new(0)),
+    );
+    let spec = LspSpec::new("double", Vec::new(), vec!["rust".into()]);
+    let client = Arc::new(connector(spec, PathBuf::from("/tmp")).await?);
+    let mut documents = HashMap::new();
+    for name in ["one.rs", "two.rs"] {
+        let path = crate::lsp::absolute_path(&Path::new("/tmp").join(name));
+        client.did_open(&path, "rust", 1, "fn main() {}\n").await?;
+        documents.insert(
+            path,
+            OpenDocument {
+                language: "rust".into(),
+                version: 1,
+                text: "fn main() {}\n".into(),
+                lines_agree: true,
+                resync: false,
+            },
+        );
+    }
+    let (updates_tx, _updates) = mpsc::unbounded_channel();
+    let key = SlotKey::new(crate::api::LanguageServerId::new("rust"), "/tmp");
+    let slot = (&updates_tx, &key, SlotToken::default());
+    let mut pulls = Pulls::default();
+    let pulls_seen = async |observed: &mut mpsc::UnboundedReceiver<Value>| {
+        let mut count = 0;
+        while count < 2 {
+            let message = tokio::time::timeout(Duration::from_secs(5), observed.recv())
+                .await
+                .ok()
+                .flatten()?;
+            count += usize::from(pulled_uri(&message).is_some());
+        }
+        Some(count)
+    };
+    pulls.launch_ready(&client, &documents, None, slot);
+    pulls_seen(&mut observed).await.ok_or("never pulled")?;
+
+    let saved = documents.keys().next().cloned().ok_or("no document")?;
+    client.did_save(&saved, None).await?;
+    tokio::time::timeout(Duration::from_secs(5), pulls.woken()).await?;
+    pulls.launch_ready(&client, &documents, None, slot);
+    pulls_seen(&mut observed)
+        .await
+        .ok_or("the refresh pulled nothing again")?;
     pulls.shutdown().await;
     Ok(())
 }

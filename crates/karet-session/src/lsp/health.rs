@@ -93,7 +93,7 @@ pub(super) enum Wake {
     /// The server registered or withdrew a capability -- a document skipped
     /// for want of one may now be pulled -- or semantic highlighting was
     /// turned on or off for this slot, or the server asked for its semantic
-    /// tokens again.
+    /// tokens or pulled diagnostics again.
     Registered,
 }
 
