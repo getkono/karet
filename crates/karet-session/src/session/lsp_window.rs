@@ -49,10 +49,10 @@ impl Session {
                 );
             },
             WindowUpdate::Request(question) => {
-                let severity = crate::lsp::message_severity(question.level);
-                let message = one_line(&question.message);
+                let severity = crate::lsp::message_severity(question.level());
+                let message = one_line(question.message());
                 let actions = question
-                    .actions
+                    .actions()
                     .iter()
                     .map(|title| one_line(title))
                     .collect();
