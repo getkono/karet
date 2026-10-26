@@ -40,9 +40,11 @@ pub fn language_name_from_path(path: &Path) -> Option<&'static str> {
 /// file path: an injection query's `#set! injection.language "javascript"`, a dynamic
 /// `@injection.language` capture, or a markdown code fence's info string (` ```sh `).
 /// Matching is case-insensitive and covers each grammar's common aliases, so `rs`,
-/// `sh` and `c++` all resolve. Unknown names (`jsdoc`, `regex`, `latex` — languages
-/// karet bundles no grammar for) return `None`, and the caller simply leaves that
-/// region unhighlighted.
+/// `sh` and `c++` all resolve (as do `tex`/`latex` when `lang-latex` is on). Unknown
+/// names (`jsdoc`, `regex` — languages karet bundles no grammar for) and names
+/// whose grammar's `lang-*` feature is off return `None`, and the caller simply
+/// leaves that region unhighlighted. When two grammars claim the same alias, the
+/// one registered first wins.
 #[must_use]
 pub fn language_id_from_injection_name(name: &str) -> Option<LanguageId> {
     let name = name.trim().to_ascii_lowercase();

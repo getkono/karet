@@ -127,10 +127,12 @@ impl Range {
 /// A precomputed line-start index over one immutable text snapshot, for cheap
 /// byte-offset → row / line-column lookups.
 ///
-/// Engines that work over a borrowed `&str` (highlighters, outline extractors,
-/// blame narrowing) all need "which row is this byte on?"; this is that one
-/// shared implementation. Buffers that *own* mutable text keep using
-/// `karet_text::TextBuffer`'s conversions instead.
+/// Engines that work over a borrowed `&str` (highlighters, outline extractors)
+/// need "which row is this byte on?"; this is the shared implementation for the
+/// `karet-*` crates. Buffers that *own* mutable text keep using
+/// `karet_text::TextBuffer`'s conversions instead, and the standalone
+/// `blameline` crate (which takes no direct `karet-core` dependency) keeps its
+/// own small line-start table for function narrowing.
 #[derive(Clone, Debug)]
 pub struct LineIndex {
     /// Byte offset of the start of each row; `starts[0] == 0`.
@@ -180,6 +182,10 @@ impl LineIndex {
     /// The [`LineCol`] (char-counted column) of byte offset `pos` within `text`.
     ///
     /// `text` must be the same snapshot the index was built from.
+    ///
+    /// The column falls back to 0 when it cannot be counted: when `pos` lies past
+    /// the end of `text`, or inside a multi-byte `char` rather than on a `char`
+    /// boundary. The row is still the one [`row_at`](Self::row_at) reports.
     #[must_use]
     pub fn line_col(&self, text: &str, pos: BytePos) -> LineCol {
         let (row, byte_col) = self.point_at(pos);

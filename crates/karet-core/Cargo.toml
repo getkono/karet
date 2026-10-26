@@ -1,6 +1,6 @@
 [package]
 name        = "karet-core"
-description = "Shared vocabulary (geometry, text coordinates, neutral models) for the karet TUI editor toolkit."
+description = "Shared vocabulary (text coordinates, neutral models) for the karet TUI editor toolkit."
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true

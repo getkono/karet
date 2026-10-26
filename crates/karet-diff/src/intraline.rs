@@ -25,6 +25,11 @@ pub struct HighlightedPair {
 }
 
 /// Tokenize both lines, run LCS on the tokens, and emit changed/unchanged segments.
+///
+/// Tokens are alternating ASCII-whitespace / non-whitespace runs. When the LCS table
+/// would exceed one million cells (`(old tokens + 1) * (new tokens + 1)`), the
+/// LCS is skipped and every token of both lines is marked changed, so the pair
+/// reads as a whole-line replacement rather than costing unbounded memory.
 #[must_use]
 pub fn compute_highlights(old: &str, new: &str) -> HighlightedPair {
     let old_tokens = tokenize(old);

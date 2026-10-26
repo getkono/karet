@@ -1,17 +1,19 @@
 //! `karet-text` — a headless text-editing model for the karet toolkit.
 //!
-//! A rope-backed [`TextBuffer`] with editing history plus a cursor/selection model
-//! (the [`cursor`] module), usable by any editor backend (TUI or otherwise)
-//! without pulling in rendering dependencies. It is the one place that converts
-//! between byte offsets and line/column positions, since that requires the rope —
-//! including the UTF-16 conversions LSP needs at its edge.
+//! A rope-backed [`TextBuffer`] with editing history, usable by any editor backend
+//! (TUI or otherwise) without pulling in rendering dependencies. Cursors and
+//! selections are not modelled here; they live in `karet_core::CursorState`.
+//! It is the one place that converts between byte offsets and line/column
+//! positions, since that requires the rope — including the UTF-16 conversions
+//! LSP needs at its edge.
 //!
 //! The mutation surface ([`apply`](TextBuffer::apply) / [`undo`](TextBuffer::undo)
-//! / [`redo`](TextBuffer::redo)) records an in-memory edit [`history`] and reports
+//! / [`redo`](TextBuffer::redo)) records an in-memory edit history and reports
 //! each applied edit back as an [`AppliedEdit`] (with tree-sitter-shaped points) so
 //! a parse host can reparse incrementally. Loading ([`load`](TextBuffer::load)) is
 //! strict UTF-8 with line-ending/BOM detection; saving ([`save`](TextBuffer::save))
-//! is atomic and round-trips the detected encoding.
+//! round-trips the detected encoding and is atomic, falling back to a direct
+//! overwrite only where the temp-file rename fails.
 
 use std::io::Read;
 
@@ -78,7 +80,7 @@ pub enum TextError {
 ///
 /// Tracks a monotonically increasing edit `version` (used to validate
 /// [`Change`](karet_core::Change)s under optimistic concurrency), an in-memory
-/// undo/redo [`History`], and the detected line-ending / encoding so a save
+/// undo/redo history, and the detected line-ending / encoding so a save
 /// round-trips the on-disk form. The dirty state is derived from the normalized
 /// text content relative to the last loaded/saved content, so undo and equivalent
 /// manual edits both clear it.
@@ -166,6 +168,11 @@ impl TextBuffer {
     }
 
     /// Whether the buffer has unsaved changes relative to the last save point.
+    ///
+    /// Compares a hash of the current text with the hash taken at the last save
+    /// point, so editing back to the saved text reads as clean. The hash is
+    /// recomputed over the whole rope on every call, so each call costs O(buffer
+    /// length).
     #[must_use]
     pub fn is_dirty(&self) -> bool {
         text_hash(&self.rope) != self.saved_text_hash
@@ -369,6 +376,12 @@ impl TextBuffer {
     /// Convert a UTF-16 `(line, column)` (as LSP speaks) to an internal [`LineCol`]
     /// with a UTF-32 (`char`) column. A column landing inside a surrogate pair is
     /// rounded down to the start of that `char`.
+    ///
+    /// Nothing is clamped: a `line` past the last line is returned unchanged with
+    /// column 0 (still out of range), and a column past the line's content is not
+    /// clamped to the content length — it can count the line's trailing line
+    /// break. Unlike [`line_col_to_utf16`](Self::line_col_to_utf16), the result is
+    /// not guaranteed to address a position inside the buffer.
     #[must_use]
     pub fn utf16_to_line_col(&self, line: u32, utf16_col: u32) -> LineCol {
         let line_idx = line as usize;

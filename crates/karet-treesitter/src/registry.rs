@@ -480,7 +480,9 @@ const RUST_DOC_COMMENT_INJECTION: &str = r#"
  (#set! injection.combined))
 "#;
 
-/// All grammars compiled into this build, in id order.
+/// All grammars compiled into this build, in registration order (the order of the
+/// pushes below), which is not id order: `MARKDOWN_INLINE` is registered last.
+/// Alias lookups that take the first match depend on this order.
 // The pushes are `#[cfg]`-gated per grammar, which `vec![]` cannot express.
 #[allow(clippy::vec_init_then_push)]
 pub(crate) fn all() -> &'static [GrammarInfo] {
