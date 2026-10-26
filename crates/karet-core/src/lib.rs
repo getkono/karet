@@ -104,6 +104,8 @@ pub use model::DecorationKind;
 pub use model::Diagnostic;
 pub use model::DiagnosticTag;
 pub use model::EolAlign;
+pub use model::HierarchyDirection;
+pub use model::HierarchyItem;
 pub use model::Hover;
 pub use model::InlayHint;
 pub use model::InlayHintKind;

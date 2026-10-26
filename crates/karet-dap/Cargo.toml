@@ -19,7 +19,7 @@ publish = false
 default = []
 
 [dependencies]
-karet-lsp.workspace = true
+karet-jsonrpc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["rt", "io-util", "net", "process", "macros", "sync", "time"] }

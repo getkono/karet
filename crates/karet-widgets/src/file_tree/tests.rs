@@ -576,16 +576,16 @@ fn extend_visible_maps_viewport_rows_via_offset() {
 }
 
 #[test]
-fn hiding_dotfiles_drops_them_from_the_next_build() {
+fn hiding_dotfiles_drops_them_from_the_listing() {
     let dir = temp_dir();
     write(&dir.path, ".env", b"x");
     write(&dir.path, "a.txt", b"a");
-    let mut state = FileTreeState::new();
-    state.ensure_built(&dir.path);
-    assert_eq!(names(&state), [".env", "a.txt"]);
-    state.set_show_hidden(false);
-    state.ensure_built(&dir.path);
-    assert_eq!(names(&state), ["a.txt"]);
+    let listed = |show| -> Vec<_> {
+        let entries = read_dir_sorted(&dir.path, show, true);
+        entries.iter().map(|entry| name_key(&entry.path)).collect()
+    };
+    assert_eq!(listed(true), [".env", "a.txt"]);
+    assert_eq!(listed(false), ["a.txt"]);
 }
 
 #[test]

@@ -24,6 +24,7 @@ use serde::Serialize;
 use wire::*;
 
 use crate::Verification;
+use crate::auth;
 use crate::generated;
 use crate::models::CheckRun;
 use crate::models::Comment;
@@ -35,14 +36,13 @@ use crate::models::NewPullRequest;
 use crate::models::Page;
 use crate::models::PullRequestCommit;
 use crate::models::PullRequestSummary;
-use crate::models::RateLimit;
 use crate::models::TimelineEvent;
 use crate::models::Workflow;
 use crate::models::WorkflowRun;
 use crate::remote::RepositoryIdentity;
 
-const API_BASE: &str = "https://api.github.com";
-const API_VERSION: &str = "2026-03-10";
+pub(crate) const API_BASE: &str = "https://api.github.com";
+pub(crate) const API_VERSION: &str = "2026-03-10";
 const PER_PAGE: u32 = 50;
 
 /// Where the active GitHub credential came from.
@@ -128,7 +128,8 @@ impl GitHubClient {
     /// anonymous public-read mode.
     ///
     /// # Errors
-    /// Returns [`GitHubError::Request`] when the HTTP client cannot be configured.
+    /// Returns [`GitHubError::Request`] when the HTTP client cannot be configured,
+    /// or [`GitHubError::Generated`] when the generated client cannot be built on it.
     pub async fn discover() -> Result<Self, GitHubError> {
         let (token, source) = discover_token().await;
         let mut client = Self::with_auth(token, source)?;
@@ -142,7 +143,8 @@ impl GitHubClient {
     ///
     /// # Errors
     /// Returns an authentication, transport, status, or decode error when GitHub
-    /// cannot resolve the token to an account.
+    /// cannot resolve the token to an account, or [`GitHubError::Generated`] when
+    /// the generated client cannot be built.
     pub async fn authenticate(token: String) -> Result<Self, GitHubError> {
         let mut client = Self::with_auth(Some(SecretString::from(token)), AuthSource::Explicit)?;
         let viewer = client.get_json::<crate::models::User>("/user", &[]).await?;
@@ -151,12 +153,14 @@ impl GitHubClient {
         Ok(client)
     }
 
-    /// Build a client with an explicit token. Intended for embedding and deterministic
-    /// transport tests; the token is kept in secret memory and never exposed again.
+    /// Build a client with an explicit token, for deterministic tests; the token
+    /// is kept in secret memory and never exposed again.
     ///
     /// # Errors
-    /// Returns [`GitHubError::Request`] when the HTTP client cannot be configured.
-    pub fn with_token(token: Option<SecretString>) -> Result<Self, GitHubError> {
+    /// Returns [`GitHubError::Request`] when the HTTP client cannot be configured,
+    /// or [`GitHubError::Generated`] when the generated client cannot be built on it.
+    #[cfg(test)]
+    pub(crate) fn with_token(token: Option<SecretString>) -> Result<Self, GitHubError> {
         let source = if token.is_some() {
             AuthSource::Explicit
         } else {
@@ -257,7 +261,6 @@ impl GitHubClient {
             page,
             next_page: next_page(page, response.total_count),
             total_count: Some(response.total_count),
-            rate_limit: response.rate_limit,
         })
     }
 
@@ -316,7 +319,6 @@ impl GitHubClient {
             page,
             next_page: next_page(page, response.total_count),
             total_count: Some(response.total_count),
-            rate_limit: response.rate_limit,
         })
     }
 
@@ -416,7 +418,6 @@ impl GitHubClient {
             page: page.max(1),
             next_page: next,
             total_count: None,
-            rate_limit: RateLimit::default(),
         })
     }
 
@@ -533,7 +534,6 @@ impl GitHubClient {
             page,
             next_page: next_page(page, body.total_count),
             total_count: Some(body.total_count),
-            rate_limit: RateLimit::default(),
         })
     }
 
@@ -568,7 +568,6 @@ impl GitHubClient {
             page,
             next_page: next_page(page, body.total_count),
             total_count: Some(body.total_count),
-            rate_limit: RateLimit::default(),
         })
     }
 
@@ -682,32 +681,18 @@ fn query_tokens(query: &str) -> Vec<String> {
 }
 
 async fn discover_token() -> (Option<SecretString>, AuthSource) {
-    for (name, source) in [
-        ("GITHUB_TOKEN", AuthSource::GitHubToken),
-        ("GH_TOKEN", AuthSource::GhToken),
-    ] {
-        if let Ok(token) = std::env::var(name) {
-            let token = token.trim();
-            if !token.is_empty() {
-                return (Some(SecretString::from(token.to_string())), source);
-            }
-        }
+    if let Some((token, source)) = auth::env_token(auth::process_env) {
+        return (Some(token), source);
     }
-
     let mut command = tokio::process::Command::new("gh");
-    command.args(["auth", "token", "--hostname", "github.com"]);
+    command
+        .args(auth::GH_AUTH_TOKEN)
+        .env("GH_PROMPT_DISABLED", "1");
     command.kill_on_drop(true);
-    if let Ok(Ok(output)) = tokio::time::timeout(Duration::from_secs(3), command.output()).await
-        && output.status.success()
-        && let Ok(token) = String::from_utf8(output.stdout)
+    if let Ok(Ok(output)) = tokio::time::timeout(auth::GH_TOKEN_TIMEOUT, command.output()).await
+        && let Some(token) = auth::cli_token(output.status.success(), output.stdout)
     {
-        let token = token.trim();
-        if !token.is_empty() {
-            return (
-                Some(SecretString::from(token.to_string())),
-                AuthSource::GitHubCli,
-            );
-        }
+        return (Some(token), AuthSource::GitHubCli);
     }
     (None, AuthSource::Anonymous)
 }
@@ -880,42 +865,4 @@ fn next_page(current: u32, total: u64) -> Option<u32> {
     (u64::from(current) * u64::from(PER_PAGE) < total)
         .then(|| current.checked_add(1))
         .flatten()
-}
-
-#[cfg(test)]
-fn parse_next_page(headers: &HeaderMap) -> Option<u32> {
-    let link = headers.get("link")?.to_str().ok()?;
-    for part in link.split(',') {
-        if !part.contains("rel=\"next\"") {
-            continue;
-        }
-        let url = part.trim().split(';').next()?.trim();
-        let url = url.strip_prefix('<')?.strip_suffix('>')?;
-        let url = reqwest::Url::parse(url).ok()?;
-        return url
-            .query_pairs()
-            .find(|(key, _)| key == "page")
-            .and_then(|(_, value)| value.parse().ok());
-    }
-    None
-}
-
-#[cfg(test)]
-fn rate_limit(headers: &HeaderMap) -> RateLimit {
-    RateLimit {
-        limit: header_u64(headers, "x-ratelimit-limit"),
-        remaining: header_u64(headers, "x-ratelimit-remaining"),
-        reset: headers
-            .get("x-ratelimit-reset")
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.parse().ok()),
-    }
-}
-
-#[cfg(test)]
-fn header_u64(headers: &HeaderMap, name: &str) -> Option<u64> {
-    headers
-        .get(name)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse().ok())
 }

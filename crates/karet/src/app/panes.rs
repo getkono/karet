@@ -1,3 +1,13 @@
+use karet_core::CursorState;
+use karet_core::Selection;
+use karet_session::backup;
+use karet_session::backup::LayoutAxis;
+use karet_session::backup::LayoutNode;
+use karet_session::backup::LayoutPane;
+use karet_session::backup::LayoutTab;
+use karet_session::backup::WorkspaceLayout;
+use karet_widgets::pane::tree::PaneTree;
+
 use super::*;
 
 impl App {
@@ -262,5 +272,318 @@ impl App {
         }
         self.tabs.swap(self.active, target);
         self.set_active(target);
+    }
+}
+
+// The saved workspace layout (`workbench.restoreLayout`): written on a clean
+// exit, reopened by the next start on the same root that has nothing to open.
+impl App {
+    /// Save this workspace's layout under `dir`, or delete the saved one when
+    /// the setting is off or no pane shows a file.
+    ///
+    /// # Errors
+    /// Returns an [`std::io::Error`] if the layout cannot be written.
+    pub(super) fn save_workspace_layout(&self, dir: &Path) -> std::io::Result<()> {
+        let layout = self
+            .settings
+            .workbench
+            .restore_layout
+            .then(|| self.workspace_layout())
+            .flatten();
+        match layout {
+            Some(layout) => backup::write_layout(dir, &self.layout_root(), &layout),
+            None => {
+                backup::remove_layout(dir, &self.layout_root());
+                Ok(())
+            },
+        }
+    }
+
+    /// Reopen the layout saved under `dir` for this workspace, when the
+    /// setting is on and startup opened nothing the user asked for.
+    pub(super) fn restore_workspace_layout(&mut self, dir: &Path) {
+        if !self.settings.workbench.restore_layout || !self.startup_is_pristine() {
+            return;
+        }
+        if let Some(layout) = backup::read_layout(dir, &self.layout_root()) {
+            self.apply_workspace_layout(layout);
+        }
+    }
+
+    /// The root a saved layout is keyed by: the workspace root made absolute.
+    /// The root as given is usually the default `.`, which would key every
+    /// directory karet is started in to one shared layout.
+    fn layout_root(&self) -> PathBuf {
+        workspace::absolute(&self.root)
+    }
+
+    /// A saved (absolute) tab path in the form this session's own tabs use: a
+    /// file under the root is joined onto the root as given, as startup and the
+    /// explorer open it, so the same file never shows up under two spellings.
+    fn session_path(&self, saved: &Path) -> PathBuf {
+        let saved = workspace::absolute(saved);
+        match saved.strip_prefix(self.layout_root()) {
+            Ok(rel) => self.root.join(rel),
+            Err(_) => saved,
+        }
+    }
+
+    /// Whether startup left only what karet shows unasked: one pane holding a
+    /// Welcome tab or the repository README preview. Any file, split, diff, or
+    /// `--goto` the command line opened means the user chose this session's
+    /// surface, and a saved layout must not replace it.
+    fn startup_is_pristine(&self) -> bool {
+        let unasked = |tab: &Tab| {
+            matches!(tab.kind, TabKind::Welcome)
+                || (tab.is_preview && tab.path().is_some_and(|path| self.is_root_readme(path)))
+        };
+        self.layout.pane_count() == 1
+            && self.stored.is_empty()
+            && self.pending_startup_diffs.is_empty()
+            && self.tabs.iter().all(unasked)
+    }
+
+    /// Whether `path` is a README at the workspace root, the file startup
+    /// previews when nothing else is opened.
+    fn is_root_readme(&self, path: &Path) -> bool {
+        path.parent() == Some(self.root.as_path())
+            && path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.to_ascii_lowercase().starts_with("readme"))
+    }
+
+    /// The current layout as it would be saved: every pane with at least one
+    /// file tab, or `None` when there is none.
+    pub(super) fn workspace_layout(&self) -> Option<WorkspaceLayout> {
+        let mut kept = Vec::new();
+        let root = self.saved_node(&self.layout.tree(), &mut kept)?;
+        let focused = self.focus_pane();
+        let focus = kept.iter().position(|pane| *pane == focused).unwrap_or(0);
+        Some(WorkspaceLayout { root, focus })
+    }
+
+    /// The saved form of `tree`, appending each pane it keeps to `kept`.
+    fn saved_node(&self, tree: &PaneTree, kept: &mut Vec<PaneId>) -> Option<LayoutNode> {
+        match tree {
+            PaneTree::Pane(pane) => {
+                let (tabs, active) = if *pane == self.focus_pane() {
+                    (self.tabs.as_slice(), self.active)
+                } else {
+                    let stored = self.stored.get(pane)?;
+                    (stored.tabs.as_slice(), stored.active)
+                };
+                let saved = self.saved_pane(tabs, active)?;
+                kept.push(*pane);
+                Some(LayoutNode::Pane(saved))
+            },
+            PaneTree::Split {
+                axis,
+                children,
+                weights,
+            } => {
+                let mut nodes = Vec::new();
+                let mut shares = Vec::new();
+                for (index, child) in children.iter().enumerate() {
+                    if let Some(node) = self.saved_node(child, kept) {
+                        nodes.push(node);
+                        shares.push(weights.get(index).copied().unwrap_or(1.0));
+                    }
+                }
+                match nodes.len() {
+                    0 => None,
+                    1 => nodes.pop(),
+                    _ => Some(LayoutNode::Split {
+                        axis: match axis {
+                            SplitAxis::Cols => LayoutAxis::Cols,
+                            SplitAxis::Rows => LayoutAxis::Rows,
+                        },
+                        children: nodes,
+                        weights: shares,
+                    }),
+                }
+            },
+        }
+    }
+
+    /// The saved form of one pane's tabs: each file it shows once, in strip
+    /// order, with the front tab (or the nearest file tab before it) active.
+    fn saved_pane(&self, tabs: &[Tab], active: usize) -> Option<LayoutPane> {
+        let mut saved: Vec<LayoutTab> = Vec::new();
+        let mut front = 0;
+        for (index, tab) in tabs.iter().enumerate() {
+            let Some(entry) = self.saved_tab(tab) else {
+                continue;
+            };
+            let slot = match saved.iter().position(|kept| kept.path == entry.path) {
+                Some(slot) => slot,
+                None => {
+                    saved.push(entry);
+                    saved.len() - 1
+                },
+            };
+            if index <= active {
+                front = slot;
+            }
+        }
+        (!saved.is_empty()).then_some(LayoutPane {
+            tabs: saved,
+            active: front,
+        })
+    }
+
+    /// The saved form of `tab`, when it shows a file (a diff does not: it is a
+    /// view of a change, not of the file).
+    fn saved_tab(&self, tab: &Tab) -> Option<LayoutTab> {
+        if tab.is_diff() {
+            return None;
+        }
+        // A relative tab path is relative to the current directory (the root
+        // as given is joined onto it), so it is made absolute the same way.
+        let path = workspace::absolute(tab.path()?);
+        let (cursors, scroll_line, scroll_col) = match &tab.kind {
+            TabKind::Code { .. } => (
+                tab.editor.cursors().clone(),
+                tab.editor.scroll_line,
+                tab.editor.scroll_col,
+            ),
+            _ => (
+                CursorState::single(Selection::caret(LineCol::new(0, 0))),
+                0,
+                0,
+            ),
+        };
+        Some(LayoutTab {
+            path,
+            cursors,
+            scroll_line,
+            scroll_col,
+            preview: tab.is_preview,
+        })
+    }
+
+    /// Replace the startup surface with `layout`. Files gone since it was saved
+    /// are skipped and a pane left with none is dropped; with nothing left, the
+    /// startup surface stays.
+    pub(super) fn apply_workspace_layout(&mut self, layout: WorkspaceLayout) {
+        let mut panes = Vec::new();
+        let mut focus = None;
+        let mut leaf = 0;
+        let Some(tree) =
+            self.restored_node(layout.root, layout.focus, &mut leaf, &mut panes, &mut focus)
+        else {
+            return;
+        };
+        let Some(restored) = PaneLayout::from_tree(tree, focus.unwrap_or(PaneId(0))) else {
+            return;
+        };
+        let focused = restored.focus();
+        let mut front = None;
+        self.stored.clear();
+        for (pane, stored) in panes {
+            if pane == focused {
+                front = Some(stored);
+            } else {
+                self.stored.insert(pane, stored);
+            }
+        }
+        let Some(front) = front else {
+            return;
+        };
+        self.layout = restored;
+        self.tabs = front.tabs;
+        self.set_active(front.active);
+        self.find_open = false;
+        // Resuming work: the keyboard goes to the restored editor, as it does
+        // for any file the user opens, not to the startup sidebar panel. An
+        // explicit `--view` or `--focus` was applied first and keeps its say.
+        if !self.startup_surface_requested {
+            self.show_editor();
+        }
+    }
+
+    /// The live tree for a saved `node`, opening each pane's tabs into `panes`.
+    /// `leaf` counts saved panes in tree order, so the one at `saved_focus`
+    /// sets `focus`.
+    fn restored_node(
+        &mut self,
+        node: LayoutNode,
+        saved_focus: usize,
+        leaf: &mut usize,
+        panes: &mut Vec<(PaneId, StoredPane)>,
+        focus: &mut Option<PaneId>,
+    ) -> Option<PaneTree> {
+        match node {
+            LayoutNode::Pane(saved) => {
+                let index = *leaf;
+                *leaf += 1;
+                let pane = self.restored_pane(saved)?;
+                let id = PaneId(u64::try_from(panes.len()).unwrap_or(u64::MAX));
+                if index == saved_focus {
+                    *focus = Some(id);
+                }
+                panes.push((id, pane));
+                Some(PaneTree::Pane(id))
+            },
+            LayoutNode::Split {
+                axis,
+                children,
+                weights,
+            } => {
+                let mut kept = Vec::new();
+                let mut shares = Vec::new();
+                for (index, child) in children.into_iter().enumerate() {
+                    if let Some(tree) = self.restored_node(child, saved_focus, leaf, panes, focus) {
+                        kept.push(tree);
+                        // A missing weight makes the split unsound, so
+                        // `from_tree` sizes its children equally.
+                        shares.push(weights.get(index).copied().unwrap_or(f32::NAN));
+                    }
+                }
+                Some(PaneTree::Split {
+                    axis: match axis {
+                        LayoutAxis::Cols => SplitAxis::Cols,
+                        LayoutAxis::Rows => SplitAxis::Rows,
+                    },
+                    children: kept,
+                    weights: shares,
+                })
+            },
+        }
+    }
+
+    /// Open a saved pane's tabs that still exist on disk, putting each code
+    /// tab's cursors and viewport back. `None` when none of them does.
+    fn restored_pane(&mut self, saved: LayoutPane) -> Option<StoredPane> {
+        let mut tabs = Vec::new();
+        let mut active = 0;
+        let mut has_preview = false;
+        for (index, entry) in saved.tabs.into_iter().enumerate() {
+            let path = self.session_path(&entry.path);
+            if !path.is_file() {
+                continue;
+            }
+            let mut tab = workspace::open_file(&path);
+            tab.view = self.alloc_view();
+            // One preview slot per pane.
+            tab.is_preview = entry.preview && !has_preview;
+            has_preview |= tab.is_preview;
+            if let Tab {
+                kind: TabKind::Code { buffer, .. },
+                editor,
+                ..
+            } = &mut tab
+            {
+                editor.set_cursor_state(buffer, entry.cursors);
+                let last_line = u32::try_from(buffer.line_count().saturating_sub(1)).unwrap_or(0);
+                editor.scroll_line = entry.scroll_line.min(last_line);
+                editor.scroll_col = entry.scroll_col;
+            }
+            if index <= saved.active {
+                active = tabs.len();
+            }
+            tabs.push(tab);
+        }
+        (!tabs.is_empty()).then_some(StoredPane { tabs, active })
     }
 }

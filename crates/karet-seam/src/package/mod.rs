@@ -30,6 +30,8 @@ use crate::discover::Discovered;
 use crate::discover::PackageKind;
 use crate::extract::ExtractError;
 use crate::extract::extract_file;
+use crate::extract::extract_parsed;
+use crate::extract::parse_file;
 use crate::id::SeamId;
 use crate::id::SeamPath;
 use crate::id::SeamSegment;
@@ -324,7 +326,9 @@ pub(crate) fn crate_roots(root: &Path) -> Vec<PathBuf> {
 /// re-walking the package on every keystroke would make the view unusable.
 ///
 /// # Errors
-/// Propagates [`ExtractError`] when the file cannot be parsed or has no mapping.
+/// Propagates [`ExtractError`] when the file cannot be parsed or has no mapping. Every
+/// such failure is detected before the file's old nodes are removed, so on `Err` the
+/// index is left as it stood.
 pub fn reindex_file(
     index: &mut SeamIndex,
     pool: &mut ParserPool,
@@ -349,8 +353,11 @@ pub fn reindex_file(
     // up beneath the type it implements, which may be anywhere in the package — and a
     // narrower sweep would leave those behind as duplicates of what is about to be built.
     let root = index.ancestors(parent).last().copied().unwrap_or(parent);
+    // Parsed before anything is removed: a file that fails here leaves the index exactly
+    // as it stood, rather than without this file's nodes.
+    let parsed = parse_file(pool, language, text)?;
     index.remove_nodes_in_file(file_id, root);
-    let outcome = extract_file(index, pool, parent, file_id, language, text)?;
+    let outcome = extract_parsed(index, parent, file_id, language, &parsed, text);
     crate::regroup::apply(index, outcome.ownership);
     // The whole index, not the file: calls elsewhere may have pointed at what this file
     // used to declare, and calls here may now reach something new.

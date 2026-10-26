@@ -1,8 +1,11 @@
 //! `karet-widgets` — a reusable ratatui widget toolkit for building editors.
 //!
-//! A lightweight (ratatui-only) crate of the UI widgets an editor needs. Widgets
-//! render data fed in by the application — they consume `karet-core` models, and
-//! so do **not** depend on the producers (`karet-lsp`/`karet-vcs`). This crate
+//! A crate of the UI widgets an editor needs, built on `ratatui` plus the
+//! neutral `karet-core` models, `karet-filetype` (file-tree icons),
+//! `karet-fuzzy` (popup filtering), `karet-theme` (role colours), `ignore` (the
+//! gitignore-aware file-tree walk) and `unicode-width`. Widgets render data fed
+//! in by the application — they consume `karet-core` models, and so do **not**
+//! depend on the producers (`karet-lsp`/`karet-vcs`). This crate
 //! also hosts the LSP [`completion`] and [`signature`]-help popups, and (behind
 //! the `hover` feature) the LSP hover/doc popup, which render `karet-core`
 //! models supplied over the backend's event stream. The [`menu`] and
@@ -14,6 +17,16 @@
 //! append-only, wrapping, stick-to-bottom view with a post-wrap scroll extent.
 //! The read-only file-view primitives (hex dump,
 //! terminal image, placeholder) live in `karet-fileview`.
+//!
+//! # Features
+//!
+//! Both are off by default.
+//!
+//! - `markdown` — renders [`dialog`] bodies as markdown
+//!   (`DialogBody::Markdown`) through `karet-markdown`, which pulls the
+//!   tree-sitter stack for code-fence highlighting. Without it a dialog body
+//!   wraps as plain text.
+//! - `hover` — the LSP hover/doc popup (`hover` module); implies `markdown`.
 
 pub mod ansi;
 pub mod breadcrumbs;
@@ -76,7 +89,7 @@ pub use transcript::Transcript;
 pub use transcript::TranscriptBody;
 pub use transcript::TranscriptMessage;
 
-/// The LSP hover / documentation popup (relocated here from `karet-lsp`).
+/// The LSP hover / documentation popup.
 #[cfg(feature = "hover")]
 pub mod hover {
     use karet_core::Markup;

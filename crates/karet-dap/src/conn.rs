@@ -1,5 +1,6 @@
 //! The DAP connection actor: two I/O tasks and request/response correlation,
-//! mirroring `karet-lsp`'s connection over the same shared codec.
+//! mirroring `karet-lsp`'s connection. The two share only the `Content-Length`
+//! framing from `karet-jsonrpc`; the message layer above it is DAP's own.
 //!
 //! DAP is not JSON-RPC: every message carries a `seq` and a `type` of
 //! `request`/`response`/`event`. Responses resolve the pending request with
@@ -19,7 +20,7 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use karet_lsp::codec;
+use karet_jsonrpc::framing::content_length as codec;
 use serde_json::Value;
 use serde_json::json;
 use tokio::io::AsyncRead;

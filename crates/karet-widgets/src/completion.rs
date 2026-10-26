@@ -1,4 +1,4 @@
-//! The LSP completion popup (relocated here from `karet-lsp`).
+//! The LSP completion popup.
 //!
 //! [`CompletionPopup`] renders `karet-core` [`CompletionItem`]s the backend
 //! supplied over the event stream: one row per candidate with a kind glyph, the

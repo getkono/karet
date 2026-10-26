@@ -1,6 +1,6 @@
 [package]
 name        = "karet-vcs"
-description = "Editor-oriented git integration (status, blame, branches, staging) for karet TUI editors."
+description = "Editor-oriented git integration (status, branches, staging) for karet TUI editors."
 version.workspace      = true
 edition.workspace      = true
 rust-version.workspace = true

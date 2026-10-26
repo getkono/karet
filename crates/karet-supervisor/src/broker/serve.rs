@@ -16,6 +16,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
 
+use karet_jsonrpc::Framing;
 use serde_json::Value;
 use serde_json::json;
 use tokio::io::AsyncBufRead;
@@ -34,7 +35,6 @@ use tokio::sync::mpsc;
 use crate::broker::BrokerError;
 use crate::broker::endpoint::Endpoint;
 use crate::broker::endpoint::write_endpoint;
-use crate::broker::framing::Framing;
 use crate::broker::io_error;
 use crate::broker::lease;
 use crate::broker::lease::BrokerSpec;
@@ -375,7 +375,7 @@ where
     P: BrokerProtocol,
     R: AsyncBufRead + Unpin + Send,
 {
-    while let Some(mut message) = <P::Framing as Framing>::read_message(reader)
+    while let Some(mut message) = read_message::<P::Framing, _>(reader)
         .await
         .map_err(io_error)?
     {
@@ -426,7 +426,7 @@ where
 {
     let mut reader = BufReader::new(read);
     loop {
-        let Ok(message) = <P::Framing as Framing>::read_message(&mut reader).await else {
+        let Ok(message) = read_message::<P::Framing, _>(&mut reader).await else {
             break;
         };
         let Some(mut message) = message else {
@@ -481,10 +481,43 @@ where
     W: AsyncWrite + Unpin + Send,
 {
     while let Some(message) = messages.recv().await {
-        if F::write_message(&mut writer, &message).await.is_err() {
+        if write_message::<F, _>(&mut writer, &message).await.is_err() {
             break;
         }
     }
+}
+
+/// Read one framed message and parse it, or `None` at a clean end of stream.
+///
+/// The framing moves bytes; this is where they become a [`Value`]. A framing
+/// failure and a body that is not JSON both surface as
+/// [`std::io::ErrorKind::InvalidData`], so a caller tells a broken peer from a
+/// broken transport only by the kind.
+pub(crate) async fn read_message<F, R>(reader: &mut R) -> std::io::Result<Option<Value>>
+where
+    F: Framing,
+    R: AsyncBufRead + Unpin + Send,
+{
+    let Some(body) = F::read_frame(reader)
+        .await
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string()))?
+    else {
+        return Ok(None);
+    };
+    serde_json::from_slice(&body)
+        .map(Some)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+}
+
+/// Serialise `message` and write it as one frame, flushed.
+pub(crate) async fn write_message<F, W>(writer: &mut W, message: &Value) -> std::io::Result<()>
+where
+    F: Framing,
+    W: AsyncWrite + Unpin + Send,
+{
+    let body = serde_json::to_vec(message)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    F::write_frame(writer, &body).await
 }
 
 fn touch<P: BrokerProtocol>(core: &Core<P>) {

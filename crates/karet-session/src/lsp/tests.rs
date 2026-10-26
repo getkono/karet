@@ -527,7 +527,21 @@ async fn crashed_server_restarts_and_replays_open_documents() -> TestResult {
         .await
         .ok_or("no outage answer")?;
 
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // Await the replay itself rather than sleeping past the restart delay. Only
+    // the restarted server echoes what it receives (the first hangs up during
+    // the handshake), so this `didOpen` is the replay; and the server task sends
+    // it inside the reconnect, so the next command is handled on the new
+    // connection. `Running` is no signal here: the doomed first connection can
+    // report it too, and that event may still be queued.
+    let mut replayed = false;
+    while !replayed {
+        let message = tokio::time::timeout(Duration::from_secs(10), observed_rx.recv())
+            .await
+            .map_err(|_elapsed| "the reconnected server never received the latest full text")?
+            .ok_or("the server stream ended before the replay")?;
+        replayed = message["method"] == "textDocument/didOpen"
+            && message["params"]["textDocument"]["text"] == "fn recovered() {}\n";
+    }
     backend.send(
         backend.next_id(),
         Command::Completion {
@@ -541,21 +555,6 @@ async fn crashed_server_restarts_and_replays_open_documents() -> TestResult {
         .ok_or("no recovered answer")?;
     assert_eq!(items.len(), 1);
     assert!(spawns.load(Ordering::SeqCst) >= 2);
-    let mut replayed = false;
-    while let Ok(Some(message)) =
-        tokio::time::timeout(Duration::from_millis(100), observed_rx.recv()).await
-    {
-        if message["method"] == "textDocument/didOpen"
-            && message["params"]["textDocument"]["text"] == "fn recovered() {}\n"
-        {
-            replayed = true;
-            break;
-        }
-    }
-    assert!(
-        replayed,
-        "reconnected server must receive the latest full text"
-    );
     Ok(())
 }
 
@@ -567,6 +566,7 @@ mod document_highlight_tests;
 mod editing_tests;
 mod failure_policy_tests;
 mod format_tests;
+mod hierarchy_tests;
 mod hint_tests;
 mod incremental_sync_tests;
 mod intelligence_tests;

@@ -8,7 +8,11 @@
 //! the left of the existing commit text.
 //!
 //! With the **`view`** feature, [`render_rail`](view::render_rail) turns a [`RailRow`]
-//! into a themed ratatui [`Line`](ratatui::text::Line).
+//! into a ratatui [`Line`](ratatui::text::Line) coloured through a caller-supplied
+//! `lane_style` closure, and [`graph_tree_lines`](view::graph_tree_lines) flattens a
+//! [`karet_core::GraphView`] into indented tree rows styled by plain
+//! [`TreeStyles`](view::TreeStyles). The view takes no theme dependency; the caller
+//! maps its own palette onto the styles.
 
 #[cfg(feature = "view")]
 pub mod view;

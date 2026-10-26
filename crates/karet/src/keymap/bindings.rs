@@ -285,6 +285,8 @@ pub(super) static BINDINGS: &[Binding] = &[
     // there either; they are reached through the palette.
     b(Editor, false, true,  false, F(12),      Command::FindReferences),
     b(Editor, true,  false, false, F(12),      Command::GoToImplementation),
+    // VS Code parity: Shift+Alt+H shows the call hierarchy, toward callers.
+    b(Editor, false, true,  true,  Char('h'), Command::ShowIncomingCalls),
     b(Editor, false, false, false, F(2),       Command::RenameSymbol),
     // VS Code parity: Ctrl+Shift+F2 starts linked editing (an HTML tag pair).
     b(Editor, true,  true,  false, F(2),       Command::StartLinkedEditing),

@@ -25,8 +25,10 @@ impl LspClient {
     ///
     /// # Errors
     /// Returns [`LspError::Unsupported`] **without issuing a request** when the
-    /// server did not advertise the capability, else [`LspError::Server`] or
-    /// [`LspError::Timeout`].
+    /// server did not advertise the capability, else [`LspError::Server`],
+    /// [`LspError::Timeout`], [`LspError::Protocol`] for an unconvertible
+    /// path, a request that does not encode or a result that does not decode,
+    /// or [`LspError::Closed`] if the connection is gone.
     pub async fn code_lenses(&self, doc: &Path) -> Result<Vec<CodeLens>, LspError> {
         self.require_for(ServerFeature::CodeLens, "textDocument/codeLens", doc)?;
         let params = lsp_types::CodeLensParams {
@@ -53,8 +55,10 @@ impl LspClient {
     /// stay true.
     ///
     /// # Errors
-    /// Returns [`LspError::Server`], [`LspError::Protocol`] (an answer that is
-    /// not a lens), or [`LspError::Timeout`].
+    /// Returns [`LspError::Server`], [`LspError::Timeout`],
+    /// [`LspError::Protocol`] for a request that does not encode or an answer
+    /// that is not a lens, or
+    /// [`LspError::Closed`] if the connection is gone.
     pub async fn resolve_code_lens(&self, lens: &CodeLens) -> Result<CodeLens, LspError> {
         if lens.is_resolved() || !self.supports(ServerFeature::CodeLensResolve) {
             return Ok(lens.clone());

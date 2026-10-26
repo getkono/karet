@@ -1,45 +1,14 @@
-//! Skeleton tests: a throwaway protocol with its own framing proves the broker
-//! machinery carries no LSP (or `Content-Length`) assumptions.
+//! Skeleton tests: a throwaway protocol on line-delimited framing proves the
+//! broker machinery carries no LSP (or `Content-Length`) assumptions.
 
-use std::io;
 use std::net::SocketAddr;
 
-use tokio::io::AsyncBufRead;
+use karet_jsonrpc::framing::line_delimited::LineDelimited;
 use tokio::io::AsyncWriteExt;
 use tokio::net::tcp::OwnedReadHalf;
 use tokio::net::tcp::OwnedWriteHalf;
 
 use super::*;
-
-/// Newline-delimited JSON — deliberately not the LSP framing.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct LineFraming;
-
-impl Framing for LineFraming {
-    async fn read_message<R>(reader: &mut R) -> io::Result<Option<Value>>
-    where
-        R: AsyncBufRead + Unpin + Send,
-    {
-        let mut line = String::new();
-        if reader.read_line(&mut line).await? == 0 {
-            return Ok(None);
-        }
-        serde_json::from_str(line.trim_end())
-            .map(Some)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
-    }
-
-    async fn write_message<W>(writer: &mut W, message: &Value) -> io::Result<()>
-    where
-        W: AsyncWrite + Unpin + Send,
-    {
-        let mut bytes = serde_json::to_vec(message)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-        bytes.push(b'\n');
-        writer.write_all(&bytes).await?;
-        writer.flush().await
-    }
-}
 
 /// The throwaway protocol. `pub(crate)` so [`crate::broker::lease`]'s own tests
 /// can elect brokers with it rather than restate one.
@@ -55,7 +24,7 @@ pub(crate) struct TestState {
 impl BrokerProtocol for TestProtocol {
     type State = TestState;
     type RequestTag = ();
-    type Framing = LineFraming;
+    type Framing = LineDelimited;
 
     const STATE_DIR: &'static str = "test-brokers";
     const PROTOCOL_VERSION: &'static str = "t1";
@@ -159,7 +128,7 @@ impl Harness {
     }
 
     async fn push_from_server(&mut self, message: &Value) -> Result<(), BoxError> {
-        LineFraming::write_message(&mut self.server, message).await?;
+        write_message::<LineDelimited, _>(&mut self.server, message).await?;
         Ok(())
     }
 
@@ -193,14 +162,17 @@ impl Harness {
 }
 
 async fn send(writer: &mut OwnedWriteHalf, message: &Value) -> Result<(), BoxError> {
-    LineFraming::write_message(writer, message).await?;
+    write_message::<LineDelimited, _>(writer, message).await?;
     Ok(())
 }
 
 async fn recv(reader: &mut BufReader<OwnedReadHalf>) -> Result<Value, BoxError> {
-    tokio::time::timeout(Duration::from_secs(5), LineFraming::read_message(reader))
-        .await??
-        .ok_or_else(|| BoxError::from("client stream ended"))
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        read_message::<LineDelimited, _>(reader),
+    )
+    .await??
+    .ok_or_else(|| BoxError::from("client stream ended"))
 }
 
 /// The acknowledgement has to be unforgeable by accident, or it proves

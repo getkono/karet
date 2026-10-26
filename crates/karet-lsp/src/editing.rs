@@ -51,8 +51,10 @@ impl LspClient {
     ///
     /// # Errors
     /// Returns [`LspError::Unsupported`] **without issuing a request** when the
-    /// server did not advertise the capability, else [`LspError::Server`] or
-    /// [`LspError::Timeout`].
+    /// server did not advertise the capability, else [`LspError::Server`],
+    /// [`LspError::Timeout`], [`LspError::Protocol`] for an unconvertible
+    /// path, a request that does not encode or a result that does not decode,
+    /// or [`LspError::Closed`] if the connection is gone.
     pub async fn linked_editing_ranges(
         &self,
         doc: &Path,
@@ -91,8 +93,10 @@ impl LspClient {
     ///
     /// # Errors
     /// Returns [`LspError::Unsupported`] **without issuing a request** when the
-    /// server did not advertise the capability, else [`LspError::Server`] or
-    /// [`LspError::Timeout`].
+    /// server did not advertise the capability, else [`LspError::Server`],
+    /// [`LspError::Timeout`], [`LspError::Protocol`] for an unconvertible
+    /// path, a request that does not encode or a result that does not decode,
+    /// or [`LspError::Closed`] if the connection is gone.
     pub async fn on_type_formatting(
         &self,
         doc: &Path,
@@ -131,7 +135,9 @@ impl LspClient {
     /// # Errors
     /// Returns [`LspError::Unsupported`] **without issuing a request** when the
     /// server did not ask for it in its `textDocumentSync` options, else
-    /// [`LspError::Server`] or [`LspError::Timeout`].
+    /// [`LspError::Server`], [`LspError::Timeout`], [`LspError::Protocol`] for
+    /// an unconvertible path, a request that does not encode or a result that
+    /// does not decode, or [`LspError::Closed`] if the connection is gone.
     pub async fn will_save_wait_until(
         &self,
         doc: &Path,

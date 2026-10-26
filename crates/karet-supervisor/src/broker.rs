@@ -10,22 +10,25 @@
 //!
 //! # Layout
 //!
-//! The process-management skeleton and the message semantics are separate, so a
-//! future agent daemon can reuse the former without inheriting LSP:
+//! The process-management skeleton and the message semantics are separate, so
+//! election, endpoint publication and request routing are written and tested
+//! without knowing what any LSP message means:
 //!
 //! - [`key`], [`endpoint`], [`lease`] and [`serve`] are the skeleton — broker
 //!   identity, the published endpoint file, `O_EXCL` election plus the hidden
 //!   entry point, and the accept/serve loop with its pending-request map.
-//! - [`framing`] and [`protocol`] are the seam: [`Framing`] says how messages sit
-//!   on the wire, [`BrokerProtocol`] says what they mean.
+//! - [`protocol`] is the seam: [`BrokerProtocol`] says what messages mean, and
+//!   names a [`Framing`] from `karet-jsonrpc` for how they sit on the wire. The
+//!   skeleton parses each frame into JSON itself, so a framing moves only bytes.
 //! - [`lsp`] is the one implementation, and the **only** module here permitted to
-//!   name the `karet-lsp` crate. Keep it that way — `grep -rn` for that crate
-//!   across `src/` should find nothing outside `src/broker/lsp.rs`: nothing in
-//!   the skeleton may learn what `initialize` or `textDocument/didOpen` is.
+//!   use the `karet-lsp` crate. Keep it that way — `grep -rn 'use karet_lsp'`
+//!   across `src/` should find nothing outside `src/broker/lsp.rs`; the skeleton
+//!   mentions that crate only in prose (as `failure` and `serve` do, to say which
+//!   of its bounds they restate): nothing in the skeleton may learn what
+//!   `initialize` or `textDocument/didOpen` is.
 
 mod endpoint;
 mod failure;
-mod framing;
 mod key;
 mod lease;
 mod lsp;
@@ -33,7 +36,7 @@ mod protocol;
 mod serve;
 
 pub use failure::BrokeredLaunchFailure;
-pub use framing::Framing;
+pub use karet_jsonrpc::Framing;
 pub use key::Launch;
 pub use lsp::MODE_ENV;
 pub use lsp::connect;

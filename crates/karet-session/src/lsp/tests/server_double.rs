@@ -117,6 +117,12 @@ pub(super) enum Behavior {
     /// (`client/registerCapability`) once a document is opened, then answer
     /// pulls like [`Behavior::Pulls`].
     RegistersPulls,
+    /// Pull like [`Behavior::Pulls`], with `interFileDependencies` declared.
+    PullsAcrossFiles,
+    /// Pull like [`Behavior::PullsAcrossFiles`], and ask the client to pull
+    /// everything again (`workspace/diagnostic/refresh`) whenever a document
+    /// is saved.
+    RefreshesPulls,
     /// Serve normally, and offer semantic tokens with deltas: a whole answer
     /// classifies UTF-16 columns 2..4 of line 0 as a `macro`, and a delta
     /// rewrites that token to a `variable.mutable`. Each result id names the
@@ -165,6 +171,7 @@ fn advertised_capabilities(behavior: Behavior) -> Value {
         },
         "inlayHintProvider": {"resolveProvider": true},
         "implementationProvider": true,
+        "callHierarchyProvider": true,
         "typeHierarchyProvider": true,
         "selectionRangeProvider": true,
         "documentHighlightProvider": true,
@@ -190,6 +197,13 @@ fn advertised_capabilities(behavior: Behavior) -> Value {
     if matches!(behavior, Behavior::Pulls | Behavior::PushesAndPulls) {
         capabilities["diagnosticProvider"] =
             json!({"interFileDependencies": false, "workspaceDiagnostics": false});
+    }
+    if matches!(
+        behavior,
+        Behavior::PullsAcrossFiles | Behavior::RefreshesPulls
+    ) {
+        capabilities["diagnosticProvider"] =
+            json!({"interFileDependencies": true, "workspaceDiagnostics": false});
     }
     if matches!(
         behavior,
@@ -275,6 +289,37 @@ fn document_highlight_reply(position: &Value) -> Value {
         {"range": {"start": {"line": 1, "character": 0},
                    "end": {"line": 1, "character": 2}}}
     ])
+}
+
+/// The double's answer to the hierarchy methods.
+///
+/// Preparing answers one item `root` in the asked document, its selection
+/// range the one UTF-16 code unit after the position (echoing it proves the
+/// request crossed in UTF-16 columns), with `data` the server needs back.
+/// Every follow-up answers one item named after the method and the asked
+/// item's `data` -- `<method> of <data>` -- over UTF-16 characters 2..3 of
+/// line 1, so an item handed back without its `data` reads `... of null`.
+fn hierarchy_reply(msg: &Value) -> Value {
+    let method = msg["method"].as_str().unwrap_or_default();
+    let params = &msg["params"];
+    let item = |name: String, uri: &Value, at: &Value| {
+        let after = at["character"].as_u64().unwrap_or(0) + 1;
+        let selection = json!({"start": at, "end": {"line": at["line"], "character": after}});
+        json!({"name": name, "kind": 12, "uri": uri, "range": selection,
+               "selectionRange": selection, "data": {"from": method}})
+    };
+    if method.starts_with("textDocument/prepare") {
+        let uri = &params["textDocument"]["uri"];
+        return json!([item("root".to_owned(), uri, &params["position"])]);
+    }
+    let asked = &params["item"];
+    let name = format!("{method} of {}", asked["data"]["from"]);
+    let child = item(name, &asked["uri"], &json!({"line": 1, "character": 2}));
+    match method {
+        "callHierarchy/incomingCalls" => json!([{"from": child, "fromRanges": []}]),
+        "callHierarchy/outgoingCalls" => json!([{"to": child, "fromRanges": []}]),
+        _ => json!([child]),
+    }
 }
 
 /// The double's answer to the three code-action methods.
@@ -549,6 +594,21 @@ pub(super) fn test_connector(
                             )
                             .await;
                         },
+                        Some(
+                            "textDocument/prepareCallHierarchy"
+                            | "textDocument/prepareTypeHierarchy"
+                            | "callHierarchy/incomingCalls"
+                            | "callHierarchy/outgoingCalls"
+                            | "typeHierarchy/supertypes"
+                            | "typeHierarchy/subtypes",
+                        ) => {
+                            let result = hierarchy_reply(&msg);
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": result}),
+                            )
+                            .await;
+                        },
                         Some("textDocument/documentHighlight") => {
                             let result = document_highlight_reply(&msg["params"]["position"]);
                             write_msg(
@@ -761,6 +821,16 @@ pub(super) fn test_connector(
                             write_msg(
                                 &mut server_write,
                                 &json!({"jsonrpc": "2.0", "id": msg["id"], "result": result}),
+                            )
+                            .await;
+                        },
+                        Some("textDocument/didSave")
+                            if matches!(behavior, Behavior::RefreshesPulls) =>
+                        {
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": "refresh-pulls",
+                                    "method": "workspace/diagnostic/refresh"}),
                             )
                             .await;
                         },

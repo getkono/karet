@@ -60,10 +60,14 @@ pub struct BlameGroup {
 
 impl BlameGroup {
     /// An abbreviated, 7-character commit hash for display.
+    ///
+    /// A `commit_hash` that is not ASCII hex (possible only through a
+    /// hand-built or deserialized group) is returned whole when byte 7 does
+    /// not fall on a character boundary, rather than panicking.
     #[must_use]
     pub fn short_hash(&self) -> &str {
         let n = self.commit_hash.len().min(7);
-        &self.commit_hash[..n]
+        self.commit_hash.get(..n).unwrap_or(&self.commit_hash)
     }
 
     /// The first line (subject) of the commit message.
@@ -103,9 +107,12 @@ pub enum BlameError {
 
 /// Semantic blame narrowed to the function/block enclosing `line` (0-based).
 ///
-/// Parses `source` with tree-sitter to find the innermost enclosing function, then
-/// clips whole-file blame to that line range. Falls back to the whole file when the
-/// language is unsupported or no enclosing function is found.
+/// With the `treesitter` feature, parses `source` with tree-sitter to find the
+/// innermost enclosing function, then clips whole-file blame to that line range.
+/// Falls back to the whole file when the language is unsupported (no matching
+/// `lang-*` feature) or no enclosing function is found. Without the `treesitter`
+/// feature, `source` and `line` are ignored and this always returns whole-file
+/// blame, the same as [`blame_file`].
 ///
 /// # Errors
 /// Returns [`BlameError`] if the repository can't be opened or blamed — including
@@ -178,6 +185,16 @@ mod tests {
     fn short_hash_handles_tiny_hashes() {
         let g = group(1, 1, "abc");
         assert_eq!(g.short_hash(), "abc");
+    }
+
+    #[test]
+    fn short_hash_does_not_panic_off_a_char_boundary() {
+        // `é` spans bytes 6..8, so byte 7 is inside it.
+        let g = group(1, 1, "abcdeféxyz");
+        assert_eq!(g.short_hash(), "abcdeféxyz");
+        // A multi-byte char ending exactly at byte 7 still truncates.
+        let g = group(1, 1, "abcdeéxyz");
+        assert_eq!(g.short_hash(), "abcdeé");
     }
 
     #[test]

@@ -8,10 +8,6 @@
 //! Nor does it depend on the syntax engine: highlight spans, fold regions and
 //! semantic blocks are the neutral `karet-core` shapes `karet-syntax` computes,
 //! so a consumer of the widget never builds tree-sitter.
-//!
-//! This is the implementation *skeleton*: the [`Editor`] builder (the data joint)
-//! and [`EditorState`] are defined; the painting/input logic is filled in
-//! separately.
 
 mod bracket;
 mod conflict;

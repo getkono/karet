@@ -12,6 +12,8 @@
 
 use std::path::Path;
 
+use serde_json::Value;
+
 use crate::LspError;
 use crate::uri;
 
@@ -159,8 +161,10 @@ pub(crate) fn initialize_params(root: &Path) -> Result<lsp_types::InitializePara
                 ..lsp_types::PublishDiagnosticsClientCapabilities::default()
             }),
             // `LspClient::pull_diagnostics`. A registration's options carry
-            // only an identifier and dependency flags, which a pull does not
-            // need, so registering dynamically loses nothing. Related
+            // only an identifier and dependency flags; the registration
+            // handler keeps `interFileDependencies` as
+            // `ServerFeature::InterFileDiagnostics`, so registering
+            // dynamically loses nothing. Related
             // documents' reports are returned beside the asked one's.
             diagnostic: Some(lsp_types::DiagnosticClientCapabilities {
                 dynamic_registration: Some(true),
@@ -186,6 +190,7 @@ pub(crate) fn initialize_params(root: &Path) -> Result<lsp_types::InitializePara
             }),
             definition: Some(goto),
             implementation: Some(goto),
+            call_hierarchy: Some(dynamic),
             type_hierarchy: Some(dynamic),
             document_symbol: Some(lsp_types::DocumentSymbolClientCapabilities {
                 dynamic_registration: Some(true),
@@ -250,6 +255,12 @@ pub(crate) fn initialize_params(root: &Path) -> Result<lsp_types::InitializePara
             semantic_tokens: Some(lsp_types::SemanticTokensWorkspaceClientCapabilities {
                 refresh_support: Some(true),
             }),
+            // Answered, and relayed through `LspClient::refreshes` as
+            // `ServerRefresh::Diagnostics`. `lsp_types` names the member
+            // `diagnostic`; the spec's `diagnostics` is added by `to_wire`.
+            diagnostic: Some(lsp_types::DiagnosticWorkspaceClientCapabilities {
+                refresh_support: Some(true),
+            }),
             // Relayed through `LspClient::apply_edit_requests`.
             apply_edit: Some(true),
             // `LspClient::execute_command`; declared without dynamic
@@ -299,4 +310,26 @@ pub(crate) fn initialize_params(root: &Path) -> Result<lsp_types::InitializePara
         capabilities,
         ..lsp_types::InitializeParams::default()
     })
+}
+
+/// `params` as sent, with what `lsp_types` cannot express added.
+///
+/// `lsp_types` 0.97 serializes the workspace diagnostic capability as
+/// `workspace.diagnostic`, while the spec -- and `vscode-languageserver`, which
+/// most servers are built on -- reads `workspace.diagnostics`. Both are sent:
+/// a server built on `lsp_types` reads the first, every other the second.
+///
+/// # Errors
+/// Returns [`LspError::Protocol`] if `params` cannot be serialized.
+pub(crate) fn to_wire(params: lsp_types::InitializeParams) -> Result<Value, LspError> {
+    let mut wire =
+        serde_json::to_value(params).map_err(|error| LspError::Protocol(error.to_string()))?;
+    if let Some(workspace) = wire
+        .pointer_mut("/capabilities/workspace")
+        .and_then(Value::as_object_mut)
+        && let Some(diagnostic) = workspace.get("diagnostic").cloned()
+    {
+        workspace.insert("diagnostics".to_owned(), diagnostic);
+    }
+    Ok(wire)
 }

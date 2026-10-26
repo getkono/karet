@@ -175,7 +175,9 @@ impl Document {
 /// One entry in a PDF's navigation outline (a bookmark / table-of-contents node).
 #[derive(Clone, Debug)]
 pub struct OutlineItem {
-    /// The bookmark's display title, decoded from the PDF text string.
+    /// The bookmark's display title, decoded from the PDF text string: UTF-16BE
+    /// when it starts with a `FE FF` byte-order mark, otherwise byte-by-byte as
+    /// Latin-1 (an approximation of PDFDocEncoding; a UTF-8 BOM is not handled).
     pub title: String,
     /// The 0-based page index the bookmark points to, if it targets an in-document
     /// page via an explicit destination or a `GoTo` action. `None` when the entry
@@ -262,7 +264,9 @@ fn dest_array_page(
 
 /// Decode a PDF text string into a Rust `String` without external crates: UTF-16BE
 /// when it opens with a `FE FF` byte-order mark, otherwise byte-for-byte as
-/// Latin-1 / PDFDocEncoding.
+/// Latin-1. That is only an approximation of PDFDocEncoding, which differs from
+/// Latin-1 at `0x18..=0x1F` and `0x80..=0x9F`, and a UTF-8 (`EF BB BF`) BOM is not
+/// recognised, so such a title decodes byte-by-byte as Latin-1 too.
 fn decode_pdf_text_string(bytes: &[u8]) -> String {
     if let Some(rest) = bytes.strip_prefix(&[0xFE, 0xFF]) {
         let units = rest

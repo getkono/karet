@@ -128,7 +128,16 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
     // quantised to the 256-colour palette instead.
     let color_depth = crate::term_caps::probe_color_depth();
 
+    // The saved workspace layout lives beside the swaps. Only the live editor
+    // reads or writes it: `--capture` and tests never touch the user's state.
+    let layout_dir = karet_session::backup::default_swap_dir();
+
     let result = runtime.block_on(async {
+        // Restored before the backend attaches, so attaching registers every
+        // restored pane's tabs with the rest of startup's.
+        if let Some(dir) = &layout_dir {
+            app.restore_workspace_layout(dir);
+        }
         let (events, snaps) = attach_backend(&mut app, config)?;
         let graphical_cursor_requested = app.tabs.get(app.active).is_some_and(|tab| {
             app.settings
@@ -156,6 +165,15 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
     );
     drop(_keyboard);
     ratatui::restore();
+    // Only a clean exit saves the layout; after a failure, the one the last
+    // clean exit saved is the better guess at where the user was.
+    if result.is_ok()
+        && let Some(dir) = &layout_dir
+        && let Err(error) = app.save_workspace_layout(dir)
+    {
+        app.farewell
+            .push(format!("could not save the workspace layout: {error}"));
+    }
     // Only now is there a screen to read it on: printed earlier, it would land in
     // the alternate screen and vanish with it.
     let mut stderr = io::stderr().lock();
