@@ -157,9 +157,11 @@ pub struct ResponseError {
     /// Boxed because it is the rare case and `Value` is not small — larger
     /// still where a workspace enables `serde_json/preserve_order`. Inline, it
     /// pushed every `Result<_, ResponseError>` in the crate over the
-    /// `result_large_err` threshold. Read it through [`data`](Self::data).
+    /// `result_large_err` threshold. Private so the boxing stays an
+    /// implementation detail: read it through [`data`](Self::data) and set it
+    /// with [`with_data`](Self::with_data).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub data: Option<Box<Value>>,
+    data: Option<Box<Value>>,
 }
 
 impl ResponseError {
