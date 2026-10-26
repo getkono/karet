@@ -7,7 +7,7 @@ use std::process::Command;
 use thiserror::Error;
 use url::Url;
 
-use crate::canonical_nearest;
+use crate::paths::canonical_nearest;
 
 /// A validated link target with its workspace boundary made explicit.
 #[derive(Clone, Debug, PartialEq, Eq)]

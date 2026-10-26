@@ -38,7 +38,7 @@ const FILE_NAME: &str = "recent.json";
 #[must_use]
 pub(crate) fn absolute(path: &Path) -> PathBuf {
     let path = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
-    crate::lexically_normalize(&path)
+    crate::paths::lexically_normalize(&path)
 }
 
 /// One remembered change, replayed in memory and against the file on disk.

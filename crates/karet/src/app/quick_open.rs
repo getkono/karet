@@ -363,7 +363,10 @@ impl App {
             .recent
             .workspaces()
             .filter(|root| *root != this && root.is_dir())
-            .map(|root| (tilde(root, home.as_deref()), root.to_path_buf()))
+            .map(|root| {
+                let label = crate::paths::abbreviate_home(root, home.as_deref());
+                (label, root.to_path_buf())
+            })
             .collect();
         if items.is_empty() {
             self.notify(
@@ -399,28 +402,5 @@ impl App {
     /// Forget a pending reopen: the quit that would have carried it was cancelled.
     pub(super) fn cancel_relaunch(&mut self) {
         self.relaunch = None;
-    }
-}
-
-/// `path` for display, with the home directory written `~`.
-fn tilde(path: &Path, home: Option<&Path>) -> String {
-    match home.and_then(|home| path.strip_prefix(home).ok()) {
-        Some(rest) if rest.as_os_str().is_empty() => "~".to_string(),
-        Some(rest) => format!("~/{}", rest.display()),
-        None => path.display().to_string(),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn tilde_shortens_only_paths_under_home() {
-        let home = Path::new("/home/me");
-        assert_eq!(tilde(Path::new("/home/me/src/k"), Some(home)), "~/src/k");
-        assert_eq!(tilde(Path::new("/home/me"), Some(home)), "~");
-        assert_eq!(tilde(Path::new("/home/meow"), Some(home)), "/home/meow");
-        assert_eq!(tilde(Path::new("/srv/k"), None), "/srv/k");
     }
 }
