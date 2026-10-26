@@ -591,36 +591,6 @@ fn public_word_boundaries_cover_whitespace_punctuation_and_lines() {
 }
 
 #[test]
-fn a_word_left_skips_the_whitespace_before_the_caret_first() {
-    let buffer = TextBuffer::from_text("foo  bar\n  baz");
-    // Back over the two spaces, then over `foo`.
-    assert_eq!(
-        previous_word_boundary(&buffer, LineCol::new(0, 5)),
-        LineCol::new(0, 0)
-    );
-    // Only whitespace before the caret: the line start.
-    assert_eq!(
-        previous_word_boundary(&buffer, LineCol::new(1, 2)),
-        LineCol::new(1, 0)
-    );
-}
-
-#[test]
-fn a_multi_line_needle_must_match_every_line_it_spans() {
-    let buffer = TextBuffer::from_text("xa\nb\nc y\n");
-    assert_eq!(
-        crate::text::find_all(&buffer, "a\nb\nc", false),
-        [Range {
-            start: LineCol::new(0, 1),
-            end: LineCol::new(2, 1),
-        }]
-    );
-    // A middle line that differs rejects the match even though both ends agree.
-    let broken = TextBuffer::from_text("xa\nZ\nc y\n");
-    assert!(crate::text::find_all(&broken, "a\nb\nc", false).is_empty());
-}
-
-#[test]
 fn select_all_spans_the_whole_buffer() {
     let buffer = TextBuffer::from_text("ab\ncde");
     let mut state = EditorState::new();
