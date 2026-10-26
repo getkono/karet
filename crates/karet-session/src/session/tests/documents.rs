@@ -4,6 +4,7 @@
     use karet_core::TextEdit;
 
     use super::*;
+    use super::documents::DocumentLanguage;
     use crate::api::Command;
 
     /// What a session test returns: a missing or wrong answer is an `Err`, so it fails
@@ -812,6 +813,57 @@
         assert!(session.document(doc).is_some());
         session.handle(RequestId(4), Command::CloseDocument { doc });
         assert!(session.document(doc).is_none());
+        Ok(())
+    }
+
+    /// The language a `.txt` file opened with `language` ends up carrying.
+    fn opened_language(
+        language: Option<&str>,
+    ) -> Result<DocumentLanguage, Box<dyn std::error::Error>> {
+        let (_dir, path) =
+            write_temp("notes.txt", "fn main() {}\n").ok_or("temp file not written")?;
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
+        session.handle(
+            RequestId(1),
+            Command::OpenDocument {
+                path,
+                language: language.map(str::to_owned),
+            },
+        );
+        let doc = opened_doc(&mut events).ok_or("no Opened event")?;
+        let doc = session.store.docs.get(&doc).ok_or("opened document not stored")?;
+        Ok(DocumentLanguage {
+            lang_id: doc.lang_id,
+            name: doc.language,
+            selector: doc.language_selector,
+            lsp_id: doc.lsp_language_id,
+        })
+    }
+
+    /// A known explicit id overrides path detection for every identity at once, so
+    /// the highlighter, the label, settings, and the server all agree. Falsified by
+    /// ignoring `language`, or by overriding only the display name.
+    #[test]
+    fn open_document_honours_a_known_language_id() -> TestResult {
+        let rust = DocumentLanguage::for_path(Path::new("main.rs"));
+        assert_eq!(rust.name, Some("Rust"));
+        assert_eq!(opened_language(Some("rust"))?, rust);
+        // A configuration selector or display name names the same language.
+        let tsx = DocumentLanguage::for_path(Path::new("app.tsx"));
+        assert_eq!(opened_language(Some("tsx"))?, tsx);
+        assert_eq!(opened_language(Some("typescriptreact"))?, tsx);
+        assert_eq!(opened_language(Some("Rust"))?, rust);
+        Ok(())
+    }
+
+    /// An id the registry does not know, and no id at all, both detect from the path.
+    #[test]
+    fn open_document_detects_from_the_path_without_a_known_language_id() -> TestResult {
+        let plain = DocumentLanguage::for_path(Path::new("notes.txt"));
+        assert_eq!(plain.name, Some("Plain Text"));
+        assert_eq!(opened_language(None)?, plain);
+        assert_eq!(opened_language(Some("klingon"))?, plain);
+        assert_eq!(opened_language(Some(""))?, plain);
         Ok(())
     }
 
