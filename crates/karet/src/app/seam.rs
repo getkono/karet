@@ -28,9 +28,16 @@ use karet_session::api::SeamSummary;
 
 use super::pending::Pending;
 
-/// The five lens names, in display order. Mirrors `karet_seam::LENSES` without taking a
-/// dependency on the engine from the presentation layer.
-pub(crate) const LENS_NAMES: [&str; 5] = ["api", "substitution", "variation", "boundary", "hazard"];
+/// The lens names, in display order: [`karet_seam::LENSES`] by name.
+pub(crate) const LENS_NAMES: [&str; karet_seam::LENSES.len()] = {
+    let mut names = [""; karet_seam::LENSES.len()];
+    let mut index = 0;
+    while index < names.len() {
+        names[index] = karet_seam::LENSES[index].name();
+        index += 1;
+    }
+    names
+};
 
 /// What has keyboard focus inside the view.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
