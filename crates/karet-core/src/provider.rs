@@ -6,7 +6,6 @@
 //! Blanket impls on `Vec<T>` and `[T]` let callers pass slices directly.
 
 use crate::coord::LineCol;
-use crate::model::Diagnostic;
 use crate::model::Symbol;
 
 /// A snapshot source of document/workspace symbols.
@@ -26,27 +25,6 @@ pub trait SymbolProvider {
         }
         deepest(self.symbols(), pos)
     }
-}
-
-/// A diagnostic message re-rendered as markdown by a [`DiagnosticFormatter`].
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FormattedDiagnostic {
-    /// The markdown replacing the raw message text wherever richer rendering
-    /// is available (hover popups, detail views). The raw
-    /// [`message`](Diagnostic::message) remains the fallback everywhere else.
-    pub markdown: String,
-}
-
-/// Re-renders a tool's raw diagnostic message as richer markdown.
-///
-/// Implementations are keyed on [`Diagnostic::source`] (a TypeScript formatter
-/// ignores rustc output) and are pure: same diagnostic in, same markdown out.
-/// Renderers stay decoupled — they receive the formatted markdown, never the
-/// formatter.
-pub trait DiagnosticFormatter {
-    /// Format `diagnostic`'s message; `None` when this formatter does not
-    /// apply, letting the raw message stand.
-    fn format(&self, diagnostic: &Diagnostic) -> Option<FormattedDiagnostic>;
 }
 
 impl SymbolProvider for [Symbol] {
