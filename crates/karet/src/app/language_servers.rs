@@ -743,7 +743,7 @@ impl App {
             .filter_map(|change| change.download_bytes)
             .sum();
         let size = if bytes > 0 {
-            format!(" Downloads about {}.", human_bytes(bytes))
+            format!(" Downloads about {}.", human_size(bytes))
         } else {
             String::new()
         };
