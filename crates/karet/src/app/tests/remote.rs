@@ -256,7 +256,7 @@ async fn remote_facts_resolve_through_the_backend() {
     let Some(Ok(facts)) = app.cached_remote_facts(&path) else {
         panic!("facts resolve inside a repo with an origin");
     };
-    assert_eq!(facts.remote.kind, crate::remote::ForgeKind::GitHub);
+    assert_eq!(facts.remote.kind, karet_vcs::ForgeKind::GitHub);
     assert_eq!(facts.rel_path, PathBuf::from("new.rs"));
     assert!(facts.tracked);
     assert!(facts.head.is_some());

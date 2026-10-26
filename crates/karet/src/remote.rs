@@ -1,5 +1,6 @@
-//! Remote-forge web links: parse a git remote URL into a browsable host +
-//! `owner/repo`, detect which forge runs the host, and build file (blob) URLs.
+//! Remote-forge web links: build file (blob) URLs for a git remote that
+//! [`karet_vcs::parse_remote`] has already resolved to a host, a repository
+//! path, and a forge.
 //!
 //! Everything here is pure — the app gathers the repository facts (HEAD, branch,
 //! tracked state) and this module turns them into URLs or user-facing refusal
@@ -7,98 +8,8 @@
 
 use std::path::Path;
 
-/// A known git-forge kind, detected from the remote host name.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ForgeKind {
-    /// github.com.
-    GitHub,
-    /// A GitLab host (gitlab.com or a self-managed `*gitlab*` host).
-    GitLab,
-    /// A Gitea host.
-    Gitea,
-    /// A Forgejo host (including codeberg.org).
-    Forgejo,
-    /// An unrecognized host.
-    Unknown,
-}
-
-impl ForgeKind {
-    /// The human-readable forge name for notes and status messages.
-    pub(crate) fn name(self) -> &'static str {
-        match self {
-            Self::GitHub => "GitHub",
-            Self::GitLab => "GitLab",
-            Self::Gitea => "Gitea",
-            Self::Forgejo => "Forgejo",
-            Self::Unknown => "an unknown host",
-        }
-    }
-}
-
-/// A parsed git remote: the web host, the repository path on it (`owner/repo`,
-/// possibly with GitLab subgroups), and the detected forge kind.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Remote {
-    /// The host name (no user, no port).
-    pub(crate) host: String,
-    /// The repository path on the host: `owner/repo` (no leading/trailing slash,
-    /// trailing `.git` stripped). GitLab subgroups keep their full path.
-    pub(crate) repo_path: String,
-    /// The forge detected from the host name.
-    pub(crate) kind: ForgeKind,
-}
-
-/// Parse a git remote URL — scp-like `git@host:owner/repo.git`, `ssh://`,
-/// `git://`, `http://`, or `https://` — into a [`Remote`]. Returns `None` for
-/// anything unrecognizable (a local path, an empty repo path, …).
-pub(crate) fn parse_remote(url: &str) -> Option<Remote> {
-    let url = url.trim();
-    let (host, path) = if let Some(rest) = url
-        .strip_prefix("ssh://")
-        .or_else(|| url.strip_prefix("git://"))
-        .or_else(|| url.strip_prefix("http://"))
-        .or_else(|| url.strip_prefix("https://"))
-    {
-        let (authority, path) = rest.split_once('/')?;
-        (authority, path)
-    } else if !url.contains("://") && url.contains('@') && url.contains(':') {
-        // scp-like: git@host:owner/repo.git (the colon separates host from path).
-        let (authority, path) = url.split_once(':')?;
-        (authority, path)
-    } else {
-        return None;
-    };
-    // Drop the user (git@) and any port (:22) from the authority.
-    let host = host.rsplit_once('@').map_or(host, |(_, h)| h);
-    let host = host.split_once(':').map_or(host, |(h, _)| h);
-    let repo_path = path
-        .trim_matches('/')
-        .trim_end_matches(".git")
-        .trim_end_matches('/');
-    if host.is_empty() || repo_path.is_empty() || !repo_path.contains('/') {
-        return None;
-    }
-    Some(Remote {
-        host: host.to_ascii_lowercase(),
-        repo_path: repo_path.to_string(),
-        kind: detect_forge(&host.to_ascii_lowercase()),
-    })
-}
-
-/// Detect the forge kind from a (lowercased) host name.
-fn detect_forge(host: &str) -> ForgeKind {
-    if host == "github.com" {
-        ForgeKind::GitHub
-    } else if host.contains("gitlab") {
-        ForgeKind::GitLab
-    } else if host == "codeberg.org" || host.contains("forgejo") {
-        ForgeKind::Forgejo
-    } else if host.contains("gitea") {
-        ForgeKind::Gitea
-    } else {
-        ForgeKind::Unknown
-    }
-}
+use karet_vcs::ForgeKind;
+use karet_vcs::RemoteUrl;
 
 /// Which web link to build for a file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -117,7 +28,7 @@ pub(crate) enum LinkKind {
 #[derive(Clone, Debug)]
 pub(crate) struct LinkTarget<'a> {
     /// The parsed origin remote.
-    pub(crate) remote: &'a Remote,
+    pub(crate) remote: &'a RemoteUrl,
     /// The full `HEAD` commit hash, or `None` on an unborn branch.
     pub(crate) head: Option<&'a str>,
     /// The current branch's short name, or `None` when `HEAD` is detached.
@@ -171,7 +82,7 @@ pub(crate) fn link(
 /// The blob URL for `rel_path` at `reference` on `remote`, with an optional
 /// 1-based `line` anchor. GitLab inserts its `/-/` route prefix; GitHub, Gitea,
 /// and Forgejo share the `/blob/` form.
-fn file_url(remote: &Remote, reference: &str, rel_path: &Path, line: Option<u32>) -> String {
+fn file_url(remote: &RemoteUrl, reference: &str, rel_path: &Path, line: Option<u32>) -> String {
     let blob = match remote.kind {
         ForgeKind::GitLab => "/-/blob/",
         _ => "/blob/",
@@ -207,84 +118,17 @@ fn path_for_url(rel: &Path) -> String {
 mod tests {
     use super::*;
 
-    fn remote(url: &str) -> Remote {
-        parse_remote(url).unwrap_or(Remote {
+    /// Parsing itself is `karet_vcs::parse_remote`'s, tested there; these tests
+    /// only need a parsed remote to build links from.
+    fn remote(url: &str) -> RemoteUrl {
+        karet_vcs::parse_remote(url).unwrap_or(RemoteUrl {
             host: String::new(),
             repo_path: String::new(),
             kind: ForgeKind::Unknown,
         })
     }
 
-    #[test]
-    fn parses_scp_like_github_remote() {
-        let r = remote("git@github.com:getkono/karet.git");
-        assert_eq!(r.host, "github.com");
-        assert_eq!(r.repo_path, "getkono/karet");
-        assert_eq!(r.kind, ForgeKind::GitHub);
-    }
-
-    #[test]
-    fn parses_https_remote_with_and_without_dot_git() {
-        assert_eq!(
-            remote("https://github.com/owner/repo.git").repo_path,
-            "owner/repo"
-        );
-        assert_eq!(
-            remote("https://github.com/owner/repo").repo_path,
-            "owner/repo"
-        );
-    }
-
-    #[test]
-    fn keeps_dots_inside_the_repo_name() {
-        // Only a trailing `.git` is stripped — dots inside the name survive.
-        let r = remote("git@github.com:owner/repo.name.git");
-        assert_eq!(r.repo_path, "owner/repo.name");
-    }
-
-    #[test]
-    fn parses_ssh_url_with_user_and_port() {
-        let r = remote("ssh://git@github.com:22/owner/repo.git");
-        assert_eq!(r.host, "github.com");
-        assert_eq!(r.repo_path, "owner/repo");
-        assert_eq!(r.kind, ForgeKind::GitHub);
-    }
-
-    #[test]
-    fn keeps_gitlab_subgroups_and_detects_gitlab() {
-        let r = remote("https://gitlab.com/group/subgroup/repo.git");
-        assert_eq!(r.repo_path, "group/subgroup/repo");
-        assert_eq!(r.kind, ForgeKind::GitLab);
-        assert_eq!(
-            remote("git@gitlab.example.com:o/r.git").kind,
-            ForgeKind::GitLab
-        );
-    }
-
-    #[test]
-    fn detects_forgejo_gitea_and_unknown_hosts() {
-        assert_eq!(remote("git@codeberg.org:o/r.git").kind, ForgeKind::Forgejo);
-        assert_eq!(
-            remote("https://gitea.example.com/o/r").kind,
-            ForgeKind::Gitea
-        );
-        assert_eq!(
-            remote("git@git.example.com:o/r.git").kind,
-            ForgeKind::Unknown
-        );
-    }
-
-    #[test]
-    fn rejects_local_paths_and_pathless_urls() {
-        assert!(parse_remote("/srv/git/repo.git").is_none());
-        assert!(parse_remote("https://github.com/").is_none());
-        assert!(
-            parse_remote("git@github.com:repo.git").is_none(),
-            "no owner"
-        );
-    }
-
-    fn target<'a>(remote: &'a Remote, tracked: bool) -> LinkTarget<'a> {
+    fn target<'a>(remote: &'a RemoteUrl, tracked: bool) -> LinkTarget<'a> {
         LinkTarget {
             remote,
             head: Some("abc123"),
