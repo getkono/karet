@@ -1,8 +1,51 @@
-//! Application wiring for Tab / Shift+Tab in the editor: an inline macro first,
-//! then the pure indent / dedent from `karet_editor::editing` over every
-//! selection at once, with the document's resolved indentation.
+//! Application wiring for indentation: Tab / Shift+Tab in the editor (an inline
+//! macro first, then the pure indent / dedent from `karet_editor::editing` over
+//! every selection at once, with the document's resolved indentation), and the
+//! syntax-aware indentation a line break opens with, which Enter and a
+//! multi-line paste consult.
 
 use super::*;
+
+/// One parse of a buffer, with the indent queries of its languages, answering
+/// what indentation a line break over a range of it opens with.
+pub(super) struct SyntaxIndent {
+    tree: karet_treesitter::LayeredTree,
+    indenter: karet_syntax::Indenter,
+    text: String,
+    unit: String,
+}
+
+impl SyntaxIndent {
+    /// Parse `buffer` as the language `path` names, with `unit` as one level.
+    fn new(path: &Path, buffer: &TextBuffer, unit: String) -> Option<Self> {
+        let lang = karet_treesitter::language_id_from_path(path)?;
+        if karet_treesitter::indents_query(lang).is_none()
+            && karet_treesitter::injections_query(lang).is_none()
+        {
+            return None;
+        }
+        let text = buffer.text();
+        let tree = karet_treesitter::LayeredParser::new()
+            .parse(lang, &text)
+            .ok()?;
+        let indenter = karet_syntax::Indenter::for_tree(&tree);
+        Some(Self {
+            tree,
+            indenter,
+            text,
+            unit,
+        })
+    }
+
+    /// The new line's indentation for a break replacing `range` of `buffer`
+    /// (the buffer this was parsed from), or `None` to copy the current line.
+    pub(super) fn for_range(&self, buffer: &TextBuffer, range: Range) -> Option<String> {
+        let before = buffer.line_col_to_byte(range.start).ok()?;
+        let after = buffer.line_col_to_byte(range.end).ok()?;
+        self.indenter
+            .newline_indent(&self.tree, &self.text, (before, after), &self.unit)
+    }
+}
 
 impl App {
     /// Tab in the editor: expand a Tab-triggered inline macro when one applies at
@@ -28,6 +71,27 @@ impl App {
         if self.active_tab_is_editable_code() {
             self.reindent(false);
         }
+    }
+
+    /// The syntax-aware indentation for line breaks in the active code tab, or
+    /// `None` when its language has no indent query to consult (nor injects
+    /// one that might), so Enter copies the current line's indentation.
+    pub(super) fn syntax_indent(&self) -> Option<SyntaxIndent> {
+        let unit = self.active_indentation();
+        let Some(Tab {
+            kind:
+                TabKind::Code {
+                    path,
+                    doc: Some(_),
+                    buffer,
+                    ..
+                },
+            ..
+        }) = self.tabs.get(self.active)
+        else {
+            return None;
+        };
+        SyntaxIndent::new(path, buffer, unit)
     }
 
     /// Whether the active tab is a code tab whose document has opened.

@@ -14,7 +14,7 @@ use std::collections::BTreeSet;
 use karet_core::CursorState;
 use karet_core::Selection;
 
-use super::autopair::SyntaxIndent;
+use super::indent::SyntaxIndent;
 use super::*;
 use crate::clipboard::Copied;
 
