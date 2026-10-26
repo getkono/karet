@@ -3715,6 +3715,7 @@ name = "karet-github"
 version = "0.7.1"
 dependencies = [
  "bytes",
+ "karet-vcs",
  "reqwest 0.12.28",
  "secrecy",
  "serde",
