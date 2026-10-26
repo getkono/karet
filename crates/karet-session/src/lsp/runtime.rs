@@ -415,7 +415,8 @@ pub(super) async fn server_task(task: ServerTask) {
                 None
             },
             // Back to the top, where the fetches a registration, a semantic
-            // highlighting change or a refresh enabled launch.
+            // highlighting change or a semantic-token or diagnostic refresh
+            // enabled launch.
             health::Wake::Registered => continue,
             health::Wake::Command(None) => break, // the session dropped the manager
             health::Wake::Command(Some(cmd)) => Some(cmd),

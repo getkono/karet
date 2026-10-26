@@ -254,10 +254,10 @@ impl DocumentFetches {
 
     /// Resolve when a document skipped or already asked may need fetching
     /// now: a capability registration, a semantic-highlighting change, or a
-    /// semantic-token refresh. Cancel-safe.
+    /// semantic-token or diagnostic refresh. Cancel-safe.
     pub(super) async fn woken(&mut self) {
         tokio::select! {
-            () = self.pulls.registered() => {},
+            () = self.pulls.woken() => {},
             () = self.semantic.changed() => {},
         }
     }
