@@ -519,7 +519,7 @@ mod tests {
         let mut parts = link_parts();
         parts
             .core
-            .state
+            .state()
             .initialize_started
             .store(true, Ordering::Release);
         let waiter = spawn_waiter(&parts.core, &parts.sender).await;
@@ -546,12 +546,12 @@ mod tests {
         let mut parts = link_parts();
         parts
             .core
-            .state
+            .state()
             .initialize_started
             .store(true, Ordering::Release);
         let waiter = spawn_waiter(&parts.core, &parts.sender).await;
 
-        parts.core.state.initialize_ready.notify_waiters();
+        parts.core.state().initialize_ready.notify_waiters();
         tokio::task::yield_now().await;
         assert!(
             !waiter.is_finished(),
@@ -583,7 +583,7 @@ mod tests {
         let parts = link_parts();
         parts
             .core
-            .state
+            .state()
             .initialize_started
             .store(true, Ordering::Release);
 
@@ -595,7 +595,7 @@ mod tests {
         )
         .await;
 
-        assert!(parts.core.state.initialize_result.lock().await.is_none());
+        assert!(parts.core.state().initialize_result.lock().await.is_none());
         let link = ClientLink::new(&parts.core, 3, &parts.sender);
         let mut retry = json!({"jsonrpc": "2.0", "id": 4, "method": "initialize"});
         assert_eq!(
@@ -612,7 +612,7 @@ mod tests {
         let parts = link_parts();
         parts
             .core
-            .state
+            .state()
             .initialize_started
             .store(true, Ordering::Release);
         let waiter = spawn_waiter(&parts.core, &parts.sender).await;

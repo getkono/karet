@@ -7,7 +7,6 @@
 //! what state the broker must keep on the protocol's behalf.
 
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 
 use karet_jsonrpc::Framing;
 use serde_json::Value;
@@ -129,18 +128,18 @@ impl<'a, P: BrokerProtocol> ServerLink<'a, P> {
     /// The protocol's broker-wide state.
     #[must_use]
     pub fn state(&self) -> &Arc<P::State> {
-        &self.core.state
+        self.core.state()
     }
 
     /// Queue a message for the server, dropping it if the queue is gone.
     pub async fn send_upstream(&self, message: Value) {
-        let _ = self.core.upstream.send(message).await;
+        self.core.send_upstream(message).await;
     }
 
     /// Reserve a request id nobody else will use on this broker.
     #[must_use]
     pub fn next_request_id(&self) -> u64 {
-        self.core.next_request.fetch_add(1, Ordering::Relaxed)
+        self.core.next_request_id()
     }
 }
 
@@ -173,7 +172,7 @@ impl<'a, P: BrokerProtocol> ClientLink<'a, P> {
     /// The protocol's broker-wide state.
     #[must_use]
     pub fn state(&self) -> &Arc<P::State> {
-        &self.core.state
+        self.core.state()
     }
 
     /// Answer this client directly, bypassing the server.
@@ -183,6 +182,6 @@ impl<'a, P: BrokerProtocol> ClientLink<'a, P> {
 
     /// Queue a message for the server, dropping it if the queue is gone.
     pub async fn send_upstream(&self, message: Value) {
-        let _ = self.core.upstream.send(message).await;
+        self.core.send_upstream(message).await;
     }
 }
