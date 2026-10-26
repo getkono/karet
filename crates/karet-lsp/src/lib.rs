@@ -666,6 +666,26 @@ impl LspClient {
             .is_ok_and(|gate| gate.supports_for(feature, doc))
     }
 
+    /// Whether this server currently supports `feature` for the document at
+    /// `doc` were it open as `language`, open now or not.
+    ///
+    /// As [`Self::supports_for`], except that a selector's `language` filter
+    /// is matched against `language` rather than the `languageId` the client
+    /// recorded at [`Self::did_open`], which [`Self::did_close`] forgets. It
+    /// answers for a document already closed: whether a registration still
+    /// covers what it was last open as.
+    #[must_use]
+    pub fn supports_for_language(
+        &self,
+        feature: ServerFeature,
+        doc: &Path,
+        language: &str,
+    ) -> bool {
+        self.gate
+            .read()
+            .is_ok_and(|gate| gate.supports_as(feature, doc, Some(language)))
+    }
+
     /// Refuse `method` when the server never said it could answer it for any
     /// document.
     ///
