@@ -254,9 +254,11 @@ fn bare_urls(line: &str) -> Vec<(usize, usize)> {
                         i += 1;
                         continue;
                     }
+                    // `<` cannot appear unescaped in a URL, so it starts
+                    // adjacent HTML (`<br>`, `<!-- c -->`), not more URL.
                     let len = chars[i..]
                         .iter()
-                        .take_while(|&&c| !c.is_whitespace() && c != '>' && c != ')' && c != '"')
+                        .take_while(|&&c| !c.is_whitespace() && !matches!(c, '<' | '>' | ')' | '"'))
                         .count();
                     out.push((i, len));
                     i += len;
