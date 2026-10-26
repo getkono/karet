@@ -14,7 +14,8 @@
 //! [`fold`] (any grammar) and [`fold_by_indent`] (no grammar) as fallbacks;
 //! [`SemanticBlocker`] extracts sticky-scroll
 //! blocks; [`OutlineExtractor`] builds symbol outlines from declaration queries;
-//! [`Indenter`] computes a new line's indentation from indent queries.
+//! [`Indenter`] computes a new line's indentation from indent queries;
+//! [`TableFinder`] finds the lines GFM tables occupy.
 
 use std::collections::HashMap;
 
@@ -33,6 +34,7 @@ mod inline_macro;
 mod map;
 mod outline;
 mod semantic;
+mod tables;
 
 pub use blocks::SemanticBlocker;
 pub use folding::Folder;
@@ -48,6 +50,7 @@ pub use semantic::CodetagHit;
 pub use semantic::SemanticCommentConfig;
 pub use semantic::find_codetags;
 pub use semantic::mark_semantic_comments;
+pub use tables::TableFinder;
 
 /// Errors produced by syntactic analysis.
 #[derive(Debug, thiserror::Error)]
