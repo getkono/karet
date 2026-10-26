@@ -240,7 +240,7 @@ keyboard path yet.
 | Double click | Select the unit under the pointer: a word, a punctuation run or a whitespace run. | harness |
 | Triple click | Select the whole line, newline included. | harness |
 | Fourth click and beyond | Stay at line granularity. | harness |
-| Click counting | Clicks count as one streak when they land within one cell of the previous click, within the multi-click interval, with the same modifiers, on the same surface. A pause, a move, or a change of modifier starts a new streak. | harness (pause, move, modifier); surface in `multi_click.rs` |
+| Click counting | Clicks count as one streak when they land within one cell of the previous click, within the multi-click interval (400 ms; a click exactly 400 ms after the previous one starts a new streak, in the editor and the terminal alike), with the same modifiers, on the same surface. A pause, a move, or a change of modifier starts a new streak. | harness (pause, move, modifier); surface in `multi_click.rs`; terminal boundary in `terminal/selection.rs` |
 | Modifier + repeated click | The modifier wins over the count: two quick Alt+clicks add (then remove) a caret, and two quick Shift+clicks extend twice. Neither selects a word. | harness |
 | Double click on a misspelled word | Select the word, as anywhere else. Spelling suggestions live in the right-click menu. | `tests/spellcheck.rs` |
 
