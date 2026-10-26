@@ -10,8 +10,10 @@ correlating responses through a pending map, bounding every request with a timeo
 a bounded outbound queue, failing all in-flight requests on EOF, and closing politely.
 
 Everything protocol-specific lives behind two traits: `Framing` (the wire framing —
-`ContentLength` for the LSP/DAP base protocol, `LineDelimited` for ACP-style newline JSON)
+`ContentLength` for the LSP base protocol, `LineDelimited` for newline-delimited JSON)
 and `Handler` (the broadcast payload, peer-request answers, and notification side effects).
+DAP is not JSON-RPC, but its framing is the same `Content-Length` header, so a DAP client
+can reuse `ContentLength` on its own.
 
 Part of the [karet](https://github.com/getkono/karet) workspace.
 

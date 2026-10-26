@@ -128,7 +128,8 @@ impl GitHubClient {
     /// anonymous public-read mode.
     ///
     /// # Errors
-    /// Returns [`GitHubError::Request`] when the HTTP client cannot be configured.
+    /// Returns [`GitHubError::Request`] when the HTTP client cannot be configured,
+    /// or [`GitHubError::Generated`] when the generated client cannot be built on it.
     pub async fn discover() -> Result<Self, GitHubError> {
         let (token, source) = discover_token().await;
         let mut client = Self::with_auth(token, source)?;
@@ -142,7 +143,8 @@ impl GitHubClient {
     ///
     /// # Errors
     /// Returns an authentication, transport, status, or decode error when GitHub
-    /// cannot resolve the token to an account.
+    /// cannot resolve the token to an account, or [`GitHubError::Generated`] when
+    /// the generated client cannot be built.
     pub async fn authenticate(token: String) -> Result<Self, GitHubError> {
         let mut client = Self::with_auth(Some(SecretString::from(token)), AuthSource::Explicit)?;
         let viewer = client.get_json::<crate::models::User>("/user", &[]).await?;
@@ -155,7 +157,8 @@ impl GitHubClient {
     /// is kept in secret memory and never exposed again.
     ///
     /// # Errors
-    /// Returns [`GitHubError::Request`] when the HTTP client cannot be configured.
+    /// Returns [`GitHubError::Request`] when the HTTP client cannot be configured,
+    /// or [`GitHubError::Generated`] when the generated client cannot be built on it.
     #[cfg(test)]
     pub(crate) fn with_token(token: Option<SecretString>) -> Result<Self, GitHubError> {
         let source = if token.is_some() {

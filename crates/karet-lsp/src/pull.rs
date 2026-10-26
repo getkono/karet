@@ -42,8 +42,10 @@ impl LspClient {
     /// # Errors
     /// Returns [`LspError::Unsupported`] **without issuing a request** when the
     /// server did not advertise or register pull diagnostics for `doc`, else
-    /// [`LspError::Server`] (a server still computing may cancel the request)
-    /// or [`LspError::Timeout`].
+    /// [`LspError::Server`] (a server still computing may cancel the request),
+    /// [`LspError::Timeout`], [`LspError::Protocol`] for an unconvertible
+    /// path, a request that does not encode or a result that does not decode,
+    /// or [`LspError::Closed`] if the connection is gone.
     pub async fn pull_diagnostics(
         &self,
         doc: &Path,
