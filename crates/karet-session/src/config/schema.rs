@@ -328,6 +328,10 @@ pub struct Editor {
     /// it on for Linux, where the primary selection is a platform convention,
     /// and off elsewhere.
     pub middle_click_paste: Option<bool>,
+    /// The editing model of a code tab: `"default"` types at the caret, as in
+    /// VS Code; `"vim"` and `"helix"` add a modal Normal/Insert layer with
+    /// that editor's motions, operators, text objects, registers and macros.
+    pub keymap: KeymapPreset,
     /// When an opening bracket inserts its closing bracket. Typing over a
     /// closer it inserted steps past it, and Backspace between an empty pair
     /// deletes both halves.
@@ -432,6 +436,7 @@ impl Default for Editor {
             wrapping_indent: WrappingIndent::Same,
             sticky_scroll: true,
             middle_click_paste: None,
+            keymap: KeymapPreset::Default,
             auto_closing_brackets: AutoClosing::LanguageDefined,
             auto_closing_quotes: AutoClosing::LanguageDefined,
             trim_trailing_whitespace: true,
@@ -673,6 +678,30 @@ impl Default for Files {
             undo_limit: 1000,
             persistent_undo: false,
         }
+    }
+}
+
+/// `editor.keymap` — which editing model a code tab uses.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "camelCase")]
+pub enum KeymapPreset {
+    /// Modeless editing: a printable key types at the caret.
+    #[default]
+    Default,
+    /// Vim's modal editing: Normal, Insert and Visual modes, operators over
+    /// motions and text objects, registers, macros and `.` repeat.
+    Vim,
+    /// Helix's selection-first modal editing: a motion selects, then an
+    /// action applies to the selection.
+    Helix,
+}
+
+impl KeymapPreset {
+    /// Whether this preset adds a modal Normal/Insert layer.
+    #[must_use]
+    pub fn is_modal(self) -> bool {
+        self != Self::Default
     }
 }
 
@@ -1039,6 +1068,25 @@ mod tests {
         assert!(parse("0").is_err());
         assert!(parse("-5").is_err());
         assert!(parse("\"10s\"").is_err());
+    }
+
+    #[test]
+    fn keymap_defaults_to_modeless_and_parses_each_preset() {
+        let parse = |json: &str| serde_json::from_str::<Editor>(json).map(|editor| editor.keymap);
+        assert_eq!(parse("{}").ok(), Some(KeymapPreset::Default));
+        assert!(!KeymapPreset::Default.is_modal());
+        assert_eq!(
+            parse(r#"{ "keymap": "vim" }"#).ok(),
+            Some(KeymapPreset::Vim)
+        );
+        assert_eq!(
+            parse(r#"{ "keymap": "helix" }"#).ok(),
+            Some(KeymapPreset::Helix)
+        );
+        assert!(KeymapPreset::Vim.is_modal() && KeymapPreset::Helix.is_modal());
+        // A preset karet does not ship is an invalid `editor` section, not a
+        // silent fall-back to the default.
+        assert!(parse(r#"{ "keymap": "emacs" }"#).is_err());
     }
 
     #[test]
