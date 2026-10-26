@@ -71,6 +71,121 @@ pub enum SyncOutcome {
     PullRequestUpdated,
 }
 
+/// A git forge kind, detected from a remote's host name by [`detect_forge`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum ForgeKind {
+    /// The public `github.com` service.
+    GitHub,
+    /// A GitLab host (`gitlab.com` or a self-managed host named `*gitlab*`).
+    GitLab,
+    /// A Gitea host (named `*gitea*`).
+    Gitea,
+    /// A Forgejo host (`codeberg.org` or a host named `*forgejo*`).
+    Forgejo,
+    /// A host none of the rules above recognize.
+    Unknown,
+}
+
+impl ForgeKind {
+    /// The human-readable forge name, for notes and status messages.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::GitHub => "GitHub",
+            Self::GitLab => "GitLab",
+            Self::Gitea => "Gitea",
+            Self::Forgejo => "Forgejo",
+            Self::Unknown => "an unknown host",
+        }
+    }
+}
+
+/// A parsed git remote URL: the host, the repository path on it, and the forge
+/// that host runs.
+///
+/// Distinct from [`Remote`], which is a configured remote's name and raw URL;
+/// this is what [`parse_remote`] makes of such a URL.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct RemoteUrl {
+    /// The lowercased host name, without user or port.
+    pub host: String,
+    /// The repository path on the host, `/`-separated with no empty segments and
+    /// one trailing `.git` stripped: `owner/repo`, or a deeper path where the
+    /// forge has nested groups (GitLab subgroups). A [`ForgeKind::GitHub`]
+    /// remote always has exactly `owner/repo`.
+    pub repo_path: String,
+    /// The forge detected from the host name.
+    pub kind: ForgeKind,
+}
+
+/// Parse a git remote URL — scp-like `user@host:owner/repo.git`, `ssh://`,
+/// `git://`, `http://`, or `https://` — into a [`RemoteUrl`].
+///
+/// The user and port never take part in the result, and the host is matched
+/// case-insensitively. Returns `None` for anything that does not name a
+/// repository on a host: a local path, another scheme, a query string or
+/// fragment, a path with fewer than two segments, or a `github.com` path other
+/// than exactly `owner/repo` (GitHub has no nested groups).
+#[must_use]
+pub fn parse_remote(url: &str) -> Option<RemoteUrl> {
+    let url = url.trim();
+    let (authority, path) = if let Some(rest) = ["ssh://", "git://", "http://", "https://"]
+        .iter()
+        .find_map(|scheme| url.strip_prefix(scheme))
+    {
+        rest.split_once('/')?
+    } else if !url.contains("://") && url.contains('@') && url.contains(':') {
+        // scp-like: the first colon separates `user@host` from the path.
+        url.split_once(':')?
+    } else {
+        return None;
+    };
+    if path.contains(['?', '#']) {
+        return None;
+    }
+    let host = authority.rsplit_once('@').map_or(authority, |(_, host)| host);
+    let host = host
+        .split_once(':')
+        .map_or(host, |(host, _)| host)
+        .to_ascii_lowercase();
+    let mut segments: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
+    if let Some(last) = segments.last_mut() {
+        *last = last.strip_suffix(".git").unwrap_or(last);
+    }
+    if host.is_empty() || segments.len() < 2 || segments.iter().any(|part| part.is_empty()) {
+        return None;
+    }
+    let kind = detect_forge(&host);
+    if kind == ForgeKind::GitHub && segments.len() != 2 {
+        return None;
+    }
+    Some(RemoteUrl {
+        repo_path: segments.join("/"),
+        host,
+        kind,
+    })
+}
+
+/// Detect the forge a host runs from its name (matched case-insensitively).
+#[must_use]
+pub fn detect_forge(host: &str) -> ForgeKind {
+    let host = host.to_ascii_lowercase();
+    if host == "github.com" {
+        ForgeKind::GitHub
+    } else if host.contains("gitlab") {
+        ForgeKind::GitLab
+    } else if host == "codeberg.org" || host.contains("forgejo") {
+        ForgeKind::Forgejo
+    } else if host.contains("gitea") {
+        ForgeKind::Gitea
+    } else {
+        ForgeKind::Unknown
+    }
+}
+
 impl Repository {
     /// Read current branch, upstream divergence, and in-progress operation state.
     ///
@@ -361,6 +476,101 @@ fn parse_counts(text: &str) -> Result<(usize, usize), VcsError> {
 mod tests {
     use super::*;
     use crate::test_support;
+
+    fn parsed(url: &str) -> Option<(String, String, ForgeKind)> {
+        parse_remote(url).map(|remote| (remote.host, remote.repo_path, remote.kind))
+    }
+
+    fn owned(host: &str, path: &str, kind: ForgeKind) -> Option<(String, String, ForgeKind)> {
+        Some((host.to_string(), path.to_string(), kind))
+    }
+
+    #[test]
+    fn parses_every_clone_form_to_the_same_remote() {
+        let want = owned("github.com", "getkono/karet", ForgeKind::GitHub);
+        for url in [
+            "git@github.com:getkono/karet.git",
+            "https://github.com/getkono/karet.git",
+            "https://github.com/getkono/karet",
+            "http://github.com/getkono/karet/",
+            "git://github.com/getkono/karet.git",
+            "ssh://git@github.com:22/getkono/karet.git",
+            "https://token@github.com:443/getkono/karet.git",
+            "https://github.com//getkono//karet.git/",
+            "  git@GitHub.COM:getkono/karet  ",
+        ] {
+            assert_eq!(parsed(url), want, "{url}");
+        }
+    }
+
+    #[test]
+    fn the_ssh_user_is_not_part_of_the_remote() {
+        // A non-`git` user names the same repository; the user only matters to
+        // ssh, never to which forge or repository the URL points at.
+        assert_eq!(
+            parsed("alice@github.com:getkono/karet.git"),
+            parsed("ssh://bob@github.com/getkono/karet.git"),
+        );
+        assert_eq!(
+            parsed("alice@github.com:getkono/karet.git"),
+            owned("github.com", "getkono/karet", ForgeKind::GitHub),
+        );
+    }
+
+    #[test]
+    fn strips_one_trailing_dot_git_and_keeps_inner_dots() {
+        assert_eq!(
+            parsed("git@github.com:owner/repo.name.git"),
+            owned("github.com", "owner/repo.name", ForgeKind::GitHub),
+        );
+        assert_eq!(
+            parsed("https://gitlab.com/g/r.git.git"),
+            owned("gitlab.com", "g/r.git", ForgeKind::GitLab),
+        );
+    }
+
+    #[test]
+    fn keeps_gitlab_subgroups_but_rejects_nested_github_paths() {
+        assert_eq!(
+            parsed("https://gitlab.com/group/subgroup/repo.git"),
+            owned("gitlab.com", "group/subgroup/repo", ForgeKind::GitLab),
+        );
+        assert_eq!(parsed("https://github.com/owner/repo/extra"), None);
+    }
+
+    #[test]
+    fn detects_each_forge_from_the_host() {
+        assert_eq!(detect_forge("github.com"), ForgeKind::GitHub);
+        assert_eq!(detect_forge("GitHub.com"), ForgeKind::GitHub);
+        assert_eq!(detect_forge("gitlab.example.com"), ForgeKind::GitLab);
+        assert_eq!(detect_forge("codeberg.org"), ForgeKind::Forgejo);
+        assert_eq!(detect_forge("forgejo.example.com"), ForgeKind::Forgejo);
+        assert_eq!(detect_forge("gitea.example.com"), ForgeKind::Gitea);
+        // Lookalikes and enterprise hosts are not github.com.
+        for host in ["www.github.com", "github.com.evil.test", "github.example.com"] {
+            assert_eq!(detect_forge(host), ForgeKind::Unknown, "{host}");
+        }
+        assert_eq!(ForgeKind::Forgejo.name(), "Forgejo");
+    }
+
+    #[test]
+    fn rejects_urls_that_name_no_repository() {
+        for url in [
+            "",
+            "/srv/git/repo.git",
+            "file:///srv/git/repo.git",
+            "ftp://github.com/o/r.git",
+            "https://github.com/",
+            "https://github.com/onlyowner",
+            "git@github.com:repo.git",
+            "https://github.com/o/.git",
+            "https://github.com/o/r?tab=readme",
+            "https://gitlab.com/g/r#readme",
+            "https:///o/r",
+        ] {
+            assert_eq!(parsed(url), None, "accepted {url:?}");
+        }
+    }
 
     #[test]
     fn state_and_remote_inventory_track_upstream() -> Result<(), VcsError> {
