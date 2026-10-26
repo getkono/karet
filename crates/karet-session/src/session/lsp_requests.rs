@@ -134,7 +134,7 @@ impl Session {
                 Some(id),
                 Event::Symbols {
                     doc: doc_id,
-                    symbols: doc.syntax_symbols.as_ref().clone(),
+                    symbols: doc.syntax.symbols().as_ref().clone(),
                 },
             );
         }

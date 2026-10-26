@@ -124,7 +124,7 @@ impl Session {
                 }
                 convert_symbol_columns(&document.buffer, &mut symbols);
                 if symbols.is_empty() {
-                    symbols = document.syntax_symbols.as_ref().clone();
+                    symbols = document.syntax.symbols().as_ref().clone();
                 }
                 self.emit(Some(request), Event::Symbols { doc, symbols });
             },
@@ -586,13 +586,10 @@ impl Session {
         if doc.buffer.version() != result.version {
             return;
         }
-        doc.highlights = result.highlights;
-        doc.folds = result.folds;
-        doc.semantic_blocks = result.semantic_blocks;
-        doc.syntax_symbols = result.symbols;
-        (doc.error_lines, doc.table_lines) = (result.error_lines, result.table_lines);
-        self.publish(result.doc, None);
-        self.schedule_spell(result.doc);
+        let doc_id = result.doc;
+        doc.syntax.adopt(result);
+        self.publish(doc_id, None);
+        self.schedule_spell(doc_id);
     }
 
     /// Queue the current token model after highlighting has settled. Disabled or
@@ -618,8 +615,8 @@ impl Session {
             language_selector: doc.language_selector,
             spelling_language,
             text: doc.buffer.text(),
-            highlights: doc.highlights.clone(),
-            syntax_error_lines: doc.error_lines.clone(),
+            highlights: doc.syntax.highlights().clone(),
+            syntax_error_lines: doc.syntax.error_lines().clone(),
             settings: self.config.settings.spellcheck.clone(),
         };
         if self.spell_tx.send(job).is_err() {
