@@ -662,20 +662,10 @@ pub struct App {
     auto_save_pending: HashMap<DocumentId, PendingAutoSave>,
     /// The closers auto-inserted by the last keystrokes, open to type-over.
     auto_closers: Option<autopair::AutoClosers>,
-    /// The in-flight completion request, if any (see [`crate::completion`]).
-    pub(crate) pending_completion: Option<crate::completion::PendingCompletion>,
-    /// The open completion popup, if any.
-    pub(crate) completion: Option<crate::completion::CompletionUi>,
-    /// The trigger and commit characters the server completing in each
-    /// document last answered with there; dropped when the document closes.
-    pub(crate) completion_chars: HashMap<DocumentId, karet_core::CompletionOptions>,
-    /// An accepted item's additional edits, still on their way.
-    pub(crate) completion_follow_up: Option<crate::completion::AcceptFollowUp>,
-    /// The snippet an accepted completion is still being filled in through,
-    /// if any (see [`crate::completion::SnippetSession`]).
-    pub(crate) snippet: Option<crate::completion::SnippetSession>,
-    /// The reusable fuzzy matcher backing the completion popup's filtering.
-    pub(crate) completion_matcher: karet_fuzzy::Matcher,
+    /// Completion: the request in flight, the open popup, each document's
+    /// trigger and commit characters, an accepted item's follow-up, the snippet
+    /// being filled in, and the matcher (see [`completion`]).
+    pub(crate) completion: completion::Completion,
     /// The in-flight hover request, if any (see [`crate::hover`]).
     pub(crate) pending_hover: Option<crate::hover::PendingHover>,
     /// The Expand Selection waiting on the server's selection ranges, if any

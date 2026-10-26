@@ -171,8 +171,8 @@ impl App {
                 )
             })
             .collect();
-        self.pending_completion = None;
-        self.completion = Some(crate::completion::CompletionUi::new(
+        self.completion.pending = None;
+        self.completion.popup = Some(crate::completion::CompletionUi::new(
             warning.doc,
             warning.range.start,
             warning.range.end,

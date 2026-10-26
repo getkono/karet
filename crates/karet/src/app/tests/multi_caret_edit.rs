@@ -59,7 +59,7 @@ fn overlapping_edits_merge() {
 
 /// Open the completion popup over `items`, anchored at `anchor`.
 fn open_completion(rig: &mut Rig, anchor: LineCol, label: &str) {
-    rig.app.completion = Some(crate::completion::CompletionUi::new(
+    rig.app.completion.popup = Some(crate::completion::CompletionUi::new(
         DocumentId(9),
         anchor,
         anchor,
@@ -78,7 +78,7 @@ fn completion_accept_applies_at_every_caret() {
     open_completion(&mut rig, LineCol::new(1, 0), "foobar");
     rig.step(key(KeyCode::Enter));
     assert_eq!(rig.marked(), "foobar|\nfoobar#\nxfoobar|");
-    assert!(rig.app.completion.is_none());
+    assert!(rig.app.completion.popup.is_none());
 }
 
 #[test]

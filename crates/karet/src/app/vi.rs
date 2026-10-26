@@ -290,7 +290,7 @@ impl App {
         }
         self.dismiss_completion();
         self.dismiss_signature_help();
-        self.snippet = None;
+        self.completion.snippet = None;
         let _ = self.dismiss_hover();
         if let Some(effects) =
             self.vi_with_snapshot(|engine, snap, _| engine.enter_normal(preset, snap))

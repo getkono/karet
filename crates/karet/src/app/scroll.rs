@@ -194,7 +194,7 @@ impl App {
             ScrollSurface::CommitConsole => self.commit_console_scroll_to(position),
             ScrollSurface::CommitConsoleColumns => self.commit_console_scroll_columns_to(position),
             ScrollSurface::Completion => {
-                if let Some(ui) = self.completion.as_mut() {
+                if let Some(ui) = self.completion.popup.as_mut() {
                     ui.list.scroll_to(position, viewport);
                 }
             },
