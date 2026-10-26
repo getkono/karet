@@ -238,6 +238,20 @@ pub(crate) fn initialize_params(root: &Path) -> Result<lsp_types::InitializePara
             // `workspace.codeLens.refreshSupport`: lenses are re-asked as the
             // text changes instead.
             code_lens: Some(lsp_types::CodeLensClientCapabilities::default()),
+            // `LspClient::document_links`; a deferred target is filled in by
+            // `LspClient::resolve_document_link`, handing `data` back
+            // untouched. Without dynamic registration, for the reason code
+            // lenses go without it: a registration's `resolveProvider` flag
+            // is not read. The tooltip is kept with the link.
+            document_link: Some(lsp_types::DocumentLinkClientCapabilities {
+                dynamic_registration: None,
+                tooltip_support: Some(true),
+            }),
+            // `LspClient::document_colors`, drawn as swatches. Nothing nests
+            // under a registration, so dynamic registration is honoured.
+            color_provider: Some(lsp_types::DocumentColorClientCapabilities {
+                dynamic_registration: Some(true),
+            }),
             semantic_tokens: Some(semantic_token_capabilities()),
             ..lsp_types::TextDocumentClientCapabilities::default()
         }),
