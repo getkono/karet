@@ -169,7 +169,7 @@ pub const BINARY_SNIFF_LEN: usize = 8000;
 /// so a caller may pass a whole file or any longer sample.
 ///
 /// This is the one binary sniff the toolkit shares, so the file explorer, the diff
-/// engine, and workspace search agree about the same file. It says nothing about
+/// engine, workspace search, and git change enumeration agree about the same file. It says nothing about
 /// encoding: whether NUL-free bytes decode as UTF-8 is the separate
 /// [`is_utf8_text`] question.
 #[must_use]
