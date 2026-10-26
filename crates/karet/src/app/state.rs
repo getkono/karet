@@ -995,7 +995,7 @@ pub(crate) enum PendingRemoteAction {
 /// the backend's VCS worker and cached per path (see [`App::cached_remote_facts`]).
 pub(crate) struct RemoteFacts {
     /// The parsed origin remote.
-    pub(crate) remote: remote::Remote,
+    pub(crate) remote: karet_vcs::RemoteUrl,
     /// The full `HEAD` commit hash, or `None` on an unborn branch.
     pub(crate) head: Option<String>,
     /// The current branch's short name, or `None` when `HEAD` is detached.

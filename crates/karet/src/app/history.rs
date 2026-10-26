@@ -670,8 +670,8 @@ impl App {
                     .or_else(|| snapshot.remotes.first())
                     .and_then(|remote| remote.url.clone())
             })?;
-            let remote = crate::remote::parse_remote(&origin)?;
-            matches!(remote.kind, crate::remote::ForgeKind::GitHub)
+            let remote = karet_vcs::parse_remote(&origin)?;
+            matches!(remote.kind, karet_vcs::ForgeKind::GitHub)
                 .then(|| format!("https://{}/{}/issues/$1", remote.host, remote.repo_path))
         });
         let Some(template) = template else {

@@ -22,8 +22,8 @@
 
 use std::ops::Range;
 
-use crate::remote::ForgeKind;
-use crate::remote::Remote;
+use karet_vcs::ForgeKind;
+use karet_vcs::RemoteUrl;
 
 /// One reference found in a draft, and the URL it resolves to.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -54,7 +54,7 @@ const NUMBER_MAX: usize = 9;
 /// Results are ordered by position and never overlap: URLs are matched first and
 /// any reference falling inside one is dropped, so a link to
 /// `…/issues/12` is one link rather than a link with another link inside it.
-pub(crate) fn scan(text: &str, remote: Option<&Remote>) -> Vec<Autolink> {
+pub(crate) fn scan(text: &str, remote: Option<&RemoteUrl>) -> Vec<Autolink> {
     let mut links = scan_urls(text);
     if let Some(remote) = remote.filter(|remote| remote.kind == ForgeKind::GitHub) {
         let covered: Vec<Range<usize>> = links.iter().map(|link| link.range.clone()).collect();
@@ -169,7 +169,7 @@ fn unbalanced(text: &str, open: char, close: char) -> bool {
 }
 
 /// Find every GitHub-specific reference outside the ranges in `covered`.
-fn scan_references(text: &str, remote: &Remote, covered: &[Range<usize>]) -> Vec<Autolink> {
+fn scan_references(text: &str, remote: &RemoteUrl, covered: &[Range<usize>]) -> Vec<Autolink> {
     let mut links = Vec::new();
     let mut at = 0usize;
     while at < text.len() {
@@ -198,7 +198,7 @@ fn scan_references(text: &str, remote: &Remote, covered: &[Range<usize>]) -> Vec
 }
 
 /// Match `#12`, or the `owner/repo#12` whose `#` sits at `at`.
-fn issue_at(text: &str, at: usize, remote: &Remote) -> Option<Autolink> {
+fn issue_at(text: &str, at: usize, remote: &RemoteUrl) -> Option<Autolink> {
     let end = number_end(text, at + 1)?;
     let number = text.get(at + 1..end)?;
     // A cross-repository reference carries its own `owner/repo` before the `#`.
@@ -238,7 +238,7 @@ fn repo_before(text: &str, at: usize) -> Option<(usize, &str)> {
 }
 
 /// Match an `@mention` starting at `at`.
-fn mention_at(text: &str, at: usize, remote: &Remote) -> Option<Autolink> {
+fn mention_at(text: &str, at: usize, remote: &RemoteUrl) -> Option<Autolink> {
     if !opens_at(text, at) {
         return None;
     }
@@ -259,7 +259,7 @@ fn mention_at(text: &str, at: usize, remote: &Remote) -> Option<Autolink> {
 }
 
 /// Match a bare word at `at`: `GH-12`, or a commit hash.
-fn word_at(text: &str, at: usize, remote: &Remote) -> Option<Autolink> {
+fn word_at(text: &str, at: usize, remote: &RemoteUrl) -> Option<Autolink> {
     if !opens_at(text, at) {
         return None;
     }
@@ -481,18 +481,18 @@ fn skip_blanks(line: &str, from: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::remote::parse_remote;
+    use karet_vcs::parse_remote;
 
-    fn github() -> Remote {
+    fn github() -> RemoteUrl {
         parse_remote("git@github.com:getkono/karet.git").unwrap_or_else(|| unreachable!())
     }
 
-    fn gitlab() -> Remote {
+    fn gitlab() -> RemoteUrl {
         parse_remote("https://gitlab.com/g/r.git").unwrap_or_else(|| unreachable!())
     }
 
     /// The linked substrings and their targets.
-    fn found(text: &str, remote: Option<&Remote>) -> Vec<(String, String)> {
+    fn found(text: &str, remote: Option<&RemoteUrl>) -> Vec<(String, String)> {
         scan(text, remote)
             .into_iter()
             .map(|link| (text[link.range].to_string(), link.url))
@@ -500,7 +500,7 @@ mod tests {
     }
 
     /// Just the linked substrings.
-    fn hits(text: &str, remote: Option<&Remote>) -> Vec<String> {
+    fn hits(text: &str, remote: Option<&RemoteUrl>) -> Vec<String> {
         found(text, remote)
             .into_iter()
             .map(|(text, _)| text)
