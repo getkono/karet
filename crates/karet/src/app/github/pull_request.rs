@@ -113,12 +113,10 @@ impl App {
                 );
                 return;
             }
-            self.open_range(SessionCommand::RangeChanges {
-                spec: karet_session::RangeSpec::Between {
-                    base,
-                    head,
-                    merge_base: true,
-                },
+            self.open_range(karet_session::RangeSpec::Between {
+                base,
+                head,
+                merge_base: true,
             });
         }
     }

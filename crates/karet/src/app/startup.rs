@@ -188,6 +188,7 @@ impl App {
             startup_commands: Vec::new(),
             inline_macro_engine: karet_syntax::InlineMacroEngine::new(),
             pending_commit_detail: HashMap::new(),
+            pending_compare: HashMap::new(),
             latex_previews: HashMap::new(),
             pending_prepared_diffs: HashMap::new(),
             pending_conversions: HashMap::new(),

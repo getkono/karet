@@ -491,7 +491,7 @@ impl App {
                 head_label,
                 merge_base,
                 changes,
-            } => self.open_compare_tab(base_label, head_label, merge_base, changes),
+            } => self.on_range_ready(id, base_label, head_label, merge_base, changes),
             SessionEvent::CommitVerification { hash, status } => {
                 self.on_commit_verification(id, &hash, status);
             },
