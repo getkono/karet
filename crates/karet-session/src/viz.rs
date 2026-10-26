@@ -36,11 +36,24 @@ pub enum VizError {
 /// [`VizError::NoLockfile`] if no `Cargo.lock` is found; [`VizError::Parse`] on a
 /// malformed lockfile.
 pub fn dependency_graph(root: &Path) -> Result<GraphView, VizError> {
-    let lock_path = crate::find_cargo_lock(root).ok_or(VizError::NoLockfile)?;
+    let lock_path = find_lockfile(root).ok_or(VizError::NoLockfile)?;
     let text = std::fs::read_to_string(&lock_path).map_err(|e| VizError::Parse(e.to_string()))?;
     let resolved = dependable_core::lockfiles::parse_cargo_lock_graph(&text)
         .map_err(|e| VizError::Parse(e.to_string()))?;
     Ok(build_view(&resolved))
+}
+
+/// Ascend from `root` looking for a `Cargo.lock` (the workspace root usually holds it).
+fn find_lockfile(root: &Path) -> Option<std::path::PathBuf> {
+    let mut dir: Option<&Path> = Some(root);
+    while let Some(current) = dir {
+        let candidate = current.join("Cargo.lock");
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        dir = current.parent();
+    }
+    None
 }
 
 /// Turn a parsed lockfile into a neutral [`GraphView`]. Node ids are `"name version"`
