@@ -82,8 +82,10 @@ impl App {
                     // edit: its caret goes where the open asked for, rather
                     // than riding the insertion of the whole text to its end.
                     let fill = tab.fill_caret.take();
+                    let fill_view = tab.fill_view.take();
                     if fill.is_some() {
                         tab.fill_since = None;
+                        tab.fill_error = None;
                         // The empty placeholder and the loaded text can share a
                         // version (a file with no restored history loads at the
                         // placeholder's), so what was drawn from the placeholder
@@ -113,7 +115,9 @@ impl App {
                     *buffer = std::sync::Arc::clone(&snap_buffer);
                     *text = snap_text.clone();
                     match (fill, restore) {
-                        (Some(position), _) => tab.editor.goto(buffer, position),
+                        (Some(position), _) => {
+                            crate::tab::place_fill(&mut tab.editor, buffer, position, fill_view);
+                        },
                         (None, Some(cursor)) => tab.editor.set_cursor_state(buffer, cursor.clone()),
                         // Every caret follows the text it sat in, and none is
                         // left past the end of a line or of the buffer. A

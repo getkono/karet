@@ -3,7 +3,9 @@
 //! placeholder are dropped, and nothing is edited against the placeholder.
 
 use karet_core::Change;
+use karet_core::CursorState;
 use karet_core::Range;
+use karet_core::Selection;
 use karet_core::TextEdit;
 
 use super::support::*;
@@ -72,6 +74,47 @@ fn a_plain_open_fills_with_the_caret_at_the_top() {
     let (mut app, _backend, dir) = reserved("fill-top", "one\ntwo\n");
     app.on_snapshot(DOC, &buffer_snapshot(restored("one\ntwo\n")));
     assert_eq!(app.tabs[app.active].editor.cursor(), LineCol::new(0, 0));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_first_fill_puts_back_a_held_view_and_a_jump_replaces_it() {
+    let text = "one\ntwo\nthree\nfour\n";
+    let held = || crate::tab::FillView {
+        cursors: CursorState {
+            selections: vec![
+                Selection::caret(LineCol::new(1, 1)),
+                Selection::caret(LineCol::new(3, 2)),
+            ],
+            primary: 1,
+        },
+        scroll_line: 9,
+        scroll_col: 1,
+    };
+    let (mut app, _backend, dir) = reserved("fill-view", text);
+    app.tabs[app.active].fill_view = Some(held());
+    app.on_snapshot(DOC, &buffer_snapshot(restored(text)));
+    let tab = &app.tabs[app.active];
+    assert!(tab.fill_view.is_none());
+    assert_eq!(
+        tab.editor.cursors(),
+        &held().cursors,
+        "both carets come back"
+    );
+    assert_eq!(
+        (tab.editor.scroll_line, tab.editor.scroll_col),
+        (4, 1),
+        "the scroll is clamped to the loaded text's last line"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // A jump while the tab waits is newer than the held view.
+    let (mut app, _backend, dir) = reserved("fill-view-jump", text);
+    app.tabs[app.active].fill_view = Some(held());
+    app.focus_by_file_line(&dir.join("notes.md"), LineCol::new(2, 0), true);
+    app.on_snapshot(DOC, &buffer_snapshot(restored(text)));
+    assert_eq!(app.tabs[app.active].editor.cursor(), LineCol::new(2, 0));
+    assert_eq!(app.tabs[app.active].editor.cursors().selections.len(), 1);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -202,5 +245,42 @@ fn the_first_fill_recomputes_conflict_markers_drawn_from_the_placeholder() {
         "{:?}",
         markers(&app)
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_failed_open_stops_the_wait_and_shows_why() {
+    let dir = test_dir("fill-failed");
+    write_file(&dir, "notes.md", b"text\n");
+    let backend = Arc::new(RecordingBackend::new());
+    let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+    app.backend = Some(backend.clone());
+    app.open_path(&dir.join("notes.md"));
+    let tab = app.active;
+    let open = backend.sent.lock().ok().and_then(|sent| {
+        sent.iter().find_map(|(id, command)| {
+            matches!(command, SessionCommand::OpenDocument { .. }).then_some(*id)
+        })
+    });
+    assert!(open.is_some(), "the tab asked the session for its text");
+    app.tabs[tab].fill_since = Some(Pending::revealed());
+
+    // A warning tagged with the open (a bad `.editorconfig`) is not a failure.
+    let warn = |severity| SessionEvent::Notification {
+        severity,
+        kind: NotificationKind::Io,
+        message: "could not open notes.md: denied".to_string(),
+    };
+    app.on_backend_event(open, warn(Severity::Warning));
+    assert!(app.tabs[tab].fill_error.is_none());
+    assert!(!app.pending_open.is_empty());
+
+    app.on_backend_event(open, warn(Severity::Error));
+    assert!(app.pending_open.is_empty(), "no `Opened` will follow");
+    assert_eq!(app.tabs[tab].fill_since, None);
+    assert!(app.pendings().is_empty(), "nothing is left to reveal");
+    let shown = screen(&mut app, 80, 10).join("\n");
+    assert!(!shown.contains("Loading file…"), "{shown}");
+    assert!(shown.contains("could not open notes.md: denied"), "{shown}");
     let _ = std::fs::remove_dir_all(&dir);
 }

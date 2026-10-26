@@ -203,7 +203,15 @@ pub(super) fn draw_pane_content(
                     },
                 );
                 editor_rect = text_rect;
-                if tab.fill_caret.is_some() && tab.fill_since.is_some_and(Pending::visible) {
+                if let Some(error) = tab.fill_error.as_ref().filter(|_| tab.fill_caret.is_some()) {
+                    // The session could not load the file: say so rather
+                    // than leave an empty editor that ignores typing.
+                    f.render_widget(
+                        Paragraph::new(error.as_str())
+                            .style(theme.style(ThemeRole::DiagnosticError)),
+                        editor_rect,
+                    );
+                } else if tab.fill_caret.is_some() && tab.fill_since.is_some_and(Pending::visible) {
                     // The session is still loading the file: past the reveal
                     // delay, a muted placeholder replaces the empty editor.
                     f.render_widget(

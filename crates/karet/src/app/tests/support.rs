@@ -611,7 +611,7 @@ pub(crate) fn fill_reserved_tabs(app: &mut App) {
         *buffer = Arc::new(loaded);
         tab.fill_caret = None;
         tab.fill_since = None;
-        tab.editor.goto(buffer, position);
+        crate::tab::place_fill(&mut tab.editor, buffer, position, tab.fill_view.take());
     }
 }
 

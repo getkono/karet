@@ -108,6 +108,7 @@ impl App {
             // of the empty buffer; the first snapshot places the caret instead.
             if tab.fill_caret.is_some() {
                 tab.fill_caret = Some(position);
+                tab.fill_view = None;
             }
         }
     }
