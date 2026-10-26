@@ -1,5 +1,5 @@
-use karet_core::Symbol;
-
+use super::columns::convert_symbol_columns;
+use super::columns::utf16_range_to_buffer;
 use super::*;
 use crate::lsp::FormattingScope;
 use crate::session::notify_text::one_line;
@@ -124,7 +124,7 @@ impl Session {
                 }
                 convert_symbol_columns(&document.buffer, &mut symbols);
                 if symbols.is_empty() {
-                    symbols = document.syntax_symbols.as_ref().clone();
+                    symbols = document.syntax.symbols().as_ref().clone();
                 }
                 self.emit(Some(request), Event::Symbols { doc, symbols });
             },
@@ -402,10 +402,10 @@ impl Session {
                         // user recorded is an answer too — re-asking either would
                         // spend their bandwidth on a decision they have made.
                         let root = self.config.lsp_registry_dir.as_deref();
-                        if crate::lsp_registry::ever_installed(root, &server) {
+                        if crate::lsp_registry::store::ever_installed(root, &server) {
                             return;
                         }
-                        if crate::lsp_registry::read_declined(root, &server).is_some() {
+                        if crate::lsp_registry::store::read_declined(root, &server).is_some() {
                             return;
                         }
                         let enabled = self
@@ -586,13 +586,10 @@ impl Session {
         if doc.buffer.version() != result.version {
             return;
         }
-        doc.highlights = result.highlights;
-        doc.folds = result.folds;
-        doc.semantic_blocks = result.semantic_blocks;
-        doc.syntax_symbols = result.symbols;
-        (doc.error_lines, doc.table_lines) = (result.error_lines, result.table_lines);
-        self.publish(result.doc, None);
-        self.schedule_spell(result.doc);
+        let doc_id = result.doc;
+        doc.syntax.adopt(result);
+        self.publish(doc_id, None);
+        self.schedule_spell(doc_id);
     }
 
     /// Queue the current token model after highlighting has settled. Disabled or
@@ -618,8 +615,8 @@ impl Session {
             language_selector: doc.language_selector,
             spelling_language,
             text: doc.buffer.text(),
-            highlights: doc.highlights.clone(),
-            syntax_error_lines: doc.error_lines.clone(),
+            highlights: doc.syntax.highlights().clone(),
+            syntax_error_lines: doc.syntax.error_lines().clone(),
             settings: self.config.settings.spellcheck.clone(),
         };
         if self.spell_tx.send(job).is_err() {
@@ -905,27 +902,6 @@ impl Session {
             }
         }
     }
-}
-
-pub(super) fn convert_symbol_columns(buffer: &TextBuffer, symbols: &mut [Symbol]) {
-    for symbol in symbols {
-        symbol.range = utf16_range_to_buffer(buffer, symbol.range);
-        symbol.selection_range = utf16_range_to_buffer(buffer, symbol.selection_range);
-        convert_symbol_columns(buffer, &mut symbol.children);
-    }
-}
-
-pub(super) fn utf16_range_to_buffer(buffer: &TextBuffer, range: Range) -> Range {
-    Range {
-        start: buffer.utf16_to_line_col(range.start.line, range.start.col),
-        end: buffer.utf16_to_line_col(range.end.line, range.end.col),
-    }
-}
-
-/// A caret converted to the server's UTF-16 column encoding — the conversion
-/// every positional LSP forwarder applies (see the karet-lsp crate docs).
-pub(super) fn utf16_caret(doc: &Document, position: LineCol) -> LineCol {
-    LineCol::new(position.line, doc.buffer.line_col_to_utf16(position))
 }
 
 #[cfg(not(feature = "mdlint"))]

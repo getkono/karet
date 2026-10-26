@@ -12,7 +12,7 @@ use super::*;
 /// them into one frame anyway.
 pub(super) fn run_commit(
     root: &Option<PathBuf>,
-    events: &UnboundedSender<(Option<RequestId>, Event)>,
+    events: &EventTx,
     last_status: &mut Option<Status>,
     id: RequestId,
     message: &str,
@@ -25,7 +25,7 @@ pub(super) fn run_commit(
 
     let repo = match repository(root) {
         Ok(repo) => repo,
-        Err(error) => return notify(events, id, error),
+        Err(error) => return events.emit(Some(id), vcs_failure(error)),
     };
     // Cancelling this job means stopping a process tree, not dropping an answer.
     // Registering the token's action is what carries the request across the
@@ -41,9 +41,8 @@ pub(super) fn run_commit(
     let result = repo.commit_with_output(message, &stop, &mut |line| {
         batch.push(line);
         if batch.len() >= BATCH || sent_at.elapsed() >= LINGER {
-            emit(
-                events,
-                id,
+            events.emit(
+                Some(id),
                 Event::CommitOutput {
                     lines: std::mem::take(&mut batch),
                 },
@@ -52,22 +51,23 @@ pub(super) fn run_commit(
         }
     });
     if !batch.is_empty() {
-        emit(events, id, Event::CommitOutput { lines: batch });
+        events.emit(Some(id), Event::CommitOutput { lines: batch });
     }
     match result {
-        Ok(karet_vcs::CommitOutcome::Created(oid)) => emit(events, id, Event::Committed { oid }),
+        Ok(karet_vcs::CommitOutcome::Created(oid)) => {
+            events.emit(Some(id), Event::Committed { oid })
+        },
         // No commit, but the working tree may still have moved: a formatter hook
         // that rewrote files before it was killed leaves those edits behind, and
         // a stale status panel would hide them.
-        Ok(karet_vcs::CommitOutcome::Cancelled) => emit(events, id, Event::CommitCancelled),
-        Err(error) => return notify(events, id, error.to_string()),
+        Ok(karet_vcs::CommitOutcome::Cancelled) => events.emit(Some(id), Event::CommitCancelled),
+        Err(error) => return events.emit(Some(id), vcs_failure(error.to_string())),
     }
     // The same republication `VcsJob::Action` does, including updating the cached
     // status: without it the next spontaneous refresh re-emits what just changed.
     if let Ok(snapshot) = snapshot(&repo) {
-        emit(
-            events,
-            id,
+        events.emit(
+            Some(id),
             Event::RepositorySnapshot {
                 snapshot: Box::new(snapshot),
             },
@@ -75,5 +75,5 @@ pub(super) fn run_commit(
     }
     let (staged, working) = compute_status(&repo);
     *last_status = Some((staged.clone(), working.clone()));
-    emit(events, id, Event::VcsStatus { staged, working });
+    events.emit(Some(id), Event::VcsStatus { staged, working });
 }

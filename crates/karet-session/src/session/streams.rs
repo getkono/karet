@@ -5,7 +5,7 @@ use super::*;
 
 impl Session {
     pub(super) fn emit(&self, id: Option<RequestId>, event: Event) {
-        self.events.send((id, event)).ok();
+        self.events.emit(id, event);
     }
 
     /// Push a render-only snapshot of `doc_id` on the snapshot stream. `cursor` is
@@ -17,10 +17,10 @@ impl Session {
                 version: doc.buffer.version(),
                 buffer: doc.buffer.content_snapshot(),
                 highlights: doc.display_highlights(),
-                folds: doc.folds.clone(),
-                semantic_blocks: doc.semantic_blocks.clone(),
-                syntax_error_lines: doc.error_lines.clone(),
-                table_lines: doc.table_lines.clone(),
+                folds: doc.syntax.folds().clone(),
+                semantic_blocks: doc.syntax.semantic_blocks().clone(),
+                syntax_error_lines: doc.syntax.error_lines().clone(),
+                table_lines: doc.syntax.table_lines().clone(),
                 language: doc.language,
                 dirty: doc.buffer.is_dirty(),
                 cursor,

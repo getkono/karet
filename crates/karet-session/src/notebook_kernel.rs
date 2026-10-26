@@ -18,10 +18,7 @@ use karet_notebook::kernel::ZmqTransport;
 use tokio::sync::mpsc;
 
 use crate::api::Event;
-use crate::api::RequestId;
-
-/// The sender the manager answers on.
-type Events = mpsc::UnboundedSender<(Option<RequestId>, Event)>;
+use crate::event_tx::EventTx;
 
 /// How long a booting kernel may take before starting is called a failure.
 const KERNEL_READY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
@@ -48,7 +45,7 @@ struct Active {
 pub(crate) struct NotebookKernels {
     supervisor: Option<PathBuf>,
     active: Option<Active>,
-    events: Events,
+    events: EventTx,
     /// Kernelspec directories override for tests (`None` = the standard set).
     #[cfg(test)]
     spec_dirs: Option<Vec<PathBuf>>,
@@ -56,7 +53,7 @@ pub(crate) struct NotebookKernels {
 
 impl NotebookKernels {
     /// Create a manager answering on `events`.
-    pub(crate) fn new(supervisor: Option<PathBuf>, events: Events) -> Self {
+    pub(crate) fn new(supervisor: Option<PathBuf>, events: EventTx) -> Self {
         Self {
             supervisor,
             active: None,
@@ -134,14 +131,14 @@ impl NotebookKernels {
                 Ok(()) => (Severity::Information, "interrupted".to_owned()),
                 Err(error) => (Severity::Error, format!("interrupt failed: {error}")),
             };
-            let _ = events.send((
+            events.emit(
                 None,
                 Event::NotebookKernelStatus {
                     path,
                     severity,
                     text,
                 },
-            ));
+            );
         });
     }
 
@@ -155,14 +152,12 @@ impl NotebookKernels {
     }
 
     fn notify(&self, message: &str) {
-        let _ = self.events.send((
+        self.events.notify(
             None,
-            Event::Notification {
-                severity: Severity::Information,
-                kind: NotificationKind::System,
-                message: message.to_owned(),
-            },
-        ));
+            Severity::Information,
+            NotificationKind::System,
+            message.to_owned(),
+        );
     }
 
     fn spec_dirs_or_default(&self) -> Vec<PathBuf> {
@@ -180,30 +175,24 @@ struct KernelTask {
     supervisor: Option<PathBuf>,
     connection: kernel::ConnectionInfo,
     spec_dirs: Vec<PathBuf>,
-    events: Events,
+    events: EventTx,
 }
 
 /// The per-kernel task: boot, then drain the job queue sequentially.
 async fn kernel_task(ctx: KernelTask, mut jobs: mpsc::UnboundedReceiver<Job>) {
     let status = |severity: Severity, text: &str| {
-        let _ = ctx.events.send((
+        ctx.events.emit(
             None,
             Event::NotebookKernelStatus {
                 path: ctx.path.clone(),
                 severity,
                 text: text.to_owned(),
             },
-        ));
+        );
     };
     let notify = |message: String| {
-        let _ = ctx.events.send((
-            None,
-            Event::Notification {
-                severity: Severity::Warning,
-                kind: NotificationKind::System,
-                message,
-            },
-        ));
+        ctx.events
+            .notify(None, Severity::Warning, NotificationKind::System, message);
     };
 
     let mut notebook = match std::fs::read_to_string(&ctx.path)
@@ -416,14 +405,14 @@ async fn run_cells(
     let total = indices.len();
     let step = |step: &RunStep| {
         let (severity, text) = step.report();
-        let _ = ctx.events.send((
+        ctx.events.emit(
             None,
             Event::NotebookKernelStatus {
                 path: ctx.path.clone(),
                 severity,
                 text,
             },
-        ));
+        );
     };
     for (nth, index) in indices.into_iter().enumerate() {
         step(&RunStep::Running { nth, total });
@@ -440,14 +429,14 @@ async fn run_cells(
         cell.outputs = Some(outcome.outputs.clone());
         rerender(ctx, notebook);
         let errored = outcome.errored;
-        let _ = ctx.events.send((
+        ctx.events.emit(
             None,
             Event::NotebookCellDone {
                 path: ctx.path.clone(),
                 cell: index,
                 errored,
             },
-        ));
+        );
         if errored {
             step(&RunStep::Raised { nth });
             return;
@@ -484,13 +473,13 @@ fn mark_stale(notebook: &mut Notebook) {
 
 /// Push a refreshed preview for the in-memory notebook.
 fn rerender(ctx: &KernelTask, notebook: &Notebook) {
-    let _ = ctx.events.send((
+    ctx.events.emit(
         None,
         Event::DocumentConverted {
             path: ctx.path.clone(),
             markdown: Ok(karet_notebook::to_markdown(notebook)),
         },
-    ));
+    );
 }
 
 #[cfg(test)]
@@ -606,7 +595,7 @@ mod tests {
                "cells": [{"cell_type": "code", "metadata": {}, "execution_count": null,
                           "source": "1", "outputs": []}]}"#,
         )?;
-        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+        let (events_tx, mut events_rx) = crate::event_tx::EventTx::channel();
         let mut kernels = NotebookKernels::new(None, events_tx);
         kernels.spec_dirs = Some(vec![dir.join("no-kernels-here")]);
         kernels.run(&path, None);
@@ -629,7 +618,7 @@ mod tests {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("bad.ipynb");
         std::fs::write(&path, "not json")?;
-        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+        let (events_tx, mut events_rx) = crate::event_tx::EventTx::channel();
         let mut kernels = NotebookKernels::new(None, events_tx);
         kernels.spec_dirs = Some(Vec::new());
         kernels.run(&path, None);
@@ -666,7 +655,7 @@ mod tests {
 
     #[tokio::test]
     async fn interrupt_without_a_kernel_notifies() {
-        let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+        let (events_tx, mut events_rx) = crate::event_tx::EventTx::channel();
         let kernels = NotebookKernels::new(None, events_tx);
         kernels.interrupt();
         let got = events_rx.recv().await.map(|(_, event)| event);

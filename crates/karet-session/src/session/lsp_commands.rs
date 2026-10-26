@@ -28,8 +28,9 @@ impl Session {
                 let Some(root) = self.config.lsp_registry_dir.clone() else {
                     return true;
                 };
-                let declined = crate::lsp_registry::Declined::now();
-                if let Err(message) = crate::lsp_registry::write_declined(&root, server, &declined)
+                let declined = crate::lsp_registry::store::Declined::now();
+                if let Err(message) =
+                    crate::lsp_registry::store::write_declined(&root, server, &declined)
                 {
                     self.emit(
                         Some(id),
@@ -46,7 +47,7 @@ impl Session {
                 let Some(root) = self.config.lsp_registry_dir.clone() else {
                     return true;
                 };
-                if let Err(message) = crate::lsp_registry::clear_declined(&root, server) {
+                if let Err(message) = crate::lsp_registry::store::clear_declined(&root, server) {
                     self.emit(
                         Some(id),
                         Event::Notification {

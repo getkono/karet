@@ -26,7 +26,7 @@ pub(super) fn compute_status(repo: &Repository) -> Status {
 
 pub(super) fn run_status(
     root: &Option<PathBuf>,
-    events: &UnboundedSender<(Option<RequestId>, Event)>,
+    events: &EventTx,
     last_status: &mut Option<Status>,
     id: Option<RequestId>,
 ) {
@@ -40,13 +40,13 @@ pub(super) fn run_status(
         Err(_) => {
             if id.is_some() {
                 *last_status = Some((Vec::new(), Vec::new()));
-                let _ = events.send((
+                events.emit(
                     id,
                     Event::VcsStatus {
                         staged: Vec::new(),
                         working: Vec::new(),
                     },
-                ));
+                );
             }
             return;
         },
@@ -57,7 +57,7 @@ pub(super) fn run_status(
     }
     let (staged, working) = status.clone();
     *last_status = Some(status);
-    let _ = events.send((id, Event::VcsStatus { staged, working }));
+    events.emit(id, Event::VcsStatus { staged, working });
 }
 
 /// Diff `path` at `rev` against its current content — `live` when the client

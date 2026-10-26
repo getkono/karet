@@ -4,7 +4,7 @@ impl Session {
     /// Create a session and its paired event and snapshot receivers.
     #[must_use]
     pub fn new(config: SessionConfig) -> (Self, EventRx, SnapshotRx) {
-        let (events, erx) = mpsc::unbounded_channel();
+        let (events, erx) = EventTx::channel();
         let (snapshots, srx) = mpsc::unbounded_channel();
         // Discover the source-control repository (from the first root) before the
         // watcher, so its git-metadata directories can be watched for index/HEAD/refs

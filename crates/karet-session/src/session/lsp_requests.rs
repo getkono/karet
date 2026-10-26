@@ -9,11 +9,10 @@ use karet_core::HierarchyDirection;
 use karet_core::HierarchyItem;
 use karet_core::InlayHint;
 use karet_core::Location;
-use karet_core::WorkspaceSymbol;
 use karet_text::TextBuffer;
 
-use super::updates::utf16_caret;
-use super::updates::utf16_range_to_buffer;
+use super::columns::utf16_caret;
+use super::columns::utf16_range_to_buffer;
 use super::*;
 use crate::api::AppliedWorkspaceEdit;
 use crate::api::DocumentHighlight;
@@ -56,149 +55,15 @@ impl Session {
     /// returned borrow leaves `self.lsp` free for the forwarding call.
     pub(super) fn doc_or_report<'a>(
         store: &'a DocumentStore,
-        events: &mpsc::UnboundedSender<(Option<RequestId>, Event)>,
+        events: &EventTx,
         id: RequestId,
         doc_id: DocumentId,
     ) -> Option<&'a Document> {
         let doc = store.docs.get(&doc_id);
         if doc.is_none() {
-            events.send((Some(id), unknown_document(doc_id))).ok();
+            events.emit(Some(id), unknown_document(doc_id));
         }
         doc
-    }
-
-    /// The text of `path` for column conversion: the live buffer when the file is
-    /// open, else its contents from disk.
-    ///
-    /// A server answers in UTF-16 columns for whatever file it names, which is often
-    /// not one the client has open — so converting those columns needs the target's
-    /// text, not the requesting document's. `None` when the file cannot be read; the
-    /// caller then leaves the range as the server sent it, since an approximate
-    /// column beats a dropped result.
-    pub(super) fn buffer_for_path(&self, path: &Path) -> Option<TextBuffer> {
-        self.store
-            .by_path
-            .get(path)
-            .and_then(|doc| self.store.docs.get(doc))
-            .map(|document| document.buffer.clone())
-            .or_else(|| {
-                std::fs::read_to_string(path)
-                    .ok()
-                    .map(|text| TextBuffer::from_text(&text))
-            })
-    }
-
-    /// Convert every location from the server's UTF-16 columns to buffer columns,
-    /// each against its own file.
-    ///
-    /// An open file's live buffer is borrowed, not cloned, and a file that is not
-    /// open is read from disk at most once per answer, so a references list with
-    /// many hits in one file costs one read rather than one per hit. A file that
-    /// cannot be read keeps the server's columns, as [`Self::buffer_for_path`]
-    /// explains.
-    pub(super) fn locations_to_buffer_columns<'a>(
-        &self,
-        locations: impl IntoIterator<Item = &'a mut Location>,
-    ) {
-        let mut read: HashMap<PathBuf, Option<TextBuffer>> = HashMap::new();
-        for location in locations {
-            let open = self
-                .store
-                .by_path
-                .get(&location.path)
-                .and_then(|doc| self.store.docs.get(doc))
-                .map(|document| &document.buffer);
-            let buffer = match open {
-                Some(buffer) => Some(buffer),
-                None => read
-                    .entry(location.path.clone())
-                    .or_insert_with(|| {
-                        std::fs::read_to_string(&location.path)
-                            .ok()
-                            .map(|text| TextBuffer::from_text(&text))
-                    })
-                    .as_ref(),
-            };
-            if let Some(buffer) = buffer {
-                location.range = utf16_range_to_buffer(buffer, location.range);
-            }
-        }
-    }
-
-    /// Move workspace symbols from the server's UTF-16 columns to buffer
-    /// columns, each against its own file when that file is open here.
-    ///
-    /// A symbol in a file that is not open keeps the server's columns. A
-    /// workspace search answers every typing pause with hits across any number
-    /// of files, so reading each from disk here would put that much blocking
-    /// I/O on the session for rows nobody may pick -- the trade inlay-hint
-    /// part locations make (see [`Self::hints_to_buffer_columns`]). The line is
-    /// right either way; the column differs only where an astral-plane
-    /// character precedes the symbol on its line.
-    pub(super) fn workspace_symbols_to_buffer_columns(&self, symbols: &mut [WorkspaceSymbol]) {
-        for symbol in symbols {
-            let Some(range) = symbol.range.as_mut() else {
-                continue;
-            };
-            let open = self
-                .store
-                .by_path
-                .get(&symbol.path)
-                .and_then(|doc| self.store.docs.get(doc));
-            if let Some(document) = open {
-                *range = utf16_range_to_buffer(&document.buffer, *range);
-            }
-        }
-    }
-
-    /// Move `hints` from the server's UTF-16 columns to buffer columns: each
-    /// position against `doc`'s buffer, and each label part's location
-    /// against the file it names when that file is open. Hints for a document
-    /// closed since they were asked for are left as they are; nobody will
-    /// adopt them.
-    ///
-    /// A part location into a file that is not open keeps the server's
-    /// columns. Hint lists arrive on every edit pause and scroll, so reading
-    /// each named file from disk here would put blocking I/O on that path for
-    /// locations nobody may follow; UTF-16 and buffer columns differ only
-    /// where an astral-plane character precedes the target on its line. A
-    /// resolve, which is asked for one hint on demand, converts against the
-    /// file on disk (see [`Self::part_locations_to_buffer_columns`]).
-    pub(super) fn hints_to_buffer_columns(&self, doc: DocumentId, hints: &mut [InlayHint]) {
-        let Some(document) = self.store.docs.get(&doc) else {
-            return;
-        };
-        for hint in hints.iter_mut() {
-            hint.position = document
-                .buffer
-                .utf16_to_line_col(hint.position.line, hint.position.col);
-        }
-        let locations = hints.iter_mut().flat_map(|hint| {
-            hint.parts
-                .iter_mut()
-                .filter_map(|part| part.location.as_mut())
-        });
-        for location in locations {
-            let open = self
-                .store
-                .by_path
-                .get(&location.path)
-                .and_then(|doc| self.store.docs.get(doc));
-            if let Some(open) = open {
-                location.range = utf16_range_to_buffer(&open.buffer, location.range);
-            }
-        }
-    }
-
-    /// Convert every label part's location in `hints` to buffer columns, each
-    /// against the file it names, as a definition's is. A resolved hint needs
-    /// only this: it keeps the position the client asked about.
-    pub(super) fn part_locations_to_buffer_columns(&self, hints: &mut [InlayHint]) {
-        self.locations_to_buffer_columns(hints.iter_mut().flat_map(|hint| {
-            hint.parts
-                .iter_mut()
-                .filter_map(|part| part.location.as_mut())
-        }));
     }
 
     /// Serve [`Command::InlayHints`]: convert the range to the server's UTF-16
@@ -269,7 +134,7 @@ impl Session {
                 Some(id),
                 Event::Symbols {
                     doc: doc_id,
-                    symbols: doc.syntax_symbols.as_ref().clone(),
+                    symbols: doc.syntax.symbols().as_ref().clone(),
                 },
             );
         }

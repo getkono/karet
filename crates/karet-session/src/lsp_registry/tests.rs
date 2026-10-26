@@ -1,3 +1,9 @@
+use super::store::Declined;
+use super::store::clear_declined;
+use super::store::ever_installed;
+use super::store::installed_version;
+use super::store::read_declined;
+use super::store::write_declined;
 use super::*;
 
 #[test]
