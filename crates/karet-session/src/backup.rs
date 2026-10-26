@@ -119,17 +119,11 @@ pub fn default_swap_dir() -> Option<PathBuf> {
 }
 
 impl SwapStore {
-    /// Open the swap store for `session_id` under the platform data directory
-    /// (`…/karet/swaps`). Returns `None` when no data directory can be determined.
-    #[must_use]
-    pub fn new(session_id: u64) -> Option<Self> {
-        Some(Self {
-            dir: default_swap_dir()?,
-            session_id,
-        })
-    }
-
-    /// Open a swap store rooted at an explicit directory (for tests).
+    /// Open the swap store for `session_id` rooted at `dir`.
+    ///
+    /// The session opens it at [`SessionConfig::swap_dir`](crate::SessionConfig::swap_dir),
+    /// which the application sets to [`default_swap_dir`] and tests point at a scratch
+    /// directory.
     #[must_use]
     pub fn with_dir(dir: PathBuf, session_id: u64) -> Self {
         Self { dir, session_id }

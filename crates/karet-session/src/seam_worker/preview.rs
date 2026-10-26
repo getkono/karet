@@ -265,7 +265,7 @@ mod tests {
         assert_eq!(preview.context, CONTEXT);
         assert_eq!(preview.lines[preview.body_start], "line 20");
         // Contiguous: nothing was cut, so no row follows a gap.
-        assert!(!(0..preview.lines.len()).any(|row| preview.is_after_gap(row)));
+        assert!(preview.numbers.windows(2).all(|pair| pair[1] == pair[0] + 1));
         Ok(())
     }
 
@@ -280,8 +280,7 @@ mod tests {
         assert_eq!(preview.body_start, 3);
         assert_eq!(preview.head_end, 7);
         assert_eq!(preview.lines[preview.head_end - 1], "line 23");
-        assert!(preview.is_head(preview.head_end - 1));
-        assert!(!preview.is_head(preview.head_end));
+        assert_eq!(preview.lines[preview.head_end], "line 24");
         Ok(())
     }
 
@@ -349,7 +348,9 @@ mod tests {
             .map(String::as_str)
             .collect();
         assert_eq!(tail, ["line 510", "line 511", "line 512"]);
-        assert!(preview.is_after_gap(preview.body_end));
+        // The fetch cap cut the node's middle out, so the tail does not follow the row
+        // before it.
+        assert!(preview.numbers[preview.body_end] > preview.numbers[preview.body_end - 1] + 1);
         assert_eq!(preview.line_number(preview.body_end), 510);
         Ok(())
     }

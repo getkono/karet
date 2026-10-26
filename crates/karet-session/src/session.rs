@@ -170,20 +170,6 @@ impl Default for SessionConfig {
     }
 }
 
-impl SessionConfig {
-    /// Whether format-on-save is enabled (`editor.formatOnSave`).
-    #[must_use]
-    pub fn format_on_save(&self) -> bool {
-        self.settings.editor.format_on_save
-    }
-
-    /// Whether spell-checking is enabled (`spellcheck.enabled`).
-    #[must_use]
-    pub fn spellcheck(&self) -> bool {
-        self.settings.spellcheck.enabled
-    }
-}
-
 /// How a document's edit buffer maps to its on-disk bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DocFormat {
