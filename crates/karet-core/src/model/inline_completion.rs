@@ -77,17 +77,23 @@ impl InlineCompletionItem {
     }
 
     /// What this item still proposes on a line reading `line` with the caret
-    /// at `caret`.
+    /// at `caret`, for an item asked for with the caret at `asked`.
+    ///
+    /// The span's end moves with what was typed (or deleted) at the caret
+    /// since the ask, so a whole accept still replaces exactly the existing
+    /// text the item spans: the caret moving from `asked` to `caret` on one
+    /// line is that many characters inserted before the span's end.
     ///
     /// `None` when it no longer applies: its range is on another line or
-    /// spans lines, the caret has left the span it replaces from, or what was
-    /// typed between the span's start and the caret is not a prefix of what
-    /// it proposes (nor of its filter text) -- or when nothing would be left
-    /// to insert or replace.
+    /// spans lines, the caret has left the line it was asked on or the span
+    /// it replaces from, or what was typed between the span's start and the
+    /// caret is not a prefix of what it proposes (nor of its filter text) --
+    /// or when nothing would be left to insert or replace.
     #[must_use]
-    pub fn ghost(&self, line: &str, caret: LineCol) -> Option<InlineGhost> {
+    pub fn ghost(&self, line: &str, asked: LineCol, caret: LineCol) -> Option<InlineGhost> {
         let range = self.range;
         if range.start.line != caret.line
+            || asked.line != caret.line
             || range.end.line != caret.line
             || range.start.col > caret.col
             || range.start.col > range.end.col
@@ -106,7 +112,10 @@ impl InlineCompletionItem {
             return None;
         }
         let text = self.insert_text[typed.len()..].to_owned();
-        let replace_end = range.end.col.max(caret.col).min(chars.len() as u32);
+        let typed_since = i64::from(caret.col) - i64::from(asked.col);
+        let end = (i64::from(range.end.col) + typed_since).clamp(0, i64::from(u32::MAX));
+        let end = u32::try_from(end).unwrap_or(u32::MAX);
+        let replace_end = end.max(caret.col).min(chars.len() as u32);
         if text.is_empty() && replace_end == caret.col {
             return None;
         }
@@ -261,7 +270,7 @@ mod tests {
     #[test]
     fn an_insertion_shows_whole_at_the_caret_it_was_asked_for() {
         let at = LineCol::new(2, 4);
-        let ghost = InlineCompletionItem::new("fn main() {}", at).ghost("    ", at);
+        let ghost = InlineCompletionItem::new("fn main() {}", at).ghost("    ", at, at);
         assert_eq!(
             ghost,
             Some(InlineGhost {
@@ -278,23 +287,25 @@ mod tests {
     #[test]
     fn typing_narrows_the_ghost_until_it_diverges() {
         let proposal = item("let x = 1;", (0, 0, 3));
+        let asked = LineCol::new(0, 3);
         assert_eq!(
-            ghost_text(proposal.ghost("let x", LineCol::new(0, 5))),
+            ghost_text(proposal.ghost("let x", asked, LineCol::new(0, 5))),
             Some(" = 1;".to_owned())
         );
         assert_eq!(
-            proposal.ghost("lex", LineCol::new(0, 3)),
+            proposal.ghost("lex", LineCol::new(0, 2), LineCol::new(0, 3)),
             None,
             "a typed character the item does not propose retires it"
         );
         assert_eq!(
-            proposal.ghost("let x = 1;", LineCol::new(0, 10)),
+            proposal.ghost("let x = 1;", asked, LineCol::new(0, 10)),
             None,
             "nothing is left once everything was typed"
         );
-        let insertion = InlineCompletionItem::new("x = 1;", LineCol::new(0, 4));
+        let asked = LineCol::new(0, 4);
+        let insertion = InlineCompletionItem::new("x = 1;", asked);
         assert_eq!(
-            ghost_text(insertion.ghost("let x ", LineCol::new(0, 6))),
+            ghost_text(insertion.ghost("let x ", asked, LineCol::new(0, 6))),
             Some("= 1;".to_owned())
         );
     }
@@ -302,8 +313,9 @@ mod tests {
     #[test]
     fn an_item_out_of_reach_of_the_caret_is_not_shown() {
         let proposal = item("abc", (1, 4, 4));
-        assert_eq!(proposal.ghost("    ", LineCol::new(2, 4)), None);
-        assert_eq!(proposal.ghost("    ", LineCol::new(1, 2)), None);
+        let asked = LineCol::new(1, 4);
+        assert_eq!(proposal.ghost("    ", asked, LineCol::new(2, 4)), None);
+        assert_eq!(proposal.ghost("    ", asked, LineCol::new(1, 2)), None);
         let spanning = InlineCompletionItem {
             range: Range {
                 start: LineCol::new(1, 0),
@@ -312,11 +324,11 @@ mod tests {
             ..InlineCompletionItem::default()
         }
         .with_text("abc");
-        assert_eq!(spanning.ghost("    ", LineCol::new(1, 4)), None);
+        assert_eq!(spanning.ghost("    ", asked, asked), None);
         // A caret past the line's end (a stale position) is no prefix at all.
         let stale = LineCol::new(1, 9);
         assert_eq!(
-            InlineCompletionItem::new("x", stale).ghost("ab", stale),
+            InlineCompletionItem::new("x", stale).ghost("ab", stale, stale),
             None
         );
     }
@@ -327,13 +339,14 @@ mod tests {
             filter_text: Some("zzz".to_owned()),
             ..item("abc", (0, 0, 0))
         };
-        assert_eq!(proposal.ghost("a", LineCol::new(0, 1)), None);
+        let asked = LineCol::new(0, 0);
+        assert_eq!(proposal.ghost("a", asked, LineCol::new(0, 1)), None);
         let matching = InlineCompletionItem {
             filter_text: Some("abc".to_owned()),
             ..proposal
         };
         assert_eq!(
-            ghost_text(matching.ghost("a", LineCol::new(0, 1))),
+            ghost_text(matching.ghost("a", asked, LineCol::new(0, 1))),
             Some("bc".to_owned())
         );
     }
@@ -344,7 +357,7 @@ mod tests {
     fn a_whole_accept_replaces_the_text_the_item_spans() {
         let line = "call()";
         let caret = LineCol::new(0, 5);
-        let ghost = item("call(a, b)", (0, 0, 6)).ghost(line, caret);
+        let ghost = item("call(a, b)", (0, 0, 6)).ghost(line, caret, caret);
         let edit = ghost.as_ref().map(InlineGhost::accept);
         assert_eq!(
             edit,
@@ -361,6 +374,62 @@ mod tests {
             shown.map(|text| text.text),
             Some("a, b".to_owned()),
             "the replaced `)` reads on after the ghost instead of twice"
+        );
+    }
+
+    /// `line` with `edit` (on its one line) applied, and the caret after it.
+    fn apply(line: &str, edit: &TextEdit) -> (String, LineCol) {
+        let chars: Vec<char> = line.chars().collect();
+        let (start, end) = (edit.range.start.col as usize, edit.range.end.col as usize);
+        let mut out: String = chars[..start].iter().collect();
+        out.push_str(&edit.new_text);
+        out.extend(&chars[end..]);
+        let caret = edit.range.start.col + edit.new_text.chars().count() as u32;
+        (out, LineCol::new(edit.range.start.line, caret))
+    }
+
+    /// Text typed (or word-accepted) at the caret since the ask pushes the
+    /// span's end along with it, so the closing bracket the item replaces is
+    /// still the one a whole accept replaces, and is never doubled.
+    #[test]
+    fn typing_since_the_ask_moves_the_replaced_span_with_it() {
+        let asked = LineCol::new(0, 6);
+        let proposal = item("call(a, b)", (0, 0, 7));
+        let accept_all = |line: &str, caret: LineCol| {
+            proposal
+                .ghost(line, asked, caret)
+                .map(|ghost| apply(line, &ghost.accept()).0)
+        };
+        // Typed `,` on `call(a)` with the caret before the `)`.
+        assert_eq!(
+            accept_all("call(a,)", LineCol::new(0, 7)),
+            Some("call(a, b)".to_owned())
+        );
+        // Deleted the `a` instead: the span's end moves back.
+        assert_eq!(
+            accept_all("call()", LineCol::new(0, 5)),
+            Some("call(a, b)".to_owned())
+        );
+        // Took it a word at a time, then the rest whole.
+        let mut line = "call(a)".to_owned();
+        let mut caret = asked;
+        for word in [",", " b"] {
+            let ghost = proposal.ghost(&line, asked, caret);
+            let edit = ghost.as_ref().map(InlineGhost::accept_word);
+            assert_eq!(edit.as_ref().map(|edit| edit.new_text.as_str()), Some(word));
+            if let Some(edit) = edit {
+                (line, caret) = apply(&line, &edit);
+            }
+        }
+        assert_eq!(
+            accept_all(&line, caret),
+            Some("call(a, b)".to_owned()),
+            "the rest replaces the `)` it was asked over"
+        );
+        assert_eq!(
+            proposal.ghost(&line, LineCol::new(1, 6), caret),
+            None,
+            "an ask from another line says nothing about this one"
         );
     }
 

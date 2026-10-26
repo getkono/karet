@@ -159,8 +159,8 @@ pub enum Event {
     ///
     /// Items are positioned against the text at `version`, but the user may
     /// have typed on since: [`InlineCompletionItem::ghost`] re-reads an item
-    /// against the line as it is now, and keeps it only while what was typed
-    /// is a prefix of what it proposes.
+    /// against the line as it is now and the caret it was asked at, and keeps
+    /// it only while what was typed is a prefix of what it proposes.
     InlineCompletions {
         /// The document the items are for.
         doc: DocumentId,

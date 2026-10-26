@@ -184,7 +184,7 @@ impl App {
         }
         let fresh = items
             .into_iter()
-            .filter(|item| item.ghost(&line, key.caret).is_some())
+            .filter(|item| item.ghost(&line, asked.caret, key.caret).is_some())
             .map(|item| (server.clone(), item));
         let state = &mut self.inline_completion;
         match &mut state.shown {
@@ -214,7 +214,11 @@ impl App {
             return None;
         }
         let (server, item) = shown.items.get(shown.index)?;
-        Some((item.ghost(&line, key.caret)?, server, item))
+        Some((
+            item.ghost(&line, shown.asked.caret, key.caret)?,
+            server,
+            item,
+        ))
     }
 
     /// The ghost as the editor draws it: its first line after the caret and
@@ -264,7 +268,12 @@ impl App {
                 } else {
                     (shown.index + len - step) % len
                 };
-                if shown.items[index].1.ghost(&line, key.caret).is_some() {
+                let asked = shown.asked.caret;
+                if shown.items[index]
+                    .1
+                    .ghost(&line, asked, key.caret)
+                    .is_some()
+                {
                     shown.index = index;
                     return;
                 }
