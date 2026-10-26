@@ -17,10 +17,10 @@ publish = false                       # karet-internal for now (model lives in k
 default = []
 # The ratatui rail renderer; off by default so the headless layout stays ratatui-free.
 # It takes a lane→Style closure, so it does not depend on any particular theme crate.
-view = ["dep:ratatui"]
+view = ["dep:ratatui", "dep:karet-core"]
 
 [dependencies]
-karet-core.workspace = true
+karet-core = { workspace = true, optional = true }
 ratatui = { workspace = true, optional = true }
 
 [lints]
