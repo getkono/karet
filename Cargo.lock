@@ -4018,6 +4018,7 @@ name = "karet-watch"
 version = "0.7.1"
 dependencies = [
  "ignore",
+ "karet-search",
  "notify",
  "notify-debouncer-full",
  "tempfile",
