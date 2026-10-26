@@ -405,6 +405,11 @@ run = [
   "cargo check -p karet-diff --no-default-features",
   "cargo check -p karet-graph --no-default-features",
   "cargo check -p karet-theme --no-default-features",
+  # The backend's shipped default and its lean build: `lint` sees karet-session
+  # only with every feature on, so code a disabled feature leaves dead is
+  # invisible there (issue #756).
+  "cargo clippy -p karet-session --all-targets -- -D warnings",
+  "cargo clippy -p karet-session --all-targets --no-default-features -- -D warnings",
 ]
 
 [tasks.coverage]
