@@ -149,8 +149,9 @@ impl Staging {
 
     /// The combined unified-diff patch for the staged hunks of `file`.
     ///
-    /// Emits one file header followed by the staged hunk bodies in order. Returns
-    /// an empty string when nothing is staged.
+    /// Emits one file header followed by the staged hunk bodies in order. A staged
+    /// index with no matching hunk in `file` is silently skipped, so the result is
+    /// an empty string when nothing is staged or no staged index is in range.
     #[must_use]
     pub fn staged_patch(&self, file: &FileDiff) -> String {
         let mut out = String::new();
