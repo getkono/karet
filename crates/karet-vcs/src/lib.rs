@@ -18,6 +18,7 @@ mod remote;
 mod repo;
 mod selection;
 mod stash;
+mod subprocess;
 mod summary;
 #[cfg(test)]
 mod test_support;
