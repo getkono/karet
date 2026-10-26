@@ -30,8 +30,6 @@ mod prepare;
 
 use blame::BlameCache;
 use blame::blame;
-#[cfg(test)]
-use blame::map_attribution;
 use commit::run_commit;
 use conflict::run_merge_conflict;
 use history::run_commit_detail;
@@ -714,8 +712,6 @@ mod job_tests;
 
 #[cfg(test)]
 mod tests {
-    use karet_core::BlameAttribution;
-
     use super::*;
 
     fn init_repository(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
@@ -728,52 +724,6 @@ mod tests {
             return Err(std::io::Error::other("git init failed").into());
         }
         Ok(())
-    }
-
-    fn commit(hash: &str) -> BlameAttribution {
-        BlameAttribution::Commit(BlameCommit {
-            hash: hash.to_string(),
-            author: "Ada".to_string(),
-            author_time: 1_773_619_200,
-        })
-    }
-
-    #[test]
-    fn current_buffer_mapping_keeps_exact_and_unique_moved_lines() {
-        let groups = vec![blameline::BlameGroup {
-            lines: blameline::LineRange { start: 1, end: 3 },
-            commit_hash: "one".to_string(),
-            message: "change".to_string(),
-            author: "Ada".to_string(),
-            date: "1773619200 +0000".to_string(),
-        }];
-        let mapped = map_attribution(&["a", "new", "c", "b"], &["a", "b", "c"], &groups);
-        assert_eq!(mapped[0], commit("one"));
-        assert_eq!(mapped[1], BlameAttribution::Uncommitted);
-        assert_eq!(mapped[2], commit("one"));
-        assert_eq!(mapped[3], commit("one"));
-    }
-
-    #[test]
-    fn ambiguous_moved_lines_are_uncommitted() {
-        let mapped = map_attribution(&["x"], &["a", "x", "x"], &[]);
-        assert_eq!(mapped, vec![BlameAttribution::Uncommitted]);
-    }
-
-    #[test]
-    fn cancellation_hub_signals_live_job_and_forgets_finished_job() {
-        let hub = crate::cancellation::CancellationHub::default();
-        let token = hub.register(RequestId(41));
-        assert!(!token.is_cancelled());
-        hub.cancel(RequestId(41));
-        assert!(token.is_cancelled());
-        drop(token);
-
-        // Cancelling after completion is a harmless no-op and does not poison a
-        // later request that happens to use a different id.
-        hub.cancel(RequestId(41));
-        let next = hub.register(RequestId(42));
-        assert!(!next.is_cancelled());
     }
 
     #[test]

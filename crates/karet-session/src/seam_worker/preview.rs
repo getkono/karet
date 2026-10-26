@@ -265,7 +265,12 @@ mod tests {
         assert_eq!(preview.context, CONTEXT);
         assert_eq!(preview.lines[preview.body_start], "line 20");
         // Contiguous: nothing was cut, so no row follows a gap.
-        assert!(preview.numbers.windows(2).all(|pair| pair[1] == pair[0] + 1));
+        assert!(
+            preview
+                .numbers
+                .windows(2)
+                .all(|pair| pair[1] == pair[0] + 1)
+        );
         Ok(())
     }
 
