@@ -75,6 +75,44 @@ fn markdown_code_selection_falls_back_to_plain_typing() {
 }
 
 #[test]
+fn inline_macros_read_the_shared_layered_parse_only_when_they_need_one() {
+    // Tab after a word that is not `fn` never asks for a parse.
+    let (mut app, _) = inline_macro_app("lib.rs", "let");
+    let active = app.active;
+    if let Tab {
+        kind: TabKind::Code { buffer, .. },
+        editor,
+        ..
+    } = &mut app.tabs[active]
+    {
+        editor.set_selection(buffer, LineCol::new(0, 3), LineCol::new(0, 3));
+    }
+    assert!(!app.try_inline_macro(karet_syntax::InlineMacroTrigger::Tab));
+    assert!(app.layered_trees.held().is_none());
+
+    // A selection the macro must check parses once, into the cache every other
+    // reader of this version shares.
+    let (mut app, _) = inline_macro_app("notes.md", "`code`");
+    let active = app.active;
+    if let Tab {
+        kind: TabKind::Code { buffer, .. },
+        editor,
+        ..
+    } = &mut app.tabs[active]
+    {
+        editor.set_selection(buffer, LineCol::new(0, 1), LineCol::new(0, 5));
+    }
+    assert!(!app.try_inline_macro(karet_syntax::InlineMacroTrigger::Character('[')));
+    let held = app
+        .layered_trees
+        .held()
+        .expect("the macro parsed through the cache");
+    assert_eq!(held.text, "`code`");
+    let shared = app.layered_tree().expect("the shared parse");
+    assert!(Arc::ptr_eq(&held, &shared));
+}
+
+#[test]
 fn markdown_macro_expands_every_selected_caret_in_one_change() {
     let (mut app, backend) = inline_macro_app("notes.md", "one two");
     let active = app.active;

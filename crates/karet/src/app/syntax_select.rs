@@ -219,8 +219,8 @@ struct TreeKey {
 
 /// The most recent layered parse a UI-thread reader asked for, keyed by
 /// document, buffer version and root language, so the readers of one keystroke
-/// or command (comment toggling, Enter and paste indentation, Expand Selection)
-/// share a parse instead of each parsing the whole document.
+/// or command (comment toggling, Enter and paste indentation, Expand Selection,
+/// inline macros) share a parse instead of each parsing the whole document.
 ///
 /// The key alone does not prove the text is the same: a split view's local
 /// edit runs ahead of the snapshot that reunites the views, and a tab waiting
@@ -237,6 +237,15 @@ pub(crate) struct LayeredTreeCache {
 }
 
 impl LayeredTreeCache {
+    /// The entry the cache holds, without parsing: what the last reader left.
+    #[cfg(test)]
+    pub(crate) fn held(&self) -> Option<Arc<ParsedText>> {
+        self.slot
+            .borrow()
+            .as_ref()
+            .map(|(_, parsed)| Arc::clone(parsed))
+    }
+
     /// The layered parse of `buffer` (the text of `doc` in `view`) as `lang`,
     /// reused when the last one was of the same view, document, buffer version,
     /// language and text. `None` when the grammar fails to parse.

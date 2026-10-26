@@ -176,7 +176,6 @@ impl App {
             debugger: debugging::Debugger::default(),
             breakpoints: std::collections::HashMap::new(),
             startup_commands: Vec::new(),
-            inline_macro_engine: karet_syntax::InlineMacroEngine::new(),
             layered_trees: syntax_select::LayeredTreeCache::default(),
             pending_commit_detail: HashMap::new(),
             pending_compare: HashMap::new(),

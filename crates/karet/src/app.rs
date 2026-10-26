@@ -709,10 +709,8 @@ pub struct App {
     /// the attach silently did nothing. [`runtime::attach_backend`] drains
     /// this, which is the one path both the live shell and `--capture` share.
     pub(crate) startup_commands: Vec<Command>,
-    /// Parser-backed resolver for the seeded inline-macro catalog.
-    inline_macro_engine: karet_syntax::InlineMacroEngine,
     /// The last layered tree-sitter parse a UI-thread reader asked for (comment
-    /// toggling, Enter and paste indentation, Expand Selection), reused while the
+    /// toggling, Enter and paste indentation, Expand Selection, inline macros), reused while the
     /// document and its buffer version are unchanged.
     layered_trees: syntax_select::LayeredTreeCache,
     /// In-flight commit-detail requests, mapping request id → where its result goes
