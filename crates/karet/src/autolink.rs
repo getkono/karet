@@ -480,8 +480,9 @@ fn skip_blanks(line: &str, from: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use karet_vcs::parse_remote;
+
+    use super::*;
 
     fn github() -> RemoteUrl {
         parse_remote("git@github.com:getkono/karet.git").unwrap_or_else(|| unreachable!())

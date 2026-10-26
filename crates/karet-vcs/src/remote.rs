@@ -146,7 +146,9 @@ pub fn parse_remote(url: &str) -> Option<RemoteUrl> {
     if path.contains(['?', '#']) {
         return None;
     }
-    let host = authority.rsplit_once('@').map_or(authority, |(_, host)| host);
+    let host = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
     let host = host
         .split_once(':')
         .map_or(host, |(host, _)| host)
@@ -547,7 +549,11 @@ mod tests {
         assert_eq!(detect_forge("forgejo.example.com"), ForgeKind::Forgejo);
         assert_eq!(detect_forge("gitea.example.com"), ForgeKind::Gitea);
         // Lookalikes and enterprise hosts are not github.com.
-        for host in ["www.github.com", "github.com.evil.test", "github.example.com"] {
+        for host in [
+            "www.github.com",
+            "github.com.evil.test",
+            "github.example.com",
+        ] {
             assert_eq!(detect_forge(host), ForgeKind::Unknown, "{host}");
         }
         assert_eq!(ForgeKind::Forgejo.name(), "Forgejo");
