@@ -21,6 +21,11 @@ impl App {
                 if panel == SidebarPanel::Todos && !self.todos_available() {
                     return;
                 }
+                // The Hierarchy panel shows a tree a hierarchy command grew;
+                // with none yet there is nothing to show.
+                if panel == SidebarPanel::Hierarchy && !self.show_hierarchy() {
+                    return;
+                }
                 self.sidebar_panel = panel;
                 self.sidebar_visible = true;
                 self.focus = Focus::Sidebar;
@@ -267,6 +272,7 @@ impl App {
             Command::ShowOutgoingCalls => self.open_hierarchy(HierarchyDirection::OutgoingCalls),
             Command::ShowSupertypes => self.open_hierarchy(HierarchyDirection::Supertypes),
             Command::ShowSubtypes => self.open_hierarchy(HierarchyDirection::Subtypes),
+            Command::HierarchyExpand => self.hierarchy_expand(),
             Command::RenameSymbol => self.start_rename(),
             Command::RenameSubmit => self.rename_submit(),
             Command::RenameCancel => self.rename_cancel(),

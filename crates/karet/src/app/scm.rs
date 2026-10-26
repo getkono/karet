@@ -385,7 +385,8 @@ impl App {
             | SidebarPanel::Spelling
             | SidebarPanel::Todos
             | SidebarPanel::Debug
-            | SidebarPanel::Problems => {},
+            | SidebarPanel::Problems
+            | SidebarPanel::Hierarchy => {},
         }
     }
 
@@ -401,7 +402,8 @@ impl App {
             | SidebarPanel::Spelling
             | SidebarPanel::Todos
             | SidebarPanel::Debug
-            | SidebarPanel::Problems => {},
+            | SidebarPanel::Problems
+            | SidebarPanel::Hierarchy => {},
         }
     }
 
@@ -417,7 +419,8 @@ impl App {
             | SidebarPanel::Spelling
             | SidebarPanel::Todos
             | SidebarPanel::Debug
-            | SidebarPanel::Problems => {},
+            | SidebarPanel::Problems
+            | SidebarPanel::Hierarchy => {},
         }
     }
 

@@ -53,6 +53,7 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(Global, true,  false, false, Char('5'), Command::SelectPanel(SidebarPanel::Todos)),
     b(Global, true,  false, false, Char('6'), Command::SelectPanel(SidebarPanel::Debug)),
     b(Global, true,  false, false, Char('7'), Command::SelectPanel(SidebarPanel::Problems)),
+    b(Global, true,  false, false, Char('8'), Command::SelectPanel(SidebarPanel::Hierarchy)),
     // Next / previous problem in the active file (VS Code parity). Global, so the
     // walk also works from the Problems panel, which hands focus to the editor.
     b(Global, false, false, false, F(8),      Command::NextProblem),
@@ -170,6 +171,11 @@ pub(super) static BINDINGS: &[Binding] = &[
     b(ProblemsFilter, false, false, false, Enter, Command::ProblemsFilterAccept),
     b(ProblemsFilter, false, false, false, Esc,   Command::ProblemsFilterCancel),
     b(ProblemsFilter, true,  false, false, Char('v'), Command::Paste),
+
+    // Hierarchy panel. Right and `l` grow the tree, where the shared sidebar verbs
+    // would open the row; Enter still opens it, and Left/`h` collapse or climb.
+    b(Hierarchy, false, false, false, Right,     Command::HierarchyExpand),
+    b(Hierarchy, false, false, false, Char('l'), Command::HierarchyExpand),
 
     // Sidebar focus. Selection verbs are shared across every list panel (explorer
     // and source control) — they route to the focused panel's selection in dispatch.

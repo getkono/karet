@@ -177,6 +177,12 @@ impl App {
                 let cursor = window_bottom(position, viewport, len);
                 self.problems.selection.move_to(cursor);
             },
+            ScrollSurface::HierarchyResults => {
+                if let Some(tree) = self.hierarchy.tree.as_mut() {
+                    let cursor = window_bottom(position, viewport, tree.row_count());
+                    tree.select(cursor);
+                }
+            },
             ScrollSurface::DebugResults => {
                 let len = self.debug_panel.rows.len();
                 let cursor = window_bottom(position, viewport, len);
