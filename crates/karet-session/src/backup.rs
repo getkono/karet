@@ -507,6 +507,56 @@ mod tests {
     }
 
     #[test]
+    fn a_history_well_under_the_bound_is_persisted() -> TestResult {
+        // The bound is 16 MiB; a 2 MiB insertion is stored and read back.
+        let dir = tempfile::tempdir()?;
+        let store = SwapStore::with_dir(dir.path().to_path_buf(), 1);
+        let original = PathBuf::from("/work/large.txt");
+        let mut buffer = karet_text::TextBuffer::new();
+        let large = karet_core::Change::new(
+            0,
+            vec![karet_core::TextEdit {
+                range: karet_core::Range::default(),
+                new_text: "x".repeat(2 * 1024 * 1024),
+            }],
+        );
+        buffer.apply_simple(&large)?;
+        store.write_undo(&original, &buffer.history_snapshot())?;
+        assert!(store.read_undo(&original).is_some());
+        Ok(())
+    }
+
+    /// A sink whose writes land but whose flush fails.
+    struct FailingFlush;
+
+    impl Write for FailingFlush {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Err(std::io::Error::other("flush failed"))
+        }
+    }
+
+    #[test]
+    fn the_bounded_writer_reports_its_sinks_flush_failure() {
+        let mut out = BoundedWriter {
+            inner: FailingFlush,
+            remaining: 4,
+            exceeded: false,
+        };
+        assert!(out.flush().is_err());
+    }
+
+    #[test]
+    fn swaps_are_stamped_with_the_wall_clock_and_live_under_the_data_dir() {
+        // 2020-09-13, well before any run of this suite.
+        assert!(now_unix_ms() > 1_600_000_000_000);
+        assert!(default_swap_dir().is_some_and(|dir| dir.ends_with("swaps")));
+    }
+
+    #[test]
     fn the_bounded_writer_stops_at_its_bound() {
         let mut sink = Vec::new();
         let mut out = BoundedWriter {

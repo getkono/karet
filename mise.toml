@@ -283,11 +283,33 @@ cargo mutants --package karet-editor --all-features --cargo-test-arg=--lib \
   --exclude-re 'comment\\.rs:38[68]:\\d+: replace > with >= in map'"""
 
 [tasks.mutants-session-pure]
-description = "Opt-in: mutation-test karet-session's pure helpers: semantic-token delta, hint flight, archive, config load, cancellation, highlight merge, linediff, backup (cap 60m)"
-timeout = "60m"
+description = "Opt-in: mutation-test karet-session's pure helpers: semantic-token delta, hint flight, archive, config load, cancellation, highlight merge, linediff, backup (cap 180m)"
+timeout = "180m"
+# `--lib`: these modules are covered by their in-file unit tests. The
+# `tests/` targets spawn real language servers, which is exactly the
+# process-bound work this scope keeps out, and would multiply every mutant's
+# test time.
+#
+# Equivalent mutants, excluded with their argument:
+# - config/load.rs the `!prefix.is_empty()` guards (`!` deleted, or the guard
+#   made `true`) in `mark_explicit`: a nested empty object still reaches the
+#   leaf arm and records the same path, so the only key these can add is the
+#   empty root path `""`. `report_from_sources` then keeps only keys whose
+#   first segment is a known section, which `""` never is.
+# - config/load.rs `to_object` returning an empty map, or its
+#   `Ok(Value::Object(map))` arm deleted: the merge then starts from no
+#   defaults instead of the serialized ones. `deserialize_sections` starts
+#   from `Settings::default()` and leaves a missing section at its default,
+#   and every section is `#[serde(default)]` over that same `Default`, whose
+#   maps and lists are empty, so a layer's partial section deserializes to the
+#   same value whether or not the defaults were merged under it.
+# - lsp/hint_flight.rs the `is_cancellation` guard made `false` in `deliver`:
+#   a cancelled request then takes the generic-error arm, which also charges
+#   nothing and reports the request failed. The two arms differ only in the
+#   level of the log line they write.
 run = """trap 'test $? -eq 3 && exit 0' EXIT
 export CARGO_MUTANTS_JOBS="${CARGO_MUTANTS_JOBS:-4}"
-cargo mutants --package karet-session --all-features \
+cargo mutants --package karet-session --all-features --cargo-test-arg=--lib \
   --file 'crates/karet-session/src/lsp/delta.rs' \
   --file 'crates/karet-session/src/lsp/hint_flight.rs' \
   --file 'crates/karet-session/src/lsp_registry/archive.rs' \
@@ -295,11 +317,15 @@ cargo mutants --package karet-session --all-features \
   --file 'crates/karet-session/src/cancellation.rs' \
   --file 'crates/karet-session/src/highlight.rs' \
   --file 'crates/karet-session/src/vcs_worker/linediff.rs' \
-  --file 'crates/karet-session/src/backup.rs'"""
+  --file 'crates/karet-session/src/backup.rs' \
+  --exclude-re 'load\\.rs:488:\\d+: (delete !|replace match guard !prefix\\.is_empty\\(\\) with true) in mark_explicit' \
+  --exclude-re 'load\\.rs:491:\\d+: replace match guard !prefix\\.is_empty\\(\\) with true in mark_explicit' \
+  --exclude-re 'load\\.rs:50[01]:\\d+: (replace to_object -> Map<String, Value> with Default::default\\(\\)|delete match arm Ok\\(Value::Object\\(map\\)\\) in to_object)' \
+  --exclude-re 'hint_flight\\.rs:383:\\d+: replace match guard is_cancellation\\(&error\\) with false in deliver'"""
 
 [tasks.mutants-app]
-description = "Opt-in: mutation-test the app's chord resolver, terminal input, CLI and command resolution (cap 120m)"
-timeout = "120m"
+description = "Opt-in: mutation-test the app's chord resolver, terminal input, CLI and command resolution (cap 180m)"
+timeout = "180m"
 # Equivalent mutants, excluded with their argument:
 # - terminal/input.rs `MOUSE_MOTION | MOUSE_DRAG` -> `^` in `encode_mouse`:
 #   the two are distinct single bits (1 << 6 and 1 << 13 in

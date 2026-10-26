@@ -456,3 +456,68 @@ fn git_root_is_found_by_ascending() -> TestResult {
     assert_eq!(git_root(&nested).as_deref(), Some(root.as_path()));
     Ok(())
 }
+
+#[test]
+fn load_reads_the_project_layer_of_a_workspace() -> TestResult {
+    let tmp = tempfile::tempdir()?;
+    let root = tmp.path().join("repo");
+    std::fs::create_dir_all(root.join(".git"))?;
+    std::fs::create_dir_all(root.join(".karet"))?;
+    std::fs::write(
+        root.join(".karet").join("setting.jsonc"),
+        r#"{ "editor": { "tabSize": 7 } }"#,
+    )?;
+    // The project layer outranks whatever user or system file this machine has.
+    let (settings, _) = load(std::slice::from_ref(&root));
+    assert_eq!(settings.editor.tab_size, 7);
+    let report = load_report(std::slice::from_ref(&root));
+    assert_eq!(report.settings.editor.tab_size, 7);
+    assert_eq!(
+        report.explicit.get("editor.tabSize"),
+        Some(&ConfigLayer::Project)
+    );
+    Ok(())
+}
+
+#[test]
+fn layers_have_stable_labels() {
+    assert_eq!(ConfigLayer::System.label(), "system");
+    assert_eq!(ConfigLayer::User.label(), "user");
+    assert_eq!(ConfigLayer::Project.label(), "project");
+}
+
+#[test]
+fn the_user_layer_lives_in_the_karet_config_dir() {
+    let dir = user_config_dir();
+    assert!(dir.as_ref().is_some_and(|dir| dir.ends_with("karet")));
+    assert_eq!(user_config_path(), dir.map(|dir| dir.join("setting.jsonc")));
+}
+
+#[test]
+fn a_manager_knows_its_files_and_rereads_only_the_ones_named() -> TestResult {
+    let (dir, system) = scratch("system.jsonc", r#"{ "editor": { "tabSize": 8 } }"#)?;
+    let project = dir.path().join("project.jsonc");
+    std::fs::write(&project, r#"{ "editor": { "insertSpaces": true } }"#)?;
+    let report = load_layer_reports([
+        (ConfigLayer::System, system.clone()),
+        (ConfigLayer::Project, project.clone()),
+    ]);
+    let mut manager = ConfigManager::from_loaded(&report)
+        .ok_or("from_loaded built no manager for a loaded report")?;
+    assert_eq!(manager.paths(), [system.clone(), project.clone()]);
+    assert!(manager.is_config_path(&project));
+    assert!(!manager.is_config_path(&dir.path().join("other.jsonc")));
+
+    // Both files change, but only the system one is named.
+    std::fs::write(&system, r#"{ "editor": { "tabSize": 6 } }"#)?;
+    std::fs::write(&project, r#"{ "editor": { "insertSpaces": false } }"#)?;
+    let updated = manager
+        .reload(std::slice::from_ref(&system))
+        .ok_or("reload of the changed layer reported no update")?;
+    assert_eq!(updated.settings.editor.tab_size, 6);
+    assert!(
+        updated.settings.editor.insert_spaces,
+        "the project layer was not named, so its edit is not read yet"
+    );
+    Ok(())
+}

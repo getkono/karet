@@ -811,5 +811,8 @@ mod tests {
         let huge = TextBuffer::from_text(&format!("a\n  b\n{}", " ".repeat(INDENT_FOLD_MAX_BYTES)));
         let settings = crate::config::Settings::default();
         assert!(indent_folds(&settings, None, &huge).regions().is_empty());
+        // The bound is 4 MiB: a 2 MiB document still folds.
+        let large = TextBuffer::from_text(&format!("a\n  b\n{}", " ".repeat(2 * 1024 * 1024)));
+        assert!(!indent_folds(&settings, None, &large).regions().is_empty());
     }
 }

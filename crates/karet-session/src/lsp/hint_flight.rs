@@ -833,4 +833,13 @@ mod tests {
         assert_eq!(answered, vec![(1, None), (2, None)]);
         assert!(!flight.is_busy());
     }
+
+    #[test]
+    fn abandoning_every_flight_reaches_the_hint_requests() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut flights = Flights::default();
+        flights.hints.ask(ask(1, 7), &tx, 0);
+        flights.abandon(&tx, 0);
+        assert_eq!(answers(&mut rx), vec![(1, None)]);
+    }
 }

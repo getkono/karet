@@ -718,6 +718,34 @@ fn the_ceiling_follows_the_publisher_but_never_exceeds_the_absolute_limit() {
     assert_eq!(download_ceiling(Some(u64::MAX)), MAX_DOWNLOAD_BYTES);
 }
 
+/// The sizes the constants document: 4 MiB of slack over a declared size, and
+/// a 512 MiB extraction budget that admits exactly that much and no more.
+#[test]
+fn the_slack_and_the_extraction_budget_are_the_documented_sizes() {
+    const MIB: u64 = 1024 * 1024;
+    assert_eq!(download_ceiling(Some(1_000)), 1_000 + 4 * MIB);
+    assert!(Budget::new().admits(512 * MIB).is_ok());
+    assert!(Budget::new().admits(512 * MIB + 1).is_err());
+}
+
+/// A body of exactly the ceiling is within it.
+#[test]
+fn a_body_exactly_at_the_ceiling_is_accepted() -> TestResult {
+    let declared = 10;
+    let payload = vec![7_u8; usize::try_from(download_ceiling(Some(declared)))?];
+    let server = responding_server(payload.clone(), None)?;
+    let client = Client::builder().build()?;
+    let bytes = download_verified(
+        &client,
+        &format!("http://{}/asset", server.address),
+        &sha256_of(&payload),
+        Some(declared),
+        |_, _| {},
+    )?;
+    assert_eq!(bytes.len(), payload.len());
+    Ok(())
+}
+
 /// A loopback server returning fixed bytes once.
 ///
 /// Local and hermetic: this exercises the verification, not the network, and
