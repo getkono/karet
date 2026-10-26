@@ -228,9 +228,6 @@ fn advertised_capabilities(behavior: Behavior) -> Value {
     capabilities
 }
 
-/// The double's answer to `textDocument/diagnostic`: one error on line 0
-/// naming `version`, linked to its documentation and related to line 1 of the
-/// asking file, beside a full report for `elsewhere.rs`.
 /// Whether `behavior` registers pulls on `didOpen` and withdraws them on
 /// `didSave`.
 fn registers_pulls(behavior: Behavior) -> bool {
@@ -240,6 +237,9 @@ fn registers_pulls(behavior: Behavior) -> bool {
     )
 }
 
+/// The double's answer to `textDocument/diagnostic`: one error on line 0
+/// naming `version`, linked to its documentation and related to line 1 of the
+/// asking file, beside a full report for `elsewhere.rs`.
 fn pull_reply(msg: &Value, version: &Value) -> Value {
     let asking = msg["params"]["textDocument"]["uri"]
         .as_str()
