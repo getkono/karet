@@ -28,6 +28,30 @@ fn a_final_line_break_ends_the_last_line_rather_than_starting_one() {
 }
 
 #[test]
+fn a_just_opened_empty_last_line_keeps_the_caret() {
+    vim(&[
+        // No final line break: `o` or `<CR>` at the end opens a real line.
+        ("a\n|b", "o<Esc>", "a\nb\n|"),
+        ("a\n|b", "o<Esc>dd", "a\n|b"),
+        ("a\n|b", "o<Esc>ix<Esc>", "a\nb\n|x"),
+        ("a\n|b", "A<CR><Esc>", "a\nb\n|"),
+        ("a\n|b", "A<CR><Esc>dd", "a\n|b"),
+        ("|a", "ihi<CR><Esc>", "hi\n|a"),
+        // An empty new buffer.
+        ("|", "o<Esc>", "\n|"),
+        ("|", "o<Esc>dd", "|"),
+        ("|", "ihi<CR><Esc>", "hi\n|"),
+        ("|", "ihi<CR><Esc>dd", "|hi"),
+        ("|", "ihi<CR><Esc>ix<Esc>", "hi\n|x"),
+        // With a final line break the line `o` opens is real either way.
+        ("a\n|b\n", "o<Esc>", "a\nb\n|\n"),
+        ("a\n|b\n", "o<Esc>dd", "a\n|b\n"),
+        // Leaving the caret off the empty last line leaves it unvisited.
+        ("a\n|b", "o<Esc>kj", "a\n|b\n"),
+    ]);
+}
+
+#[test]
 fn a_change_with_nothing_to_delete_still_enters_insert_mode() {
     vim(&[
         ("|", "Cx<Esc>", "|x"),
