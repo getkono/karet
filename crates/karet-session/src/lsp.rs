@@ -431,7 +431,7 @@ impl LspManager {
                     .then_some((fallback, LanguageServerSource::Path))
             })
             .or_else(|| {
-                crate::lsp_registry::installed_spec(
+                crate::lsp_registry::store::installed_spec(
                     self.registry_root.as_deref(),
                     provider,
                     language,
@@ -469,7 +469,7 @@ impl LspManager {
             return true;
         }
         let managed = || {
-            crate::lsp_registry::installed_spec(
+            crate::lsp_registry::store::installed_spec(
                 self.registry_root.as_deref(),
                 &LanguageServerId::new(provider::ASTRO),
                 language,

@@ -402,10 +402,10 @@ impl Session {
                         // user recorded is an answer too — re-asking either would
                         // spend their bandwidth on a decision they have made.
                         let root = self.config.lsp_registry_dir.as_deref();
-                        if crate::lsp_registry::ever_installed(root, &server) {
+                        if crate::lsp_registry::store::ever_installed(root, &server) {
                             return;
                         }
-                        if crate::lsp_registry::read_declined(root, &server).is_some() {
+                        if crate::lsp_registry::store::read_declined(root, &server).is_some() {
                             return;
                         }
                         let enabled = self
