@@ -735,8 +735,9 @@ impl LayeredParser {
     /// or reparsed over edited text. Outside them, a query over the new tree
     /// finds what it found over the old one, moved by the edits.
     ///
-    /// Too many edits at once (a large multi-cursor replace) report the whole
-    /// document rather than track each one.
+    /// No edits at all (a cold reparse of unrelated text) and too many edits at
+    /// once (a large multi-cursor replace) both report the whole document rather
+    /// than track each change.
     ///
     /// # Errors
     /// Returns [`TsError::ParseFailed`] if the root cannot be reparsed.
@@ -746,7 +747,14 @@ impl LayeredParser {
         edits: &[Edit],
         text: &str,
     ) -> Result<Vec<Span>, TsError> {
-        let edited = changes::edited_ranges(edits);
+        // With no edits the reparse is cold, and tree-sitter's `changed_ranges`
+        // compares only structure, never text: a rename that keeps the tree's
+        // shape would go unreported. Report the whole document instead.
+        let edited = if edits.is_empty() {
+            None
+        } else {
+            changes::edited_ranges(edits)
+        };
         for edit in edits {
             tree.root.edit(edit);
             // The old layers are only compared when the edits are tracked.
@@ -1057,10 +1065,28 @@ mod reparse_tests {
         let changed = parser.reparse_changed(&mut tree, &[], NEW)?;
         let cold = parser.parse(rust, NEW)?;
         assert_eq!(sexp(tree.root()), sexp(cold.root()));
-        assert!(
-            !changed.is_empty(),
-            "the new struct must be reported changed"
-        );
+        let whole = Span {
+            start: BytePos(0),
+            end: BytePos(NEW.len()),
+        };
+        assert_eq!(changed, vec![whole]);
+        Ok(())
+    }
+
+    #[test]
+    fn reparse_changed_with_no_edits_reports_a_same_shape_rename() -> Result<(), TsError> {
+        // Same tree shape, different text: structural `changed_ranges` sees
+        // nothing, so the whole document must still be reported.
+        let rust = language_id_from_injection_name("rust").ok_or(TsError::UnknownLanguage)?;
+        let renamed = "fn mian() {}\n";
+        let mut parser = LayeredParser::new();
+        let mut tree = parser.parse(rust, OLD)?;
+        let changed = parser.reparse_changed(&mut tree, &[], renamed)?;
+        let whole = Span {
+            start: BytePos(0),
+            end: BytePos(renamed.len()),
+        };
+        assert_eq!(changed, vec![whole]);
         Ok(())
     }
 }
