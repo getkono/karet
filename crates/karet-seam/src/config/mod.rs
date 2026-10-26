@@ -73,11 +73,19 @@ impl Configuration {
     }
 
     /// This configuration built for a named target, which decides `test` and friends.
+    ///
+    /// The target is folded into the name (`unconfigured @ <triple>` becomes
+    /// `unconfigured:test @ <triple>`), so a configuration and its per-target variants
+    /// stay distinct and each can be selected by name.
     #[must_use]
     pub fn for_target(mut self, target: &str) -> Self {
         if matches!(target, "test" | "bench") {
             self.env.flags.insert("test".to_owned());
         }
+        self.name = match self.name.rsplit_once(" @ ") {
+            Some((base, triple)) => format!("{base}:{target} @ {triple}"),
+            None => format!("{}:{target}", self.name),
+        };
         self.target = Some(target.to_owned());
         self
     }
@@ -339,6 +347,28 @@ mod tests {
         let configuration = Configuration::named("default", ["view".to_owned()]);
         assert!(configuration.name.starts_with("default @ "));
         assert!(configuration.variation_is_complete());
+    }
+
+    #[test]
+    fn a_target_is_folded_into_the_name_before_the_triple() {
+        let base = Configuration::unconfigured();
+        let testing = Configuration::unconfigured().for_target("test");
+        assert_eq!(
+            testing.name,
+            format!("{UNCONFIGURED}:test @ {}", host_triple())
+        );
+        assert_ne!(
+            testing.name, base.name,
+            "a target must not share its base's name"
+        );
+        assert_eq!(testing.target.as_deref(), Some("test"));
+    }
+
+    #[test]
+    fn a_target_on_a_name_with_no_triple_is_appended() {
+        let mut configuration = Configuration::named("default", []);
+        configuration.name = "bare".to_owned();
+        assert_eq!(configuration.for_target("bench").name, "bare:bench");
     }
 
     #[test]
