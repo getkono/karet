@@ -9,7 +9,7 @@ impl App {
     /// document if the view has since closed.
     pub(super) fn on_opened(&mut self, id: Option<RequestId>, doc: DocumentId) {
         if id.is_some_and(|request| self.abandoned_open.remove(&request)) {
-            self.send_command(SessionCommand::CloseDocument { doc });
+            self.send_command(DocumentCommand::Close { doc });
             return;
         }
         let pending = id.and_then(|request| self.pending_open.remove(&request));
@@ -31,7 +31,7 @@ impl App {
             if bound {
                 self.open_docs.insert(doc);
             } else {
-                self.send_command(SessionCommand::CloseDocument { doc });
+                self.send_command(DocumentCommand::Close { doc });
             }
         }
     }

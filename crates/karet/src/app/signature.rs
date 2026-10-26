@@ -19,7 +19,6 @@ use std::collections::HashMap;
 
 use karet_core::SignatureHelp;
 use karet_core::SignatureHelpOptions;
-use karet_session::Command as SessionCommand;
 use karet_session::RequestId;
 
 use super::*;
@@ -134,12 +133,12 @@ impl App {
             return;
         };
         let id = backend.next_id();
-        let command = SessionCommand::SignatureHelp {
+        let command = LspCommand::SignatureHelp {
             doc,
             position: at,
             manual,
         };
-        if backend.send(id, command).is_ok() {
+        if backend.send(id, command.into()).is_ok() {
             self.signature.pending = Some(PendingSignature { id, doc, at });
         }
     }

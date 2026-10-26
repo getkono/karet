@@ -11,13 +11,13 @@ impl App {
             return;
         }
         self.scm.repository_loading_since = Some(Pending::start());
-        self.scm.repository_request = self.send(SessionCommand::RepositorySnapshot);
+        self.scm.repository_request = self.send(VcsCommand::RepositorySnapshot);
     }
 
     /// Submit one ordered repository action.
     pub(super) fn run_vcs_action(&mut self, action: VcsAction) {
         if self
-            .send(SessionCommand::VcsAction {
+            .send(VcsCommand::Action {
                 action: action.clone(),
             })
             .is_some()
@@ -139,7 +139,7 @@ impl App {
         if self.pending_blame.is_some() {
             return;
         }
-        if let Some(id) = self.send(SessionCommand::Blame { doc, version, line }) {
+        if let Some(id) = self.send(VcsCommand::Blame { doc, version, line }) {
             self.pending_blame = Some((id, doc, version, line));
         }
     }
@@ -166,7 +166,7 @@ impl App {
         self.loaded_config.settings.git.blame = enabled;
         // The persistent write runs on the backend; a failure comes back as an
         // ordinary notification event.
-        self.send_command(SessionCommand::SetBlameEnabled { enabled });
+        self.send_command(VcsCommand::SetBlameEnabled { enabled });
         self.pending_blame = None;
         self.failed_blame = None;
         self.live_blame = None;
@@ -189,7 +189,7 @@ impl App {
         }
         self.scm.log_loading = true;
         self.scm.log_loading_since = Some(Pending::start());
-        self.send_command(SessionCommand::VcsLog {
+        self.send_command(VcsCommand::Log {
             skip,
             limit: SCM_LOG_PAGE,
         });
@@ -209,7 +209,7 @@ impl App {
     pub(super) fn open_commit(&mut self, rev: String) {
         self.push_tab(Tab::commit_loading(rev.clone()));
         let view = self.tabs[self.active].view;
-        if let Some(id) = self.send(SessionCommand::CommitDetail { rev }) {
+        if let Some(id) = self.send(VcsCommand::CommitDetail { rev }) {
             self.pending_commit_detail.insert(id, view);
         }
     }
@@ -218,7 +218,7 @@ impl App {
     pub(super) fn open_commit_graph(&mut self) {
         self.push_tab(Tab::commit_graph(None, "Commits"));
         let view = self.tabs[self.active].view;
-        if let Some(id) = self.send(SessionCommand::VcsLog {
+        if let Some(id) = self.send(VcsCommand::Log {
             skip: 0,
             limit: GRAPH_LOG_PAGE,
         }) {
@@ -250,7 +250,7 @@ impl App {
             .to_string();
         self.push_tab(Tab::commit_graph(Some(path.clone()), format!("⌥ {name}")));
         let view = self.tabs[self.active].view;
-        if let Some(id) = self.send(SessionCommand::FileHistory {
+        if let Some(id) = self.send(VcsCommand::FileHistory {
             path,
             skip: 0,
             limit: GRAPH_LOG_PAGE,
@@ -321,11 +321,11 @@ impl App {
     /// Submit a backend command and return its [`RequestId`], so the answering
     /// event can be correlated — the one submission primitive (a failed or
     /// backend-less submission notifies and returns `None`).
-    pub(super) fn send(&mut self, command: SessionCommand) -> Option<RequestId> {
+    pub(super) fn send(&mut self, command: impl Into<SessionCommand>) -> Option<RequestId> {
         let (id, result) = {
             let backend = self.backend.as_ref()?;
             let id = backend.next_id();
-            (id, backend.send(id, command))
+            (id, backend.send(id, command.into()))
         };
         match result {
             Ok(()) => Some(id),
@@ -337,12 +337,12 @@ impl App {
     }
 
     /// Submit a backend command whose answer needs no correlation.
-    pub(super) fn send_command(&mut self, command: SessionCommand) {
+    pub(super) fn send_command(&mut self, command: impl Into<SessionCommand>) {
         let _ = self.send(command);
     }
 
     /// Send a path-scoped Source-Control command for the current selection.
-    pub(super) fn scm_send_paths(&mut self, make: impl FnOnce(Vec<PathBuf>) -> SessionCommand) {
+    pub(super) fn scm_send_paths(&mut self, make: impl FnOnce(Vec<PathBuf>) -> VcsCommand) {
         let paths = self.scm.selected_paths();
         if paths.is_empty() {
             return;
@@ -366,10 +366,10 @@ impl App {
             }
         }
         if !to_unstage.is_empty() {
-            self.send_command(SessionCommand::Unstage { paths: to_unstage });
+            self.send_command(VcsCommand::Unstage { paths: to_unstage });
         }
         if !to_stage.is_empty() {
-            self.send_command(SessionCommand::Stage { paths: to_stage });
+            self.send_command(VcsCommand::Stage { paths: to_stage });
         }
     }
 
@@ -495,7 +495,7 @@ impl App {
             );
             return;
         }
-        if let Some(id) = self.send(SessionCommand::Commit { message }) {
+        if let Some(id) = self.send(VcsCommand::Commit { message }) {
             self.commit_input.pending = Some(id);
             self.notify_progress(
                 NotificationKind::Vcs,
@@ -565,7 +565,7 @@ impl App {
             return;
         }
         let count = paths.len();
-        self.send_command(SessionCommand::Discard { paths });
+        self.send_command(VcsCommand::Discard { paths });
         // Its own tag, not the shared operation one: a discard answers with a
         // status refresh rather than an operation-finished event, so it is retired
         // from `on_vcs_status` — and that fires for unrelated worktree changes too,

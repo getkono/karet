@@ -15,7 +15,6 @@ use std::collections::HashMap;
 
 use karet_core::Change;
 use karet_core::TextEdit;
-use karet_session::Command as SessionCommand;
 use karet_session::RequestId;
 
 use super::*;
@@ -126,8 +125,8 @@ impl App {
             return;
         };
         let id = backend.next_id();
-        let command = SessionCommand::FormatOnType { doc, position, ch };
-        if backend.send(id, command).is_ok() {
+        let command = LspCommand::FormatOnType { doc, position, ch };
+        if backend.send(id, command.into()).is_ok() {
             self.on_type.pending = Some(PendingOnType { id, doc, version });
         }
     }

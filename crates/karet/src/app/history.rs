@@ -161,12 +161,12 @@ impl App {
         }
         let loaded = commits.len();
         let command = match history_path.clone() {
-            Some(path) => SessionCommand::FileHistory {
+            Some(path) => VcsCommand::FileHistory {
                 path,
                 skip: loaded,
                 limit: GRAPH_LOG_PAGE,
             },
-            None => SessionCommand::VcsLog {
+            None => VcsCommand::Log {
                 skip: loaded,
                 limit: GRAPH_LOG_PAGE,
             },
@@ -247,7 +247,7 @@ impl App {
         };
         // No request means nothing will answer (`send` already reported why), so
         // there is no tab to reserve.
-        let Some(id) = self.send(SessionCommand::RangeChanges { spec }) else {
+        let Some(id) = self.send(VcsCommand::RangeChanges { spec }) else {
             return;
         };
         self.push_tab(Tab::compare(
@@ -479,7 +479,7 @@ impl App {
             return;
         }
         if let Some(request) =
-            self.send(SessionCommand::FetchCommitVerification { hash: hash.clone() })
+            self.send(VcsCommand::FetchCommitVerification { hash: hash.clone() })
         {
             self.pending_commit_verification
                 .insert(request, (view, hash));
@@ -817,7 +817,7 @@ impl App {
         let mut sent = false;
         for remote in remotes {
             sent |= self
-                .send(SessionCommand::VcsAction {
+                .send(VcsCommand::Action {
                     action: VcsAction::Fetch { remote },
                 })
                 .is_some();

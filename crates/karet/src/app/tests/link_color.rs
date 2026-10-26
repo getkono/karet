@@ -24,7 +24,7 @@ fn listings(backend: &RecordingBackend) -> Vec<RequestId> {
         .map(|sent| {
             sent.iter()
                 .filter_map(|(id, command)| match command {
-                    SessionCommand::LinksAndColors { .. } => Some(*id),
+                    SessionCommand::Lsp(LspCommand::LinksAndColors { .. }) => Some(*id),
                     _ => None,
                 })
                 .collect()
@@ -40,7 +40,9 @@ fn resolves(backend: &RecordingBackend) -> Vec<(RequestId, DocumentLink)> {
         .map(|sent| {
             sent.iter()
                 .filter_map(|(id, command)| match command {
-                    SessionCommand::ResolveDocumentLink { link, .. } => Some((*id, link.clone())),
+                    SessionCommand::Lsp(LspCommand::ResolveDocumentLink { link, .. }) => {
+                        Some((*id, link.clone()))
+                    },
                     _ => None,
                 })
                 .collect()

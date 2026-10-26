@@ -116,8 +116,8 @@ impl App {
             return;
         };
         let command = match kind {
-            None => SessionCommand::Definition { doc, position },
-            Some(kind) => SessionCommand::FindLocations {
+            None => LspCommand::Definition { doc, position },
+            Some(kind) => LspCommand::FindLocations {
                 doc,
                 position,
                 kind,

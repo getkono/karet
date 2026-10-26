@@ -143,7 +143,7 @@ fn an_edit_before_the_fill_is_refused_rather_than_sent_against_the_placeholder()
     assert_eq!(code_text(&app), "", "the placeholder is not edited");
     let sent_change = backend.sent.lock().is_ok_and(|sent| {
         sent.iter()
-            .any(|(_, command)| matches!(command, SessionCommand::ApplyChange { .. }))
+            .any(|(_, command)| matches!(command, SessionCommand::Document(DocumentCommand::ApplyChange { .. })))
     });
     assert!(
         !sent_change,
@@ -259,7 +259,7 @@ fn a_failed_open_stops_the_wait_and_shows_why() {
     let tab = app.active;
     let open = backend.sent.lock().ok().and_then(|sent| {
         sent.iter().find_map(|(id, command)| {
-            matches!(command, SessionCommand::OpenDocument { .. }).then_some(*id)
+            matches!(command, SessionCommand::Document(DocumentCommand::Open { .. })).then_some(*id)
         })
     });
     assert!(open.is_some(), "the tab asked the session for its text");

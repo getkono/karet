@@ -273,7 +273,7 @@ fn a_rejected_change_moves_nothing_and_is_not_sent() {
         .lock()
         .map(|sent| {
             sent.iter()
-                .filter(|(_, c)| matches!(c, SessionCommand::ApplyChange { .. }))
+                .filter(|(_, c)| matches!(c, SessionCommand::Document(DocumentCommand::ApplyChange { .. })))
                 .count()
         })
         .unwrap_or(usize::MAX);

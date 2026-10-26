@@ -187,7 +187,7 @@ impl App {
                 return;
             },
         }
-        let sent = self.send(SessionCommand::DocumentHighlights {
+        let sent = self.send(LspCommand::DocumentHighlights {
             doc: key.doc,
             position: key.caret,
         });

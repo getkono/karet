@@ -214,7 +214,7 @@ impl App {
     /// Ask the backend to add a spelling word to the project layer; the answering
     /// event either confirms the write or asks for typed creation confirmation.
     pub(super) fn add_spelling_to_project_dictionary(&mut self, word: String) {
-        self.send_command(SessionCommand::AddDictionaryWord {
+        self.send_command(WorkspaceCommand::AddDictionaryWord {
             word,
             scope: karet_session::DictionaryScope::Project,
             create_project: false,
@@ -224,7 +224,7 @@ impl App {
     /// Ask the backend to add a spelling word to the platform user settings,
     /// creating that layer when necessary.
     pub(super) fn add_spelling_to_user_dictionary(&mut self, word: String) {
-        self.send_command(SessionCommand::AddDictionaryWord {
+        self.send_command(WorkspaceCommand::AddDictionaryWord {
             word,
             scope: karet_session::DictionaryScope::User,
             create_project: false,
@@ -233,7 +233,7 @@ impl App {
 
     /// Finish the explicitly confirmed missing-project-settings path.
     pub(super) fn create_project_dictionary(&mut self, word: &str, _expected_path: &Path) {
-        self.send_command(SessionCommand::AddDictionaryWord {
+        self.send_command(WorkspaceCommand::AddDictionaryWord {
             word: word.to_string(),
             scope: karet_session::DictionaryScope::Project,
             create_project: true,

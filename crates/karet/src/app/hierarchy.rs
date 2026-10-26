@@ -441,7 +441,7 @@ impl App {
             );
             return;
         };
-        let command = SessionCommand::PrepareHierarchy {
+        let command = LspCommand::PrepareHierarchy {
             doc,
             position,
             direction,
@@ -566,7 +566,7 @@ impl App {
         if let Some(tree) = self.hierarchy.tree.as_mut() {
             tree.retarget(doc);
         }
-        let command = SessionCommand::ExpandHierarchy {
+        let command = LspCommand::ExpandHierarchy {
             doc,
             item: Box::new(item),
             direction,

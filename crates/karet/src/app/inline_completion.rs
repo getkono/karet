@@ -161,7 +161,7 @@ impl App {
     /// Send an ask for `key`, replacing any older one.
     fn ask_inline_completion(&mut self, key: InlineKey, trigger: InlineCompletionTrigger) {
         self.inline_completion.probe = None;
-        let command = SessionCommand::InlineCompletion {
+        let command = LspCommand::InlineCompletion {
             doc: key.doc,
             position: key.caret,
             trigger,
@@ -341,7 +341,7 @@ impl App {
         self.vi_note_text(0, ahead, &edit.new_text);
         if whole {
             self.inline_completion.shown = None;
-            self.send_command(SessionCommand::AcceptInlineCompletion { doc, server, item });
+            self.send_command(LspCommand::AcceptInlineCompletion { doc, server, item });
         } else if let Some((key, _)) = self.inline_target() {
             self.inline_completion.quiet = Some((key.doc, key.version));
         }
@@ -351,9 +351,9 @@ impl App {
     pub(crate) fn copilot_account(&mut self, sign_in: bool) {
         let server = LanguageServerId::new(COPILOT);
         self.send_command(if sign_in {
-            SessionCommand::SignInLanguageServer { server }
+            LanguageServerCommand::SignIn { server }
         } else {
-            SessionCommand::SignOutLanguageServer { server }
+            LanguageServerCommand::SignOut { server }
         });
     }
 

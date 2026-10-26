@@ -23,7 +23,7 @@ fn asks(backend: &RecordingBackend) -> Vec<(RequestId, LineCol)> {
         .map(|sent| {
             sent.iter()
                 .filter_map(|(id, command)| match command {
-                    SessionCommand::DocumentHighlights { position, .. } => Some((*id, *position)),
+                    SessionCommand::Lsp(LspCommand::DocumentHighlights { position, .. }) => Some((*id, *position)),
                     _ => None,
                 })
                 .collect()

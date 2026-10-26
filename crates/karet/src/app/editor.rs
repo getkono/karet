@@ -298,7 +298,7 @@ impl App {
         } else {
             FormatScope::Document
         };
-        let _ = self.send(SessionCommand::Format(FormatRequest { doc, scope }));
+        let _ = self.send(LspCommand::Format(FormatRequest { doc, scope }));
     }
 
     /// Expand every collapsed fold that hides a caret, in every code tab of
@@ -781,7 +781,7 @@ impl App {
                 {
                     return; // already requested (attach re-walks every tab)
                 }
-                if let Some(request) = self.send(SessionCommand::ConvertDocument { path }) {
+                if let Some(request) = self.send(DocumentCommand::Convert { path }) {
                     self.pending_conversions.insert(request, view);
                 }
                 return;
@@ -794,10 +794,11 @@ impl App {
         let id = backend.next_id();
         let _ = backend.send(
             id,
-            SessionCommand::OpenDocument {
+            DocumentCommand::Open {
                 path: path.clone(),
                 language: None,
-            },
+            }
+            .into(),
         );
         self.pending_open.insert(id, PendingOpen { path, view });
     }
@@ -949,14 +950,14 @@ impl App {
                 // The selection set on either side of the edit, each reported
                 // at the version it describes: the one before is what undoing
                 // the edit restores, the one after what redoing it restores.
-                let report = |cursors| SessionCommand::SetCursor { doc, view, cursors };
-                let apply = SessionCommand::ApplyChange {
+                let report = |cursors| DocumentCommand::SetCursor { doc, view, cursors };
+                let apply = DocumentCommand::ApplyChange {
                     doc,
                     change: change.clone(),
                     cause,
                 };
                 for command in [report(before), apply, report(after)] {
-                    let _ = backend.send(backend.next_id(), command);
+                    let _ = backend.send(backend.next_id(), command.into());
                 }
             }
             // The hints on screen move with the text until the server's

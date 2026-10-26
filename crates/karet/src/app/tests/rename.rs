@@ -25,15 +25,15 @@ fn sent<T>(
 
 fn prepare_ids(backend: &RecordingBackend) -> Vec<RequestId> {
     sent(backend, |id, command| {
-        matches!(command, SessionCommand::PrepareRename { .. }).then_some(id)
+        matches!(command, SessionCommand::Lsp(LspCommand::PrepareRename { .. })).then_some(id)
     })
 }
 
 fn renames(backend: &RecordingBackend) -> Vec<(RequestId, LineCol, String)> {
     sent(backend, |id, command| match command {
-        SessionCommand::Rename {
+        SessionCommand::Lsp(LspCommand::Rename {
             position, new_name, ..
-        } => Some((id, *position, new_name.clone())),
+        }) => Some((id, *position, new_name.clone())),
         _ => None,
     })
 }
@@ -220,12 +220,14 @@ fn the_applied_rename_is_reported_and_opens_background_tabs() {
     // The tab opens the document like any other, and the reference the
     // backend held on our behalf is released.
     let opens = sent(&backend, |_, command| match command {
-        SessionCommand::OpenDocument { path, .. } if *path == other => Some(path.clone()),
+        SessionCommand::Document(DocumentCommand::Open { path, .. }) if *path == other => {
+            Some(path.clone())
+        },
         _ => None,
     });
     assert_eq!(opens.len(), 1);
     let closes = sent(&backend, |_, command| match command {
-        SessionCommand::CloseDocument { doc } => Some(*doc),
+        SessionCommand::Document(DocumentCommand::Close { doc }) => Some(*doc),
         _ => None,
     });
     assert_eq!(closes, vec![DocumentId(40)]);
@@ -239,7 +241,8 @@ fn code_tabs_and_opens(backend: &RecordingBackend, app: &App, path: &Path) -> (u
         .filter(|tab| matches!(tab.kind, TabKind::Code { .. }) && tab.path() == Some(path))
         .count();
     let opens = sent(backend, |_, command| {
-        matches!(command, SessionCommand::OpenDocument { path: p, .. } if p == path).then_some(())
+        matches!(command, SessionCommand::Document(DocumentCommand::Open { path: p, .. }) if p == path)
+            .then_some(())
     })
     .len();
     (tabs, opens)
@@ -277,7 +280,7 @@ fn an_edited_document_keeps_a_code_tab_whatever_else_shows_its_path() {
     assert_eq!(code_tabs_and_opens(&backend, &app, &binary), (1, 1));
     assert_eq!(code_tabs_and_opens(&backend, &app, &previewed), (1, 1));
     let closes = sent(&backend, |_, command| match command {
-        SessionCommand::CloseDocument { doc } => Some(*doc),
+        SessionCommand::Document(DocumentCommand::Close { doc }) => Some(*doc),
         _ => None,
     });
     assert_eq!(closes, vec![DocumentId(41), DocumentId(42)]);
@@ -398,7 +401,8 @@ fn the_prompt_copies_cuts_and_pastes_its_own_field() {
     assert_eq!(field(&app).0, "");
     assert!(app.rename.as_ref().is_some_and(|prompt| prompt.touched));
     let edits = sent(&backend, |_, command| {
-        matches!(command, SessionCommand::ApplyChange { .. }).then_some(())
+        matches!(command, SessionCommand::Document(DocumentCommand::ApplyChange { .. }))
+            .then_some(())
     });
     assert!(edits.is_empty(), "the buffer under the prompt is untouched");
     // With nothing selected in the field, Ctrl+C copies nothing -- not the

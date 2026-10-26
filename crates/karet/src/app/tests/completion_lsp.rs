@@ -45,7 +45,7 @@ fn resolves(backend: &RecordingBackend) -> Vec<(RequestId, String)> {
     sent(backend)
         .into_iter()
         .filter_map(|(id, command)| match command {
-            SessionCommand::ResolveCompletion { item, .. } => Some((id, item.label)),
+            SessionCommand::Lsp(LspCommand::ResolveCompletion { item, .. }) => Some((id, item.label)),
             _ => None,
         })
         .collect()
@@ -56,7 +56,7 @@ fn triggers(backend: &RecordingBackend) -> Vec<CompletionTrigger> {
     sent(backend)
         .into_iter()
         .filter_map(|(_, command)| match command {
-            SessionCommand::Completion { trigger, .. } => Some(trigger),
+            SessionCommand::Lsp(LspCommand::Completion { trigger, .. }) => Some(trigger),
             _ => None,
         })
         .collect()

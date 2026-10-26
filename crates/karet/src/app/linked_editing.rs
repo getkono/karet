@@ -11,7 +11,6 @@
 
 use karet_core::CursorState;
 use karet_core::Selection;
-use karet_session::Command as SessionCommand;
 use karet_session::RequestId;
 
 use super::*;
@@ -107,8 +106,8 @@ impl App {
         };
         let id = backend.next_id();
         let position = cursors.primary().head;
-        let command = SessionCommand::LinkedEditingRanges { doc, position };
-        if backend.send(id, command).is_ok() {
+        let command = LspCommand::LinkedEditingRanges { doc, position };
+        if backend.send(id, command.into()).is_ok() {
             self.pending_linked = Some(PendingLinked {
                 id,
                 doc,

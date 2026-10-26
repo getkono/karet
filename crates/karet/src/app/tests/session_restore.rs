@@ -151,7 +151,7 @@ fn attaching_registers_the_tabs_of_every_pane() {
         .map(|sent| {
             sent.iter()
                 .filter_map(|(_, command)| match command {
-                    SessionCommand::OpenDocument { path, .. } => Some(path.clone()),
+                    SessionCommand::Document(DocumentCommand::Open { path, .. }) => Some(path.clone()),
                     _ => None,
                 })
                 .collect()

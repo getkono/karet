@@ -46,7 +46,7 @@ fn duplicate_save_command_is_debounced_while_in_flight() {
         .lock()
         .map(|sent| {
             sent.iter()
-                .filter(|(_, command)| matches!(command, SessionCommand::Save { .. }))
+                .filter(|(_, command)| matches!(command, SessionCommand::Document(DocumentCommand::Save { .. })))
                 .count()
         })
         .unwrap_or_default();
@@ -594,7 +594,7 @@ fn each_save_trigger_reports_the_cause_the_session_judges_it_by() {
             .map(|sent| {
                 sent.iter()
                     .filter_map(|(_, command)| match command {
-                        SessionCommand::Save { cause, .. } => Some(*cause),
+                        SessionCommand::Document(DocumentCommand::Save { cause, .. }) => Some(*cause),
                         _ => None,
                     })
                     .collect::<Vec<_>>()
@@ -659,7 +659,7 @@ fn switching_branches_waits_for_a_save_already_in_flight() {
         .lock()
         .map(|sent| {
             sent.iter()
-                .any(|(_, command)| matches!(command, SessionCommand::VcsAction { .. }))
+                .any(|(_, command)| matches!(command, SessionCommand::Vcs(VcsCommand::Action { .. })))
         })
         .unwrap_or_default();
     assert!(

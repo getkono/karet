@@ -97,7 +97,12 @@ fn cancelling_sends_the_work_token_only_when_the_server_allows_it() {
     let cancels = |backend: &RecordingBackend| {
         sent(backend)
             .into_iter()
-            .filter(|command| matches!(command, SessionCommand::CancelLanguageServerWork { .. }))
+            .filter(|command| {
+                matches!(
+                    command,
+                    SessionCommand::LanguageServer(LanguageServerCommand::CancelWork { .. })
+                )
+            })
             .count()
     };
     assert_eq!(cancels(&backend), 0, "nothing cancellable was running");
@@ -106,7 +111,7 @@ fn cancelling_sends_the_work_token_only_when_the_server_allows_it() {
     app.dispatch(Command::CancelLanguageServerWork);
     assert!(sent(&backend).iter().any(|command| matches!(
         command,
-        SessionCommand::CancelLanguageServerWork { server, root, token }
+        SessionCommand::LanguageServer(LanguageServerCommand::CancelWork { server, root, token })
             if *server == LanguageServerId::RustAnalyzer
                 && root == Path::new("/workspace")
                 && *token == WorkToken::Text("index".to_owned())
@@ -127,7 +132,10 @@ fn answers(backend: &RecordingBackend) -> Vec<(LanguageServerMessageId, Option<u
     sent(backend)
         .into_iter()
         .filter_map(|command| match command {
-            SessionCommand::AnswerLanguageServerMessage { request, action } => {
+            SessionCommand::LanguageServer(LanguageServerCommand::AnswerMessage {
+                request,
+                action,
+            }) => {
                 Some((request, action))
             },
             _ => None,
@@ -231,7 +239,7 @@ fn the_log_tab_is_reserved_at_once_and_filled_by_the_answer() {
     ));
     assert!(sent(&backend).iter().any(|command| matches!(
         command,
-        SessionCommand::LanguageServerLog { server } if *server == LanguageServerId::RustAnalyzer
+        SessionCommand::LanguageServer(LanguageServerCommand::Log { server }) if *server == LanguageServerId::RustAnalyzer
     )));
 
     app.on_backend_event(

@@ -176,7 +176,7 @@ impl App {
                 continue;
             }
             let lines = (wanted.first, wanted.last);
-            let Some(id) = self.send(SessionCommand::CodeLenses { doc, lines }) else {
+            let Some(id) = self.send(LspCommand::CodeLenses { doc, lines }) else {
                 continue;
             };
             let epoch = self.code_lenses.epoch;
@@ -388,7 +388,7 @@ impl App {
             return true;
         };
         let (doc, title) = (*doc, lens.title.clone().unwrap_or_default());
-        if let Some(id) = self.send(SessionCommand::RunCodeLens { doc, lens }) {
+        if let Some(id) = self.send(LspCommand::RunCodeLens { doc, lens }) {
             self.code_lenses.running = Some((id, title));
         }
         true

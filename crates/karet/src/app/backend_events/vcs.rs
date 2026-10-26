@@ -38,7 +38,7 @@ impl App {
             self.docs.line_changes_rerun.insert(doc);
             return;
         }
-        if let Some(id) = self.send(SessionCommand::LineChanges { doc }) {
+        if let Some(id) = self.send(VcsCommand::LineChanges { doc }) {
             self.docs.line_changes_pending.insert(doc, id);
         }
     }
@@ -255,7 +255,7 @@ impl App {
             self.pending_pull_requests = None;
             self.pull_request_items.extend(items);
             if let Some(page) = next_page {
-                self.pending_pull_requests = self.send(SessionCommand::PullRequests {
+                self.pending_pull_requests = self.send(VcsCommand::PullRequests {
                     remote,
                     page,
                     per_page: 100,

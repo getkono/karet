@@ -51,9 +51,9 @@ impl App {
     /// F5: start a session when idle, continue when stopped.
     pub(super) fn debug_start_or_continue(&mut self) {
         match self.debugger.state {
-            DebugSessionState::Stopped => self.debug_send(SessionCommand::DebugContinue),
+            DebugSessionState::Stopped => self.debug_send(DebugCommand::Continue),
             DebugSessionState::Idle => {
-                self.debug_send(SessionCommand::DebugStart {
+                self.debug_send(DebugCommand::Start {
                     configuration: None,
                 });
             },
@@ -70,7 +70,7 @@ impl App {
     }
 
     /// A step control is only meaningful while stopped; nudge otherwise.
-    pub(super) fn debug_step(&mut self, command: SessionCommand) {
+    pub(super) fn debug_step(&mut self, command: DebugCommand) {
         if self.debugger.state == DebugSessionState::Stopped {
             self.debug_send(command);
         } else {
@@ -83,12 +83,12 @@ impl App {
     }
 
     /// Send one debugger command to the backend.
-    pub(super) fn debug_send(&mut self, command: SessionCommand) {
+    pub(super) fn debug_send(&mut self, command: impl Into<SessionCommand>) {
         let Some(backend) = self.backend.clone() else {
             return;
         };
         let id = backend.next_id();
-        let _ = backend.send(id, command);
+        let _ = backend.send(id, command.into());
     }
 
     /// F9: toggle a breakpoint on the caret line of the active code tab.
@@ -133,7 +133,7 @@ impl App {
         if lines.is_empty() {
             self.breakpoints.remove(&path);
         }
-        self.debug_send(SessionCommand::DebugSetBreakpoints { path, lines });
+        self.debug_send(DebugCommand::SetBreakpoints { path, lines });
     }
 
     /// `Event::DebugState`: mirror the lifecycle and surface transitions.
@@ -208,7 +208,7 @@ impl App {
             self.focus_by_file_line(&path, LineCol::new(line, 0), true);
         }
         // Populate the panel for this stop.
-        self.debug_request(SessionCommand::DebugStackTrace);
+        self.debug_request(DebugCommand::StackTrace);
     }
 
     /// `Event::DebugOutput`: buffer for the Debug panel, capped.
@@ -282,7 +282,7 @@ impl App {
                 if let Some(path) = path {
                     self.jump_to_location(&path, LineCol::new(line, 0));
                 }
-                self.debug_request(SessionCommand::DebugScopes { frame: id });
+                self.debug_request(DebugCommand::Scopes { frame: id });
                 self.debugger.rebuild_rows();
             },
             DebugRow::Scope(index) => {
@@ -321,19 +321,19 @@ impl App {
         }
         self.debugger.panel.expanded.insert(reference);
         if !self.debugger.panel.variables.contains_key(&reference) {
-            self.debug_request(SessionCommand::DebugVariables { reference });
+            self.debug_request(DebugCommand::Variables { reference });
         }
         self.debugger.rebuild_rows();
     }
 
     /// Send an inspection command, remembering its id so the answer is
     /// accepted (anything else is a stale reply from before a resume).
-    fn debug_request(&mut self, command: SessionCommand) {
+    fn debug_request(&mut self, command: DebugCommand) {
         let Some(backend) = self.backend.clone() else {
             return;
         };
         let id = backend.next_id();
-        if backend.send(id, command).is_ok() {
+        if backend.send(id, command.into()).is_ok() {
             self.debugger.panel.pending.insert(id);
         }
     }
@@ -361,7 +361,7 @@ impl App {
             return;
         }
         self.debugger.panel.repl.push(format!("› {expression}"));
-        self.debug_request(SessionCommand::DebugEvaluate {
+        self.debug_request(DebugCommand::Evaluate {
             expression,
             frame: self.debugger.panel.selected_frame,
         });
@@ -378,7 +378,7 @@ impl App {
         if let Some(top) = self.debugger.panel.stack.first() {
             let frame = top.id;
             self.debugger.panel.selected_frame = Some(frame);
-            self.debug_request(SessionCommand::DebugScopes { frame });
+            self.debug_request(DebugCommand::Scopes { frame });
         }
         self.debugger.rebuild_rows();
     }
@@ -405,7 +405,7 @@ impl App {
             .map(|scope| scope.reference)
         {
             self.debugger.panel.expanded.insert(first);
-            self.debug_request(SessionCommand::DebugVariables { reference: first });
+            self.debug_request(DebugCommand::Variables { reference: first });
         }
         self.debugger.rebuild_rows();
     }
@@ -451,7 +451,7 @@ impl App {
             );
             return;
         };
-        self.debug_send(SessionCommand::NotebookRunAll { path });
+        self.debug_send(NotebookCommand::RunAll { path });
     }
 
     /// The status-bar debug segment, `None` while idle.

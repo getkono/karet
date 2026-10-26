@@ -21,9 +21,9 @@ fn asks(backend: &RecordingBackend) -> Vec<(RequestId, LineCol, InlineCompletion
         .map(|sent| {
             sent.iter()
                 .filter_map(|(id, command)| match command {
-                    SessionCommand::InlineCompletion {
+                    SessionCommand::Lsp(LspCommand::InlineCompletion {
                         position, trigger, ..
-                    } => Some((*id, *position, *trigger)),
+                    }) => Some((*id, *position, *trigger)),
                     _ => None,
                 })
                 .collect()
@@ -39,7 +39,7 @@ fn accepts(backend: &RecordingBackend) -> Vec<(String, String)> {
         .map(|sent| {
             sent.iter()
                 .filter_map(|(_, command)| match command {
-                    SessionCommand::AcceptInlineCompletion { server, item, .. } => {
+                    SessionCommand::Lsp(LspCommand::AcceptInlineCompletion { server, item, .. }) => {
                         Some((server.key().to_owned(), item.insert_text.clone()))
                     },
                     _ => None,
@@ -375,7 +375,7 @@ fn copilot_sign_in_puts_the_device_code_on_the_clipboard_and_on_screen() {
         .lock()
         .map(|sent| {
             sent.iter().any(|(_, command)| {
-                matches!(command, SessionCommand::SignInLanguageServer { server }
+                matches!(command, SessionCommand::LanguageServer(LanguageServerCommand::SignIn { server })
                     if *server == copilot())
             })
         })

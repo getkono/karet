@@ -283,26 +283,31 @@ fn ctrl_r_refreshes_every_github_page_that_loads_remote_data() {
         .lock()
         .map(|sent| {
             sent.iter()
-                .map(|(_, command)| std::mem::discriminant(command))
+                .filter_map(|(_, command)| match command {
+                    SessionCommand::Github(command) => Some(std::mem::discriminant(command)),
+                    _ => None,
+                })
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    assert!(commands.contains(&std::mem::discriminant(
-        &SessionCommand::GithubSearchIssues {
+    assert!(
+        commands.contains(&std::mem::discriminant(&GithubCommand::SearchIssues {
             query: String::new(),
             page: 1,
-        }
-    )));
+        }))
+    );
     assert!(
-        commands.contains(&std::mem::discriminant(&SessionCommand::GithubIssue {
+        commands.contains(&std::mem::discriminant(&GithubCommand::Issue {
             number: 4
         }))
     );
-    assert!(commands.contains(&std::mem::discriminant(
-        &SessionCommand::GithubPullRequest { number: 5 }
-    )));
     assert!(
-        commands.contains(&std::mem::discriminant(&SessionCommand::GithubActions {
+        commands.contains(&std::mem::discriminant(&GithubCommand::PullRequest {
+            number: 5
+        }))
+    );
+    assert!(
+        commands.contains(&std::mem::discriminant(&GithubCommand::Actions {
             page: 1
         }))
     );
@@ -366,7 +371,7 @@ fn pull_request_body_comment_merge_and_readiness_controls_submit_typed_commands(
             .is_ok_and(|sent| sent.iter().any(|(_, command)| {
                 matches!(
                     command,
-                    SessionCommand::GithubUpdatePullRequestBody { number: 12, body }
+                    SessionCommand::Github(GithubCommand::UpdatePullRequestBody { number: 12, body })
                         if body == "PR description!"
                 )
             }))
@@ -376,7 +381,7 @@ fn pull_request_body_comment_merge_and_readiness_controls_submit_typed_commands(
             .is_ok_and(|sent| sent.iter().any(|(_, command)| {
                 matches!(
                     command,
-                    SessionCommand::GithubMergePullRequest { number: 12, .. }
+                    SessionCommand::Github(GithubCommand::MergePullRequest { number: 12, .. })
                 )
             }))
     );
@@ -385,11 +390,11 @@ fn pull_request_body_comment_merge_and_readiness_controls_submit_typed_commands(
             .is_ok_and(|sent| sent.iter().any(|(_, command)| {
                 matches!(
                     command,
-                    SessionCommand::GithubSetPullRequestDraft {
+                    SessionCommand::Github(GithubCommand::SetPullRequestDraft {
                         number: 12,
                         draft: true,
                         ..
-                    }
+                    })
                 )
             }))
     );
@@ -398,7 +403,7 @@ fn pull_request_body_comment_merge_and_readiness_controls_submit_typed_commands(
             .is_ok_and(|sent| sent.iter().any(|(_, command)| {
                 matches!(
                     command,
-                    SessionCommand::GithubCommentPullRequest { number: 12, body }
+                    SessionCommand::Github(GithubCommand::CommentPullRequest { number: 12, body })
                         if body == "Looks good"
                 )
             }))
@@ -434,13 +439,13 @@ fn pull_request_tabs_use_commits_and_existing_range_diff_paths() {
             .as_ref()
             .is_ok_and(|sent| sent.iter().any(|(_, command)| matches!(
                 command,
-                SessionCommand::RangeChanges {
+                SessionCommand::Vcs(VcsCommand::RangeChanges {
                     spec: RangeSpec::Between {
                         base,
                         head,
                         merge_base: true,
                     }
-                } if base == "aaaaaaaa" && head == "bbbbbbbb"
+                }) if base == "aaaaaaaa" && head == "bbbbbbbb"
             )))
     );
 }
@@ -848,7 +853,7 @@ fn reopening_an_issue_focuses_it_without_orphaning_a_request() {
     assert_eq!(app.github.active(), 1);
     let issued = backend.sent.lock().is_ok_and(|sent| {
         sent.iter()
-            .any(|(_, command)| matches!(command, SessionCommand::GithubIssue { .. }))
+            .any(|(_, command)| matches!(command, SessionCommand::Github(GithubCommand::Issue { .. })))
     });
     assert!(!issued, "no request without a page to own its reply");
 }
