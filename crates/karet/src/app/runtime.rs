@@ -113,23 +113,20 @@ pub fn run(mut app: App) -> color_eyre::Result<()> {
         EnableFocusChange
     );
 
-    // Refine the env-var graphics heuristic with a real handshake (raw mode is on and
-    // the input reader thread has not started yet, so we can read the reply here).
-    // Upgrade to Kitty when the terminal actually answers; never downgrade a terminal
-    // the heuristic already trusts.
-    if crate::term_caps::probe_kitty_graphics(crate::term_caps::PROBE_TIMEOUT) == Some(true) {
-        app.caps.graphics = GraphicsProtocol::Kitty;
-        app.caps.kitty_graphics = true;
-        app.caps.placeholders = super::state::unicode_placeholders();
-    }
-    // Same handshake for OSC 22 pointer-shape hints (col-resize/row-resize over
-    // the sidebar/SCM dividers) — confirmed support only, never assumed.
-    if crate::term_caps::probe_osc22_pointer_shape(crate::term_caps::PROBE_TIMEOUT) == Some(true) {
-        app.caps.pointer_shapes = true;
-    }
+    // Refine the environment's answers with the real handshakes (raw mode is on and
+    // the input reader thread has not started yet, so the replies are read here).
+    // This is the probe `--doctor` reports: Kitty graphics are upgraded when the
+    // terminal answers and never downgraded from a trusted heuristic, and OSC 22
+    // pointer-shape hints (col-resize/row-resize over the sidebar/SCM dividers)
+    // are confirmed support only, never assumed. The keyboard answer is the one
+    // the gate above already got.
+    let probed = crate::term_caps::probe_with_keyboard(kitty_keyboard_supported);
+    let cell_px = app.caps.cell_px;
+    app.caps = TerminalCaps::from_capabilities(&probed);
+    app.caps.cell_px = cell_px;
     // Themes are RGB; a terminal without 24-bit colour gets every frame
     // quantised to the 256-colour palette instead.
-    let color_depth = crate::term_caps::probe_color_depth();
+    let color_depth = probed.color_depth;
 
     // The saved workspace layout lives beside the swaps. Only the live editor
     // reads or writes it: `--capture` and tests never touch the user's state.

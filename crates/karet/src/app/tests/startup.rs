@@ -713,7 +713,7 @@ fn queued_startup_commands_run_at_once_without_a_code_tab() {
 
 #[test]
 fn unicode_placeholders_are_off_where_the_image_would_be_blank() {
-    use crate::app::state::placeholders_in;
+    use crate::term_caps::placeholders_in;
     let env = |pairs: &'static [(&'static str, &'static str)]| {
         move |key: &str| {
             pairs

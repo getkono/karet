@@ -36,37 +36,29 @@ pub(crate) struct TerminalCaps {
 }
 
 impl TerminalCaps {
-    /// Probe the environment for the graphics protocol; everything else starts
-    /// unconfirmed until the startup handshakes answer.
+    /// What the environment alone answers ([`crate::term_caps::probe_env`]);
+    /// everything a handshake confirms starts unconfirmed until the live app
+    /// probes the terminal.
     pub(crate) fn detect() -> Self {
-        let graphics = image::detect_protocol();
+        Self::from_capabilities(&crate::term_caps::probe_env())
+    }
+
+    /// The app's view of one probe: the same [`TerminalCapabilities`]
+    /// `--doctor` reports, so the two cannot disagree.
+    ///
+    /// [`TerminalCapabilities`]: crate::term_caps::TerminalCapabilities
+    pub(crate) fn from_capabilities(caps: &crate::term_caps::TerminalCapabilities) -> Self {
         Self {
-            graphics,
-            kitty_graphics: graphics == GraphicsProtocol::Kitty,
-            kitty_keyboard: false,
-            pointer_shapes: false,
+            graphics: caps.effective_graphics(),
+            kitty_graphics: caps.kitty_graphics_supported(),
+            kitty_keyboard: caps.keyboard_enhancement,
+            pointer_shapes: caps.pointer_shapes_supported(),
             pointer_shape: None,
-            placeholders: graphics == GraphicsProtocol::Kitty && unicode_placeholders(),
+            placeholders: caps.kitty_placeholders(),
             cell_px: karet_markdown::DEFAULT_CELL_PIXELS,
-            undercurl: crate::term_caps::probe_undercurl(),
+            undercurl: caps.undercurl,
         }
     }
-}
-
-/// Whether a terminal speaking the Kitty graphics protocol draws its unicode
-/// placeholders too. WezTerm and Konsole transmit and place Kitty images but draw no
-/// placeholders, and tmux drops the transmissions (its passthrough is off by default)
-/// while forwarding the placeholder cells — either way the image would be blank, so
-/// they keep halfblocks.
-pub(crate) fn unicode_placeholders() -> bool {
-    placeholders_in(|key| std::env::var(key).ok())
-}
-
-/// [`unicode_placeholders`], reading the environment through `var`.
-pub(crate) fn placeholders_in(var: impl Fn(&str) -> Option<String>) -> bool {
-    let wezterm =
-        var("TERM_PROGRAM").is_some_and(|program| program.eq_ignore_ascii_case("wezterm"));
-    !wezterm && var("TMUX").is_none() && var("KONSOLE_VERSION").is_none()
 }
 
 /// The right-side outline panel: visibility, selection, and last-frame
