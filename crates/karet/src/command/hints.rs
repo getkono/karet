@@ -336,6 +336,8 @@ impl Command {
             | Self::TriggerCompletion
             | Self::NextInlineCompletion
             | Self::PrevInlineCompletion
+            | Self::CopilotSignIn
+            | Self::CopilotSignOut
             | Self::Hover
             | Self::SignatureHelp
             | Self::ToggleInlayHints

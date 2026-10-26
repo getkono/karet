@@ -36,7 +36,9 @@ use super::hint_flight::FlightTag;
 use super::message::LspUpdate;
 use super::slot::SlotKey;
 use super::slot::SlotToken;
+use crate::api::AccountOutcome;
 use crate::api::DocumentId;
+use crate::api::LanguageServerId;
 use crate::api::RequestId;
 
 /// One inline-completion step for a server task.
@@ -53,6 +55,27 @@ pub(crate) enum InlineCompletionCmd {
     },
     /// Tell the server the item was accepted (boxed: it dwarfs the ask).
     Accept { item: Box<InlineCompletionItem> },
+    /// Sign in to (or out of) the account the server proposes for -- GitHub,
+    /// for Copilot -- through its own `signIn`/`signOut` flow; always
+    /// answered with an [`LspUpdate::Account`].
+    Account {
+        request: RequestId,
+        server: LanguageServerId,
+        sign_in: bool,
+    },
+}
+
+/// A step that is not a background ask, served in line.
+#[derive(Debug)]
+pub(super) enum InlineStep {
+    /// [`InlineCompletionCmd::Accept`].
+    Accept(Box<InlineCompletionItem>),
+    /// [`InlineCompletionCmd::Account`].
+    Account {
+        request: RequestId,
+        server: LanguageServerId,
+        sign_in: bool,
+    },
 }
 
 /// An ask's position and trigger, the part of it the server is sent besides
@@ -60,9 +83,29 @@ pub(crate) enum InlineCompletionCmd {
 pub(super) type InlineParams = (LineCol, InlineCompletionTrigger);
 
 impl InlineCompletionCmd {
-    /// This step as a background ask, when it is one; an accept comes back as
-    /// its item.
-    pub(super) fn into_ask(self) -> Result<Ask<InlineParams>, Box<InlineCompletionItem>> {
+    /// The answer when no server can take this step: nothing for an ask or an
+    /// accept, which nobody waits on, and a failure for an account step,
+    /// which the user is waiting on.
+    pub(crate) fn unanswered(self, updates: &mpsc::UnboundedSender<LspUpdate>, generation: u64) {
+        if let Self::Account {
+            request, server, ..
+        } = self
+        {
+            let outcome = AccountOutcome::Failed {
+                message: "the language server is not connected".to_owned(),
+            };
+            let _ = updates.send(LspUpdate::Account {
+                generation,
+                request,
+                server,
+                outcome,
+            });
+        }
+    }
+
+    /// This step as a background ask, when it is one; any other comes back
+    /// as the step to serve in line.
+    pub(super) fn into_ask(self) -> Result<Ask<InlineParams>, InlineStep> {
         match self {
             Self::Ask {
                 request,
@@ -80,8 +123,47 @@ impl InlineCompletionCmd {
                 path,
                 params: (position, trigger),
             }),
-            Self::Accept { item } => Err(item),
+            Self::Accept { item } => Err(InlineStep::Accept(item)),
+            Self::Account {
+                request,
+                server,
+                sign_in,
+            } => Err(InlineStep::Account {
+                request,
+                server,
+                sign_in,
+            }),
         }
+    }
+}
+
+/// Serve a step that is not a background ask on `key`'s live connection --
+/// the task's own, which it holds as an `Option` it only clears on a death.
+pub(super) async fn serve(
+    client: &Option<Arc<LspClient>>,
+    step: InlineStep,
+    (key, _): (&SlotKey, SlotToken),
+    updates: &mpsc::UnboundedSender<LspUpdate>,
+    generation: u64,
+) {
+    let Some(client) = client else {
+        return;
+    };
+    match step {
+        InlineStep::Accept(item) => accept(client, &item, key).await,
+        InlineStep::Account {
+            request,
+            server,
+            sign_in,
+        } => {
+            let outcome = super::account::account(client, sign_in).await;
+            let _ = updates.send(LspUpdate::Account {
+                generation,
+                request,
+                server,
+                outcome,
+            });
+        },
     }
 }
 
@@ -287,6 +369,35 @@ mod tests {
             item: Box::new(item.clone()),
         }
         .into_ask();
-        assert_eq!(accept.err().map(|item| *item), Some(item));
+        assert!(matches!(accept, Err(InlineStep::Accept(taken)) if *taken == item));
+    }
+
+    /// A sign-in no server can take is still answered -- the user is waiting
+    /// on it -- and names the server it was for; an ask or an accept is not.
+    #[test]
+    fn only_an_unserved_sign_in_is_answered() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let server = crate::api::LanguageServerId::new("copilot-language-server");
+        InlineCompletionCmd::Accept {
+            item: Box::new(InlineCompletionItem::new("y", LineCol::default())),
+        }
+        .unanswered(&tx, 0);
+        assert!(rx.try_recv().is_err(), "an accept was answered");
+        InlineCompletionCmd::Account {
+            request: RequestId(7),
+            server: server.clone(),
+            sign_in: true,
+        }
+        .unanswered(&tx, 0);
+        let answered = rx.try_recv().ok();
+        assert!(matches!(
+            answered,
+            Some(LspUpdate::Account {
+                request: RequestId(7),
+                server: answered_for,
+                outcome: AccountOutcome::Failed { .. },
+                ..
+            }) if answered_for == server
+        ));
     }
 }

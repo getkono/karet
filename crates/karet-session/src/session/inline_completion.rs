@@ -2,7 +2,8 @@
 //! to a document for ghost text ([`Command::InlineCompletion`]), handing what
 //! each proposes back with its ranges in buffer columns, and telling the
 //! proposing server when one of its items was accepted
-//! ([`Command::AcceptInlineCompletion`]).
+//! ([`Command::AcceptInlineCompletion`]) -- and signing in to the account such
+//! a server proposes for ([`Command::SignInLanguageServer`]).
 
 use karet_core::InlineCompletionItem;
 use karet_core::InlineCompletionTrigger;
@@ -10,6 +11,7 @@ use karet_core::InlineCompletionTrigger;
 use super::updates::utf16_caret;
 use super::updates::utf16_range_to_buffer;
 use super::*;
+use crate::api::AccountOutcome;
 use crate::api::LanguageServerId;
 
 impl Session {
@@ -54,10 +56,45 @@ impl Session {
         }
     }
 
+    /// Serve [`Command::SignInLanguageServer`] (`sign_in`) or
+    /// [`Command::SignOutLanguageServer`] on a running instance of `server`.
+    /// With none running the answer is why, at once.
+    pub(super) fn language_server_account(
+        &mut self,
+        id: RequestId,
+        server: &LanguageServerId,
+        sign_in: bool,
+    ) {
+        if self.lsp.account(server, id, sign_in) {
+            return;
+        }
+        let outcome = AccountOutcome::Failed {
+            message: format!(
+                "{} is not running: open a file it serves, then try again",
+                server.key()
+            ),
+        };
+        let server = server.clone();
+        self.emit(Some(id), Event::LanguageServerAccount { server, outcome });
+    }
+
     /// Hand one server's [`LspUpdate::InlineCompletions`] to the client with
-    /// every range in buffer columns. Items for a document closed since are
-    /// stale by definition and dropped.
+    /// every range in buffer columns, or an [`LspUpdate::Account`] as it is.
+    /// Items for a document closed since are stale by definition and dropped.
     pub(super) fn deliver_inline_completions(&mut self, update: LspUpdate) {
+        if let LspUpdate::Account {
+            request,
+            server,
+            outcome,
+            ..
+        } = update
+        {
+            self.emit(
+                Some(request),
+                Event::LanguageServerAccount { server, outcome },
+            );
+            return;
+        }
         let LspUpdate::InlineCompletions {
             server,
             request,

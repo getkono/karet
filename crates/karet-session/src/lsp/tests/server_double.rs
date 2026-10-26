@@ -909,6 +909,18 @@ pub(super) fn test_connector(
                             )
                             .await;
                         },
+                        // Copilot's sign-in: a device code, and the command
+                        // that completes it.
+                        Some("signIn") => {
+                            let result = json!({"userCode": "ABCD-EFGH",
+                                "command": {"title": "Sign in", "command": "double.run",
+                                            "arguments": [2]}});
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": result}),
+                            )
+                            .await;
+                        },
                         Some("exit") => break,
                         _ => {},
                     }

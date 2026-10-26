@@ -411,6 +411,21 @@ layer and preferred repository formatter without duplicating completion or
 navigation. Astro, Svelte, and Vue use their framework server for the outer
 document and Tree-sitter language injections for embedded script and style syntax.
 
+### Inline completions (Copilot)
+
+`copilot-language-server` proposes ghost text for every language through LSP
+3.18 `textDocument/inlineCompletion` (see `editor.inlineCompletion` in the
+[configuration](configuration.md)). It sends the code being edited to GitHub,
+so it is attached only once you opt in: install it from the Language Servers
+manager (a karet-managed npm install), or give it an `lsp.servers` entry --
+`"copilot-language-server": {}` attaches the one on `PATH`, and
+`{ "enabled": false }` keeps it off. Being on `PATH` alone attaches nothing.
+
+Sign in with **Copilot: Sign In** from the palette: the device code is copied
+to the clipboard and shown until dismissed, and the server opens the GitHub
+page to enter it in. **Copilot: Sign Out** signs out. Any other server that
+offers inline completions is asked too, beside the language's primary.
+
 ## Shared process lifecycle
 
 Installations and live processes are machine-local shared resources. A hidden,

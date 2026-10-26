@@ -21,6 +21,7 @@ use karet_core::InlineGhost;
 use karet_core::VirtualLine;
 use karet_core::VirtualText;
 use karet_session::LSP_CHANGE_DEBOUNCE;
+use karet_session::api::AccountOutcome;
 
 use super::*;
 use crate::keymap::Editing;
@@ -320,4 +321,59 @@ impl App {
             self.inline_completion.quiet = Some((key.doc, key.version));
         }
     }
+
+    /// Sign in to (`sign_in`) or out of GitHub through Copilot's server.
+    pub(crate) fn copilot_account(&mut self, sign_in: bool) {
+        let server = LanguageServerId::new(COPILOT);
+        self.send_command(if sign_in {
+            SessionCommand::SignInLanguageServer { server }
+        } else {
+            SessionCommand::SignOutLanguageServer { server }
+        });
+    }
+
+    /// Tell the user what came of a sign-in or sign-out. A device code goes
+    /// on the clipboard and stays on screen until dismissed: the user types
+    /// it into the browser page the server opens, which takes a while.
+    pub(super) fn on_language_server_account(
+        &mut self,
+        server: &LanguageServerId,
+        outcome: AccountOutcome,
+    ) {
+        let name = if server.key() == COPILOT {
+            "Copilot"
+        } else {
+            server.key()
+        }
+        .to_owned();
+        let (tier, message) = match outcome {
+            AccountOutcome::DeviceCode {
+                user_code,
+                verification_uri,
+            } => {
+                let copied = self.clipboard.set(&user_code).is_ok();
+                let at = verification_uri.map_or_else(String::new, |uri| format!(" at {uri}"));
+                let copied = if copied { " (copied)" } else { "" };
+                let message = format!(
+                    "{name}: enter code {user_code}{copied}{at} in the browser to finish signing in"
+                );
+                (Report::Alert, message)
+            },
+            AccountOutcome::SignedIn { user } => {
+                let who = user.map_or_else(String::new, |user| format!(" as {user}"));
+                (Report::Outcome, format!("{name}: signed in{who}"))
+            },
+            AccountOutcome::SignedOut => (Report::Outcome, format!("{name}: signed out")),
+            AccountOutcome::Failed { message } => (
+                Report::Failure,
+                format!("{name}: sign-in failed: {message}"),
+            ),
+            _ => return,
+        };
+        self.notify(tier, NotificationKind::Lsp, message);
+    }
 }
+
+/// Copilot's language server, which proposes the ghost text and owns the
+/// GitHub sign-in.
+const COPILOT: &str = "copilot-language-server";

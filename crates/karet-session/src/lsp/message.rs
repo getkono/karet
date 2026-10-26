@@ -538,6 +538,17 @@ pub(crate) enum LspUpdate {
         /// The items.
         items: Vec<InlineCompletionItem>,
     },
+    /// The answer to an [`InlineCompletionCmd::Account`] step.
+    Account {
+        /// The manager generation that spawned the server task.
+        generation: u64,
+        /// The originating request.
+        request: RequestId,
+        /// The provider the step named.
+        server: LanguageServerId,
+        /// What came of it.
+        outcome: crate::api::AccountOutcome,
+    },
     /// A [`ServerCmd::InlayHints`] request a server existed for but did not
     /// answer: it failed, timed out, was superseded, or its slot retired.
     /// Distinct from an empty [`Self::InlayHints`], which says there are none.

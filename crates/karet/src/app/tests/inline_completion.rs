@@ -321,3 +321,59 @@ fn a_second_caret_hides_the_ghost() {
     send_key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
     assert!(accepts(&backend).is_empty());
 }
+
+/// "Copilot: Sign In" asks Copilot's server; the device code it answers goes
+/// on the clipboard and stays on screen, and a failure says why.
+#[test]
+fn copilot_sign_in_puts_the_device_code_on_the_clipboard_and_on_screen() {
+    let (backend, mut app) = completion_app("x\n", LineCol::new(0, 0));
+    app.clipboard = crate::clipboard::Clipboard::in_memory();
+    app.dispatch(Command::CopilotSignIn);
+    let asked = backend
+        .sent
+        .lock()
+        .map(|sent| {
+            sent.iter().any(|(_, command)| {
+                matches!(command, SessionCommand::SignInLanguageServer { server }
+                    if *server == copilot())
+            })
+        })
+        .unwrap_or_default();
+    assert!(asked, "the sign-in was not asked of Copilot's server");
+
+    app.on_backend_event(
+        None,
+        SessionEvent::LanguageServerAccount {
+            server: copilot(),
+            outcome: karet_session::api::AccountOutcome::DeviceCode {
+                user_code: "ABCD-EFGH".to_owned(),
+                verification_uri: Some("https://github.com/login/device".to_owned()),
+            },
+        },
+    );
+    assert_eq!(app.clipboard.get().unwrap_or_default(), "ABCD-EFGH");
+    let (severity, message) = last_report(&app).expect("a notification");
+    assert_eq!(
+        severity,
+        Severity::Warning,
+        "the code must stay until dismissed"
+    );
+    assert!(message.contains("ABCD-EFGH") && message.contains("github.com/login/device"));
+
+    app.on_backend_event(
+        None,
+        SessionEvent::LanguageServerAccount {
+            server: copilot(),
+            outcome: karet_session::api::AccountOutcome::Failed {
+                message: "not running".to_owned(),
+            },
+        },
+    );
+    assert_eq!(
+        last_report(&app),
+        Some((
+            Severity::Error,
+            "Copilot: sign-in failed: not running".to_owned()
+        ))
+    );
+}

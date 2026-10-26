@@ -40,6 +40,8 @@ static PALETTE: &[Command] = &[
     Command::TriggerCompletion,
     Command::NextInlineCompletion,
     Command::PrevInlineCompletion,
+    Command::CopilotSignIn,
+    Command::CopilotSignOut,
     Command::Hover,
     Command::SignatureHelp,
     Command::ToggleInlayHints,

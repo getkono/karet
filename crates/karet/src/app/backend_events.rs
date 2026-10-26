@@ -190,6 +190,9 @@ impl App {
             SessionEvent::InlineCompletions {
                 doc, server, items, ..
             } => self.on_inline_completions(id, doc, server, items),
+            SessionEvent::LanguageServerAccount { server, outcome } => {
+                self.on_language_server_account(&server, outcome);
+            },
             SessionEvent::InlayHintsFailed { doc, version } => {
                 self.on_inlay_hints_failed(id, doc, version);
             },

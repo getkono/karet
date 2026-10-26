@@ -190,6 +190,8 @@ impl App {
             Command::TriggerCompletion => self.trigger_completion(true),
             Command::NextInlineCompletion => self.cycle_inline_completion(true),
             Command::PrevInlineCompletion => self.cycle_inline_completion(false),
+            Command::CopilotSignIn => self.copilot_account(true),
+            Command::CopilotSignOut => self.copilot_account(false),
             Command::Hover => self.request_hover(),
             Command::SignatureHelp => self.request_signature_help(true),
             Command::ToggleInlayHints => self.toggle_inlay_hints(),

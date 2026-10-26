@@ -870,9 +870,10 @@ pub(super) async fn server_task(task: ServerTask) {
                     // An ask is background work: no flush, and no await -- it
                     // launches below, as a hint request does. See `inline`.
                     Ok(ask) => flights.inline.ask(ask, &updates, generation),
-                    // An accept only reports what the user took; the edit it
-                    // made reaches the server as any edit does.
-                    Err(item) => inline::accept(active, &item, &key).await,
+                    // An accept only reports what the user took (the edit it
+                    // made reaches the server as any edit does); a sign-in
+                    // needs no text either.
+                    Err(step) => inline::serve(&client, step, slot, &updates, generation).await,
                 },
                 ServerCmd::Formatting {
                     request,

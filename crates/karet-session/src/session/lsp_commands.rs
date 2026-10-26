@@ -121,6 +121,14 @@ impl Session {
                 self.inline_completion(id, *doc, (*position, *trigger));
                 return true;
             },
+            Command::SignInLanguageServer { server } => {
+                self.language_server_account(id, server, true);
+                return true;
+            },
+            Command::SignOutLanguageServer { server } => {
+                self.language_server_account(id, server, false);
+                return true;
+            },
             Command::AcceptInlineCompletion { doc, server, item } => {
                 self.accept_inline_completion(id, *doc, server, item.clone());
                 return true;

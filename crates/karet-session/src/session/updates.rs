@@ -74,7 +74,7 @@ impl Session {
             update @ (LspUpdate::Completions { .. } | LspUpdate::CompletionResolved { .. }) => {
                 self.deliver_completion(update);
             },
-            update @ LspUpdate::InlineCompletions { .. } => {
+            update @ (LspUpdate::InlineCompletions { .. } | LspUpdate::Account { .. }) => {
                 self.deliver_inline_completions(update);
             },
             LspUpdate::InlayHints {

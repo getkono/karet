@@ -178,3 +178,94 @@ async fn an_accept_for_another_server_reaches_nobody() -> TestResult {
         }
     }
 }
+
+/// The answer to `request`, if it is an account outcome.
+async fn await_account(
+    events: &mut EventRx,
+    request: RequestId,
+) -> Option<(LanguageServerId, crate::api::AccountOutcome)> {
+    let answer = async {
+        loop {
+            let (id, event) = next_event(events).await?;
+            if let (true, Event::LanguageServerAccount { server, outcome }) =
+                (id == Some(request), event)
+            {
+                return Some((server, outcome));
+            }
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(10), answer)
+        .await
+        .ok()
+        .flatten()
+}
+
+/// Signing in hands the user the device code at once, and runs the command
+/// the server returned to complete it -- the one that opens the browser.
+#[tokio::test]
+async fn sign_in_answers_the_device_code_and_runs_the_completing_command() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let path = rust_file(&dir, "main.rs", "ab\n").ok_or("write failed")?;
+    let (observed_tx, mut observed) = mpsc::unbounded_channel();
+    let spawns = Arc::new(AtomicUsize::new(0));
+    let (session, mut events) =
+        session_with_connector(test_connector(Behavior::Normal, Some(observed_tx), spawns));
+    let backend = local_session(session, None);
+    backend.send(
+        backend.next_id(),
+        Command::OpenDocument {
+            path,
+            language: None,
+        },
+    )?;
+    await_opened(&mut events).await.ok_or("no Opened")?;
+    await_method(&mut observed, "textDocument/didOpen").await?;
+
+    let request = backend.next_id();
+    backend.send(
+        request,
+        Command::SignInLanguageServer {
+            server: LanguageServerId::RustAnalyzer,
+        },
+    )?;
+    let (server, outcome) = await_account(&mut events, request)
+        .await
+        .ok_or("the sign-in went unanswered")?;
+    assert_eq!(server, LanguageServerId::RustAnalyzer);
+    assert_eq!(
+        outcome,
+        crate::api::AccountOutcome::DeviceCode {
+            user_code: "ABCD-EFGH".to_owned(),
+            verification_uri: None,
+        }
+    );
+    let ran = await_method(&mut observed, "workspace/executeCommand").await?;
+    assert_eq!(ran["params"]["command"], json!("double.run"));
+    assert_eq!(ran["params"]["arguments"], json!([2]));
+    Ok(())
+}
+
+/// With the server not running there is nobody to sign in through: the
+/// answer says so at once rather than leaving the user waiting.
+#[tokio::test]
+async fn sign_in_with_no_server_running_fails_at_once() -> TestResult {
+    let spawns = Arc::new(AtomicUsize::new(0));
+    let (session, mut events) =
+        session_with_connector(test_connector(Behavior::Normal, None, spawns));
+    let backend = local_session(session, None);
+    let request = backend.next_id();
+    backend.send(
+        request,
+        Command::SignInLanguageServer {
+            server: LanguageServerId::new("copilot-language-server"),
+        },
+    )?;
+    let (_, outcome) = await_account(&mut events, request)
+        .await
+        .ok_or("the sign-in went unanswered")?;
+    assert!(matches!(
+        outcome,
+        crate::api::AccountOutcome::Failed { message } if message.contains("not running")
+    ));
+    Ok(())
+}

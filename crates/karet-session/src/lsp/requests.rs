@@ -127,6 +127,31 @@ impl LspManager {
             .is_ok()
     }
 
+    /// Ask a running `server` to sign in to (or, without `sign_in`, out of)
+    /// its account. Returns whether one took the step -- when `false`, none
+    /// is running and the caller answers.
+    pub(crate) fn account(
+        &self,
+        server: &LanguageServerId,
+        request: RequestId,
+        sign_in: bool,
+    ) -> bool {
+        let Some(slot) = self
+            .servers
+            .iter()
+            .find(|(key, _)| key.serves(server))
+            .map(|(_, slot)| slot)
+        else {
+            return false;
+        };
+        let step = InlineCompletionCmd::Account {
+            request,
+            server: server.clone(),
+            sign_in,
+        };
+        slot.tx.try_send(ServerCmd::InlineCompletion(step)).is_ok()
+    }
+
     /// Forward a document-symbol request. Returns whether a live server accepted it.
     pub(crate) fn document_symbols(
         &mut self,

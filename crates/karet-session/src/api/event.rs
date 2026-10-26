@@ -173,6 +173,14 @@ pub enum Event {
         /// order.
         items: Vec<InlineCompletionItem>,
     },
+    /// What came of a [`Command::SignInLanguageServer`] or
+    /// [`Command::SignOutLanguageServer`].
+    LanguageServerAccount {
+        /// The server asked, as the command named it.
+        server: LanguageServerId,
+        /// What came of it.
+        outcome: AccountOutcome,
+    },
     /// A [`Command::InlayHints`] went unanswered: the server failed or timed
     /// out on it, a newer request replaced it, or the server went away.
     ///

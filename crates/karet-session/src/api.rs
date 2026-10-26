@@ -471,6 +471,19 @@ pub enum Command {
         /// Whether the user asked, or the editor asked on its own.
         trigger: InlineCompletionTrigger,
     },
+    /// Sign in to the account a language server proposes for -- GitHub, for
+    /// `copilot-language-server` -- through the server's own `signIn` flow.
+    /// Answered by [`Event::LanguageServerAccount`], always.
+    SignInLanguageServer {
+        /// The server, which must be running (attached to an open document).
+        server: LanguageServerId,
+    },
+    /// Sign out of that account (`signOut`). Answered by
+    /// [`Event::LanguageServerAccount`], always.
+    SignOutLanguageServer {
+        /// The server, which must be running.
+        server: LanguageServerId,
+    },
     /// Tell the server that proposed `item` that the user accepted it, after
     /// the client applied its edit -- so the server runs whatever the item
     /// asked to have run on acceptance. Unanswered: nothing waits on it.

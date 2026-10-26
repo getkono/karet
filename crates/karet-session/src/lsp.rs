@@ -15,6 +15,7 @@
 //! exponential backoff, replays every `didOpen`, and opens a cooldown circuit
 //! after repeated failures instead of creating a respawn storm.
 
+mod account;
 mod catalog;
 mod code_actions;
 mod code_lens;
@@ -313,6 +314,7 @@ impl LspManager {
             | LspUpdate::InlayHintsFailed { generation, .. }
             | LspUpdate::InlayHintResolved { generation, .. }
             | LspUpdate::InlineCompletions { generation, .. }
+            | LspUpdate::Account { generation, .. }
             | LspUpdate::Symbols { generation, .. }
             | LspUpdate::Hover { generation, .. }
             | LspUpdate::SignatureHelp { generation, .. }

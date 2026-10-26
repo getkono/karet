@@ -333,6 +333,10 @@ pub enum Command {
     /// Show the previous ghost-text proposal, or ask for some when none is
     /// on show (Alt+[).
     PrevInlineCompletion,
+    /// Sign in to GitHub through `copilot-language-server` (palette).
+    CopilotSignIn,
+    /// Sign out of GitHub through `copilot-language-server` (palette).
+    CopilotSignOut,
     /// Show hover documentation and diagnostics for the caret (Ctrl+K Ctrl+I).
     Hover,
     /// Show the parameter hints of the call around the caret
@@ -987,6 +991,8 @@ impl Command {
             Self::TriggerCompletion => "Trigger Suggest",
             Self::NextInlineCompletion => "Show Next Inline Suggestion",
             Self::PrevInlineCompletion => "Show Previous Inline Suggestion",
+            Self::CopilotSignIn => "Copilot: Sign In",
+            Self::CopilotSignOut => "Copilot: Sign Out",
             Self::Hover => "Show Hover",
             Self::SignatureHelp => "Trigger Parameter Hints",
             Self::ToggleInlayHints => "Toggle Inlay Hints",

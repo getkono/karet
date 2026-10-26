@@ -217,6 +217,8 @@ command_ids! {
     TriggerCompletion => "triggerCompletion",
     NextInlineCompletion => "nextInlineCompletion",
     PrevInlineCompletion => "prevInlineCompletion",
+    CopilotSignIn => "copilotSignIn",
+    CopilotSignOut => "copilotSignOut",
     Hover => "hover",
     SignatureHelp => "signatureHelp",
     ToggleInlayHints => "toggleInlayHints",
