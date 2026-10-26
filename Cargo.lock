@@ -3652,6 +3652,7 @@ version = "0.7.1"
 dependencies = [
  "imara-diff",
  "karet-core",
+ "karet-filetype",
  "ratatui",
  "serde",
  "tempfile",
@@ -3818,6 +3819,7 @@ name = "karet-search"
 version = "0.7.1"
 dependencies = [
  "ignore",
+ "karet-filetype",
  "memchr",
  "regex",
  "regex-syntax 0.8.11",
@@ -4005,6 +4007,7 @@ dependencies = [
  "command-group",
  "gix",
  "imara-diff",
+ "karet-filetype",
  "serde",
  "ssh-key",
  "thiserror 2.0.19",

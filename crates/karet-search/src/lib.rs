@@ -1,7 +1,8 @@
 //! `karet-search` — code search & replace for the karet toolkit.
 //!
-//! A ripgrep-style engine usable standalone (depends on no other karet crate):
-//! in-file search plus a gitignore-aware workspace walk with streamed results.
+//! A ripgrep-style engine usable standalone (its only karet dependency is the
+//! dependency-free `karet-filetype`, for the shared binary sniff): in-file search
+//! plus a gitignore-aware workspace walk with streamed results.
 //! Positions are reported as plain byte offsets plus 0-based line/column so the
 //! crate stays dependency-light; an integrator maps them to its own coordinate
 //! types.

@@ -55,8 +55,9 @@ pub enum FileKind {
 /// [`FileKind::Text`]; the application resolves a grammar from the path. A known
 /// image, PDF, DOCX, notebook, or CBOR extension routes on the extension alone
 /// (the content is not checked against it). Otherwise magic bytes recover a PDF,
-/// image, or self-described CBOR file whatever its name; then a NUL or invalid
-/// UTF-8 byte in `head` routes to [`FileKind::Binary`], and only text-shaped
+/// image, or self-described CBOR file whatever its name; then content that
+/// [`looks_binary`] (a NUL in the first [`BINARY_SNIFF_LEN`] bytes) or fails
+/// [`is_utf8_text`] routes to [`FileKind::Binary`], and only text-shaped
 /// content with a markdown extension becomes [`FileKind::Markdown`].
 ///
 /// Files larger than [`SIZE_GUARD`] are [`FileKind::TooLarge`]. To route with a
@@ -128,7 +129,7 @@ fn classify_content(path: &Path, head: &[u8]) -> FileKind {
     if is_cbor(head) {
         return FileKind::Cbor;
     }
-    if looks_binary(head) {
+    if looks_binary(head) || !is_utf8_text(head) {
         return FileKind::Binary;
     }
     if is_markdown_ext {
@@ -159,17 +160,36 @@ fn is_image(head: &[u8]) -> bool {
         || (head.starts_with(b"RIFF") && head.get(8..12) == Some(b"WEBP"))
 }
 
-/// Whether `head` looks like binary content: a NUL byte, or an invalid UTF-8 byte
-/// that is not merely a multi-byte sequence truncated at the sample boundary.
-fn looks_binary(head: &[u8]) -> bool {
-    if head.contains(&0) {
-        return true;
-    }
+/// How many leading bytes [`looks_binary`] inspects for a NUL byte (8000, the
+/// window git uses to decide whether a file is binary).
+pub const BINARY_SNIFF_LEN: usize = 8000;
+
+/// Whether `head` looks like binary content: a NUL byte within its first
+/// [`BINARY_SNIFF_LEN`] bytes, git's heuristic. Bytes past the window are ignored,
+/// so a caller may pass a whole file or any longer sample.
+///
+/// This is the one binary sniff the toolkit shares, so the file explorer, the diff
+/// engine, workspace search, and git change enumeration agree about the same file. It says nothing about
+/// encoding: whether NUL-free bytes decode as UTF-8 is the separate
+/// [`is_utf8_text`] question.
+#[must_use]
+pub fn looks_binary(head: &[u8]) -> bool {
+    head.get(..BINARY_SNIFF_LEN).unwrap_or(head).contains(&0)
+}
+
+/// Whether `head` is UTF-8 text: valid UTF-8, allowing a multi-byte sequence
+/// truncated at the end of the sample (a head cut mid-character is still text).
+///
+/// [`classify`] routes content that fails this to [`FileKind::Binary`] (the hex
+/// view), because it cannot open as editable text. A NUL byte is valid UTF-8, so
+/// this does not replace [`looks_binary`].
+#[must_use]
+pub fn is_utf8_text(head: &[u8]) -> bool {
     match std::str::from_utf8(head) {
-        Ok(_) => false,
+        Ok(_) => true,
         // `error_len() == None` means the sample ended mid-character (truncation),
-        // which is fine; `Some(_)` is a genuinely invalid byte → binary.
-        Err(e) => e.error_len().is_some(),
+        // which is fine; `Some(_)` is a genuinely invalid byte → not text.
+        Err(e) => e.error_len().is_none(),
     }
 }
 
@@ -258,6 +278,44 @@ mod tests {
         let head = &full[..full.len() - 1];
         assert_eq!(
             classify(Path::new("x.txt"), head, full.len() as u64),
+            FileKind::Text
+        );
+    }
+
+    /// The sniff window is git's 8000 bytes: a NUL on its last byte is binary, one
+    /// just past it is not, and a sample shorter than the window is read whole.
+    #[test]
+    fn looks_binary_finds_a_nul_only_inside_the_sniff_window() {
+        assert!(!looks_binary(b""));
+        assert!(looks_binary(b"\x00"));
+        let mut bytes = vec![b'a'; BINARY_SNIFF_LEN + 1];
+        assert!(!looks_binary(&bytes));
+        bytes[BINARY_SNIFF_LEN - 1] = 0;
+        assert!(looks_binary(&bytes));
+        bytes[BINARY_SNIFF_LEN - 1] = b'a';
+        bytes[BINARY_SNIFF_LEN] = 0;
+        assert!(!looks_binary(&bytes));
+    }
+
+    /// Encoding is a separate question from the NUL sniff: NUL is valid UTF-8, a
+    /// truncated trailing character is still text, a stray invalid byte is not.
+    #[test]
+    fn is_utf8_text_allows_a_truncated_tail_but_not_an_invalid_byte() {
+        assert!(is_utf8_text(b""));
+        assert!(is_utf8_text(b"a\x00b"));
+        assert!(is_utf8_text(&"café".as_bytes()[..4]));
+        assert!(!is_utf8_text(b"caf\xe9!"));
+        assert!(!is_utf8_text(b"\xff"));
+    }
+
+    /// The explorer routes with the shared window: a NUL past it no longer makes
+    /// a file binary (diff and search agree it is text).
+    #[test]
+    fn nul_past_the_sniff_window_classifies_as_text() {
+        let mut head = vec![b'a'; BINARY_SNIFF_LEN + 1];
+        head[BINARY_SNIFF_LEN] = 0;
+        assert_eq!(
+            classify(Path::new("x.txt"), &head, head.len() as u64),
             FileKind::Text
         );
     }
