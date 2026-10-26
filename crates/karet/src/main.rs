@@ -38,6 +38,7 @@ mod tab;
 mod term_caps;
 #[cfg(feature = "terminal")]
 mod terminal;
+mod ts_errors;
 mod ui;
 mod view;
 mod workspace;

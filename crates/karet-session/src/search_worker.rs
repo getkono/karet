@@ -14,6 +14,7 @@
 mod preview;
 
 use std::ops::ControlFlow;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
@@ -27,12 +28,9 @@ use crate::api::Event;
 use crate::api::RequestId;
 use crate::api::SearchHit;
 use crate::cancellation::Cancellation;
-
-/// Flush a batch after this many files, so a long stretch of non-matching files
-/// still advances the panel's scanned count.
-const FILES_PER_BATCH: usize = 200;
-/// Flush a batch once it holds this many matching files.
-const HITS_PER_BATCH: usize = 64;
+use crate::scan_walk::BatchedScan;
+use crate::scan_walk::Walk;
+use crate::scan_walk::send;
 
 /// One unit of background search work.
 pub(crate) enum SearchJob {
@@ -136,15 +134,55 @@ fn superseded(
     )
 }
 
-/// Everything one search accumulates while walking.
-struct ScanState {
-    hits: Vec<SearchHit>,
-    files_scanned: usize,
-    files_since_flush: usize,
+/// One search's matcher, caps and running totals, visited by the shared walk.
+struct SearchScan<'a> {
+    matcher: &'a Matcher,
+    file_limit: usize,
+    match_limit: usize,
     files_matched: usize,
     matches_found: usize,
-    truncated: bool,
-    cancelled: bool,
+}
+
+impl BatchedScan for SearchScan<'_> {
+    type Hit = SearchHit;
+
+    fn visit(&mut self, path: &Path, text: &str, hits: &mut Vec<SearchHit>) -> ControlFlow<()> {
+        let matches = self.matcher.find(text);
+        if !matches.is_empty() {
+            // Build previews only up to the remaining budget. Checking the cap
+            // after converting a whole file would let one 10 MiB minified line
+            // allocate a preview `String` per match — the very case the match
+            // cap exists to bound. The *count* still reflects everything found,
+            // so the total stays honest.
+            let room = self.match_limit.saturating_sub(self.matches_found);
+            let kept: Vec<_> = matches
+                .iter()
+                .take(room)
+                .map(|m| preview::search_match(text, m))
+                .collect();
+            self.matches_found += matches.len();
+            if !kept.is_empty() {
+                self.files_matched += 1;
+                hits.push(SearchHit {
+                    path: path.to_path_buf(),
+                    matches: kept,
+                });
+            }
+        }
+        if self.files_matched >= self.file_limit || self.matches_found >= self.match_limit {
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
+    }
+
+    fn progress(&self, hits: Vec<SearchHit>, files_scanned: usize) -> Option<Event> {
+        Some(Event::SearchProgress {
+            hits,
+            files_scanned,
+            matches_found: self.matches_found,
+        })
+    }
 }
 
 fn execute(
@@ -228,120 +266,31 @@ fn search(
             );
         },
     };
-    let mut state = ScanState {
-        hits: Vec::new(),
-        files_scanned: 0,
-        files_since_flush: 0,
+    let mut scan = SearchScan {
+        matcher: &matcher,
+        file_limit,
+        match_limit,
         files_matched: 0,
         matches_found: 0,
-        truncated: false,
-        cancelled: false,
     };
-    let mut disconnected = false;
-    let mut walk_error = None;
-    // One `ScanState` across every root, so the caps, the batching and
-    // cancellation stay global to the search rather than resetting per root.
-    for root in roots {
-        let outcome =
-            karet_search::walk_text_files(root, &query.includes, &query.excludes, |path, text| {
-                // Checked on every visited file, matching or not, so cancelling
-                // over a large non-matching tree does not wait out the walk.
-                if cancel.is_cancelled() {
-                    state.cancelled = true;
-                    return ControlFlow::Break(());
-                }
-                state.files_scanned += 1;
-                state.files_since_flush += 1;
-                let matches = matcher.find(&text);
-                if !matches.is_empty() {
-                    // Build previews only up to the remaining budget. Checking the
-                    // cap after converting a whole file would let one 10 MiB
-                    // minified line allocate a preview `String` per match — the
-                    // very case the match cap exists to bound. The *count* still
-                    // reflects everything found, so the total stays honest.
-                    let room = match_limit.saturating_sub(state.matches_found);
-                    let kept: Vec<_> = matches
-                        .iter()
-                        .take(room)
-                        .map(|m| preview::search_match(&text, m))
-                        .collect();
-                    state.matches_found += matches.len();
-                    if !kept.is_empty() {
-                        state.files_matched += 1;
-                        state.hits.push(SearchHit {
-                            path: path.to_path_buf(),
-                            matches: kept,
-                        });
-                    }
-                }
-                if state.files_matched >= file_limit || state.matches_found >= match_limit {
-                    state.truncated = true;
-                    return ControlFlow::Break(());
-                }
-                if state.hits.len() >= HITS_PER_BATCH || state.files_since_flush >= FILES_PER_BATCH
-                {
-                    state.files_since_flush = 0;
-                    if flush(&mut state, id, events).is_break() {
-                        disconnected = true;
-                        return ControlFlow::Break(());
-                    }
-                }
-                ControlFlow::Continue(())
-            });
-        if let Err(error) = outcome {
-            walk_error = Some(error.to_string());
-            break;
-        }
-        if disconnected || state.cancelled || state.truncated {
-            break;
-        }
-    }
-    if disconnected {
-        return ControlFlow::Break(());
-    }
-    if !state.hits.is_empty() {
-        flush(&mut state, id, events)?;
-    }
+    let walk = Walk {
+        roots,
+        includes: &query.includes,
+        excludes: &query.excludes,
+        cancel,
+    };
+    let walked = crate::scan_walk::walk_batched(&walk, &mut scan, id, events, Vec::new())?;
     send(
         events,
         id,
         Event::SearchFinished {
-            files_scanned: state.files_scanned,
-            matches_found: state.matches_found,
-            truncated: state.truncated,
-            cancelled: state.cancelled,
-            error: walk_error,
+            files_scanned: walked.files_scanned,
+            matches_found: scan.matches_found,
+            truncated: walked.truncated,
+            cancelled: walked.cancelled,
+            error: walked.error,
         },
     )
-}
-
-/// Send the pending batch, leaving `state.hits` empty.
-fn flush(
-    state: &mut ScanState,
-    id: RequestId,
-    events: &tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
-) -> ControlFlow<()> {
-    send(
-        events,
-        id,
-        Event::SearchProgress {
-            hits: std::mem::take(&mut state.hits),
-            files_scanned: state.files_scanned,
-            matches_found: state.matches_found,
-        },
-    )
-}
-
-fn send(
-    events: &tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
-    id: RequestId,
-    event: Event,
-) -> ControlFlow<()> {
-    if events.send((Some(id), event)).is_err() {
-        ControlFlow::Break(())
-    } else {
-        ControlFlow::Continue(())
-    }
 }
 
 #[cfg(test)]

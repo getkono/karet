@@ -484,6 +484,21 @@ impl Session {
             },
         );
     }
+
+    /// Persist the inline-blame toggle and adopt it into the live settings.
+    pub(super) fn set_blame_enabled(&mut self, id: RequestId, enabled: bool) {
+        self.config.settings.git.blame = enabled;
+        if let Err(error) = crate::config::set_user_blame(enabled) {
+            self.emit(
+                Some(id),
+                Event::Notification {
+                    severity: Severity::Error,
+                    kind: NotificationKind::System,
+                    message: format!("settings: {error}"),
+                },
+            );
+        }
+    }
 }
 
 /// Report a generation failure, unless the request was cancelled.
