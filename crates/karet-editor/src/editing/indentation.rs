@@ -277,6 +277,17 @@ mod tests {
     }
 
     #[test]
+    fn a_line_holding_only_a_non_newline_break_is_empty() {
+        // A form feed or lone `\r` ends a line like `\n` does, so the line
+        // between two of them is empty and stays unindented.
+        for brk in ['\u{0C}', '\r'] {
+            let set = cursors(&[(at(0, 0), at(2, 1))]);
+            let (text, _) = run(&format!("a{brk}{brk}b"), |b| indent(b, &set, 0, "  ", 4));
+            assert_eq!(text, format!("  a{brk}{brk}  b"), "for {brk:?}");
+        }
+    }
+
+    #[test]
     fn caret_on_a_line_a_selection_indents_moves_with_it() {
         let set = cursors(&[(at(0, 0), at(1, 1)), (at(1, 2), at(1, 2))]);
         let (text, sel) = run("ab\ncd", |b| indent(b, &set, 0, "  ", 4));
