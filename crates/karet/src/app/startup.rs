@@ -277,6 +277,11 @@ impl App {
         if !settings.git.decorations {
             self.forget_line_changes(None);
         }
+        // Changed `lsp` settings reconfigure the language servers, so what a
+        // document's old server said it formats on no longer holds.
+        if settings.lsp != self.settings.lsp {
+            self.forget_on_type_triggers();
+        }
         self.settings = settings;
         if inlay_changed {
             self.inlay_ui.flipped = false;

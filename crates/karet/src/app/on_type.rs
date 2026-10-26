@@ -76,6 +76,14 @@ impl App {
         );
     }
 
+    /// Forget every document's remembered trigger characters, so each is
+    /// offered typed characters again until its server answers anew. Called
+    /// when the `lsp` settings change: a document may now be served by a
+    /// server that formats on characters the old one did not.
+    pub(super) fn forget_on_type_triggers(&mut self) {
+        self.on_type.triggers.clear();
+    }
+
     /// After `ch` was typed (`\n` for Enter): offer it to the language
     /// server, when on-type formatting is on, a single bare caret typed it,
     /// and the server formats on it or has yet to say what it formats on.

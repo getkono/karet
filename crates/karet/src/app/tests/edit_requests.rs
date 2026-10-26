@@ -204,6 +204,55 @@ fn a_server_with_no_triggers_is_offered_nothing_more() {
     assert_eq!(on_type_asks(&backend).len(), 1, "nothing is a trigger");
 }
 
+/// Reload the settings with `edit` applied, keeping on-type formatting on.
+fn reload_settings(app: &mut App, edit: impl FnOnce(&mut karet_session::config::Settings)) {
+    let mut config = app.loaded_config.clone();
+    config.settings.editor.format_on_type = true;
+    edit(&mut config.settings);
+    app.apply_loaded_config(config, false);
+}
+
+/// Changed `lsp` settings may move the document to a server that does format
+/// on type, so a remembered empty list is dropped and the document is offered
+/// typed characters again. Falsifier: kept until the tab closes, the list
+/// leaves on-type formatting off for the document under its new server.
+#[test]
+fn an_lsp_settings_change_offers_typed_characters_again() {
+    let (backend, mut app) = on_type_app("a\n", LineCol::new(0, 1));
+    app.dispatch(Command::InsertChar('b'));
+    let (id, _, _) = on_type_asks(&backend)[0];
+    let version = version(&app);
+    answer_triggers(&mut app, id, version, (Vec::new(), Some(Vec::new())));
+
+    reload_settings(&mut app, |settings| {
+        settings.lsp.enabled = !settings.lsp.enabled;
+    });
+    app.dispatch(Command::InsertChar(';'));
+    let asked = on_type_asks(&backend);
+    assert_eq!(
+        asked.len(),
+        2,
+        "the new server has not said what it formats on"
+    );
+    assert_eq!(asked[1].2, ';');
+}
+
+/// A reload that leaves `lsp` alone leaves the servers as they were, so what
+/// they said they format on still holds. Falsifier: dropped on every reload,
+/// a server that formats on nothing is offered every keystroke again.
+#[test]
+fn a_reload_that_leaves_lsp_alone_keeps_the_triggers() {
+    let (backend, mut app) = on_type_app("a\n", LineCol::new(0, 1));
+    app.dispatch(Command::InsertChar('b'));
+    let (id, _, _) = on_type_asks(&backend)[0];
+    let version = version(&app);
+    answer_triggers(&mut app, id, version, (Vec::new(), Some(Vec::new())));
+
+    reload_settings(&mut app, |settings| settings.editor.tab_size += 1);
+    app.dispatch(Command::InsertChar(';'));
+    assert_eq!(on_type_asks(&backend).len(), 1, "nothing is a trigger");
+}
+
 /// An answer no server gave says nothing about the triggers, so the next
 /// character is still offered: a server may yet start serving the file.
 #[test]
