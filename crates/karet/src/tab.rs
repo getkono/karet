@@ -489,6 +489,10 @@ pub struct Tab {
     /// through the insertion. Edits are refused while this is set, since they
     /// would be built against the empty placeholder rather than the document.
     pub(crate) fill_caret: Option<karet_core::LineCol>,
+    /// When a reserved code tab began waiting for its text, so the editor pane
+    /// reveals a muted loading placeholder once the wait outlasts the shared
+    /// reveal delay. Set and cleared together with [`Self::fill_caret`].
+    pub(crate) fill_since: Option<Pending>,
 }
 
 impl Tab {
@@ -513,6 +517,7 @@ impl Tab {
             markdown_preview: None,
             merge_conflict: None,
             fill_caret: None,
+            fill_since: None,
         }
     }
 

@@ -166,6 +166,7 @@ fn open_pending_code(path: &Path, language: &'static str) -> Tab {
         },
     );
     tab.fill_caret = Some(LineCol::default());
+    tab.fill_since = Some(crate::app::Pending::start());
     tab
 }
 

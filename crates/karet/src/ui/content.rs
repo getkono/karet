@@ -203,7 +203,16 @@ pub(super) fn draw_pane_content(
                     },
                 );
                 editor_rect = text_rect;
-                f.render_stateful_widget(editor, editor_rect, &mut tab.editor);
+                if tab.fill_caret.is_some() && tab.fill_since.is_some_and(Pending::visible) {
+                    // The session is still loading the file: past the reveal
+                    // delay, a muted placeholder replaces the empty editor.
+                    f.render_widget(
+                        Paragraph::new("Loading file…").style(theme.style(ThemeRole::Muted)),
+                        editor_rect,
+                    );
+                } else {
+                    f.render_stateful_widget(editor, editor_rect, &mut tab.editor);
+                }
                 // Read the extents back after the render: the widget clamps the
                 // offsets and measures the viewport as it paints, so the bar is
                 // correct on the very first frame.

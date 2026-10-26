@@ -83,6 +83,7 @@ impl App {
                     // than riding the insertion of the whole text to its end.
                     let fill = tab.fill_caret.take();
                     if fill.is_some() {
+                        tab.fill_since = None;
                         // The empty placeholder and the loaded text can share a
                         // version (a file with no restored history loads at the
                         // placeholder's), so what was drawn from the placeholder

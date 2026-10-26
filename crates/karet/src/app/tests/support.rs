@@ -610,6 +610,7 @@ pub(crate) fn fill_reserved_tabs(app: &mut App) {
         *text = loaded.text_snapshot();
         *buffer = Arc::new(loaded);
         tab.fill_caret = None;
+        tab.fill_since = None;
         tab.editor.goto(buffer, position);
     }
 }

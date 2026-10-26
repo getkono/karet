@@ -133,3 +133,74 @@ fn the_first_fill_redraws_a_markdown_preview_drawn_from_the_placeholder() {
     assert!(after.contains("Loaded heading"), "{after}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_tab_waiting_past_the_reveal_delay_shows_a_muted_loading_placeholder() {
+    let (mut app, _backend, dir) = reserved("fill-placeholder", "loaded body\n");
+    let tab = app.active;
+    let since = app.tabs[tab].fill_since;
+    assert!(since.is_some(), "a reserved tab anchors its wait");
+    // The wait sends no event, so the loop has to schedule the reveal itself.
+    assert!(since.is_some_and(|since| app.pendings().contains(&since)));
+
+    // A fast load never flashes the placeholder.
+    let fresh = screen(&mut app, 80, 10).join("\n");
+    assert!(!fresh.contains("Loading file…"), "{fresh}");
+
+    app.tabs[tab].fill_since = Some(Pending::revealed());
+    let waiting = screen(&mut app, 80, 10).join("\n");
+    assert!(waiting.contains("Loading file…"), "{waiting}");
+
+    app.on_snapshot(
+        DOC,
+        &buffer_snapshot(TextBuffer::from_text("loaded body\n")),
+    );
+    assert_eq!(app.tabs[tab].fill_since, None);
+    assert!(app.pendings().is_empty(), "the filled tab waits on nothing");
+    let filled = screen(&mut app, 80, 10).join("\n");
+    assert!(!filled.contains("Loading file…"), "{filled}");
+    assert!(filled.contains("loaded body"), "{filled}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_first_fill_recomputes_conflict_markers_drawn_from_the_placeholder() {
+    let dir = test_dir("fill-conflict");
+    let text = "<<<<<<< HEAD\nfn current() {}\n=======\nfn incoming() {}\n>>>>>>> incoming\n";
+    write_file(&dir, "a.rs", text.as_bytes());
+    let backend = Arc::new(RecordingBackend::new());
+    let conflicted = change("a.rs", karet_vcs::StatusKind::Conflicted);
+    let mut app = App::new(dir.clone(), Vec::new(), vec![conflicted], false);
+    app.backend = Some(backend.clone());
+    app.open_path(&dir.join("a.rs"));
+    let tab = app.active;
+    if let TabKind::Code { doc, .. } = &mut app.tabs[tab].kind {
+        *doc = Some(DOC);
+    }
+    app.sidebar_panel = SidebarPanel::SourceControl;
+    app.preview_selected_diff();
+    assert!(app.tabs[tab].merge_conflict.is_some());
+
+    // Drawn once from the empty placeholder at version 0: no markers to find.
+    let _ = screen(&mut app, 120, 12);
+    let markers = |app: &App| {
+        app.tabs[tab]
+            .conflict_decorations
+            .as_ref()
+            .map(|(version, decorations)| (*version, decorations.len()))
+    };
+    assert_eq!(markers(&app), Some((0, 0)));
+
+    // The loaded text arrives at that same version 0, so only dropping what
+    // was drawn from the placeholder lets the markers appear.
+    let loaded = TextBuffer::from_text(text);
+    assert_eq!(loaded.version(), 0);
+    app.on_snapshot(DOC, &buffer_snapshot(loaded));
+    let _ = screen(&mut app, 120, 12);
+    assert!(
+        markers(&app).is_some_and(|(version, count)| version == 0 && count > 0),
+        "{:?}",
+        markers(&app)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
