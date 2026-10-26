@@ -37,6 +37,8 @@ pub enum SidebarPanel {
     Debug,
     /// The diagnostics published for open documents, grouped by file.
     Problems,
+    /// A call or type hierarchy, walked one level at a time.
+    Hierarchy,
 }
 
 /// The content kind of the active editor tab — the third input to
@@ -109,6 +111,8 @@ pub enum FocusTarget {
     Debug,
     /// The Problems (diagnostics) panel.
     Problems,
+    /// The call/type Hierarchy panel.
+    Hierarchy,
     /// The right-side outline panel.
     Outline,
 }
@@ -145,6 +149,7 @@ impl FocusTarget {
                 SidebarPanel::Todos => FocusTarget::Todos,
                 SidebarPanel::Debug => FocusTarget::Debug,
                 SidebarPanel::Problems => FocusTarget::Problems,
+                SidebarPanel::Hierarchy => FocusTarget::Hierarchy,
             },
         }
     }
@@ -168,6 +173,9 @@ pub enum Layer {
     Problems,
     /// Active while editing the Problems panel's text filter.
     ProblemsFilter,
+    /// Active when the Hierarchy panel has focus (Right expands a node, where
+    /// the shared sidebar verbs would open it).
+    Hierarchy,
     /// Active when a code or diff editor tab has focus.
     Editor,
     /// Active over [`Editor`](Layer::Editor) in vim's Normal and Visual modes
@@ -236,6 +244,7 @@ impl Layer {
         Layer::Outline,
         Layer::Problems,
         Layer::ProblemsFilter,
+        Layer::Hierarchy,
         Layer::Editor,
         Layer::VimNormal,
         Layer::HelixNormal,
@@ -274,6 +283,7 @@ impl Layer {
             Layer::Outline => "outline",
             Layer::Problems => "problems",
             Layer::ProblemsFilter => "problemsFilter",
+            Layer::Hierarchy => "hierarchy",
             Layer::Editor => "editor",
             Layer::VimNormal => "vimNormal",
             Layer::HelixNormal => "helixNormal",
@@ -308,7 +318,7 @@ impl Layer {
 }
 
 /// Every focus target, for walking the contexts a binding can be live in.
-const TARGETS: [FocusTarget; 17] = [
+const TARGETS: [FocusTarget; 18] = [
     FocusTarget::Editor,
     FocusTarget::DiffEditor,
     FocusTarget::Pager,
@@ -325,6 +335,7 @@ const TARGETS: [FocusTarget; 17] = [
     FocusTarget::Todos,
     FocusTarget::Debug,
     FocusTarget::Problems,
+    FocusTarget::Hierarchy,
     FocusTarget::Outline,
 ];
 
@@ -545,6 +556,9 @@ pub fn active_layers(ctx: Context) -> &'static [Layer] {
             // A results list with two panel keys of its own (filter, severity)
             // over the shared sidebar verbs.
             FocusTarget::Problems => &[L::Problems, L::Sidebar, L::Global],
+            // A tree over the shared sidebar verbs: its own layer takes Right
+            // to expand, so Enter alone opens the selected item.
+            FocusTarget::Hierarchy => &[L::Hierarchy, L::Sidebar, L::Global],
             FocusTarget::SourceControl => &[L::SourceControl, L::Sidebar, L::Global],
         },
     }
@@ -562,6 +576,24 @@ mod tests {
             active_layers(Context::focus(FocusTarget::SourceControl)),
             &[Layer::SourceControl, Layer::Sidebar, Layer::Global]
         );
+    }
+
+    #[test]
+    fn hierarchy_shadows_sidebar_shadows_global() {
+        assert_eq!(
+            FocusTarget::from(
+                Focus::Sidebar,
+                SidebarPanel::Hierarchy,
+                EditorTab::Plain,
+                View::Editor
+            ),
+            FocusTarget::Hierarchy
+        );
+        assert_eq!(
+            active_layers(Context::focus(FocusTarget::Hierarchy)),
+            &[Layer::Hierarchy, Layer::Sidebar, Layer::Global]
+        );
+        assert!(takes_sequences(Layer::Hierarchy));
     }
 
     #[test]

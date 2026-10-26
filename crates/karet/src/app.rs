@@ -574,6 +574,10 @@ pub struct App {
     pub(crate) problems: ProblemsPanel,
     /// The Problems panel's per-frame chrome.
     pub(crate) problems_ui: ProblemsChrome,
+    /// The Hierarchy panel state: the call or type tree being walked.
+    pub(crate) hierarchy: hierarchy::HierarchyPanel,
+    /// The Hierarchy panel's per-frame chrome.
+    pub(crate) hierarchy_ui: hierarchy::HierarchyChrome,
     /// The status bar rect from the last frame (mouse hit-testing).
     pub(crate) status_rect: Rect,
     /// Clickable status-bar segments `(start, end, command)` from the last frame.

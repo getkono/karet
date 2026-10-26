@@ -17,6 +17,7 @@ static PALETTE: &[Command] = &[
     Command::SelectPanel(SidebarPanel::Todos),
     Command::SelectPanel(SidebarPanel::Debug),
     Command::SelectPanel(SidebarPanel::Problems),
+    Command::SelectPanel(SidebarPanel::Hierarchy),
     Command::SpellingScan,
     Command::TodoScan,
     Command::TodoToggleGrouping,

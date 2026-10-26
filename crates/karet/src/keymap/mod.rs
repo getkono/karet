@@ -146,6 +146,7 @@ use Layer::Find;
 use Layer::Github;
 use Layer::Global;
 use Layer::HelixNormal;
+use Layer::Hierarchy;
 use Layer::Insert;
 use Layer::LanguageServers;
 use Layer::Outline;

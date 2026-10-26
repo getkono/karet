@@ -87,6 +87,8 @@ impl App {
             todos_ui: TodosChrome::default(),
             problems: ProblemsPanel::default(),
             problems_ui: ProblemsChrome::default(),
+            hierarchy: hierarchy::HierarchyPanel::default(),
+            hierarchy_ui: hierarchy::HierarchyChrome::default(),
             notifications: NotificationCenter::default(),
             toast_hits: Vec::new(),
             sidebar_rect: Rect::default(),
