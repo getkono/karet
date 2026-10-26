@@ -47,7 +47,6 @@ impl Command {
             Self::ToggleFocus => "focus",
             Self::SelectView(View::Editor) => "editor",
             Self::SelectView(View::GitHub) => "github",
-            // #211: Self::SelectView(View::Agents) => "agents",
             Self::SelectPanel(SidebarPanel::Explorer) => "explorer",
             Self::SelectPanel(SidebarPanel::Search) => "search",
             Self::SelectPanel(SidebarPanel::SourceControl) => "git",
