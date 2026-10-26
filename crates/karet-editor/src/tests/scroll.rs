@@ -25,6 +25,77 @@ fn center_on_and_scroll_paging_move_viewport_only() {
 }
 
 #[test]
+fn centering_and_paging_outlast_a_pending_caret_reveal() {
+    // A caret move owes a reveal on the next render; a scroll asked for
+    // after it (vi `zz`, a pager's page key) drops that reveal instead of
+    // being undone by it.
+    let buffer = numbered(100);
+    let area = Rect::new(0, 0, 20, 10);
+    let render = |state: &mut EditorState| {
+        Editor::new(&buffer).render(area, &mut Buffer::empty(area), state);
+    };
+    // Each target is relative to the top the caret move left, and none
+    // shows the caret on line 80.
+    let ops: [(&str, fn(&mut EditorState), fn(u32) -> u32); 3] = [
+        ("center_on", |s| s.center_on(30), |_| 25),
+        ("scroll_page_down", EditorState::scroll_page_down, |top| {
+            top + 10
+        }),
+        ("scroll_page_up", EditorState::scroll_page_up, |top| {
+            top - 10
+        }),
+    ];
+    for (name, op, target) in ops {
+        let mut state = EditorState::new();
+        render(&mut state);
+        state.goto(&buffer, LineCol::new(80, 0));
+        let expected = target(state.scroll_line());
+        op(&mut state);
+        render(&mut state);
+        assert_eq!(state.scroll_line(), expected, "{name}");
+        assert_eq!(state.cursor(), LineCol::new(80, 0), "{name}");
+    }
+}
+
+#[test]
+fn centering_and_paging_start_at_the_first_row_of_the_line() {
+    // Scrolled onto a continuation row of the wrapped line 0, each of these
+    // lands on a buffer line and shows it from its first row.
+    let text = format!("{}\n{}", "word ".repeat(40), "end\n".repeat(7));
+    let buffer = TextBuffer::from_text(&text);
+    let area = Rect::new(0, 0, 20, 4);
+    let render = |state: &mut EditorState| {
+        let mut target = Buffer::empty(area);
+        Editor::new(&buffer)
+            .word_wrap(true)
+            .render(area, &mut target, state);
+        target
+    };
+    let ops: [(&str, fn(&mut EditorState)); 2] = [
+        ("center_on", |s| s.center_on(0)),
+        ("scroll_page_up", EditorState::scroll_page_up),
+    ];
+    for (name, op) in ops {
+        let mut state = EditorState::new();
+        render(&mut state);
+        state.scroll_rows(&buffer, &[], true, 1);
+        let target = render(&mut state);
+        assert_ne!(
+            target[(1, 0)].symbol(),
+            "1",
+            "{name}: continuation row on top"
+        );
+        op(&mut state);
+        let target = render(&mut state);
+        assert_eq!(
+            target[(1, 0)].symbol(),
+            "1",
+            "{name}: line 1's first row on top"
+        );
+    }
+}
+
+#[test]
 fn scrolling_to_a_line_lands_there_whether_or_not_the_view_wraps() {
     // A scrollbar hands over a position, not a delta. Stepping there with
     // `scroll_rows` would walk one visual anchor per row in wrap mode — the whole

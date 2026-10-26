@@ -560,23 +560,32 @@ impl EditorState {
     /// Scroll so `line` sits at the vertical center of the viewport. Handy for a
     /// read-only viewer centering a search match. The scroll is clamped to the
     /// buffer at render time.
+    ///
+    /// Like [`scroll_to_line`](Self::scroll_to_line), it stops following the
+    /// cursor and starts at the line's first row.
     pub fn center_on(&mut self, line: u32) {
         let height = u32::from(self.frame.height.max(1));
-        self.scroll_line = line.saturating_sub(height / 2);
+        self.scroll_to_line(line.saturating_sub(height / 2));
     }
 
     /// Scroll the viewport down one page **without moving the cursor** — read-only
     /// paging for a pager/viewer. The scroll is clamped to the buffer at render
     /// time.
+    ///
+    /// Like [`scroll_to_line`](Self::scroll_to_line), it stops following the
+    /// cursor and starts at the line's first row.
     pub fn scroll_page_down(&mut self) {
         let height = u32::from(self.frame.height.max(1));
-        self.scroll_line = self.scroll_line.saturating_add(height);
+        self.scroll_to_line(self.scroll_line.saturating_add(height));
     }
 
     /// Scroll the viewport up one page without moving the cursor (read-only paging).
+    ///
+    /// Like [`scroll_to_line`](Self::scroll_to_line), it stops following the
+    /// cursor and starts at the line's first row.
     pub fn scroll_page_up(&mut self) {
         let height = u32::from(self.frame.height.max(1));
-        self.scroll_line = self.scroll_line.saturating_sub(height);
+        self.scroll_to_line(self.scroll_line.saturating_sub(height));
     }
 
     /// The primary selection as a normalized range, or `None` when it is a bare
