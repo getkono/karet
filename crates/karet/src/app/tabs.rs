@@ -355,6 +355,9 @@ impl App {
         docs.sort_by_key(|(doc, _)| *doc);
         docs.dedup_by_key(|(doc, _)| *doc);
         for (doc, path) in docs {
+            // The session may hand the moved document to another language's
+            // server, so what the old one said it formats on no longer holds.
+            self.on_type.triggers.remove(&doc);
             self.send_command(SessionCommand::RetargetDocument { doc, path });
         }
     }
