@@ -48,7 +48,7 @@ impl Matcher {
     /// joined into one string first.
     #[must_use]
     pub fn find_chunks<'a>(&self, chunks: impl IntoIterator<Item = &'a str>) -> Vec<Match> {
-        if matches!(&self.kind, MatcherKind::Literal(needle) if needle.is_empty()) {
+        if matches!(self.kind, MatcherKind::Never) {
             return Vec::new();
         }
         if !self.line_bounded {

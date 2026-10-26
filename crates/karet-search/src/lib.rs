@@ -193,8 +193,12 @@ pub struct Matcher {
     line_bounded: bool,
 }
 
-/// A compiled query: a literal needle (fast-path) or a regex.
+/// A compiled query: nothing at all, a literal needle (fast-path), or a regex.
 enum MatcherKind {
+    /// An empty pattern, which matches nothing whatever the query's options:
+    /// compiled as a regex it would match at every position (or at every word
+    /// boundary, for a whole-word query).
+    Never,
     /// An exact, case-sensitive substring search.
     Literal(String),
     /// A compiled regular expression.
@@ -207,7 +211,12 @@ impl Matcher {
     /// # Errors
     /// Returns [`SearchError::InvalidPattern`] for a malformed regex.
     pub fn new(query: &SearchQuery) -> Result<Self, SearchError> {
-        if !query.regex && query.case_sensitive && !query.whole_word {
+        if query.pattern.is_empty() {
+            Ok(Self {
+                kind: MatcherKind::Never,
+                line_bounded: true,
+            })
+        } else if !query.regex && query.case_sensitive && !query.whole_word {
             Ok(Self {
                 kind: MatcherKind::Literal(query.pattern.clone()),
                 line_bounded: !query.pattern.contains('\n'),
@@ -222,11 +231,12 @@ impl Matcher {
 
     /// Find every match in `text`.
     ///
-    /// An empty pattern never matches, matching [`search_in_file`]'s behavior.
+    /// An empty pattern never matches, whatever the query's options, matching
+    /// [`search_in_file`]'s behavior.
     #[must_use]
     pub fn find(&self, text: &str) -> Vec<Match> {
         match &self.kind {
-            MatcherKind::Literal(needle) if needle.is_empty() => Vec::new(),
+            MatcherKind::Never => Vec::new(),
             MatcherKind::Literal(needle) => literal_matches(text, needle),
             MatcherKind::Regex(re) => regex_matches(text, re),
         }
@@ -238,7 +248,7 @@ impl Matcher {
     /// (so a literal or whole-word query never mis-reads a `$` in the replacement).
     fn plan(&self, text: &str, replacement: &str, expand: bool) -> Vec<Replacement> {
         match &self.kind {
-            MatcherKind::Literal(needle) if needle.is_empty() => Vec::new(),
+            MatcherKind::Never => Vec::new(),
             MatcherKind::Literal(needle) => literal_matches(text, needle)
                 .into_iter()
                 .map(|m| Replacement {
@@ -660,6 +670,47 @@ mod tests {
             matcher.map(|m| m.find("anything at all").len()).ok(),
             Some(0)
         );
+    }
+
+    /// Every query kind other than the literal fast path compiles to a regex, and
+    /// an empty regex (or `\b(?:)\b`) matches at every position or word boundary.
+    /// The empty guard must hold for all of them, through every entry point.
+    #[test]
+    fn an_empty_pattern_never_matches_under_any_option() {
+        let text = "alpha beta\ngamma";
+        for (regex, case_sensitive, whole_word) in [
+            (false, false, false),
+            (false, true, true),
+            (true, true, false),
+            (true, false, true),
+        ] {
+            let q = SearchQuery {
+                regex,
+                case_sensitive,
+                whole_word,
+                ..Default::default()
+            };
+            let kind = (regex, case_sensitive, whole_word);
+            let matcher = Matcher::new(&q);
+            assert_eq!(
+                matcher.as_ref().map(|m| m.find(text).len()).ok(),
+                Some(0),
+                "{kind:?}"
+            );
+            assert_eq!(
+                matcher
+                    .as_ref()
+                    .map(|m| m.find_chunks(["alpha be", "ta\ngamma"]).len())
+                    .ok(),
+                Some(0),
+                "{kind:?}"
+            );
+            assert_eq!(
+                matcher.map(|m| m.plan(text, "x", regex).len()).ok(),
+                Some(0),
+                "{kind:?}"
+            );
+        }
     }
 
     #[test]
