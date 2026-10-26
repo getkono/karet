@@ -176,8 +176,9 @@ fn copy_name(source: &Path, fallback: &str, n: usize) -> String {
     }
 }
 
-/// The canonical form of `path` for tab de-duplication; see [`canonical_nearest`].
-pub(super) use crate::canonical_nearest as canonical;
+/// The canonical form of `path` for tab de-duplication; see
+/// [`canonical_nearest`](crate::paths::canonical_nearest).
+pub(super) use crate::paths::canonical_nearest as canonical;
 
 /// Parse a revision-range spec typed into the go-to-commit input into
 /// `(base, head, merge_base)`, or `None` when it is a single revision.
