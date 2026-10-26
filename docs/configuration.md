@@ -468,6 +468,65 @@ whole story. No launch.json compatibility layer — configurations live here.
 |---|---|---|---|
 | `kernel.autoStart` | bool | `false` | Start a notebook's Jupyter kernel as soon as its preview opens, instead of on the first `Notebook: Run All Cells`. Off by default — a kernel is an arbitrary-code process. |
 
+### `tasks`
+
+Named shell commands for build and test loops. **Tasks: Run Task** (palette, or
+bind `runTask` in `keymap.jsonc`) lists them by label with the command beside
+it; picking one runs the command in a new [integrated terminal](scope.md#in-scope)
+tab titled `Task: <label>`. `tasks` is an object keyed by label, so a project
+layer overrides a user task of the same name key by key and leaves the user's
+other tasks alone. Each task takes:
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `command` | string | `""` | The command line, run by `/bin/sh -c` on Unix and `cmd /C` on Windows (not your login shell, so it behaves the same for everyone sharing the project file). |
+| `cwd` | string | `""` | The working directory: absolute, or relative to the workspace root; empty is the root. |
+| `env` | object | `{}` | Environment variables set for the command, over the editor's own. |
+| `problemMatcher` | array | `[]` | How to read the output for problems: built-in names and patterns of your own, all applied. |
+
+The built-in matchers are `"$rustc"` (cargo and clippy too: the
+`error[E0308]: …` heading and the ` --> file:line:col` under it), `"$gcc"`
+(GCC and Clang), `"$tsc"` (plain and `--pretty`), `"$go"`, and
+`"$eslint-compact"`. A pattern of your own is
+`{ "regexp", "file": 1, "line": 2, "column", "severity", "code", "message", "defaultSeverity": "error" }`:
+`regexp` (Rust `regex` syntax) is tried on every output line, the other numbers
+are capture groups, and an unset `message` takes the whole line; `severity`
+reads `error`, `warning`, `info`, `note` and `hint` in any case and falls back
+to `defaultSeverity` (`"error"`, `"warning"`, `"info"` or `"hint"`).
+
+The matchers read what the terminal shows, history included, after colours
+and cursor movement are interpreted, so coloured compiler output needs no
+`--color=never`. A relative path resolves under the task's `cwd`, or under the
+workspace root when it is not there (cargo prints workspace-relative paths
+from inside a member). What they find replaces that task's entries in the
+**Problems** panel and the status-bar counts — at most twice a second while it
+runs with its tab on screen, and always when it exits — with the task's label as the source, and
+stays until the task runs again; F8 still walks only the language servers'
+diagnostics. When a task ends, a notification gives its exit status and how
+many problems it found.
+
+Running a task whose last run is still going shows that run instead of starting
+a second (close its terminal to stop it); a finished run's tab is closed and
+replaced, so repeated builds do not pile up tabs.
+
+```jsonc
+{
+  "tasks": {
+    "check": { "command": "cargo clippy --workspace", "problemMatcher": ["$rustc"] },
+    "web": {
+      "command": "npx tsc --noEmit",
+      "cwd": "web",
+      "env": { "NODE_OPTIONS": "--max-old-space-size=4096" },
+      "problemMatcher": ["$tsc"]
+    },
+    "lint": {
+      "command": "ruff check --output-format concise .",
+      "problemMatcher": [{ "regexp": "^(.+?):(\\d+):(\\d+): (\\S+) (.*)$", "column": 3, "code": 4, "message": 5, "defaultSeverity": "warning" }]
+    }
+  }
+}
+```
+
 ### `wakatime`
 
 **Off by default** — enabling it sends file names, project names, and editing
