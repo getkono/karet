@@ -1,5 +1,5 @@
-use karet_core::Symbol;
-
+use super::columns::convert_symbol_columns;
+use super::columns::utf16_range_to_buffer;
 use super::*;
 use crate::lsp::FormattingScope;
 use crate::session::notify_text::one_line;
@@ -905,27 +905,6 @@ impl Session {
             }
         }
     }
-}
-
-pub(super) fn convert_symbol_columns(buffer: &TextBuffer, symbols: &mut [Symbol]) {
-    for symbol in symbols {
-        symbol.range = utf16_range_to_buffer(buffer, symbol.range);
-        symbol.selection_range = utf16_range_to_buffer(buffer, symbol.selection_range);
-        convert_symbol_columns(buffer, &mut symbol.children);
-    }
-}
-
-pub(super) fn utf16_range_to_buffer(buffer: &TextBuffer, range: Range) -> Range {
-    Range {
-        start: buffer.utf16_to_line_col(range.start.line, range.start.col),
-        end: buffer.utf16_to_line_col(range.end.line, range.end.col),
-    }
-}
-
-/// A caret converted to the server's UTF-16 column encoding — the conversion
-/// every positional LSP forwarder applies (see the karet-lsp crate docs).
-pub(super) fn utf16_caret(doc: &Document, position: LineCol) -> LineCol {
-    LineCol::new(position.line, doc.buffer.line_col_to_utf16(position))
 }
 
 #[cfg(not(feature = "mdlint"))]

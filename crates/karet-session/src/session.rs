@@ -13,6 +13,7 @@
 //! in the frames before the worker answers.
 
 mod code_actions;
+mod columns;
 mod completion;
 mod debug;
 mod docfile;
@@ -59,6 +60,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
+use columns::Columns;
 #[cfg(feature = "github")]
 use github::GithubJob;
 use karet_core::BytePos;
@@ -92,7 +94,6 @@ use karet_vcs::VcsError;
 use karet_watch::FsEvent;
 use karet_watch::Watcher;
 use tokio::sync::mpsc;
-use workspace_edit::Columns;
 
 use crate::api::Command;
 use crate::api::DocumentEncoding;
