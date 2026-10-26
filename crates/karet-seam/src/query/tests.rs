@@ -378,6 +378,51 @@ fn a_value_that_needs_no_quoting_keeps_its_bare_form() -> TestResult {
 }
 
 #[test]
+fn a_facet_subtype_is_quoted_and_unquoted_like_any_other_value() -> TestResult {
+    // The generator draws only subtypes a language emits, none of which need quoting, so
+    // the facet arm of both directions is pinned here.
+    for (subtype, text) in [
+        ("a b", r#"hazard:"a b""#),
+        (r#"x"y"#, r#"hazard:"x\"y""#),
+        ("unsafe", "hazard:unsafe"),
+    ] {
+        let kind = TermKind::Facet {
+            lens: Lens::Hazard,
+            subtype: subtype.to_owned(),
+        };
+        assert_eq!(kind.to_string(), text);
+    }
+
+    // A quoted known subtype reads as the bare one.
+    assert_eq!(
+        parse(r#"hazard:"unsafe""#)?.terms[0].kind,
+        TermKind::Facet {
+            lens: Lens::Hazard,
+            subtype: "unsafe".to_owned(),
+        }
+    );
+
+    // A subtype holding whitespace is unquoted before it is checked: with languages
+    // compiled in it is refused by its unquoted name, and with none it reads back whole.
+    let text = r#"hazard:"a b""#;
+    if super::parse::known_subtypes(Lens::Hazard).is_empty() {
+        assert_eq!(
+            parse(text)?.terms[0].kind,
+            TermKind::Facet {
+                lens: Lens::Hazard,
+                subtype: "a b".to_owned(),
+            }
+        );
+    } else {
+        let Err(error) = parse(text) else {
+            return Err("expected an unknown hazard facet".into());
+        };
+        assert!(error.message.contains("`a b`"), "{}", error.message);
+    }
+    Ok(())
+}
+
+#[test]
 fn an_empty_quoted_value_is_refused_like_an_empty_one() {
     assert!(parse(r#"in:"""#).is_err());
     assert!(parse(r#"cfg:"""#).is_err());
