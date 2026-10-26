@@ -732,6 +732,32 @@ pub fn all_file_types() -> &'static [FileType] {
     REGISTRY
 }
 
+/// Resolve an explicit language identifier to its [`FileType`], or `None` when
+/// no recognized type answers to it.
+///
+/// `id` is matched, ASCII case-insensitively, against each type's
+/// [`FileType::lsp_language_id`] (e.g. `"typescriptreact"`), then its
+/// [`FileType::config_selector`] (e.g. `"tsx"`, `"c++"`), then its
+/// [`FileType::name`] (e.g. `"Rust"`). Each tier scans the whole registry
+/// before the next is tried, so a protocol id never loses to a display name
+/// that happens to spell it; within a tier the first entry in registry order
+/// wins. The unrecognized `"File"` fallback is never returned.
+#[must_use]
+pub fn file_type_for_language(id: &str) -> Option<FileType> {
+    let tiers: [fn(&FileType) -> Option<&'static str>; 3] = [
+        FileType::lsp_language_id,
+        FileType::config_selector,
+        |file_type| Some(file_type.name()),
+    ];
+    tiers.iter().find_map(|identity| {
+        REGISTRY
+            .iter()
+            .filter(|file_type| file_type.is_recognized())
+            .find(|file_type| identity(file_type).is_some_and(|key| key.eq_ignore_ascii_case(id)))
+            .copied()
+    })
+}
+
 /// The icon glyph for a path in the given [`IconStyle`] — a convenience wrapper
 /// over [`file_type_for_path`] + [`FileType::icon`].
 #[must_use]

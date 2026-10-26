@@ -215,6 +215,41 @@ fn comment_tokens_follow_the_file_type_not_the_shared_grammar() {
 }
 
 #[test]
+fn file_type_for_language_matches_each_identity_tier() {
+    let name = |id: &str| file_type_for_language(id).map(|ft| ft.name());
+    // Protocol id, configuration selector, and display name all resolve.
+    assert_eq!(name("rust"), Some("Rust"));
+    assert_eq!(name("typescriptreact"), Some("TSX"));
+    assert_eq!(name("tsx"), Some("TSX"));
+    assert_eq!(
+        name("c++"),
+        Some(file_type_for_path(Path::new("a.cpp")).name())
+    );
+    assert_eq!(name("Plain Text"), Some("Plain Text"));
+    // Case does not matter for any tier.
+    assert_eq!(name("RUST"), Some("Rust"));
+    assert_eq!(name("plain text"), Some("Plain Text"));
+}
+
+#[test]
+fn file_type_for_language_agrees_with_path_resolution() {
+    // An id taken from a resolved path resolves back to that same type.
+    for path in ["main.rs", "app.tsx", "Cargo.toml", "a.cpp", "script.py"] {
+        let by_path = file_type_for_path(Path::new(path));
+        let id = by_path.lsp_language_id().ok_or(path);
+        assert_eq!(id.map(file_type_for_language), Ok(Some(by_path)), "{path}");
+    }
+}
+
+#[test]
+fn file_type_for_language_rejects_unknown_ids() {
+    assert_eq!(file_type_for_language("klingon"), None);
+    assert_eq!(file_type_for_language(""), None);
+    // The unrecognized fallback's name is not a language.
+    assert_eq!(file_type_for_language("File"), None);
+}
+
+#[test]
 fn icon_for_path_matches_resolution() {
     assert_eq!(
         icon_for_path(Path::new("a.rs"), IconStyle::NerdFont),
