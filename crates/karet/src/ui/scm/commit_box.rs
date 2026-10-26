@@ -170,13 +170,13 @@ fn span_cells(text: &str, row_start: usize, start: usize, end: usize) -> Option<
 /// backend round trip. Which forge it is decides only whether the reference
 /// forms apply; a bare URL is a link in any repository, including one with no
 /// remote at all.
-fn origin_remote(app: &App) -> Option<crate::remote::Remote> {
+fn origin_remote(app: &App) -> Option<karet_vcs::RemoteUrl> {
     let snapshot = app.scm.repository.as_ref()?;
     let origin = snapshot
         .remotes
         .iter()
         .find(|remote| remote.name == "origin")?;
-    crate::remote::parse_remote(origin.url.as_deref()?)
+    karet_vcs::parse_remote(origin.url.as_deref()?)
 }
 
 #[cfg(test)]

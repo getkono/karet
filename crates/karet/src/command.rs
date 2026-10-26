@@ -19,13 +19,9 @@ mod resolve;
 #[cfg(test)]
 mod tests;
 
-// The app is a binary crate, so this compatibility re-export is not referenced
-// internally even though it preserves the command module's existing API path.
 // Only the keymap schema generator (a test) enumerates every id.
 #[cfg(test)]
 pub(crate) use ids::COMMAND_IDS;
-#[allow(unused_imports)]
-pub use resolve::ResolveNamedError;
 pub use resolve::palette;
 pub use resolve::resolve_named;
 
@@ -285,6 +281,8 @@ pub enum Command {
     ShrinkSelection,
     /// Collapse multiple carets to the primary; with one caret, leave the editor.
     CollapseCarets,
+    /// Leave Insert mode for Normal mode (`editor.keymap` `"vim"`/`"helix"`).
+    EnterNormalMode,
     /// Scroll the active tab up one line.
     ScrollUp,
     /// Scroll the active tab down one line.
@@ -831,7 +829,6 @@ impl Command {
             Self::ToggleFocus => "View: Toggle Focus (Sidebar / Editor)",
             Self::SelectView(View::Editor) => "View: Editor",
             Self::SelectView(View::GitHub) => "View: GitHub",
-            // #211: Self::SelectView(View::Agents) => "View: Agents",
             Self::SelectPanel(SidebarPanel::Explorer) => "View: Show Explorer",
             Self::SelectPanel(SidebarPanel::Search) => "View: Show Search",
             Self::SelectPanel(SidebarPanel::SourceControl) => "View: Show Source Control",
@@ -952,6 +949,7 @@ impl Command {
             Self::ExpandSelection => "Expand Selection",
             Self::ShrinkSelection => "Shrink Selection",
             Self::CollapseCarets => "Collapse Cursors",
+            Self::EnterNormalMode => "Enter Normal Mode",
             Self::ScrollUp => "Scroll Up",
             Self::ScrollDown => "Scroll Down",
             Self::PageUp => "Scroll Page Up",

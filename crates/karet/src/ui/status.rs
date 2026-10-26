@@ -131,6 +131,20 @@ pub(super) fn draw_status(f: &mut Frame, app: &mut App, theme: &Theme, area: Rec
     spans.push(Span::styled(focus_text, key));
     app.status_hits.push((x, x + fw, Command::ToggleFocus));
     x += fw;
+    // A modal preset names its mode beside the focus, with the macro being
+    // recorded and the command typed so far (vim's `showcmd`).
+    if let Some((mode, recording, typed)) = app.vi_status() {
+        let mut chip = format!(" {} ", mode.label());
+        if let Some(register) = recording {
+            chip.push_str(&format!("recording @{register} "));
+        }
+        if !typed.is_empty() {
+            chip.push_str(&typed);
+            chip.push(' ');
+        }
+        x += cell_width(&chip);
+        spans.push(Span::styled(chip, key));
+    }
     let gutter = "   ";
     spans.push(Span::styled(gutter.to_string(), bar));
     x += cell_width(gutter);
@@ -142,7 +156,7 @@ pub(super) fn draw_status(f: &mut Frame, app: &mut App, theme: &Theme, area: Rec
     // message rendered in the bar's own style read as invisible, and covering the
     // hints also took their click targets with it.
     if !app.pending.is_empty() {
-        let ctx = Context::focus(app.focus_target());
+        let ctx = Context::focus(app.focus_target()).with_editing(app.vi_editing());
         let prefix = app
             .pending
             .iter()

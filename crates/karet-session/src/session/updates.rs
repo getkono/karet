@@ -303,8 +303,14 @@ impl Session {
             // The connection has been gone past the grace window: its
             // markers and its overlay both describe a server that is down.
             LspUpdate::DiagnosticsCleared { server, .. } => {
-                self.clear_lsp_diagnostic_layer(&server);
+                self.clear_lsp_diagnostic_layer(&server, None);
                 self.clear_semantic_tokens_of(&server);
+            },
+            // The server is up, but no longer answers pulls for a document
+            // it was pulled for: what it last answered would otherwise stay
+            // on screen, since nothing it publishes replaces that layer.
+            LspUpdate::PulledDiagnosticsWithdrawn { server, .. } => {
+                self.clear_lsp_diagnostic_layer(&server, Some(crate::lsp::DiagnosticFeed::Pulled));
             },
             update @ LspUpdate::SemanticTokens { .. } => self.adopt_semantic_tokens(update),
             LspUpdate::SyncFailed { server, reason, .. } => self.emit(

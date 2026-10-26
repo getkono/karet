@@ -481,6 +481,58 @@ pub struct Tab {
     pub(crate) markdown_preview: Option<MarkdownPreviewState>,
     /// Dedicated three-way conflict presentation for this editable code document.
     pub(crate) merge_conflict: Option<MergeConflictState>,
+    /// Where the caret goes once a reserved code tab first fills, or `None`
+    /// once it holds the document's text. A code tab opened before its content
+    /// arrives starts empty (see [`crate::workspace::open_file`]); the first
+    /// document snapshot replaces that empty buffer with the whole file, which
+    /// is a load, not an edit, so the caret is placed here rather than carried
+    /// through the insertion. Edits are refused while this is set, since they
+    /// would be built against the empty placeholder rather than the document.
+    pub(crate) fill_caret: Option<karet_core::LineCol>,
+    /// When a reserved code tab began waiting for its text, so the editor pane
+    /// reveals a muted loading placeholder once the wait outlasts the shared
+    /// reveal delay. Set and cleared together with [`Self::fill_caret`].
+    pub(crate) fill_since: Option<Pending>,
+    /// The cursors and viewport a restored workspace layout puts back once a
+    /// reserved code tab first fills; when set, it replaces
+    /// [`Self::fill_caret`]'s single caret. Cleared with it, and by a jump that
+    /// moves the caret while the tab is still waiting.
+    pub(crate) fill_view: Option<FillView>,
+    /// Why the session could not load a reserved code tab's text, which then
+    /// never arrives: the editor pane shows this instead of waiting forever.
+    pub(crate) fill_error: Option<String>,
+}
+
+/// A code view's cursors and viewport, held for a reserved tab until its text
+/// arrives (an empty buffer would clamp them all to the top).
+#[derive(Debug, Clone)]
+pub(crate) struct FillView {
+    /// Every selection, as saved.
+    pub(crate) cursors: karet_core::CursorState,
+    /// The first visible line.
+    pub(crate) scroll_line: u32,
+    /// The first visible column.
+    pub(crate) scroll_col: u32,
+}
+
+/// Place a code view's carets in `buffer`, the text it has just been given:
+/// `view` when one was held for it, else a single caret at `caret`. The scroll
+/// is clamped to the buffer's last line.
+pub(crate) fn place_fill(
+    editor: &mut EditorState,
+    buffer: &TextBuffer,
+    caret: karet_core::LineCol,
+    view: Option<FillView>,
+) {
+    match view {
+        Some(view) => {
+            editor.set_cursor_state(buffer, view.cursors);
+            let last_line = u32::try_from(buffer.line_count().saturating_sub(1)).unwrap_or(0);
+            editor.scroll_line = view.scroll_line.min(last_line);
+            editor.scroll_col = view.scroll_col;
+        },
+        None => editor.goto(buffer, caret),
+    }
 }
 
 impl Tab {
@@ -504,6 +556,10 @@ impl Tab {
             markdown_table_lines: std::sync::Arc::default(),
             markdown_preview: None,
             merge_conflict: None,
+            fill_caret: None,
+            fill_since: None,
+            fill_view: None,
+            fill_error: None,
         }
     }
 

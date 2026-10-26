@@ -1014,14 +1014,6 @@ pub(super) fn clamp_cursor(buffer: &TextBuffer, mut cursors: CursorState) -> Cur
     cursors
 }
 
-/// Map an explicit LSP-style language id (e.g. `"rust"`) to karet's display name,
-/// when one is supplied on open.
-fn name_for_language(_id: &str) -> Option<&'static str> {
-    // The display name is derived from the path today; an explicit override table
-    // lands with the LSP language registry.
-    None
-}
-
 /// Resolve an editor language even when Karet has no Tree-sitter grammar for
 /// it yet. LSP routing follows the broader file-type registry; syntax parsing
 /// remains independently optional.

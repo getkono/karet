@@ -15,6 +15,7 @@ fn previewing(readme: &str, files: &[(&str, &[u8])]) -> (App, std::path::PathBuf
     }
     let mut app = App::new(root.clone(), Vec::new(), Vec::new(), false);
     app.open_path(&root.join("README.md"));
+    fill_reserved_tabs(&mut app);
     app.main_rect = Rect::new(0, 0, 100, 30);
     app.dispatch(Command::MarkdownPreviewSide);
     let _ = screen(&mut app, 100, 30);

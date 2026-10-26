@@ -89,6 +89,7 @@ fn ctrl_click_opens_a_markdown_source_link_to_a_workspace_file() {
     write_file(&root, "docs/guide.md", b"guide");
     let mut app = App::new(root.clone(), Vec::new(), Vec::new(), false);
     app.open_path(&root.join("README.md"));
+    fill_reserved_tabs(&mut app);
     app.focus = Focus::Editor;
     app.pane_frames = vec![content_frame(&app, Rect::new(0, 0, 60, 5))];
     let down = MouseEventKind::Down(MouseButton::Left);
@@ -121,6 +122,7 @@ fn ctrl_click_on_an_unsafe_source_link_is_blocked_not_opened() {
     write_file(&root, "README.md", b"[run](javascript:alert)\n");
     let mut app = App::new(root.clone(), Vec::new(), Vec::new(), false);
     app.open_path(&root.join("README.md"));
+    fill_reserved_tabs(&mut app);
     app.focus = Focus::Editor;
     app.pane_frames = vec![content_frame(&app, Rect::new(0, 0, 60, 5))];
 
@@ -152,6 +154,7 @@ fn ctrl_click_on_a_source_link_in_an_unfocused_split_opens_it_there() {
     write_file(&root, "docs/guide.md", b"guide");
     let mut app = App::new(root.clone(), Vec::new(), Vec::new(), false);
     app.open_path(&root.join("README.md"));
+    fill_reserved_tabs(&mut app);
     app.focus = Focus::Editor;
     let left = app.focus_pane();
     app.dispatch(Command::SplitRight);

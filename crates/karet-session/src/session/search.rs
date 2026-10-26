@@ -56,6 +56,8 @@ impl Session {
                 Event::SearchReplaced {
                     files_changed: 0,
                     replacements: 0,
+                    failures: Vec::new(),
+                    error: None,
                 },
             );
             return;
@@ -70,11 +72,15 @@ impl Session {
             replacement,
         };
         if self.search_worker.send(job).is_err() {
+            // The worker thread is gone, so nothing was written: say so rather
+            // than answer as if the replace ran and matched nothing.
             self.emit(
                 Some(id),
                 Event::SearchReplaced {
                     files_changed: 0,
                     replacements: 0,
+                    failures: Vec::new(),
+                    error: Some("the search worker is not running".to_owned()),
                 },
             );
         }

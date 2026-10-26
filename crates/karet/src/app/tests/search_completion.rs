@@ -243,6 +243,83 @@ async fn search_replace_all_rewrites_matching_files() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A replace that left files unwritten, or stopped on an error, surfaces as a
+/// failure naming what went wrong rather than as a plain success count.
+#[test]
+fn a_partial_or_failed_replace_is_reported_as_a_failure() {
+    let mut app = app();
+    let root = app.root.clone();
+    app.on_backend_event(
+        Some(RequestId(1)),
+        SessionEvent::SearchReplaced {
+            files_changed: 1,
+            replacements: 2,
+            failures: vec![karet_search::WriteFailure {
+                path: root.join("locked.rs"),
+                error: "Permission denied".to_owned(),
+            }],
+            error: None,
+        },
+    );
+    let note = app.notifications.active().first().cloned();
+    assert_eq!(
+        note.as_ref().map(|n| (n.severity, n.title.as_str())),
+        Some((
+            Severity::Error,
+            "replaced 2 occurrence(s) in 1 file(s); 1 file(s) could not be written"
+        ))
+    );
+    assert_eq!(
+        note.and_then(|n| n.body.clone()),
+        Some("locked.rs: Permission denied".to_owned())
+    );
+
+    app.on_backend_event(
+        Some(RequestId(2)),
+        SessionEvent::SearchReplaced {
+            files_changed: 0,
+            replacements: 0,
+            failures: Vec::new(),
+            error: Some("invalid search pattern".to_owned()),
+        },
+    );
+    assert_eq!(
+        last_report(&app),
+        Some((
+            Severity::Error,
+            "replace stopped: invalid search pattern".to_owned()
+        ))
+    );
+
+    // More unwritten files than the body shows: the first five are listed and
+    // the rest are counted, so a read-only tree cannot fill the screen.
+    let failures = (0..7)
+        .map(|i| karet_search::WriteFailure {
+            path: root.join(format!("f{i}.rs")),
+            error: "Read-only file system".to_owned(),
+        })
+        .collect();
+    app.on_backend_event(
+        Some(RequestId(3)),
+        SessionEvent::SearchReplaced {
+            files_changed: 0,
+            replacements: 0,
+            failures,
+            error: None,
+        },
+    );
+    let note = app.notifications.active().first().cloned();
+    assert_eq!(
+        note.as_ref().map(|n| n.title.as_str()),
+        Some("replaced 0 occurrence(s) in 0 file(s); 7 file(s) could not be written")
+    );
+    let expected: Vec<String> = (0..5)
+        .map(|i| format!("f{i}.rs: Read-only file system"))
+        .chain(std::iter::once("…and 2 more".to_owned()))
+        .collect();
+    assert_eq!(note.and_then(|n| n.body.clone()), Some(expected.join("\n")));
+}
+
 #[test]
 fn search_option_toggle_button_click_dispatches() {
     let mut app = App::new(PathBuf::from("."), Vec::new(), Vec::new(), false);
@@ -303,7 +380,7 @@ async fn backspace_and_insert_apply_to_the_local_buffer_without_waiting_for_a_sn
     let path = dir.join("a.txt");
     std::fs::write(&path, "ab").expect("write temp file");
 
-    let (local_backend, _snaps) = local(SessionConfig {
+    let (local_backend, mut snaps) = local(SessionConfig {
         roots: vec![dir.clone()],
         ..SessionConfig::default()
     });
@@ -312,8 +389,8 @@ async fn backspace_and_insert_apply_to_the_local_buffer_without_waiting_for_a_sn
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
     app.backend = Some(backend);
     app.open_path(&path);
-    // Registers the doc so submit_edit can act.
-    pump_until(&mut app, &mut events, active_doc_open).await;
+    // Registers the doc and fills the tab with its text so submit_edit can act.
+    pump_with_snapshots_until(&mut app, &mut events, &mut snaps, active_doc_filled).await;
 
     app.dispatch(Command::InsertChar('x'));
     assert_eq!(code_tab_text(&app), "xab");
@@ -346,7 +423,7 @@ async fn paste_while_find_is_open_targets_the_find_query_not_the_editor() {
     let path = dir.join("a.txt");
     std::fs::write(&path, "hello world").expect("write temp file");
 
-    let (local_backend, _snaps) = local(SessionConfig {
+    let (local_backend, mut snaps) = local(SessionConfig {
         roots: vec![dir.clone()],
         ..SessionConfig::default()
     });
@@ -355,7 +432,7 @@ async fn paste_while_find_is_open_targets_the_find_query_not_the_editor() {
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
     app.backend = Some(backend);
     app.open_path(&path);
-    pump_until(&mut app, &mut events, active_doc_open).await;
+    pump_with_snapshots_until(&mut app, &mut events, &mut snaps, active_doc_filled).await;
 
     app.open_find();
     assert!(app.find_open);

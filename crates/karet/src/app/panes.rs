@@ -9,6 +9,8 @@ use karet_session::backup::WorkspaceLayout;
 use karet_widgets::pane::tree::PaneTree;
 
 use super::*;
+use crate::tab::FillView;
+use crate::tab::place_fill;
 
 impl App {
     /// Grow the focused pane toward `dir` by the keyboard resize step.
@@ -442,6 +444,16 @@ impl App {
         // as given is joined onto it), so it is made absolute the same way.
         let path = workspace::absolute(tab.path()?);
         let (cursors, scroll_line, scroll_col) = match &tab.kind {
+            // A tab still waiting for its text keeps what it will be given, so
+            // quitting before it fills does not save the empty buffer's top.
+            TabKind::Code { .. } if tab.fill_caret.is_some() => match &tab.fill_view {
+                Some(view) => (view.cursors.clone(), view.scroll_line, view.scroll_col),
+                None => (
+                    CursorState::single(Selection::caret(tab.fill_caret.unwrap_or_default())),
+                    0,
+                    0,
+                ),
+            },
             TabKind::Code { .. } => (
                 tab.editor.cursors().clone(),
                 tab.editor.scroll_line,
@@ -568,16 +580,26 @@ impl App {
             // One preview slot per pane.
             tab.is_preview = entry.preview && !has_preview;
             has_preview |= tab.is_preview;
+            let view = FillView {
+                cursors: entry.cursors,
+                scroll_line: entry.scroll_line,
+                scroll_col: entry.scroll_col,
+            };
             if let Tab {
                 kind: TabKind::Code { buffer, .. },
                 editor,
+                fill_caret,
+                fill_view,
                 ..
             } = &mut tab
             {
-                editor.set_cursor_state(buffer, entry.cursors);
-                let last_line = u32::try_from(buffer.line_count().saturating_sub(1)).unwrap_or(0);
-                editor.scroll_line = entry.scroll_line.min(last_line);
-                editor.scroll_col = entry.scroll_col;
+                if fill_caret.is_some() {
+                    // Still waiting for its text: an empty buffer would clamp
+                    // the view to the top, so it is put back on the first fill.
+                    *fill_view = Some(view);
+                } else {
+                    place_fill(editor, buffer, LineCol::default(), Some(view));
+                }
             }
             if index <= saved.active {
                 active = tabs.len();

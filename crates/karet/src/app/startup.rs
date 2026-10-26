@@ -78,6 +78,7 @@ impl App {
             saving_close: None,
             pending_swaps: None,
             pending: Vec::new(),
+            vi: vi::ViState::default(),
             search: SearchPanel::default(),
             spelling: SpellingPanel::default(),
             todos: TodosPanel::default(),
@@ -429,7 +430,8 @@ impl App {
     /// Run the queued `--command` palette commands, once the backend can serve
     /// them.
     ///
-    /// They wait for the active tab's document id. A command that queries or
+    /// They wait for the active tab's document id and for the first snapshot
+    /// that fills it with the document's text. A command that queries or
     /// edits a document — Show Hover, Trigger Suggest, the markdown edits —
     /// returns early without one, so running them while the tab is still
     /// pending silently dropped them. A session whose active tab is not a
@@ -438,10 +440,12 @@ impl App {
         if self.startup_commands.is_empty() {
             return;
         }
-        let pending = matches!(
-            self.tabs.get(self.active).map(|tab| &tab.kind),
-            Some(TabKind::Code { doc: None, .. })
-        );
+        // Waiting on the document id, or on the text it fills the tab with: a
+        // command run against the empty placeholder would act on nothing, at
+        // the top of the file.
+        let pending = self.tabs.get(self.active).is_some_and(|tab| {
+            matches!(&tab.kind, TabKind::Code { doc, .. } if doc.is_none() || tab.fill_caret.is_some())
+        });
         if pending {
             return;
         }
@@ -518,6 +522,14 @@ impl App {
     /// Whether the active frame should suppress the editor's cell caret because the
     /// app will draw the Kitty graphics caret after ratatui flushes the frame.
     pub(crate) fn graphical_cursor_enabled(&self) -> bool {
+        // A modal preset's Normal mode puts the cursor *on* a character, which
+        // the cell caret's block shows and the graphical bar would not.
+        if matches!(
+            self.vi_editing(),
+            crate::keymap::Editing::VimNormal | crate::keymap::Editing::HelixNormal
+        ) {
+            return false;
+        }
         let configured =
             self.tabs
                 .get(self.active)

@@ -64,8 +64,7 @@ pub struct Cli {
     #[arg(long, value_enum)]
     pub startup_panel: Option<StartupPanelChoice>,
 
-    /// Top-level view to show at startup. The Agents view owns the full terminal
-    /// width, so it starts with the sidebar hidden whatever `--startup-panel` says.
+    /// Top-level view to show at startup.
     #[arg(long, value_enum)]
     pub view: Option<ViewChoice>,
 
@@ -381,8 +380,6 @@ pub enum ViewChoice {
     Editor,
     /// Start in the GitHub view.
     Github,
-    // #211: /// Start in the Agents view.
-    // #211: Agents,
 }
 
 /// CLI choices for startup focus.
@@ -409,7 +406,6 @@ impl From<ViewChoice> for View {
         match choice {
             ViewChoice::Editor => Self::Editor,
             ViewChoice::Github => Self::GitHub,
-            // #211: ViewChoice::Agents => Self::Agents,
         }
     }
 }

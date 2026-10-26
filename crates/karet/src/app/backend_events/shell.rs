@@ -131,6 +131,11 @@ impl App {
             self.failed_blame = Some((pending.1, pending.2, pending.3));
         }
         if let Some(req) = id {
+            // An open fails with an error notification and nothing else; its
+            // warnings (a bad `.editorconfig`) still end in `Opened`.
+            if severity == Severity::Error {
+                self.on_open_failed(req, &message);
+            }
             self.fail_pending_commit_detail(req, &message);
             if let Some((view, _)) = self.pending_merge_conflicts.remove(&req)
                 && let Some(tab) = self.all_tabs_mut().find(|tab| tab.view == view)

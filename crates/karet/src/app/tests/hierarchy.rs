@@ -203,6 +203,8 @@ fn the_arrows_walk_the_tree_and_enter_opens_the_item() {
     key(&mut app, KeyCode::Enter);
     assert!(app.overlay.is_none());
     assert_eq!(app.tabs[app.active].path(), Some(lib.as_path()));
+    // The opened tab waits for its text; the caret lands once it arrives.
+    fill_reserved_tabs(&mut app);
     assert_eq!(app.tabs[app.active].editor.cursor(), LineCol::new(2, 3));
 }
 

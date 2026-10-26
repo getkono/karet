@@ -381,10 +381,9 @@ pub(super) fn hint_segment(hint: &keymap::Hint) -> String {
 }
 
 /// The terminal-cell width of `s` (display width, wide/combining aware — unlike a
-/// raw `chars().count()`), via ratatui's own measurement so no extra dependency is
-/// pulled in.
+/// raw `chars().count()`), saturating at `u16::MAX`.
 pub(super) fn cell_width(s: &str) -> u16 {
-    u16::try_from(Span::raw(s).width()).unwrap_or(u16::MAX)
+    u16::try_from(karet_widgets::text::width(s)).unwrap_or(u16::MAX)
 }
 
 /// How many leading `hints` fit in `avail` columns when joined by [`HINT_SEP`].

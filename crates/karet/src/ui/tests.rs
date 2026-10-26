@@ -516,7 +516,7 @@ fn narrow_file_card_headers_never_exceed_the_pane() {
         );
     }
     assert_eq!(
-        truncate_start("a/\u{65e5}\u{672c}\u{8a9e}/file.rs", 8),
+        karet_widgets::text::fit_start("a/\u{65e5}\u{672c}\u{8a9e}/file.rs", 8),
         "\u{2026}file.rs"
     );
 }

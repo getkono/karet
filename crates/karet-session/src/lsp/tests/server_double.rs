@@ -115,8 +115,16 @@ pub(super) enum Behavior {
     PushesAndPulls,
     /// Advertise no pull diagnostics, but register them dynamically
     /// (`client/registerCapability`) once a document is opened, then answer
-    /// pulls like [`Behavior::Pulls`].
+    /// pulls like [`Behavior::Pulls`]. Withdraws that registration
+    /// (`client/unregisterCapability`) whenever a document is saved.
     RegistersPulls,
+    /// Register and withdraw pulls like [`Behavior::RegistersPulls`], with a
+    /// `documentSelector` covering only documents opened as `rust`.
+    RegistersRustPulls,
+    /// Register and withdraw pulls like [`Behavior::RegistersPulls`], but
+    /// hold every pull's answer until a document is closed: an answer that
+    /// arrives after the withdrawal it raced.
+    RegistersPullsLate,
     /// Pull like [`Behavior::Pulls`], with `interFileDependencies` declared.
     PullsAcrossFiles,
     /// Pull like [`Behavior::PullsAcrossFiles`], and ask the client to pull
@@ -220,6 +228,15 @@ fn advertised_capabilities(behavior: Behavior) -> Value {
 /// The double's answer to `textDocument/diagnostic`: one error on line 0
 /// naming `version`, linked to its documentation and related to line 1 of the
 /// asking file, beside a full report for `elsewhere.rs`.
+/// Whether `behavior` registers pulls on `didOpen` and withdraws them on
+/// `didSave`.
+fn registers_pulls(behavior: Behavior) -> bool {
+    matches!(
+        behavior,
+        Behavior::RegistersPulls | Behavior::RegistersRustPulls | Behavior::RegistersPullsLate
+    )
+}
+
 fn pull_reply(msg: &Value, version: &Value) -> Value {
     let asking = msg["params"]["textDocument"]["uri"]
         .as_str()
@@ -445,6 +462,8 @@ pub(super) fn test_connector(
                 // The version the last `didOpen` or `didChange` carried.
                 let mut last_version = Value::Null;
                 let mut cancel_tokens = matches!(behavior, Behavior::CancelsSemanticTokensOnce);
+                // `RegistersPullsLate`'s pulls, each with the version it asked at.
+                let mut held_pulls = Vec::new();
                 while let Some(msg) = read_msg(&mut reader).await {
                     if let Some(tx) = &observed {
                         let _ = tx.send(msg.clone());
@@ -715,6 +734,21 @@ pub(super) fn test_connector(
                             )
                             .await;
                         },
+                        Some("textDocument/diagnostic")
+                            if matches!(behavior, Behavior::RegistersPullsLate) =>
+                        {
+                            held_pulls.push((msg, last_version.clone()));
+                        },
+                        Some("textDocument/didClose") => {
+                            for (msg, version) in held_pulls.drain(..) {
+                                write_msg(
+                                    &mut server_write,
+                                    &json!({"jsonrpc": "2.0", "id": msg["id"],
+                                        "result": pull_reply(&msg, &version)}),
+                                )
+                                .await;
+                            }
+                        },
                         Some("textDocument/diagnostic") => {
                             write_msg(
                                 &mut server_write,
@@ -750,7 +784,14 @@ pub(super) fn test_connector(
                                 )
                                 .await;
                             }
-                            if matches!(behavior, Behavior::RegistersPulls) {
+                            if registers_pulls(behavior) {
+                                let mut options = json!({
+                                    "interFileDependencies": false,
+                                    "workspaceDiagnostics": false
+                                });
+                                if matches!(behavior, Behavior::RegistersRustPulls) {
+                                    options["documentSelector"] = json!([{"language": "rust"}]);
+                                }
                                 write_msg(
                                     &mut server_write,
                                     &json!({"jsonrpc": "2.0", "id": "register-pull",
@@ -758,10 +799,7 @@ pub(super) fn test_connector(
                                     "params": {"registrations": [{
                                         "id": "pull",
                                         "method": "textDocument/diagnostic",
-                                        "registerOptions": {
-                                            "interFileDependencies": false,
-                                            "workspaceDiagnostics": false
-                                        }
+                                        "registerOptions": options
                                     }]}}),
                                 )
                                 .await;
@@ -821,6 +859,18 @@ pub(super) fn test_connector(
                             write_msg(
                                 &mut server_write,
                                 &json!({"jsonrpc": "2.0", "id": msg["id"], "result": result}),
+                            )
+                            .await;
+                        },
+                        Some("textDocument/didSave") if registers_pulls(behavior) => {
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": "unregister-pull",
+                                "method": "client/unregisterCapability",
+                                "params": {"unregisterations": [{
+                                    "id": "pull",
+                                    "method": "textDocument/diagnostic"
+                                }]}}),
                             )
                             .await;
                         },

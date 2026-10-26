@@ -8,16 +8,22 @@
 //! dependencies at all**, so a consumer speaking one protocol never inherits
 //! another protocol's model crates.
 //!
-//! Two seams keep it protocol-agnostic:
+//! Three seams keep it protocol-agnostic:
 //!
 //! - [`Framing`] — how a message body is delimited on the wire.
 //!   [`framing::content_length`] is the LSP base-protocol framing (DAP shares
-//!   this framing alone, since its messages are not JSON-RPC);
-//!   [`framing::line_delimited`] is newline-delimited JSON. Framing moves
+//!   it); [`framing::line_delimited`] is newline-delimited JSON. Framing moves
 //!   **bytes**, so an implementation never touches serde.
-//! - [`Handler`] — the broadcast payload built from peer notifications, the
-//!   answers to peer→client requests, notification side effects, and the tuning
-//!   constants (timeouts, channel capacities, the log-facing peer name).
+//! - [`Envelope`] — what a message is: the request id type, how a request is
+//!   encoded, and how an inbound message [classifies](Envelope::classify) into
+//!   a response to correlate or a message to route. The correlation [`Actor`]
+//!   is generic over it, so a protocol that is not JSON-RPC — DAP, whose
+//!   responses carry a `request_seq` — reuses the pending map, timeouts,
+//!   bounded queue and fail-all-on-EOF rather than re-implementing them.
+//! - [`Handler`] — for JSON-RPC itself, through [`Connection`]: the broadcast
+//!   payload built from peer notifications, the answers to peer→client
+//!   requests, notification side effects, and the tuning constants (timeouts,
+//!   channel capacities, the log-facing peer name).
 //!
 //! ```no_run
 //! use karet_jsonrpc::Connection;
@@ -40,11 +46,16 @@
 //! # }
 //! ```
 
+mod actor;
 mod connection;
 pub mod framing;
 mod message;
 mod peer;
 
+pub use actor::Actor;
+pub use actor::Classified;
+pub use actor::Envelope;
+pub use actor::Link;
 pub use connection::Connection;
 pub use connection::Handler;
 pub use connection::RpcError;

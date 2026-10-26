@@ -165,25 +165,38 @@ fn execute(
             roots,
             query,
             replacement,
-        } => {
-            let mut files_changed = 0;
-            let mut replacements = 0;
-            for root in &roots {
-                let summary = WorkspaceSearch::new()
-                    .replace(root, &query, &replacement)
-                    .unwrap_or_default();
+        } => send(events, id, replace_all(&roots, &query, &replacement)),
+    }
+}
+
+/// Replace across every root and fold the per-root summaries into one answer.
+///
+/// An error (a bad pattern or glob) is the same for every root, so it stops the
+/// loop and is reported rather than read as "0 replacements"; whatever earlier
+/// roots already wrote is still counted.
+fn replace_all(roots: &[PathBuf], query: &SearchQuery, replacement: &str) -> Event {
+    let mut files_changed = 0;
+    let mut replacements = 0;
+    let mut failures = Vec::new();
+    let mut error = None;
+    for root in roots {
+        match WorkspaceSearch::new().replace(root, query, replacement) {
+            Ok(summary) => {
                 files_changed += summary.files_changed;
                 replacements += summary.replacements;
-            }
-            send(
-                events,
-                id,
-                Event::SearchReplaced {
-                    files_changed,
-                    replacements,
-                },
-            )
-        },
+                failures.extend(summary.failures);
+            },
+            Err(e) => {
+                error = Some(e.to_string());
+                break;
+            },
+        }
+    }
+    Event::SearchReplaced {
+        files_changed,
+        replacements,
+        failures,
+        error,
     }
 }
 
@@ -447,6 +460,7 @@ mod tests {
                 Event::SearchReplaced {
                     files_changed,
                     replacements,
+                    ..
                 } => order.push((id.map_or(0, |id| id.0), files_changed, replacements)),
                 Event::SearchFinished {
                     matches_found,
@@ -465,6 +479,71 @@ mod tests {
         assert_eq!(order, vec![(1, 0, 2), (2, 1, 2), (3, 0, 2)]);
         let text = std::fs::read_to_string(dir.path().join("a.txt"))?;
         assert_eq!(text, "new new\n");
+        Ok(())
+    }
+
+    /// A replace that could not run reports why instead of answering
+    /// "0 replacements", and it stops at the first root rather than repeating
+    /// the same error for each.
+    #[test]
+    fn an_invalid_replace_pattern_is_reported_not_read_as_zero() -> TestResult {
+        let dir = tree(&[("a.txt", "needle\n")])?;
+        let bad = SearchQuery {
+            regex: true,
+            ..query("(")
+        };
+        let roots = vec![dir.path().to_path_buf(), dir.path().to_path_buf()];
+        let Event::SearchReplaced {
+            files_changed,
+            failures,
+            error,
+            ..
+        } = replace_all(&roots, &bad, "pin")
+        else {
+            return Err("not a SearchReplaced".into());
+        };
+        assert_eq!((files_changed, failures.len()), (0, 0));
+        assert_eq!(error, Some("invalid search pattern".to_owned()));
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("a.txt"))?,
+            "needle\n"
+        );
+        Ok(())
+    }
+
+    /// Files that could not be written back are carried in the answer from every
+    /// root, beside the counts of the files that were.
+    #[test]
+    fn replace_failures_from_every_root_reach_the_answer() -> TestResult {
+        let (one, two) = (
+            tree(&[("a.txt", "needle\n")])?,
+            tree(&[("b.txt", "needle\n")])?,
+        );
+        let locked = two.path().join("b.txt");
+        let mut perms = std::fs::metadata(&locked)?.permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&locked, perms)?;
+        if std::fs::OpenOptions::new()
+            .write(true)
+            .open(&locked)
+            .is_ok()
+        {
+            // A privileged user writes through the read-only bit; nothing to observe.
+            return Ok(());
+        }
+        let roots = vec![one.path().to_path_buf(), two.path().to_path_buf()];
+        let Event::SearchReplaced {
+            files_changed,
+            replacements,
+            failures,
+            error,
+        } = replace_all(&roots, &query("needle"), "pin")
+        else {
+            return Err("not a SearchReplaced".into());
+        };
+        assert_eq!((files_changed, replacements, error), (1, 1, None));
+        let failed: Vec<PathBuf> = failures.into_iter().map(|f| f.path).collect();
+        assert_eq!(failed, vec![locked]);
         Ok(())
     }
 

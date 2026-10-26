@@ -62,6 +62,7 @@ use karet_core::WorkspaceEdit;
 use karet_lsp::LspClient;
 use karet_lsp::LspError;
 use karet_lsp::LspSpec;
+pub(crate) use message::DiagnosticFeed;
 pub(crate) use message::DiagnosticLayer;
 pub(crate) use message::DocumentHighlightsAnswer;
 pub(crate) use message::EditingAnswer;
@@ -291,6 +292,9 @@ impl LspManager {
                 token, server: key, ..
             }
             | LspUpdate::DiagnosticsCleared {
+                token, server: key, ..
+            }
+            | LspUpdate::PulledDiagnosticsWithdrawn {
                 token, server: key, ..
             }
             | LspUpdate::SemanticTokens {

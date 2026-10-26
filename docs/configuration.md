@@ -61,6 +61,7 @@ Keys use the VS Code / Zed camelCase style. Defaults shown.
 | `wrappingIndent` | `"none"`\|`"same"`\|`"indent"` | `"same"` | How a wrapped line's continuation rows are indented: `"none"` starts them at the left edge, `"same"` lines them up with the line's own leading whitespace, `"indent"` puts them one `tabSize` deeper. The indent never takes more than half the wrap width, so a deeply indented line in a narrow pane keeps room for its text. A click in the indent puts the caret at the row's first character, and Up/Down keep the screen column across it. |
 | `stickyScroll` | bool | `true` | Pin the active semantic block hierarchy above scrolled text. Multi-line signatures collapse to one row with an ellipsis. |
 | `middleClickPaste` | bool\|null | `null` | Paste the primary selection (the X11/Wayland "last selected text") at a middle click in the text, read through `wl-paste`, `xclip` or `xsel`. `null` turns it on for Linux and off elsewhere. A middle click on a tab closes it either way. Global only; not a per-language override. |
+| `keymap` | `"default"`\|`"vim"`\|`"helix"` | `"default"` | The editing model of a code tab. `"default"` types at the caret, as in VS Code; `"vim"` and `"helix"` add modal editing (Normal, Insert and Visual/Select modes), described under [Modal editing](#modal-editing-editorkeymap). Takes effect on save, in the mode the editor was last in. Global only; not a per-language override. |
 | `autoClosingBrackets` | `"always"`\|`"languageDefined"`\|`"never"` | `"languageDefined"` | When typing `(`, `[` or `{` also inserts its closer. `"languageDefined"` closes only before whitespace, the end of the line, or closing punctuation (`;:.,=}])>`); `"always"` closes wherever the caret is. Typing a closer the editor inserted steps over it, Backspace between an empty pair deletes both halves, and an opener typed over a selection wraps it. Enter between a bracket pair and a closer typed on a blank line (which snaps to its opener's indentation) work whatever this says. |
 | `autoClosingQuotes` | `"always"`\|`"languageDefined"`\|`"never"` | `"languageDefined"` | The same for quotes. The language decides which quotes pair: `"` everywhere, `'` only where it is always a quote (not in Rust, whose lifetimes start with one, nor in Markdown or plain text), and `` ` `` in JavaScript, TypeScript, Go, shell and Markdown. `"languageDefined"` also leaves a quote alone inside a string or comment, and straight after a letter, digit or `_` (`don't`). |
 | `trimTrailingWhitespace` | bool | `true` | Strip trailing whitespace on save. |
@@ -144,6 +145,86 @@ tracked `.karet/setting.jsonc` therefore carries:
 
 Because the project layer has the highest precedence within a selector, this value
 also beats a user-level `[rust]` `formatOnSave`.
+
+#### Modal editing (`editor.keymap`)
+
+`"vim"` and `"helix"` make a code tab modal. The editor starts in **Normal** mode,
+where keys are commands and never type; the status bar names the mode beside the
+focus (`NORMAL`, `INSERT`, `VISUAL`, `V-LINE`, `SELECT`), with the macro being
+recorded and the command typed so far. **Insert** mode types exactly as the default
+keymap does (completion, snippets, auto-pairs, every `Ctrl` chord); `Esc` returns to
+Normal, closing any popup on the way. Every other pane — the sidebar, pickers, the
+terminal, diff and pager views — keeps its usual keys.
+
+In Normal mode a key goes first to the mode's layer (`vimNormal` or `helixNormal`),
+then to the editing grammar, then, if it carries `Ctrl` or `Alt` or is a function key,
+to the editor's and global bindings. So `Ctrl+P`, `Ctrl+S`, `Ctrl+B`, `Ctrl+F` and the
+`Ctrl+K` chords work as usual, while a plain key nothing takes is ignored. The grammar
+claims only the `Ctrl` keys vim cannot do without: `Ctrl+D`/`Ctrl+U` (half page),
+`Ctrl+E`/`Ctrl+Y` (scroll), `Ctrl+A`/`Ctrl+X` (increment/decrement the number at the
+cursor: decimal, `0x` hexadecimal or `0b` binary, keeping its width); `Ctrl+R` is
+redo in vim.
+
+**vim** supports:
+
+- **Counts** before a command or its motion (`3w`, `2d3w`, `5dd`).
+- **Motions:** `h j k l`, arrows, `w b e ge` and `W B E gE`, `0 ^ $ g_ |`, `gg G`
+  (with a count, that line), `f t F T` with `;` and `,`, `%` (and `N%`), `{ }`,
+  `H M L`, `+ - Enter`, `n N * #`, `Ctrl+D Ctrl+U PageDown PageUp`.
+- **Operators** over a motion or text object, or doubled for whole lines: `d c y > <`
+  and `gu gU g~`. `cw` changes to the word's end; a `dw` (or `d3w`) whose last word
+  ends a line stops at the line's end.
+- **Text objects** after `i` (inner) or `a` (around): `w W p`, `" ' \``, `( ) b`,
+  `[ ]`, `{ } B`, `< >`, and `t` (an XML/HTML element). An inner block whose braces
+  sit on their own lines is the lines between them.
+- **Commands:** `x X D C s S Y` (`Y` yanks to the line's end, as in Neovim), `p P`,
+  `J gJ`, `r`, `~`, `i a I A gI o O`, `v V` (with `o` to swap ends), `.`, `zz zt zb`,
+  `Ctrl+E Ctrl+Y`, `Ctrl+A Ctrl+X`.
+- **Registers** after `"`: the unnamed register, `a`–`z` (`A`–`Z` append), `0` (the
+  last yank), `1`–`9` (recent multi-line deletes), `-` (the last small delete), `_`
+  (discards), and `+`/`*` (the system clipboard; text ending in a line break pastes
+  as a line). Visual `p` swaps the selection with the register; `P` keeps it.
+- **Macros:** `q{a-z}` records every key until `q` (`q{A-Z}` appends), `@{a-z}`
+  replays (with a count), `@@` replays the last one. A completion accepted while
+  recording (or within the change `.` repeats) replays as the text it inserted. A
+  macro that ends up running itself is stopped after 16 nested replays, with a
+  notification.
+- **Search:** `/` and `?` open the find bar; `Enter` jumps to the match and hands the
+  keys back, so `n`/`N` step through the query (smart case: a lower-case query matches
+  either case). `*`/`#` search for the word under the cursor.
+- **The `vimNormal` layer:** `u` undo, `Ctrl+R` redo, `:` the command palette, `K`
+  hover, `gd`/`Ctrl+]` definition, `gD` declaration, `grr` references, `grn` rename,
+  `gra` code actions, `gri` implementation, `gO` document symbols, `gt`/`gT` next and
+  previous tab, `]d`/`[d` next and previous problem, `Ctrl+O` back. A count runs a
+  layer command that many times (`3u`).
+
+**helix** selects first, then acts: `w b e` (and `W B E`) select to the next word
+start, the previous word start or the word end; `f t F T` select to a character;
+`x` selects the line (again, the next line too), `X` extends to whole lines, `%`
+selects everything, `;` collapses the selection and `Alt+;` flips it; `v` toggles
+Select mode, in which motions extend. Then `d`/`c` delete or change the selection
+(`Alt+d`/`Alt+c` without yanking), `y` yanks, `p`/`P` paste after or before it (a line
+below or above when the register holds lines), `R` replaces it with the register, `r`
+replaces each character, `~`, `` ` `` and `` Alt+` `` change case, `>`/`<` indent,
+`J` joins. `mm` jumps to the matching bracket and `mi`/`ma` select a text object (with
+`m` for the nearest pair of any kind). `gg ge gh gl gs` and `G` go to places, `Q`
+records a macro and `q` replays it, `"` names a register, `.` repeats the last change,
+`n`/`N` select the next match and `*` searches for the selection. The `helixNormal`
+layer holds `u`/`U` (undo, redo), `/`, `:`, `gd gD gy gr gi`, `gn`/`gp` (tabs),
+`Alt+o`/`Alt+i` (expand and shrink the selection by syntax), `]d`/`[d`, `Ctrl+O`, and
+space mode: `Space f` (files), `Space s`/`Space S` (symbols), `Space k` (hover),
+`Space r` (rename), `Space a` (code actions), `Space /` (search), `Space c` (comment).
+
+Both layers, and the shared `insert` layer (whose `Esc` is `enterNormalMode`), can be
+rebound in [`keymap.jsonc`](#key-bindings-keymapjsonc): a binding in `vimNormal` or
+`helixNormal` outranks the grammar, so `{ "key": "Q", "command": "formatDocument",
+"when": "vimNormal" }` takes `Q` from it.
+
+Not supported: ex commands (`:` is the command palette), marks, Visual block mode,
+sentence objects, `gv`, and multiple selections in Normal mode (Normal mode keeps the
+primary one). A change made from Visual mode is not what `.` repeats, `3.` repeats the
+change three times rather than with a count of three, and undo restores a change and
+the typing after it in two steps rather than one.
 
 ### `files`
 
@@ -511,7 +592,9 @@ in turn:
   `caretUp`).
 - **`when`** — the layer the binding lives in (default `global`): `editor`,
   `explorer`, `sourceControl`, `find`, `overlay`, … A more specific layer shadows
-  `global` while it is active. A modal layer (`overlay`, `find`, `searchInput`,
+  `global` while it is active. With a modal `editor.keymap`, `vimNormal`,
+  `helixNormal` and `insert` stack over `editor` in their mode (see
+  [Modal editing](#modal-editing-editorkeymap)). A modal layer (`overlay`, `find`, `searchInput`,
   `searchList`, `problemsFilter`, `commitInput`, `commitConsole`, `revInput`,
   `rename`, `contextMenu`, `confirm`, `explorerEdit`) reads one chord at a time, so it
   takes single chords only: a sequence bound there is reported and skipped. So does

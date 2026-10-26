@@ -63,7 +63,6 @@ fn focus_target_derivation() {
 fn a_non_editor_view_owns_the_content_area() {
     // The view outranks the active tab: whatever tab is open behind it, keys aimed
     // at the content area belong to the showing view.
-    // #211 adds `(View::Agents, FocusTarget::Agents)` back beside this one.
     assert_eq!(
         FocusTarget::from(
             Focus::Editor,
@@ -105,11 +104,7 @@ fn the_view_switcher_chords_resolve_from_every_focus() {
     // A `Ctrl+K <digit>` chord rather than `Ctrl+Shift+<digit>`: a terminal reports
     // a shifted digit as its shifted *character*, which varies by keyboard layout.
     let ctrl_k = KeyChord::from_event(key(KeyCode::Char('k'), KeyModifiers::CONTROL));
-    for (digit, view) in [
-        ('1', View::Editor),
-        ('2', View::GitHub),
-        // #211: ('3', View::Agents),
-    ] {
+    for (digit, view) in [('1', View::Editor), ('2', View::GitHub)] {
         let chord = KeyChord::from_event(key(KeyCode::Char(digit), KeyModifiers::NONE));
         // Global, so the switcher works from the sidebar as well as the content area.
         for target in [FocusTarget::Editor, FocusTarget::Explorer] {
