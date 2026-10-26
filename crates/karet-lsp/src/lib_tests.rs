@@ -612,14 +612,29 @@ async fn spawn_missing_binary_names_the_command_and_why_it_failed() -> TestResul
 
 /// The deprecated `karet_lsp::codec` alias still reaches the one framing
 /// implementation, so callers migrate on a warning rather than a break.
-#[test]
+#[tokio::test]
 #[allow(deprecated)] // exercising the deprecated bridge is the point
-fn the_deprecated_codec_path_is_the_jsonrpc_framing() {
+async fn the_deprecated_codec_path_is_the_jsonrpc_framing() -> TestResult {
     assert_eq!(
         crate::codec::MAX_MESSAGE_BYTES,
         karet_jsonrpc::framing::MAX_MESSAGE_BYTES
     );
-    assert_eq!(crate::codec::ContentLength, codec::ContentLength);
+    let framing: crate::codec::ContentLength = crate::codec::ContentLength;
+    assert_eq!(framing, codec::ContentLength);
+
+    // A frame written through the old path reads back through the new one, and
+    // the reverse, so the forwarders are the one implementation.
+    let mut wire = Vec::new();
+    crate::codec::write_frame(&mut wire, b"{}").await?;
+    assert_eq!(wire, b"Content-Length: 2\r\n\r\n{}");
+    assert_eq!(
+        codec::read_frame(&mut wire.as_slice()).await?,
+        Some(b"{}".to_vec())
+    );
+    let oversized = format!("Content-Length: {}\r\n\r\n", codec::MAX_MESSAGE_BYTES + 1);
+    let err = crate::codec::read_frame(&mut oversized.as_bytes()).await;
+    assert!(matches!(err, Err(crate::codec::CodecError::TooLarge(_))));
+    Ok(())
 }
 
 /// A spec's builders write the one [`ConnectOptions`] it launches with, so what

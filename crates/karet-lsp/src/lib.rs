@@ -67,12 +67,85 @@ pub use highlight::HighlightKind;
 /// Deprecated: a second public path to [`karet_jsonrpc::framing::content_length`],
 /// where the implementation lives. Use that module directly; this alias is kept
 /// for one release so existing callers keep compiling with a warning.
+///
+/// A `#[deprecated]` module warns only where the module itself is named
+/// (`use karet_lsp::codec;`), not on `karet_lsp::codec::read_frame`, so every
+/// item here is a deprecated forwarder of its own: each path through the module
+/// warns, whichever way it is written.
 #[deprecated(
     since = "0.8.0",
     note = "use `karet_jsonrpc::framing::content_length`, which this re-exports"
 )]
 pub mod codec {
-    pub use karet_jsonrpc::framing::content_length::*;
+    use std::io;
+
+    use karet_jsonrpc::framing::content_length;
+    use tokio::io::AsyncBufRead;
+    use tokio::io::AsyncWrite;
+
+    /// Deprecated alias of [`content_length::MAX_MESSAGE_BYTES`].
+    #[deprecated(
+        since = "0.8.0",
+        note = "use `karet_jsonrpc::framing::content_length::MAX_MESSAGE_BYTES`"
+    )]
+    pub const MAX_MESSAGE_BYTES: usize = content_length::MAX_MESSAGE_BYTES;
+
+    /// Deprecated alias of the [`content_length::ContentLength`] framing type.
+    #[deprecated(
+        since = "0.8.0",
+        note = "use `karet_jsonrpc::framing::content_length::ContentLength`"
+    )]
+    pub type ContentLength = content_length::ContentLength;
+
+    /// Deprecated alias of the [`content_length::ContentLength`] unit value, so
+    /// `codec::ContentLength` keeps working in expression position too.
+    #[deprecated(
+        since = "0.8.0",
+        note = "use `karet_jsonrpc::framing::content_length::ContentLength`"
+    )]
+    #[allow(non_upper_case_globals)] // must keep the unit struct's own name
+    pub const ContentLength: content_length::ContentLength = content_length::ContentLength;
+
+    /// Deprecated alias of [`content_length::CodecError`].
+    #[deprecated(
+        since = "0.8.0",
+        note = "use `karet_jsonrpc::framing::content_length::CodecError`"
+    )]
+    pub type CodecError = content_length::CodecError;
+
+    /// Deprecated forwarder to [`content_length::read_frame`].
+    ///
+    /// # Errors
+    ///
+    /// As [`content_length::read_frame`].
+    #[deprecated(
+        since = "0.8.0",
+        note = "use `karet_jsonrpc::framing::content_length::read_frame`"
+    )]
+    pub async fn read_frame<R>(
+        reader: &mut R,
+    ) -> Result<Option<Vec<u8>>, content_length::CodecError>
+    where
+        R: AsyncBufRead + Unpin,
+    {
+        content_length::read_frame(reader).await
+    }
+
+    /// Deprecated forwarder to [`content_length::write_frame`].
+    ///
+    /// # Errors
+    ///
+    /// As [`content_length::write_frame`].
+    #[deprecated(
+        since = "0.8.0",
+        note = "use `karet_jsonrpc::framing::content_length::write_frame`"
+    )]
+    pub async fn write_frame<W>(writer: &mut W, body: &[u8]) -> io::Result<()>
+    where
+        W: AsyncWrite + Unpin,
+    {
+        content_length::write_frame(writer, body).await
+    }
 }
 pub use launch::ExitReport;
 pub use launch::LaunchCause;
