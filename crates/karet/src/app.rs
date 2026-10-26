@@ -720,6 +720,8 @@ pub struct App {
     /// In-flight commit-detail requests, mapping request id → where its result goes
     /// (a new standalone commit tab, or the graph browser's detail pane).
     pending_commit_detail: HashMap<RequestId, ViewId>,
+    /// In-flight range diffs, mapping request id → the compare tab reserved for it.
+    pending_compare: HashMap<RequestId, ViewId>,
     /// Explicit LaTeX build requests mapped to their reserved preview view.
     latex_previews: HashMap<RequestId, ViewId>,
     /// Lazy forge-verification reads, owned by their exact commit view.

@@ -287,12 +287,10 @@ impl App {
                 "go to commit: enter a hash, ref, or range (a..b, a...b)",
             );
         } else if let Some((base, head, merge_base)) = parse_rev_range(&rev) {
-            self.open_range(SessionCommand::RangeChanges {
-                spec: RangeSpec::Between {
-                    base,
-                    head,
-                    merge_base,
-                },
+            self.open_range(RangeSpec::Between {
+                base,
+                head,
+                merge_base,
             });
         } else {
             self.open_commit(rev);
