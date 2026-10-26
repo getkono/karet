@@ -10,19 +10,23 @@ use std::path::PathBuf;
 
 use crate::coord::Range;
 use crate::edit::WorkspaceEdit;
-use crate::token::ThemeRole;
-use crate::token::TokenId;
 
 mod completion;
+mod decoration;
 mod hierarchy;
 mod inlay;
 mod lens;
+mod virtual_text;
 
 pub use completion::CompletionItem;
 pub use completion::CompletionKind;
 pub use completion::CompletionList;
 pub use completion::CompletionTrigger;
 pub use completion::Tabstop;
+pub use decoration::Decoration;
+pub use decoration::DecorationColor;
+pub use decoration::DecorationKind;
+pub use decoration::TextModifiers;
 pub use hierarchy::HierarchyDirection;
 pub use hierarchy::HierarchyItem;
 pub use inlay::InlayHint;
@@ -32,6 +36,11 @@ pub use lens::CODE_LENS_SEPARATOR;
 pub use lens::CodeLens;
 pub use lens::CodeLensRow;
 pub use lens::CodeLensSpan;
+pub use virtual_text::EolAlign;
+pub use virtual_text::VirtualLine;
+pub use virtual_text::VirtualLineSide;
+pub use virtual_text::VirtualText;
+pub use virtual_text::VirtualTextPlacement;
 
 /// Severity of a [`Diagnostic`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -97,213 +106,6 @@ pub struct Diagnostic {
     pub tags: Vec<DiagnosticTag>,
     /// Related locations.
     pub related: Vec<RelatedInfo>,
-}
-
-/// The kind of a [`Decoration`] — the visual treatment to apply to a range.
-///
-/// `#[non_exhaustive]`: richer treatments (underlines, gutter icons, breakpoint
-/// markers, …) are added as variants when a producer and a renderer exist for them.
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[non_exhaustive]
-pub enum DecorationKind {
-    /// A glyph in the gutter's leading marker column (e.g. a breakpoint, a
-    /// diagnostic's severity sign).
-    GutterMarker {
-        /// The glyph to draw.
-        glyph: char,
-    },
-    /// A glyph marking lines changed against a baseline (e.g. a VCS
-    /// uncommitted-change bar), drawn in a gutter column of its own so it
-    /// never competes with a [`GutterMarker`](Self::GutterMarker) on the same
-    /// line.
-    ///
-    /// A renderer with no such column may draw it in the marker column
-    /// instead, behind every `GutterMarker` on the line.
-    ChangeMarker {
-        /// The glyph to draw.
-        glyph: char,
-    },
-    /// Highlight the whole line's background.
-    LineBackground,
-    /// Highlight the text background within the range.
-    TextBackground,
-    /// Underline the text within the range, leaving its colors alone (e.g. a
-    /// Ctrl-hovered symbol a click would navigate to).
-    ///
-    /// The decoration's `role` colors the underline; `None` underlines in the
-    /// text's own foreground, which no theme can render illegibly.
-    Underline,
-    /// A color chip over the range, carrying an arbitrary color instead of a
-    /// theme role (e.g. a CSS color literal). The renderer paints the range's
-    /// background in this color and picks a contrasting foreground itself.
-    ColorSwatch {
-        /// The color, as straight (un-premultiplied) 8-bit RGBA. Renderers
-        /// that cannot blend may ignore the alpha channel.
-        rgba: [u8; 4],
-    },
-    /// Restyle the text within the range with the decoration's
-    /// [`fg`](Decoration::fg) and [`modifiers`](Decoration::modifiers) only,
-    /// painting no background or underline (e.g. a semantic token's colour, a
-    /// struck-through deprecated name). The `role` is unused.
-    TextStyle,
-}
-
-/// Text attributes a [`Decoration`] adds to the cells it covers: a small set
-/// of flags combined with `|`.
-///
-/// Overlapping decorations *blend* their modifiers: a cell shows the union of
-/// every covering decoration's flags, whatever their priorities.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-#[cfg_attr(
-    feature = "serde",
-    derive(serde::Serialize, serde::Deserialize),
-    serde(transparent)
-)]
-pub struct TextModifiers(u8);
-
-impl TextModifiers {
-    /// No attributes.
-    pub const NONE: Self = Self(0);
-    /// Bold (heavier) text.
-    pub const BOLD: Self = Self(1);
-    /// Italic text.
-    pub const ITALIC: Self = Self(1 << 1);
-    /// Struck-through text.
-    pub const STRIKETHROUGH: Self = Self(1 << 2);
-    /// Dimmed (faint) text.
-    pub const DIM: Self = Self(1 << 3);
-
-    /// Whether every flag of `other` is set in `self`.
-    #[must_use]
-    pub const fn contains(self, other: Self) -> bool {
-        self.0 & other.0 == other.0
-    }
-
-    /// Whether no flag is set.
-    #[must_use]
-    pub const fn is_empty(self) -> bool {
-        self.0 == 0
-    }
-
-    /// The flags set in either `self` or `other`.
-    #[must_use]
-    pub const fn union(self, other: Self) -> Self {
-        Self(self.0 | other.0)
-    }
-}
-
-impl std::ops::BitOr for TextModifiers {
-    type Output = Self;
-
-    fn bitor(self, other: Self) -> Self {
-        self.union(other)
-    }
-}
-
-impl std::ops::BitOrAssign for TextModifiers {
-    fn bitor_assign(&mut self, other: Self) {
-        *self = self.union(other);
-    }
-}
-
-/// A theme-resolved color a [`Decoration`] recolours its text with: a UI
-/// [`ThemeRole`], or a code [`TokenId`] class (e.g. a semantic token), whose
-/// color the renderer's theme supplies.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[non_exhaustive]
-pub enum DecorationColor {
-    /// The color of a UI role.
-    Role(ThemeRole),
-    /// The color of a code token class.
-    Token(TokenId),
-}
-
-impl From<ThemeRole> for DecorationColor {
-    fn from(role: ThemeRole) -> Self {
-        Self::Role(role)
-    }
-}
-
-impl From<TokenId> for DecorationColor {
-    fn from(token: TokenId) -> Self {
-        Self::Token(token)
-    }
-}
-
-/// A presentation-neutral decoration: a range plus a visual treatment.
-///
-/// Build one with [`Decoration::new`] and refine it with the `with_*`
-/// methods, or as a literal.
-///
-/// Where decorations overlap, each single-valued attribute (a background, a
-/// foreground, an underline color, a gutter glyph) comes from the covering
-/// decoration with the highest [`priority`](Self::priority); among equal
-/// priorities the one supplied first wins. [`modifiers`](Self::modifiers)
-/// blend instead (see [`TextModifiers`]).
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct Decoration {
-    /// The decorated range.
-    pub range: Range,
-    /// How to decorate it.
-    pub kind: DecorationKind,
-    /// An optional theme role supplying the color.
-    pub role: Option<ThemeRole>,
-    /// An optional color recolouring the text the decoration covers.
-    ///
-    /// Applies to the text-level kinds (backgrounds, underlines, swatches,
-    /// [`TextStyle`](DecorationKind::TextStyle)); gutter markers ignore it. A
-    /// [`ColorSwatch`](DecorationKind::ColorSwatch)'s own contrasting
-    /// foreground and a selection's background still take precedence, so the
-    /// text stays legible.
-    #[cfg_attr(feature = "serde", serde(default))]
-    pub fg: Option<DecorationColor>,
-    /// Text attributes added to the covered text (text-level kinds only, as
-    /// with [`fg`](Self::fg)).
-    #[cfg_attr(feature = "serde", serde(default))]
-    pub modifiers: TextModifiers,
-    /// The overlap priority: higher wins (default `0`).
-    #[cfg_attr(feature = "serde", serde(default))]
-    pub priority: i32,
-}
-
-impl Decoration {
-    /// A decoration of `kind` over `range` colored by `role`, with no
-    /// foreground, no modifiers and the default priority.
-    #[must_use]
-    pub const fn new(range: Range, kind: DecorationKind, role: Option<ThemeRole>) -> Self {
-        Self {
-            range,
-            kind,
-            role,
-            fg: None,
-            modifiers: TextModifiers::NONE,
-            priority: 0,
-        }
-    }
-
-    /// Recolour the covered text with `fg` (a [`ThemeRole`] or a [`TokenId`]).
-    #[must_use]
-    pub fn with_fg(mut self, fg: impl Into<DecorationColor>) -> Self {
-        self.fg = Some(fg.into());
-        self
-    }
-
-    /// Add `modifiers` to the covered text.
-    #[must_use]
-    pub const fn with_modifiers(mut self, modifiers: TextModifiers) -> Self {
-        self.modifiers = self.modifiers.union(modifiers);
-        self
-    }
-
-    /// Set the overlap priority (higher wins).
-    #[must_use]
-    pub const fn with_priority(mut self, priority: i32) -> Self {
-        self.priority = priority;
-        self
-    }
 }
 
 /// The kind of a [`Symbol`] (mirrors the LSP `SymbolKind` set).
@@ -404,161 +206,6 @@ pub struct WorkspaceSymbol {
     /// Where in `path` the symbol is, or `None` when the producer named only
     /// the file (LSP's URI-only form, which a later resolve would complete).
     pub range: Option<Range>,
-}
-
-/// Which edge of the end-of-line slot a [`VirtualTextPlacement::EndOfLine`]
-/// text keeps to.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[non_exhaustive]
-pub enum EolAlign {
-    /// Immediately after the line's content (and any left-aligned text before
-    /// it).
-    #[default]
-    Left,
-    /// Flush against the viewport's right edge, when the row leaves room for
-    /// it; otherwise immediately after the left-aligned text.
-    Right,
-}
-
-/// Where a [`VirtualText`] sits on its line.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[non_exhaustive]
-pub enum VirtualTextPlacement {
-    /// Between characters: immediately before the character at `col`, after
-    /// that column's caret slot, so a caret at `col` sits against the text it
-    /// edits rather than past the annotation. A `col` at or past the line's
-    /// end trails its last character.
-    ///
-    /// It is part of the line's layout: it takes cells when the line wraps,
-    /// shifts every caret and click after it, and a horizontal reveal scrolls
-    /// as far as it is drawn. A click on it resolves to `col`.
-    Inline {
-        /// The buffer column (in `char`s) it renders before.
-        col: u32,
-    },
-    /// The end-of-line slot: the cells a line's last row leaves free after
-    /// its content and trailing inline text. It never wraps, never shifts the
-    /// text, and no caret enters it (a click on it resolves to the end of the
-    /// line). When the slot is too narrow for everything on the line, higher
-    /// `priority` keeps its cells first, and a text cut short ends in `…`.
-    ///
-    /// The slot begins at the end-of-line caret cell: a text that should
-    /// stand apart from the code carries its own leading gap.
-    EndOfLine {
-        /// Which edge of the slot it keeps to.
-        align: EolAlign,
-        /// Truncation priority: higher is cut last. Equal priorities are cut
-        /// last-supplied first.
-        priority: u8,
-    },
-}
-
-/// Presentation-neutral virtual text: cells a renderer paints on a line that
-/// are not in the buffer (inlay hints, inline blame, dependency versions,
-/// inline diagnostics, ghost text).
-///
-/// One model for every producer, so a renderer has one path that wrapping,
-/// caret placement, hit-testing and horizontal scrolling all account for.
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct VirtualText {
-    /// The line it is on.
-    pub line: u32,
-    /// Where on the line.
-    pub placement: VirtualTextPlacement,
-    /// The text to paint, on one row (a renderer does not break it).
-    pub text: String,
-    /// The theme role supplying its color.
-    pub role: ThemeRole,
-}
-
-impl VirtualText {
-    /// Text anchored before the character at `col` on `line`
-    /// ([`VirtualTextPlacement::Inline`]).
-    #[must_use]
-    pub fn inline(line: u32, col: u32, text: impl Into<String>, role: ThemeRole) -> Self {
-        Self {
-            line,
-            placement: VirtualTextPlacement::Inline { col },
-            text: text.into(),
-            role,
-        }
-    }
-
-    /// Left-aligned text in `line`'s end-of-line slot at `priority`
-    /// ([`VirtualTextPlacement::EndOfLine`]).
-    #[must_use]
-    pub fn end_of_line(line: u32, text: impl Into<String>, role: ThemeRole, priority: u8) -> Self {
-        Self {
-            line,
-            placement: VirtualTextPlacement::EndOfLine {
-                align: EolAlign::Left,
-                priority,
-            },
-            text: text.into(),
-            role,
-        }
-    }
-}
-
-/// Which side of its buffer line a [`VirtualLine`] sits on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[non_exhaustive]
-pub enum VirtualLineSide {
-    /// On its own row immediately above the line's first row (a code lens,
-    /// say).
-    Above,
-    /// On its own row immediately below the line's last row (a multi-line
-    /// inline diagnostic, an inline diff hunk, ghost text continuing a
-    /// completion).
-    Below,
-}
-
-/// A whole row of presentation-neutral text between buffer lines: cells a
-/// renderer paints on a row of their own that no buffer line owns.
-///
-/// It belongs to the buffer line it is anchored to: it scrolls with it, is
-/// hidden with it when a collapsed fold hides that line, and a click on it is
-/// routed to it. Several on one side of one line stack in supply order, so a
-/// multi-line block is one `VirtualLine` per row.
-#[derive(Clone, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct VirtualLine {
-    /// The buffer line it is anchored to.
-    pub line: u32,
-    /// Which side of that line.
-    pub side: VirtualLineSide,
-    /// The text to paint, on one row (a renderer does not wrap it).
-    pub text: String,
-    /// The theme role supplying its color.
-    pub role: ThemeRole,
-}
-
-impl VirtualLine {
-    /// A row above `line` ([`VirtualLineSide::Above`]).
-    #[must_use]
-    pub fn above(line: u32, text: impl Into<String>, role: ThemeRole) -> Self {
-        Self {
-            line,
-            side: VirtualLineSide::Above,
-            text: text.into(),
-            role,
-        }
-    }
-
-    /// A row below `line` ([`VirtualLineSide::Below`]).
-    #[must_use]
-    pub fn below(line: u32, text: impl Into<String>, role: ThemeRole) -> Self {
-        Self {
-            line,
-            side: VirtualLineSide::Below,
-            text: text.into(),
-            role,
-        }
-    }
 }
 
 /// An opaque, application-resolved command identifier.
@@ -710,50 +357,14 @@ impl CodeAction {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn end_of_line_text_defaults_to_the_left_edge_of_the_slot() {
-        let text = VirtualText::end_of_line(4, "  Ada", ThemeRole::Muted, 3);
-        assert_eq!(text.line, 4);
-        assert_eq!(
-            text.placement,
-            VirtualTextPlacement::EndOfLine {
-                align: EolAlign::Left,
-                priority: 3,
-            }
-        );
-        assert_eq!(EolAlign::default(), EolAlign::Left);
-    }
-
-    #[test]
-    fn virtual_lines_are_built_on_the_side_their_constructor_names() {
-        let above = VirtualLine::above(2, "3 references", ThemeRole::Muted);
-        let below = VirtualLine::below(2, "  ^ expected i32", ThemeRole::DiagnosticError);
-        assert_eq!((above.line, above.side), (2, VirtualLineSide::Above));
-        assert_eq!((below.line, below.side), (2, VirtualLineSide::Below));
-        assert_eq!(below.text, "  ^ expected i32");
-        assert_eq!(below.role, ThemeRole::DiagnosticError);
-    }
+    #[cfg(feature = "serde")]
+    use crate::token::ThemeRole;
+    #[cfg(feature = "serde")]
+    use crate::token::TokenId;
 
     #[test]
     fn severity_orders_most_severe_first() {
         assert!(Severity::Error < Severity::Hint);
-    }
-
-    #[test]
-    fn decoration_kinds() {
-        let dec = Decoration::new(
-            Range::default(),
-            DecorationKind::GutterMarker { glyph: '▎' },
-            Some(ThemeRole::DiagnosticError),
-        );
-        assert_eq!(dec.kind, DecorationKind::GutterMarker { glyph: '▎' });
-        // A change marker is its own kind, never equal to a marker with the
-        // same glyph, so a renderer can give it its own lane.
-        assert_ne!(
-            DecorationKind::ChangeMarker { glyph: '▎' },
-            DecorationKind::GutterMarker { glyph: '▎' }
-        );
     }
 
     /// A kind matches itself and whatever nests under it, never a mere
@@ -771,88 +382,6 @@ mod tests {
         assert!(!extract.is_kind("source"));
         assert!(!action(Some("refactoring")).is_kind("refactor"));
         assert!(!action(None).is_kind("quickfix"));
-    }
-
-    #[test]
-    fn a_color_swatch_carries_its_color_instead_of_a_role() {
-        // The one decoration whose color is data, not a theme role: a color
-        // literal's own value travels with the decoration.
-        let dec = Decoration::new(
-            Range::default(),
-            DecorationKind::ColorSwatch {
-                rgba: [0x12, 0x34, 0x56, 0xff],
-            },
-            None,
-        );
-        assert_eq!(
-            dec.kind,
-            DecorationKind::ColorSwatch {
-                rgba: [0x12, 0x34, 0x56, 0xff],
-            }
-        );
-    }
-
-    #[test]
-    fn an_underline_decoration_carries_no_color_of_its_own() {
-        // `role: None` is the case a navigable-symbol underline uses: the
-        // underline takes the text's own foreground, so no theme can render it
-        // illegibly against its own background.
-        let dec = Decoration::new(Range::default(), DecorationKind::Underline, None);
-        assert_eq!(dec.clone(), dec);
-        assert_ne!(dec.kind, DecorationKind::TextBackground);
-    }
-
-    /// A new decoration carries no style of its own and the default
-    /// priority, so a producer that sets only a range, kind and role keeps
-    /// the old first-supplied-wins behaviour.
-    #[test]
-    fn a_new_decoration_is_unstyled_at_the_default_priority() {
-        let dec = Decoration::new(Range::default(), DecorationKind::TextBackground, None);
-        assert_eq!(dec.fg, None);
-        assert!(dec.modifiers.is_empty());
-        assert_eq!(dec.priority, 0);
-        let styled = dec
-            .clone()
-            .with_fg(TokenId::KEYWORD)
-            .with_modifiers(TextModifiers::BOLD)
-            .with_modifiers(TextModifiers::ITALIC)
-            .with_priority(-3);
-        assert_eq!(styled.fg, Some(DecorationColor::Token(TokenId::KEYWORD)));
-        // `with_modifiers` adds; it never drops a flag set earlier.
-        assert_eq!(
-            styled.modifiers,
-            TextModifiers::BOLD | TextModifiers::ITALIC
-        );
-        assert_eq!(styled.priority, -3);
-        let role = dec.with_fg(ThemeRole::Muted);
-        assert_eq!(role.fg, Some(DecorationColor::Role(ThemeRole::Muted)));
-    }
-
-    #[test]
-    fn text_modifiers_combine_as_flags() {
-        let mut both = TextModifiers::BOLD;
-        both |= TextModifiers::STRIKETHROUGH;
-        assert!(both.contains(TextModifiers::BOLD));
-        assert!(both.contains(TextModifiers::STRIKETHROUGH));
-        assert!(both.contains(TextModifiers::BOLD | TextModifiers::STRIKETHROUGH));
-        assert!(!both.contains(TextModifiers::ITALIC));
-        assert!(!both.contains(TextModifiers::BOLD | TextModifiers::DIM));
-        // The empty set is contained in every set, and is the default.
-        assert!(both.contains(TextModifiers::NONE));
-        assert_eq!(TextModifiers::default(), TextModifiers::NONE);
-        assert!(TextModifiers::NONE.is_empty());
-        assert!(!both.is_empty());
-        let flags = [
-            TextModifiers::BOLD,
-            TextModifiers::ITALIC,
-            TextModifiers::STRIKETHROUGH,
-            TextModifiers::DIM,
-        ];
-        for (i, a) in flags.iter().enumerate() {
-            for b in &flags[i + 1..] {
-                assert!(!a.contains(*b), "{a:?} overlaps {b:?}");
-            }
-        }
     }
 
     /// The wire payloads the backend seam actually carries must round-trip; this
