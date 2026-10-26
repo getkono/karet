@@ -14,7 +14,7 @@ use karet_core::DiagnosticFormatter;
 use karet_core::FormattedDiagnostic;
 
 /// The built-in [`DiagnosticFormatter`] for tsserver-family diagnostics.
-pub struct TsErrorFormatter;
+pub(crate) struct TsErrorFormatter;
 
 /// The `Diagnostic::source` values the TypeScript formatter claims.
 const TS_SOURCES: &[&str] = &["typescript", "ts", "tsserver", "deno-ts"];
@@ -31,7 +31,7 @@ impl DiagnosticFormatter for TsErrorFormatter {
 /// Format `diagnostic` through the built-in formatter registry (currently the
 /// TypeScript formatter alone; others slot in beside it).
 #[must_use]
-pub fn format_diagnostic(diagnostic: &Diagnostic) -> Option<FormattedDiagnostic> {
+pub(crate) fn format_diagnostic(diagnostic: &Diagnostic) -> Option<FormattedDiagnostic> {
     const FORMATTERS: &[&(dyn DiagnosticFormatter + Sync)] = &[&TsErrorFormatter];
     FORMATTERS
         .iter()
