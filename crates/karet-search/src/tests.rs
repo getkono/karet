@@ -456,6 +456,57 @@ fn workspace_replace_reports_a_file_it_could_not_write() -> TestResult {
     Ok(())
 }
 
+/// A write that fails after the file was found writable (here: no room for the
+/// temp file, because the directory is read-only) leaves the file exactly as it
+/// was instead of truncated, and is reported.
+#[test]
+fn workspace_replace_never_leaves_a_failed_file_truncated() -> TestResult {
+    let dir = temp_dir()?;
+    let sub = dir.path().join("sealed");
+    std::fs::create_dir(&sub)?;
+    write(&sub, "a.txt", b"needle\n")?;
+    let original = std::fs::metadata(&sub)?.permissions();
+    let mut sealed_perms = original.clone();
+    sealed_perms.set_readonly(true);
+    std::fs::set_permissions(&sub, sealed_perms)?;
+    // A privileged user (or a platform without directory write bits) can still
+    // create files there, so the failure this test needs cannot be provoked.
+    let sealed = std::fs::File::create(sub.join("probe")).is_err();
+
+    let summary = WorkspaceSearch::new().replace(dir.path(), &literal("needle"), "pin");
+    let text = std::fs::read_to_string(sub.join("a.txt"));
+    std::fs::set_permissions(&sub, original)?;
+    if !sealed {
+        return Ok(());
+    }
+    let summary = summary?;
+    assert_eq!((summary.files_changed, summary.replacements), (0, 0));
+    let failed: Vec<&Path> = summary.failures.iter().map(|f| f.path.as_path()).collect();
+    assert_eq!(failed, [sub.join("a.txt").as_path()]);
+    assert_eq!(text?, "needle\n");
+    Ok(())
+}
+
+/// A successful replace keeps the file's permissions.
+#[cfg(unix)]
+#[test]
+fn workspace_replace_keeps_file_permissions() -> TestResult {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = temp_dir()?;
+    write(dir.path(), "run.sh", b"needle\n")?;
+    let path = dir.path().join("run.sh");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o751))?;
+
+    let summary = WorkspaceSearch::new().replace(dir.path(), &literal("needle"), "pin")?;
+    assert_eq!(summary.files_changed, 1);
+    assert_eq!(std::fs::read_to_string(&path)?, "pin\n");
+    assert_eq!(
+        std::fs::metadata(&path)?.permissions().mode() & 0o777,
+        0o751
+    );
+    Ok(())
+}
+
 /// Collect every file the walk visits, as root-relative path + contents.
 fn walked(root: &Path, includes: &[String], excludes: &[String]) -> Vec<(String, String)> {
     let mut files = Vec::new();

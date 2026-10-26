@@ -384,7 +384,7 @@ impl WorkspaceSearch {
             let plan = matcher.plan(&text, replacement, query.regex);
             if !plan.is_empty() {
                 let updated = apply_replacements(&text, &plan);
-                match std::fs::write(path, updated) {
+                match write_replacing(path, updated.as_bytes()) {
                     Ok(()) => {
                         summary.files_changed += 1;
                         summary.replacements += plan.len();
@@ -399,6 +399,32 @@ impl WorkspaceSearch {
         })?;
         Ok(summary)
     }
+}
+
+/// Write `bytes` over the existing file at `path` without ever leaving it empty
+/// or half-written: the bytes go to a temp file in the same directory, which is
+/// flushed to disk and renamed over `path` only once complete. Any error before
+/// the rename (a full disk, a read-only directory) leaves `path` untouched and
+/// removes the temp file. The original's permissions are carried over.
+///
+/// A file the caller may not write is refused rather than replaced, even though
+/// the directory would allow the rename: a read-only file stays read-only.
+fn write_replacing(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let dir = match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    // Opening for write without truncating probes write permission and leaves
+    // the contents alone.
+    drop(std::fs::OpenOptions::new().write(true).open(path)?);
+    let permissions = std::fs::metadata(path)?.permissions();
+    let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
+    tmp.write_all(bytes)?;
+    tmp.as_file().sync_all()?;
+    std::fs::set_permissions(tmp.path(), permissions)?;
+    tmp.persist(path).map_err(|error| error.error)?;
+    Ok(())
 }
 
 /// Walk `root` gitignore-aware and hand every readable text file to `sink`.
