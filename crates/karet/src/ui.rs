@@ -301,11 +301,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     draw_diagnostic_view(f, app, &theme, area);
 
     if let Some(overlay) = &app.overlay {
-        // Quick-open over a first walk (or a symbol request), or a hierarchy
-        // waiting on its server, that is taking a while says so.
+        // Quick-open over a first walk (or a symbol request) that is taking a
+        // while says so.
         let loading = app
             .quick_open_loading()
-            .or_else(|| app.hierarchy_loading())
             .is_some_and(|pending| pending.visible());
         draw_overlay(f, overlay, loading, &theme, area);
     }
@@ -495,6 +494,9 @@ struct PaneCtx<'a> {
     /// Code lenses keyed by backend document, in buffer columns; empty while
     /// `editor.codeLens` is off.
     code_lenses: &'a HashMap<DocumentId, Vec<karet_core::CodeLens>>,
+    /// The language servers' colours keyed by backend document, each with the
+    /// buffer version its ranges are positioned against.
+    document_colors: &'a crate::app::HeldColors,
     /// Cached document symbols keyed by backend document, for the breadcrumb's
     /// enclosing-symbol chain.
     symbols: &'a HashMap<DocumentId, Vec<karet_core::Symbol>>,

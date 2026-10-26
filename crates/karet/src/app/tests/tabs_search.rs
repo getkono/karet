@@ -594,7 +594,6 @@ fn commit_graph_browser_opens_fills_and_clamps_navigation() {
     // Backend is None in unit tests, so feed a history page directly.
     let commit = |hash: &str, summary: &str, parents: Vec<String>| Commit {
         hash: hash.to_string(),
-        short_hash: hash.chars().take(7).collect(),
         summary: summary.to_string(),
         author: "Tester".to_string(),
         time: 0,
@@ -666,7 +665,6 @@ fn graph_compare_requires_a_marked_base() {
         vec![
             Commit {
                 hash: "aaaa".to_string(),
-                short_hash: "aaaa".to_string(),
                 summary: "c1".to_string(),
                 author: "T".to_string(),
                 time: 0,
@@ -674,7 +672,6 @@ fn graph_compare_requires_a_marked_base() {
             },
             Commit {
                 hash: "bbbb".to_string(),
-                short_hash: "bbbb".to_string(),
                 summary: "c0".to_string(),
                 author: "T".to_string(),
                 time: 0,
@@ -705,7 +702,6 @@ fn commit_view_scrolls_by_wheel_and_page_and_edges() {
     // Build a standalone commit view with one changed file.
     let detail = CommitDetail {
         hash: "a".repeat(40),
-        short_hash: "aaaaaaa".to_string(),
         summary: "subject".to_string(),
         body: String::new(),
         author: karet_vcs::Identity {
@@ -762,7 +758,6 @@ fn double_click_badge_reveals_and_wakes_to_hide() {
     };
     let detail = CommitDetail {
         hash: "a".repeat(40),
-        short_hash: "aaaaaaa".to_string(),
         summary: "subject".to_string(),
         body: String::new(),
         author: id(),

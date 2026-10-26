@@ -23,6 +23,7 @@ mod commands;
 mod connector;
 mod delta;
 mod editing;
+mod folding;
 mod format;
 mod forward;
 mod health;
@@ -31,6 +32,7 @@ mod inline_completion;
 mod inventory;
 mod jdtls;
 mod lifecycle;
+mod link_color;
 mod message;
 mod provider;
 mod pull;
@@ -64,6 +66,9 @@ use karet_core::WorkspaceEdit;
 use karet_lsp::LspClient;
 use karet_lsp::LspError;
 use karet_lsp::LspSpec;
+pub(crate) use link_color::LinkColorAnswer;
+pub(crate) use link_color::LinkColorCmd;
+pub(crate) use link_color::NO_TARGET;
 pub(crate) use message::DiagnosticFeed;
 pub(crate) use message::DiagnosticLayer;
 pub(crate) use message::DocumentHighlightsAnswer;
@@ -302,6 +307,9 @@ impl LspManager {
             | LspUpdate::SemanticTokens {
                 token, server: key, ..
             }
+            | LspUpdate::FoldingRanges {
+                token, server: key, ..
+            }
             | LspUpdate::SpawnFailed { token, key, .. }
             | LspUpdate::ServerDied { token, key, .. }
             | LspUpdate::RuntimeState { token, key, .. } => self
@@ -329,6 +337,7 @@ impl LspManager {
             | LspUpdate::PrepareRename { generation, .. }
             | LspUpdate::CodeAction { generation, .. }
             | LspUpdate::CodeLens { generation, .. }
+            | LspUpdate::LinkColor { generation, .. }
             | LspUpdate::Formatting { generation, .. }
             | LspUpdate::SyncFailed { generation, .. }
             | LspUpdate::PreflightFailed { generation, .. }
@@ -628,8 +637,11 @@ impl LspManager {
     fn inline_companion(&self) -> Option<LanguageServerId> {
         let copilot = LanguageServerId::new(catalog::COPILOT);
         let opted_in = self.settings.servers.contains_key(copilot.key())
-            || crate::lsp_registry::installed_version(self.registry_root.as_deref(), &copilot)
-                .is_some();
+            || crate::lsp_registry::store::installed_version(
+                self.registry_root.as_deref(),
+                &copilot,
+            )
+            .is_some();
         opted_in.then_some(copilot)
     }
 

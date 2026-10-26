@@ -58,6 +58,7 @@
         Ok(())
     }
 
+    #[cfg(feature = "cbor")]
     #[test]
     fn cbor_opens_decoded_and_save_reencodes() -> TestResult {
         let dir = tempfile::tempdir()?;
@@ -125,6 +126,7 @@
         Ok(())
     }
 
+    #[cfg(feature = "cbor")]
     #[test]
     fn cbor_save_of_malformed_edit_leaves_file_untouched() -> TestResult {
         let dir = tempfile::tempdir()?;

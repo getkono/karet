@@ -35,7 +35,6 @@ use ratatui::style::Color;
 use ratatui::widgets::Widget;
 
 /// The maximum base64 payload per Kitty escape chunk.
-#[cfg(feature = "raster")]
 const KITTY_CHUNK: usize = 4096;
 
 /// The most source pixels a side the per-frame halfblock painters average for one
@@ -130,14 +129,30 @@ pub fn kitty_place(id: u32, placement: u32, cols: u16, rows: u16) -> String {
 /// `more_keys` follow `m` in every later one.
 #[cfg(feature = "raster")]
 fn kitty_chunks(payload: &[u8], keys: &str, more_keys: &str) -> String {
-    let payload = base64::engine::general_purpose::STANDARD.encode(payload);
+    kitty_chunked(
+        &base64::engine::general_purpose::STANDARD.encode(payload),
+        keys,
+        more_keys,
+    )
+}
+
+/// An already base64-encoded Kitty payload split into escapes of at most 4096
+/// payload bytes each, as the Kitty graphics protocol requires: `keys` lead the
+/// first escape, every escape but the last carries `m=1` and the last `m=0`, and
+/// `more_keys` (e.g. `",q=2"`) follow `m` in every escape after the first.
+///
+/// For callers that build their own pixels without the `raster` feature. The
+/// payload is split on byte boundaries, so it must be ASCII, as base64 is; an
+/// empty payload yields no escape.
+#[must_use]
+pub fn kitty_chunked(base64: &str, keys: &str, more_keys: &str) -> String {
     // Base64 is ASCII, so every chunk boundary is a char boundary.
-    let chunks: Vec<&str> = payload
+    let chunks: Vec<&str> = base64
         .as_bytes()
         .chunks(KITTY_CHUNK)
         .filter_map(|chunk| std::str::from_utf8(chunk).ok())
         .collect();
-    let mut out = String::with_capacity(payload.len() + chunks.len() * (keys.len() + 16));
+    let mut out = String::with_capacity(base64.len() + chunks.len() * (keys.len() + 16));
     for (i, data) in chunks.iter().enumerate() {
         let more = u8::from(i + 1 != chunks.len());
         if i == 0 {

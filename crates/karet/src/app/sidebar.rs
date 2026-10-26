@@ -278,6 +278,7 @@ impl App {
             SidebarPanel::Todos => self.todos_select(delta),
             SidebarPanel::Debug => self.debug_select(delta),
             SidebarPanel::Problems => self.problems_select(delta),
+            SidebarPanel::Hierarchy => self.hierarchy_select(delta),
         }
     }
 
@@ -297,7 +298,8 @@ impl App {
             | SidebarPanel::Spelling
             | SidebarPanel::Todos
             | SidebarPanel::Debug
-            | SidebarPanel::Problems => {},
+            | SidebarPanel::Problems
+            | SidebarPanel::Hierarchy => {},
         }
     }
 
@@ -375,6 +377,7 @@ impl App {
             SidebarPanel::Todos => self.open_selected_todo(),
             SidebarPanel::Debug => self.debug_activate_row(),
             SidebarPanel::Problems => self.open_selected_problem(),
+            SidebarPanel::Hierarchy => self.open_selected_hierarchy(),
             // The Search panel binds Enter in its own layer (Layer::SearchList).
             SidebarPanel::Search => {},
         }
@@ -446,9 +449,12 @@ impl App {
         }
     }
 
-    /// Collapse the selected directory (explorer only).
+    /// Collapse the selected directory, or the selected hierarchy node (or
+    /// climb to its parent).
     pub(super) fn sidebar_collapse(&mut self) {
-        if self.sidebar_panel == SidebarPanel::Explorer
+        if self.sidebar_panel == SidebarPanel::Hierarchy {
+            self.hierarchy_collapse();
+        } else if self.sidebar_panel == SidebarPanel::Explorer
             && let Some(row) = self.explorer.selected()
             && row.is_dir
         {
@@ -457,10 +463,13 @@ impl App {
         }
     }
 
-    /// Toggle expansion of the selected directory (explorer only).
+    /// Toggle expansion of the selected directory, or of the selected
+    /// hierarchy node.
     pub(super) fn sidebar_toggle_expand(&mut self) {
-        if self.sidebar_panel == SidebarPanel::Explorer {
-            self.explorer.toggle_selected();
+        match self.sidebar_panel {
+            SidebarPanel::Explorer => self.explorer.toggle_selected(),
+            SidebarPanel::Hierarchy => self.hierarchy_toggle(),
+            _ => {},
         }
     }
 

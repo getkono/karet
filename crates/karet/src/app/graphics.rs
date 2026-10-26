@@ -25,20 +25,19 @@ pub(super) struct GraphicsCaret {
 }
 
 impl GraphicsCaret {
-    /// Build the escape sequence that deletes any previous caret placement and draws
-    /// an RGBA bar scaled into this cell.
+    /// Build the escape sequences that delete any previous caret placement and draw
+    /// an RGBA bar scaled into this cell, its payload chunked to the Kitty limit.
     fn escape(self) -> String {
-        let rgba = caret_rgba();
-        let payload = base64::engine::general_purpose::STANDARD.encode(rgba);
+        let payload = base64::engine::general_purpose::STANDARD.encode(caret_rgba());
+        let keys = format!(
+            "a=T,i={CARET_IMAGE_ID},f=32,s={CARET_IMAGE_WIDTH},v={CARET_IMAGE_HEIGHT},c=1,r=1,z=1,C=1,q=2"
+        );
         format!(
-            "{}\x1b[{};{}H\x1b_Ga=T,i={},f=32,s={},v={},c=1,r=1,z=1,C=1,q=2;{}\x1b\\",
+            "{}\x1b[{};{}H{}",
             delete_graphics_caret(),
             self.y + 1,
             self.x + 1,
-            CARET_IMAGE_ID,
-            CARET_IMAGE_WIDTH,
-            CARET_IMAGE_HEIGHT,
-            payload
+            image::kitty_chunked(&payload, &keys, ",q=2")
         )
     }
 }
@@ -235,6 +234,37 @@ mod tests {
         assert!(esc.contains("c=1"));
         assert!(esc.contains("r=1"));
         assert!(esc.contains("z=1"));
+    }
+
+    #[test]
+    fn graphics_caret_transmit_is_chunked_within_the_kitty_payload_limit() {
+        let delete = image::kitty_delete_image(CARET_IMAGE_ID);
+        let esc = GraphicsCaret { x: 0, y: 0 }.escape();
+        let transmit = esc
+            .strip_prefix(&delete)
+            .and_then(|rest| rest.strip_prefix("\x1b[1;1H"))
+            .unwrap_or_default();
+        let mut keys = Vec::new();
+        let mut payload = String::new();
+        for escape in transmit.split_terminator("\x1b\\") {
+            let body = escape.strip_prefix("\x1b_G").unwrap_or_default();
+            let (head, data) = body.split_once(';').unwrap_or_default();
+            assert!(data.len() <= 4096, "a chunk carries {} bytes", data.len());
+            keys.push(head);
+            payload.push_str(data);
+        }
+        // 8192 RGBA bytes are 10924 base64 bytes: three chunks.
+        assert_eq!(keys.len(), 3);
+        assert_eq!(
+            keys[0],
+            format!("a=T,i={CARET_IMAGE_ID},f=32,s=32,v=64,c=1,r=1,z=1,C=1,q=2,m=1")
+        );
+        assert_eq!(keys[1], "m=1,q=2");
+        assert_eq!(keys[2], "m=0,q=2");
+        let rgba = base64::engine::general_purpose::STANDARD
+            .decode(payload)
+            .unwrap_or_default();
+        assert_eq!(rgba, caret_rgba());
     }
 
     #[test]

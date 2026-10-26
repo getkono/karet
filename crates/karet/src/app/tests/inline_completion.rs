@@ -342,6 +342,27 @@ fn a_second_caret_hides_the_ghost() {
     assert!(accepts(&backend).is_empty());
 }
 
+#[test]
+fn an_open_completion_popup_hides_the_ghost() {
+    let (backend, mut app, now) = ghost_app("ab\n", LineCol::new(0, 2));
+    let id = type_and_ask(&mut app, &backend, 'c', now);
+    answer(&mut app, id, vec![item("abcd", 0, (0, 3))]);
+    assert!(app.inline_ghost().is_some());
+    let doc = app.completion_target().map(|(doc, _)| doc);
+    assert!(doc.is_some(), "the code tab has a document");
+    app.completion.popup = Some(crate::completion::CompletionUi::new(
+        doc.unwrap_or(DocumentId(0)),
+        LineCol::new(0, 0),
+        LineCol::new(0, 3),
+        vec![karet_core::CompletionItem::new(
+            "abcdef",
+            karet_core::CompletionKind::Function,
+        )],
+        crate::completion::CompletionMode::Filtered,
+    ));
+    assert!(app.inline_ghost().is_none());
+}
+
 /// "Copilot: Sign In" asks Copilot's server; the device code it answers goes
 /// on the clipboard and stays on screen, and a failure says why.
 #[test]

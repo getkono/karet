@@ -50,10 +50,14 @@ use karet_lsp::LspError;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 
+use super::account::FollowUpTask;
 use super::code_actions::ProbeFlight;
 use super::code_lens::LensFlight;
 use super::health::FailureTally;
+use super::inline_completion;
 use super::inline_completion::InlineFlight;
+use super::inline_completion::InlineStep;
+use super::link_color::LinkColorFlight;
 use super::message::LspUpdate;
 use super::slot::SlotKey;
 use super::slot::SlotToken;
@@ -141,9 +145,9 @@ pub(super) type HintAnswer = Answer<Vec<InlayHint>>;
 pub(super) type HintFlight = Flight<Hints>;
 
 /// Every background request one server task has accepted and not yet
-/// answered: its inlay-hint requests, lightbulb probes, code-lens listings
-/// and inline-completion asks, each kind capped at one running per document
-/// on its own.
+/// answered: its inlay-hint requests, lightbulb probes, code-lens listings,
+/// inline-completion asks and link-and-colour listings, each kind capped at
+/// one running per document on its own.
 #[derive(Default)]
 pub(super) struct Flights {
     /// The inlay-hint requests.
@@ -154,15 +158,36 @@ pub(super) struct Flights {
     pub(super) lenses: LensFlight,
     /// The inline-completion asks.
     pub(super) inline: InlineFlight,
+    /// The document-link and colour listings.
+    pub(super) links: LinkColorFlight,
+    /// The running completing request of the last sign-in, which the next
+    /// account step supersedes (see `account`).
+    sign_in: FollowUpTask,
 }
 
 impl Flights {
+    /// Run an inline-completion step that is not a background ask (see
+    /// [`inline_completion::serve`]), holding the sign-in completing request
+    /// it may start, so the next account step can supersede it.
+    pub(super) async fn run(
+        &mut self,
+        client: &Option<Arc<LspClient>>,
+        step: InlineStep,
+        slot: (&SlotKey, SlotToken),
+        updates: &mpsc::UnboundedSender<LspUpdate>,
+        generation: u64,
+    ) {
+        let sinks = (updates, &mut self.sign_in);
+        inline_completion::serve(client, step, slot, sinks, generation).await;
+    }
+
     /// [`Flight::launch_ready`] for every kind.
     pub(super) fn launch_ready(&mut self, client: &Arc<LspClient>, pending: Option<&Path>) {
         self.hints.launch_ready(client, pending);
         self.probes.launch_ready(client, pending);
         self.lenses.launch_ready(client, pending);
         self.inline.launch_ready(client, pending);
+        self.links.launch_ready(client, pending);
     }
 
     /// [`Flight::abandon`] for every kind.
@@ -171,6 +196,7 @@ impl Flights {
         self.probes.abandon(updates, generation);
         self.lenses.abandon(updates, generation);
         self.inline.abandon(updates, generation);
+        self.links.abandon(updates, generation);
     }
 
     /// [`Flight::shutdown`] for every kind.
@@ -183,6 +209,7 @@ impl Flights {
         self.probes.shutdown(updates, generation).await;
         self.lenses.shutdown(updates, generation).await;
         self.inline.shutdown(updates, generation).await;
+        self.links.shutdown(updates, generation).await;
     }
 }
 

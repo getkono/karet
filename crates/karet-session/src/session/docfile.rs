@@ -7,6 +7,7 @@
 use super::*;
 
 /// How many leading bytes to sample when classifying a document's on-disk format.
+#[cfg(feature = "cbor")]
 const CLASSIFY_HEAD: usize = 8192;
 
 /// Load `path` into an editable buffer, decoding a known binary format (CBOR) to

@@ -553,6 +553,7 @@ impl App {
             SidebarPanel::Todos => self.todos_click(col, row_y),
             SidebarPanel::Debug => self.debug_click(col, row_y),
             SidebarPanel::Problems => self.problems_click(col, row_y),
+            SidebarPanel::Hierarchy => self.hierarchy_click(col, row_y),
             SidebarPanel::Explorer => {
                 if !rect_contains(self.sidebar_content_rect, (col, row_y)) {
                     return;

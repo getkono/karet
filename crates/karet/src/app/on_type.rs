@@ -26,7 +26,8 @@ pub(crate) struct OnTypeState {
     /// The request in flight, if any; a newer one supersedes it.
     pending: Option<PendingOnType>,
     /// The trigger characters each document's server answered with, empty
-    /// for a server that formats on none; dropped when the document closes.
+    /// for a server that formats on none; dropped when the document closes,
+    /// is moved, or may have changed servers.
     /// A document without an entry is offered every typed character until
     /// its server says which it formats on.
     pub(crate) triggers: HashMap<DocumentId, Vec<char>>,
@@ -74,6 +75,15 @@ impl App {
             NotificationKind::Lsp,
             format!("format on type: {state}"),
         );
+    }
+
+    /// Forget every document's remembered trigger characters, so each is
+    /// offered typed characters again until its server answers anew. Called
+    /// when the `lsp` settings change and when a managed server is installed,
+    /// updated, or removed: a document may now be served by a server that
+    /// formats on characters the old one did not.
+    pub(super) fn forget_on_type_triggers(&mut self) {
+        self.on_type.triggers.clear();
     }
 
     /// After `ch` was typed (`\n` for Enter): offer it to the language

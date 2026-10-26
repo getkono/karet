@@ -1,14 +1,16 @@
 //! Call and type hierarchies: a tree of callers, callees, supertypes or
 //! subtypes, grown one level at a time as the user expands it.
 //!
-//! The tree is an overlay ([`Overlay::Hierarchy`]) opened at once, empty, when
-//! the command runs; the language server's roots fill it in
-//! (`Command::PrepareHierarchy` in, `Event::Hierarchy` out), and the first root
-//! is expanded straight away so the tree opens on an answer, not on a lone
-//! row. Every other level is asked for only when the user expands its node
-//! (`Command::ExpandHierarchy`), so a deep or recursive hierarchy costs
+//! The tree lives in the Hierarchy sidebar panel ([`SidebarPanel::Hierarchy`]),
+//! shown at once, empty, when the command runs; the language server's roots
+//! fill it in (`Command::PrepareHierarchy` in, `Event::Hierarchy` out), and the
+//! first root is expanded straight away so the tree opens on an answer, not on
+//! a lone row. Every other level is asked for only when the user expands its
+//! node (`Command::ExpandHierarchy`), so a deep or recursive hierarchy costs
 //! nothing until it is walked. Right expands, Left collapses or climbs to the
-//! parent, and Enter opens the selected item.
+//! parent, Space toggles, and Enter opens the selected item. Opening an item
+//! leaves the panel and its expansion alone, so the next row is one keystroke
+//! (Ctrl+8, or the focus toggle) away.
 
 use karet_core::HierarchyDirection;
 use karet_core::HierarchyItem;
@@ -73,7 +75,6 @@ pub(crate) struct HierarchyTree {
     labels: Vec<String>,
     hints: Vec<Option<String>>,
     selected: usize,
-    title: String,
     /// The requests in flight: the node each will fill in (`None`: the
     /// roots), and when it was asked.
     pending: Vec<(RequestId, Option<usize>, Pending)>,
@@ -102,10 +103,6 @@ impl HierarchyTree {
         root: PathBuf,
         request: RequestId,
     ) -> Self {
-        let title = format!(
-            "{} · → expands · ← collapses · Enter opens",
-            direction_title(direction)
-        );
         Self {
             direction,
             doc,
@@ -116,21 +113,13 @@ impl HierarchyTree {
             labels: Vec::new(),
             hints: Vec::new(),
             selected: 0,
-            title,
             pending: vec![(request, None, Pending::start())],
         }
     }
 
-    /// The overlay title: the direction, and the keys that walk the tree.
-    pub(crate) fn title(&self) -> &str {
-        &self.title
-    }
-
-    /// The selected item's detail (a signature, a module), else its name.
-    pub(crate) fn query(&self) -> &str {
-        self.selected_node().map_or("", |node| {
-            node.item.detail.as_deref().unwrap_or(&node.item.name)
-        })
+    /// The panel's status line: which way the tree grows.
+    pub(crate) fn title(&self) -> &'static str {
+        direction_title(self.direction)
     }
 
     /// One label per visible row: indented by depth, marked by what is known
@@ -150,29 +139,67 @@ impl HierarchyTree {
         self.selected
     }
 
-    /// Move the selection up a row.
-    pub(crate) fn select_up(&mut self) {
-        self.selected = self.selected.saturating_sub(1);
+    /// How many rows are visible.
+    pub(crate) fn row_count(&self) -> usize {
+        self.visible.len()
     }
 
-    /// Move the selection down a row.
-    pub(crate) fn select_down(&mut self) {
-        self.selected = (self.selected + 1).min(self.visible.len().saturating_sub(1));
+    /// Move the selection by `delta` rows, clamped to the visible rows.
+    pub(crate) fn select_by(&mut self, delta: i32) {
+        let step = delta.unsigned_abs() as usize;
+        let row = if delta < 0 {
+            self.selected.saturating_sub(step)
+        } else {
+            self.selected.saturating_add(step)
+        };
+        self.select(row);
     }
 
-    /// Open the selected item, or close when there is none yet.
-    pub(crate) fn accept(&self) -> OverlayEvent {
-        self.selected_node()
-            .map_or(OverlayEvent::Close, |node| OverlayEvent::AcceptLocation {
-                path: node.item.location.path.clone(),
-                position: node.item.location.range.start,
-            })
+    /// Select visible row `row`, clamped to the visible rows.
+    pub(crate) fn select(&mut self, row: usize) {
+        self.selected = row.min(self.visible.len().saturating_sub(1));
+    }
+
+    /// Where the selected item is named, which Enter opens; `None` before the
+    /// roots arrive.
+    pub(crate) fn selected_location(&self) -> Option<(PathBuf, LineCol)> {
+        self.selected_node().map(|node| {
+            (
+                node.item.location.path.clone(),
+                node.item.location.range.start,
+            )
+        })
+    }
+
+    /// Whether the selected node is expanded with children to fold away, so
+    /// a toggle collapses it rather than expanding it.
+    pub(crate) fn selected_is_open(&self) -> bool {
+        self.selected_node().is_some_and(|node| {
+            node.expanded
+                && !matches!(&node.children, Children::Loaded(children) if children.is_empty())
+        })
+    }
+
+    /// The column of visible row `row`'s expansion marker, counted from the
+    /// start of its label.
+    pub(crate) fn marker_column(&self, row: usize) -> Option<usize> {
+        let node = self.nodes.get(*self.visible.get(row)?)?;
+        Some(node.depth.saturating_mul(2))
     }
 
     /// The earliest request still in flight, which the delayed loading note
     /// anchors on.
     pub(crate) fn loading(&self) -> Option<Pending> {
         self.pending.first().map(|(_, _, since)| *since)
+    }
+
+    /// Backdate every request in flight past the reveal delay, so a test can
+    /// paint the loading note without sleeping.
+    #[cfg(test)]
+    pub(crate) fn reveal_loading(&mut self) {
+        for (_, _, since) in &mut self.pending {
+            *since = Pending::revealed();
+        }
     }
 
     /// Whether `request` is the one bringing the roots.
@@ -187,9 +214,54 @@ impl HierarchyTree {
         self.direction
     }
 
-    /// The document the hierarchy was asked from.
+    /// The document the tree is grown through: the one it was asked from,
+    /// until that one closes and another takes its place.
     pub(crate) fn doc(&self) -> DocumentId {
         self.doc
+    }
+
+    /// Grow the tree through `doc` from now on.
+    pub(crate) fn retarget(&mut self, doc: DocumentId) {
+        self.doc = doc;
+    }
+
+    /// The files named by `node` and each of its ancestors, nearest first:
+    /// where a document to grow the tree through is looked for when the one
+    /// it was asked from has closed.
+    pub(crate) fn paths_toward_root(&self, node: usize) -> Vec<PathBuf> {
+        let mut paths = Vec::new();
+        let mut at = Some(node);
+        while let Some(index) = at
+            && let Some(node) = self.nodes.get(index)
+        {
+            paths.push(node.item.location.path.clone());
+            at = node.parent;
+        }
+        paths
+    }
+
+    /// Put `node` back as never asked for and collapsed, so a later
+    /// expansion asks again instead of waiting on an answer that will not
+    /// come.
+    pub(crate) fn unask(&mut self, node: usize) {
+        if let Some(node) = self.nodes.get_mut(node) {
+            node.children = Children::Unasked;
+            node.expanded = false;
+        }
+        self.rebuild();
+    }
+
+    /// Settle `request` as failed. Returns `None` when the tree was not
+    /// waiting on it, else what it was for: `Some(None)` for the roots, and
+    /// `Some(Some(node))` for a node's children, which is put back as never
+    /// asked for.
+    pub(crate) fn fail(&mut self, request: RequestId) -> Option<Option<usize>> {
+        let at = self.pending.iter().position(|(id, ..)| *id == request)?;
+        let (_, node, _) = self.pending.remove(at);
+        if let Some(node) = node {
+            self.unask(node);
+        }
+        Some(node)
     }
 
     fn selected_node(&self) -> Option<&Node> {
@@ -333,9 +405,32 @@ impl HierarchyTree {
     }
 }
 
+/// Where the sidebar and keyboard focus stood before the Hierarchy panel took
+/// them, so a tree that never gets an answer can hand them back.
+#[derive(Clone, Copy, Debug)]
+struct Before {
+    panel: SidebarPanel,
+    focus: Focus,
+    visible: bool,
+}
+
+/// The Hierarchy panel: the tree being walked, if any.
+#[derive(Debug, Default)]
+pub(crate) struct HierarchyPanel {
+    /// The tree the panel shows; `None` until a hierarchy is first asked for,
+    /// and again once one comes back empty.
+    pub(crate) tree: Option<HierarchyTree>,
+    /// What the panel replaced, restored when its tree is dropped unanswered.
+    before: Option<Before>,
+}
+
+/// The Hierarchy panel's per-frame chrome — same shape as the Spelling panel's.
+pub(crate) type HierarchyChrome = SpellingChrome;
+
 impl App {
     /// Open the hierarchy in `direction` of the symbol at the caret: the tree
-    /// overlay at once, empty until the server's roots fill it in.
+    /// panel at once, empty until the server's roots fill it in. A tree
+    /// already in the panel is replaced, and its late answers are dropped.
     pub(crate) fn open_hierarchy(&mut self, direction: HierarchyDirection) {
         let Some((doc, position)) = self.completion_target() else {
             let noun = hierarchy_noun(direction);
@@ -356,24 +451,83 @@ impl App {
         };
         let root = workspace::absolute(&self.root);
         let tree = HierarchyTree::new(direction, doc, root, request);
-        self.overlay = Some(Overlay::Hierarchy(Box::new(tree)));
+        // Replacing a tree already on show keeps what that one replaced: the
+        // panel itself is not somewhere to return to once its tree is gone.
+        let showing = self.hierarchy_showing() && self.hierarchy.tree.is_some();
+        if !showing {
+            self.hierarchy.before = Some(Before {
+                panel: self.sidebar_panel,
+                focus: self.focus,
+                visible: self.sidebar_visible,
+            });
+        }
+        self.hierarchy.tree = Some(tree);
+        self.sidebar_visible = true;
+        self.sidebar_panel = SidebarPanel::Hierarchy;
+        self.focus = Focus::Sidebar;
     }
 
-    /// Adopt a hierarchy answer into the open tree: fill in its roots and
+    /// Whether the Hierarchy panel is on screen.
+    fn hierarchy_showing(&self) -> bool {
+        self.sidebar_visible && self.sidebar_panel == SidebarPanel::Hierarchy
+    }
+
+    /// Drop a tree that will never get an answer. The sidebar's panel goes
+    /// back to what the Hierarchy panel replaced, so the sidebar never opens
+    /// on an empty tree; only when the panel is still on show do the
+    /// sidebar's visibility and the focus go back too. A sidebar the user
+    /// hid while the request was out stays hidden.
+    fn drop_unanswered_hierarchy(&mut self) {
+        self.hierarchy.tree = None;
+        let before = self.hierarchy.before.take();
+        if self.sidebar_panel != SidebarPanel::Hierarchy {
+            return;
+        }
+        let before = before
+            .filter(|before| before.panel != SidebarPanel::Hierarchy)
+            .unwrap_or(Before {
+                panel: SidebarPanel::Explorer,
+                focus: Focus::Editor,
+                visible: self.sidebar_visible,
+            });
+        self.sidebar_panel = before.panel;
+        if !self.sidebar_visible {
+            return;
+        }
+        self.sidebar_visible = before.visible;
+        if self.focus == Focus::Sidebar {
+            self.focus = before.focus;
+        }
+    }
+
+    /// Show the Hierarchy panel; with no tree to show, say how to get one.
+    pub(super) fn show_hierarchy(&mut self) -> bool {
+        if self.hierarchy.tree.is_none() {
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Lsp,
+                "hierarchy: show the callers, callees, supertypes or subtypes of a symbol first",
+            );
+            return false;
+        }
+        true
+    }
+
+    /// Adopt a hierarchy answer into the panel's tree: fill in its roots and
     /// expand the first, or one node's children. An answer for a tree the
-    /// user has since closed or replaced finds nothing to fill and is dropped.
+    /// user has since replaced finds nothing to fill and is dropped.
     pub(crate) fn on_hierarchy(&mut self, id: Option<RequestId>, items: Vec<HierarchyItem>) {
         let Some(id) = id else {
             return;
         };
-        let Some(Overlay::Hierarchy(tree)) = self.overlay.as_mut() else {
+        let Some(tree) = self.hierarchy.tree.as_mut() else {
             return;
         };
         let direction = tree.direction();
         match tree.adopt(id, items) {
             Adopted::NoRoots => {
                 let reason = self.no_hierarchy_reason(direction);
-                self.overlay = None;
+                self.drop_unanswered_hierarchy();
                 self.notify(Report::Refusal, NotificationKind::Lsp, reason);
             },
             Adopted::Roots => self.hierarchy_expand(),
@@ -381,50 +535,175 @@ impl App {
         }
     }
 
-    /// Expand the selected node of the open tree, asking the server for its
+    /// Expand the selected node of the tree, asking the server for its
     /// children the first time.
     pub(crate) fn hierarchy_expand(&mut self) {
-        let Some(Overlay::Hierarchy(tree)) = self.overlay.as_mut() else {
+        let Some(tree) = self.hierarchy.tree.as_mut() else {
             return;
         };
         let Some((node, item)) = tree.expand_selected() else {
             return;
         };
+        let direction = tree.direction();
+        let Some(doc) = self.hierarchy_doc(node) else {
+            if let Some(tree) = self.hierarchy.tree.as_mut() {
+                tree.unask(node);
+            }
+            let path = &item.location.path;
+            let root = workspace::absolute(&self.root);
+            let shown = path.strip_prefix(&root).unwrap_or(path);
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Lsp,
+                format!(
+                    "{}: open {} again to expand it further",
+                    hierarchy_noun(direction),
+                    shown.display()
+                ),
+            );
+            return;
+        };
+        if let Some(tree) = self.hierarchy.tree.as_mut() {
+            tree.retarget(doc);
+        }
         let command = SessionCommand::ExpandHierarchy {
-            doc: tree.doc(),
+            doc,
             item: Box::new(item),
-            direction: tree.direction(),
+            direction,
         };
         let request = self.send(command);
-        if let Some(Overlay::Hierarchy(tree)) = self.overlay.as_mut() {
+        if let Some(tree) = self.hierarchy.tree.as_mut() {
             tree.track(node, request);
         }
     }
 
-    /// Collapse the selected node of the open tree, or climb to its parent.
+    /// The open document to grow the tree through when expanding `node`:
+    /// the one it was asked from while that is still open, else one open on
+    /// the file `node` or one of its ancestors names -- the session answers
+    /// a closed document only with an error, never with children. `None`
+    /// when no such document is open.
+    fn hierarchy_doc(&self, node: usize) -> Option<DocumentId> {
+        let tree = self.hierarchy.tree.as_ref()?;
+        let open_at = |path: &Path| {
+            self.all_tabs().find_map(|tab| match &tab.kind {
+                TabKind::Code { doc: Some(doc), .. } if tab.path() == Some(path) => Some(*doc),
+                _ => None,
+            })
+        };
+        if self.doc_path(tree.doc()).is_some() {
+            return Some(tree.doc());
+        }
+        tree.paths_toward_root(node)
+            .iter()
+            .find_map(|path| open_at(path))
+    }
+
+    /// Settle a hierarchy request the session answered with an error rather
+    /// than items (its document closed, say): a node waiting on it goes back
+    /// to never asked for, and a tree waiting on it for its roots is dropped.
+    /// The error notification itself says what went wrong.
+    pub(super) fn fail_hierarchy_request(&mut self, id: RequestId) {
+        let failed = self.hierarchy.tree.as_mut().and_then(|tree| tree.fail(id));
+        if failed == Some(None) {
+            self.drop_unanswered_hierarchy();
+        }
+    }
+
+    /// Collapse the selected node of the tree, or climb to its parent.
     pub(crate) fn hierarchy_collapse(&mut self) {
-        if let Some(Overlay::Hierarchy(tree)) = self.overlay.as_mut() {
+        if let Some(tree) = self.hierarchy.tree.as_mut() {
             tree.collapse_selected();
         }
     }
 
-    /// When the open tree is still waiting on `id` for its roots, close it:
-    /// the server has said it does not offer the hierarchy, and that notice
-    /// explains the empty answer that follows.
-    pub(super) fn refuse_hierarchy(&mut self, id: RequestId) {
-        if let Some(Overlay::Hierarchy(tree)) = self.overlay.as_ref()
-            && tree.awaits_roots(id)
-        {
-            self.overlay = None;
+    /// Collapse the selected node when it is open, else expand it.
+    pub(super) fn hierarchy_toggle(&mut self) {
+        let open = self
+            .hierarchy
+            .tree
+            .as_ref()
+            .is_some_and(HierarchyTree::selected_is_open);
+        if open {
+            self.hierarchy_collapse();
+        } else {
+            self.hierarchy_expand();
         }
     }
 
-    /// What the open tree is still waiting on, for its delayed loading note.
-    pub(crate) fn hierarchy_loading(&self) -> Option<Pending> {
-        match self.overlay.as_ref()? {
-            Overlay::Hierarchy(tree) => tree.loading(),
-            _ => None,
+    /// Move the tree's selection by `delta` rows.
+    pub(super) fn hierarchy_select(&mut self, delta: i32) {
+        if let Some(tree) = self.hierarchy.tree.as_mut() {
+            tree.select_by(delta);
         }
+    }
+
+    /// Open the selected item where it is named. The panel, its selection
+    /// and its expansion stay as they are, ready for the next row.
+    pub(super) fn open_selected_hierarchy(&mut self) {
+        let Some((path, position)) = self
+            .hierarchy
+            .tree
+            .as_ref()
+            .and_then(HierarchyTree::selected_location)
+        else {
+            return;
+        };
+        self.jump_to_location(&path, position);
+    }
+
+    /// Route a click inside the Hierarchy panel: on a row's marker, expand or
+    /// collapse it; anywhere else on the row, select and open it.
+    pub(super) fn hierarchy_click(&mut self, col: u16, row_y: u16) {
+        let rect = self.hierarchy_ui.results_rect;
+        if !rect_contains(rect, (col, row_y)) {
+            return;
+        }
+        let Some(tree) = self.hierarchy.tree.as_mut() else {
+            return;
+        };
+        let row = self.hierarchy_ui.offset + usize::from(row_y - rect.y);
+        if row >= tree.row_count() {
+            return;
+        }
+        tree.select(row);
+        // Each label is drawn one cell in from the panel edge, and its marker
+        // and the space after it make a two-cell target.
+        let marker = tree
+            .marker_column(row)
+            .map(|at| usize::from(rect.x) + 1 + at);
+        let at = usize::from(col);
+        if marker.is_some_and(|marker| (marker..marker + 2).contains(&at)) {
+            self.hierarchy_toggle();
+        } else {
+            self.open_selected_hierarchy();
+        }
+    }
+
+    /// When the tree is still waiting on `id` for its roots, drop it: the
+    /// server has said it does not offer the hierarchy, and that notice
+    /// explains the empty answer that follows.
+    pub(super) fn refuse_hierarchy(&mut self, id: RequestId) {
+        if self
+            .hierarchy
+            .tree
+            .as_ref()
+            .is_some_and(|tree| tree.awaits_roots(id))
+        {
+            self.drop_unanswered_hierarchy();
+        }
+    }
+
+    /// What the tree is still waiting on, for its delayed loading note.
+    pub(crate) fn hierarchy_loading(&self) -> Option<Pending> {
+        self.hierarchy.tree.as_ref()?.loading()
+    }
+
+    /// What the tree is waiting on while its panel is on screen: the only
+    /// time its loading note needs a scheduled reveal.
+    pub(super) fn visible_hierarchy_loading(&self) -> Option<Pending> {
+        self.hierarchy_showing()
+            .then(|| self.hierarchy_loading())
+            .flatten()
     }
 
     /// Why no roots came back, phrased for the refusal it becomes: a server
