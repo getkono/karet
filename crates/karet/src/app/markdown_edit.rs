@@ -17,7 +17,7 @@ impl App {
             matches!(
                 &tab.kind,
                 TabKind::Code { path, .. }
-                    if karet_filetype::file_type_for_path(path).name() == "Markdown"
+                    if is_markdown(path)
             )
         })
     }

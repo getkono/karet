@@ -396,7 +396,7 @@ fn source_link_in(tab: &Tab, area: Rect, point: (u16, u16)) -> Option<(Range, St
         return None;
     };
     let line = buffer.line(pos.line as usize)?;
-    let markdown = karet_filetype::file_type_for_path(path).name() == "Markdown";
+    let markdown = is_markdown(path);
     let (byte, _) = line.char_indices().nth(pos.col as usize)?;
     let link = crate::autolink::source_links(&line, markdown)
         .into_iter()

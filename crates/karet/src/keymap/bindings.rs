@@ -68,7 +68,6 @@ pub(super) static BINDINGS: &[Binding] = &[
     // mirror `Ctrl+1..6` one level up.
     seq(Global, chord(true, false, false, Char('k')), &[chord(false, false, false, Char('1'))], Command::SelectView(View::Editor)),
     seq(Global, chord(true, false, false, Char('k')), &[chord(false, false, false, Char('2'))], Command::SelectView(View::GitHub)),
-    // #211: seq(Global, chord(true, false, false, Char('k')), &[chord(false, false, false, Char('3'))], Command::SelectView(View::Agents)),
     seq(Global, chord(true, false, false, Char('k')), &[chord(false, false, false, Char('o'))], Command::ToggleOutline),
     // Screen-reclaiming modes for small terminals. `Ctrl+K Z` is VS Code's Zen
     // Mode; its maximise chord, `Ctrl+K Ctrl+M`, is the editor's Show Diagnostic

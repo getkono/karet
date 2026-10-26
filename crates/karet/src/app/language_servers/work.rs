@@ -18,7 +18,7 @@ use karet_session::WorkPhase;
 use karet_session::WorkToken;
 
 use super::*;
-use crate::app::util::path_contains_or_equals;
+use crate::app::util::path_under;
 
 /// The longest the status bar's work text runs before it is cut.
 const WORK_LABEL_CHARS: usize = 48;
@@ -149,9 +149,10 @@ impl WindowModel {
         path: &Path,
         language: &str,
     ) -> Option<&WorkEntry> {
-        self.work.iter().rev().find(|entry| {
-            covers(servers, &entry.server, language) && path_contains_or_equals(&entry.root, path)
-        })
+        self.work
+            .iter()
+            .rev()
+            .find(|entry| covers(servers, &entry.server, language) && path_under(&entry.root, path))
     }
 
     /// Hold `question` until the dialog is free.

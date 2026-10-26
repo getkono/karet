@@ -45,6 +45,11 @@ pub(crate) fn tab_language(tab: &Tab) -> Option<&str> {
     (!language.is_empty()).then_some(language)
 }
 
+/// Whether `path` names a Markdown file, by the file-type registry's name for it.
+pub(crate) fn is_markdown(path: &Path) -> bool {
+    file_type_for_path(path).name() == "Markdown"
+}
+
 /// Resolve a code tab's long-line behavior from its configured override or file type.
 pub(crate) fn effective_word_wrap(tab: &Tab, override_: Option<bool>) -> bool {
     override_.unwrap_or_else(|| {
@@ -94,6 +99,7 @@ pub(super) fn same_path(a: &Path, b: &Path) -> bool {
     canonical(a) == canonical(b)
 }
 
+/// Whether `path` resolves to `root` or a path below it.
 pub(super) fn path_under(root: &Path, path: &Path) -> bool {
     canonical(path).starts_with(canonical(root))
 }
@@ -125,11 +131,6 @@ pub(super) fn retarget_tab_path(tab: &mut Tab, path: &Path) {
             tab.title = name.to_string();
         }
     }
-}
-
-/// Whether `child` resolves to `parent` or a path below it.
-pub(super) fn path_contains_or_equals(parent: &Path, child: &Path) -> bool {
-    canonical(child).starts_with(canonical(parent))
 }
 
 /// A destination path under `dir`, suffixing when the source name already exists.
@@ -175,31 +176,8 @@ fn copy_name(source: &Path, fallback: &str, n: usize) -> String {
     }
 }
 
-/// The canonical form of `path` for tab de-duplication. For a missing leaf, resolve
-/// its nearest existing ancestor and append the unresolved suffix; this preserves
-/// macOS `/var` → `/private/var` normalization before a new file is created.
-pub(super) fn canonical(path: &Path) -> PathBuf {
-    if let Ok(resolved) = std::fs::canonicalize(path) {
-        return resolved;
-    }
-    for ancestor in path.ancestors().skip(1) {
-        let Ok(resolved) = std::fs::canonicalize(ancestor) else {
-            continue;
-        };
-        let Ok(suffix) = path.strip_prefix(ancestor) else {
-            continue;
-        };
-        return resolved.join(suffix);
-    }
-    path.to_path_buf()
-}
-
-/// The (anchor, head) span of the word under `pos`, or the single character there
-/// when the cursor is not on a word character. Delegates to the widget's
-/// [`karet_editor::word_bounds`] so double-click and word motions agree.
-pub(super) fn word_at(buffer: &TextBuffer, pos: LineCol) -> (LineCol, LineCol) {
-    karet_editor::word_bounds(buffer, pos)
-}
+/// The canonical form of `path` for tab de-duplication; see [`canonical_nearest`].
+pub(super) use crate::canonical_nearest as canonical;
 
 /// Parse a revision-range spec typed into the go-to-commit input into
 /// `(base, head, merge_base)`, or `None` when it is a single revision.

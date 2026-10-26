@@ -10,9 +10,6 @@ use karet_session::FormatScope;
 use super::*;
 use crate::app::scroll::adjust;
 
-/// How soon a press must follow the last one to continue its multi-click streak.
-const MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(400);
-
 /// What a left click landed on, for multi-click counting: a press on another
 /// surface than the last one starts a new streak.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

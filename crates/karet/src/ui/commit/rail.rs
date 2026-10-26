@@ -101,7 +101,7 @@ fn dir_index_line(
         .max(1);
     // Directory names truncate from the start like paths do: a compacted chain's
     // tail is the part that distinguishes it from its siblings.
-    let label = truncate_start(label, label_width);
+    let label = karet_widgets::text::fit_start(label, label_width);
     let padding = if show_stats {
         usize::from(width).saturating_sub(
             ROW_PREFIX + indent + UnicodeWidthStr::width(label.as_str()) + stats_width,
@@ -153,7 +153,7 @@ fn file_index_line(
     let name_width = usize::from(width)
         .saturating_sub(fixed + reason_width + if show_stats { stats_width } else { 0 })
         .max(1);
-    let name = truncate_start(label, name_width);
+    let name = karet_widgets::text::fit_start(label, name_width);
     let padding = if show_stats {
         usize::from(width).saturating_sub(
             ROW_PREFIX

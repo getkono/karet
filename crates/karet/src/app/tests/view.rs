@@ -33,21 +33,6 @@ fn selecting_a_view_moves_focus_onto_it() {
     assert_eq!(app.view, View::Editor);
 }
 
-// #211: the Agents view is the only one that hides the sidebar, so this has nothing
-// to assert against until it exists.
-// #[test]
-// fn a_view_that_hides_the_sidebar_cannot_be_toggled_into_it() {
-//     let mut app = app();
-//     app.dispatch(Command::SelectView(View::Agents));
-//     app.dispatch(Command::ToggleFocus);
-//     assert_eq!(app.focus, Focus::Editor, "no sidebar to toggle into");
-//
-//     // The GitHub view keeps the sidebar, so Tab still reaches it there.
-//     app.dispatch(Command::SelectView(View::GitHub));
-//     app.dispatch(Command::ToggleFocus);
-//     assert_eq!(app.focus, Focus::Sidebar);
-// }
-
 #[test]
 fn the_view_decides_the_active_keymap_layers() {
     let mut app = app();
@@ -142,29 +127,6 @@ fn clicking_the_chrome_row_switches_view() {
     assert!(app.handle_view_chrome_mouse(click(99, 0)));
     assert_eq!(app.view, view);
 }
-
-// #211: full-width layout and the placeholder body both come back with the Agents
-// view; every view that ships today keeps the sidebar and draws a real surface.
-// #[test]
-// fn the_agents_view_takes_the_full_width_and_hides_the_sidebar() {
-//     let mut app = app();
-//     let _ = screen(&mut app, 100, 12);
-//     assert!(
-//         app.sidebar_rect.width > 0,
-//         "the editor view keeps a sidebar"
-//     );
-//
-//     app.dispatch(Command::SelectView(View::Agents));
-//     let rows = screen(&mut app, 100, 12);
-//     assert_eq!(app.sidebar_rect, Rect::default());
-//     assert_eq!(app.main_rect.x, 0);
-//     assert_eq!(app.main_rect.width, 100);
-//     assert!(
-//         rows.iter()
-//             .any(|row| row.contains("Agents — not available yet")),
-//         "the placeholder body names the view: {rows:?}"
-//     );
-// }
 
 #[test]
 fn the_github_hooks_do_not_fire_under_another_view() {

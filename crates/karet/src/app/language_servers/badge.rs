@@ -14,7 +14,7 @@ use karet_session::LanguageServerRuntimeState;
 use karet_session::LanguageServerSource;
 use karet_session::LanguageServerStatus;
 
-use crate::app::util::path_contains_or_equals;
+use crate::app::util::path_under;
 
 /// One file's language-server condition, separated by cause.
 ///
@@ -90,7 +90,7 @@ fn provider_badge(status: &LanguageServerStatus, path: &Path) -> Option<Language
     let covering = status
         .instances
         .iter()
-        .filter(|instance| path_contains_or_equals(&instance.root, path));
+        .filter(|instance| path_under(&instance.root, path));
     for instance in covering {
         let badge =
             if instance.command.is_none() || instance.source == LanguageServerSource::Unavailable {
