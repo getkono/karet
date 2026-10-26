@@ -50,6 +50,9 @@ pub struct Settings {
     pub debug: Debugger,
     /// Jupyter-notebook behaviour (kernel execution).
     pub notebook: NotebookSettings,
+    /// Named shell commands the Run Task picker offers, keyed by label.
+    #[serde(default)]
+    pub tasks: BTreeMap<String, Task>,
 }
 
 /// `wakatime.*` — WakaTime time tracking. **Off by default**: enabling it
@@ -516,6 +519,11 @@ pub use overrides::ResolvedCompletion;
 pub use overrides::ResolvedEditor;
 pub use overrides::ResolvedInlineDiagnostics;
 pub use overrides::ResolvedSemanticComments;
+pub use tasks::BuiltinMatcher;
+pub use tasks::MatcherSeverity;
+pub use tasks::PatternMatcher;
+pub use tasks::ProblemMatcher;
+pub use tasks::Task;
 pub use workbench::IconStyleSetting;
 pub use workbench::StartupPanel;
 pub use workbench::Workbench;
@@ -527,6 +535,7 @@ mod inline_diagnostics;
 mod keymap;
 mod lsp;
 mod overrides;
+mod tasks;
 mod workbench;
 
 /// `editor.completion.*` — LSP-powered code completion.
