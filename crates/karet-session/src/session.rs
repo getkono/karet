@@ -261,7 +261,7 @@ struct Document {
     /// The buffer version last written to a crash-recovery swap, so a tick does not
     /// rewrite an unchanged buffer.
     backed_up_version: Option<u64>,
-    /// The caret the client last reported through [`Command::SetCursor`], with
+    /// The caret the client last reported through [`DocumentCommand::SetCursor`], with
     /// the buffer version it arrived at. A save's own rewrites record it as the
     /// cursor their undo restores, but only while that version is still
     /// current: once any edit lands after it, the report no longer says where
@@ -713,7 +713,7 @@ fn save_edit_context(tick_ms: u64, doc: &Document, change: &Change) -> EditConte
 }
 
 /// The cursor/selection set the client last reported through
-/// [`Command::SetCursor`], clamped to the buffer, as long as no edit has landed
+/// [`DocumentCommand::SetCursor`], clamped to the buffer, as long as no edit has landed
 /// since it: that is the whole set an undo of the next edit restores. A stale
 /// or missing report yields `None`, and the caller falls back to the first
 /// edit's start -- the only position the change itself says anything about.

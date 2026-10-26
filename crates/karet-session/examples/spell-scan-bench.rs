@@ -19,9 +19,9 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use karet_session::Backend;
-use karet_session::Command;
 use karet_session::Event;
 use karet_session::SessionConfig;
+use karet_session::WorkspaceCommand;
 
 #[tokio::main]
 async fn main() {
@@ -59,7 +59,7 @@ async fn main() {
     let id = backend.next_id();
     let started = Instant::now();
     if backend
-        .send(id, Command::ScanWorkspaceSpelling { limit })
+        .send(id, WorkspaceCommand::ScanSpelling { limit }.into())
         .is_err()
     {
         eprintln!("spell-scan-bench: the backend refused the command");

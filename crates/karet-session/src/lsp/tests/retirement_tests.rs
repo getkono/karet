@@ -51,7 +51,9 @@ async fn inventory(
     events: &mut EventRx,
 ) -> Option<Vec<LanguageServerStatus>> {
     let request = backend.next_id();
-    backend.send(request, Command::LanguageServerStatus).ok()?;
+    backend
+        .send(request, LanguageServerCommand::Status.into())
+        .ok()?;
     while let Some((id, event)) = next_event(events).await {
         if let Event::LanguageServerStatus { servers } = event
             && id == Some(request)
@@ -87,10 +89,11 @@ async fn a_provider_whose_last_document_closed_is_reported_idle_with_no_document
 
     backend.send(
         backend.next_id(),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path: path.clone(),
             language: None,
-        },
+        }
+        .into(),
     )?;
     let (doc, _) = await_opened(&mut events).await.ok_or("no Opened")?;
 
@@ -114,7 +117,7 @@ async fn a_provider_whose_last_document_closed_is_reported_idle_with_no_document
     assert_eq!(serving.runtime, LanguageServerRuntimeState::Running);
     assert_eq!(serving.open_documents, 1);
 
-    backend.send(backend.next_id(), Command::CloseDocument { doc })?;
+    backend.send(backend.next_id(), DocumentCommand::Close { doc }.into())?;
 
     let retired = inventory(&backend, &mut events)
         .await
@@ -151,10 +154,11 @@ async fn a_provider_that_cannot_start_keeps_reporting_why() -> TestResult {
 
     backend.send(
         backend.next_id(),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path,
             language: None,
-        },
+        }
+        .into(),
     )?;
     await_opened(&mut events).await.ok_or("no Opened")?;
 
@@ -304,10 +308,11 @@ pub(super) async fn open(
     backend
         .send(
             backend.next_id(),
-            Command::OpenDocument {
+            DocumentCommand::Open {
                 path: path.to_path_buf(),
                 language: None,
-            },
+            }
+            .into(),
         )
         .ok()?;
     await_opened(events).await.map(|(doc, _)| doc)
@@ -387,7 +392,7 @@ async fn retiring_one_provider_leaves_another_providers_markers_alone() -> TestR
     // Closing the last Python document retires its providers -- and nothing else.
     backend.send(
         backend.next_id(),
-        Command::CloseDocument { doc: python_doc },
+        DocumentCommand::Close { doc: python_doc }.into(),
     )?;
 
     // Asserted on the settled set, not the first payload that drops one source:
@@ -406,7 +411,7 @@ async fn retiring_one_provider_leaves_another_providers_markers_alone() -> TestR
 
 /// Restarting one provider leaves every other provider running.
 ///
-/// `Command::RestartLanguageServer` had no test at all, and it retired *every*
+/// `LanguageServerCommand::Restart` had no test at all, and it retired *every*
 /// slot: restarting one server silently restarted all of them, and uninstalling
 /// Ruff stopped rust-analyzer as a side effect. The markers are the visible
 /// consequence -- a provider nobody asked about lost its own, and only got them
@@ -467,9 +472,10 @@ async fn restarting_one_provider_leaves_the_others_running() -> TestResult {
 
     backend.send(
         backend.next_id(),
-        Command::RestartLanguageServer {
+        LanguageServerCommand::Restart {
             server: LanguageServerId::new("rust"),
-        },
+        }
+        .into(),
     )?;
 
     // Asserted on the retirement *report*, not on a payload of markers. Under
@@ -541,7 +547,7 @@ async fn retiring_a_provider_reports_an_inventory_that_offers_no_restart() -> Te
         "a serving provider is what Restart is for"
     );
 
-    backend.send(backend.next_id(), Command::CloseDocument { doc })?;
+    backend.send(backend.next_id(), DocumentCommand::Close { doc }.into())?;
 
     // Unsolicited: nothing after this point asks for anything.
     let mut signalled = false;
@@ -612,9 +618,10 @@ async fn a_restart_reports_the_document_it_reopened() -> TestResult {
 
     backend.send(
         backend.next_id(),
-        Command::RestartLanguageServer {
+        LanguageServerCommand::Restart {
             server: LanguageServerId::RustAnalyzer,
-        },
+        }
+        .into(),
     )?;
 
     let mut signalled = false;

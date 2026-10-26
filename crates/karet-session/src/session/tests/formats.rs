@@ -11,7 +11,7 @@
         let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
         session.handle(
             RequestId(1),
-            Command::OpenDocument {
+            DocumentCommand::Open {
                 path: path.clone(),
                 language: None,
             },
@@ -48,7 +48,7 @@
         writer.finish()?;
         std::fs::write(&path, &bytes)?;
         let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
-        session.handle(RequestId(1), Command::ConvertDocument { path: path.clone() });
+        session.handle(RequestId(1), DocumentCommand::Convert { path: path.clone() });
         // The conversion runs on its own thread; await its answer.
         let markdown = await_event(&mut events, EVENT_DEADLINE, |_, event| match event {
             Event::DocumentConverted { markdown, .. } => Some(markdown),
@@ -73,7 +73,7 @@
         let (mut session, mut events, mut snaps) = Session::new(SessionConfig::default());
         session.handle(
             RequestId(1),
-            Command::OpenDocument {
+            DocumentCommand::Open {
                 path: path.clone(),
                 language: None,
             },
@@ -97,7 +97,7 @@
         );
         session.handle(
             RequestId(2),
-            Command::ApplyChange {
+            DocumentCommand::ApplyChange {
                 doc,
                 change,
                 cause: EditCause::Replace,
@@ -106,7 +106,7 @@
         while events.try_recv().is_some() {}
 
         // Save re-encodes to CBOR; the file on disk decodes to the edited value.
-        session.handle(RequestId(3), Command::Save {
+        session.handle(RequestId(3), DocumentCommand::Save {
                 doc,
                 cause: SaveCause::Manual,
             });
@@ -141,7 +141,7 @@
         let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
         session.handle(
             RequestId(1),
-            Command::OpenDocument {
+            DocumentCommand::Open {
                 path: path.clone(),
                 language: None,
             },
@@ -161,7 +161,7 @@
         );
         session.handle(
             RequestId(2),
-            Command::ApplyChange {
+            DocumentCommand::ApplyChange {
                 doc,
                 change,
                 cause: EditCause::Replace,
@@ -170,7 +170,7 @@
         while events.try_recv().is_some() {}
 
         // Save fails to encode; no Saved event, and the file is unchanged.
-        session.handle(RequestId(3), Command::Save {
+        session.handle(RequestId(3), DocumentCommand::Save {
                 doc,
                 cause: SaveCause::Manual,
             });

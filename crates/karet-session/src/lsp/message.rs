@@ -159,7 +159,7 @@ pub(crate) enum ServerCmd {
         position: LineCol,
     },
     /// Request signature help; `manual` as on
-    /// [`crate::api::Command::SignatureHelp`].
+    /// [`crate::api::LspCommand::SignatureHelp`].
     SignatureHelp {
         request: RequestId,
         doc: DocumentId,
@@ -168,7 +168,7 @@ pub(crate) enum ServerCmd {
         manual: bool,
     },
     /// Request the selection ranges around each of `positions`, for a
-    /// [`crate::api::Command::SelectionRanges`].
+    /// [`crate::api::LspCommand::SelectionRanges`].
     SelectionRanges {
         /// The originating request, the document asked about and its version
         /// at request time, all echoed on the answer.
@@ -180,7 +180,7 @@ pub(crate) enum ServerCmd {
         positions: Vec<LineCol>,
     },
     /// Request the occurrences of the symbol at `position`, for a
-    /// [`crate::api::Command::DocumentHighlights`].
+    /// [`crate::api::LspCommand::DocumentHighlights`].
     DocumentHighlights {
         /// The originating request, the document asked about and its version
         /// at request time, all echoed on the answer.
@@ -192,7 +192,7 @@ pub(crate) enum ServerCmd {
         position: LineCol,
     },
     /// Request definition locations, or with a `kind` the locations a
-    /// [`crate::api::Command::FindLocations`] asks for.
+    /// [`crate::api::LspCommand::FindLocations`] asks for.
     Definition {
         request: RequestId,
         doc: DocumentId,

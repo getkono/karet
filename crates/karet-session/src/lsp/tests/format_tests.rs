@@ -2,7 +2,7 @@
 //!
 //! The rest of the deferred-save tests seed `pending_format_saves` by hand,
 //! which covers every ending of the wait and none of its beginning. These
-//! start from a real `Command::Save`.
+//! start from a real `DocumentCommand::Save`.
 
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -81,7 +81,7 @@ fn saved_now(events: &mut EventRx) -> bool {
 fn park_a_save(session: &mut Session, events: &mut EventRx, path: &Path) -> Option<DocumentId> {
     session.handle(
         RequestId(1),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path: path.to_path_buf(),
             language: None,
         },
@@ -99,7 +99,7 @@ fn park_a_save(session: &mut Session, events: &mut EventRx, path: &Path) -> Opti
     );
     session.handle(
         RequestId(2),
-        Command::ApplyChange {
+        DocumentCommand::ApplyChange {
             doc,
             change,
             cause: EditCause::Replace,
@@ -107,7 +107,7 @@ fn park_a_save(session: &mut Session, events: &mut EventRx, path: &Path) -> Opti
     );
     session.handle(
         RequestId(3),
-        Command::Save {
+        DocumentCommand::Save {
             doc,
             cause: crate::api::SaveCause::Manual,
         },
@@ -133,20 +133,22 @@ async fn a_save_parks_on_the_formatter_and_lands_formatted() -> TestResult {
 
     backend.send(
         backend.next_id(),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path: path.clone(),
             language: None,
-        },
+        }
+        .into(),
     )?;
     let (doc, _version) = await_opened(&mut events).await.ok_or("no Opened")?;
 
     let request = backend.next_id();
     backend.send(
         request,
-        Command::Save {
+        DocumentCommand::Save {
             doc,
             cause: crate::api::SaveCause::Manual,
-        },
+        }
+        .into(),
     )?;
 
     let (answered, saved_doc) = await_saved(&mut events).await.ok_or("no Saved")?;
@@ -247,19 +249,21 @@ async fn a_deferred_save_writes_no_swap_when_backups_are_off() -> TestResult {
 
     backend.send(
         backend.next_id(),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path: path.clone(),
             language: None,
-        },
+        }
+        .into(),
     )?;
     let (doc, _version) = await_opened(&mut events).await.ok_or("no Opened")?;
     let request = backend.next_id();
     backend.send(
         request,
-        Command::Save {
+        DocumentCommand::Save {
             doc,
             cause: crate::api::SaveCause::Manual,
-        },
+        }
+        .into(),
     )?;
 
     let (_answered, saved_doc) = await_saved(&mut events).await.ok_or("no Saved")?;
@@ -377,7 +381,7 @@ async fn a_formatter_that_never_answers_does_not_wedge_its_server() -> TestResul
     Ok(())
 }
 
-/// A `Command::Save` hands the server task the configured
+/// A `DocumentCommand::Save` hands the server task the configured
 /// `editor.formatOnSaveTimeout`, not the default.
 ///
 /// The test above calls `LspManager::formatting` directly, which takes
@@ -408,19 +412,21 @@ async fn a_save_hands_the_server_the_configured_format_timeout() -> TestResult {
 
     backend.send(
         backend.next_id(),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path: path.clone(),
             language: None,
-        },
+        }
+        .into(),
     )?;
     let (doc, _version) = await_opened(&mut events).await.ok_or("no Opened")?;
     let started = tokio::time::Instant::now();
     backend.send(
         backend.next_id(),
-        Command::Save {
+        DocumentCommand::Save {
             doc,
             cause: crate::api::SaveCause::Manual,
-        },
+        }
+        .into(),
     )?;
     let (_request, saved) = tokio::time::timeout(Duration::from_secs(60), await_saved(&mut events))
         .await
@@ -496,18 +502,20 @@ async fn a_formatting_request_carries_the_configured_indentation() -> TestResult
 
     backend.send(
         backend.next_id(),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path: path.clone(),
             language: None,
-        },
+        }
+        .into(),
     )?;
     let (doc, _version) = await_opened(&mut events).await.ok_or("no Opened")?;
     backend.send(
         backend.next_id(),
-        Command::Save {
+        DocumentCommand::Save {
             doc,
             cause: crate::api::SaveCause::Manual,
-        },
+        }
+        .into(),
     )?;
     await_saved(&mut events).await.ok_or("no Saved")?;
 
@@ -565,18 +573,20 @@ async fn a_formatting_request_carries_the_editorconfig_indentation() -> TestResu
 
     backend.send(
         backend.next_id(),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path: path.clone(),
             language: None,
-        },
+        }
+        .into(),
     )?;
     let (doc, _version) = await_opened(&mut events).await.ok_or("no Opened")?;
     backend.send(
         backend.next_id(),
-        Command::Save {
+        DocumentCommand::Save {
             doc,
             cause: crate::api::SaveCause::Manual,
-        },
+        }
+        .into(),
     )?;
     await_saved(&mut events).await.ok_or("no Saved")?;
 
@@ -594,7 +604,7 @@ async fn a_formatting_request_carries_the_editorconfig_indentation() -> TestResu
     Ok(())
 }
 
-// ---- Format Document and Format Selection: `Command::Format`, asked for by hand.
+// ---- Format Document and Format Selection: `LspCommand::Format`, asked for by hand.
 
 /// A session that does not format on save, so only a `Format` formats, with
 /// its snapshot stream kept so a test can watch the text change.
@@ -612,7 +622,7 @@ fn manual_session(connector: Option<Connector>) -> (Session, EventRx, crate::loc
 }
 
 fn format_command(doc: DocumentId, scope: crate::api::FormatScope) -> Command {
-    Command::Format(crate::api::FormatRequest { doc, scope })
+    LspCommand::Format(crate::api::FormatRequest { doc, scope }).into()
 }
 
 fn caret(line: u32, col: u32) -> Range {
@@ -641,10 +651,11 @@ async fn open_on_backend(
     let backend = local_session(session, None);
     backend.send(
         backend.next_id(),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path: path.to_path_buf(),
             language: None,
-        },
+        }
+        .into(),
     )?;
     let (doc, _version) = await_opened(events).await.ok_or("no Opened")?;
     Ok((backend, doc))
@@ -783,7 +794,7 @@ fn a_format_with_no_formatter_says_so() -> TestResult {
     let (mut session, mut events, _snaps) = manual_session(None);
     session.handle(
         RequestId(1),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path,
             language: None,
         },
@@ -839,7 +850,7 @@ fn a_format_answer_for_a_superseded_version_is_dropped() -> TestResult {
     let (mut session, mut events, _snaps) = manual_session(None);
     session.handle(
         RequestId(1),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path,
             language: None,
         },
@@ -858,7 +869,7 @@ fn a_format_answer_for_a_superseded_version_is_dropped() -> TestResult {
         .ok_or("no document")?;
     session.handle(
         RequestId(2),
-        Command::ApplyChange {
+        DocumentCommand::ApplyChange {
             doc,
             change: Change::new(stale, vec![edit("bbb")]),
             cause: EditCause::Replace,

@@ -65,7 +65,7 @@ impl Session {
         doc
     }
 
-    /// Serve [`Command::InlayHints`]: convert the range to the server's UTF-16
+    /// Serve [`LspCommand::InlayHints`](crate::api::LspCommand::InlayHints): convert the range to the server's UTF-16
     /// encoding and forward it. A language with no server, or a server that
     /// does not offer hints, answers immediately with an empty set so the
     /// editor never holds a stale annotation waiting for a reply that is not
@@ -98,7 +98,7 @@ impl Session {
         }
     }
 
-    /// Serve [`Command::ResolveInlayHint`] from the server that answered the
+    /// Serve [`LspCommand::ResolveInlayHint`](crate::api::LspCommand::ResolveInlayHint) from the server that answered the
     /// hint: the document's primary, which is the only one asked for hints.
     /// With no server to ask the hint comes straight back, so the client
     /// stops waiting on it and does not ask again.
@@ -119,7 +119,7 @@ impl Session {
         }
     }
 
-    /// Serve [`Command::DocumentSymbols`] from the document's language server.
+    /// Serve [`LspCommand::DocumentSymbols`](crate::api::LspCommand::DocumentSymbols) from the document's language server.
     pub(super) fn document_symbols(&mut self, id: RequestId, doc_id: DocumentId) {
         let Some(doc) = Self::doc_or_report(&self.store, &self.events, id, doc_id) else {
             return;
@@ -139,7 +139,7 @@ impl Session {
         }
     }
 
-    /// Forward a [`Command::SelectionRanges`], or answer it with an empty
+    /// Forward a [`LspCommand::SelectionRanges`](crate::api::LspCommand::SelectionRanges), or answer it with an empty
     /// chain per position when no server serves the document.
     pub(super) fn selection_ranges(
         &mut self,
@@ -167,7 +167,7 @@ impl Session {
         }
     }
 
-    /// Forward a [`Command::DocumentHighlights`], or answer it with no
+    /// Forward a [`LspCommand::DocumentHighlights`](crate::api::LspCommand::DocumentHighlights), or answer it with no
     /// highlights when no server serves the document.
     pub(super) fn document_highlights(&mut self, id: RequestId, doc_id: DocumentId, at: LineCol) {
         let Some(doc) = Self::doc_or_report(&self.store, &self.events, id, doc_id) else {
@@ -221,7 +221,7 @@ impl Session {
 
     /// Settle an answer the generation fence turned away: a save's formatting
     /// still completes the save, unformatted, and selection ranges still
-    /// answer the request with empty chains, because `Command::SelectionRanges`
+    /// answer the request with empty chains, because `LspCommand::SelectionRanges`
     /// is always answered and Expand Selection waits on it. Document
     /// highlights, linked ranges and on-type edits are answered with none for
     /// the same reason, and a save's will-save edits are dropped. A code-lens
@@ -285,7 +285,13 @@ impl Session {
 
     /// Forward a [`LspCommand::SignatureHelp`](crate::api::LspCommand::SignatureHelp),
     /// or answer it empty when no server serves the document.
-    pub(super) fn signature_help(&mut self, id: RequestId, doc_id: DocumentId, at: LineCol, manual: bool) {
+    pub(super) fn signature_help(
+        &mut self,
+        id: RequestId,
+        doc_id: DocumentId,
+        at: LineCol,
+        manual: bool,
+    ) {
         let Some(doc) = Self::doc_or_report(&self.store, &self.events, id, doc_id) else {
             return;
         };
@@ -323,8 +329,8 @@ impl Session {
         }
     }
 
-    /// Answer a [`Command::Definition`] (`kind` `None`) or a
-    /// [`Command::FindLocations`]: forward it, or answer it empty when no
+    /// Answer a [`LspCommand::Definition`](crate::api::LspCommand::Definition) (`kind` `None`) or a
+    /// [`LspCommand::FindLocations`](crate::api::LspCommand::FindLocations): forward it, or answer it empty when no
     /// server serves the document.
     pub(super) fn definition(
         &mut self,
@@ -347,7 +353,7 @@ impl Session {
         }
     }
 
-    /// Answer a [`Command::PrepareHierarchy`]: forward it, or answer it with
+    /// Answer a [`LspCommand::PrepareHierarchy`](crate::api::LspCommand::PrepareHierarchy): forward it, or answer it with
     /// no items when no server serves the document.
     pub(super) fn prepare_hierarchy(
         &mut self,
@@ -372,7 +378,7 @@ impl Session {
         }
     }
 
-    /// Answer a [`Command::ExpandHierarchy`] by asking the server of the
+    /// Answer a [`LspCommand::ExpandHierarchy`](crate::api::LspCommand::ExpandHierarchy) by asking the server of the
     /// document the hierarchy was opened from, or with no items when there is
     /// none.
     pub(super) fn expand_hierarchy(
@@ -449,7 +455,7 @@ impl Session {
         }
     }
 
-    /// Serve [`Command::PrepareRename`]: ask the document's server what can be
+    /// Serve [`LspCommand::PrepareRename`](crate::api::LspCommand::PrepareRename): ask the document's server what can be
     /// renamed at `position`, answering at once when no server runs for it.
     pub(super) fn prepare_rename(&mut self, id: RequestId, doc_id: DocumentId, position: LineCol) {
         let Some(doc) = Self::doc_or_report(&self.store, &self.events, id, doc_id) else {
@@ -632,7 +638,7 @@ pub(super) const FORMAT_OVERLAP: &str =
     "format: the formatter's edits overlap; nothing was applied";
 
 impl Session {
-    /// Serve [`Command::Format`]: hand the document, or its selected ranges, to
+    /// Serve [`LspCommand::Format`](crate::api::LspCommand::Format): hand the document, or its selected ranges, to
     /// the formatter its language names -- the same choice a save makes --
     /// and fall back on the built-in formatter for a whole document when no
     /// server runs for it.
@@ -667,7 +673,7 @@ impl Session {
         }
     }
 
-    /// Adopt a server's answer to a [`Command::Format`]: its edits, converted
+    /// Adopt a server's answer to a [`LspCommand::Format`](crate::api::LspCommand::Format): its edits, converted
     /// to buffer columns, as one undoable change -- or nothing, when the
     /// document moved on while the server worked, since the edits describe
     /// text that is no longer there.
@@ -728,7 +734,7 @@ impl Session {
         }
     }
 
-    /// Apply the edits a [`Command::Format`] produced, reporting edits that
+    /// Apply the edits a [`LspCommand::Format`](crate::api::LspCommand::Format) produced, reporting edits that
     /// cannot be applied together. Nothing to change is not a failure.
     fn apply_requested_format(&mut self, id: RequestId, doc_id: DocumentId, edits: Vec<TextEdit>) {
         if !edits.is_empty() && !self.apply_format_edits(doc_id, edits, false) {
@@ -737,7 +743,7 @@ impl Session {
     }
 }
 
-/// A warning answering a [`Command::Format`] that changed nothing.
+/// A warning answering a [`LspCommand::Format`](crate::api::LspCommand::Format) that changed nothing.
 fn format_notice(message: &str) -> Event {
     Event::Notification {
         severity: Severity::Warning,

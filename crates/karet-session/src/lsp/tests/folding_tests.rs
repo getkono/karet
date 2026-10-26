@@ -130,10 +130,11 @@ async fn a_snapshot_carries_the_server_folds() -> TestResult {
     let backend = local_session(session, None);
     backend.send(
         backend.next_id(),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path,
             language: None,
-        },
+        }
+        .into(),
     )?;
     let (doc, _) = await_opened(&mut events).await.ok_or("no Opened")?;
     let carried = async {

@@ -218,7 +218,7 @@ pub enum VcsOutcome {
     },
 }
 
-/// Repository/remote facts for one file, answering [`Command::RemoteFacts`].
+/// Repository/remote facts for one file, answering [`VcsCommand::RemoteFacts`].
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RemoteFacts {
     /// The `origin` remote's fetch URL.
@@ -234,7 +234,7 @@ pub struct RemoteFacts {
 }
 
 /// One changed file in an [`Event::VcsStatus`] listing: identity, status, and
-/// added/removed line counts — no file contents. Ask [`Command::PrepareChange`]
+/// added/removed line counts — no file contents. Ask [`VcsCommand::PrepareChange`]
 /// for the displayable diff.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ChangeSummary {
@@ -270,7 +270,7 @@ pub struct PreparedChange {
     pub diff: karet_diff::PreparedDiff,
 }
 
-/// Which diff-between-two-points a [`Command::RangeChanges`] asks for. The backend
+/// Which diff-between-two-points a [`VcsCommand::RangeChanges`] asks for. The backend
 /// resolves the endpoints against the repository (upstream, base branch, merge base) so
 /// ref resolution stays with the repo, and answers with [`Event::RangeReady`].
 #[derive(Clone, Debug, PartialEq, Eq)]

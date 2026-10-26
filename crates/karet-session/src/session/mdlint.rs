@@ -85,7 +85,7 @@ impl Session {
         self.publish_document_diagnostics(doc_id);
     }
 
-    /// Serve [`Command::FixMarkdownLint`](crate::api::Command::FixMarkdownLint):
+    /// Serve [`DocumentCommand::FixMarkdownLint`](crate::api::DocumentCommand::FixMarkdownLint):
     /// apply every autofix under the workspace lint configuration as one
     /// undoable change, and answer with how many issues it fixed.
     pub(super) fn fix_markdown_lint(&mut self, id: RequestId, doc_id: DocumentId) {
@@ -111,7 +111,7 @@ mod tests {
     use std::path::Path;
 
     use super::*;
-    use crate::api::Command;
+    use crate::api::DocumentCommand;
     use crate::session::EventRx;
     use crate::session::SessionConfig;
 
@@ -128,7 +128,7 @@ mod tests {
         });
         session.handle(
             RequestId(1),
-            Command::OpenDocument {
+            DocumentCommand::Open {
                 path: path.to_path_buf(),
                 language: None,
             },
@@ -143,10 +143,10 @@ mod tests {
         Ok((session, events, doc))
     }
 
-    /// Send a [`Command::FixMarkdownLint`] as `id`, and answer the count its
+    /// Send a [`DocumentCommand::FixMarkdownLint`] as `id`, and answer the count its
     /// [`Event::MarkdownLintFixed`] carried.
     fn fix(session: &mut Session, events: &mut EventRx, id: u64, doc: DocumentId) -> Option<usize> {
-        session.handle(RequestId(id), Command::FixMarkdownLint { doc });
+        session.handle(RequestId(id), DocumentCommand::FixMarkdownLint { doc });
         let mut fixed = None;
         while let Some((answers, event)) = events.try_recv() {
             if let (Some(RequestId(answers)), Event::MarkdownLintFixed { doc: d, fixed: n }) =
@@ -181,7 +181,7 @@ mod tests {
         assert_eq!(fix(&mut session, &mut events, 3, doc), Some(0));
         assert_eq!(text(&session, doc), "# Title\n\ntext\n");
 
-        session.handle(RequestId(4), Command::Undo { doc });
+        session.handle(RequestId(4), DocumentCommand::Undo { doc });
         assert_eq!(
             text(&session, doc),
             TRAILING,
@@ -220,7 +220,10 @@ mod tests {
         let (mut session, mut events, doc) = open(Vec::new(), &path)?;
         let unknown = DocumentId(doc.0 + 100);
 
-        session.handle(RequestId(2), Command::FixMarkdownLint { doc: unknown });
+        session.handle(
+            RequestId(2),
+            DocumentCommand::FixMarkdownLint { doc: unknown },
+        );
         let mut answered = false;
         while let Some((id, event)) = events.try_recv() {
             answered |= id == Some(RequestId(2))

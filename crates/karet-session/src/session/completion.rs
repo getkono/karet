@@ -48,7 +48,12 @@ impl Session {
     /// from the server that completes in the document. With no server to ask,
     /// the answer is that nothing was resolved, so the client stops waiting and
     /// does not ask again.
-    pub(super) fn resolve_completion(&mut self, id: RequestId, doc_id: DocumentId, item: CompletionItem) {
+    pub(super) fn resolve_completion(
+        &mut self,
+        id: RequestId,
+        doc_id: DocumentId,
+        item: CompletionItem,
+    ) {
         let Some(doc) = Self::doc_or_report(&self.store, &self.events, id, doc_id) else {
             return;
         };

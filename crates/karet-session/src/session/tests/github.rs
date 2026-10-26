@@ -5,48 +5,49 @@
     #[cfg(feature = "github")]
     #[test]
     fn every_github_command_answers_an_ineligible_workspace() {
+        use crate::api::GithubCommand;
         use crate::api::GithubNewIssue;
         use crate::api::GithubNewPullRequest;
         use crate::api::GithubToken;
 
         let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
         let commands = [
-            Command::GithubLogin {
+            GithubCommand::Login {
                 token: GithubToken::new("github_pat_never_sent".to_owned()),
             },
-            Command::GithubSearchIssues {
+            GithubCommand::SearchIssues {
                 query: "is:open".to_owned(),
                 page: 1,
             },
-            Command::GithubSearchPullRequests {
+            GithubCommand::SearchPullRequests {
                 query: "is:open".to_owned(),
                 page: 1,
             },
-            Command::GithubActions { page: 1 },
-            Command::GithubIssue { number: 1 },
-            Command::GithubPullRequest { number: 1 },
-            Command::GithubUpdatePullRequestBody {
+            GithubCommand::Actions { page: 1 },
+            GithubCommand::Issue { number: 1 },
+            GithubCommand::PullRequest { number: 1 },
+            GithubCommand::UpdatePullRequestBody {
                 number: 1,
                 body: String::new(),
             },
-            Command::GithubCommentPullRequest {
+            GithubCommand::CommentPullRequest {
                 number: 1,
                 body: String::new(),
             },
-            Command::GithubMergePullRequest {
+            GithubCommand::MergePullRequest {
                 number: 1,
                 head_sha: "0".repeat(40),
             },
-            Command::GithubSetPullRequestDraft {
+            GithubCommand::SetPullRequestDraft {
                 node_id: "PR_1".to_owned(),
                 number: 1,
                 draft: true,
             },
-            Command::GithubIssueMetadata,
-            Command::GithubCreateIssue {
+            GithubCommand::IssueMetadata,
+            GithubCommand::CreateIssue {
                 issue: GithubNewIssue::default(),
             },
-            Command::GithubCreatePullRequest {
+            GithubCommand::CreatePullRequest {
                 pull_request: GithubNewPullRequest::default(),
             },
         ];
@@ -79,7 +80,7 @@
     fn refreshing_an_ineligible_workspace_reports_it_unavailable() {
         let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
 
-        session.handle(RequestId(1), Command::GithubRefresh);
+        session.handle(RequestId(1), crate::api::GithubCommand::Refresh);
 
         let answer = events.try_recv();
         assert!(
@@ -100,4 +101,38 @@
             "{answer:?}"
         );
         assert!(events.try_recv().is_none(), "exactly one answer");
+    }
+
+    /// A build without the `github` feature answers every GitHub command, on
+    /// its own id, with a `FeatureDisabled` error -- the one
+    /// `Command::Github(_)` arm, so a panel waiting on any of them never hangs.
+    #[cfg(not(feature = "github"))]
+    #[test]
+    fn every_github_command_answers_feature_disabled_without_the_feature() {
+        use crate::api::GithubCommand;
+
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
+        let commands = [
+            GithubCommand::Refresh,
+            GithubCommand::Issue { number: 1 },
+            GithubCommand::IssueMetadata,
+        ];
+        let sent = commands.len();
+        for (n, command) in commands.into_iter().enumerate() {
+            session.handle(RequestId(n as u64 + 1), command);
+        }
+
+        let answers: Vec<_> = std::iter::from_fn(|| events.try_recv()).collect();
+        assert_eq!(answers.len(), sent, "{answers:?}");
+        for (n, (id, event)) in answers.into_iter().enumerate() {
+            assert_eq!(id, Some(RequestId(n as u64 + 1)));
+            assert!(
+                matches!(
+                    &event,
+                    Event::GithubError { operation, .. }
+                        if *operation == crate::api::GithubOperation::FeatureDisabled
+                ),
+                "{event:?}"
+            );
+        }
     }

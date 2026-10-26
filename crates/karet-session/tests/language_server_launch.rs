@@ -18,9 +18,10 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use karet_core::Severity;
-use karet_session::api::Command;
+use karet_session::api::DocumentCommand;
 use karet_session::api::Event;
 use karet_session::api::LanguageServerRuntimeState;
+use karet_session::api::LspCommand;
 use karet_session::backend::Backend;
 use karet_session::backend::local;
 use karet_session::config::schema::LspServer;
@@ -139,10 +140,11 @@ impl Harness {
         self.backend
             .send(
                 self.backend.next_id(),
-                Command::OpenDocument {
+                DocumentCommand::Open {
                     path: self.file.clone(),
                     language: Some("rust".to_owned()),
-                },
+                }
+                .into(),
             )
             .is_ok()
     }
@@ -345,11 +347,12 @@ async fn a_real_server_completes_a_request_over_the_supervisor() -> Result<(), S
     let request = harness.backend.next_id();
     let _ = harness.backend.send(
         request,
-        Command::Completion {
+        LspCommand::Completion {
             doc,
             position: karet_core::LineCol { line: 0, col: 0 },
             trigger: karet_core::CompletionTrigger::Invoked,
-        },
+        }
+        .into(),
     );
     let completions = harness
         .wait_for(|event| matches!(event, Event::Completions { .. }))
@@ -490,10 +493,11 @@ async fn a_missing_binary_becomes_unavailable_rather_than_retrying_forever()
         .ok_or("the session handed out no event stream")?;
     let _ = backend.send(
         backend.next_id(),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path: file,
             language: Some("rust".to_owned()),
-        },
+        }
+        .into(),
     );
 
     let deadline = tokio::time::Instant::now() + DEADLINE;
@@ -610,10 +614,11 @@ async fn two_sessions_on_one_root_share_a_single_server_process() -> Result<(), 
         .ok_or("the session handed out no event stream")?;
     let _ = backend.send(
         backend.next_id(),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path: first.file.clone(),
             language: Some("rust".to_owned()),
-        },
+        }
+        .into(),
     );
     let deadline = tokio::time::Instant::now() + DEADLINE;
     while tokio::time::Instant::now() < deadline {
@@ -754,10 +759,11 @@ async fn a_diagnostics_companion_attaches_even_with_no_primary_provider() -> Res
         .ok_or("the session handed out no event stream")?;
     let _ = backend.send(
         backend.next_id(),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path: file,
             language: Some("python".to_owned()),
-        },
+        }
+        .into(),
     );
 
     let deadline = tokio::time::Instant::now() + STARTUP_DEADLINE;
@@ -813,10 +819,11 @@ async fn disabling_lsp_stops_companions_and_not_only_primaries() -> Result<(), S
         .ok_or("the session handed out no event stream")?;
     let _ = backend.send(
         backend.next_id(),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path: file,
             language: Some("python".to_owned()),
-        },
+        }
+        .into(),
     );
 
     // Short: this waits for something that must never happen. The companion

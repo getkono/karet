@@ -40,7 +40,7 @@ pub enum BackendError {
 /// # Answer latency
 ///
 /// Do not assume a command is answered promptly. In particular, a
-/// [`Command::Save`] with format-on-save enabled waits for the language
+/// [`DocumentCommand::Save`](crate::api::DocumentCommand::Save) with format-on-save enabled waits for the language
 /// server's formatting answer before it writes, so its
 /// [`Event::Saved`](crate::api::Event::Saved) can arrive seconds after the
 /// command, bounded by the format-on-save deadline. A consumer that needs to
@@ -56,12 +56,12 @@ pub enum BackendError {
 /// outcome the client waits on — is answered by at least one event tagged with
 /// its [`RequestId`]: the result, an empty result, or an error. That holds when
 /// the session has no workspace root or no repository too. For example, with no
-/// root [`Command::IndexSeams`](crate::api::Command::IndexSeams) answers
+/// root [`SeamCommand::Index`](crate::api::SeamCommand::Index) answers
 /// [`Event::SeamIndexFailed`](crate::api::Event::SeamIndexFailed) and
-/// [`Command::DependencyGraph`](crate::api::Command::DependencyGraph) answers an
-/// error notification. With no repository the index writes
-/// ([`Command::Stage`](crate::api::Command::Stage) and its siblings) answer an
-/// error notification, and [`Command::RefreshVcs`](crate::api::Command::RefreshVcs)
+/// [`WorkspaceCommand::DependencyGraph`](crate::api::WorkspaceCommand::DependencyGraph)
+/// answers an error notification. With no repository the index writes
+/// ([`VcsCommand::Stage`](crate::api::VcsCommand::Stage) and its siblings) answer an
+/// error notification, and [`VcsCommand::Refresh`](crate::api::VcsCommand::Refresh)
 /// answers an empty [`Event::VcsStatus`](crate::api::Event::VcsStatus).
 ///
 /// The exceptions are deliberate:

@@ -6,7 +6,7 @@
     fn open_for_reload(session: &mut Session, events: &mut EventRx, path: &Path) -> Option<DocumentId> {
         session.handle(
             RequestId(1),
-            Command::OpenDocument {
+            DocumentCommand::Open {
                 path: path.to_path_buf(),
                 language: None,
             },

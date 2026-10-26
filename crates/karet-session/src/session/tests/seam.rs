@@ -114,7 +114,7 @@
             roots: vec![dir.path().to_path_buf()],
             ..SessionConfig::default()
         });
-        session.handle(RequestId(1), Command::IndexSeams {
+        session.handle(RequestId(1), SeamCommand::Index {
             root: None,
             mode: crate::api::SeamSync::Incremental,
         });
@@ -186,7 +186,7 @@
             roots: vec![dir.path().to_path_buf()],
             ..SessionConfig::default()
         });
-        session.handle(RequestId(1), Command::IndexSeams {
+        session.handle(RequestId(1), SeamCommand::Index {
             root: None,
             mode: crate::api::SeamSync::Incremental,
         });
@@ -202,7 +202,7 @@
         let (mut session, mut events, _dir, _) = indexed_session()?;
         session.handle(
             RequestId(2),
-            Command::SeamQuery {
+            SeamCommand::Query {
                 text: "lens:hazard".to_owned(),
             },
         );
@@ -220,7 +220,7 @@
         let (mut session, mut events, _dir, _) = indexed_session()?;
         session.handle(
             RequestId(2),
-            Command::SeamQuery {
+            SeamCommand::Query {
                 text: "lens:hazrd".to_owned(),
             },
         );
@@ -242,7 +242,7 @@
         let (mut session, mut events, _dir, _) = indexed_session()?;
         session.handle(
             RequestId(2),
-            Command::SeamQuery {
+            SeamCommand::Query {
                 text: "config:tests lens:api".to_owned(),
             },
         );
@@ -259,7 +259,7 @@
         let (mut session, mut events, _dir, _) = indexed_session()?;
         session.handle(
             RequestId(2),
-            Command::SeamNode {
+            SeamCommand::Node {
                 path: "seamdemo::inner::Contract".to_owned(),
             },
         );
@@ -277,7 +277,7 @@
         let (mut session, mut events, _dir, _) = indexed_session()?;
         session.handle(
             RequestId(2),
-            Command::SeamNode {
+            SeamCommand::Node {
                 path: "seamdemo::danger".to_owned(),
             },
         );
@@ -304,7 +304,7 @@
             roots: vec![dir.path().to_path_buf()],
             ..SessionConfig::default()
         });
-        session.handle(RequestId(1), Command::SeamNode {
+        session.handle(RequestId(1), SeamCommand::Node {
             path: "absent::thing".to_owned(),
         });
         let event = next_seam_answer(&mut events, "SeamNodeDetail")?;
@@ -332,7 +332,7 @@
 
         session.handle(
             RequestId(2),
-            Command::SetSeamConfiguration {
+            SeamCommand::SetConfiguration {
                 name: other.clone(),
             },
         );
@@ -355,7 +355,7 @@
 
         session.handle(
             RequestId(2),
-            Command::ReindexSeams {
+            SeamCommand::Reindex {
                 path: dir.path().join("src").join("inner.rs"),
                 text: "pub trait Contract {}\npub fn renamed() {}\n".to_owned(),
             },
@@ -408,7 +408,7 @@
             roots: vec![dir.path().to_path_buf()],
             ..SessionConfig::default()
         });
-        session.handle(RequestId(1), Command::IndexSeams {
+        session.handle(RequestId(1), SeamCommand::Index {
             root: None,
             mode: crate::api::SeamSync::Incremental,
         });
@@ -437,7 +437,7 @@
             roots: vec![dir.path().to_path_buf()],
             ..SessionConfig::default()
         });
-        session.handle(RequestId(1), Command::IndexSeams {
+        session.handle(RequestId(1), SeamCommand::Index {
             root: None,
             mode: crate::api::SeamSync::Incremental,
         });
@@ -480,7 +480,7 @@
             settings,
             ..SessionConfig::default()
         });
-        session.handle(RequestId(1), Command::IndexSeams {
+        session.handle(RequestId(1), SeamCommand::Index {
             root: None,
             mode: crate::api::SeamSync::Incremental,
         });
@@ -502,14 +502,14 @@
             roots: vec![dir.path().to_path_buf()],
             ..SessionConfig::default()
         });
-        session.handle(RequestId(1), Command::IndexSeams {
+        session.handle(RequestId(1), SeamCommand::Index {
             root: None,
             mode: crate::api::SeamSync::Incremental,
         });
         let event = next_seam_answer(&mut events, "SeamIndexFailed")?;
         assert!(matches!(event, Event::SeamIndexFailed { .. }), "got {event:?}");
 
-        session.handle(RequestId(2), Command::SeamQuery {
+        session.handle(RequestId(2), SeamCommand::Query {
             text: "lens:api".to_owned(),
         });
         let answer = await_seam_event(&mut events);
@@ -528,14 +528,14 @@
             roots: vec![dir.path().to_path_buf()],
             ..SessionConfig::default()
         });
-        session.handle(RequestId(1), Command::IndexSeams {
+        session.handle(RequestId(1), SeamCommand::Index {
             root: None,
             mode: crate::api::SeamSync::Incremental,
         });
         let event = next_seam_answer(&mut events, "SeamIndexFailed")?;
         assert!(matches!(event, Event::SeamIndexFailed { .. }), "got {event:?}");
 
-        session.handle(RequestId(2), Command::SeamNode {
+        session.handle(RequestId(2), SeamCommand::Node {
             path: "absent::thing".to_owned(),
         });
         let answer = await_seam_event(&mut events);
@@ -570,7 +570,7 @@
         session: &mut Session,
         events: &mut crate::session::EventRx,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        session.handle(RequestId(99), Command::SeamQuery {
+        session.handle(RequestId(99), SeamCommand::Query {
             text: "lens:api".to_owned(),
         });
         next_seam_answer(events, "SeamQueryResult").map(|_| ())
@@ -584,7 +584,7 @@
             roots: vec![dir.path().to_path_buf()],
             ..SessionConfig::default()
         });
-        session.handle(RequestId(1), Command::IndexSeams {
+        session.handle(RequestId(1), SeamCommand::Index {
             root: None,
             mode: crate::api::SeamSync::Incremental,
         });
@@ -620,7 +620,7 @@
 
         // Cold: everything is parsed, and the result is stored.
         let (mut session, mut events) = cached_session(dir.path(), cache.path());
-        session.handle(RequestId(1), Command::IndexSeams {
+        session.handle(RequestId(1), SeamCommand::Index {
             root: None,
             mode: crate::api::SeamSync::Incremental,
         });
@@ -631,7 +631,7 @@
 
         // Warm: the same workspace, a fresh session, nothing changed on disk.
         let (mut session, mut events) = cached_session(dir.path(), cache.path());
-        session.handle(RequestId(2), Command::IndexSeams {
+        session.handle(RequestId(2), SeamCommand::Index {
             root: None,
             mode: crate::api::SeamSync::Incremental,
         });
@@ -647,7 +647,7 @@
         let (dir, cache) = (tempfile::tempdir()?, tempfile::tempdir()?);
         seam_workspace(dir.path(), &["alpha", "beta"])?;
         let (mut session, mut events) = cached_session(dir.path(), cache.path());
-        session.handle(RequestId(1), Command::IndexSeams {
+        session.handle(RequestId(1), SeamCommand::Index {
             root: None,
             mode: crate::api::SeamSync::Incremental,
         });
@@ -662,7 +662,7 @@
         )?;
 
         let (mut session, mut events) = cached_session(dir.path(), cache.path());
-        session.handle(RequestId(2), Command::IndexSeams {
+        session.handle(RequestId(2), SeamCommand::Index {
             root: None,
             mode: crate::api::SeamSync::Incremental,
         });
@@ -676,14 +676,14 @@
         let (dir, cache) = (tempfile::tempdir()?, tempfile::tempdir()?);
         seam_workspace(dir.path(), &["alpha", "beta"])?;
         let (mut session, mut events) = cached_session(dir.path(), cache.path());
-        session.handle(RequestId(1), Command::IndexSeams {
+        session.handle(RequestId(1), SeamCommand::Index {
             root: None,
             mode: crate::api::SeamSync::Incremental,
         });
         let first = await_index_stream(&mut events).ok_or(NO_STREAM)?;
 
         // The recourse when the stored index is itself suspect: nothing is trusted.
-        session.handle(RequestId(2), Command::IndexSeams {
+        session.handle(RequestId(2), SeamCommand::Index {
             root: None,
             mode: crate::api::SeamSync::Forced,
         });
@@ -717,7 +717,7 @@
                 ..SessionConfig::default()
             });
             let start = std::time::Instant::now();
-            session.handle(request, Command::IndexSeams {
+            session.handle(request, SeamCommand::Index {
                 root: None,
                 mode: crate::api::SeamSync::Incremental,
             });

@@ -1,4 +1,4 @@
-//! The seam contract for [`Command::SelectionRanges`]: a server that offers
+//! The seam contract for [`LspCommand::SelectionRanges`]: a server that offers
 //! selection ranges answers with its chains in buffer columns, and every other
 //! case -- a server without them, no server at all, a document that moved on
 //! -- still answers, with an empty chain per position, and raises no notice.
@@ -34,10 +34,11 @@ async fn opened(
     let backend = local_session(session, None);
     backend.send(
         backend.next_id(),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path,
             language: None,
-        },
+        }
+        .into(),
     )?;
     let (doc, version) = await_opened(&mut events).await.ok_or("no Opened")?;
     Ok((backend, events, doc, version))
@@ -70,7 +71,10 @@ fn ask(
 ) -> Result<RequestId, Box<dyn std::error::Error + Send + Sync>> {
     let request = backend.next_id();
     let positions = carets();
-    backend.send(request, Command::SelectionRanges { doc, positions })?;
+    backend.send(
+        request,
+        LspCommand::SelectionRanges { doc, positions }.into(),
+    )?;
     Ok(request)
 }
 
@@ -145,7 +149,7 @@ async fn an_answer_to_a_document_that_moved_on_carries_no_ranges() -> TestResult
     let at = Range::new(LineCol::new(1, 0), LineCol::new(1, 0)).map_err(|e| format!("{e}"))?;
     backend.send(
         backend.next_id(),
-        Command::ApplyChange {
+        DocumentCommand::ApplyChange {
             doc,
             change: Change::new(
                 version,
@@ -155,7 +159,8 @@ async fn an_answer_to_a_document_that_moved_on_carries_no_ranges() -> TestResult
                 }],
             ),
             cause: EditCause::Type,
-        },
+        }
+        .into(),
     )?;
     let (answered, asked_at, chains, _) = answer_to(&mut events, request).await?;
 
@@ -174,7 +179,7 @@ fn an_answer_from_a_retired_generation_still_answers_empty() -> TestResult {
     let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
     session.handle(
         RequestId(1),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path,
             language: None,
         },
