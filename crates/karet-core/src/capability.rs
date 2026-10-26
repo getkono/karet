@@ -267,7 +267,10 @@ impl Capabilities {
         self.features.len()
     }
 
-    /// Whether the server advertised nothing at all.
+    /// Whether no [`ServerFeature`] is available.
+    ///
+    /// Only the feature set is consulted; the other fields (position encoding,
+    /// sync kind, trigger characters, …) may still carry advertised values.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.features.is_empty()

@@ -40,8 +40,11 @@ impl TokenId {
 
 /// The text emphasis requested for a run of text, independent of any renderer.
 ///
-/// The one neutral attribute vocabulary shared by themes (per-token emphasis),
-/// document models (DOCX runs), and markup rendering — markup tokens carry
+/// The neutral emphasis vocabulary shared by themes (per-token emphasis),
+/// document models (DOCX runs), and markup rendering. It is not the only
+/// attribute type: a [`Decoration`](crate::Decoration) carries its own
+/// [`TextModifiers`](crate::TextModifiers) flags, kept separate on purpose.
+/// Markup tokens carry
 /// weight/slant as much as color: a markdown heading reads as a heading because
 /// it is **bold**, not merely blue.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
