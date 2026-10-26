@@ -333,7 +333,7 @@ pub fn toggle_surround(line: &str, start: usize, end: usize, marker: &str) -> Op
     }
     if s == e {
         // Expand to the word under the caret.
-        let is_word = |c: char| c.is_alphanumeric() || c == '_';
+        let is_word = karet_core::is_word_char;
         let mut ws = s;
         while ws > 0 && chars.get(ws - 1).copied().is_some_and(is_word) {
             ws -= 1;
