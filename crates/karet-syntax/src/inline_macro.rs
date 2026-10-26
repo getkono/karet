@@ -2,6 +2,7 @@
 
 use karet_core::BytePos;
 use karet_core::LineCol;
+use karet_core::LineIndex;
 use karet_core::Range;
 use karet_core::Span;
 use karet_treesitter::LanguageId;
@@ -185,7 +186,7 @@ impl InlineMacroEngine {
         }
         let new_text = format!("fn () {{\n{leading}{indentation}\n{leading}}}");
         let range = Range {
-            start: byte_to_line_col(text, trigger_start)?,
+            start: LineIndex::new(text).line_col(text, BytePos(trigger_start)),
             end: selection.end,
         };
         Some(expansion(range, &new_text, 3))
@@ -280,14 +281,6 @@ fn line_col_to_byte(text: &str, position: LineCol) -> Option<usize> {
         |(index, _)| Some(index),
     )?;
     Some(line_start + byte_col)
-}
-
-fn byte_to_line_col(text: &str, byte: usize) -> Option<LineCol> {
-    let prefix = text.get(..byte)?;
-    let line = prefix.bytes().filter(|byte| *byte == b'\n').count();
-    let line_start = prefix.rfind('\n').map_or(0, |index| index + 1);
-    let col = text.get(line_start..byte)?.chars().count();
-    Some(LineCol::new(line.try_into().ok()?, col.try_into().ok()?))
 }
 
 #[cfg(test)]
