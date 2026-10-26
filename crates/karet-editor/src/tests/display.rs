@@ -207,11 +207,11 @@ fn scroll_off_keeps_rows_below_and_above_a_keyboard_caret() {
         let mut state = EditorState::new();
         paint(&buffer, &mut state, wrap);
         for _ in 0..6 {
-            state.move_down(&buffer);
+            state.extend_down(&buffer);
         }
         paint(&buffer, &mut state, wrap);
         assert_eq!(state.scroll_line, 0, "line 6 has three rows below it");
-        state.move_down(&buffer);
+        state.extend_down(&buffer);
         if !wrap {
             // A wrapped view leaves the margin to the render, in rows.
             assert_eq!(state.scroll_line, 1, "resolved by the motion");
@@ -223,7 +223,7 @@ fn scroll_off_keeps_rows_below_and_above_a_keyboard_caret() {
         paint(&buffer, &mut state, wrap);
         assert_eq!(state.scroll_line, 14, "line 20 three rows from the bottom");
         for _ in 0..4 {
-            state.move_up(&buffer);
+            state.extend_up(&buffer);
         }
         paint(&buffer, &mut state, wrap);
         assert_eq!(state.scroll_line, 13, "line 16 three rows from the top");
@@ -272,10 +272,10 @@ fn scroll_off_stops_at_either_end_of_the_buffer() {
         let buffer = lines(30);
         let mut state = EditorState::new();
         paint(&buffer, &mut state, wrap);
-        state.move_doc_end(&buffer);
+        state.extend_doc_end(&buffer);
         paint(&buffer, &mut state, wrap);
         assert_eq!(state.scroll_line, 21, "the last line on the bottom row");
-        state.move_doc_start(&buffer);
+        state.extend_doc_start(&buffer);
         paint(&buffer, &mut state, wrap);
         assert_eq!(state.scroll_line, 0);
     }
@@ -304,11 +304,11 @@ fn scroll_off_is_capped_to_what_a_short_viewport_can_spare() {
             .render(area, &mut target, state);
     };
     paint(&mut state);
-    state.move_down(&buffer);
-    state.move_down(&buffer);
+    state.extend_down(&buffer);
+    state.extend_down(&buffer);
     paint(&mut state);
     assert_eq!(state.scroll_line, 0, "line 2 has a row below it");
-    state.move_down(&buffer);
+    state.extend_down(&buffer);
     paint(&mut state);
     assert_eq!(state.scroll_line, 1);
 }
@@ -396,16 +396,16 @@ fn vertical_motion_keeps_the_screen_column_across_an_indent() {
     let mut path = Vec::new();
     for down in [true, true, false, false] {
         if down {
-            state.move_down(&buffer);
+            state.extend_down(&buffer);
         } else {
-            state.move_up(&buffer);
+            state.extend_up(&buffer);
         }
         path.push(state.cursor().col);
     }
     assert_eq!(path, [9, 14, 9, 4]);
     // A goal inside the indent lands on the continuation row's start.
     state.set_caret(&buffer, LineCol::new(0, 1));
-    state.move_down(&buffer);
+    state.extend_down(&buffer);
     assert_eq!(state.cursor(), LineCol::new(0, 7));
 }
 

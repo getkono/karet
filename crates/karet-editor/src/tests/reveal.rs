@@ -42,10 +42,10 @@ fn a_hinted_line_reveals_leftward_by_display_cells_before_any_render() {
     let editor = || Editor::new(&buffer).virtual_text(&hints);
     let _ = paint(editor(), &buffer, &mut target, &mut state);
 
-    state.move_line_end(&buffer);
+    state.extend_line_end(&buffer);
     assert_eq!(state.scroll_col, 21, "right reveal leaves 10 cells after");
     for _ in 0..14 {
-        state.move_left(&buffer);
+        state.extend_left(&buffer);
     }
     assert_eq!(state.cursor(), LineCol::new(0, 22));
     assert_eq!(
@@ -68,9 +68,9 @@ fn a_tabbed_line_reveals_leftward_by_display_cells() {
     let editor = || Editor::new(&buffer).tab_width(4);
     let _ = paint(editor(), &buffer, &mut target, &mut state);
 
-    state.move_line_end(&buffer);
+    state.extend_line_end(&buffer);
     for _ in 0..23 {
-        state.move_left(&buffer);
+        state.extend_left(&buffer);
     }
     assert_eq!(state.cursor(), LineCol::new(0, 16));
     let revealed = state.scroll_col;
@@ -96,7 +96,7 @@ fn a_wrapped_view_never_scrolls_horizontally() {
     let editor = || Editor::new(&buffer).word_wrap(true);
     editor().render(area, &mut target, &mut state);
 
-    state.move_line_end(&buffer);
+    state.extend_line_end(&buffer);
     assert_eq!(state.scroll_col, 0);
     editor().render(area, &mut target, &mut state);
     assert_eq!(state.scroll_col, 0);

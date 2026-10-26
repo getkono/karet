@@ -166,6 +166,41 @@ fn a_page_moves_the_caret_by_the_viewport_and_scrolls_with_it() {
     assert_eq!(state.cursor(), at(19, 2), "back at the goal column");
 }
 
+#[test]
+fn extend_page_down_and_up_move_the_caret_a_page_and_keep_the_anchor() {
+    let text: Vec<String> = (0..30).map(|n| format!("line {n}")).collect();
+    let buffer = TextBuffer::from_text(&text.join("\n"));
+    let mut state = state_at(&buffer, &[at(3, 2)]);
+    state.extend_page_down(&buffer);
+    assert_eq!(
+        state.cursors().selections,
+        vec![Selection {
+            anchor: at(3, 2),
+            head: at(13, 2),
+        }],
+        "Shift+PageDown grows the selection by one page"
+    );
+    paint(&buffer, &mut state, &[], false, 40);
+    state.extend_page_up(&buffer);
+    assert_eq!(
+        state.cursors().selections,
+        vec![Selection {
+            anchor: at(3, 2),
+            head: at(3, 2),
+        }],
+        "Shift+PageUp moves the head back one page, and the anchor stays put"
+    );
+    state.extend_page_up(&buffer);
+    assert_eq!(
+        state.cursors().selections,
+        vec![Selection {
+            anchor: at(3, 2),
+            head: at(0, 0),
+        }],
+        "a page past the first line selects to the document start"
+    );
+}
+
 /// `zero`, then a fold headed by `head` hiding `in1` and `in2`, then `tail`.
 fn folded() -> (TextBuffer, EditorState, [Fold; 1]) {
     let buffer = TextBuffer::from_text("zero\nhead\nin1\nin2\ntail");
