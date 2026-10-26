@@ -1,7 +1,8 @@
 //! A graceful placeholder for files the code window cannot render inline.
 //!
-//! File-type classification itself lives in [`karet_filetype`]; this module
-//! re-exports [`FileKind`]/[`classify`]/[`SIZE_GUARD`] for callers and supplies the
+//! File-type classification itself lives in [`karet_filetype`]; this module is
+//! this crate's one path to it, re-exporting [`FileKind`], [`classify`],
+//! [`classify_ignoring_size`] and [`SIZE_GUARD`] for callers, and supplies the
 //! ratatui [`Placeholder`] widget. The application opens a file by
 //! [`classify`]ing it and then choosing a renderer: [`FileKind::Text`] /
 //! [`FileKind::Markdown`] → the editor widget, [`FileKind::Image`] → the image

@@ -14,10 +14,9 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use karet_core::LineCol;
+use karet_filetype::FileKind;
 #[cfg(feature = "images")]
 use karet_fileview::image;
-use karet_fileview::viewer::FileKind;
-use karet_fileview::viewer::{self};
 use karet_syntax::FoldRegions;
 use karet_syntax::Highlights;
 use karet_syntax::SemanticBlocks;
@@ -39,7 +38,7 @@ pub(crate) use recent::absolute;
 pub(crate) const HEAD_BYTES: usize = 8192;
 
 /// Open `path` as a tab, classifying its content and choosing a renderer. Files
-/// larger than the [size guard](viewer::SIZE_GUARD) route to a too-large
+/// larger than the [size guard](karet_filetype::SIZE_GUARD) route to a too-large
 /// placeholder; [`open_file_ignoring_size`] bypasses that guard. Failures degrade
 /// gracefully to a placeholder rather than erroring.
 ///
@@ -49,17 +48,17 @@ pub(crate) const HEAD_BYTES: usize = 8192;
 #[must_use]
 pub fn open_file(path: &Path) -> Tab {
     let (head, len) = read_head(path);
-    let kind = viewer::classify(path, &head, len);
+    let kind = karet_filetype::classify(path, &head, len);
     open_classified(path, kind, len)
 }
 
-/// Open `path`, bypassing the [size guard](viewer::SIZE_GUARD) so an over-large
+/// Open `path`, bypassing the [size guard](karet_filetype::SIZE_GUARD) so an over-large
 /// file opens with the renderer its content warrants (never a too-large
 /// placeholder). Backs the TUI "open anyway" override on a too-large placeholder.
 #[must_use]
 pub fn open_file_ignoring_size(path: &Path) -> Tab {
     let (head, len) = read_head(path);
-    let kind = viewer::classify_ignoring_size(path, &head);
+    let kind = karet_filetype::classify_ignoring_size(path, &head);
     open_classified(path, kind, len)
 }
 
@@ -396,7 +395,7 @@ mod tests {
         let file = dir.path.join("big.bin");
         // Just over the size guard: the default open path shows a too-large
         // placeholder…
-        let _ = std::fs::write(&file, vec![0u8; viewer::SIZE_GUARD as usize + 1]);
+        let _ = std::fs::write(&file, vec![0u8; karet_filetype::SIZE_GUARD as usize + 1]);
         assert!(matches!(
             open_file(&file).kind,
             TabKind::Placeholder {
