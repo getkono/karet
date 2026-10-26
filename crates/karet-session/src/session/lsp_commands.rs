@@ -113,6 +113,18 @@ impl Session {
                 self.format_on_type(id, *doc, *position, *ch);
                 return true;
             },
+            Command::InlineCompletion {
+                doc,
+                position,
+                trigger,
+            } => {
+                self.inline_completion(id, *doc, (*position, *trigger));
+                return true;
+            },
+            Command::AcceptInlineCompletion { doc, server, item } => {
+                self.accept_inline_completion(id, *doc, server, item.clone());
+                return true;
+            },
             Command::CodeLenses { doc, lines } => {
                 self.code_lenses(id, *doc, *lines);
                 return true;

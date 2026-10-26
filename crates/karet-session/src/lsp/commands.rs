@@ -674,11 +674,14 @@ pub(super) fn answer_empty(
             let _ = updates.send(LspUpdate::CodeLens { generation, answer });
         },
         // A notice is not a request: nobody waits on it, and one that finds no
-        // connection means nothing to the next (see `window::Notice`).
+        // connection means nothing to the next (see `window::Notice`). Nor is
+        // an inline-completion step: an ask with no server proposes nothing,
+        // which is what silence says (see `inline_completion`).
         ServerCmd::DidOpen { .. }
         | ServerCmd::DidChange { .. }
         | ServerCmd::DidClose { .. }
         | ServerCmd::DidSave { .. }
+        | ServerCmd::InlineCompletion(_)
         | ServerCmd::Notify(_) => {},
     }
 }
@@ -773,6 +776,7 @@ pub(super) fn remember_document(
         | ServerCmd::PrepareRename { .. }
         | ServerCmd::CodeAction(_)
         | ServerCmd::CodeLens(_)
+        | ServerCmd::InlineCompletion(_)
         | ServerCmd::Formatting { .. }
         | ServerCmd::Notify(_) => {},
     }

@@ -20,6 +20,7 @@ use super::hint_flight::FlightTag;
 use super::hint_flight::Flights;
 use super::hint_flight::HintAsk;
 use super::hint_flight::{self};
+use super::inline_completion as inline;
 use super::semantic_tokens::DocumentFetches;
 use super::*;
 
@@ -328,6 +329,7 @@ pub(super) async fn server_task(task: ServerTask) {
         )
         .await;
         let mut dead = false;
+        let slot = (&key, token);
         let cmd = match wake {
             health::Wake::Lost => {
                 let _ = client.take();
@@ -410,8 +412,11 @@ pub(super) async fn server_task(task: ServerTask) {
                 None
             },
             health::Wake::Lens(answer) => {
-                let slot = (&key, token);
                 code_lens::deliver(answer, &mut tally, &mut dead, &updates, slot, generation);
+                None
+            },
+            health::Wake::Inline(answer) => {
+                inline::deliver(answer, &mut tally, &mut dead, &updates, slot, generation);
                 None
             },
             // Back to the top, where the fetches a registration, a semantic
@@ -860,6 +865,14 @@ pub(super) async fn server_task(task: ServerTask) {
                         let answer = code_lens::run(active, request, lens, &mut context).await;
                         let _ = updates.send(LspUpdate::CodeLens { generation, answer });
                     },
+                },
+                ServerCmd::InlineCompletion(cmd) => match cmd.into_ask() {
+                    // An ask is background work: no flush, and no await -- it
+                    // launches below, as a hint request does. See `inline`.
+                    Ok(ask) => flights.inline.ask(ask, &updates, generation),
+                    // An accept only reports what the user took; the edit it
+                    // made reaches the server as any edit does.
+                    Err(item) => inline::accept(active, &item, &key).await,
                 },
                 ServerCmd::Formatting {
                     request,

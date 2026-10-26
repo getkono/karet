@@ -9,8 +9,11 @@ use karet_core::CompletionItem;
 use karet_core::CompletionTrigger;
 use karet_core::HierarchyDirection;
 use karet_core::InlayHint;
+use karet_core::InlineCompletionItem;
+use karet_core::InlineCompletionTrigger;
 use karet_core::Range;
 
+use super::inline_completion::InlineCompletionCmd;
 use super::*;
 use crate::api::LocationKind;
 
@@ -59,6 +62,68 @@ impl LspManager {
         };
         let item = Box::new(item);
         tx.try_send(ServerCmd::ResolveCompletion { request, doc, item })
+            .is_ok()
+    }
+
+    /// Ask every server attached to `path` for inline completions at
+    /// `position` (already in UTF-16 columns), not only the language's
+    /// primary: they come from a companion such as Copilot far more often.
+    /// Each answers on its own, and only with items (see
+    /// `inline_completion`). Returns how many servers took the ask.
+    pub(crate) fn inline_completion(
+        &self,
+        request: RequestId,
+        doc: DocumentId,
+        version: u64,
+        path: &Path,
+        (position, trigger): (LineCol, InlineCompletionTrigger),
+    ) -> usize {
+        if !self.settings.enabled {
+            return 0;
+        }
+        let path = absolute_path(path);
+        let mut taken = 0;
+        for slot in self.servers.values() {
+            if !slot.documents.contains(&path) {
+                continue;
+            }
+            let ask = InlineCompletionCmd::Ask {
+                request,
+                doc,
+                version,
+                path: path.clone(),
+                position,
+                trigger,
+            };
+            if slot.tx.try_send(ServerCmd::InlineCompletion(ask)).is_ok() {
+                taken += 1;
+            }
+        }
+        taken
+    }
+
+    /// Tell `server`, attached to `path`, that one of the inline completions
+    /// it proposed was accepted. Returns whether a live server took it.
+    pub(crate) fn accept_inline_completion(
+        &self,
+        server: &LanguageServerId,
+        path: &Path,
+        item: InlineCompletionItem,
+    ) -> bool {
+        let path = absolute_path(path);
+        let Some(slot) = self
+            .servers
+            .iter()
+            .find(|(key, slot)| key.serves(server) && slot.documents.contains(&path))
+            .map(|(_, slot)| slot)
+        else {
+            return false;
+        };
+        let accept = InlineCompletionCmd::Accept {
+            item: Box::new(item),
+        };
+        slot.tx
+            .try_send(ServerCmd::InlineCompletion(accept))
             .is_ok()
     }
 

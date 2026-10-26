@@ -32,7 +32,27 @@ fn defaults_are_sane() {
     assert!(s.lsp.enabled, "LSP is on by default (issue #57)");
     assert!(s.editor.completion.enabled, "completion defaults on (#57)");
     assert!(s.editor.completion.auto_trigger, "auto-trigger defaults on");
+    assert!(
+        s.editor.inline_completion.enabled,
+        "ghost text is asked for wherever a server offers it"
+    );
     assert!(s.lsp.servers.is_empty(), "no user overrides by default");
+}
+
+/// Ghost text switches off per language without touching the rest: an
+/// override that names only `inlineCompletion` leaves the popup alone.
+#[test]
+fn inline_completion_switches_off_per_language() {
+    let parsed: Editor =
+        serde_json::from_str(r#"{ "[markdown]": { "inlineCompletion": { "enabled": false } } }"#)
+            .unwrap_or_default();
+    let markdown = parsed.for_language(Some("markdown"));
+    assert!(!markdown.inline_completion());
+    assert!(markdown.completion().enabled());
+    assert!(parsed.for_language(Some("rust")).inline_completion());
+    let off: Editor =
+        serde_json::from_str(r#"{ "inlineCompletion": { "enabled": false } }"#).unwrap_or_default();
+    assert!(!off.for_language(Some("rust")).inline_completion());
 }
 
 #[test]

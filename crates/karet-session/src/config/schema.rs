@@ -361,6 +361,9 @@ pub struct Editor {
     pub pretty_errors: bool,
     /// LSP-powered code completion (the popup).
     pub completion: Completion,
+    /// `editor.inlineCompletion.*` — ghost text a language server (such as
+    /// Copilot) proposes at the caret.
+    pub inline_completion: InlineCompletion,
     /// The hover popup (documentation + diagnostics at the caret).
     pub hover: HoverPopup,
     /// `editor.inlayHints.*` — inferred types and parameter names drawn inline.
@@ -447,6 +450,7 @@ impl Default for Editor {
             semantic_comments: SemanticComments::default(),
             pretty_errors: true,
             completion: Completion::default(),
+            inline_completion: InlineCompletion::default(),
             hover: HoverPopup::default(),
             inlay_hints: InlayHints::default(),
             code_lens: true,
@@ -545,6 +549,27 @@ impl Default for Completion {
             enabled: true,
             auto_trigger: true,
         }
+    }
+}
+
+/// `editor.inlineCompletion.*` — ghost text proposed at the caret by a
+/// language server offering LSP 3.18 inline completions (such as
+/// `copilot-language-server`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(default, deny_unknown_fields, rename_all = "camelCase")]
+pub struct InlineCompletion {
+    /// Ask for ghost text once typing pauses, and on Alt+] / Alt+[. Nothing
+    /// is shown unless a server attached to the document offers it, so this
+    /// costs nothing where none does; switch it off per language with
+    /// `"[markdown]": { "inlineCompletion": { "enabled": false } }`.
+    pub enabled: bool,
+}
+
+impl Default for InlineCompletion {
+    /// On: a server that offers inline completions was attached on purpose.
+    fn default() -> Self {
+        Self { enabled: true }
     }
 }
 

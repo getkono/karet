@@ -28,6 +28,7 @@ mod edit_requests;
 #[cfg(feature = "github")]
 mod github;
 mod hints;
+mod inline_completion;
 mod lifecycle;
 mod lsp_commands;
 mod lsp_registry_updates;

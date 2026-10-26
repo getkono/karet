@@ -514,6 +514,13 @@
             "enabled": true
           }
         },
+        "inlineCompletion": {
+          "description": "`editor.inlineCompletion.*` — ghost text a language server (such as\nCopilot) proposes at the caret.",
+          "$ref": "#/$defs/InlineCompletion",
+          "default": {
+            "enabled": true
+          }
+        },
         "inlineDiagnostics": {
           "description": "`editor.inlineDiagnostics.*` — which diagnostics show their message at\nthe end of their line.",
           "$ref": "#/$defs/InlineDiagnostics",
@@ -721,6 +728,18 @@
             "boolean",
             "null"
           ]
+        },
+        "inlineCompletion": {
+          "description": "Partially override inline completion (ghost text).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InlineCompletionOverride"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "inlineDiagnostics": {
           "description": "Partially override which diagnostics show their message inline.",
@@ -1071,6 +1090,33 @@
           ]
         }
       ]
+    },
+    "InlineCompletion": {
+      "description": "`editor.inlineCompletion.*` — ghost text proposed at the caret by a\nlanguage server offering LSP 3.18 inline completions (such as\n`copilot-language-server`).",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Ask for ghost text once typing pauses, and on Alt+] / Alt+[. Nothing\nis shown unless a server attached to the document offers it, so this\ncosts nothing where none does; switch it off per language with\n`\"[markdown]\": { \"inlineCompletion\": { \"enabled\": false } }`.",
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "InlineCompletionOverride": {
+      "description": "A partial per-language patch for `editor.inlineCompletion`.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Override whether ghost text is asked for.",
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "additionalProperties": false
     },
     "InlineDiagnostics": {
       "description": "`editor.inlineDiagnostics.*` — which diagnostics show their message at the\nend of their line.",
@@ -1810,15 +1856,15 @@
           "$ref": "#/$defs/IconStyleSetting",
           "default": "nerdFont"
         },
-        "startupPanel": {
-          "description": "Which sidebar panel is shown at startup (`none` starts collapsed).",
-          "$ref": "#/$defs/StartupPanel",
-          "default": "explorer"
-        },
         "restoreLayout": {
           "description": "Reopen a workspace's tabs, splits, and cursors as the last clean exit\nleft them, when karet starts on it without a file to open.",
           "type": "boolean",
           "default": true
+        },
+        "startupPanel": {
+          "description": "Which sidebar panel is shown at startup (`none` starts collapsed).",
+          "$ref": "#/$defs/StartupPanel",
+          "default": "explorer"
         }
       },
       "additionalProperties": false

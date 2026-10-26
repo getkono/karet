@@ -184,6 +184,7 @@ fn builtin_install_recipes_are_complete_for_supported_targets() {
         "buf",
         "clangd",
         "clojure-lsp",
+        "copilot-language-server",
         "docker-langserver",
         "graphql-lsp",
         "lemminx",
@@ -260,7 +261,7 @@ fn builtin_install_recipes_are_complete_for_supported_targets() {
             "{server} has no manual-install reason"
         );
     }
-    assert_eq!(actual.len() + manual.len() + builtin.len(), 41);
+    assert_eq!(actual.len() + manual.len() + builtin.len(), 42);
     // A reason is total: an id karet has never heard of is still explained,
     // because callers use `None` to mean "the user has nothing to install" and
     // must never read an unknown provider that way.

@@ -154,6 +154,25 @@ pub enum Event {
         /// every location.
         hints: Vec<InlayHint>,
     },
+    /// Ghost text one server proposes, answering a
+    /// [`Command::InlineCompletion`]; never empty.
+    ///
+    /// Items are positioned against the text at `version`, but the user may
+    /// have typed on since: [`InlineCompletionItem::ghost`] re-reads an item
+    /// against the line as it is now, and keeps it only while what was typed
+    /// is a prefix of what it proposes.
+    InlineCompletions {
+        /// The document the items are for.
+        doc: DocumentId,
+        /// The document version the request was made against.
+        version: u64,
+        /// The server that proposed them, which an accept is sent back to
+        /// ([`Command::AcceptInlineCompletion`]).
+        server: LanguageServerId,
+        /// The items, ranges in buffer (UTF-32) columns, in the server's
+        /// order.
+        items: Vec<InlineCompletionItem>,
+    },
     /// A [`Command::InlayHints`] went unanswered: the server failed or timed
     /// out on it, a newer request replaced it, or the server went away.
     ///
