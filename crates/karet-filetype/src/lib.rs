@@ -1,7 +1,7 @@
 //! `karet-filetype` — the single source of truth for file-type classification and
 //! presentation metadata in the karet toolkit.
 //!
-//! It unifies three concerns that were previously scattered across the workspace:
+//! It unifies four concerns that were previously scattered across the workspace:
 //!
 //! - **Identity** — [`file_type_for_path`] resolves display, tree-sitter grammar,
 //!   LSP `languageId`, configuration selector, and [`Category`] independently,

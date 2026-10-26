@@ -42,9 +42,12 @@ pub enum FileKind {
 /// first 8 KiB), and its total `len` in bytes.
 ///
 /// This deliberately does **not** distinguish code from plain text — both are
-/// [`FileKind::Text`]; the application resolves a grammar from the path. Image and
-/// PDF kinds are detected by extension and confirmed (or recovered) by magic
-/// bytes, so a mislabeled file still routes sensibly.
+/// [`FileKind::Text`]; the application resolves a grammar from the path. A known
+/// image, PDF, DOCX, notebook, or CBOR extension routes on the extension alone
+/// (the content is not checked against it). Otherwise magic bytes recover a PDF,
+/// image, or self-described CBOR file whatever its name; then a NUL or invalid
+/// UTF-8 byte in `head` routes to [`FileKind::Binary`], and only text-shaped
+/// content with a markdown extension becomes [`FileKind::Markdown`].
 ///
 /// Files larger than [`SIZE_GUARD`] are [`FileKind::TooLarge`]. To route with a
 /// different ceiling — an inline preview and a full-file reader typically use very
