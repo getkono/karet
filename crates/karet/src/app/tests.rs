@@ -53,6 +53,7 @@ mod multi_caret;
 mod multi_caret_edit;
 mod multi_click;
 mod occurrences;
+mod open_fill;
 mod overlay_focus;
 mod pending;
 mod pointer_routing;

@@ -36,6 +36,25 @@ impl App {
         }
     }
 
+    /// An open the session answered with an error rather than a document: the
+    /// requesting tab's text will never arrive, so it stops waiting and shows
+    /// why. No `Opened` follows, so the request is forgotten here.
+    pub(super) fn on_open_failed(&mut self, request: RequestId, message: &str) {
+        self.abandoned_open.remove(&request);
+        let Some(pending) = self.pending_open.remove(&request) else {
+            return;
+        };
+        for tab in self.all_tabs_mut() {
+            if tab.view == pending.view
+                && tab.fill_caret.is_some()
+                && matches!(&tab.kind, TabKind::Code { path, doc: None, .. } if *path == pending.path)
+            {
+                tab.fill_since = None;
+                tab.fill_error = Some(message.to_string());
+            }
+        }
+    }
+
     /// Merge a published diagnostic layer over the retained LaTeX layer.
     pub(super) fn on_diagnostics_published(
         &mut self,

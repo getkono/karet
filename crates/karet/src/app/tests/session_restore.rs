@@ -1,6 +1,9 @@
 //! The saved workspace layout (`workbench.restoreLayout`): what a clean exit
 //! writes, and what the next start on the same root reopens from it.
 
+use karet_core::CursorState;
+use karet_core::Selection;
+
 use super::support::*;
 use crate::app::*;
 
@@ -28,6 +31,7 @@ fn two_pane_session(root: &Path) -> App {
     let mut app = fresh(root);
     app.open_initial(&root.join("a.rs"));
     app.open_initial(&root.join("b.rs"));
+    fill_reserved_tabs(&mut app);
     let tab = &mut app.tabs[app.active];
     tab.editor
         .set_carets(&[LineCol::new(2, 1), LineCol::new(5, 3)]);
@@ -84,6 +88,14 @@ fn a_clean_exit_layout_reopens_its_panes_tabs_and_cursors() {
         vec![root.join("a.rs"), root.join("b.rs")]
     );
     assert_eq!(left[0].active, 1, "b.rs is still in front");
+    // A restored tab waits for its text, holding the view until it arrives.
+    let held = left[0].tabs[1]
+        .fill_view
+        .as_ref()
+        .map(|view| (view.cursors.clone(), view.scroll_line));
+    assert_eq!(held, saved_carets, "the waiting tab holds the saved view");
+    fill_reserved_tabs(&mut after);
+    let left: Vec<&StoredPane> = after.stored.values().collect();
     let front = &left[0].tabs[1];
     assert_eq!(
         Some((front.editor.cursors().clone(), front.editor.scroll_line)),
@@ -190,10 +202,32 @@ fn a_requested_startup_view_or_focus_outlasts_the_restored_layout() {
 }
 
 #[test]
+fn a_tab_still_waiting_for_its_text_saves_where_its_caret_will_go() {
+    let (root, state) = workspace("restore-waiting");
+    let mut app = fresh(&root);
+    app.focus_by_file_line(&root.join("a.rs"), LineCol::new(3, 2), true);
+    assert!(app.tabs[app.active].fill_caret.is_some(), "no text yet");
+    assert!(app.save_workspace_layout(&state).is_ok());
+    let saved = match karet_session::backup::read_layout(&state, &root).map(|layout| layout.root) {
+        Some(karet_session::backup::LayoutNode::Pane(pane)) => {
+            pane.tabs.first().map(|tab| tab.cursors.clone())
+        },
+        _ => None,
+    };
+    assert_eq!(
+        saved,
+        Some(CursorState::single(Selection::caret(LineCol::new(3, 2)))),
+        "not the empty placeholder's top"
+    );
+    cleanup(&[&root, &state]);
+}
+
+#[test]
 fn restored_scroll_is_clamped_and_a_pane_keeps_one_preview_tab() {
     let (root, state) = workspace("restore-clamp-preview");
     let mut app = fresh(&root);
     app.open_initial(&root.join("a.rs"));
+    fill_reserved_tabs(&mut app);
     app.tabs[app.active].editor.scroll_line = 8;
     app.open_initial(&root.join("b.rs"));
     app.open_initial(&root.join("c.rs"));
@@ -215,6 +249,7 @@ fn restored_scroll_is_clamped_and_a_pane_keeps_one_preview_tab() {
     write_file(&root, "a.rs", b"one\ntwo\n");
     let mut after = fresh(&root);
     after.restore_workspace_layout(&state);
+    fill_reserved_tabs(&mut after);
     assert_eq!(
         tab_paths(&after.tabs),
         vec![root.join("a.rs"), root.join("b.rs"), root.join("c.rs")]

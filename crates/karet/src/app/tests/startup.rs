@@ -164,6 +164,7 @@ fn open_startup_goto_positions_caret_and_focuses_editor() {
 
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
     app.open_startup_goto(&path, 2, 5);
+    fill_reserved_tabs(&mut app);
 
     // The file opened as a code tab, focused, with the caret at 0-based (1, 4).
     assert!(matches!(app.tabs[app.active].kind, TabKind::Code { .. }));
@@ -664,6 +665,36 @@ fn queued_startup_commands_wait_for_the_active_document() {
     app.run_startup_commands_when_ready();
     assert!(app.startup_commands.is_empty(), "the queue drains once");
     assert_eq!(app.sidebar_panel, SidebarPanel::Search);
+}
+
+#[test]
+fn queued_startup_commands_wait_for_the_active_document_to_fill() {
+    // A tab bound to its document but still showing the empty placeholder
+    // holds the queue too: the command would act on no text. The first
+    // snapshot fills the tab and drains it.
+    let dir = test_dir("startup-command-fill");
+    write_file(&dir, "main.rs", b"fn main() {}\n");
+    let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
+    app.backend = Some(Arc::new(RecordingBackend::new()));
+    app.open_path(&dir.join("main.rs"));
+    let idx = app.active;
+    if let TabKind::Code { doc, .. } = &mut app.tabs[idx].kind {
+        *doc = Some(DocumentId(9));
+    }
+    app.startup_commands = vec![Command::SelectPanel(SidebarPanel::Search)];
+
+    app.run_startup_commands_when_ready();
+    assert_eq!(
+        app.startup_commands.len(),
+        1,
+        "an unfilled tab holds the queue"
+    );
+
+    let snapshot = buffer_snapshot(TextBuffer::from_text("fn main() {}\n"));
+    app.on_snapshot(DocumentId(9), &snapshot);
+    assert!(app.startup_commands.is_empty(), "the fill drains the queue");
+    assert_eq!(app.sidebar_panel, SidebarPanel::Search);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

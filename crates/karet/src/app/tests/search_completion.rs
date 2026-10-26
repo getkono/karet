@@ -303,7 +303,7 @@ async fn backspace_and_insert_apply_to_the_local_buffer_without_waiting_for_a_sn
     let path = dir.join("a.txt");
     std::fs::write(&path, "ab").expect("write temp file");
 
-    let (local_backend, _snaps) = local(SessionConfig {
+    let (local_backend, mut snaps) = local(SessionConfig {
         roots: vec![dir.clone()],
         ..SessionConfig::default()
     });
@@ -312,8 +312,8 @@ async fn backspace_and_insert_apply_to_the_local_buffer_without_waiting_for_a_sn
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
     app.backend = Some(backend);
     app.open_path(&path);
-    // Registers the doc so submit_edit can act.
-    pump_until(&mut app, &mut events, active_doc_open).await;
+    // Registers the doc and fills the tab with its text so submit_edit can act.
+    pump_with_snapshots_until(&mut app, &mut events, &mut snaps, active_doc_filled).await;
 
     app.dispatch(Command::InsertChar('x'));
     assert_eq!(code_tab_text(&app), "xab");
@@ -346,7 +346,7 @@ async fn paste_while_find_is_open_targets_the_find_query_not_the_editor() {
     let path = dir.join("a.txt");
     std::fs::write(&path, "hello world").expect("write temp file");
 
-    let (local_backend, _snaps) = local(SessionConfig {
+    let (local_backend, mut snaps) = local(SessionConfig {
         roots: vec![dir.clone()],
         ..SessionConfig::default()
     });
@@ -355,7 +355,7 @@ async fn paste_while_find_is_open_targets_the_find_query_not_the_editor() {
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
     app.backend = Some(backend);
     app.open_path(&path);
-    pump_until(&mut app, &mut events, active_doc_open).await;
+    pump_with_snapshots_until(&mut app, &mut events, &mut snaps, active_doc_filled).await;
 
     app.open_find();
     assert!(app.find_open);
