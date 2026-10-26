@@ -190,6 +190,19 @@ fn type_hierarchy_is_read_even_though_lsp_types_has_no_field_for_it() {
 }
 
 #[test]
+fn inline_completion_is_read_though_lsp_types_hides_it_behind_a_feature() {
+    let caps = parse(&json!({"capabilities": {"inlineCompletionProvider": {}}}));
+    assert!(caps.supports(ServerFeature::InlineCompletion));
+    let off = parse(&json!({"capabilities": {"inlineCompletionProvider": false}}));
+    assert!(!off.supports(ServerFeature::InlineCompletion));
+    assert_eq!(
+        super::feature_for_method("textDocument/inlineCompletion"),
+        Some(ServerFeature::InlineCompletion),
+        "a server registering it later must be honoured too"
+    );
+}
+
+#[test]
 fn execute_command_carries_its_command_list() {
     let caps = parse(&json!({"capabilities": {
         "executeCommandProvider": {"commands": ["rust-analyzer.runSingle"]},

@@ -15,6 +15,7 @@ mod completion;
 mod decoration;
 mod hierarchy;
 mod inlay;
+mod inline_completion;
 mod lens;
 mod virtual_text;
 
@@ -32,6 +33,9 @@ pub use hierarchy::HierarchyItem;
 pub use inlay::InlayHint;
 pub use inlay::InlayHintKind;
 pub use inlay::InlayHintLabelPart;
+pub use inline_completion::InlineCompletionItem;
+pub use inline_completion::InlineCompletionTrigger;
+pub use inline_completion::InlineGhost;
 pub use lens::CODE_LENS_SEPARATOR;
 pub use lens::CodeLens;
 pub use lens::CodeLensRow;

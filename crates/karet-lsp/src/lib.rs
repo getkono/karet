@@ -49,7 +49,8 @@
 //!
 //! Transport, lifecycle, document sync, diagnostics (pushed, and pulled through
 //! [`LspClient::pull_diagnostics`]), completion, navigation,
-//! symbols, document highlights, inlay hints, semantic tokens (whole and delta,
+//! symbols, document highlights, inlay hints, inline completions (LSP 3.18
+//! `textDocument/inlineCompletion`), semantic tokens (whole and delta,
 //! see [`LspClient::semantic_tokens`]), rename, signature help, code actions (with
 //! `codeAction/resolve` and `workspace/executeCommand`), document/range
 //! formatting, on-type formatting, linked editing ranges and will-save edits
@@ -97,6 +98,7 @@ mod handshake;
 mod hierarchy;
 mod highlight;
 mod inlay;
+mod inline_completion;
 mod launch;
 mod navigation;
 mod pull;
