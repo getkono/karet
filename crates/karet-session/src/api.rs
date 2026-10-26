@@ -477,7 +477,10 @@ pub enum Command {
     /// `copilot-language-server` -- through the server's own `signIn` flow.
     /// Answered by [`Event::LanguageServerAccount`], always; a device code
     /// ([`AccountOutcome::DeviceCode`](crate::api::AccountOutcome::DeviceCode)) is followed by a second one, with the
-    /// same request id, once the server says whether the sign-in landed.
+    /// same request id, once the server says whether the sign-in landed --
+    /// unless a later sign-in or sign-out for the same server supersedes it
+    /// first or the server stops, in which case that sign-in gets no second
+    /// outcome.
     SignInLanguageServer {
         /// The server, which must be running (attached to an open document).
         server: LanguageServerId,

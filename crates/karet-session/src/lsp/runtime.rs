@@ -869,8 +869,8 @@ pub(super) async fn server_task(task: ServerTask) {
                     Ok(ask) => flights.inline.ask(ask, &updates, generation),
                     // An accept only reports what the user took (the edit it
                     // made reaches the server as any edit does); a sign-in
-                    // needs no text either.
-                    Err(step) => inline::serve(&client, step, slot, &updates, generation).await,
+                    // needs no text either, and its flights hold its follow-up.
+                    Err(step) => flights.run(&client, step, slot, &updates, generation).await,
                 },
                 ServerCmd::LinkColor(cmd) => match cmd.into_listing() {
                     // A listing is background work: no flush, and no await --

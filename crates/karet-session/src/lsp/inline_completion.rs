@@ -27,6 +27,7 @@ use karet_lsp::LspClient;
 use karet_lsp::LspError;
 use tokio::sync::mpsc;
 
+use super::account::FollowUpTask;
 use super::health::FailureTally;
 use super::hint_flight::Answer;
 use super::hint_flight::Ask;
@@ -140,11 +141,13 @@ impl InlineCompletionCmd {
 
 /// Serve a step that is not a background ask on `key`'s live connection --
 /// the task's own, which it holds as an `Option` it only clears on a death.
+/// `follow_up` is the task's running sign-in completion, which an account
+/// step supersedes (see `account`).
 pub(super) async fn serve(
     client: &Option<Arc<LspClient>>,
     step: InlineStep,
     (key, _): (&SlotKey, SlotToken),
-    updates: &mpsc::UnboundedSender<LspUpdate>,
+    (updates, follow_up): (&mpsc::UnboundedSender<LspUpdate>, &mut FollowUpTask),
     generation: u64,
 ) {
     let Some(client) = client else {
@@ -166,7 +169,7 @@ pub(super) async fn serve(
                     outcome,
                 });
             };
-            super::account::account(client, sign_in, report).await;
+            super::account::account(client, sign_in, follow_up, report).await;
         },
     }
 }
