@@ -50,6 +50,7 @@ mod language_server_window;
 mod language_servers;
 mod lifecycle;
 mod line_changes;
+mod link_color;
 mod markdown_edit;
 mod multi_caret;
 mod multi_caret_edit;

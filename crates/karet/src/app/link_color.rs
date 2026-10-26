@@ -64,8 +64,16 @@ pub(crate) fn shift_span(range: Range, edits: &[TextEdit]) -> Option<Range> {
     if reached {
         return None;
     }
-    let start = shift_position(range.start, edits)?;
-    let end = shift_position(range.end, edits)?;
+    // Every edit is now wholly before the span or wholly after it, and only
+    // those before move it -- both ends alike. (`shift_position` alone would
+    // push the end along with typing right after the span.)
+    let before: Vec<TextEdit> = edits
+        .iter()
+        .filter(|edit| edit.range.end <= range.start)
+        .cloned()
+        .collect();
+    let start = shift_position(range.start, &before)?;
+    let end = shift_position(range.end, &before)?;
     Some(Range { start, end })
 }
 

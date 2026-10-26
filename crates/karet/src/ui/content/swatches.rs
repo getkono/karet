@@ -462,6 +462,70 @@ mod diagnostic_text_tests {
 }
 
 #[cfg(test)]
+mod swatch_tests {
+    use karet_core::DocumentColor;
+    use karet_core::LineCol;
+
+    use super::*;
+
+    fn span(line: u32, start: u32, end: u32) -> karet_core::Range {
+        karet_core::Range {
+            start: LineCol::new(line, start),
+            end: LineCol::new(line, end),
+        }
+    }
+
+    fn colour(range: karet_core::Range, rgba: [u8; 4]) -> DocumentColor {
+        DocumentColor { range, rgba }
+    }
+
+    /// The swatches' spans and colours, in order.
+    fn swatches(decorations: &[Decoration]) -> Vec<(karet_core::Range, [u8; 4])> {
+        decorations
+            .iter()
+            .filter_map(|decoration| match decoration.kind {
+                karet_core::DecorationKind::ColorSwatch { rgba } => Some((decoration.range, rgba)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A literal both the server and the detector know is swatched once, in
+    /// the server's colour; the detector's other finds and the server's
+    /// colours the detector cannot see (a Tailwind class) are each kept.
+    #[test]
+    fn a_server_colour_replaces_the_detector_s_swatch_it_overlaps() {
+        let buffer = TextBuffer::from_text("a: #ff0000;\nb: #00ff00;\nbg-red-500\n");
+        let served = [
+            colour(span(0, 3, 10), [250, 0, 0, 255]),
+            colour(span(2, 0, 10), [239, 68, 68, 255]),
+        ];
+        let local = color_swatch_decorations(&buffer, 0, 10);
+        let merged = merge_swatches(&served, 0, 10, local);
+        assert_eq!(
+            swatches(&merged),
+            [
+                (span(0, 3, 10), [250, 0, 0, 255]),
+                (span(2, 0, 10), [239, 68, 68, 255]),
+                (span(1, 3, 10), [0, 255, 0, 255]),
+            ]
+        );
+    }
+
+    /// Only the server colours a viewport can show are drawn.
+    #[test]
+    fn server_colours_off_the_viewport_are_not_drawn() {
+        let served = [
+            colour(span(0, 0, 1), [1, 2, 3, 255]),
+            colour(span(5, 0, 1), [4, 5, 6, 255]),
+            colour(span(50, 0, 1), [7, 8, 9, 255]),
+        ];
+        let merged = merge_swatches(&served, 4, 3, Vec::new());
+        assert_eq!(swatches(&merged), [(span(5, 0, 1), [4, 5, 6, 255])]);
+    }
+}
+
+#[cfg(test)]
 mod manifest_hint_tests {
     use karet_core::EolAlign;
     use karet_core::VirtualTextPlacement;
