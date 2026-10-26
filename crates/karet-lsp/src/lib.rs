@@ -53,7 +53,8 @@
 //! `textDocument/inlineCompletion`), semantic tokens (whole and delta,
 //! see [`LspClient::semantic_tokens`]), rename, signature help, code actions (with
 //! `codeAction/resolve` and `workspace/executeCommand`), document links (with
-//! `documentLink/resolve`), document colours, document/range
+//! `documentLink/resolve`), document colours, folding ranges (see
+//! [`LspClient::folding_ranges`]), document/range
 //! formatting, on-type formatting, linked editing ranges and will-save edits
 //! are implemented as typed, non-panicking operations.
 
@@ -94,6 +95,7 @@ mod config;
 mod conn;
 mod convert;
 mod editing;
+mod folding;
 mod gate;
 mod handshake;
 mod hierarchy;

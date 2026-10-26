@@ -253,6 +253,21 @@ pub(crate) fn initialize_params(root: &Path) -> Result<lsp_types::InitializePara
                 dynamic_registration: Some(true),
             }),
             semantic_tokens: Some(semantic_token_capabilities()),
+            // `LspClient::folding_ranges`. Every karet fold hides whole lines,
+            // so the server need not compute columns; a registration carries
+            // only a document selector, so dynamic registration is honoured.
+            folding_range: Some(lsp_types::FoldingRangeClientCapabilities {
+                dynamic_registration: Some(true),
+                line_folding_only: Some(true),
+                folding_range_kind: Some(lsp_types::FoldingRangeKindCapability {
+                    value_set: Some(vec![
+                        lsp_types::FoldingRangeKind::Comment,
+                        lsp_types::FoldingRangeKind::Imports,
+                        lsp_types::FoldingRangeKind::Region,
+                    ]),
+                }),
+                ..lsp_types::FoldingRangeClientCapabilities::default()
+            }),
             ..lsp_types::TextDocumentClientCapabilities::default()
         }),
         workspace: Some(lsp_types::WorkspaceClientCapabilities {
