@@ -29,6 +29,8 @@ pub enum UiIcon {
     Debug,
     /// The problems (diagnostics) activity-bar entry.
     Problems,
+    /// The call/type hierarchy activity-bar entry.
+    Hierarchy,
     /// A close ("×") affordance, e.g. on a tab.
     Close,
     /// A right-pointing chevron, e.g. a breadcrumb separator.
@@ -92,6 +94,7 @@ impl UiIcon {
             Self::Todos => '\u{f00c}',         // check mark (tasks)
             Self::Debug => '\u{f188}',         // bug
             Self::Problems => '\u{f06a}',      // exclamation-circle
+            Self::Hierarchy => '\u{f0e8}',     // sitemap (a tree)
             Self::Close => '\u{f00d}',         // times
             Self::ChevronRight => '\u{f054}',  // chevron-right
             Self::NewFile => '\u{f15b}',       // file
@@ -133,6 +136,7 @@ impl UiIcon {
             Self::Todos => '\u{2713}',            // ✓ check mark (tasks)
             Self::Debug => '\u{25f4}',            // ◴ (dial: run state)
             Self::Problems => '\u{2297}',         // ⊗ circled times (an error mark)
+            Self::Hierarchy => '\u{22d4}',        // ⋔ pitchfork (a branching tree)
             Self::Close => '\u{00d7}',            // ×
             Self::ChevronRight => '\u{203a}',     // ›
             Self::NewFile => '\u{25A4}',          // ▤ (file-ish lines)
@@ -166,6 +170,7 @@ impl UiIcon {
             Self::Todos => 'T',         // todos
             Self::Debug => 'G',         // debuG (D is taken by new directory)
             Self::Problems => 'P',      // problems
+            Self::Hierarchy => 'H',     // hierarchy
             Self::Close => 'x',
             Self::ChevronRight => '>',
             Self::NewFile => '+',
@@ -272,7 +277,7 @@ mod tests {
     }
 
     /// The sidebar activity-bar switcher, read as a group on the header row.
-    const ACTIVITY_ICONS: [UiIcon; 7] = [
+    const ACTIVITY_ICONS: [UiIcon; 8] = [
         UiIcon::Explorer,
         UiIcon::Search,
         UiIcon::SourceControl,
@@ -280,6 +285,7 @@ mod tests {
         UiIcon::Todos,
         UiIcon::Debug,
         UiIcon::Problems,
+        UiIcon::Hierarchy,
     ];
 
     #[test]
@@ -305,6 +311,15 @@ mod tests {
         // would shift the button after it off its click target.
         let glyph = UiIcon::Problems.glyph(IconStyle::Unicode);
         assert_eq!(glyph, '\u{2297}');
+        assert_eq!(unicode_width::UnicodeWidthChar::width(glyph), Some(1));
+    }
+
+    #[test]
+    fn the_hierarchy_glyph_is_one_narrow_non_emoji_cell_in_the_unicode_tier() {
+        // Same pin as Problems: it sits last in the switcher, whose hit
+        // regions march in two-cell steps.
+        let glyph = UiIcon::Hierarchy.glyph(IconStyle::Unicode);
+        assert_eq!(glyph, '\u{22d4}');
         assert_eq!(unicode_width::UnicodeWidthChar::width(glyph), Some(1));
     }
 
