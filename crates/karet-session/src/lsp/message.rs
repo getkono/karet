@@ -36,6 +36,8 @@ use super::code_lens::CodeLensAnswer;
 use super::code_lens::CodeLensCmd;
 use super::delta::DocumentDelta;
 use super::inline_completion::InlineCompletionCmd;
+use super::link_color::LinkColorAnswer;
+use super::link_color::LinkColorCmd;
 use super::slot::SlotKey;
 use super::slot::SlotToken;
 use super::window::Notice;
@@ -259,6 +261,9 @@ pub(crate) enum ServerCmd {
     /// One code-lens step: a listing or a run; always answered with an
     /// [`LspUpdate::CodeLens`].
     CodeLens(CodeLensCmd),
+    /// One document-link or colour step: a listing or a link resolve; always
+    /// answered with an [`LspUpdate::LinkColor`].
+    LinkColor(LinkColorCmd),
     /// One inline-completion step: asking for items, or telling the server
     /// one was accepted. Answered with an [`LspUpdate::InlineCompletions`]
     /// only when there are items to show (see `inline_completion`).
@@ -723,6 +728,12 @@ pub(crate) enum LspUpdate {
     CodeLens {
         generation: u64,
         answer: CodeLensAnswer,
+    },
+    /// The answer to a [`ServerCmd::LinkColor`]; a listing's ranges in
+    /// UTF-16 columns.
+    LinkColor {
+        generation: u64,
+        answer: LinkColorAnswer,
     },
     /// A complete server diagnostic layer for one file.
     Diagnostics {

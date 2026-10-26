@@ -31,6 +31,7 @@ mod inline_completion;
 mod inventory;
 mod jdtls;
 mod lifecycle;
+mod link_color;
 mod message;
 mod provider;
 mod pull;
@@ -64,6 +65,9 @@ use karet_core::WorkspaceEdit;
 use karet_lsp::LspClient;
 use karet_lsp::LspError;
 use karet_lsp::LspSpec;
+pub(crate) use link_color::LinkColorAnswer;
+pub(crate) use link_color::LinkColorCmd;
+pub(crate) use link_color::NO_TARGET;
 pub(crate) use message::DiagnosticFeed;
 pub(crate) use message::DiagnosticLayer;
 pub(crate) use message::DocumentHighlightsAnswer;
@@ -329,6 +333,7 @@ impl LspManager {
             | LspUpdate::PrepareRename { generation, .. }
             | LspUpdate::CodeAction { generation, .. }
             | LspUpdate::CodeLens { generation, .. }
+            | LspUpdate::LinkColor { generation, .. }
             | LspUpdate::Formatting { generation, .. }
             | LspUpdate::SyncFailed { generation, .. }
             | LspUpdate::PreflightFailed { generation, .. }

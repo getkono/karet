@@ -790,6 +790,8 @@ impl Session {
             | Command::FormatOnType { .. }
             | Command::CodeLenses { .. }
             | Command::RunCodeLens { .. }
+            | Command::LinksAndColors { .. }
+            | Command::ResolveDocumentLink { .. }
             | Command::RestartLanguageServer { .. }
             | Command::CancelLanguageServerWork { .. }
             | Command::AnswerLanguageServerMessage { .. }

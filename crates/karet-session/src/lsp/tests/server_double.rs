@@ -174,6 +174,8 @@ fn advertised_capabilities(behavior: Behavior) -> Value {
         "executeCommandProvider": {"commands": ["double.fix", "double.run", "double.accept"]},
         "inlineCompletionProvider": {},
         "codeLensProvider": {"resolveProvider": true},
+        "documentLinkProvider": {"resolveProvider": true},
+        "colorProvider": true,
         "signatureHelpProvider": {
             "triggerCharacters": ["("],
             "retriggerCharacters": [","]
@@ -394,6 +396,36 @@ fn code_lens_reply(msg: &Value) -> Value {
             resolved["command"] = json!({"title": title, "command": ""});
             resolved
         },
+        _ => Value::Null,
+    }
+}
+
+/// The double's answer to the document-link and colour methods.
+///
+/// Listing links offers two: one to `https://example.com/` over UTF-16
+/// characters 2..4 of line 0 (buffer columns 1..3 past the emoji
+/// `link_color_tests` opens with), and a deferred one on line 1. Resolving
+/// targets a link `file:///w/<n>.rs` from its `data`, except `n` = 0, which
+/// it leaves without a target. Listing colours offers red over line 0's
+/// UTF-16 characters 2..4.
+fn link_color_reply(msg: &Value) -> Value {
+    let on = |line: u32, from: u32, to: u32| json!({"start": {"line": line, "character": from}, "end": {"line": line, "character": to}});
+    match msg["method"].as_str() {
+        Some("textDocument/documentLink") => json!([
+            {"range": on(0, 2, 4), "target": "https://example.com/", "tooltip": "Example"},
+            {"range": on(1, 0, 2), "data": {"n": 2}}
+        ]),
+        Some("documentLink/resolve") => {
+            let mut resolved = msg["params"].clone();
+            let n = &msg["params"]["data"]["n"];
+            if n != &json!(0) {
+                resolved["target"] = json!(format!("file:///w/{n}.rs"));
+            }
+            resolved
+        },
+        Some("textDocument/documentColor") => json!([
+            {"range": on(0, 2, 4), "color": {"red": 1.0, "green": 0.0, "blue": 0.0, "alpha": 1.0}}
+        ]),
         _ => Value::Null,
     }
 }
@@ -874,6 +906,18 @@ pub(super) fn test_connector(
                         },
                         Some("textDocument/codeLens" | "codeLens/resolve") => {
                             let result = code_lens_reply(&msg);
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": result}),
+                            )
+                            .await;
+                        },
+                        Some(
+                            "textDocument/documentLink"
+                            | "documentLink/resolve"
+                            | "textDocument/documentColor",
+                        ) => {
+                            let result = link_color_reply(&msg);
                             write_msg(
                                 &mut server_write,
                                 &json!({"jsonrpc": "2.0", "id": msg["id"], "result": result}),

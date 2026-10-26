@@ -16,6 +16,8 @@ use karet_core::CompletionOptions;
 use karet_core::CompletionTrigger;
 use karet_core::CursorState;
 use karet_core::Diagnostic;
+use karet_core::DocumentColor;
+use karet_core::DocumentLink;
 use karet_core::HierarchyDirection;
 use karet_core::HierarchyItem;
 use karet_core::Hover;
@@ -520,6 +522,22 @@ pub enum Command {
         doc: DocumentId,
         /// The lens, as the answer listed it.
         lens: CodeLens,
+    },
+    /// Request a document's links and colours from its primary server
+    /// (`textDocument/documentLink` and `textDocument/documentColor`, asked
+    /// together). Answered by [`Event::LinksAndColors`].
+    LinksAndColors {
+        /// The target document.
+        doc: DocumentId,
+    },
+    /// Fill in the target of a link from an [`Event::LinksAndColors`] answer
+    /// that arrived without one (`documentLink/resolve`). Answered by
+    /// [`Event::DocumentLinkResolved`].
+    ResolveDocumentLink {
+        /// The document the link was listed for.
+        doc: DocumentId,
+        /// The link, as the answer listed it.
+        link: DocumentLink,
     },
     /// Request hover information at a position.
     Hover {
