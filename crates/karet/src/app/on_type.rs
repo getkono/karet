@@ -4,7 +4,7 @@
 //!
 //! Off unless `editor.formatOnType` says otherwise for the language, and
 //! Toggle Format on Type flips that for the session. While on, a typed
-//! character goes to the session as `Command::FormatOnType`; the answering
+//! character goes to the session as `LspCommand::FormatOnType`; the answering
 //! `Event::OnTypeFormatting` names the server's trigger characters, after
 //! which only those are sent. Its edits are applied here, by the app, as an
 //! edit of its own -- and only when the text is still the text the server was

@@ -6,7 +6,7 @@
 //! `karet-filetype` registry) and the matching tab is reserved immediately.
 //! Decoding belongs to the backend — editable text/CBOR content arrives through
 //! the session's document snapshots, and DOCX previews through
-//! `Command::ConvertDocument`. Only presentation media (images, PDF pages, hex
+//! `DocumentCommand::Convert`. Only presentation media (images, PDF pages, hex
 //! bytes) are read directly, since rendering them is the app's job.
 
 use std::collections::BTreeSet;
@@ -126,7 +126,7 @@ fn open_classified(path: &Path, kind: FileKind, len: u64) -> Tab {
         ),
         #[cfg(feature = "pdf")]
         FileKind::Pdf => open_document(path, read(), len),
-        // The backend converts DOCX to markdown (`Command::ConvertDocument`);
+        // The backend converts DOCX to markdown (`DocumentCommand::Convert`);
         // the preview tab is reserved immediately and fills when it answers.
         #[cfg(feature = "docx")]
         FileKind::Docx => Tab::document_converting(path.to_path_buf()),
