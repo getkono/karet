@@ -207,7 +207,7 @@ fn end_of_line_text_moves_neither_the_reveal_nor_the_scroll_extent() {
         render(&mut state);
         state.goto(&buffer, LineCol::new(0, 5));
         render(&mut state);
-        (state.scroll_col, state.longest_col())
+        (state.scroll_col(), state.longest_col())
     };
 
     assert_eq!(
@@ -232,7 +232,7 @@ fn end_of_line_text_stays_off_a_line_scrolled_past_its_end() {
     state.goto(&buffer, LineCol::new(1, 30));
     render(&mut state);
 
-    assert!(state.scroll_col > 6, "scrolled past `fn f()`");
+    assert!(state.scroll_col() > 6, "scrolled past `fn f()`");
     assert_eq!(state.virtual_text_rect(0), None);
 }
 
@@ -247,7 +247,7 @@ fn a_sticky_row_paints_its_inline_text_and_a_click_counts_it() {
     let texts = [VirtualText::inline(0, 5, "n: ", ThemeRole::InlayHint)];
     let area = Rect::new(0, 0, 30, 3);
     let mut state = EditorState::new();
-    state.scroll_line = 2;
+    state.scroll_to_line(2);
     let mut target = Buffer::empty(area);
     Editor::new(&buffer)
         .semantic_blocks(&blocks)

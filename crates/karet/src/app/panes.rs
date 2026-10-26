@@ -456,8 +456,8 @@ impl App {
             },
             TabKind::Code { .. } => (
                 tab.editor.cursors().clone(),
-                tab.editor.scroll_line,
-                tab.editor.scroll_col,
+                tab.editor.scroll_line(),
+                tab.editor.scroll_col(),
             ),
             _ => (
                 CursorState::single(Selection::caret(LineCol::new(0, 0))),

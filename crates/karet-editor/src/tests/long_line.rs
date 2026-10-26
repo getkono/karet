@@ -80,7 +80,7 @@ fn a_far_scrolled_minified_line_paints_its_window_in_its_colours() {
     let highlights = Highlights::from_sorted_spans(spans);
     let theme = Theme::dark();
     let mut state = EditorState::new();
-    state.scroll_col = 150_003;
+    state.scroll_to_column(150_003);
     let area = Rect::new(0, 0, 20, 1);
     let mut target = Buffer::empty(area);
     Editor::new(&buffer)
@@ -105,7 +105,7 @@ fn a_far_scrolled_minified_line_paints_its_window_in_its_colours() {
 fn render_line(text: &str, width: u16, scroll_col: u32) -> Buffer {
     let buffer = TextBuffer::from_text(text);
     let mut state = EditorState::new();
-    state.scroll_col = scroll_col;
+    state.scroll_to_column(scroll_col);
     let area = Rect::new(0, 0, width, 1);
     let mut target = Buffer::empty(area);
     Editor::new(&buffer).render(area, &mut target, &mut state);
@@ -163,7 +163,7 @@ fn a_long_line_scrolled_to_its_end_still_closes_with_its_trailing_hint() {
     let buffer = TextBuffer::from_text(&text);
     let hints = [VirtualText::inline(0, 10_000, "END", ThemeRole::InlayHint)];
     let mut state = EditorState::new();
-    state.scroll_col = 9_990;
+    state.scroll_to_column(9_990);
     let area = Rect::new(0, 0, 20, 1);
     let mut target = Buffer::empty(area);
     Editor::new(&buffer)
@@ -244,7 +244,7 @@ fn horizontal_scroll_clamps_to_a_line_lengthened_since_the_last_scan() {
     let mut target = Buffer::empty(area);
     Editor::new(&buffer).render(area, &mut target, &mut state);
     state.scroll_columns(&buffer, i32::MAX);
-    assert_eq!(state.scroll_col, 0, "the line fits");
+    assert_eq!(state.scroll_col(), 0, "the line fits");
 
     let edit = TextEdit {
         range: Range {
@@ -260,7 +260,8 @@ fn horizontal_scroll_clamps_to_a_line_lengthened_since_the_last_scan() {
     );
     state.scroll_columns(&buffer, i32::MAX);
     assert_eq!(
-        state.scroll_col, 31,
+        state.scroll_col(),
+        31,
         "40 chars and the caret slot, 10 shown"
     );
 }

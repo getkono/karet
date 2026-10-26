@@ -801,26 +801,20 @@ pub(super) fn caret_cell(
     // Off the buffer, past the line's end, or (unwrapped) scrolled off to
     // the left: not on screen. Drawing it pinned to an edge would show it
     // over text it is not on.
-    if at.line >= line_count || at.col > chars.len() as u32 || (!wrap && at.col < state.scroll_col)
+    if at.line >= line_count
+        || at.col > chars.len() as u32
+        || (!wrap && at.col < state.scroll_col())
     {
         return None;
     }
     let layout = state.row_layout(u32::from(content_width.max(1)), wrap);
     let target = visual_anchor_for_position(buffer, layout, at, state.upstream.contains(&at));
-    let mut anchor = normalize_visual_anchor(
-        buffer,
-        folds,
-        layout,
-        VisualAnchor {
-            line: state.scroll_line,
-            subrow: state.scroll_subrow,
-        },
-    );
+    let mut anchor = normalize_visual_anchor(buffer, folds, layout, state.top_anchor());
     // Walked row by row, virtual lines included: a line hidden in a
     // collapsed fold is never reached, so its caret is never drawn.
     for row in 0..content_height {
         if anchor == target {
-            let ranges = layout.text_rows(buffer, at.line, state.scroll_col);
+            let ranges = layout.text_rows(buffer, at.line, state.scroll_col());
             let index = target.subrow.saturating_sub(layout.above(at.line)) as usize;
             let range = ranges
                 .get(index)

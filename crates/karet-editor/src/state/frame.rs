@@ -3,13 +3,20 @@
 
 use std::ops::RangeInclusive;
 
+use karet_text::TextBuffer;
 use ratatui::layout::Rect;
 
+use super::EditorState;
 use super::Fold;
 use crate::LineNumbers;
 use crate::WrappingIndent;
 use crate::hint::BlockIndex;
 use crate::hint::HintIndex;
+use crate::text::last_line;
+use crate::text::line_chars;
+use crate::visual::Layout;
+use crate::visual::VisualAnchor;
+use crate::visual::reveal_column;
 
 /// What the last render laid out and painted: the viewport it measured, the
 /// options it was given, the virtual text and lines it indexed, and where it
@@ -84,6 +91,49 @@ impl FrameGeometry {
         self.virtual_text.clear();
         self.virtual_lines.clear();
         self.fold_ellipses.clear();
+    }
+}
+
+impl EditorState {
+    /// Bring the scroll position into the frame a render is about to lay
+    /// out with `layout`: the top line clamped to `buffer`, the column pinned
+    /// to zero in a soft-wrapped frame, and a horizontal reveal still owed
+    /// re-resolved against this frame's width — the reveal's own estimate
+    /// used the last frame's, or had none to use.
+    pub(crate) fn clamp_scroll_to_frame(&mut self, buffer: &TextBuffer, layout: Layout<'_>) {
+        self.scroll_line = self.scroll_line.min(last_line(buffer));
+        if layout.wrap {
+            self.scroll_col = 0;
+        } else if self.follow_cursor
+            && let Some((target, reveal)) = self.follow_col
+        {
+            self.scroll_col = reveal_column(
+                &line_chars(buffer, target.line),
+                self.scroll_col,
+                target.col,
+                layout.width,
+                layout.tab_width,
+                layout.hints_on(target.line),
+                reveal,
+            );
+        }
+    }
+
+    /// The top of the viewport, as a visual row.
+    pub(crate) const fn top_anchor(&self) -> VisualAnchor {
+        VisualAnchor {
+            line: self.scroll_line,
+            subrow: self.scroll_subrow,
+        }
+    }
+
+    /// Settle the viewport at `top`, the row a render has laid out from, and
+    /// discharge any pending reveal: the render has just made it.
+    pub(crate) fn settle_scroll(&mut self, top: VisualAnchor) {
+        self.scroll_line = top.line;
+        self.scroll_subrow = top.subrow;
+        self.follow_cursor = false;
+        self.follow_col = None;
     }
 }
 

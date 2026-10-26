@@ -436,7 +436,7 @@ impl Rig {
 
     /// The focused pane's first visible line.
     pub(crate) fn scroll_line(&self) -> u32 {
-        self.tab().editor.scroll_line
+        self.tab().editor.scroll_line()
     }
 
     /// The `n`th pane's first visible line, in layout order.
@@ -445,7 +445,7 @@ impl Rig {
         let Some((pane, _)) = frames.get(n) else {
             panic!("no pane {n}");
         };
-        self.pane_tab(*pane).editor.scroll_line
+        self.pane_tab(*pane).editor.scroll_line()
     }
 
     /// The index, in layout order, of the focused pane.

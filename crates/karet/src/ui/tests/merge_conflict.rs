@@ -36,13 +36,13 @@ fn side_panes_scroll_with_the_merged_caret_in_the_same_frame() {
     let painted = screen(&mut app, 120, 12);
 
     let tab = &app.tabs[app.active];
-    let merged = tab.editor.scroll_col;
+    let merged = tab.editor.scroll_col();
     assert!(merged > 0, "End scrolled the merged pane");
     let Some(conflict) = tab.merge_conflict.as_ref() else {
         unreachable!("the tab is still a merge conflict");
     };
-    assert_eq!(conflict.current_editor.scroll_col, merged);
-    assert_eq!(conflict.incoming_editor.scroll_col, merged);
+    assert_eq!(conflict.current_editor.scroll_col(), merged);
+    assert_eq!(conflict.incoming_editor.scroll_col(), merged);
     // All three panes show the same columns: the `END` tail of each line.
     assert!(
         painted.iter().any(|row| row.matches("END").count() == 3),
@@ -68,11 +68,11 @@ fn side_panes_follow_a_caret_typed_past_the_right_margin() {
     let _ = screen(&mut app, 120, 12);
 
     let tab = &app.tabs[app.active];
-    let merged = tab.editor.scroll_col;
+    let merged = tab.editor.scroll_col();
     assert!(merged > 0, "typing scrolled the merged pane");
     let Some(conflict) = tab.merge_conflict.as_ref() else {
         unreachable!("the tab is still a merge conflict");
     };
-    assert_eq!(conflict.current_editor.scroll_col, merged);
-    assert_eq!(conflict.incoming_editor.scroll_col, merged);
+    assert_eq!(conflict.current_editor.scroll_col(), merged);
+    assert_eq!(conflict.incoming_editor.scroll_col(), merged);
 }

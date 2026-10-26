@@ -70,18 +70,18 @@ pub fn resolve_folds(
 ///
 /// The viewport height is cached at each render so motions and
 /// [`scroll_to`](Self::scroll_to) know how far a page is without re-deriving it.
+///
+/// The scroll position is read through [`scroll_line`](Self::scroll_line) and
+/// [`scroll_col`](Self::scroll_col) and changed only through methods, so every
+/// change keeps the rules that go with it: a manual scroll stops following the
+/// cursor and leaves any wrapped continuation row, and a soft-wrapped view has
+/// no horizontal scroll.
 #[derive(Clone, Debug)]
 pub struct EditorState {
-    /// The first visible buffer line (top of the viewport).
-    pub scroll_line: u32,
-    /// The first visible column (horizontal scroll), as a **buffer** column
-    /// counted in `char`s: an unwrapped row starts painting at this column.
-    ///
-    /// Screen positions within the row are then measured in display cells
-    /// from there — tabs, wide characters and inlay hints included — which is
-    /// how the caret, mouse clicks, cursor reveal and
-    /// [`longest_col`](Self::longest_col) all read it.
-    pub scroll_col: u32,
+    /// The first visible buffer line — see [`scroll_line`](Self::scroll_line).
+    scroll_line: u32,
+    /// The first visible column — see [`scroll_col`](Self::scroll_col).
+    scroll_col: u32,
     /// The cursor/selection set (never empty). The moving end of each selection is its
     /// `head`; the primary selection's head is the main caret.
     pub(super) cursors: CursorState,
@@ -192,6 +192,45 @@ impl EditorState {
         self.cursors.selections.len() > 1
     }
 
+    /// The first visible buffer line (top of the viewport).
+    ///
+    /// Changed by the scroll methods — [`scroll_to_line`](Self::scroll_to_line),
+    /// [`scroll_rows`](Self::scroll_rows), the reveals — and clamped to the
+    /// buffer at render time.
+    #[must_use]
+    pub const fn scroll_line(&self) -> u32 {
+        self.scroll_line
+    }
+
+    /// The first visible column (horizontal scroll), as a **buffer** column
+    /// counted in `char`s: an unwrapped row starts painting at this column.
+    ///
+    /// Screen positions within the row are then measured in display cells
+    /// from there — tabs, wide characters and inlay hints included — which is
+    /// how the caret, mouse clicks, cursor reveal and
+    /// [`longest_col`](Self::longest_col) all read it. Always zero in a
+    /// soft-wrapped view.
+    #[must_use]
+    pub const fn scroll_col(&self) -> u32 {
+        self.scroll_col
+    }
+
+    /// Show the same place as `other`: its top line and its horizontal
+    /// scroll, without moving the caret. For a view kept level with another
+    /// one, as the merge-conflict side panes are with the merged pane.
+    ///
+    /// The other view's wrapped continuation row is not carried over, since
+    /// it names a row of the other view's text, and this view stops
+    /// following its cursor so the next render keeps the mirrored position.
+    /// The column is pinned to zero at render time if this view is soft
+    /// wrapped.
+    pub fn mirror_scroll(&mut self, other: &Self) {
+        self.follow_cursor = false;
+        self.scroll_line = other.scroll_line;
+        self.scroll_subrow = 0;
+        self.scroll_col = other.scroll_col;
+    }
+
     /// Scroll so that `pos` is within the viewport, when the buffer is not at
     /// hand.
     ///
@@ -223,7 +262,7 @@ impl EditorState {
     /// Vertically the caret's line is brought onto a visible row, counting
     /// rows rather than buffer lines — collapsed folds take none, wrapped
     /// lines take several, sticky headers shrink the viewport — keeping the
-    /// rows [`Editor::scroll_off`] asks for between it and either edge, so a
+    /// rows [`Editor::scroll_off`](crate::Editor::scroll_off) asks for between it and either edge, so a
     /// line already inside that margin never scrolls. The estimate made here
     /// uses the last frame's folds, height and margin; the render completes
     /// it against the ones it paints.
@@ -502,7 +541,7 @@ impl EditorState {
 
     /// The screen cells the last render painted the
     /// [`VirtualText`](karet_core::VirtualText) at `index` of the slice given
-    /// to [`Editor::virtual_text`] in, clipped to the editor area; `None`
+    /// to [`Editor::virtual_text`](crate::Editor::virtual_text) in, clipped to the editor area; `None`
     /// when it painted none of it (off screen, scrolled past, or left out of
     /// a full end-of-line slot). End-of-line text cut short reports the cells
     /// of what was painted, `…` included.
@@ -754,7 +793,29 @@ impl EditorState {
 
     /// Restore a complete cursor/selection set, clamping every endpoint to `buffer`.
     /// An empty set becomes one caret at the origin.
-    pub fn set_cursor_state(&mut self, buffer: &TextBuffer, mut cursors: CursorState) {
+    ///
+    /// The primary caret is revealed as a keyboard move, with its margin. Use
+    /// [`set_cursor_state_from_pointer`](Self::set_cursor_state_from_pointer)
+    /// when the set comes from a pointer gesture.
+    pub fn set_cursor_state(&mut self, buffer: &TextBuffer, cursors: CursorState) {
+        self.replace_cursors(buffer, cursors);
+        self.reveal(buffer, self.cursor());
+    }
+
+    /// [`set_cursor_state`](Self::set_cursor_state) for a set a pointer
+    /// gesture made (a box selection dragged with the mouse): like every
+    /// other pointer move it scrolls only when the primary caret is off
+    /// screen, so the text under the pointer stays where it is.
+    pub fn set_cursor_state_from_pointer(&mut self, buffer: &TextBuffer, cursors: CursorState) {
+        self.replace_cursors(buffer, cursors);
+        let head = self.cursor();
+        self.pointer_moved(head);
+        self.reveal_with(buffer, head, Reveal::Minimal);
+    }
+
+    /// Replace the cursor set with `cursors` clamped to `buffer`, without
+    /// scrolling.
+    fn replace_cursors(&mut self, buffer: &TextBuffer, mut cursors: CursorState) {
         if cursors.selections.is_empty() {
             cursors = CursorState::single(Selection::caret(LineCol::new(0, 0)));
         }
@@ -768,7 +829,6 @@ impl EditorState {
         self.cursors = cursors;
         self.goals = None;
         self.normalize();
-        self.reveal(buffer, self.cursor());
     }
 
     /// Carry every anchor and head through a change made elsewhere (another
@@ -1119,7 +1179,7 @@ impl EditorState {
 
     /// The [`VirtualLine`](karet_core::VirtualLine) the last render painted
     /// on the row under the screen cell `(col, row)`, as its index in the
-    /// slice given to [`Editor::virtual_lines`]; `None` off a virtual line,
+    /// slice given to [`Editor::virtual_lines`](crate::Editor::virtual_lines); `None` off a virtual line,
     /// and in the gutter beside one.
     ///
     /// A click on a virtual line belongs to whoever supplied it (a code
@@ -1137,7 +1197,7 @@ impl EditorState {
     }
 
     /// The row the last render painted the virtual line at `index` of the
-    /// slice given to [`Editor::virtual_lines`] on, from the end of the
+    /// slice given to [`Editor::virtual_lines`](crate::Editor::virtual_lines) on, from the end of the
     /// gutter to the editor's right edge; `None` when it was not painted
     /// (scrolled off, or hidden in a collapsed fold).
     #[must_use]

@@ -152,11 +152,11 @@ fn a_page_moves_the_caret_by_the_viewport_and_scrolls_with_it() {
     let mut state = state_at(&buffer, &[at(3, 2)]);
     state.move_carets(&buffer, Motion::PageDown, false);
     assert_eq!(state.cursor(), at(13, 2));
-    assert_eq!(state.scroll_line, 10, "the caret stays on its screen row");
+    assert_eq!(state.scroll_line(), 10, "the caret stays on its screen row");
     paint(&buffer, &mut state, &[], false, 40);
     state.move_carets(&buffer, Motion::PageUp, false);
     assert_eq!(state.cursor(), at(3, 2));
-    assert_eq!(state.scroll_line, 0);
+    assert_eq!(state.scroll_line(), 0);
 
     state.goto(&buffer, at(25, 2));
     paint(&buffer, &mut state, &[], false, 40);

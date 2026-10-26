@@ -13,7 +13,7 @@ pub enum GutterLane {
     /// here (and change markers, when no [`Change`](Self::Change) lane is
     /// reserved); a click is the breakpoint toggle.
     Marker,
-    /// The line numbers. Absent when [`LineNumbers::Off`] hides them.
+    /// The line numbers. Absent when [`LineNumbers::Off`](crate::LineNumbers::Off) hides them.
     LineNumber,
     /// The change column after the line numbers, where
     /// [`DecorationKind::ChangeMarker`](karet_core::DecorationKind::ChangeMarker)s

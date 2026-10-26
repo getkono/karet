@@ -299,7 +299,7 @@ fn scroll_to_keeps_cursor_in_view() {
     let vp = state.viewport();
     assert!(vp.start.line <= 25 && 25 < vp.end.line);
     state.scroll_to(LineCol::new(0, 0));
-    assert_eq!(state.scroll_line, 0);
+    assert_eq!(state.scroll_line(), 0);
 }
 
 #[test]
@@ -326,7 +326,7 @@ fn pos_at_accounts_for_gutter_and_scroll() {
     // A click past the line end clamps to the line length.
     assert_eq!(state.pos_at(area, &buffer, &[], 100, 0), LineCol::new(0, 5));
     // Vertical scroll shifts the mapped line.
-    state.scroll_line = 1;
+    state.scroll_to_line(1);
     assert_eq!(state.pos_at(area, &buffer, &[], 3, 0), LineCol::new(1, 0));
 }
 
@@ -428,11 +428,11 @@ fn wrapped_row_scrolling_walks_continuations_before_lines() {
         .render(area, &mut buf, &mut state);
 
     state.scroll_rows(&buffer, &[], true, 1);
-    assert_eq!((state.scroll_line, state.scroll_subrow), (0, 1));
+    assert_eq!((state.scroll_line(), state.scroll_subrow), (0, 1));
     state.scroll_rows(&buffer, &[], true, 2);
-    assert_eq!((state.scroll_line, state.scroll_subrow), (1, 0));
+    assert_eq!((state.scroll_line(), state.scroll_subrow), (1, 0));
     state.scroll_rows(&buffer, &[], true, -1);
-    assert_eq!((state.scroll_line, state.scroll_subrow), (0, 2));
+    assert_eq!((state.scroll_line(), state.scroll_subrow), (0, 2));
 }
 
 #[test]
@@ -444,14 +444,18 @@ fn overflow_scrolling_and_cursor_margin_are_clamped() {
     Editor::new(&buffer).render(area, &mut buf, &mut state);
 
     state.goto(&buffer, LineCol::new(0, 15));
-    assert_eq!(state.scroll_col, 4);
+    assert_eq!(state.scroll_col(), 4);
     state.goto(&buffer, LineCol::new(0, 2));
-    assert_eq!(state.scroll_col, 0);
+    assert_eq!(state.scroll_col(), 0);
 
     state.scroll_columns(&buffer, 3);
-    assert_eq!(state.scroll_col, 3);
+    assert_eq!(state.scroll_col(), 3);
     state.scroll_columns(&buffer, i32::MAX);
-    assert_eq!(state.scroll_col, 5, "longest line clamps manual scrolling");
+    assert_eq!(
+        state.scroll_col(),
+        5,
+        "longest line clamps manual scrolling"
+    );
 }
 
 #[test]
@@ -461,7 +465,7 @@ fn overflow_caret_scrolled_off_either_side_is_hidden() {
     let area = Rect::new(0, 0, 10, 1); // 3-cell gutter, 7 content cells.
     let mut buf = Buffer::empty(area);
     Editor::new(&buffer).render(area, &mut buf, &mut state);
-    state.scroll_col = 10;
+    state.scroll_to_column(10);
 
     state.place_caret(LineCol::new(0, 2));
     assert_eq!(state.primary_caret_cell(area, &buffer, &[]), None, "left");
@@ -478,7 +482,8 @@ fn overflow_caret_scrolled_off_either_side_is_hidden() {
         .render(area, &mut buf, &mut state);
     state.scroll_columns(&buffer, 3);
     assert_eq!(
-        state.scroll_col, 0,
+        state.scroll_col(),
+        0,
         "wrapped views never scroll horizontally"
     );
 }
@@ -696,7 +701,7 @@ fn sticky_scroll_pins_the_active_chain_and_collapses_signatures() {
         },
     ]);
     let mut state = EditorState::new();
-    state.scroll_line = 4;
+    state.scroll_to_line(4);
     let area = Rect::new(0, 0, 24, 4);
     let mut buf = Buffer::empty(area);
     Editor::new(&buffer)
@@ -730,7 +735,7 @@ fn disabled_sticky_scroll_preserves_the_original_viewport() {
         scope_end: 3,
     }]);
     let mut state = EditorState::new();
-    state.scroll_line = 2;
+    state.scroll_to_line(2);
     let area = Rect::new(0, 0, 16, 2);
     let mut buf = Buffer::empty(area);
     Editor::new(&buffer)
@@ -766,7 +771,7 @@ fn a_tiny_viewport_keeps_the_deepest_header_and_one_content_row() {
         },
     ]);
     let mut state = EditorState::new();
-    state.scroll_line = 3;
+    state.scroll_to_line(3);
     let area = Rect::new(0, 0, 16, 2);
     let mut buf = Buffer::empty(area);
     Editor::new(&buffer)

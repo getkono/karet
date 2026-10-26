@@ -112,7 +112,7 @@ fn map_cursors_maps_clamps_and_merges_without_scrolling() {
     let buffer = TextBuffer::from_text("abc\nx\nyz");
     let mut state = EditorState::new();
     state.frame.height = 2;
-    state.scroll_line = 1;
+    state.scroll_to_line(1);
     state.cursors = CursorState {
         selections: vec![
             Selection {
@@ -138,7 +138,7 @@ fn map_cursors_maps_clamps_and_merges_without_scrolling() {
         "the selection is clamped, the two carets past the end merge"
     );
     assert_eq!(state.cursor(), LineCol::new(2, 2), "the primary survives");
-    assert_eq!(state.scroll_line, 1, "the viewport did not move");
+    assert_eq!(state.scroll_line(), 1, "the viewport did not move");
 
     // A real map: everything shifts one column right.
     state.map_cursors(&buffer, |pos| LineCol::new(pos.line, pos.col + 1));
@@ -561,7 +561,7 @@ fn gutter_marker_line_hits_only_the_marker_column() {
     );
     assert_eq!(state.gutter_marker_line_at(area, &buffer, &[], 1, 2), None);
     assert_eq!(state.gutter_marker_line_at(area, &buffer, &[], 10, 2), None);
-    state.scroll_line = 1;
+    state.scroll_to_line(1);
     assert_eq!(
         state.gutter_marker_line_at(area, &buffer, &[], 0, 0),
         Some(1)
@@ -649,7 +649,7 @@ fn gutter_rows_follow_folds_sticky_headers_and_wrapping() {
     // A sticky header row shows its own line.
     state.frame.sticky_rows = vec![1];
     state.frame.sticky_height = 1;
-    state.scroll_line = 4;
+    state.scroll_to_line(4);
     assert_eq!((line(&state, 0), line(&state, 1)), (Some(1), Some(4)));
     // A soft-wrap continuation row belongs to the line it continues.
     let buffer = TextBuffer::from_text("abcdefghij\nk");
@@ -746,7 +746,7 @@ fn select_lines_selects_whole_lines_either_way_without_scrolling() {
     let buffer = TextBuffer::from_text("a\nbb\nccc");
     let mut state = EditorState::new();
     state.frame.height = 1;
-    state.scroll_col = 2;
+    state.scroll_to_column(2);
     let selection = |state: &EditorState| state.selection_range();
     state.select_lines(&buffer, 0, 0);
     assert_eq!(
@@ -758,7 +758,7 @@ fn select_lines_selects_whole_lines_either_way_without_scrolling() {
     );
     assert_eq!(state.cursor(), LineCol::new(1, 0));
     // The line break ends on a row off screen, and still nothing scrolls.
-    assert_eq!((state.scroll_line, state.scroll_col), (0, 2));
+    assert_eq!((state.scroll_line(), state.scroll_col()), (0, 2));
     // Upward: anchored after the first line's break, caret at the last one's start.
     state.select_lines(&buffer, 1, 0);
     assert_eq!(state.cursors().primary().anchor, LineCol::new(2, 0));

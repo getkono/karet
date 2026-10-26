@@ -35,9 +35,9 @@ fn a_click_on_a_visible_cell_never_scrolls_the_line() {
 
     // Two cells from the right edge: inside the keyboard's margin.
     state.set_caret(&buffer, LineCol::new(0, 18));
-    assert_eq!(state.scroll_col, 0, "resolved by the click");
+    assert_eq!(state.scroll_col(), 0, "resolved by the click");
     Editor::new(&buffer).render(NARROW, &mut target, &mut state);
-    assert_eq!(state.scroll_col, 0, "and not revised by the render");
+    assert_eq!(state.scroll_col(), 0, "and not revised by the render");
     assert_eq!(cell(&target, 18), under_pointer, "the text did not move");
     assert_eq!(
         state.primary_caret_cell(NARROW, &buffer, &[]),
@@ -46,7 +46,7 @@ fn a_click_on_a_visible_cell_never_scrolls_the_line() {
 
     // The keyboard reveal of the same column keeps its margin.
     state.goto(&buffer, LineCol::new(0, 18));
-    assert!(state.scroll_col > 0, "goto keeps the keyboard margin");
+    assert!(state.scroll_col() > 0, "goto keeps the keyboard margin");
 }
 
 /// One of the editor's pointer-originated caret moves.
@@ -57,20 +57,23 @@ fn every_pointer_move_keeps_a_visible_target_where_it_is() {
     let buffer = TextBuffer::from_text(&long_line());
     let mut target = Buffer::empty(NARROW);
     let edge = LineCol::new(0, 19);
-    let moves: [(&str, PointerMove); 4] = [
+    let moves: [(&str, PointerMove); 5] = [
         ("set_caret", |s, b, p| s.set_caret(b, p)),
         ("extend_to", |s, b, p| s.extend_to(b, p)),
         ("set_selection", |s, b, p| {
             s.set_selection(b, LineCol::new(0, 0), p);
         }),
         ("add_caret", |s, b, p| s.add_caret(b, p)),
+        ("set_cursor_state_from_pointer", |s, b, p| {
+            s.set_cursor_state_from_pointer(b, CursorState::single(Selection::caret(p)));
+        }),
     ];
     for (name, pointer_move) in moves {
         let mut state = EditorState::new();
         Editor::new(&buffer).render(NARROW, &mut target, &mut state);
         pointer_move(&mut state, &buffer, edge);
         Editor::new(&buffer).render(NARROW, &mut target, &mut state);
-        assert_eq!(state.scroll_col, 0, "{name} scrolled a visible target");
+        assert_eq!(state.scroll_col(), 0, "{name} scrolled a visible target");
     }
 }
 
@@ -84,7 +87,7 @@ fn a_pointer_move_off_screen_scrolls_by_the_least_that_shows_it() {
     // A drag one cell past the right edge: the caret lands on the last cell.
     state.extend_to(&buffer, LineCol::new(0, 20));
     Editor::new(&buffer).render(NARROW, &mut target, &mut state);
-    assert_eq!(state.scroll_col, 1);
+    assert_eq!(state.scroll_col(), 1);
     assert_eq!(
         state.primary_caret_cell(NARROW, &buffer, &[]),
         Some((GUTTER + 19, 0))
@@ -112,9 +115,9 @@ fn a_click_below_a_collapsed_fold_counts_rows_not_lines() {
     render(&mut state, &mut target);
 
     state.set_caret(&buffer, LineCol::new(60, 0));
-    assert_eq!(state.scroll_line, 0, "resolved by the click");
+    assert_eq!(state.scroll_line(), 0, "resolved by the click");
     render(&mut state, &mut target);
-    assert_eq!(state.scroll_line, 0, "and not revised by the render");
+    assert_eq!(state.scroll_line(), 0, "and not revised by the render");
     let gutter = 5;
     assert_eq!(
         state.primary_caret_cell(area, &buffer, &folds),
@@ -125,10 +128,10 @@ fn a_click_below_a_collapsed_fold_counts_rows_not_lines() {
     // line off the bottom lands on the last row.
     state.extend_down(&buffer);
     render(&mut state, &mut target);
-    assert_eq!(state.scroll_line, 0, "line 61 is on row 12");
+    assert_eq!(state.scroll_line(), 0, "line 61 is on row 12");
     state.goto(&buffer, LineCol::new(80, 0));
     render(&mut state, &mut target);
-    assert_eq!(state.scroll_line, 51);
+    assert_eq!(state.scroll_line(), 51);
     assert_eq!(
         state.primary_caret_cell(area, &buffer, &folds),
         Some((gutter, 29))
@@ -164,7 +167,7 @@ fn a_sticky_header_that_appears_does_not_hide_the_caret() {
         assert!(
             state.primary_caret_cell(area, &buffer, &[]).is_some(),
             "caret on line {line} hidden: top {}, sticky {:?}",
-            state.scroll_line,
+            state.scroll_line(),
             state.frame.sticky_rows
         );
     }
@@ -179,9 +182,9 @@ fn select_all_does_not_scroll() {
     Editor::new(&buffer).render(area, &mut target, &mut state);
 
     state.select_all(&buffer);
-    assert_eq!(state.scroll_line, 0);
+    assert_eq!(state.scroll_line(), 0);
     Editor::new(&buffer).render(area, &mut target, &mut state);
-    assert_eq!(state.scroll_line, 0, "nor does the render after it");
+    assert_eq!(state.scroll_line(), 0, "nor does the render after it");
     assert_eq!(state.cursor(), LineCol::new(100, 0));
 }
 

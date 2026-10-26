@@ -300,7 +300,7 @@ impl App {
         };
         let rows = code_lens_rows(lenses, buffer, self.tab_width_for(tab));
         let column = editor.virtual_line_rect(index).map_or(0, |rect| {
-            usize::from(mouse.column.saturating_sub(rect.x)) + editor.scroll_col as usize
+            usize::from(mouse.column.saturating_sub(rect.x)) + editor.scroll_col() as usize
         });
         let lens = rows
             .get(index)

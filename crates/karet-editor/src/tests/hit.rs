@@ -22,7 +22,7 @@ fn a_click_on_a_sticky_row_counts_its_tabs_as_painted() {
     }]);
     let area = Rect::new(0, 0, 30, 3);
     let mut state = EditorState::new();
-    state.scroll_line = 2;
+    state.scroll_to_line(2);
     let mut target = Buffer::empty(area);
     Editor::new(&buffer)
         .semantic_blocks(&blocks)
@@ -396,7 +396,7 @@ fn line_start_inline_text_does_not_hide_a_revealed_line_end() {
     let Some((x, _)) = state.primary_caret_cell(area, &buffer, &[]) else {
         unreachable!(
             "the end of the line is revealed, scrolled {}",
-            state.scroll_col
+            state.scroll_col()
         );
     };
     assert!(x < area.right());

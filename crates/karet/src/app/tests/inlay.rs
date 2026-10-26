@@ -270,7 +270,7 @@ fn one_document_in_two_panes_is_asked_about_once_over_both_viewports() {
     app.split_focused(karet_widgets::SplitDir::Right);
     // The new, focused pane scrolls far down; the stored one stays at the top.
     let active = app.active;
-    app.tabs[active].editor.scroll_line = 500;
+    app.tabs[active].editor.scroll_to_line(500);
 
     app.request_inlay_hints();
     let asked = inlay_requests(&backend);

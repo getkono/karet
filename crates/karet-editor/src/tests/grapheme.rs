@@ -296,7 +296,7 @@ fn a_row_scrolled_into_a_cluster_paints_from_the_next_one() {
     let mut target = Buffer::empty(area);
     Editor::new(&buffer).render(area, &mut target, &mut state);
     state.scroll_columns(&buffer, 2);
-    assert_eq!(state.scroll_col, 2);
+    assert_eq!(state.scroll_col(), 2);
     let mut target = Buffer::empty(area);
     Editor::new(&buffer).render(area, &mut target, &mut state);
     let row: String = (GUTTER..GUTTER + 4)

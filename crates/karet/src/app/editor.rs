@@ -177,7 +177,8 @@ impl App {
             .wrapped
             .source_line_for_wrapped(usize::from(preview.scroll));
         let last = buffer.line_count().saturating_sub(1);
-        tab.editor.scroll_line = u32::try_from(source.min(last)).unwrap_or(u32::MAX);
+        tab.editor
+            .scroll_to_line(u32::try_from(source.min(last)).unwrap_or(u32::MAX));
     }
 
     /// Jump to the top or bottom of the active tab.
@@ -187,11 +188,11 @@ impl App {
         };
         match &mut tab.kind {
             TabKind::Code { buffer, .. } => {
-                tab.editor.scroll_line = if top {
+                tab.editor.scroll_to_line(if top {
                     0
                 } else {
                     buffer.line_count().saturating_sub(1) as u32
-                };
+                });
             },
             TabKind::MarkdownPreview {
                 wrapped, scroll, ..

@@ -440,7 +440,7 @@ fn an_unfocused_panes_rail_takes_the_wheel_without_taking_focus() {
         _ => panic!("the other pane shows the commit view"),
     };
 
-    let before = app.tabs[app.active].editor.scroll_line;
+    let before = app.tabs[app.active].editor.scroll_line();
     let rail_before = rail_scroll(&app);
     wheel(
         &mut app,
@@ -450,7 +450,8 @@ fn an_unfocused_panes_rail_takes_the_wheel_without_taking_focus() {
     );
     assert_eq!(app.focus_pane(), focused, "the wheel does not move focus");
     assert_eq!(
-        app.tabs[app.active].editor.scroll_line, before,
+        app.tabs[app.active].editor.scroll_line(),
+        before,
         "the focused document does not scroll"
     );
     assert_eq!(

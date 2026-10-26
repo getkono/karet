@@ -342,11 +342,15 @@ fn overflow_row_scrolling_steps_over_a_collapsed_fold_as_one_row() {
     }];
     let mut state = EditorState::new();
     state.scroll_rows(&buffer, &folds, false, 1);
-    assert_eq!(state.scroll_line, 4, "the fold's hidden lines take no rows");
+    assert_eq!(
+        state.scroll_line(),
+        4,
+        "the fold's hidden lines take no rows"
+    );
     state.scroll_rows(&buffer, &folds, false, -1);
-    assert_eq!(state.scroll_line, 0);
+    assert_eq!(state.scroll_line(), 0);
     state.scroll_rows(&buffer, &folds, false, i32::MAX);
-    assert_eq!(state.scroll_line, 5, "clamped to the last line");
+    assert_eq!(state.scroll_line(), 5, "clamped to the last line");
 }
 
 #[test]
@@ -364,23 +368,23 @@ fn an_unwrapped_reveal_keeps_scroll_off_in_rows_not_lines() {
             .render(area, &mut target, state);
         target
     };
-    state.scroll_line = 10;
+    state.scroll_to_line(10);
     state.place_caret(LineCol::new(12, 0));
     paint(&mut state);
 
     // Line 11's text row is the fourth row: already three rows from the top.
     state.extend_up(&buffer);
     state.reveal(&buffer, state.cursor());
-    assert_eq!(state.scroll_line, 10, "the estimate must not scroll");
+    assert_eq!(state.scroll_line(), 10, "the estimate must not scroll");
     let target = paint(&mut state);
-    assert_eq!(state.scroll_line, 10, "nor the render");
+    assert_eq!(state.scroll_line(), 10, "nor the render");
     assert_eq!(row(&target, 3).trim_end(), " 12 l11");
 
     // One more line up lands on the top row; the render restores the margin.
     state.extend_up(&buffer);
     state.reveal(&buffer, state.cursor());
     paint(&mut state);
-    assert_eq!(state.scroll_line, 7);
+    assert_eq!(state.scroll_line(), 7);
 }
 
 #[test]
