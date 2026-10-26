@@ -319,6 +319,11 @@ pub(crate) fn initialize_params(root: &Path) -> Result<lsp_types::InitializePara
 /// most servers are built on -- reads `workspace.diagnostics`. Both are sent:
 /// a server built on `lsp_types` reads the first, every other the second.
 ///
+/// `textDocument.inlineCompletion` (LSP 3.18) exists in `lsp_types` 0.97 only
+/// behind its `proposed` feature, so it is added here: `LspClient::inline_completion`
+/// asks for it, and its registration carries nothing beyond "on" and a
+/// document selector, so dynamic registration is honoured like the others.
+///
 /// # Errors
 /// Returns [`LspError::Protocol`] if `params` cannot be serialized.
 pub(crate) fn to_wire(params: lsp_types::InitializeParams) -> Result<Value, LspError> {
@@ -330,6 +335,15 @@ pub(crate) fn to_wire(params: lsp_types::InitializeParams) -> Result<Value, LspE
         && let Some(diagnostic) = workspace.get("diagnostic").cloned()
     {
         workspace.insert("diagnostics".to_owned(), diagnostic);
+    }
+    if let Some(text_document) = wire
+        .pointer_mut("/capabilities/textDocument")
+        .and_then(Value::as_object_mut)
+    {
+        text_document.insert(
+            "inlineCompletion".to_owned(),
+            serde_json::json!({ "dynamicRegistration": true }),
+        );
     }
     Ok(wire)
 }

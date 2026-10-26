@@ -69,6 +69,7 @@ async fn dynamic_registration_is_declared_only_where_it_is_honoured() -> TestRes
         "selectionRange",
         "documentHighlight",
         "inlayHint",
+        "inlineCompletion",
         "diagnostic",
     ] {
         assert_eq!(

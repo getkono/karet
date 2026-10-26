@@ -114,6 +114,26 @@ impl Session {
                 self.format_on_type(id, *doc, *position, *ch);
                 return true;
             },
+            Command::InlineCompletion {
+                doc,
+                position,
+                trigger,
+            } => {
+                self.inline_completion(id, *doc, (*position, *trigger));
+                return true;
+            },
+            Command::SignInLanguageServer { server } => {
+                self.language_server_account(id, server, true);
+                return true;
+            },
+            Command::SignOutLanguageServer { server } => {
+                self.language_server_account(id, server, false);
+                return true;
+            },
+            Command::AcceptInlineCompletion { doc, server, item } => {
+                self.accept_inline_completion(id, *doc, server, item.clone());
+                return true;
+            },
             Command::CodeLenses { doc, lines } => {
                 self.code_lenses(id, *doc, *lines);
                 return true;

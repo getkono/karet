@@ -274,6 +274,12 @@ pub(super) static BINDINGS: &[Binding] = &[
     // Ctrl+Space asks the language server for completions (bypasses the
     // syntax-error auto-trigger gate).
     b(Editor, true,  false, false, Char(' '), Command::TriggerCompletion),
+    // Alt+] / Alt+[ cycle the ghost-text proposals, asking for some when none
+    // is on show (VS Code parity). Tab, Ctrl+Right and Esc act on the ghost
+    // only while one is on show, so they are taken ahead of the keymap
+    // (`App::inline_completion_key`) rather than bound here.
+    b(Editor, false, false, true,  Char(']'), Command::NextInlineCompletion),
+    b(Editor, false, false, true,  Char('['), Command::PrevInlineCompletion),
     // Ctrl+Shift+Space shows the parameter hints (VS Code parity). Only a
     // terminal that reports Shift with Space (kitty protocol) can send it;
     // the palette reaches it everywhere.

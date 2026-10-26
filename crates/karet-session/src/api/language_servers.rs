@@ -238,6 +238,39 @@ impl LanguageServerStatus {
     }
 }
 
+/// What came of signing in to, or out of, the account a language server
+/// proposes for (see `Command::SignInLanguageServer`).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
+pub enum AccountOutcome {
+    /// The user is to confirm `user_code` in a browser, at `verification_uri`
+    /// when the server named it. Nothing opens the browser for them: the
+    /// client is to show both. A second outcome of the same sign-in,
+    /// [`SignedIn`](Self::SignedIn) or [`Failed`](Self::Failed), follows once
+    /// the server says whether it landed.
+    DeviceCode {
+        /// The code to enter.
+        user_code: String,
+        /// Where to enter it.
+        verification_uri: Option<String>,
+    },
+    /// Already signed in, as `user` when the server said.
+    SignedIn {
+        /// The account's user name.
+        user: Option<String>,
+    },
+    /// Signed out.
+    SignedOut,
+    /// Nothing happened, and why.
+    Failed {
+        /// The reason, for the user.
+        message: String,
+    },
+    /// Forward-compatibility fallback: an unrecognized value from a newer peer.
+    #[serde(other)]
+    Unknown,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

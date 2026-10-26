@@ -29,6 +29,7 @@ mod edit_requests;
 #[cfg(feature = "github")]
 mod github;
 mod hints;
+mod inline_completion;
 mod lifecycle;
 mod lsp_commands;
 mod lsp_registry_updates;
@@ -792,6 +793,10 @@ impl Session {
             | Command::RestartLanguageServer { .. }
             | Command::CancelLanguageServerWork { .. }
             | Command::AnswerLanguageServerMessage { .. }
+            | Command::InlineCompletion { .. }
+            | Command::AcceptInlineCompletion { .. }
+            | Command::SignInLanguageServer { .. }
+            | Command::SignOutLanguageServer { .. }
             | Command::LanguageServerLog { .. } => {},
         }
     }

@@ -177,6 +177,13 @@ impl App {
                     self.vi_popup_took(key);
                     return;
                 }
+                // Ghost text on show takes Tab, Ctrl+Right and Esc, ahead of
+                // a snippet session's Tab: accepting it is what Tab was
+                // pressed for while it is the thing on screen.
+                if self.inline_completion_key(key) {
+                    self.vi_popup_took(key);
+                    return;
+                }
                 // The signature popup under it takes only Esc, and Up/Down
                 // when there are overloads to cycle.
                 if self.signature_key(key) {

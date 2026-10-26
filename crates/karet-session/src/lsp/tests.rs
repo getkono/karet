@@ -569,6 +569,7 @@ mod format_tests;
 mod hierarchy_tests;
 mod hint_tests;
 mod incremental_sync_tests;
+mod inline_completion_tests;
 mod intelligence_tests;
 mod inventory_tests;
 mod jdtls_tests;

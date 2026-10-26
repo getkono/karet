@@ -20,6 +20,11 @@ const EXPECTED_LAUNCH: &[(&str, &str, &[&str])] = &[
     ("clangd", "clangd", &[]),
     ("clojure-lsp", "clojure-lsp", &[]),
     (
+        "copilot-language-server",
+        "copilot-language-server",
+        &["--stdio"],
+    ),
+    (
         "csharp",
         "Microsoft.CodeAnalysis.LanguageServer",
         &["--stdio"],
@@ -164,6 +169,20 @@ fn launches_name_a_real_executable_and_carry_no_empty_arguments() {
             );
         }
     }
+}
+
+/// Copilot is no language's provider and every language's companion: it
+/// answers for any language, and claims none from a primary.
+#[test]
+fn a_provider_for_any_language_serves_every_language_and_is_no_primary() {
+    let copilot = LanguageServerId::new(COPILOT);
+    assert!(serves_language(&copilot, "rust"));
+    assert!(serves_language(&copilot, "markdown"));
+    assert!(!serves_language(&LanguageServerId::new("ruff"), "rust"));
+    assert_eq!(
+        super::super::provider::builtin_server("rust"),
+        Some(LanguageServerId::new("rust-analyzer"))
+    );
 }
 
 /// The registry launches an installed provider with these same arguments, so a

@@ -15,6 +15,7 @@
 //! exponential backoff, replays every `didOpen`, and opens a cooldown circuit
 //! after repeated failures instead of creating a respawn storm.
 
+mod account;
 mod catalog;
 mod code_actions;
 mod code_lens;
@@ -26,6 +27,7 @@ mod format;
 mod forward;
 mod health;
 mod hint_flight;
+mod inline_completion;
 mod inventory;
 mod jdtls;
 mod lifecycle;
@@ -311,6 +313,8 @@ impl LspManager {
             | LspUpdate::InlayHints { generation, .. }
             | LspUpdate::InlayHintsFailed { generation, .. }
             | LspUpdate::InlayHintResolved { generation, .. }
+            | LspUpdate::InlineCompletions { generation, .. }
+            | LspUpdate::Account { generation, .. }
             | LspUpdate::Symbols { generation, .. }
             | LspUpdate::Hover { generation, .. }
             | LspUpdate::SignatureHelp { generation, .. }
@@ -605,6 +609,7 @@ impl LspManager {
             self.report_unresolved(provider, language);
             return None;
         };
+        provider::default_initialization_options(&provider, &mut spec);
         // A companion reads only its own entry: the language's belongs to
         // the language's primary.
         let settings_key = self.configure(&mut spec, &provider, None);
@@ -612,6 +617,20 @@ impl LspManager {
         let key = SlotKey::new(provider, root);
         self.spawn_slot(&key, &spec, false, settings_key, owner)?;
         self.servers.get(&key).map(|slot| (slot.tx.clone(), key))
+    }
+
+    /// The inline-completion companion every document is attached to, once
+    /// the user opted in to it: installed it through karet, or gave it an
+    /// `lsp.servers` entry (one with `enabled: false` is honoured by the
+    /// launch, which then starts nothing). Being on `PATH` is not opting in:
+    /// it sends the code being edited to a remote service, which a server
+    /// installed for another editor never agreed to on karet's behalf.
+    fn inline_companion(&self) -> Option<LanguageServerId> {
+        let copilot = LanguageServerId::new(catalog::COPILOT);
+        let opted_in = self.settings.servers.contains_key(copilot.key())
+            || crate::lsp_registry::installed_version(self.registry_root.as_deref(), &copilot)
+                .is_some();
+        opted_in.then_some(copilot)
     }
 
     /// The running task inbox for `language`, when one was already spawned.
@@ -690,6 +709,11 @@ impl LspManager {
                 {
                     targets.push(target);
                 }
+            }
+            if let Some(provider) = self.inline_companion()
+                && let Some(target) = self.ensure_additional_provider(provider, language_key, &path)
+            {
+                targets.push(target);
             }
         }
         if targets.is_empty() {

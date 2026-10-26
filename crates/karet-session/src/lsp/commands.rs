@@ -673,6 +673,9 @@ pub(super) fn answer_empty(
             let answer = cmd.unserved(UNAVAILABLE);
             let _ = updates.send(LspUpdate::CodeLens { generation, answer });
         },
+        // An inline-completion ask with no server proposes nothing, which is
+        // what silence says; only a sign-in, which the user waits on, fails.
+        ServerCmd::InlineCompletion(cmd) => cmd.unanswered(updates, generation),
         // A notice is not a request: nobody waits on it, and one that finds no
         // connection means nothing to the next (see `window::Notice`).
         ServerCmd::DidOpen { .. }
@@ -773,6 +776,7 @@ pub(super) fn remember_document(
         | ServerCmd::PrepareRename { .. }
         | ServerCmd::CodeAction(_)
         | ServerCmd::CodeLens(_)
+        | ServerCmd::InlineCompletion(_)
         | ServerCmd::Formatting { .. }
         | ServerCmd::Notify(_) => {},
     }

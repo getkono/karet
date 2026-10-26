@@ -20,6 +20,8 @@ use karet_core::HierarchyDirection;
 use karet_core::HierarchyItem;
 use karet_core::Hover;
 use karet_core::InlayHint;
+use karet_core::InlineCompletionItem;
+use karet_core::InlineCompletionTrigger;
 use karet_core::LineCol;
 use karet_core::Location;
 use karet_core::NotificationKind;
@@ -447,6 +449,53 @@ pub enum Command {
         /// The hint as an [`Event::InlayHints`] answer delivered it, payload
         /// included.
         hint: InlayHint,
+    },
+    /// Ask for ghost text at a position: every language server attached to
+    /// the document is asked, not only the language's primary, since inline
+    /// completions usually come from a companion such as Copilot.
+    ///
+    /// Answered by one [`Event::InlineCompletions`] per server that has
+    /// something to propose, and by nothing at all when none has -- no
+    /// server, none offering inline completions, or nothing to say. Whether
+    /// to ask at all (`editor.inlineCompletion`) is the client's to read, as
+    /// it reads `editor.completion` before a [`Command::Completion`]. A client shows
+    /// no ghost text while it waits, which is also what "nothing" shows, so
+    /// there is no empty answer to wait for. A client debounces this itself:
+    /// a newer ask for the same document replaces one a server has not yet
+    /// been sent.
+    InlineCompletion {
+        /// The target document.
+        doc: DocumentId,
+        /// The caret, in buffer columns.
+        position: LineCol,
+        /// Whether the user asked, or the editor asked on its own.
+        trigger: InlineCompletionTrigger,
+    },
+    /// Sign in to the account a language server proposes for -- GitHub, for
+    /// `copilot-language-server` -- through the server's own `signIn` flow.
+    /// Answered by [`Event::LanguageServerAccount`], always; a device code
+    /// ([`AccountOutcome::DeviceCode`](crate::api::AccountOutcome::DeviceCode)) is followed by a second one, with the
+    /// same request id, once the server says whether the sign-in landed.
+    SignInLanguageServer {
+        /// The server, which must be running (attached to an open document).
+        server: LanguageServerId,
+    },
+    /// Sign out of that account (`signOut`). Answered by
+    /// [`Event::LanguageServerAccount`], always.
+    SignOutLanguageServer {
+        /// The server, which must be running.
+        server: LanguageServerId,
+    },
+    /// Tell the server that proposed `item` that the user accepted it, after
+    /// the client applied its edit -- so the server runs whatever the item
+    /// asked to have run on acceptance. Unanswered: nothing waits on it.
+    AcceptInlineCompletion {
+        /// The document the item was proposed for.
+        doc: DocumentId,
+        /// The server that proposed it, as [`Event::InlineCompletions`] named.
+        server: LanguageServerId,
+        /// The item as delivered, payload included.
+        item: InlineCompletionItem,
     },
     /// Request a document's code lenses from its primary server, resolving
     /// the ones on `lines` it deferred. Answered by [`Event::CodeLenses`], or

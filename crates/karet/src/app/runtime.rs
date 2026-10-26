@@ -298,6 +298,8 @@ async fn event_loop(
         app.request_code_lenses();
         // The lightbulb follows the painted caret the same way.
         app.probe_code_actions(Instant::now());
+        // And the ghost-text ask, once typing has paused.
+        app.probe_inline_completion(Instant::now());
         // So does the occurrence highlight.
         app.probe_occurrences(Instant::now());
         // A workspace-symbol query goes out once typing has paused.

@@ -171,7 +171,8 @@ fn advertised_capabilities(behavior: Behavior) -> Value {
         "renameProvider": true,
         "documentRangeFormattingProvider": true,
         "codeActionProvider": {"resolveProvider": true},
-        "executeCommandProvider": {"commands": ["double.fix", "double.run"]},
+        "executeCommandProvider": {"commands": ["double.fix", "double.run", "double.accept"]},
+        "inlineCompletionProvider": {},
         "codeLensProvider": {"resolveProvider": true},
         "signatureHelpProvider": {
             "triggerCharacters": ["("],
@@ -508,6 +509,23 @@ pub(super) fn test_connector(
                             write_msg(
                                 &mut server_write,
                                 &json!({"jsonrpc": "2.0", "id": msg["id"], "result": item}),
+                            )
+                            .await;
+                        },
+                        Some("textDocument/inlineCompletion") => {
+                            // One item replacing UTF-16 characters 0..4 of
+                            // line 0 -- buffer columns 0..3 once the emoji
+                            // is accounted for -- with an acceptance command.
+                            let result = json!({"items": [{
+                                "insertText": "😀ab = 1;",
+                                "range": {"start": {"line": 0, "character": 0},
+                                          "end": {"line": 0, "character": 4}},
+                                "command": {"title": "", "command": "double.accept",
+                                            "arguments": [1]}
+                            }]});
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": result}),
                             )
                             .await;
                         },
@@ -888,6 +906,18 @@ pub(super) fn test_connector(
                             write_msg(
                                 &mut server_write,
                                 &json!({"jsonrpc": "2.0", "id": msg["id"], "result": null}),
+                            )
+                            .await;
+                        },
+                        // Copilot's sign-in: a device code, and the command
+                        // that completes it.
+                        Some("signIn") => {
+                            let result = json!({"userCode": "ABCD-EFGH",
+                                "command": {"title": "Sign in", "command": "double.run",
+                                            "arguments": [2]}});
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": result}),
                             )
                             .await;
                         },

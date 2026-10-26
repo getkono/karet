@@ -53,6 +53,7 @@ use tokio::task::JoinSet;
 use super::code_actions::ProbeFlight;
 use super::code_lens::LensFlight;
 use super::health::FailureTally;
+use super::inline_completion::InlineFlight;
 use super::message::LspUpdate;
 use super::slot::SlotKey;
 use super::slot::SlotToken;
@@ -140,8 +141,9 @@ pub(super) type HintAnswer = Answer<Vec<InlayHint>>;
 pub(super) type HintFlight = Flight<Hints>;
 
 /// Every background request one server task has accepted and not yet
-/// answered: its inlay-hint requests, lightbulb probes and code-lens
-/// listings, each kind capped at one running per document on its own.
+/// answered: its inlay-hint requests, lightbulb probes, code-lens listings
+/// and inline-completion asks, each kind capped at one running per document
+/// on its own.
 #[derive(Default)]
 pub(super) struct Flights {
     /// The inlay-hint requests.
@@ -150,6 +152,8 @@ pub(super) struct Flights {
     pub(super) probes: ProbeFlight,
     /// The code-lens listings.
     pub(super) lenses: LensFlight,
+    /// The inline-completion asks.
+    pub(super) inline: InlineFlight,
 }
 
 impl Flights {
@@ -158,6 +162,7 @@ impl Flights {
         self.hints.launch_ready(client, pending);
         self.probes.launch_ready(client, pending);
         self.lenses.launch_ready(client, pending);
+        self.inline.launch_ready(client, pending);
     }
 
     /// [`Flight::abandon`] for every kind.
@@ -165,6 +170,7 @@ impl Flights {
         self.hints.abandon(updates, generation);
         self.probes.abandon(updates, generation);
         self.lenses.abandon(updates, generation);
+        self.inline.abandon(updates, generation);
     }
 
     /// [`Flight::shutdown`] for every kind.
@@ -176,6 +182,7 @@ impl Flights {
         self.hints.shutdown(updates, generation).await;
         self.probes.shutdown(updates, generation).await;
         self.lenses.shutdown(updates, generation).await;
+        self.inline.shutdown(updates, generation).await;
     }
 }
 

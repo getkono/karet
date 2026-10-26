@@ -17,6 +17,7 @@ use karet_core::HierarchyDirection;
 use karet_core::HierarchyItem;
 use karet_core::Hover;
 use karet_core::InlayHint;
+use karet_core::InlineCompletionItem;
 use karet_core::LineCol;
 use karet_core::Location;
 use karet_core::Range;
@@ -34,6 +35,7 @@ use super::code_actions::CodeActionCmd;
 use super::code_lens::CodeLensAnswer;
 use super::code_lens::CodeLensCmd;
 use super::delta::DocumentDelta;
+use super::inline_completion::InlineCompletionCmd;
 use super::slot::SlotKey;
 use super::slot::SlotToken;
 use super::window::Notice;
@@ -257,6 +259,10 @@ pub(crate) enum ServerCmd {
     /// One code-lens step: a listing or a run; always answered with an
     /// [`LspUpdate::CodeLens`].
     CodeLens(CodeLensCmd),
+    /// One inline-completion step: asking for items, or telling the server
+    /// one was accepted. Answered with an [`LspUpdate::InlineCompletions`]
+    /// only when there are items to show (see `inline_completion`).
+    InlineCompletion(InlineCompletionCmd),
 }
 
 /// How a server's diagnostic set reached the client.
@@ -514,6 +520,34 @@ pub(crate) enum LspUpdate {
         version: u64,
         /// The mapped hints.
         hints: Vec<InlayHint>,
+    },
+    /// Inline completions answering an [`InlineCompletionCmd::Ask`], from the
+    /// server `server` names. Ranges remain in UTF-16 until the session adopts
+    /// the update. Never empty: a server with nothing to propose stays quiet.
+    InlineCompletions {
+        /// The manager generation that spawned the server task.
+        generation: u64,
+        /// The slot whose server answered, which an accept is routed back to.
+        server: SlotKey,
+        /// The originating request.
+        request: RequestId,
+        /// The target document.
+        doc: DocumentId,
+        /// The buffer version the request was made against.
+        version: u64,
+        /// The items.
+        items: Vec<InlineCompletionItem>,
+    },
+    /// The answer to an [`InlineCompletionCmd::Account`] step.
+    Account {
+        /// The manager generation that spawned the server task.
+        generation: u64,
+        /// The originating request.
+        request: RequestId,
+        /// The provider the step named.
+        server: LanguageServerId,
+        /// What came of it.
+        outcome: crate::api::AccountOutcome,
     },
     /// A [`ServerCmd::InlayHints`] request a server existed for but did not
     /// answer: it failed, timed out, was superseded, or its slot retired.
