@@ -113,6 +113,7 @@ use crate::backup::SwapStore;
 use crate::backup::discard;
 use crate::backup::scan;
 use crate::config::load::ConfigManager;
+use crate::event_tx::EventTx;
 use crate::highlight::HighlightJob;
 use crate::highlight::HighlightRequest;
 use crate::highlight::HighlightResult;
@@ -273,7 +274,7 @@ pub struct Session {
     config: SessionConfig,
     /// Cached configuration layers used for targeted live reloads.
     config_manager: Option<ConfigManager>,
-    events: mpsc::UnboundedSender<(Option<RequestId>, Event)>,
+    events: EventTx,
     snapshots: mpsc::UnboundedSender<(DocumentId, Arc<DocSnapshot>)>,
     store: DocumentStore,
     /// Jobs for the background highlight worker (see [`crate::highlight`]). Layered

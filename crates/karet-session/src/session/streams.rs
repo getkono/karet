@@ -5,7 +5,7 @@ use super::*;
 
 impl Session {
     pub(super) fn emit(&self, id: Option<RequestId>, event: Event) {
-        self.events.send((id, event)).ok();
+        self.events.emit(id, event);
     }
 
     /// Push a render-only snapshot of `doc_id` on the snapshot stream. `cursor` is

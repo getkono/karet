@@ -55,13 +55,13 @@ impl Session {
     /// returned borrow leaves `self.lsp` free for the forwarding call.
     pub(super) fn doc_or_report<'a>(
         store: &'a DocumentStore,
-        events: &mpsc::UnboundedSender<(Option<RequestId>, Event)>,
+        events: &EventTx,
         id: RequestId,
         doc_id: DocumentId,
     ) -> Option<&'a Document> {
         let doc = store.docs.get(&doc_id);
         if doc.is_none() {
-            events.send((Some(id), unknown_document(doc_id))).ok();
+            events.emit(Some(id), unknown_document(doc_id));
         }
         doc
     }
