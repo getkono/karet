@@ -395,7 +395,7 @@ fn debounced_spell_warning_replaces_pending_lsp_with_spelling_completions() {
     let (backend, mut app) = completion_app("wrod\n", LineCol::new(0, 4));
     app.trigger_completion(false);
     assert_eq!(completion_requests(&backend).len(), 1);
-    assert!(app.pending_completion.is_some());
+    assert!(app.completion.pending.is_some());
 
     app.on_backend_event(
         None,
@@ -405,9 +405,9 @@ fn debounced_spell_warning_replaces_pending_lsp_with_spelling_completions() {
         },
     );
 
-    assert!(app.pending_completion.is_none());
+    assert!(app.completion.pending.is_none());
     assert!(matches!(
-        app.completion.as_ref().map(|ui| ui.mode),
+        app.completion.popup.as_ref().map(|ui| ui.mode),
         Some(crate::completion::CompletionMode::Spelling {
             caret: LineCol { line: 0, col: 4 }
         })
@@ -430,12 +430,12 @@ fn manual_completion_still_offers_spelling_when_auto_trigger_is_disabled() {
             diagnostics: vec![spell_diagnostic("Unknown word “wrod”; try word")],
         },
     );
-    assert!(app.completion.is_none());
+    assert!(app.completion.popup.is_none());
 
     app.trigger_completion(true);
 
     assert!(matches!(
-        app.completion.as_ref().map(|ui| ui.mode),
+        app.completion.popup.as_ref().map(|ui| ui.mode),
         Some(crate::completion::CompletionMode::Spelling { .. })
     ));
     assert!(
@@ -454,9 +454,9 @@ fn spelling_completion_dismisses_as_soon_as_the_word_changes() {
             diagnostics: vec![spell_diagnostic("Unknown word “wrod”; try word")],
         },
     );
-    assert!(app.completion.is_some());
+    assert!(app.completion.popup.is_some());
 
     app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
 
-    assert!(app.completion.is_none());
+    assert!(app.completion.popup.is_none());
 }

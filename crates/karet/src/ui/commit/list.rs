@@ -1,13 +1,12 @@
 //! The commit-row vocabulary shared by Source Control, the commit-graph view, and the
 //! GitHub pull-request `Commits` list.
 //!
-//! Keeping the rail/hash/refs/summary/age composition — and the lane palette, the
-//! keep-the-cursor-visible clamp, and the relative-age format — in one place is what
-//! stops those three screens from drifting apart.
+//! Keeping the rail/hash/refs/summary/age composition and the lane palette in one
+//! place is what stops those three screens from drifting apart. The lane layout of
+//! a `karet-vcs` log, the keep-the-cursor-visible clamp, and the relative-age format
+//! are app logic and live in `app/util.rs`.
 
 use std::collections::HashMap;
-use std::time::SystemTime;
-use std::time::UNIX_EPOCH;
 
 use karet_graph::LaneInput;
 use karet_graph::RailRow;
@@ -51,28 +50,19 @@ pub(in crate::ui) fn lane_style(theme: &Theme, lane: u8) -> Style {
     theme.style(LANE_ROLES[lane as usize % LANE_ROLES.len()])
 }
 
-/// Build the lane layout for `commits` (newest first). Lane assignment is sequential
-/// from the tip, so callers cache this and recompute only when the commit list changes.
-pub(crate) fn commit_rails(commits: &[karet_vcs::Commit]) -> Vec<RailRow> {
-    lanes(commits.iter().enumerate().map(|(i, commit)| LaneInput {
-        id: commit.hash.clone(),
-        parents: commit.parents.clone(),
-        head: i == 0,
-    }))
-}
-
-/// The same layout, from already-built render entries (the `List`-based callers, whose
-/// rows do not come from a `karet-vcs` log).
+/// The lane layout [`crate::app::commit_rails`] builds from a `karet-vcs` log, from
+/// already-built render entries (the `List`-based callers, whose rows do not come from
+/// a log).
 pub(in crate::ui) fn rails_from_entries(entries: &[CommitListEntry<'_>]) -> Vec<RailRow> {
-    lanes(entries.iter().map(|entry| LaneInput {
-        id: entry.hash.to_string(),
-        parents: entry.parents.to_vec(),
-        head: entry.head,
-    }))
-}
-
-fn lanes(inputs: impl Iterator<Item = LaneInput>) -> Vec<RailRow> {
-    assign_lanes(&inputs.collect::<Vec<_>>())
+    let inputs: Vec<LaneInput> = entries
+        .iter()
+        .map(|entry| LaneInput {
+            id: entry.hash.to_string(),
+            parents: entry.parents.to_vec(),
+            head: entry.head,
+        })
+        .collect();
+    assign_lanes(&inputs)
 }
 
 /// Build render entries for a slice of `karet-vcs` commits, decorating each with any
@@ -171,55 +161,10 @@ pub(in crate::ui) fn commit_list_items(
         .collect()
 }
 
-/// Scroll `offset` the minimum distance that brings row `cursor` inside a viewport of
-/// `height` rows. The three commit lists and the change list all need exactly this.
-#[must_use]
-pub(crate) fn keep_visible(cursor: usize, offset: usize, height: usize) -> usize {
-    if cursor < offset {
-        cursor
-    } else if height > 0 && cursor >= offset + height {
-        cursor + 1 - height
-    } else {
-        offset
-    }
-}
-
-/// A terse `git log`-style relative time (e.g. `3d ago`) for a Unix timestamp.
-pub(crate) fn relative_time(secs: i64) -> String {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .and_then(|d| i64::try_from(d.as_secs()).ok())
-        .unwrap_or(0);
-    relative_time_at(secs, now)
-}
-
-pub(in crate::ui) fn relative_time_at(secs: i64, now: i64) -> String {
-    let delta = now - secs;
-    if delta < 0 {
-        return "just now".to_string();
-    }
-    let (n, unit) = if delta < 60 {
-        (delta, "s")
-    } else if delta < 3600 {
-        (delta / 60, "m")
-    } else if delta < 86_400 {
-        (delta / 3600, "h")
-    } else if delta < 86_400 * 7 {
-        (delta / 86_400, "d")
-    } else if delta < 86_400 * 30 {
-        (delta / (86_400 * 7), "w")
-    } else if delta < 86_400 * 365 {
-        (delta / (86_400 * 30), "mo")
-    } else {
-        (delta / (86_400 * 365), "y")
-    };
-    format!("{n}{unit} ago")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::commit_rails;
 
     fn commit(hash: &str, parents: Vec<String>) -> karet_vcs::Commit {
         karet_vcs::Commit {
@@ -230,20 +175,6 @@ mod tests {
             time: 0,
             parents,
         }
-    }
-
-    /// The clamp only moves the viewport when the cursor is actually outside it, and
-    /// then by the minimum distance.
-    #[test]
-    fn keep_visible_scrolls_the_minimum_distance() {
-        // Already inside: unchanged.
-        assert_eq!(keep_visible(5, 3, 10), 3);
-        // Above the viewport: the cursor becomes the top row.
-        assert_eq!(keep_visible(1, 4, 10), 1);
-        // Below the viewport: the cursor becomes the bottom row.
-        assert_eq!(keep_visible(20, 4, 10), 11);
-        // A zero-height viewport can't scroll anywhere.
-        assert_eq!(keep_visible(20, 4, 0), 4);
     }
 
     /// Lane colours resolve through the theme rather than a fixed ANSI palette, and the

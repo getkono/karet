@@ -713,7 +713,7 @@ fn queued_startup_commands_run_at_once_without_a_code_tab() {
 
 #[test]
 fn unicode_placeholders_are_off_where_the_image_would_be_blank() {
-    use crate::app::state::placeholders_in;
+    use crate::term_caps::placeholders_in;
     let env = |pairs: &'static [(&'static str, &'static str)]| {
         move |key: &str| {
             pairs
@@ -730,4 +730,40 @@ fn unicode_placeholders_are_off_where_the_image_would_be_blank() {
         "/tmp/tmux-1/default,1,0"
     )])));
     assert!(!placeholders_in(env(&[("KONSOLE_VERSION", "240401")])));
+}
+
+/// The app's capabilities are read off the same probe `--doctor` reports: a
+/// confirmed handshake upgrades halfblocks to Kitty, only a positive OSC 22
+/// answer enables pointer shapes, and an unanswered terminal keeps every
+/// confirmed capability off.
+#[test]
+fn terminal_caps_are_read_off_the_doctor_probe() {
+    use crate::color_depth::ColorDepth;
+    use crate::term_caps::TerminalCapabilities;
+    let answered = TerminalCapabilities {
+        keyboard_enhancement: true,
+        graphics_env: GraphicsProtocol::Halfblocks,
+        kitty_graphics: Some(true),
+        osc22_pointer_shape: Some(true),
+        undercurl: true,
+        color_depth: ColorDepth::TrueColor,
+        placeholders: true,
+    };
+    let caps = TerminalCaps::from_capabilities(&answered);
+    assert_eq!(caps.graphics, GraphicsProtocol::Kitty);
+    assert!(caps.kitty_graphics && caps.kitty_keyboard && caps.pointer_shapes);
+    assert!(caps.placeholders && caps.undercurl);
+    assert_eq!(caps.pointer_shape, None);
+
+    let silent = TerminalCapabilities {
+        keyboard_enhancement: false,
+        kitty_graphics: None,
+        osc22_pointer_shape: None,
+        undercurl: false,
+        ..answered
+    };
+    let caps = TerminalCaps::from_capabilities(&silent);
+    assert_eq!(caps.graphics, GraphicsProtocol::Halfblocks);
+    assert!(!caps.kitty_graphics && !caps.kitty_keyboard && !caps.pointer_shapes);
+    assert!(!caps.placeholders && !caps.undercurl);
 }

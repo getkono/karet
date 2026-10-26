@@ -367,7 +367,7 @@ impl App {
         for doc in stale {
             self.open_docs.remove(&doc);
             self.auto_save_pending.remove(&doc);
-            self.completion_chars.remove(&doc);
+            self.completion.chars.remove(&doc);
             self.signature.chars.remove(&doc);
             self.on_type.triggers.remove(&doc);
             if let Some(backend) = &self.backend {

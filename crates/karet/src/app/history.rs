@@ -99,7 +99,7 @@ impl App {
             return;
         }
         *selected = index.min(commits.len() - 1);
-        let offset = crate::ui::commit::list::keep_visible(
+        let offset = crate::app::keep_visible(
             *selected,
             usize::from(*list_offset),
             usize::from(list_rect.height),
@@ -351,7 +351,7 @@ impl App {
                 // A page that neither replaces nor continues the loaded run is stale.
                 return;
             }
-            *rails = crate::ui::commit::list::commit_rails(loaded);
+            *rails = crate::app::commit_rails(loaded);
             break;
         }
         // Chain the next page while the viewport is still short of the end.

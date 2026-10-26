@@ -291,7 +291,7 @@ mod tests {
     fn disabling_completion_closes_a_pending_request() {
         for (enabled, kept) in [(false, false), (true, true)] {
             let mut app = code_app();
-            app.pending_completion = Some(PendingCompletion {
+            app.completion.pending = Some(PendingCompletion {
                 id: RequestId(1),
                 doc: DocumentId(9),
                 anchor: LineCol::new(0, 0),
@@ -300,7 +300,7 @@ mod tests {
             let mut settings = Settings::default();
             settings.editor.completion.enabled = enabled;
             reload(&mut app, settings);
-            assert_eq!(app.pending_completion.is_some(), kept, "enabled={enabled}");
+            assert_eq!(app.completion.pending.is_some(), kept, "enabled={enabled}");
         }
     }
 }

@@ -1,5 +1,11 @@
 use super::*;
 
+mod panel;
+
+pub(crate) use panel::SearchPanel;
+pub(crate) use panel::SearchPanelField;
+pub(crate) use panel::SearchRow;
+
 impl App {
     /// Open the find-in-file bar (only over a text/code tab). Restores this tab's
     /// last query/toggles if it has one (from a previous open-then-Esc on the same

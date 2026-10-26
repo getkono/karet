@@ -6,6 +6,25 @@ use super::*;
 mod accept;
 mod snippet;
 
+/// Completion's app-side state, from the request to the last snippet stop.
+#[derive(Default)]
+pub(crate) struct Completion {
+    /// The in-flight completion request, if any (see [`crate::completion`]).
+    pub(crate) pending: Option<crate::completion::PendingCompletion>,
+    /// The open completion popup, if any.
+    pub(crate) popup: Option<crate::completion::CompletionUi>,
+    /// The trigger and commit characters the server completing in each
+    /// document last answered with there; dropped when the document closes.
+    pub(crate) chars: HashMap<DocumentId, CompletionOptions>,
+    /// An accepted item's additional edits, still on their way.
+    pub(crate) follow_up: Option<crate::completion::AcceptFollowUp>,
+    /// The snippet an accepted completion is still being filled in through,
+    /// if any (see [`crate::completion::SnippetSession`]).
+    pub(crate) snippet: Option<crate::completion::SnippetSession>,
+    /// The reusable fuzzy matcher backing the popup's filtering.
+    pub(crate) matcher: karet_fuzzy::Matcher,
+}
+
 impl App {
     /// The active code tab's completion target: `(document, caret)`.
     pub(super) fn completion_target(&self) -> Option<(DocumentId, LineCol)> {
@@ -63,7 +82,7 @@ impl App {
         };
         // Narrowing an incomplete list keeps the popup's own anchor: the word
         // being completed has not changed, only how much of it is typed.
-        let anchor = match (trigger, &self.completion) {
+        let anchor = match (trigger, &self.completion.popup) {
             (CompletionTrigger::Incomplete, Some(ui)) => ui.anchor,
             _ => karet_editor::word_bounds(buffer, caret).0,
         };
@@ -74,7 +93,7 @@ impl App {
             trigger,
         };
         if backend.send(id, command).is_ok() {
-            self.pending_completion = Some(crate::completion::PendingCompletion {
+            self.completion.pending = Some(crate::completion::PendingCompletion {
                 id,
                 doc,
                 anchor,
@@ -86,7 +105,7 @@ impl App {
     /// The trigger and commit characters of the server completing in `doc`,
     /// as its last answer there said; empty before any did.
     pub(crate) fn completion_characters(&self, doc: DocumentId) -> CompletionOptions {
-        self.completion_chars.get(&doc).cloned().unwrap_or_default()
+        self.completion.chars.get(&doc).cloned().unwrap_or_default()
     }
 
     /// Auto-trigger after typing `c`: identifier characters open the popup (a
@@ -112,7 +131,7 @@ impl App {
             self.request_completion(false, trigger);
             return;
         }
-        if self.completion.is_some() {
+        if self.completion.popup.is_some() {
             return; // already open: typing narrows the filter client-side
         }
         if crate::completion::is_word_char(c) {
@@ -139,7 +158,7 @@ impl App {
     /// The live filter: the text typed between the popup's anchor and the
     /// caret. `None` when the popup no longer applies to the active view.
     pub(crate) fn completion_filter(&self) -> Option<String> {
-        let ui = self.completion.as_ref()?;
+        let ui = self.completion.popup.as_ref()?;
         let tab = self.tabs.get(self.active)?;
         let TabKind::Code {
             doc: Some(doc),
@@ -170,14 +189,14 @@ impl App {
     /// the selection when the filter changed since the last look.
     pub(crate) fn completion_ranked(&mut self) -> Option<Vec<usize>> {
         let filter = self.completion_filter()?;
-        let ui = self.completion.as_mut()?;
+        let ui = self.completion.popup.as_mut()?;
         if filter != ui.last_filter {
             ui.list.reset();
             ui.last_filter.clone_from(&filter);
         }
         let mut popup = karet_widgets::CompletionPopup::new(
             &ui.items,
-            &mut self.completion_matcher,
+            &mut self.completion.matcher,
             &filter,
             &self.theme,
         );
@@ -193,7 +212,7 @@ impl App {
     /// Only while the owning editor has the keyboard: with the Explorer focused,
     /// Enter belongs to the Explorer, never to a popup over a document.
     pub(super) fn completion_key(&mut self, key: KeyEvent) -> bool {
-        if self.completion.is_none() || !self.editor_owns_keyboard() {
+        if self.completion.popup.is_none() || !self.editor_owns_keyboard() {
             return false;
         }
         let replace = matches!(
@@ -223,13 +242,13 @@ impl App {
         }
         match key.code {
             KeyCode::Up => {
-                if let Some(ui) = self.completion.as_mut() {
+                if let Some(ui) = self.completion.popup.as_mut() {
                     ui.list.select_prev(len);
                 }
                 true
             },
             KeyCode::Down => {
-                if let Some(ui) = self.completion.as_mut() {
+                if let Some(ui) = self.completion.popup.as_mut() {
                     ui.list.select_next(len);
                 }
                 true
@@ -248,8 +267,8 @@ impl App {
 
     /// Close the popup and forget any in-flight request.
     pub(crate) fn dismiss_completion(&mut self) {
-        self.completion = None;
-        self.pending_completion = None;
+        self.completion.popup = None;
+        self.completion.pending = None;
     }
 
     /// Drop the popup / pending request when the caret left the anchored span,
@@ -275,19 +294,19 @@ impl App {
                         caret == expected,
                 })
             };
-        if let Some(pending) = &self.pending_completion
+        if let Some(pending) = &self.completion.pending
             && !anchored(
                 pending.doc,
                 pending.anchor,
                 crate::completion::CompletionMode::Filtered,
             )
         {
-            self.pending_completion = None;
+            self.completion.pending = None;
         }
-        if let Some(ui) = &self.completion
+        if let Some(ui) = &self.completion.popup
             && !anchored(ui.doc, ui.anchor, ui.mode)
         {
-            self.completion = None;
+            self.completion.popup = None;
         }
         self.requery_incomplete_completion();
         self.resolve_selected_completion();
@@ -297,10 +316,10 @@ impl App {
     /// asked for -- typed further or deleted back -- unless a request is
     /// already on its way.
     fn requery_incomplete_completion(&mut self) {
-        if self.pending_completion.is_some() {
+        if self.completion.pending.is_some() {
             return;
         }
-        let Some(ui) = self.completion.as_ref() else {
+        let Some(ui) = self.completion.popup.as_ref() else {
             return;
         };
         if !ui.incomplete || ui.mode != crate::completion::CompletionMode::Filtered {
@@ -329,18 +348,18 @@ impl App {
         // supersedes); the anchor check below covers caret movement, which
         // also subsumes the version tag for typed-ahead edits.
         let _ = version;
-        let Some(pending) = self.pending_completion else {
+        let Some(pending) = self.completion.pending else {
             return;
         };
         if id != Some(pending.id) {
             return; // an answer to a superseded request
         }
-        self.pending_completion = None;
+        self.completion.pending = None;
         if pending.doc != doc {
             return;
         }
         if !options.trigger_characters.is_empty() || !options.commit_characters.is_empty() {
-            self.completion_chars.insert(doc, options);
+            self.completion.chars.insert(doc, options);
         }
         let still_valid = matches!(self.completion_target(), Some((d, caret))
             if d == doc && crate::completion::caret_still_anchored(pending.anchor, caret));
@@ -348,7 +367,7 @@ impl App {
             return;
         }
         if items.is_empty() && !incomplete {
-            self.completion = None;
+            self.completion.popup = None;
             return;
         }
         let mut ui = crate::completion::CompletionUi::new(
@@ -359,11 +378,11 @@ impl App {
             crate::completion::CompletionMode::Filtered,
         );
         ui.incomplete = incomplete;
-        self.completion = Some(ui);
+        self.completion.popup = Some(ui);
         // Seed the filter so the first render doesn't spuriously reset it, and
         // remember what the items were asked for.
         if let Some(filter) = self.completion_filter()
-            && let Some(ui) = self.completion.as_mut()
+            && let Some(ui) = self.completion.popup.as_mut()
         {
             ui.queried_filter.clone_from(&filter);
             ui.last_filter = filter;

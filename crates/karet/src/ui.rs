@@ -31,7 +31,6 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::time::Instant;
 
-pub(crate) use commit::relative_time;
 use commit::*;
 use content::*;
 use display::EditorDisplay;
@@ -112,6 +111,7 @@ use crate::app::TabHit;
 use crate::app::TextFieldState;
 use crate::app::ToastHit;
 use crate::app::is_markdown;
+pub(crate) use crate::app::relative_time;
 use crate::command::Command;
 use crate::keymap::ChordStyle;
 use crate::keymap::Context;

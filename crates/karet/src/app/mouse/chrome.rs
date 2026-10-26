@@ -461,7 +461,7 @@ impl App {
     /// it. Returns `true` when the event landed on the popup. Its scrollbar is
     /// routed before this, with every other bar.
     pub(in crate::app) fn handle_completion_mouse(&mut self, mouse: MouseEvent) -> bool {
-        let Some(list) = self.completion.as_ref().map(|ui| ui.list) else {
+        let Some(list) = self.completion.popup.as_ref().map(|ui| ui.list) else {
             return false;
         };
         if !rect_contains(list.area(), (mouse.column, mouse.row)) {
@@ -476,7 +476,7 @@ impl App {
                     .row_at(mouse.column, mouse.row)
                     .filter(|row| *row < len)
                 {
-                    if let Some(ui) = self.completion.as_mut() {
+                    if let Some(ui) = self.completion.popup.as_mut() {
                         ui.list.select(row, len);
                     }
                     self.accept_completion();
@@ -487,7 +487,7 @@ impl App {
             _ => return false,
         };
         let len = self.completion_ranked().map_or(0, |ranked| ranked.len());
-        if let Some(ui) = self.completion.as_mut() {
+        if let Some(ui) = self.completion.popup.as_mut() {
             ui.list.scroll_by(delta, len);
         }
         true

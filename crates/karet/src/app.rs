@@ -111,6 +111,9 @@ use crossterm::event::PopKeyboardEnhancementFlags;
 use crossterm::event::PushKeyboardEnhancementFlags;
 use crossterm::event::{self};
 use crossterm::terminal::SetTitle;
+#[cfg(test)]
+pub(crate) use debugging::DebugPanel;
+pub(crate) use debugging::DebugRow;
 pub(crate) use drag::DragGranularity;
 pub(crate) use drag::EditorDrag;
 pub(crate) use editor::column::ColumnSelect;
@@ -221,24 +224,34 @@ pub(crate) use problems::ProblemsPanel;
 pub(crate) use problems::is_problem;
 use ratatui::layout::Rect;
 pub(crate) use runtime::run;
+pub(crate) use search::SearchPanel;
+pub(crate) use search::SearchPanelField;
+pub(crate) use search::SearchRow;
 pub(crate) use select::SelectRegion;
 pub(crate) use select::SelectSurface;
 pub(crate) use select::SurfaceRow;
 pub(crate) use select::SurfaceSelection;
+pub(crate) use spelling::SpellingPanel;
+pub(crate) use spelling::SpellingRow;
 pub(crate) use state::*;
+pub(crate) use todos::TodoRow;
+pub(crate) use todos::TodosPanel;
 use tokio::sync::mpsc;
 use util::KeyboardEnhancementGuard;
 use util::canonical;
 use util::close_prompt_choices;
+pub(crate) use util::commit_rails;
 use util::copy_path_recursive;
 pub(crate) use util::effective_word_wrap;
 pub(crate) use util::is_markdown;
+pub(crate) use util::keep_visible;
 use util::load_theme;
 use util::move_path;
 use util::parse_rev_range;
 use util::path_under;
 use util::rebase_path;
 use util::rect_contains;
+pub(crate) use util::relative_time;
 use util::retarget_tab_path;
 use util::row_in_rect;
 use util::same_path;
@@ -656,20 +669,10 @@ pub struct App {
     auto_save_pending: HashMap<DocumentId, PendingAutoSave>,
     /// The closers auto-inserted by the last keystrokes, open to type-over.
     auto_closers: Option<autopair::AutoClosers>,
-    /// The in-flight completion request, if any (see [`crate::completion`]).
-    pub(crate) pending_completion: Option<crate::completion::PendingCompletion>,
-    /// The open completion popup, if any.
-    pub(crate) completion: Option<crate::completion::CompletionUi>,
-    /// The trigger and commit characters the server completing in each
-    /// document last answered with there; dropped when the document closes.
-    pub(crate) completion_chars: HashMap<DocumentId, karet_core::CompletionOptions>,
-    /// An accepted item's additional edits, still on their way.
-    pub(crate) completion_follow_up: Option<crate::completion::AcceptFollowUp>,
-    /// The snippet an accepted completion is still being filled in through,
-    /// if any (see [`crate::completion::SnippetSession`]).
-    pub(crate) snippet: Option<crate::completion::SnippetSession>,
-    /// The reusable fuzzy matcher backing the completion popup's filtering.
-    pub(crate) completion_matcher: karet_fuzzy::Matcher,
+    /// Completion: the request in flight, the open popup, each document's
+    /// trigger and commit characters, an accepted item's follow-up, the snippet
+    /// being filled in, and the matcher (see [`completion`]).
+    pub(crate) completion: completion::Completion,
     /// The in-flight hover request, if any (see [`crate::hover`]).
     pub(crate) pending_hover: Option<crate::hover::PendingHover>,
     /// The Expand Selection waiting on the server's selection ranges, if any
@@ -693,21 +696,12 @@ pub struct App {
     pub(crate) code_lenses: code_lens::CodeLensState,
     /// The open scrollable diagnostic detail view, if any.
     pub(crate) diagnostic_view: Option<crate::hover::DiagnosticView>,
-    /// The debug session's lifecycle, mirrored from `Event::DebugState`.
-    pub(crate) debug_state: karet_session::DebugSessionState,
-    /// The status-line detail for the current debug state.
-    pub(crate) debug_detail: String,
+    /// The debug session: lifecycle, console, Debug panel, and stop location
+    /// (see [`debugging`]).
+    pub(crate) debugger: debugging::Debugger,
     /// Armed breakpoints per absolute file path: line → verified.
     pub(crate) breakpoints:
         std::collections::HashMap<PathBuf, std::collections::BTreeMap<u32, bool>>,
-    /// Buffered debug-console output (ANSI kept; rendered by the Debug panel).
-    pub(crate) debug_output: std::collections::VecDeque<(String, String)>,
-    /// The Debug sidebar panel (stack, variables tree, evaluate log).
-    pub(crate) debug_panel: DebugPanel,
-    /// The Debug panel's last-frame hit-test data.
-    pub(crate) debug_ui: DebugChrome,
-    /// Where the debuggee is stopped, for the stopped-line tint.
-    pub(crate) debug_stopped: Option<(PathBuf, u32)>,
     /// Palette commands from `--command`, queued until the backend is attached.
     ///
     /// They cannot run at construction time: a command like Show Hover or
@@ -715,8 +709,10 @@ pub struct App {
     /// the attach silently did nothing. [`runtime::attach_backend`] drains
     /// this, which is the one path both the live shell and `--capture` share.
     pub(crate) startup_commands: Vec<Command>,
-    /// Parser-backed resolver for the seeded inline-macro catalog.
-    inline_macro_engine: karet_syntax::InlineMacroEngine,
+    /// The last layered tree-sitter parse a UI-thread reader asked for (comment
+    /// toggling, Enter and paste indentation, Expand Selection, inline macros), reused while the
+    /// document and its buffer version are unchanged.
+    layered_trees: syntax_select::LayeredTreeCache,
     /// In-flight commit-detail requests, mapping request id → where its result goes
     /// (a new standalone commit tab, or the graph browser's detail pane).
     pending_commit_detail: HashMap<RequestId, ViewId>,

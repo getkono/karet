@@ -21,7 +21,7 @@ fn commit_graph_header_reports_branch_divergence_and_tip() -> Result<(), std::co
         time: 0,
         parents: Vec::new(),
     }];
-    let rails = crate::ui::commit::list::commit_rails(&commits);
+    let rails = crate::app::commit_rails(&commits);
     let labels = std::collections::HashMap::new();
     let state = karet_vcs::RepositoryState {
         branch: Some("feat/graph".to_string()),
@@ -112,7 +112,7 @@ fn the_graph_view_survives_degenerate_pane_sizes() -> Result<(), std::convert::I
             parents: Vec::new(),
         })
         .collect();
-    let rails = crate::ui::commit::list::commit_rails(&commits);
+    let rails = crate::app::commit_rails(&commits);
     let labels = std::collections::HashMap::new();
 
     for (w, h) in [(1, 1), (2, 3), (4, 4), (80, 1), (1, 40)] {

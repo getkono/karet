@@ -342,7 +342,7 @@ fn clicking_the_find_field_takes_the_keyboard_back() {
 #[test]
 fn completion_keys_belong_to_the_focused_editor_only() {
     let (_backend, mut app) = completion_app("fo\n", LineCol::new(0, 2));
-    app.completion = Some(crate::completion::CompletionUi::new(
+    app.completion.popup = Some(crate::completion::CompletionUi::new(
         DocumentId(9),
         LineCol::new(0, 0),
         LineCol::new(0, 2),
@@ -359,7 +359,7 @@ fn completion_keys_belong_to_the_focused_editor_only() {
 
     assert_eq!(code_tab_text(&app), "fo\n", "Enter went to the Explorer");
     assert!(
-        app.completion.is_none(),
+        app.completion.popup.is_none(),
         "the popup closes once its editor has lost the keyboard"
     );
 }

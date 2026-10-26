@@ -215,7 +215,7 @@ fn the_selected_item_resolves_and_shows_its_documentation() {
             }),
         },
     );
-    let ui = app.completion.as_ref().expect("still open");
+    let ui = app.completion.popup.as_ref().expect("still open");
     assert_eq!(ui.items[0].payload, None, "the payload is spent");
     let painted = screen(&mut app, 100, 12).join("\n");
     assert!(
@@ -298,7 +298,7 @@ fn eager_additional_edits_are_not_asked_for_again() {
     key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     assert_eq!(code_tab_text(&app), "use m::HashMap;\nx\nHashMap\n");
     assert_eq!(resolves(&backend).len(), asked, "no follow-up resolve");
-    assert!(app.completion_follow_up.is_none());
+    assert!(app.completion.follow_up.is_none());
 }
 
 /// Each document keeps the characters its own server last answered with:
@@ -316,7 +316,7 @@ fn completion_characters_are_kept_per_document() {
         commit_characters: Vec::new(),
     };
     let id = RequestId(u64::MAX);
-    app.pending_completion = Some(crate::completion::PendingCompletion {
+    app.completion.pending = Some(crate::completion::PendingCompletion {
         id,
         doc: DocumentId(10),
         anchor: LineCol::new(0, 0),
@@ -407,7 +407,10 @@ fn an_incomplete_list_is_asked_again_as_the_word_grows() {
         if incomplete {
             assert_eq!(after.len(), before + 1);
             assert_eq!(after.last(), Some(&CompletionTrigger::Incomplete));
-            assert!(app.completion.is_some(), "the old list stays up meanwhile");
+            assert!(
+                app.completion.popup.is_some(),
+                "the old list stays up meanwhile"
+            );
         } else {
             assert_eq!(after.len(), before, "a complete list only filters");
         }
