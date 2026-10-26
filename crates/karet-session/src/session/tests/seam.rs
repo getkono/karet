@@ -318,7 +318,6 @@
     }
 
     #[test]
-    #[ignore = "#657: both offered configurations share one name, so none can be switched to"]
     fn switching_configuration_re_answers_with_the_new_one_named() -> TestResult {
         let (mut session, mut events, _dir, first) = indexed_session()?;
         let Event::SeamIndexed { summary, .. } = first else {
