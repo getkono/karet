@@ -57,7 +57,7 @@ impl Framing for ContentLength {
 #[derive(Debug, thiserror::Error)]
 pub enum CodecError {
     /// The underlying stream failed (including EOF mid-message).
-    #[error("i/o error on the language-server stream: {0}")]
+    #[error("i/o error on the message stream: {0}")]
     Io(#[from] io::Error),
     /// The header block ended without a `Content-Length` header.
     #[error("message headers carried no Content-Length")]
@@ -279,6 +279,18 @@ mod tests {
             assert!(matches!(err, Err(CodecError::Io(_))));
         }
         Ok(())
+    }
+
+    /// The framing is protocol-agnostic (LSP, DAP, the broker), so the I/O
+    /// error names the message stream rather than any one protocol's peer.
+    #[test]
+    fn io_error_names_the_message_stream() {
+        let err = CodecError::Io(io::ErrorKind::UnexpectedEof.into());
+        let source = io::Error::from(io::ErrorKind::UnexpectedEof);
+        assert_eq!(
+            err.to_string(),
+            format!("i/o error on the message stream: {source}")
+        );
     }
 
     /// `count` bodies from a deterministic LCG (so a failure replays), over
