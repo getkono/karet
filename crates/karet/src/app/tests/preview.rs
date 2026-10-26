@@ -89,18 +89,18 @@ fn horizontal_mouse_events_scroll_code_and_pager_overflow() {
     };
 
     app.handle_mouse(mouse(MouseEventKind::ScrollRight, KeyModifiers::NONE));
-    assert_eq!(app.tabs[app.active].editor.scroll_col, 3);
+    assert_eq!(app.tabs[app.active].editor.scroll_col(), 3);
     app.handle_mouse(mouse(MouseEventKind::ScrollUp, KeyModifiers::SHIFT));
-    assert_eq!(app.tabs[app.active].editor.scroll_col, 0);
+    assert_eq!(app.tabs[app.active].editor.scroll_col(), 0);
     app.handle_mouse(mouse(MouseEventKind::ScrollDown, KeyModifiers::SHIFT));
-    assert_eq!(app.tabs[app.active].editor.scroll_col, 3);
+    assert_eq!(app.tabs[app.active].editor.scroll_col(), 3);
     app.handle_mouse(mouse(MouseEventKind::ScrollDown, KeyModifiers::NONE));
-    assert_eq!(app.tabs[app.active].editor.scroll_line, 3);
+    assert_eq!(app.tabs[app.active].editor.scroll_line(), 3);
 
     app.tabs[app.active] = text_tab("notes.md", "prose that is much wider than the pane");
     let _ = screen(&mut app, 24, 8);
     app.handle_mouse(mouse(MouseEventKind::ScrollRight, KeyModifiers::NONE));
-    assert_eq!(app.tabs[app.active].editor.scroll_col, 0);
+    assert_eq!(app.tabs[app.active].editor.scroll_col(), 0);
 
     app.tabs[app.active] = Tab::stash_preview(
         "stash@{0}",
@@ -249,10 +249,10 @@ fn preview_scroll(app: &App) -> u16 {
 #[test]
 fn source_scroll_aligns_the_in_editor_preview_on_draw() {
     let mut app = rendered_preview_app();
-    app.tabs[app.active].editor.scroll_line = 4;
+    app.tabs[app.active].editor.scroll_to_line(4);
     let _ = screen(&mut app, 100, 12);
     assert_eq!(preview_scroll(&app), 4);
-    assert_eq!(app.tabs[app.active].editor.scroll_line, 4);
+    assert_eq!(app.tabs[app.active].editor.scroll_line(), 4);
 }
 
 #[test]
@@ -260,7 +260,7 @@ fn scrolling_the_in_editor_preview_moves_the_source_to_its_anchor() {
     let mut app = rendered_preview_app();
     app.scroll_markdown_preview(4);
     assert_eq!(preview_scroll(&app), 4);
-    assert_eq!(app.tabs[app.active].editor.scroll_line, 4);
+    assert_eq!(app.tabs[app.active].editor.scroll_line(), 4);
 }
 
 #[test]
@@ -278,7 +278,7 @@ fn preview_geometry_and_wheel_are_routed_inside_the_editor_view() {
     });
 
     assert_eq!(preview_scroll(&app), 3);
-    assert_eq!(app.tabs[app.active].editor.scroll_line, 3);
+    assert_eq!(app.tabs[app.active].editor.scroll_line(), 3);
 }
 
 #[test]

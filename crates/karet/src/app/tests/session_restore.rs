@@ -35,7 +35,7 @@ fn two_pane_session(root: &Path) -> App {
     let tab = &mut app.tabs[app.active];
     tab.editor
         .set_carets(&[LineCol::new(2, 1), LineCol::new(5, 3)]);
-    tab.editor.scroll_line = 1;
+    tab.editor.scroll_to_line(1);
     app.open_startup_split(&root.join("c.rs"));
     app
 }
@@ -59,7 +59,7 @@ fn a_clean_exit_layout_reopens_its_panes_tabs_and_cursors() {
     let before = two_pane_session(&root);
     let saved_carets = before.stored.values().next().map(|pane| {
         let tab = &pane.tabs[pane.active];
-        (tab.editor.cursors().clone(), tab.editor.scroll_line)
+        (tab.editor.cursors().clone(), tab.editor.scroll_line())
     });
     assert!(before.save_workspace_layout(&state).is_ok());
 
@@ -98,7 +98,7 @@ fn a_clean_exit_layout_reopens_its_panes_tabs_and_cursors() {
     let left: Vec<&StoredPane> = after.stored.values().collect();
     let front = &left[0].tabs[1];
     assert_eq!(
-        Some((front.editor.cursors().clone(), front.editor.scroll_line)),
+        Some((front.editor.cursors().clone(), front.editor.scroll_line())),
         saved_carets,
         "both carets and the scroll come back"
     );
@@ -228,7 +228,7 @@ fn restored_scroll_is_clamped_and_a_pane_keeps_one_preview_tab() {
     let mut app = fresh(&root);
     app.open_initial(&root.join("a.rs"));
     fill_reserved_tabs(&mut app);
-    app.tabs[app.active].editor.scroll_line = 8;
+    app.tabs[app.active].editor.scroll_to_line(8);
     app.open_initial(&root.join("b.rs"));
     app.open_initial(&root.join("c.rs"));
     for tab in &mut app.tabs[1..] {
@@ -255,7 +255,8 @@ fn restored_scroll_is_clamped_and_a_pane_keeps_one_preview_tab() {
         vec![root.join("a.rs"), root.join("b.rs"), root.join("c.rs")]
     );
     assert_eq!(
-        after.tabs[0].editor.scroll_line, 2,
+        after.tabs[0].editor.scroll_line(),
+        2,
         "the scroll is clamped to the shortened file's last line"
     );
     let flags: Vec<bool> = after.tabs.iter().map(|tab| tab.is_preview).collect();

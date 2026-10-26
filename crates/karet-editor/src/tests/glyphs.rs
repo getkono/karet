@@ -6,7 +6,7 @@ use karet_core::BytePos;
 use karet_core::Span;
 use karet_core::StandardToken;
 
-use crate::*;
+use super::*;
 
 /// The gutter `LineNumbers::Off` keeps: content starts at this column.
 const X: u16 = 2;
@@ -147,7 +147,7 @@ fn guides_follow_horizontal_scroll_on_text_and_blank_lines() {
     let buffer = TextBuffer::from_text("{\n        a\n\n        b\n");
     let area = Rect::new(0, 0, 10, 4);
     let mut state = EditorState::new();
-    state.scroll_col = 2;
+    state.scroll_to_column(2);
     let mut target = Buffer::empty(area);
     Editor::new(&buffer)
         .indent_guides(true)

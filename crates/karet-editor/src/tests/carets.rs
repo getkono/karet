@@ -1,8 +1,8 @@
 //! Caret, multi-caret, and screen-cell geometry tests, split from the main
 //! test module to respect the per-file code-line ceiling.
 
+use super::*;
 use crate::text::*;
-use crate::*;
 
 #[test]
 fn render_draws_a_caret_for_every_cursor() {
@@ -111,8 +111,8 @@ fn map_cursors_maps_clamps_and_merges_without_scrolling() {
     // The text after the change: line 1 lost its tail, and line 3 is gone.
     let buffer = TextBuffer::from_text("abc\nx\nyz");
     let mut state = EditorState::new();
-    state.last_height = 2;
-    state.scroll_line = 1;
+    state.frame.height = 2;
+    state.scroll_to_line(1);
     state.cursors = CursorState {
         selections: vec![
             Selection {
@@ -138,7 +138,7 @@ fn map_cursors_maps_clamps_and_merges_without_scrolling() {
         "the selection is clamped, the two carets past the end merge"
     );
     assert_eq!(state.cursor(), LineCol::new(2, 2), "the primary survives");
-    assert_eq!(state.scroll_line, 1, "the viewport did not move");
+    assert_eq!(state.scroll_line(), 1, "the viewport did not move");
 
     // A real map: everything shifts one column right.
     state.map_cursors(&buffer, |pos| LineCol::new(pos.line, pos.col + 1));
@@ -152,7 +152,7 @@ fn map_cursors_maps_clamps_and_merges_without_scrolling() {
 fn add_caret_below_clamps_to_short_line() {
     let buffer = TextBuffer::from_text("longline\nab");
     let mut state = EditorState::new();
-    state.last_height = 4;
+    state.frame.height = 4;
     state.place_caret(LineCol::new(0, 6));
     state.add_caret_below(&buffer);
     let heads: Vec<LineCol> = state.cursors().selections.iter().map(|s| s.head).collect();
@@ -163,7 +163,7 @@ fn add_caret_below_clamps_to_short_line() {
 fn add_caret_above_is_noop_on_the_top_line() {
     let buffer = TextBuffer::from_text("ab\ncd");
     let mut state = EditorState::new();
-    state.last_height = 4;
+    state.frame.height = 4;
     state.place_caret(LineCol::new(0, 1));
     state.add_caret_above(&buffer);
     assert!(!state.has_multiple_cursors());
@@ -173,7 +173,7 @@ fn add_caret_above_is_noop_on_the_top_line() {
 fn add_caret_toggles_a_coincident_caret() {
     let buffer = TextBuffer::from_text("abcdef");
     let mut state = EditorState::new();
-    state.last_height = 4;
+    state.frame.height = 4;
     state.place_caret(LineCol::new(0, 0));
     state.add_caret(&buffer, LineCol::new(0, 3));
     assert_eq!(state.cursors().selections.len(), 2);
@@ -187,7 +187,7 @@ fn add_caret_toggles_a_coincident_caret() {
 fn add_next_occurrence_selects_word_then_next_match() {
     let buffer = TextBuffer::from_text("foo bar foo");
     let mut state = EditorState::new();
-    state.last_height = 4;
+    state.frame.height = 4;
     state.place_caret(LineCol::new(0, 1)); // inside the first "foo"
     state.add_next_occurrence(&buffer);
     assert_eq!(
@@ -218,7 +218,7 @@ fn add_next_occurrence_reaches_every_match_then_stops() {
     // on to the middle one rather than finding the first again.
     let buffer = TextBuffer::from_text("foo foo foo");
     let mut state = EditorState::new();
-    state.last_height = 4;
+    state.frame.height = 4;
     state.place_caret(LineCol::new(0, 9));
     state.add_next_occurrence(&buffer);
     assert_eq!(state.selection_ranges(), vec![span(0, 8, 11)]);
@@ -238,7 +238,7 @@ fn add_next_occurrence_reaches_every_match_then_stops() {
 fn add_next_occurrence_from_a_caret_matches_whole_words_only() {
     let buffer = TextBuffer::from_text("id width\nid_x id");
     let mut state = EditorState::new();
-    state.last_height = 4;
+    state.frame.height = 4;
     state.place_caret(LineCol::new(0, 2)); // touching the end of `id`
     for _ in 0..3 {
         state.add_next_occurrence(&buffer);
@@ -251,7 +251,7 @@ fn add_next_occurrence_from_a_caret_matches_whole_words_only() {
 fn add_next_occurrence_from_a_selection_matches_inside_words() {
     let buffer = TextBuffer::from_text("id width");
     let mut state = EditorState::new();
-    state.last_height = 4;
+    state.frame.height = 4;
     state.set_selection(&buffer, LineCol::new(0, 0), LineCol::new(0, 2));
     state.add_next_occurrence(&buffer);
     assert_eq!(state.selection_ranges(), vec![span(0, 0, 2), span(0, 4, 6)]);
@@ -263,7 +263,7 @@ fn add_next_occurrence_word_run_ends_when_the_user_reselects() {
     // selection is theirs, so it matches inside words.
     let buffer = TextBuffer::from_text("id width");
     let mut state = EditorState::new();
-    state.last_height = 4;
+    state.frame.height = 4;
     state.place_caret(LineCol::new(0, 0));
     state.add_next_occurrence(&buffer);
     state.set_selection(&buffer, LineCol::new(0, 2), LineCol::new(0, 0));
@@ -275,7 +275,7 @@ fn add_next_occurrence_word_run_ends_when_the_user_reselects() {
 fn add_next_occurrence_off_a_word_does_nothing() {
     let buffer = TextBuffer::from_text("a  b");
     let mut state = EditorState::new();
-    state.last_height = 4;
+    state.frame.height = 4;
     state.place_caret(LineCol::new(0, 2)); // between the two spaces
     state.add_next_occurrence(&buffer);
     assert_eq!(state.selection_range(), None);
@@ -286,7 +286,7 @@ fn add_next_occurrence_off_a_word_does_nothing() {
 fn add_next_occurrence_matches_a_selection_spanning_lines() {
     let buffer = TextBuffer::from_text("ab\ncd ab\ncd");
     let mut state = EditorState::new();
-    state.last_height = 4;
+    state.frame.height = 4;
     state.set_selection(&buffer, LineCol::new(0, 0), LineCol::new(1, 2));
     state.add_next_occurrence(&buffer);
     assert_eq!(state.cursor(), LineCol::new(2, 2));
@@ -301,7 +301,7 @@ fn add_next_occurrence_handles_multibyte_text() {
     // Columns are chars, not bytes: `é` is two bytes.
     let buffer = TextBuffer::from_text("é ab é ab");
     let mut state = EditorState::new();
-    state.last_height = 4;
+    state.frame.height = 4;
     state.place_caret(LineCol::new(0, 2));
     state.add_next_occurrence(&buffer);
     state.add_next_occurrence(&buffer);
@@ -321,7 +321,7 @@ fn add_next_occurrence_wraps_across_rope_chunks() {
     text.push_str("bar foo\n");
     let buffer = TextBuffer::from_text(&text);
     let mut state = EditorState::new();
-    state.last_height = 4;
+    state.frame.height = 4;
     state.set_selection(&buffer, at(501, 4), at(501, 7));
     state.add_next_occurrence(&buffer);
     assert!(state.has_multiple_cursors());
@@ -365,7 +365,7 @@ fn a_plain_motion_collapses_each_selection_to_its_leading_edge() {
     ] {
         for sel in [forward, backward] {
             let mut state = EditorState::new();
-            state.last_height = 4;
+            state.frame.height = 4;
             state.set_cursor_state(&buffer, CursorState::single(sel));
             state.move_carets(&buffer, motion, false);
             assert_eq!(
@@ -410,7 +410,7 @@ fn an_extending_motion_moves_heads_and_keeps_anchors() {
 fn plain_motions_move_carets_independently() {
     let buffer = TextBuffer::from_text("abc\nabc\nabc");
     let mut state = EditorState::new();
-    state.last_height = 4;
+    state.frame.height = 4;
     state.set_carets(&[at(0, 1), at(1, 1)]);
     state.move_carets(&buffer, Motion::Down, false);
     assert_eq!(heads(&state), vec![at(1, 1), at(2, 1)]);
@@ -423,7 +423,7 @@ fn plain_motions_move_carets_independently() {
 fn removing_a_caret_keeps_the_primary_on_the_same_caret() {
     let buffer = TextBuffer::from_text("abc\nabc\nabc");
     let mut state = EditorState::new();
-    state.last_height = 4;
+    state.frame.height = 4;
     state.place_caret(at(0, 1));
     state.add_caret(&buffer, at(2, 1));
     state.add_caret(&buffer, at(1, 1));
@@ -442,7 +442,7 @@ fn removing_a_caret_keeps_the_primary_on_the_same_caret() {
 fn collapse_to_original_keeps_the_first_placed_caret_and_its_selection() {
     let buffer = TextBuffer::from_text("abc\nabc\nabc");
     let mut state = EditorState::new();
-    state.last_height = 4;
+    state.frame.height = 4;
     state.set_selection(&buffer, at(1, 0), at(1, 2));
     state.add_caret_above(&buffer);
     state.add_caret(&buffer, at(2, 3));
@@ -462,7 +462,7 @@ fn collapse_to_original_keeps_the_first_placed_caret_and_its_selection() {
 fn the_original_caret_survives_a_merge_and_a_reset() {
     let buffer = TextBuffer::from_text("abcdef");
     let mut state = EditorState::new();
-    state.last_height = 4;
+    state.frame.height = 4;
     state.place_caret(at(0, 1));
     state.add_caret(&buffer, at(0, 0));
     state.add_caret(&buffer, at(0, 4));
@@ -553,7 +553,7 @@ fn line_span_includes_the_line_break_except_on_the_last_line() {
 fn gutter_marker_line_hits_only_the_marker_column() {
     let buffer = TextBuffer::from_text("a\nb\nc\nd\n");
     let mut state = EditorState::new();
-    state.last_height = 4;
+    state.frame.height = 4;
     let area = Rect::new(0, 0, 20, 4);
     assert_eq!(
         state.gutter_marker_line_at(area, &buffer, &[], 0, 2),
@@ -561,7 +561,7 @@ fn gutter_marker_line_hits_only_the_marker_column() {
     );
     assert_eq!(state.gutter_marker_line_at(area, &buffer, &[], 1, 2), None);
     assert_eq!(state.gutter_marker_line_at(area, &buffer, &[], 10, 2), None);
-    state.scroll_line = 1;
+    state.scroll_to_line(1);
     assert_eq!(
         state.gutter_marker_line_at(area, &buffer, &[], 0, 0),
         Some(1)
@@ -597,7 +597,7 @@ fn the_gutter_splits_into_marker_number_and_fold_lanes() {
         ]
     );
     // Numbers off: the marker and fold lanes meet.
-    state.last_line_numbers = LineNumbers::Off;
+    state.frame.line_numbers = LineNumbers::Off;
     assert_eq!(
         lanes(&state, &buffer, area),
         [Some(Marker), Some(Fold), None, None, None]
@@ -647,14 +647,14 @@ fn gutter_rows_follow_folds_sticky_headers_and_wrapping() {
         [Some(0), Some(1), Some(4), None]
     );
     // A sticky header row shows its own line.
-    state.sticky_rows = vec![1];
-    state.sticky_height = 1;
-    state.scroll_line = 4;
+    state.frame.sticky_rows = vec![1];
+    state.frame.sticky_height = 1;
+    state.scroll_to_line(4);
     assert_eq!((line(&state, 0), line(&state, 1)), (Some(1), Some(4)));
     // A soft-wrap continuation row belongs to the line it continues.
     let buffer = TextBuffer::from_text("abcdefghij\nk");
     let mut state = EditorState::new();
-    state.last_word_wrap = true;
+    state.frame.word_wrap = true;
     let area = Rect::new(0, 0, 7, 6);
     let line = |row| {
         state
@@ -745,8 +745,8 @@ fn the_fold_ellipsis_resolves_to_its_header_where_it_was_painted() {
 fn select_lines_selects_whole_lines_either_way_without_scrolling() {
     let buffer = TextBuffer::from_text("a\nbb\nccc");
     let mut state = EditorState::new();
-    state.last_height = 1;
-    state.scroll_col = 2;
+    state.frame.height = 1;
+    state.scroll_to_column(2);
     let selection = |state: &EditorState| state.selection_range();
     state.select_lines(&buffer, 0, 0);
     assert_eq!(
@@ -758,7 +758,7 @@ fn select_lines_selects_whole_lines_either_way_without_scrolling() {
     );
     assert_eq!(state.cursor(), LineCol::new(1, 0));
     // The line break ends on a row off screen, and still nothing scrolls.
-    assert_eq!((state.scroll_line, state.scroll_col), (0, 2));
+    assert_eq!((state.scroll_line(), state.scroll_col()), (0, 2));
     // Upward: anchored after the first line's break, caret at the last one's start.
     state.select_lines(&buffer, 1, 0);
     assert_eq!(state.cursors().primary().anchor, LineCol::new(2, 0));

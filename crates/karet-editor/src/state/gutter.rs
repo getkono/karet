@@ -13,7 +13,7 @@ pub enum GutterLane {
     /// here (and change markers, when no [`Change`](Self::Change) lane is
     /// reserved); a click is the breakpoint toggle.
     Marker,
-    /// The line numbers. Absent when [`LineNumbers::Off`] hides them.
+    /// The line numbers. Absent when [`LineNumbers::Off`](crate::LineNumbers::Off) hides them.
     LineNumber,
     /// The change column after the line numbers, where
     /// [`DecorationKind::ChangeMarker`](karet_core::DecorationKind::ChangeMarker)s
@@ -58,7 +58,7 @@ impl EditorState {
             return None;
         }
         let line_count = buffer.line_count().max(1) as u32;
-        let gutter = gutter_width(line_count, self.last_line_numbers, self.last_change_lane);
+        let gutter = gutter_width(line_count, self.frame.line_numbers, self.frame.change_lane);
         let offset = col - area.x;
         if offset >= gutter.min(area.width) {
             return None;
@@ -67,22 +67,23 @@ impl EditorState {
             GutterLane::Marker
         } else if offset + 1 == gutter {
             GutterLane::Fold
-        } else if self.last_change_lane && offset + 2 == gutter {
+        } else if self.frame.change_lane && offset + 2 == gutter {
             GutterLane::Change
         } else {
             GutterLane::LineNumber
         };
         let rel_row = u32::from(row - area.y);
-        let sticky = u32::from(self.sticky_height);
+        let sticky = u32::from(self.frame.sticky_height);
         let line = if rel_row < sticky {
-            self.sticky_rows
+            self.frame
+                .sticky_rows
                 .get(rel_row as usize)
                 .copied()
                 .unwrap_or(self.scroll_line)
                 .min(line_count - 1)
         } else {
             let width = u32::from(area.width.saturating_sub(gutter).max(1));
-            let layout = self.row_layout(width, self.last_word_wrap);
+            let layout = self.row_layout(width, self.frame.word_wrap);
             let (anchor, below_end) = self.row_at(buffer, folds, layout, rel_row - sticky);
             (!below_end).then_some(anchor.line)?
         };
@@ -111,7 +112,8 @@ impl EditorState {
     /// painted over the screen cell `(col, row)`, if any.
     #[must_use]
     pub fn fold_ellipsis_at(&self, col: u16, row: u16) -> Option<u32> {
-        self.last_fold_ellipses
+        self.frame
+            .fold_ellipses
             .iter()
             .find(|(rect, _)| rect.contains(ratatui::layout::Position { x: col, y: row }))
             .map(|&(_, line)| line)

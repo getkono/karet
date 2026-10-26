@@ -89,7 +89,7 @@ fn a_tall_document_paints_a_vertical_bar_that_tracks_the_scroll() {
     let at_top = thumb_rows(&rows);
     assert!(!at_top.is_empty(), "a 200-line file should show a thumb");
 
-    app.tabs[app.active].editor.scroll_line = 188;
+    app.tabs[app.active].editor.scroll_to_line(188);
     let scrolled = thumb_rows(&screen(&mut app, 40, 12));
     assert!(
         scrolled.first() > at_top.first(),
@@ -142,15 +142,17 @@ fn a_wheel_notch_over_the_track_moves_one_line_while_the_text_moves_three() {
 
     wheel(&mut app, rect.right(), rect.y + 1, true);
     assert_eq!(
-        app.tabs[app.active].editor.scroll_line, 1,
+        app.tabs[app.active].editor.scroll_line(),
+        1,
         "a notch over the track should step exactly one line"
     );
 
-    app.tabs[app.active].editor.scroll_line = 0;
+    app.tabs[app.active].editor.scroll_to_line(0);
     screen(&mut app, 40, 12);
     wheel(&mut app, rect.x + 1, rect.y + 1, true);
     assert_eq!(
-        app.tabs[app.active].editor.scroll_line, 3,
+        app.tabs[app.active].editor.scroll_line(),
+        3,
         "a notch over the text should keep its three lines"
     );
 }
@@ -163,7 +165,7 @@ fn the_wheel_over_a_track_stops_at_the_ends() {
     let rect = app.editor_rect;
 
     wheel(&mut app, rect.right(), rect.y + 1, false);
-    assert_eq!(app.tabs[app.active].editor.scroll_line, 0);
+    assert_eq!(app.tabs[app.active].editor.scroll_line(), 0);
 }
 
 #[test]
@@ -182,13 +184,13 @@ fn dragging_the_thumb_scrolls_the_editor_and_reaches_the_last_line() {
     // Grabbing without moving must not shift the view by so much as a line.
     press(&mut app, track_x, rect.y + start);
     assert!(app.scroll_drag.is_some(), "the press should grab the thumb");
-    assert_eq!(app.tabs[app.active].editor.scroll_line, 0);
+    assert_eq!(app.tabs[app.active].editor.scroll_line(), 0);
 
     // Dragging to the bottom of the track reaches the end of the document.
     drag(&mut app, track_x, rect.bottom());
     let visible = app.tabs[app.active].editor.visible_lines();
     assert_eq!(
-        app.tabs[app.active].editor.scroll_line,
+        app.tabs[app.active].editor.scroll_line(),
         201 - visible,
         "dragging to the end should land on the last position"
     );
@@ -223,7 +225,7 @@ fn a_drag_keeps_scrolling_after_the_pointer_leaves_the_track() {
         "the drag should still be captured"
     );
     assert!(
-        app.tabs[app.active].editor.scroll_line > 0,
+        app.tabs[app.active].editor.scroll_line() > 0,
         "a drag off the track should still scroll"
     );
 }
@@ -238,7 +240,7 @@ fn clicking_the_groove_below_the_thumb_pages_down() {
     press(&mut app, rect.right(), rect.bottom() - 1);
 
     let visible = app.tabs[app.active].editor.visible_lines();
-    assert_eq!(app.tabs[app.active].editor.scroll_line, visible);
+    assert_eq!(app.tabs[app.active].editor.scroll_line(), visible);
     assert!(
         app.scroll_drag.is_none(),
         "a groove click pages; it does not start a drag"
@@ -259,7 +261,7 @@ fn a_track_for_content_that_fits_is_inert_and_still_swallows_the_click() {
         "a suppressed bar should not be registered"
     );
     press(&mut app, rect.right(), rect.y + 2);
-    assert_eq!(app.tabs[app.active].editor.scroll_line, 0);
+    assert_eq!(app.tabs[app.active].editor.scroll_line(), 0);
     assert!(app.scroll_drag.is_none());
 }
 
@@ -338,7 +340,8 @@ fn the_sidebar_track_scrolls_the_sidebar_and_not_the_editor() {
     wheel(&mut app, track.x, track.y + 1, true);
 
     assert_eq!(
-        app.tabs[app.active].editor.scroll_line, 0,
+        app.tabs[app.active].editor.scroll_line(),
+        0,
         "a notch over the sidebar's bar must not scroll the editor"
     );
 }

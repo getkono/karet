@@ -528,8 +528,8 @@ pub(crate) fn place_fill(
         Some(view) => {
             editor.set_cursor_state(buffer, view.cursors);
             let last_line = u32::try_from(buffer.line_count().saturating_sub(1)).unwrap_or(0);
-            editor.scroll_line = view.scroll_line.min(last_line);
-            editor.scroll_col = view.scroll_col;
+            editor.scroll_to_line(view.scroll_line.min(last_line));
+            editor.scroll_to_column(view.scroll_col);
         },
         None => editor.goto(buffer, caret),
     }

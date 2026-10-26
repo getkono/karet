@@ -119,7 +119,7 @@ fn a_double_click_near_the_right_edge_selects_the_word_under_the_pointer() {
     rig.run(&[click(At::Cell(x, y)), click(At::Cell(x, y))]);
 
     assert_eq!(
-        rig.tab().editor.scroll_col,
+        rig.tab().editor.scroll_col(),
         0,
         "the click scrolled the line"
     );
@@ -134,7 +134,7 @@ fn a_double_click_near_the_right_edge_selects_the_word_under_the_pointer() {
     // The view is unwrapped, so the keyboard does scroll it.
     rig.step(key(KeyCode::End));
     assert!(
-        rig.tab().editor.scroll_col > 0,
+        rig.tab().editor.scroll_col() > 0,
         "the line does not overflow"
     );
 }
@@ -373,7 +373,7 @@ fn dragging_past_the_right_edge_scrolls_horizontally() {
     );
     rig.step(Step::Tick);
     assert_eq!(
-        rig.tab().editor.scroll_col,
+        rig.tab().editor.scroll_col(),
         2,
         "two columns out, two per step"
     );
@@ -425,7 +425,11 @@ fn shift_wheel_during_a_drag_scrolls_columns_and_extends() {
         KeyModifiers::SHIFT,
     ));
     assert_eq!(rig.scroll_line(), 0, "the notch did not scroll rows");
-    assert_eq!(rig.tab().editor.scroll_col, 3, "the notch scrolled columns");
+    assert_eq!(
+        rig.tab().editor.scroll_col(),
+        3,
+        "the notch scrolled columns"
+    );
     assert_eq!(
         rig.tab().editor.cursor().col,
         7,

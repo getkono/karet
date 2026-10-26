@@ -220,15 +220,12 @@ impl App {
             return;
         };
         let cursors = box_cursors(buffer, state.anchor, head, tab_width);
-        let scroll_col = editor.scroll_col;
-        editor.set_cursor_state(buffer, cursors);
         if pointer {
-            // `set_cursor_state` reveals with the keyboard's margin. Undo its
-            // horizontal part and reveal again as a pointer move, which keeps
-            // a head already on screen exactly where it is.
-            editor.scroll_col = scroll_col;
-            let primary = editor.cursors().primary().head;
-            editor.extend_to(buffer, primary);
+            // A pointer move keeps a head already on screen exactly where it
+            // is; the keyboard reveals it with its usual margin.
+            editor.set_cursor_state_from_pointer(buffer, cursors);
+        } else {
+            editor.set_cursor_state(buffer, cursors);
         }
         state.head = head;
         state.cursors = editor.cursors().clone();
@@ -337,7 +334,8 @@ impl App {
             let past = match tab.editor.screen_cell(area, buffer, &fold_lines, pos) {
                 Some((x, _)) => u32::from(col.saturating_sub(x)),
                 None => {
-                    tab.editor.scroll_col.saturating_sub(len) + u32::from(col.saturating_sub(left))
+                    tab.editor.scroll_col().saturating_sub(len)
+                        + u32::from(col.saturating_sub(left))
                 },
             };
             cell = cell.saturating_add(past);
