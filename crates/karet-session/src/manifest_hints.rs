@@ -7,6 +7,7 @@
 //! served from `dependable-fetch`'s in-process cache.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
 use std::sync::mpsc::TryRecvError;
@@ -23,6 +24,8 @@ use crate::api::ManifestHint;
 use crate::api::ManifestHintState;
 use crate::api::RequestId;
 
+mod lockfile;
+
 /// One re-check request (the newest per document wins).
 pub(crate) struct HintJob {
     /// The document whose hints these are.
@@ -32,8 +35,10 @@ pub(crate) struct HintJob {
     pub version: u64,
     /// The manifest text (the live buffer).
     pub manifest: String,
-    /// The sibling `Cargo.lock`, when present on disk.
-    pub lockfile: Option<String>,
+    /// Where the manifest lives. The worker reads the governing `Cargo.lock`
+    /// from it (beside the manifest, or the root's of the workspace that
+    /// counts the package as a member), off the session thread.
+    pub path: PathBuf,
 }
 
 /// Start the worker; answers arrive as [`Event::ManifestHints`].
@@ -95,12 +100,9 @@ fn run(jobs: &Receiver<HintJob>, events: &tokio_mpsc::UnboundedSender<(Option<Re
 /// fails outright (offline, rate-limited) yields no hints — annotations
 /// simply do not appear rather than shouting about the network.
 async fn check(checker: &Checker, job: &HintJob) -> Vec<ManifestHint> {
+    let lockfile = lockfile::read(&job.path);
     let Ok(report) = checker
-        .check_manifest(
-            ManifestKind::CargoToml,
-            &job.manifest,
-            job.lockfile.as_deref(),
-        )
+        .check_manifest(ManifestKind::CargoToml, &job.manifest, lockfile.as_deref())
         .await
     else {
         return Vec::new();
