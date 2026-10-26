@@ -214,9 +214,54 @@ impl HierarchyTree {
         self.direction
     }
 
-    /// The document the hierarchy was asked from.
+    /// The document the tree is grown through: the one it was asked from,
+    /// until that one closes and another takes its place.
     pub(crate) fn doc(&self) -> DocumentId {
         self.doc
+    }
+
+    /// Grow the tree through `doc` from now on.
+    pub(crate) fn retarget(&mut self, doc: DocumentId) {
+        self.doc = doc;
+    }
+
+    /// The files named by `node` and each of its ancestors, nearest first:
+    /// where a document to grow the tree through is looked for when the one
+    /// it was asked from has closed.
+    pub(crate) fn paths_toward_root(&self, node: usize) -> Vec<PathBuf> {
+        let mut paths = Vec::new();
+        let mut at = Some(node);
+        while let Some(index) = at
+            && let Some(node) = self.nodes.get(index)
+        {
+            paths.push(node.item.location.path.clone());
+            at = node.parent;
+        }
+        paths
+    }
+
+    /// Put `node` back as never asked for and collapsed, so a later
+    /// expansion asks again instead of waiting on an answer that will not
+    /// come.
+    pub(crate) fn unask(&mut self, node: usize) {
+        if let Some(node) = self.nodes.get_mut(node) {
+            node.children = Children::Unasked;
+            node.expanded = false;
+        }
+        self.rebuild();
+    }
+
+    /// Settle `request` as failed. Returns `None` when the tree was not
+    /// waiting on it, else what it was for: `Some(None)` for the roots, and
+    /// `Some(Some(node))` for a node's children, which is put back as never
+    /// asked for.
+    pub(crate) fn fail(&mut self, request: RequestId) -> Option<Option<usize>> {
+        let at = self.pending.iter().position(|(id, ..)| *id == request)?;
+        let (_, node, _) = self.pending.remove(at);
+        if let Some(node) = node {
+            self.unask(node);
+        }
+        Some(node)
     }
 
     fn selected_node(&self) -> Option<&Node> {
@@ -427,8 +472,11 @@ impl App {
         self.sidebar_visible && self.sidebar_panel == SidebarPanel::Hierarchy
     }
 
-    /// Drop a tree that will never get an answer, and when its panel is still
-    /// on show, hand the sidebar and focus back to what it replaced.
+    /// Drop a tree that will never get an answer. The sidebar's panel goes
+    /// back to what the Hierarchy panel replaced, so the sidebar never opens
+    /// on an empty tree; only when the panel is still on show do the
+    /// sidebar's visibility and the focus go back too. A sidebar the user
+    /// hid while the request was out stays hidden.
     fn drop_unanswered_hierarchy(&mut self) {
         self.hierarchy.tree = None;
         let before = self.hierarchy.before.take();
@@ -443,6 +491,9 @@ impl App {
                 visible: self.sidebar_visible,
             });
         self.sidebar_panel = before.panel;
+        if !self.sidebar_visible {
+            return;
+        }
         self.sidebar_visible = before.visible;
         if self.focus == Focus::Sidebar {
             self.focus = before.focus;
@@ -493,14 +544,68 @@ impl App {
         let Some((node, item)) = tree.expand_selected() else {
             return;
         };
+        let direction = tree.direction();
+        let Some(doc) = self.hierarchy_doc(node) else {
+            if let Some(tree) = self.hierarchy.tree.as_mut() {
+                tree.unask(node);
+            }
+            let path = &item.location.path;
+            let root = workspace::absolute(&self.root);
+            let shown = path.strip_prefix(&root).unwrap_or(path);
+            self.notify(
+                Report::Refusal,
+                NotificationKind::Lsp,
+                format!(
+                    "{}: open {} again to expand it further",
+                    hierarchy_noun(direction),
+                    shown.display()
+                ),
+            );
+            return;
+        };
+        if let Some(tree) = self.hierarchy.tree.as_mut() {
+            tree.retarget(doc);
+        }
         let command = SessionCommand::ExpandHierarchy {
-            doc: tree.doc(),
+            doc,
             item: Box::new(item),
-            direction: tree.direction(),
+            direction,
         };
         let request = self.send(command);
         if let Some(tree) = self.hierarchy.tree.as_mut() {
             tree.track(node, request);
+        }
+    }
+
+    /// The open document to grow the tree through when expanding `node`:
+    /// the one it was asked from while that is still open, else one open on
+    /// the file `node` or one of its ancestors names -- the session answers
+    /// a closed document only with an error, never with children. `None`
+    /// when no such document is open.
+    fn hierarchy_doc(&self, node: usize) -> Option<DocumentId> {
+        let tree = self.hierarchy.tree.as_ref()?;
+        let open_at = |path: &Path| {
+            self.all_tabs().find_map(|tab| match &tab.kind {
+                TabKind::Code { doc: Some(doc), .. } if tab.path() == Some(path) => Some(*doc),
+                _ => None,
+            })
+        };
+        if self.doc_path(tree.doc()).is_some() {
+            return Some(tree.doc());
+        }
+        tree.paths_toward_root(node)
+            .iter()
+            .find_map(|path| open_at(path))
+    }
+
+    /// Settle a hierarchy request the session answered with an error rather
+    /// than items (its document closed, say): a node waiting on it goes back
+    /// to never asked for, and a tree waiting on it for its roots is dropped.
+    /// The error notification itself says what went wrong.
+    pub(super) fn fail_hierarchy_request(&mut self, id: RequestId) {
+        let failed = self.hierarchy.tree.as_mut().and_then(|tree| tree.fail(id));
+        if failed == Some(None) {
+            self.drop_unanswered_hierarchy();
         }
     }
 

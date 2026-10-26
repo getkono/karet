@@ -600,6 +600,133 @@ fn an_empty_replacement_returns_to_what_the_first_tree_replaced() {
     assert_eq!(app.focus, Focus::Editor);
 }
 
+/// A sidebar the user hid while the roots were on their way stays hidden
+/// when they come back empty; only its panel goes back to what the
+/// Hierarchy panel replaced.
+#[test]
+fn an_empty_answer_leaves_a_sidebar_hidden_meanwhile_hidden() {
+    let (backend, mut app) = completion_app("fn main() {}\n", LineCol::new(0, 4));
+    app.sidebar_panel = SidebarPanel::Problems;
+    app.sidebar_visible = true;
+    app.dispatch(Command::ShowSubtypes);
+    let prepare = sent(&backend)[0].0;
+    app.sidebar_visible = false;
+    app.focus = Focus::Editor;
+    answer(&mut app, prepare, Vec::new());
+    assert!(app.hierarchy.tree.is_none());
+    assert_eq!(app.sidebar_panel, SidebarPanel::Problems);
+    assert!(!app.sidebar_visible, "the hidden sidebar is not reopened");
+    assert_eq!(app.focus, Focus::Editor);
+}
+
+/// A tree with one level answered: `main` (in `main.rs`) expanded onto
+/// `caller` (in `lib.rs`), with `caller` selected.
+fn answered_tree(name: &str) -> (Arc<RecordingBackend>, App, PathBuf) {
+    let (backend, mut app, root) = workspace(name);
+    app.dispatch(Command::ShowIncomingCalls);
+    let prepare = sent(&backend)[0].0;
+    answer(
+        &mut app,
+        prepare,
+        vec![item("main", &root.join("main.rs"), 0)],
+    );
+    let expand = sent(&backend)[1].0;
+    answer(
+        &mut app,
+        expand,
+        vec![item("caller", &root.join("lib.rs"), 2)],
+    );
+    key(&mut app, KeyCode::Down);
+    (backend, app, root)
+}
+
+/// Stand in for the tab the tree was asked from having closed: the only
+/// code tab left is open on `path` as `doc`, or holds no document at all.
+fn only_tab_open_on(app: &mut App, path: PathBuf, doc: Option<DocumentId>) {
+    let active = app.active;
+    if let TabKind::Code {
+        path: shown,
+        doc: held,
+        ..
+    } = &mut app.tabs[active].kind
+    {
+        *shown = path;
+        *held = doc;
+    }
+}
+
+/// Once the document the tree was asked from has closed, an expansion is
+/// grown through a document still open on a file the tree names, not sent
+/// for the closed one -- the session would answer that only with an error.
+#[test]
+fn an_expansion_after_the_origin_closes_goes_through_an_open_document() {
+    let (backend, mut app, root) = answered_tree("hierarchy-retarget");
+    only_tab_open_on(&mut app, root.join("lib.rs"), Some(DocumentId(12)));
+    key(&mut app, KeyCode::Right);
+    let requests = sent(&backend);
+    assert!(
+        matches!(
+            requests.get(2),
+            Some((_, SessionCommand::ExpandHierarchy { doc, .. })) if *doc == DocumentId(12)
+        ),
+        "{requests:?}"
+    );
+    assert_eq!(rows(&app), vec!["▾ main", "  ▾ caller"]);
+}
+
+/// With no document open on any file the tree names, an expansion asks
+/// nothing, leaves no node loading, and says how to grow the tree again.
+#[test]
+fn an_expansion_with_no_open_document_says_so_and_waits_on_nothing() {
+    let (backend, mut app, root) = answered_tree("hierarchy-no-doc");
+    only_tab_open_on(&mut app, root.join("main.rs"), None);
+    key(&mut app, KeyCode::Right);
+    assert_eq!(
+        sent(&backend).len(),
+        2,
+        "nothing is sent for a closed document"
+    );
+    assert_eq!(rows(&app), vec!["▾ main", "  ▸ caller"]);
+    assert!(app.hierarchy_loading().is_none());
+    let titles: Vec<_> = app
+        .notifications
+        .active()
+        .iter()
+        .map(|note| note.title.clone())
+        .collect();
+    assert_eq!(
+        titles,
+        vec!["call hierarchy: open lib.rs again to expand it further".to_owned()]
+    );
+}
+
+/// An expansion the session answers with an error (its document closed in
+/// the meantime) puts the node back as never asked for, so no loading note
+/// lingers and the next Right asks again; a root request answered that way
+/// drops the tree.
+#[test]
+fn an_error_answer_settles_the_request_it_answers() {
+    let (backend, mut app, _root) = answered_tree("hierarchy-error");
+    key(&mut app, KeyCode::Right);
+    let expand = sent(&backend)[2].0;
+    let unknown = || SessionEvent::Notification {
+        severity: Severity::Error,
+        kind: NotificationKind::System,
+        message: "unknown document 9".to_owned(),
+    };
+    app.on_backend_event(Some(expand), unknown());
+    assert_eq!(rows(&app), vec!["▾ main", "  ▸ caller"]);
+    assert!(app.hierarchy_loading().is_none());
+    key(&mut app, KeyCode::Right);
+    assert_eq!(sent(&backend).len(), 4, "the next expansion asks again");
+
+    app.dispatch(Command::ShowSupertypes);
+    let prepare = sent(&backend)[4].0;
+    app.on_backend_event(Some(prepare), unknown());
+    assert!(app.hierarchy.tree.is_none());
+    assert_ne!(app.sidebar_panel, SidebarPanel::Hierarchy);
+}
+
 /// With no tree, the panel cannot be selected: Ctrl+8 says how to get one
 /// and leaves the sidebar as it was.
 #[test]
