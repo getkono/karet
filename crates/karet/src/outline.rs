@@ -5,12 +5,16 @@
 //! PDF bookmarks, Markdown headings, and language-server symbols all convert into
 //! this model without coupling the panel to their producer.
 
+use std::cell::Cell;
+use std::cell::RefCell;
+
 use karet_core::LineCol;
 use karet_core::Symbol;
 #[cfg(test)]
 use karet_core::SymbolKind;
 use karet_markdown::Block;
 use karet_markdown::Inline;
+use karet_session::ViewId;
 
 /// Where activating an outline entry navigates to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,6 +90,85 @@ pub fn from_markdown(source: &str) -> Vec<OutlineEntry> {
         .collect();
     let mut index = 0;
     nest_headings(&headings, &mut index, 0)
+}
+
+/// The Markdown outline of the last view the outline panel asked about, so a
+/// frame that redraws an unchanged document reuses its rows instead of parsing
+/// the whole source again.
+///
+/// The panel asks for the active tab's rows several times per frame (the draw,
+/// the selection sync, a click), and for Markdown each ask used to be a full
+/// [`from_markdown`] parse. An entry is keyed by the view and its buffer
+/// version and also holds the source it was built from: a version alone can
+/// repeat over different text (a reserved tab's placeholder and the loaded file
+/// share one, and a regenerated preview restarts at version 0), so a hit also
+/// requires the text to match. That check is a byte comparison, far cheaper
+/// than the parse it saves.
+#[derive(Default)]
+pub struct MarkdownOutlineCache {
+    entry: RefCell<Option<CachedOutline>>,
+    builds: Cell<u64>,
+}
+
+struct CachedOutline {
+    view: ViewId,
+    version: u64,
+    source: String,
+    rows: Vec<OutlineRow>,
+}
+
+impl MarkdownOutlineCache {
+    /// The flattened Markdown outline of `view` at `version`, whose text is the
+    /// concatenation of the pieces `chunks` yields (it is called once to compare
+    /// and once more to copy on a miss): the cached rows when the view, version,
+    /// and text all match the last build, otherwise a fresh parse that replaces it.
+    #[must_use]
+    pub fn rows<'a, I>(&self, view: ViewId, version: u64, chunks: impl Fn() -> I) -> Vec<OutlineRow>
+    where
+        I: Iterator<Item = &'a str>,
+    {
+        let mut entry = self.entry.borrow_mut();
+        if let Some(cached) = entry.as_ref()
+            && cached.view == view
+            && cached.version == version
+            && same_text(&cached.source, chunks())
+        {
+            return cached.rows.clone();
+        }
+        let source: String = chunks().collect();
+        let rows = flatten(&from_markdown(&source));
+        self.builds.set(self.builds.get() + 1);
+        *entry = Some(CachedOutline {
+            view,
+            version,
+            source,
+            rows: rows.clone(),
+        });
+        rows
+    }
+
+    /// How many times [`rows`](Self::rows) has parsed a source rather than
+    /// reusing the cached outline.
+    #[cfg(test)]
+    pub fn builds(&self) -> u64 {
+        self.builds.get()
+    }
+}
+
+/// Whether the concatenation of `chunks` is exactly `source`, compared piece by
+/// piece without joining the pieces.
+fn same_text<'a>(source: &str, chunks: impl Iterator<Item = &'a str>) -> bool {
+    let mut rest = source.as_bytes();
+    for chunk in chunks {
+        let Some((head, tail)) = rest.split_at_checked(chunk.len()) else {
+            return false;
+        };
+        if head != chunk.as_bytes() {
+            return false;
+        }
+        rest = tail;
+    }
+    rest.is_empty()
 }
 
 fn nest_headings(
@@ -228,6 +311,28 @@ impl From<&karet_pdf::OutlineItem> for OutlineEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn same_text_compares_across_chunk_boundaries() {
+        assert!(same_text("# ab", ["# ", "a", "b"].into_iter()));
+        assert!(same_text("", std::iter::empty()));
+        assert!(!same_text("# ab", ["# ", "a"].into_iter()), "shorter");
+        assert!(!same_text("# a", ["# ", "ab"].into_iter()), "longer");
+        assert!(!same_text("# ab", ["# ", "ax"].into_iter()), "differs");
+    }
+
+    #[test]
+    fn markdown_cache_rebuilds_for_another_view_or_version() {
+        let cache = MarkdownOutlineCache::default();
+        let rows = |view, version| cache.rows(ViewId(view), version, || ["# H\n"].into_iter());
+        assert_eq!(rows(1, 0).len(), 1);
+        assert_eq!(rows(1, 0).len(), 1);
+        assert_eq!(cache.builds(), 1);
+        let _ = rows(2, 0);
+        assert_eq!(cache.builds(), 2, "another view");
+        let _ = rows(2, 1);
+        assert_eq!(cache.builds(), 3, "another version");
+    }
 
     #[test]
     fn flatten_walks_pre_order_with_depth() {

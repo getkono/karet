@@ -577,7 +577,14 @@ async fn a_missing_adapter_executable_is_a_launch_error() {
 
 #[tokio::test]
 async fn a_socket_that_never_accepts_is_a_launch_error_at_the_deadline() -> TestResult {
-    let port = free_port()?; // nobody listens on it
+    // Hold the port with a socket that is bound but never listens: connects to
+    // it are refused, and for as long as it lives no concurrent test can bind
+    // the port and no connect can pick it as its own source port (a loopback
+    // self-connect). A `free_port()` that is dropped at once leaves both open,
+    // and the test then flakes by connecting successfully.
+    let holder = tokio::net::TcpSocket::new_v4()?;
+    holder.bind(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))?;
+    let port = holder.local_addr()?.port();
     let started = std::time::Instant::now();
     let got = connect_with_retries(port, Duration::from_millis(200)).await;
     let elapsed = started.elapsed();
@@ -590,6 +597,7 @@ async fn a_socket_that_never_accepts_is_a_launch_error_at_the_deadline() -> Test
         elapsed >= Duration::from_millis(200),
         "gave up before the deadline"
     );
+    drop(holder);
     Ok(())
 }
 

@@ -88,6 +88,9 @@ pub(crate) struct OutlinePanel {
     /// The list's scroll offset (first visible row) from the last frame, so a
     /// click maps to the correct entry even when the list is scrolled.
     pub(crate) scroll: usize,
+    /// The active Markdown view's outline rows, reused across frames until its
+    /// text changes or another view becomes active.
+    pub(crate) markdown: crate::outline::MarkdownOutlineCache,
 }
 
 /// The screen-reclaiming modes for small terminals: Zen Mode and a maximised
@@ -121,6 +124,7 @@ impl Default for OutlinePanel {
             content_rect: Rect::default(),
             width: OUTLINE_WIDTH,
             scroll: 0,
+            markdown: crate::outline::MarkdownOutlineCache::default(),
         }
     }
 }
