@@ -162,7 +162,7 @@ cargo mutants --package karet-diff --all-features \
   --file 'crates/karet-diff/src/prepared.rs' \
   --file 'crates/karet-diff/src/align.rs' \
   --exclude-re 'path\\.rs:8[78]:\\d+: replace \\| with \\^ in decode_path' \
-  --exclude-re 'intraline\\.rs:109:43: replace - with / in lcs_tokens'"""
+  --exclude-re 'intraline\\.rs:114:43: replace - with / in lcs_tokens'"""
 
 [tasks.mutants-core]
 description = "Opt-in: mutation-test karet-core's edit, highlight, coord, capability and graph (cap 20m)"
