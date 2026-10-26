@@ -25,7 +25,7 @@ use serde::Deserialize;
 use serde::Serialize;
 
 /// Environment flag selecting the hidden supervisor entry point.
-pub const MODE_ENV: &str = "KARET_INTERNAL_PROCESS_SUPERVISOR";
+const MODE_ENV: &str = "KARET_INTERNAL_PROCESS_SUPERVISOR";
 const SPEC_ENV: &str = "KARET_INTERNAL_PROCESS_SPEC";
 
 /// Errors produced while preparing or running a supervised process.
