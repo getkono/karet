@@ -494,6 +494,9 @@ struct PaneCtx<'a> {
     /// Code lenses keyed by backend document, in buffer columns; empty while
     /// `editor.codeLens` is off.
     code_lenses: &'a HashMap<DocumentId, Vec<karet_core::CodeLens>>,
+    /// The language servers' colours keyed by backend document, each with the
+    /// buffer version its ranges are positioned against.
+    document_colors: &'a crate::app::HeldColors,
     /// Cached document symbols keyed by backend document, for the breadcrumb's
     /// enclosing-symbol chain.
     symbols: &'a HashMap<DocumentId, Vec<karet_core::Symbol>>,

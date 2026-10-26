@@ -245,7 +245,8 @@ impl Session {
     /// highlights, linked ranges and on-type edits are answered with none for
     /// the same reason, and a save's will-save edits are dropped. A code-lens
     /// listing is answered as unanswered, so the client asks again, and a
-    /// lens run reports how it went, since its command did run. Every other
+    /// lens run reports how it went, since its command did run; a link and
+    /// colour listing and a link resolve likewise. Every other
     /// fenced answer is advisory and simply dropped.
     pub(super) fn settle_retired_answer(&mut self, update: LspUpdate) {
         match update {
@@ -266,6 +267,7 @@ impl Session {
                 self.adopt_document_highlights(answer);
             },
             LspUpdate::CodeLens { answer, .. } => self.adopt_code_lens(answer.fenced()),
+            LspUpdate::LinkColor { answer, .. } => self.adopt_link_color(answer.fenced()),
             LspUpdate::Editing { answer, .. } => self.settle_retired_editing(answer),
             LspUpdate::Hierarchy {
                 request, direction, ..

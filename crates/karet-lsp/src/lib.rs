@@ -52,7 +52,8 @@
 //! symbols, document highlights, inlay hints, inline completions (LSP 3.18
 //! `textDocument/inlineCompletion`), semantic tokens (whole and delta,
 //! see [`LspClient::semantic_tokens`]), rename, signature help, code actions (with
-//! `codeAction/resolve` and `workspace/executeCommand`), document/range
+//! `codeAction/resolve` and `workspace/executeCommand`), document links (with
+//! `documentLink/resolve`), document colours, document/range
 //! formatting, on-type formatting, linked editing ranges and will-save edits
 //! are implemented as typed, non-panicking operations.
 
@@ -100,6 +101,7 @@ mod highlight;
 mod inlay;
 mod inline_completion;
 mod launch;
+mod link_color;
 mod navigation;
 mod pull;
 mod selection;
