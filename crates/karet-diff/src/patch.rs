@@ -51,12 +51,28 @@ fn status_metadata(file: &FileDiff, old_path: &str, new_path: &str) -> String {
     }
 }
 
+/// The mode git assumes for a file whose mode nobody recorded: a regular,
+/// non-executable file.
+const DEFAULT_FILE_MODE: u32 = 0o100644;
+
 /// The mode lines for `file`: `new file mode` / `deleted file mode` for a one-sided
 /// change, or an `old mode`/`new mode` pair when the mode itself changed.
+///
+/// A one-sided change always gets its line, falling back to
+/// [`DEFAULT_FILE_MODE`] when the mode is unknown: without it git reads the
+/// `/dev/null` side as a path, so a deletion renames the file to `dev/null` and
+/// a creation fails for want of a `dev/null` in the index.
 fn mode_metadata(file: &FileDiff) -> String {
     match (file.status.clone(), file.old_mode, file.new_mode) {
-        (FileStatus::Added, _, Some(new)) => format!("new file mode {new:06o}\n"),
-        (FileStatus::Removed, Some(old), _) => format!("deleted file mode {old:06o}\n"),
+        (FileStatus::Added, _, new) => {
+            format!("new file mode {:06o}\n", new.unwrap_or(DEFAULT_FILE_MODE))
+        },
+        (FileStatus::Removed, old, _) => {
+            format!(
+                "deleted file mode {:06o}\n",
+                old.unwrap_or(DEFAULT_FILE_MODE)
+            )
+        },
         _ if file.mode_changed() => {
             // `mode_changed` is only true when both sides are known.
             let old = file.old_mode.unwrap_or_default();
@@ -208,6 +224,9 @@ mod tests {
         let patch = format_hunk_patch(&file, &file.hunks[0]);
         assert!(patch.contains("--- /dev/null\n"));
         assert!(patch.contains("+++ b/new.rs\n"));
+        // The engine knows no mode, so the default stands in: without the line
+        // git reads `/dev/null` as a path.
+        assert!(patch.starts_with("diff --git a/new.rs b/new.rs\nnew file mode 100644\n"));
     }
 
     #[test]
@@ -224,6 +243,7 @@ mod tests {
         let patch = format_hunk_patch(&file, &file.hunks[0]);
         assert!(patch.contains("--- a/old.rs\n"));
         assert!(patch.contains("+++ /dev/null\n"));
+        assert!(patch.starts_with("diff --git a/old.rs b/old.rs\ndeleted file mode 100644\n"));
     }
 
     /// A one-hunk `old();` → `new();` file, for exercising header emission.
@@ -658,66 +678,133 @@ mod tests {
         }
     }
 
-    /// What `format_hunk_patch` promises — "suitable for `git apply --cached`" —
-    /// checked against git itself for in-place modifications. Skipped where no
-    /// `git` is on `PATH`.
-    ///
-    /// Added and removed files are left out: without a known mode the patch
-    /// carries no `new file mode` / `deleted file mode` line, and git reads the
-    /// `/dev/null` side as a path, which is a defect tracked on its own.
-    #[test]
-    fn git_accepts_every_generated_modification_patch() -> Result<(), String> {
-        if std::process::Command::new("git")
+    /// Whether `git` can be run here; the git-backed tests skip without it.
+    fn has_git() -> bool {
+        let found = std::process::Command::new("git")
             .arg("--version")
             .output()
-            .is_err()
-        {
+            .is_ok();
+        if !found {
             eprintln!("skipped: no git on PATH");
+        }
+        found
+    }
+
+    /// A fresh repository whose index holds `f.txt` with `old`, or nothing at
+    /// all when `old` is `None`.
+    fn repo_with(old: Option<&str>) -> Result<tempfile::TempDir, String> {
+        let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+        git(dir.path(), &["init", "-q"], "")?;
+        if let Some(old) = old {
+            std::fs::write(dir.path().join("f.txt"), old).map_err(|e| e.to_string())?;
+            git(dir.path(), &["add", "f.txt"], "")?;
+        }
+        Ok(dir)
+    }
+
+    /// Apply `patch` to the index of `dir` with the flags
+    /// `Repository::apply_index_patch` passes — `--check` only when `check` —
+    /// and return what the index then holds for `f.txt` (`None`: no entry).
+    fn apply_to_index(
+        dir: &std::path::Path,
+        patch: &str,
+        zero_context: bool,
+        check: bool,
+    ) -> Result<Option<String>, String> {
+        let mut apply = vec!["apply", "--cached", "--whitespace=nowarn"];
+        // git refuses a context-free hunk unless told it is one, since nothing
+        // anchors it.
+        if zero_context {
+            apply.push("--unidiff-zero");
+        }
+        if check {
+            apply.push("--check");
+        }
+        apply.push("-");
+        git(dir, &apply, patch).map_err(|e| format!("{e}\n{patch}"))?;
+        let listed = git(dir, &["ls-files", "--", "f.txt"], "")?;
+        if listed.is_empty() {
+            return Ok(None);
+        }
+        let staged = git(dir, &["show", ":f.txt"], "")?;
+        Ok(Some(String::from_utf8_lossy(&staged).into_owned()))
+    }
+
+    /// What `format_hunk_patch` promises — "suitable for `git apply --cached`" —
+    /// checked against git itself for modifications, creations and deletions.
+    /// Skipped where no `git` is on `PATH`.
+    #[test]
+    fn git_accepts_every_generated_patch() -> Result<(), String> {
+        if !has_git() {
             return Ok(());
         }
-        // `[crlf, no_newline, ctx 0, multi-hunk]` among the cases this runs.
-        let mut seen = [false; 4];
+        // `[crlf, no_newline, ctx 0, multi-hunk, added, removed]` among the cases
+        // this runs.
+        let mut seen = [false; 6];
         for seed in 0..80 {
             let (old, new, context) = gen_case(seed);
-            let file = diff_text(&old, &new, &opts(context));
-            if file.status != FileStatus::Modified || file.hunks.is_empty() {
-                continue;
-            }
-            let lines = || file.hunks.iter().flat_map(|h| &h.lines);
-            seen[0] |= lines().any(|l| l.crlf);
-            seen[1] |= lines().any(|l| l.no_newline);
-            seen[2] |= context == 0;
-            seen[3] |= file.hunks.len() > 1;
+            // Each seed's change, plus the creation of its new text and the
+            // deletion of its old one.
+            let cases = [(old.as_str(), new.as_str()), ("", &new), (&old, "")];
+            for (old, new) in cases {
+                let file = diff_text(old, new, &opts(context));
+                if file.hunks.is_empty() {
+                    continue;
+                }
+                let lines = || file.hunks.iter().flat_map(|h| &h.lines);
+                seen[0] |= lines().any(|l| l.crlf);
+                seen[1] |= lines().any(|l| l.no_newline);
+                seen[2] |= context == 0;
+                seen[3] |= file.hunks.len() > 1;
+                seen[4] |= file.status == FileStatus::Added;
+                seen[5] |= file.status == FileStatus::Removed;
 
-            let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
-            let dir = dir.path();
-            git(dir, &["init", "-q"], "")?;
-            std::fs::write(dir.join("f.txt"), &old).map_err(|e| e.to_string())?;
-            git(dir, &["add", "f.txt"], "")?;
-            // The flags `Repository::apply_index_patch` passes. git refuses a
-            // context-free hunk unless told it is one, since nothing anchors it.
-            let mut apply = vec!["apply", "--cached", "--whitespace=nowarn"];
-            if context == 0 {
-                apply.push("--unidiff-zero");
+                // An added file has no old side in the index at all.
+                let before = (file.status != FileStatus::Added).then_some(old);
+                let repo = repo_with(before)?;
+                let dir = repo.path();
+                for hunk in &file.hunks {
+                    let patch = format_hunk_patch(&file, hunk);
+                    apply_to_index(dir, &patch, context == 0, true)
+                        .map_err(|e| format!("seed {seed}: {e}"))?;
+                }
+                let mut staging = Staging::new();
+                (0..file.hunks.len()).for_each(|i| staging.stage(i));
+                let patch = staging.staged_patch(&file);
+                let staged = apply_to_index(dir, &patch, context == 0, false)
+                    .map_err(|e| format!("seed {seed}: {e}"))?;
+                // A removal leaves no entry; anything else leaves the new text,
+                // byte for byte.
+                let expected = (file.status != FileStatus::Removed).then_some(new);
+                assert_eq!(
+                    staged.as_deref(),
+                    expected,
+                    "seed {seed}: what the index holds\n{patch}"
+                );
             }
-            let check = [apply.as_slice(), &["--check", "-"]].concat();
-            for hunk in &file.hunks {
-                let patch = format_hunk_patch(&file, hunk);
-                git(dir, &check, &patch).map_err(|e| format!("seed {seed}: {e}\n{patch}"))?;
-            }
-            let mut staging = Staging::new();
-            (0..file.hunks.len()).for_each(|i| staging.stage(i));
-            let patch = staging.staged_patch(&file);
-            apply.push("-");
-            git(dir, &apply, &patch).map_err(|e| format!("seed {seed}: {e}\n{patch}"))?;
-            let staged = git(dir, &["show", ":f.txt"], "")?;
-            assert_eq!(
-                String::from_utf8_lossy(&staged),
-                new,
-                "seed {seed}: the index holds the new text byte for byte"
-            );
         }
-        assert_eq!(seen, [true; 4], "the seeds reach every shape");
+        assert_eq!(seen, [true; 6], "the seeds reach every shape");
+        Ok(())
+    }
+
+    /// A file that still exists but went empty, or an empty file that gained
+    /// lines, is a modification: with the status corrected to `Modified` (as a
+    /// producer that knows the file's history does), git keeps the path in the
+    /// index rather than deleting or re-creating it.
+    #[test]
+    fn git_keeps_an_emptied_or_filled_file_as_a_modification() -> Result<(), String> {
+        if !has_git() {
+            return Ok(());
+        }
+        for (old, new) in [("a\nb\n", ""), ("", "a\nb\n")] {
+            let mut file = diff_text(old, new, &opts(3));
+            file.status = FileStatus::Modified;
+            let repo = repo_with(Some(old))?;
+            let patch = format_hunk_patch(&file, &file.hunks[0]);
+            assert!(!patch.contains("file mode"), "{patch}");
+            let staged = apply_to_index(repo.path(), &patch, false, false)?;
+            assert_eq!(staged.as_deref(), Some(new), "{old:?} -> {new:?}");
+        }
         Ok(())
     }
 }
