@@ -755,9 +755,48 @@ impl Session {
             Command::SearchReplaceAll { query, replacement } => {
                 self.search_replace_all(id, query, replacement);
             },
-            // Language-server management commands are consumed by the
-            // `handle_lsp_command` pre-dispatch above and never reach this match.
-            _ => {},
+            // Consumed by the pre-dispatch functions above, so they never reach
+            // this match. Named rather than matched by a wildcard so that a new
+            // `Command` variant nobody routed fails to compile instead of being
+            // silently dropped. The notebook-kernel commands land here only in a
+            // build without the `notebook-kernel` feature, where there is no
+            // kernel to drive.
+            Command::DebugStart { .. }
+            | Command::DebugStop
+            | Command::DebugContinue
+            | Command::DebugStepOver
+            | Command::DebugStepIn
+            | Command::DebugStepOut
+            | Command::DebugPause
+            | Command::DebugSetBreakpoints { .. }
+            | Command::DebugStackTrace
+            | Command::DebugScopes { .. }
+            | Command::DebugVariables { .. }
+            | Command::DebugEvaluate { .. }
+            | Command::NotebookRunAll { .. }
+            | Command::NotebookRunCell { .. }
+            | Command::NotebookInterrupt
+            | Command::NotebookRestart
+            | Command::LanguageServerStatus
+            | Command::InstallLanguageServer { .. }
+            | Command::DeclineLanguageServer { .. }
+            | Command::UndeclineLanguageServer { .. }
+            | Command::CheckLanguageServerUpdates { .. }
+            | Command::ApplyLanguageServerPlan { .. }
+            | Command::UninstallLanguageServer { .. }
+            | Command::Format(_)
+            | Command::SelectionRanges { .. }
+            | Command::DocumentHighlights { .. }
+            | Command::PrepareHierarchy { .. }
+            | Command::ExpandHierarchy { .. }
+            | Command::LinkedEditingRanges { .. }
+            | Command::FormatOnType { .. }
+            | Command::CodeLenses { .. }
+            | Command::RunCodeLens { .. }
+            | Command::RestartLanguageServer { .. }
+            | Command::CancelLanguageServerWork { .. }
+            | Command::AnswerLanguageServerMessage { .. }
+            | Command::LanguageServerLog { .. } => {},
         }
     }
 
