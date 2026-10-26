@@ -78,6 +78,7 @@ impl App {
             saving_close: None,
             pending_swaps: None,
             pending: Vec::new(),
+            vi: vi::ViState::default(),
             search: SearchPanel::default(),
             spelling: SpellingPanel::default(),
             todos: TodosPanel::default(),
@@ -515,6 +516,14 @@ impl App {
     /// Whether the active frame should suppress the editor's cell caret because the
     /// app will draw the Kitty graphics caret after ratatui flushes the frame.
     pub(crate) fn graphical_cursor_enabled(&self) -> bool {
+        // A modal preset's Normal mode puts the cursor *on* a character, which
+        // the cell caret's block shows and the graphical bar would not.
+        if matches!(
+            self.vi_editing(),
+            crate::keymap::Editing::VimNormal | crate::keymap::Editing::HelixNormal
+        ) {
+            return false;
+        }
         let configured =
             self.tabs
                 .get(self.active)

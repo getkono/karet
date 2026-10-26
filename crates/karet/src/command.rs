@@ -285,6 +285,8 @@ pub enum Command {
     ShrinkSelection,
     /// Collapse multiple carets to the primary; with one caret, leave the editor.
     CollapseCarets,
+    /// Leave Insert mode for Normal mode (`editor.keymap` `"vim"`/`"helix"`).
+    EnterNormalMode,
     /// Scroll the active tab up one line.
     ScrollUp,
     /// Scroll the active tab down one line.
@@ -952,6 +954,7 @@ impl Command {
             Self::ExpandSelection => "Expand Selection",
             Self::ShrinkSelection => "Shrink Selection",
             Self::CollapseCarets => "Collapse Cursors",
+            Self::EnterNormalMode => "Enter Normal Mode",
             Self::ScrollUp => "Scroll Up",
             Self::ScrollDown => "Scroll Down",
             Self::PageUp => "Scroll Page Up",

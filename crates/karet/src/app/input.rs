@@ -93,6 +93,7 @@ impl App {
     /// [input context](Self::input_context) and dispatch, or fall through to the
     /// active modal's text input when nothing is bound.
     pub(super) fn handle_key(&mut self, key: KeyEvent) {
+        self.vi_record(key);
         self.begin_inlay_key();
         self.handle_key_inner(key);
         self.end_inlay_key();
@@ -141,6 +142,8 @@ impl App {
             && key.modifiers.is_empty()
             && !self.notifications.is_empty()
             && self.input_context().modal.is_none()
+            // In a modal preset's Insert mode, Esc is the way back to Normal.
+            && self.vi_editing() != crate::keymap::Editing::Insert
         {
             self.notifications.dismiss_latest();
             return;
@@ -155,6 +158,9 @@ impl App {
                 Resolved::Command(command) => self.dispatch(command),
                 Resolved::Pending | Resolved::None => self.modal_text(modal, key),
             },
+            // A modal preset (`editor.keymap`) takes the editor's keys first:
+            // Normal mode's commands and grammar, and Insert mode's `Esc`.
+            None if self.vi_key(key) => {},
             None => {
                 // An open hover popup is dismissed by Esc before anything else
                 // sees the key; every other key falls through (and most will
@@ -250,6 +256,11 @@ impl App {
         Context {
             modal,
             target: self.focus_target(),
+            editing: if modal.is_none() {
+                self.vi_editing()
+            } else {
+                crate::keymap::Editing::Modeless
+            },
         }
     }
 
@@ -267,7 +278,7 @@ impl App {
     /// input; a broken sequence is dropped.
     pub(super) fn resolve_key(&mut self, key: KeyEvent) {
         self.pending.push(KeyChord::from_event(key));
-        let ctx = Context::focus(self.focus_target());
+        let ctx = Context::focus(self.focus_target()).with_editing(self.vi_editing());
         match keymap::resolve(ctx, &self.pending) {
             Resolved::Command(command) => {
                 self.pending.clear();

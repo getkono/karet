@@ -68,6 +68,7 @@ pub(crate) mod theme_picker;
 mod todos;
 mod unsupported;
 mod util;
+pub(crate) mod vi;
 
 #[cfg(test)]
 pub(crate) mod tests;
@@ -468,6 +469,9 @@ pub struct App {
     pub(crate) pending_swaps: Option<Vec<SwapInfo>>,
     /// Chords typed so far toward a multi-key binding (empty when not mid-sequence).
     pub(crate) pending: Vec<KeyChord>,
+    /// Modal editing (`editor.keymap` `"vim"`/`"helix"`): the mode, registers,
+    /// macros and the command being typed.
+    pub(crate) vi: vi::ViState,
     /// The workspace-search panel state.
     pub(crate) search: SearchPanel,
     /// The workspace-spelling panel state.

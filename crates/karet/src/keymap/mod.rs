@@ -12,14 +12,19 @@
 //! The table in effect is a [`Keymap`]: the compiled-in [`BINDINGS`] with the
 //! user's and the project's `keymap.jsonc` files ([`user`]) parsed into the same
 //! [`Binding`] shape and layered over them. The merged keymap is [installed](install)
-//! at startup and again on every live reload, and every query here reads it. A
-//! modal-editing mode (vi Normal/Insert) would just be another [`Layer`] in the
-//! [`active_layers`] stack — no separate engine required.
+//! at startup and again on every live reload, and every query here reads it.
+//!
+//! Modal editing (`editor.keymap` `"vim"`/`"helix"`) is a layer like any other:
+//! the mode's layer stacks over the editor's ([`Editing`]), so its bindings are
+//! rebindable in a keymap file. What no fixed binding can express — counts,
+//! operators over motions, registers, macros — is the grammar in [`vi`], which
+//! takes the keys the mode's layer leaves unbound ([`resolve_normal`]).
 
 mod bindings;
 mod chord;
 mod layer;
 pub mod user;
+pub(crate) mod vi;
 
 #[cfg(test)]
 mod tests;
@@ -36,6 +41,7 @@ pub use chord::KeyChord;
 use chord::chord;
 use crossterm::event::KeyCode;
 pub use layer::Context;
+pub use layer::Editing;
 pub use layer::EditorTab;
 pub use layer::Focus;
 pub use layer::FocusTarget;
@@ -139,6 +145,8 @@ use Layer::ExplorerEdit;
 use Layer::Find;
 use Layer::Github;
 use Layer::Global;
+use Layer::HelixNormal;
+use Layer::Insert;
 use Layer::LanguageServers;
 use Layer::Outline;
 use Layer::Overlay;
@@ -154,6 +162,7 @@ use Layer::SearchList;
 use Layer::Sidebar;
 use Layer::SourceControl;
 use Layer::Terminal;
+use Layer::VimNormal;
 
 /// A complete, merged binding table: the compiled-in defaults with any user and
 /// project keymap files applied over them (see [`user`]). Every query the keymap
@@ -204,6 +213,21 @@ pub fn resolve(ctx: Context, pending: &[KeyChord]) -> Resolved {
     active().resolve(ctx, pending)
 }
 
+/// Resolve a key sequence typed in a modal preset's Normal mode against the
+/// mode's own layer alone (the first of `ctx`'s stack), which takes precedence
+/// over the modal grammar (see [`Keymap::resolve_normal`]).
+#[must_use]
+pub fn resolve_normal(ctx: Context, pending: &[KeyChord]) -> Resolved {
+    active().resolve_normal(ctx, pending)
+}
+
+/// Resolve a key sequence the modal grammar did not take against the rest of
+/// `ctx`'s stack (see [`Keymap::resolve_below_normal`]).
+#[must_use]
+pub fn resolve_below_normal(ctx: Context, pending: &[KeyChord]) -> Resolved {
+    active().resolve_below_normal(ctx, pending)
+}
+
 /// The display hint (e.g. `"Ctrl+W"`, `"Ctrl+K Ctrl+W"`) for `command`'s first
 /// binding, rendered in `style`, if the command is bound.
 #[must_use]
@@ -250,9 +274,47 @@ impl Keymap {
     /// failing that, report [`Resolved::Pending`] if `pending` is a prefix of some
     /// binding.
     fn resolve_in(&self, layers: &[Layer], pending: &[KeyChord]) -> Resolved {
+        self.resolve_filtered(layers, pending, false)
+    }
+
+    /// Resolve in the modal Normal layer of `ctx`'s stack alone: the first
+    /// layer, when `ctx` is a modal preset's Normal mode. Its bindings are the
+    /// preset's commands and the user's rebindings, which outrank the grammar.
+    #[must_use]
+    pub fn resolve_normal(&self, ctx: Context, pending: &[KeyChord]) -> Resolved {
+        match active_layers(ctx) {
+            [first @ (VimNormal | HelixNormal), ..] => self.resolve_in(&[*first], pending),
+            _ => Resolved::None,
+        }
+    }
+
+    /// Resolve against the layers under the modal Normal layer, for a key
+    /// sequence the grammar did not take. Only bindings whose first chord is
+    /// modified (`Ctrl`, `Alt`) or a function key count: a plain key in Normal
+    /// mode is the grammar's or nothing, so the editor's Enter, Tab or
+    /// Backspace can never edit there.
+    #[must_use]
+    pub fn resolve_below_normal(&self, ctx: Context, pending: &[KeyChord]) -> Resolved {
+        match active_layers(ctx) {
+            [VimNormal | HelixNormal, rest @ ..] => self.resolve_filtered(rest, pending, true),
+            _ => Resolved::None,
+        }
+    }
+
+    /// [`Self::resolve_in`], optionally skipping bindings that start with a
+    /// plain chord.
+    fn resolve_filtered(
+        &self,
+        layers: &[Layer],
+        pending: &[KeyChord],
+        modified_only: bool,
+    ) -> Resolved {
         let mut prefix = false;
         for &layer in layers {
             for bind in self.in_layer(layer) {
+                if modified_only && bind.chord.is_plain() {
+                    continue;
+                }
                 match bind.match_seq(pending) {
                     SeqMatch::Full => return Resolved::Command(bind.command),
                     SeqMatch::Prefix => prefix = true,

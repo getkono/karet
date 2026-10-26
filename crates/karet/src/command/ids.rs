@@ -187,6 +187,7 @@ command_ids! {
     ExpandSelection => "expandSelection",
     ShrinkSelection => "shrinkSelection",
     CollapseCarets => "collapseCarets",
+    EnterNormalMode => "enterNormalMode",
     ScrollUp => "scrollUp",
     ScrollDown => "scrollDown",
     PageUp => "pageUp",

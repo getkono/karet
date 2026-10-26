@@ -326,6 +326,7 @@ impl Command {
             | Self::AddCursorAbove
             | Self::AddCursorBelow
             | Self::CollapseCarets
+            | Self::EnterNormalMode
             | Self::ScrollUp
             | Self::ScrollDown
             | Self::PageUp
