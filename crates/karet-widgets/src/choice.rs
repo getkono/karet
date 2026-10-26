@@ -96,15 +96,20 @@ impl<A> Choice<A> {
 /// Navigation counts only activatable rows and never wraps: overshooting lands
 /// on the last enabled row in that direction, so holding a key cannot teleport
 /// the cursor to the opposite end of a permission prompt.
+///
+/// The fields are private so the one rule every selection path shares — the
+/// cursor rests on an activatable row whenever one exists — is enforced here:
+/// keyboard moves go through [`select_by`](Self::select_by), pointer picks
+/// through [`select_row`](Self::select_row).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ChoiceList<A> {
     /// The rows, in display order.
-    pub entries: Vec<Choice<A>>,
+    entries: Vec<Choice<A>>,
     /// The selected row index.
-    pub selected: usize,
+    selected: usize,
     /// The activatable row under the pointer, painted with a secondary accent so
     /// the mouse gets the same live feedback the keyboard cursor has.
-    pub hover: Option<usize>,
+    hover: Option<usize>,
     /// The entry painted on the first row of the rect the last
     /// [`render`](Self::render) drew into.
     ///
@@ -134,6 +139,42 @@ impl<A> ChoiceList<A> {
     #[must_use]
     pub fn first_visible(&self) -> usize {
         self.first_visible
+    }
+
+    /// The rows, in display order.
+    #[must_use]
+    pub fn entries(&self) -> &[Choice<A>] {
+        &self.entries
+    }
+
+    /// Consume the list, yielding its rows in display order.
+    #[must_use]
+    pub fn into_entries(self) -> Vec<Choice<A>> {
+        self.entries
+    }
+
+    /// The selected row index.
+    #[must_use]
+    pub fn selected(&self) -> usize {
+        self.selected
+    }
+
+    /// The activatable row under the pointer, if any.
+    #[must_use]
+    pub fn hover(&self) -> Option<usize> {
+        self.hover
+    }
+
+    /// Put the cursor on `row` when it exists and can be activated, reporting
+    /// whether it moved there. A disabled or out-of-range `row` leaves the
+    /// selection where it was: a click must not be the way around the rule
+    /// keyboard navigation keeps.
+    pub fn select_row(&mut self, row: usize) -> bool {
+        let activatable = self.entries.get(row).is_some_and(|entry| entry.enabled);
+        if activatable {
+            self.selected = row;
+        }
+        activatable
     }
 
     /// The number of rows.
@@ -346,6 +387,30 @@ mod tests {
         assert_eq!(l.selected, 0, "and never wraps around");
         l.select_by(0);
         assert_eq!(l.selected, 0, "a zero step is a no-op");
+    }
+
+    #[test]
+    fn a_pointer_pick_lands_only_on_an_activatable_row() {
+        let mut l = list(&[true, false, true]);
+        assert!(l.select_row(2), "an enabled row takes the cursor");
+        assert_eq!(l.selected(), 2);
+        assert!(!l.select_row(1), "a disabled row is refused");
+        assert_eq!(l.selected(), 2, "and the cursor stays put");
+        assert!(!l.select_row(9), "so is a row that does not exist");
+        assert_eq!(l.selected(), 2);
+        assert!(!ChoiceList::<u8>::new(Vec::new()).select_row(0));
+    }
+
+    #[test]
+    fn the_rows_are_readable_and_can_be_taken_back() {
+        let mut l = list(&[true, false]);
+        assert_eq!(l.entries().len(), 2);
+        assert!(!l.entries().get(1).is_some_and(|e| e.enabled));
+        assert_eq!(l.hover(), None);
+        l.set_hover_row(Some(0));
+        assert_eq!(l.hover(), Some(0));
+        let actions: Vec<u8> = l.into_entries().into_iter().map(|e| e.action).collect();
+        assert_eq!(actions, vec![0, 1], "in display order");
     }
 
     #[test]

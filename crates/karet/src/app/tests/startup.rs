@@ -82,7 +82,7 @@ fn the_install_prompt_offers_a_permanent_refusal() {
         .as_ref()
         .map(|d| {
             d.choices
-                .entries
+                .entries()
                 .iter()
                 .map(|entry| entry.label.clone().unwrap_or_default())
                 .collect()

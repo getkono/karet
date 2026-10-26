@@ -174,7 +174,7 @@ pub(super) fn draw_context_menu(f: &mut Frame, app: &mut App, theme: &Theme, are
     // Resolve the app-specific row texts (default command labels + key hints);
     // the shared widget owns placement, clamping, and painting.
     let hints: Vec<Option<String>> = menu
-        .entries
+        .entries()
         .iter()
         .map(|entry| {
             entry
@@ -183,7 +183,7 @@ pub(super) fn draw_context_menu(f: &mut Frame, app: &mut App, theme: &Theme, are
         })
         .collect();
     let labels: Vec<String> = menu
-        .entries
+        .entries()
         .iter()
         .map(|entry| {
             entry.label.clone().unwrap_or_else(|| {

@@ -51,7 +51,7 @@ const ASCII_FRAMES: [char; 4] = ['|', '/', '-', '\\'];
 /// ```
 /// use std::time::Duration;
 ///
-/// use karet_widgets::IconStyle;
+/// use karet_filetype::IconStyle;
 /// use karet_widgets::Spinner;
 ///
 /// let spinner = Spinner::new(IconStyle::Ascii);

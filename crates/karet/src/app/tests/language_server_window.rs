@@ -145,7 +145,7 @@ fn a_question_offers_its_actions_after_a_dismiss_that_backing_out_takes() {
         .map(|dialog| {
             dialog
                 .choices
-                .entries
+                .entries()
                 .iter()
                 .filter_map(|choice| choice.label.clone())
                 .collect()

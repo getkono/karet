@@ -472,13 +472,13 @@ fn explorer_context_menu_accepts_the_selected_file_command() {
         return;
     };
     let Some(duplicate) = menu
-        .entries
+        .entries()
         .iter()
         .position(|entry| entry.command() == Some(Command::ExplorerDuplicate))
     else {
         return;
     };
-    menu.selected = duplicate;
+    assert!(menu.select_row(duplicate));
     app.accept_context_menu();
 
     assert_eq!(
@@ -531,7 +531,7 @@ fn explorer_right_click_selects_the_row_and_offers_path_commands() {
         return;
     };
     let has = |command| {
-        menu.entries
+        menu.entries()
             .iter()
             .any(|entry| entry.command() == Some(command))
     };
@@ -558,7 +558,7 @@ fn explorer_keyboard_context_menu_uses_blank_items_when_empty() {
         return;
     };
     let has = |cmd: Command| {
-        menu.entries
+        menu.entries()
             .iter()
             .any(|entry| entry.command() == Some(cmd))
     };
@@ -567,7 +567,7 @@ fn explorer_keyboard_context_menu_uses_blank_items_when_empty() {
     assert!(!has(Command::SidebarActivate));
     assert!(!has(Command::ExplorerRename));
     assert!(
-        menu.entries.iter().all(|entry| entry.enabled),
+        menu.entries().iter().all(|entry| entry.enabled),
         "explorer menu entries stay enabled"
     );
     let _ = std::fs::remove_dir_all(&dir);
@@ -587,7 +587,7 @@ fn context_menu_opens_on_the_first_enabled_entry_and_skips_disabled_on_nav() {
             ContextMenuEntry::enabled(Command::ExplorerRefresh),
         ],
     ));
-    let selected = |app: &App| app.context_menu.as_ref().map(|m| m.selected);
+    let selected = |app: &App| app.context_menu.as_ref().map(ContextMenu::selected);
     // The initial selection lands on the first enabled row, not row 0.
     assert_eq!(selected(&app), Some(1));
     // Down skips the disabled row 2 and lands on 3; another Down stays put.

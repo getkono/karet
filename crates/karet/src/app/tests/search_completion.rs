@@ -785,12 +785,15 @@ fn popup_keys_navigate_and_escape_dismisses() {
     );
     app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::empty()));
     assert_eq!(
-        app.completion.as_ref().map(|ui| ui.list.selected),
+        app.completion.as_ref().map(|ui| ui.list.selected()),
         Some(1),
         "Down moves the selection"
     );
     app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::empty()));
-    assert_eq!(app.completion.as_ref().map(|ui| ui.list.selected), Some(0));
+    assert_eq!(
+        app.completion.as_ref().map(|ui| ui.list.selected()),
+        Some(0)
+    );
     app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()));
     assert!(app.completion.is_none(), "Esc dismisses");
 }

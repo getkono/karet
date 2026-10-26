@@ -74,8 +74,8 @@ impl App {
             return;
         };
         let mut entries = spelling_entries(warning);
-        if let Some(mut menu) = self.context_menu.take() {
-            entries.append(&mut menu.entries);
+        if let Some(menu) = self.context_menu.take() {
+            entries.extend(menu.into_entries());
         }
         self.context_menu = Some(ContextMenu::new(x, y, entries));
     }

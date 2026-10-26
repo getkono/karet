@@ -73,7 +73,7 @@ impl App {
     fn selected_completion(&mut self) -> Option<(CompletionItem, LineCol, LineCol)> {
         let ranked = self.completion_ranked()?;
         let ui = self.completion.as_ref()?;
-        let selected = ui.list.selected.min(ranked.len().saturating_sub(1));
+        let selected = ui.list.selected().min(ranked.len().saturating_sub(1));
         let item = ranked.get(selected).and_then(|&i| ui.items.get(i))?;
         Some((item.clone(), ui.anchor, ui.requested_at))
     }
@@ -206,7 +206,7 @@ impl App {
         let Some(ui) = self.completion.as_mut() else {
             return;
         };
-        let selected = ui.list.selected.min(ranked.len().saturating_sub(1));
+        let selected = ui.list.selected().min(ranked.len().saturating_sub(1));
         let Some(&index) = ranked.get(selected) else {
             return;
         };
