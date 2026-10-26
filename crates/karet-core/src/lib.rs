@@ -25,7 +25,8 @@
 //! - Edits & cursors: [`TextEdit`], [`Change`], [`AppliedEdit`], [`EditCause`],
 //!   [`Selection`], [`CursorState`].
 //! - Highlighting & folds: [`HighlightSpan`], [`Highlights`], [`FoldRegion`],
-//!   [`FoldKind`], [`FoldRegions`].
+//!   [`FoldKind`], [`FoldRegions`], plus the span helpers [`shift_span`] and
+//!   [`merge_spans`].
 //! - Server capabilities: [`Capabilities`], [`ServerFeature`], [`PositionEncoding`].
 //! - Interop traits: [`SymbolProvider`], [`DiagnosticFormatter`].
 //! - Theme vocabulary: [`TokenId`], [`StandardToken`], [`ThemeRole`], [`Emphasis`].
@@ -88,6 +89,8 @@ pub use highlight::HighlightSpan;
 pub use highlight::Highlights;
 pub use highlight::SemanticBlock;
 pub use highlight::SemanticBlocks;
+pub use highlight::merge_spans;
+pub use highlight::shift_span;
 pub use model::CODE_LENS_SEPARATOR;
 pub use model::CodeAction;
 pub use model::CodeLens;

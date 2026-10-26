@@ -6,6 +6,7 @@ use std::collections::HashMap;
 
 use karet_core::BytePos;
 use karet_core::Span;
+use karet_core::shift_span;
 
 use crate::Edit;
 use crate::LanguageId;
@@ -15,39 +16,6 @@ use crate::SyntaxTree;
 /// than it saves (every edit shifts every range before it), so the whole
 /// document is reported changed instead.
 const MAX_TRACKED_EDITS: usize = 256;
-
-/// Map `span` from the text before `edit` into the text after it.
-///
-/// A span wholly before the edit is unchanged and one wholly after it moves by
-/// the edit's length change. An end that falls inside the replaced region moves
-/// to the end of the inserted text, and a start inside it to the edit's start, so
-/// a span overlapping the edit still covers what replaced the part it lost.
-#[must_use]
-pub fn shift_span(span: Span, edit: &Edit) -> Span {
-    let start = if span.start.0 <= edit.start_byte {
-        span.start.0
-    } else if span.start.0 >= edit.old_end_byte {
-        shifted(span.start.0, edit)
-    } else {
-        edit.start_byte
-    };
-    let end = if span.end.0 <= edit.start_byte {
-        span.end.0
-    } else if span.end.0 >= edit.old_end_byte {
-        shifted(span.end.0, edit)
-    } else {
-        edit.new_end_byte
-    };
-    Span {
-        start: BytePos(start),
-        end: BytePos(end.max(start)),
-    }
-}
-
-/// `byte`, at or after `edit`'s old end, moved by the edit's length change.
-fn shifted(byte: usize, edit: &Edit) -> usize {
-    (byte + edit.new_end_byte).saturating_sub(edit.old_end_byte)
-}
 
 /// The ranges `edits`, applied in order, wrote, in the frame after the last.
 ///
@@ -126,22 +94,6 @@ pub(crate) fn layer_changes(old: &[SyntaxTree], new: &[SyntaxTree], edited: &[Sp
     out
 }
 
-/// Sort `spans` and merge every pair that overlaps or touches.
-#[must_use]
-pub fn merge_spans(mut spans: Vec<Span>) -> Vec<Span> {
-    spans.sort_by_key(|s| (s.start.0, s.end.0));
-    let mut out: Vec<Span> = Vec::with_capacity(spans.len());
-    for span in spans {
-        match out.last_mut() {
-            Some(last) if span.start.0 <= last.end.0 => {
-                last.end = BytePos(last.end.0.max(span.end.0));
-            },
-            _ => out.push(span),
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -160,26 +112,6 @@ mod tests {
             new_end_byte: new_end,
             ..Edit::default()
         }
-    }
-
-    #[test]
-    fn a_span_before_an_edit_stays_and_one_after_moves() {
-        let insert = edit(10, 10, 13);
-        assert_eq!(shift_span(span(2, 10), &insert), span(2, 10));
-        assert_eq!(shift_span(span(10, 12), &insert), span(10, 15));
-        assert_eq!(shift_span(span(11, 12), &insert), span(14, 15));
-        let delete = edit(4, 8, 4);
-        assert_eq!(shift_span(span(9, 12), &delete), span(5, 8));
-    }
-
-    #[test]
-    fn a_span_overlapping_an_edit_covers_its_replacement() {
-        // Replace 4..8 with two bytes: 4..6.
-        let replace = edit(4, 8, 6);
-        assert_eq!(shift_span(span(2, 6), &replace), span(2, 6));
-        assert_eq!(shift_span(span(6, 10), &replace), span(4, 8));
-        assert_eq!(shift_span(span(5, 7), &replace), span(4, 6));
-        assert_eq!(shift_span(span(2, 10), &replace), span(2, 8));
     }
 
     #[test]
@@ -330,12 +262,5 @@ mod tests {
         assert!(found.iter().all(|c| touches(c.span, range)));
         assert!(found.len() < tree.captures(&query, text).len());
         Ok(())
-    }
-
-    #[test]
-    fn merge_spans_joins_overlapping_and_touching_spans() {
-        let merged = merge_spans(vec![span(8, 9), span(0, 2), span(2, 4), span(3, 6)]);
-        assert_eq!(merged, vec![span(0, 6), span(8, 9)]);
-        assert!(merge_spans(Vec::new()).is_empty());
     }
 }

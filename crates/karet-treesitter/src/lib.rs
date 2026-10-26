@@ -26,13 +26,15 @@ mod walk;
 #[cfg(test)]
 mod tests;
 
-pub use changes::merge_spans;
-pub use changes::shift_span;
 pub use detect::language_id_from_injection_name;
 pub use detect::language_id_from_path;
 pub use detect::language_name_from_path;
 pub use indent::IndentAnchor;
 pub use injection::InjectionRegion;
+// The span helpers live in `karet-core` beside `Highlights::translate`, which
+// shares their shifting rule; these keep their `karet_treesitter::` paths working.
+pub use karet_core::merge_spans;
+pub use karet_core::shift_span;
 pub use walk::WalkControl;
 pub use walk::WalkNode;
 
@@ -756,7 +758,7 @@ impl LayeredParser {
         let layers = changes::layer_changes(&old_children, &tree.children, &changed);
         changed.extend(tree.root.changed_ranges(&old_root));
         changed.extend(layers);
-        Ok(changes::merge_spans(changed))
+        Ok(merge_spans(changed))
     }
 
     /// Expand every injected layer beneath `root`, breadth-first.
