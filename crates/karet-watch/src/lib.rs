@@ -215,10 +215,8 @@ impl Drop for Watcher {
     }
 }
 
-/// The background worker: registers watches (off the caller's critical path), then
-/// loops converting and forwarding events until told to [`Watcher::drop`]. Owns the
-/// debouncer so it can register new watches (e.g. for a freshly created directory)
-/// from the same thread that reads its event stream.
+/// The borrowed channels, roots and stop flag [`worker_main`] runs over, bundled so
+/// its signature stays short.
 struct WorkerMainArgs<'a> {
     raw_rx: &'a std::sync::mpsc::Receiver<DebounceEventResult>,
     poll_rx: &'a std::sync::mpsc::Receiver<DebounceEventResult>,
@@ -229,6 +227,10 @@ struct WorkerMainArgs<'a> {
     stop: &'a AtomicBool,
 }
 
+/// The background worker: registers watches (off the caller's critical path), then
+/// loops converting and forwarding events until told to [`Watcher::drop`]. Owns the
+/// debouncer so it can register new watches (e.g. for a freshly created directory)
+/// from the same thread that reads its event stream.
 fn worker_main(mut native: NativeDebouncer, mut poll: PollDebouncer, args: WorkerMainArgs<'_>) {
     let WorkerMainArgs {
         raw_rx,
