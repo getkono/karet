@@ -179,8 +179,18 @@ pub(crate) fn scan(
     context: &ScanContext,
 ) -> Vec<ProblemEntry> {
     let mut found: Vec<ProblemEntry> = Vec::new();
+    // What makes two problems one: a hashed set, since a long build log can
+    // hold thousands and a live scan repeats twice a second.
+    let mut seen = std::collections::HashSet::new();
     let mut push = |entry: ProblemEntry| {
-        if !found.contains(&entry) {
+        let d = &entry.diagnostic;
+        let key = (
+            entry.path.clone(),
+            d.range.start,
+            d.message.clone(),
+            d.code.clone(),
+        );
+        if seen.insert(key) {
             found.push(entry);
         }
     };
