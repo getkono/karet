@@ -141,8 +141,9 @@ needed. The individual tasks
 (`mise run test`, `mise run lint`, `mise run format-check`, …) exist for quick
 iteration; CI additionally checks Conventional Commits (`convco`) on pull
 requests and runs `mise run feature-subsets`, which `cargo test`s the grammar,
-theme and blameline feature subsets `--all-features` never builds and `cargo
-check`s the headless engines without `view`. It stays out of `verify`, so the
+theme and blameline feature subsets `--all-features` never builds, `cargo
+check`s the headless engines without `view`, and runs `cargo clippy` on
+`karet-session`'s default and `--no-default-features` builds. It stays out of `verify`, so the
 pre-push hook does not run it.
 
 Format Rust with `mise run format`, never with an editor's format-on-save:
