@@ -170,6 +170,16 @@ pub enum Layer {
     ProblemsFilter,
     /// Active when a code or diff editor tab has focus.
     Editor,
+    /// Active over [`Editor`](Layer::Editor) in vim's Normal and Visual modes
+    /// (`editor.keymap: "vim"`). Its plain keys are the modal grammar's
+    /// commands; see [`super::vi`].
+    VimNormal,
+    /// Active over [`Editor`](Layer::Editor) in helix's Normal and Select
+    /// modes (`editor.keymap: "helix"`).
+    HelixNormal,
+    /// Active over [`Editor`](Layer::Editor) in a modal preset's Insert mode;
+    /// its `Esc` returns to Normal mode.
+    Insert,
     /// Active when a diff editor tab has focus.
     DiffEditor,
     /// Active when a read-only scrollable view (commit / compare / blame / graph /
@@ -227,6 +237,9 @@ impl Layer {
         Layer::Problems,
         Layer::ProblemsFilter,
         Layer::Editor,
+        Layer::VimNormal,
+        Layer::HelixNormal,
+        Layer::Insert,
         Layer::DiffEditor,
         Layer::Pager,
         Layer::CommitGraph,
@@ -262,6 +275,9 @@ impl Layer {
             Layer::Problems => "problems",
             Layer::ProblemsFilter => "problemsFilter",
             Layer::Editor => "editor",
+            Layer::VimNormal => "vimNormal",
+            Layer::HelixNormal => "helixNormal",
+            Layer::Insert => "insert",
             Layer::DiffEditor => "diffEditor",
             Layer::Pager => "pager",
             Layer::CommitGraph => "commitGraph",
@@ -320,10 +336,25 @@ const TARGETS: [FocusTarget; 17] = [
 /// would never wait for its second.
 #[must_use]
 pub(super) fn takes_sequences(layer: Layer) -> bool {
-    layer != Layer::Terminal
-        && TARGETS
+    layer != Layer::Terminal && focus_contexts().any(|ctx| active_layers(ctx).contains(&layer))
+}
+
+/// Every modal editing state a focused code editor can be in.
+const EDITING: [Editing; 4] = [
+    Editing::Modeless,
+    Editing::Insert,
+    Editing::VimNormal,
+    Editing::HelixNormal,
+];
+
+/// Every context without a modal: each focus target, and the code editor in
+/// each editing state.
+fn focus_contexts() -> impl Iterator<Item = Context> {
+    TARGETS.into_iter().map(Context::focus).chain(
+        EDITING
             .into_iter()
-            .any(|target| active_layers(Context::focus(target)).contains(&layer))
+            .map(|editing| Context::focus(FocusTarget::Editor).with_editing(editing)),
+    )
 }
 
 /// Every distinct layer stack [`active_layers`] can return — the contexts in which
@@ -350,8 +381,9 @@ pub(super) fn all_stacks() -> Vec<&'static [Layer]> {
         .map(|modal| Context {
             modal: Some(modal),
             target: FocusTarget::Editor,
+            editing: Editing::Modeless,
         })
-        .chain(TARGETS.into_iter().map(Context::focus));
+        .chain(focus_contexts());
     for ctx in contexts {
         let stack = active_layers(ctx);
         if !stacks.contains(&stack) {
@@ -392,6 +424,21 @@ pub enum Modal {
     ExplorerEdit,
 }
 
+/// The modal editing state of a focused code editor (`editor.keymap`), which
+/// decides the layer stacked over [`Layer::Editor`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Editing {
+    /// The default keymap: no modal layer.
+    #[default]
+    Modeless,
+    /// A modal preset's Insert mode.
+    Insert,
+    /// Vim's Normal or Visual mode.
+    VimNormal,
+    /// Helix's Normal or Select mode.
+    HelixNormal,
+}
+
 /// The full input context: an optional exclusive [`Modal`] over the focused pane.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Context {
@@ -399,6 +446,8 @@ pub struct Context {
     pub modal: Option<Modal>,
     /// The focused pane (still tracked so a modal can layer over it if wanted).
     pub target: FocusTarget,
+    /// The modal editing state, which matters only for a focused code editor.
+    pub editing: Editing,
 }
 
 impl Context {
@@ -408,7 +457,14 @@ impl Context {
         Self {
             modal: None,
             target,
+            editing: Editing::Modeless,
         }
+    }
+
+    /// This context with the code editor in `editing` state.
+    #[must_use]
+    pub fn with_editing(self, editing: Editing) -> Self {
+        Self { editing, ..self }
     }
 
     /// A modal context over `target` (test construction helper; production code
@@ -419,6 +475,7 @@ impl Context {
         Self {
             modal: Some(modal),
             target,
+            editing: Editing::Modeless,
         }
     }
 }
@@ -447,7 +504,16 @@ pub fn active_layers(ctx: Context) -> &'static [Layer] {
         Some(Modal::ProblemsFilter) => &[L::ProblemsFilter, L::Global],
         None => match ctx.target {
             FocusTarget::Outline => &[L::Outline, L::Global],
-            FocusTarget::Editor => &[L::Editor, L::Global],
+            // A modal preset stacks its mode's layer over the editor's: in
+            // Normal mode the resolver lets only that layer's plain keys
+            // through, so the editor's Enter or Backspace never edits there
+            // (see `super::resolve_normal`).
+            FocusTarget::Editor => match ctx.editing {
+                Editing::Modeless => &[L::Editor, L::Global],
+                Editing::Insert => &[L::Insert, L::Editor, L::Global],
+                Editing::VimNormal => &[L::VimNormal, L::Editor, L::Global],
+                Editing::HelixNormal => &[L::HelixNormal, L::Editor, L::Global],
+            },
             // A diff is read-only: its own keys (layout toggle, next/prev change) stack
             // over the shared Pager scroll keys, never the editor's editing/motion keys.
             FocusTarget::DiffEditor => &[L::DiffEditor, L::Pager, L::Global],
@@ -510,6 +576,39 @@ mod tests {
             active_layers(Context::focus(FocusTarget::Editor)),
             &[Layer::Editor, Layer::Global]
         );
+    }
+
+    #[test]
+    fn a_modal_preset_stacks_its_mode_layer_over_the_editor() {
+        let editor = Context::focus(FocusTarget::Editor);
+        assert_eq!(
+            active_layers(editor.with_editing(Editing::VimNormal)),
+            &[Layer::VimNormal, Layer::Editor, Layer::Global]
+        );
+        assert_eq!(
+            active_layers(editor.with_editing(Editing::HelixNormal)),
+            &[Layer::HelixNormal, Layer::Editor, Layer::Global]
+        );
+        assert_eq!(
+            active_layers(editor.with_editing(Editing::Insert)),
+            &[Layer::Insert, Layer::Editor, Layer::Global]
+        );
+        // The editing state means nothing away from a code editor, and a
+        // modal (the palette over a Normal-mode editor) still shadows it.
+        assert_eq!(
+            active_layers(Context::focus(FocusTarget::Pager).with_editing(Editing::VimNormal)),
+            &[Layer::Pager, Layer::Global]
+        );
+        assert_eq!(
+            active_layers(
+                Context::modal(Modal::Overlay, FocusTarget::Editor)
+                    .with_editing(Editing::VimNormal)
+            ),
+            &[Layer::Overlay]
+        );
+        // The Normal layers resolve sequences (`g d`).
+        assert!(takes_sequences(Layer::VimNormal));
+        assert!(takes_sequences(Layer::HelixNormal));
     }
 
     #[test]

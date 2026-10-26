@@ -120,10 +120,18 @@ fn chord_sequences_resolve_through_a_pending_prefix() {
 fn no_terminal_binding_is_a_prefix_of_another() {
     // The resolver commits on the first full match, so a binding must never also
     // be a strict prefix of a longer one (which it would shadow). This invariant
-    // is what lets resolution stay deterministic without a timeout.
+    // is what lets resolution stay deterministic without a timeout. Two
+    // bindings can only shadow each other where some stack holds both layers
+    // (helix's `Space f` and Source Control's `Space` never meet).
+    let stacks = crate::keymap::layer::all_stacks();
+    let meet = |a: &Binding, b: &Binding| {
+        stacks
+            .iter()
+            .any(|stack| stack.contains(&a.layer) && stack.contains(&b.layer))
+    };
     for a in BINDINGS {
         for b in BINDINGS {
-            if a.seq_len() >= b.seq_len() {
+            if a.seq_len() >= b.seq_len() || !meet(a, b) {
                 continue;
             }
             let a_prefixes_b = (0..a.seq_len()).all(|i| a.chord_at(i) == b.chord_at(i));

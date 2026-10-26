@@ -532,6 +532,11 @@
           "type": "boolean",
           "default": true
         },
+        "keymap": {
+          "description": "The editing model of a code tab: `\"default\"` types at the caret, as in\nVS Code; `\"vim\"` and `\"helix\"` add a modal Normal/Insert layer with\nthat editor's motions, operators, text objects, registers and macros.",
+          "$ref": "#/$defs/KeymapPreset",
+          "default": "default"
+        },
         "lineNumbers": {
           "description": "How the line-number gutter is numbered.",
           "$ref": "#/$defs/LineNumbers",
@@ -1134,6 +1139,26 @@
         }
       },
       "additionalProperties": false
+    },
+    "KeymapPreset": {
+      "description": "`editor.keymap` — which editing model a code tab uses.",
+      "oneOf": [
+        {
+          "description": "Modeless editing: a printable key types at the caret.",
+          "type": "string",
+          "const": "default"
+        },
+        {
+          "description": "Vim's modal editing: Normal, Insert and Visual modes, operators over\nmotions and text objects, registers, macros and `.` repeat.",
+          "type": "string",
+          "const": "vim"
+        },
+        {
+          "description": "Helix's selection-first modal editing: a motion selects, then an\naction applies to the selection.",
+          "type": "string",
+          "const": "helix"
+        }
+      ]
     },
     "Latex": {
       "description": "`latex.*` — external LaTeX compilation and preview behavior.",

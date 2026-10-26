@@ -89,4 +89,5 @@ mod theme_picker;
 mod todos;
 mod unsupported;
 mod vertical_motion;
+mod vi;
 mod view;

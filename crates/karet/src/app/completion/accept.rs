@@ -123,6 +123,8 @@ impl App {
             .as_ref()
             .map_or_else(|| item.insert_text.clone(), |edit| edit.new_text.clone());
         let inserted = text.clone();
+        let count = |s: &str| u32::try_from(s.chars().count()).unwrap_or(u32::MAX);
+        let (back, ahead) = (count(&before), count(&after));
         let Some(multi) = self.compose_edit(move |caret, sel, buf, base| {
             let range = caret_range((&before, &after), caret, sel, buf);
             Some(editing::Edit {
@@ -142,6 +144,9 @@ impl App {
         let multi = crate::completion::with_additional_edits(multi, &item.additional_edits);
         let snippet = self.snippet_for(item, &inserted, &applied, &multi);
         self.submit_with_snippet(multi, snippet);
+        // Modal editing's `.` and macros replay the text, not the key that
+        // accepted it.
+        self.vi_note_text(back, ahead, &inserted);
         // Eager additional edits are final (a resolve keeps them, as
         // `CompletionItem::adopt_resolved` does): only an item that listed
         // none may still have some deferred.
@@ -303,7 +308,9 @@ impl App {
         if !crate::completion::commits(&item, c, &defaults) {
             return false;
         }
+        self.vi.committing = true;
         self.accept_completion();
+        self.vi.committing = false;
         true
     }
 }

@@ -68,6 +68,14 @@ impl KeyChord {
         c
     }
 
+    /// Whether this is a plain key: no `Ctrl` or `Alt`, and not a function
+    /// key. A modal preset's Normal mode gives every plain key to its own
+    /// layer and grammar.
+    #[must_use]
+    pub fn is_plain(self) -> bool {
+        !self.mods.ctrl && !self.mods.alt && !matches!(self.code, KeyCode::F(_))
+    }
+
     /// The canonical chord for a live terminal key event.
     #[must_use]
     pub fn from_event(ev: KeyEvent) -> Self {

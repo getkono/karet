@@ -166,6 +166,7 @@ impl App {
             Command::ExpandSelection => self.expand_selection(),
             Command::ShrinkSelection => self.shrink_selection(),
             Command::CollapseCarets => self.collapse_carets_or_unfocus(),
+            Command::EnterNormalMode => self.vi_enter_normal(),
             Command::ScrollUp => self.scroll_lines(-1),
             Command::ScrollDown => self.scroll_lines(1),
             Command::PageUp => self.scroll_lines(-i32::from(self.main_rect.height.max(1))),
@@ -443,7 +444,20 @@ impl App {
             Command::FindNext => self.find_step(1),
             Command::FindPrev => self.find_step(-1),
             Command::FindCancel => self.close_find(),
-            Command::FindSubmit => self.find_submit(),
+            Command::FindSubmit => {
+                let searching =
+                    self.active_find().map(|find| find.field) == Some(SearchField::Find);
+                // In a modal preset, Enter in the query accepts the match the
+                // typing already moved to and hands the keys back to the
+                // editor, as vim's `/` does; `n`/`N` go on from there.
+                if searching && self.keymap_preset().is_modal() {
+                    if let Some(find) = self.active_find_mut() {
+                        find.focused = false;
+                    }
+                } else {
+                    self.find_submit();
+                }
+            },
             Command::FindReplaceAll => self.find_replace_all(),
             Command::FindToggleReplace => self.find_toggle_replace(),
             Command::FindToggleField => self.find_toggle_field(),
