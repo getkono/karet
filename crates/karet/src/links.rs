@@ -99,6 +99,61 @@ pub(crate) fn resolve(raw: &str, source: &Path, root: &Path) -> Result<LinkTarge
     })
 }
 
+/// Validate an absolute target a language server supplied, such as a document
+/// link's: a web or mail URL as [`resolve`] accepts one, or a `file:` URI,
+/// whose workspace boundary is made explicit as for a relative Markdown link.
+///
+/// A `file:` URI's fragment may name where to land, VS Code's way: `#L12` or
+/// `#L12,5` (one-based line, then column; the `L` is optional). It is returned
+/// zero-based beside the target; any other fragment is not a position.
+pub(crate) fn resolve_absolute(
+    raw: &str,
+    root: &Path,
+) -> Result<(LinkTarget, Option<karet_core::LineCol>), LinkError> {
+    if raw.chars().any(char::is_control) {
+        return Err(LinkError::ControlCharacter);
+    }
+    match explicit_scheme(raw).as_deref() {
+        Some("file") => {},
+        Some(_) => return resolve(raw, root, root).map(|target| (target, None)),
+        None => return Err(LinkError::Invalid),
+    }
+    let url = Url::parse(raw).map_err(|_| LinkError::Invalid)?;
+    let path = url.to_file_path().map_err(|()| LinkError::Invalid)?;
+    let position = url.fragment().and_then(fragment_position);
+    let root = absolute(root).map_err(|_| LinkError::Invalid)?;
+    let resolved_root = canonical_nearest(&root);
+    let resolved_path = canonical_nearest(&path);
+    if !resolved_path.starts_with(&resolved_root) {
+        return Ok((LinkTarget::OutsideWorkspaceFile(resolved_path), position));
+    }
+    let uri = Url::from_file_path(&resolved_path).map_err(|()| LinkError::Invalid)?;
+    let target = LinkTarget::WorkspaceFile {
+        path: resolved_path,
+        uri: uri.into(),
+    };
+    Ok((target, position))
+}
+
+/// The zero-based position a `L<line>[,<column>]` fragment names (one-based,
+/// the `L` optional), or `None` for a fragment that is not one.
+fn fragment_position(fragment: &str) -> Option<karet_core::LineCol> {
+    let spec = fragment.strip_prefix('L').unwrap_or(fragment);
+    let (line, column) = match spec.split_once(',') {
+        Some((line, column)) => (line, Some(column)),
+        None => (spec, None),
+    };
+    let line: u32 = line.parse().ok()?;
+    let column: u32 = match column {
+        Some(column) => column.parse().ok()?,
+        None => 1,
+    };
+    Some(karet_core::LineCol::new(
+        line.checked_sub(1)?,
+        column.saturating_sub(1),
+    ))
+}
+
 /// Accept `url` as a target safe to hand a terminal through OSC 8.
 ///
 /// Two hazards, one guard. A control character in the target would close the
@@ -208,6 +263,60 @@ mod tests {
             Err(LinkError::AbsoluteFile)
         );
         Ok(())
+    }
+
+    #[test]
+    fn a_server_target_is_a_web_url_or_a_file_uri_with_its_boundary_explicit()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let parent = tempfile::tempdir()?;
+        let root = parent.path().join("workspace");
+        std::fs::create_dir_all(root.join("src"))?;
+        std::fs::write(root.join("src/lib.rs"), "")?;
+        let file = Url::from_file_path(root.join("src/lib.rs")).map_err(|()| "not absolute")?;
+
+        let (inside, position) = resolve_absolute(&format!("{file}#L12,5"), &root)?;
+        let LinkTarget::WorkspaceFile { path, .. } = inside else {
+            return Err("expected a workspace file".into());
+        };
+        assert_eq!(path, std::fs::canonicalize(root.join("src/lib.rs"))?);
+        assert_eq!(position, Some(karet_core::LineCol::new(11, 4)));
+
+        let outside =
+            Url::from_file_path(parent.path().join("elsewhere.rs")).map_err(|()| "not absolute")?;
+        assert!(matches!(
+            resolve_absolute(outside.as_str(), &root)?,
+            (LinkTarget::OutsideWorkspaceFile(_), None)
+        ));
+        assert!(matches!(
+            resolve_absolute("https://example.com/a", &root)?,
+            (LinkTarget::ExternalUrl(_), None)
+        ));
+        assert_eq!(
+            resolve_absolute("javascript:alert(1)", &root),
+            Err(LinkError::UnsupportedScheme("javascript".to_string()))
+        );
+        assert_eq!(
+            resolve_absolute("src/lib.rs", &root),
+            Err(LinkError::Invalid),
+            "a server's target is absolute"
+        );
+        assert_eq!(
+            resolve_absolute("file:///w/\u{7}x", &root),
+            Err(LinkError::ControlCharacter)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_fragment_names_a_one_based_line_and_column_or_nothing() {
+        let at = |line, col| Some(karet_core::LineCol::new(line, col));
+        assert_eq!(fragment_position("L12"), at(11, 0));
+        assert_eq!(fragment_position("12,3"), at(11, 2));
+        assert_eq!(fragment_position("L1,1"), at(0, 0));
+        assert_eq!(fragment_position("L0"), None, "lines count from one");
+        assert_eq!(fragment_position("section-2"), None);
+        assert_eq!(fragment_position("L3,x"), None);
+        assert_eq!(fragment_position(""), None);
     }
 
     #[test]

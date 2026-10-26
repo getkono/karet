@@ -182,18 +182,47 @@ pub(super) fn debug_decorations(ctx: &PaneCtx, path: &std::path::Path) -> Vec<De
 }
 
 /// The per-frame decorations content assembles fresh each draw: color
-/// swatches over the visible slice.
+/// swatches over the visible slice -- the language server's colours for
+/// `doc`, then the literals the built-in detector finds that no server colour
+/// already covers, so a colour both know is swatched once.
 pub(super) fn frame_decorations(
     ctx: &PaneCtx,
+    doc: Option<DocumentId>,
     buffer: &TextBuffer,
     scroll_line: u32,
     area: Rect,
 ) -> Vec<Decoration> {
-    if ctx.color_highlight {
-        color_swatch_decorations(buffer, scroll_line, area.height)
-    } else {
-        Vec::new()
+    if !ctx.color_highlight {
+        return Vec::new();
     }
+    let served = doc.map_or(&[][..], |doc| {
+        crate::app::current_items(ctx.document_colors, doc, buffer.version())
+    });
+    let local = color_swatch_decorations(buffer, scroll_line, area.height);
+    merge_swatches(served, scroll_line, area.height, local)
+}
+
+/// The swatches of `served` on the lines a viewport of `height` rows from
+/// `first_line` can show (doubled for wrap slack, as the detector's), then
+/// each of `local` that overlaps none of them.
+fn merge_swatches(
+    served: &[karet_core::DocumentColor],
+    first_line: u32,
+    height: u16,
+    local: Vec<Decoration>,
+) -> Vec<Decoration> {
+    let last = first_line.saturating_add(u32::from(height) * 2);
+    let mut out: Vec<Decoration> = served
+        .iter()
+        .filter(|colour| colour.range.end.line >= first_line && colour.range.start.line <= last)
+        .map(karet_core::DocumentColor::swatch)
+        .collect();
+    out.extend(
+        local
+            .into_iter()
+            .filter(|swatch| !served.iter().any(|colour| colour.overlaps(swatch.range))),
+    );
+    out
 }
 
 /// The virtual text content assembles fresh each draw, in one slice: the
