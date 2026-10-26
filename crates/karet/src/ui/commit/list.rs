@@ -77,7 +77,7 @@ pub(in crate::ui) fn entries_from_commits<'a>(
         .enumerate()
         .map(|(i, commit)| CommitListEntry {
             hash: &commit.hash,
-            short_hash: &commit.short_hash,
+            short_hash: commit.short_hash(),
             summary: &commit.summary,
             time: commit.time,
             parents: &commit.parents,
@@ -169,7 +169,6 @@ mod tests {
     fn commit(hash: &str, parents: Vec<String>) -> karet_vcs::Commit {
         karet_vcs::Commit {
             hash: hash.to_string(),
-            short_hash: hash.chars().take(7).collect(),
             summary: format!("summary of {hash}"),
             author: "Tester".to_string(),
             time: 0,
