@@ -377,11 +377,11 @@ impl TextBuffer {
     /// with a UTF-32 (`char`) column. A column landing inside a surrogate pair is
     /// rounded down to the start of that `char`.
     ///
-    /// Nothing is clamped: a `line` past the last line is returned unchanged with
-    /// column 0 (still out of range), and a column past the line's content is not
-    /// clamped to the content length — it can count the line's trailing line
-    /// break. Unlike [`line_col_to_utf16`](Self::line_col_to_utf16), the result is
-    /// not guaranteed to address a position inside the buffer.
+    /// A column past the line's content is clamped to the content length, never
+    /// counting the line's trailing line break, as the LSP specification asks and
+    /// as [`line_col_to_utf16`](Self::line_col_to_utf16) does in the other
+    /// direction. A `line` past the last line is returned unchanged with column 0,
+    /// so that result still does not address a position inside the buffer.
     #[must_use]
     pub fn utf16_to_line_col(&self, line: u32, utf16_col: u32) -> LineCol {
         let line_idx = line as usize;
@@ -389,9 +389,10 @@ impl TextBuffer {
             return LineCol::new(line, 0);
         }
         let lslice = self.rope.line(line_idx);
+        let content = lslice.slice(..line_content_chars(lslice));
         let mut units = 0u32;
         let mut col = 0u32;
-        for c in lslice.chars() {
+        for c in content.chars() {
             let width = c.len_utf16() as u32;
             // Stop before any char we cannot fully include, so an offset landing
             // inside a surrogate pair rounds down to that char's start.
@@ -648,10 +649,10 @@ mod tests {
     #[test]
     fn utf16_column_past_the_end_of_an_lf_line() {
         let b = TextBuffer::from_text("ab\ncd");
-        // Current behaviour: the column counts the line's `\n`, so it lands one
-        // past the content end (2). `line_col_to_byte` and `clamp` pull it back.
-        // Filed as #634; the fix changes this assertion deliberately.
-        assert_eq!(b.utf16_to_line_col(0, 99), LineCol::new(0, 3));
+        // The column stops at the content end (2), never counting the `\n`, so
+        // the result already addresses a position inside the buffer (#634).
+        assert_eq!(b.utf16_to_line_col(0, 99), LineCol::new(0, 2));
+        assert_eq!(b.utf16_to_line_col(0, 3), LineCol::new(0, 2));
         assert_eq!(b.clamp(b.utf16_to_line_col(0, 99)), LineCol::new(0, 2));
         assert_eq!(
             b.line_col_to_byte(b.utf16_to_line_col(0, 99)),
@@ -664,6 +665,25 @@ mod tests {
         // The opposite direction clamps to the content end.
         assert_eq!(b.line_col_to_utf16(LineCol::new(0, 99)), 2);
         assert_eq!(b.line_col_to_utf16(LineCol::new(7, 1)), 0);
+    }
+
+    #[test]
+    fn utf16_column_past_the_end_excludes_every_break_type() {
+        // `\r\n` is two chars of break; a lone `\r` and U+2028 are one each.
+        let b = TextBuffer::from_text("ab\r\ncd\rx\u{2028}y");
+        assert_eq!(b.utf16_to_line_col(0, 99), LineCol::new(0, 2));
+        assert_eq!(b.utf16_to_line_col(0, 3), LineCol::new(0, 2));
+        assert_eq!(b.utf16_to_line_col(1, 99), LineCol::new(1, 2));
+        assert_eq!(b.utf16_to_line_col(2, 99), LineCol::new(2, 1));
+        assert_eq!(b.utf16_to_line_col(3, 99), LineCol::new(3, 1));
+        // Round-trips with the opposite direction at every line end.
+        for line in 0..4 {
+            let end = b.utf16_to_line_col(line, 99);
+            assert_eq!(b.utf16_to_line_col(line, b.line_col_to_utf16(end)), end);
+        }
+        // An astral char before the break still counts as one column.
+        let astral = TextBuffer::from_text("a\u{1F600}\nz");
+        assert_eq!(astral.utf16_to_line_col(0, 99), LineCol::new(0, 2));
     }
 
     #[test]
