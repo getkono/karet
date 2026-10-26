@@ -661,3 +661,81 @@ fn workspace_search_surfaces_invalid_pattern() -> TestResult {
     assert_eq!(result, Err(SearchError::InvalidPattern));
     Ok(())
 }
+
+/// The root-relative paths [`walk_files`] yields, sorted.
+fn listed(root: &Path) -> Vec<String> {
+    let mut names: Vec<String> = walk_files(root)
+        .map(|path| {
+            path.strip_prefix(root)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/")
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn walk_files_honors_gitignore_and_prunes_ignored_dirs() -> TestResult {
+    let dir = temp_dir()?;
+    write(dir.path(), "a.txt", b"alpha\n")?;
+    write(dir.path(), "sub/b.rs", b"beta\n")?;
+    write(dir.path(), ".gitignore", b"ignored.txt\n")?;
+    write(dir.path(), "ignored.txt", b"gamma\n")?;
+    write(dir.path(), ".hidden", b"delta\n")?;
+    // Pruned by IGNORED_DIRS even though no ignore file names them.
+    write(dir.path(), "target/debug/out", b"x\n")?;
+    write(dir.path(), "node_modules/pkg/index.js", b"x\n")?;
+
+    assert_eq!(listed(dir.path()), ["a.txt", "sub/b.rs"]);
+    Ok(())
+}
+
+#[test]
+fn walk_files_lists_files_the_text_walk_skips() -> TestResult {
+    let dir = temp_dir()?;
+    write(dir.path(), "blob.bin", b"x\x00y")?;
+    write(dir.path(), "latin1.txt", b"caf\xe9\n")?;
+    write(dir.path(), "empty.txt", b"")?;
+
+    // A file picker lists every openable file; contents are never read.
+    assert_eq!(listed(dir.path()), ["blob.bin", "empty.txt", "latin1.txt"]);
+    Ok(())
+}
+
+#[test]
+fn walk_files_honors_an_ignore_file_above_the_root() -> TestResult {
+    let dir = temp_dir()?;
+    write(dir.path(), ".gitignore", b"*.log\n")?;
+    write(dir.path(), "sub/keep.rs", b"x\n")?;
+    write(dir.path(), "sub/drop.log", b"x\n")?;
+
+    assert_eq!(listed(&dir.path().join("sub")), ["keep.rs"]);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn walk_files_never_follows_or_lists_symlinks() -> TestResult {
+    use std::os::unix::fs::symlink;
+    let dir = temp_dir()?;
+    write(dir.path(), "real/file.txt", b"x\n")?;
+    symlink(dir.path().join("real"), dir.path().join("dir_link"))?;
+    symlink(
+        dir.path().join("real/file.txt"),
+        dir.path().join("file_link"),
+    )?;
+    // A link back to the root would loop forever if followed.
+    symlink(dir.path(), dir.path().join("real/cycle"))?;
+
+    assert_eq!(listed(dir.path()), ["real/file.txt"]);
+    Ok(())
+}
+
+#[test]
+fn walk_files_of_a_missing_root_is_empty() -> TestResult {
+    let dir = temp_dir()?;
+    assert!(listed(&dir.path().join("absent")).is_empty());
+    Ok(())
+}
