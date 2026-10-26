@@ -1,5 +1,29 @@
 use std::ops::RangeInclusive;
 
+use karet_core::Decoration;
+use karet_core::DecorationKind;
+use karet_core::Diagnostic;
+use karet_core::HighlightSpan;
+use karet_core::Highlights;
+use karet_core::LineCol;
+use karet_core::Range;
+use karet_core::SemanticBlock;
+use karet_core::SemanticBlocks;
+use karet_core::ThemeRole;
+use karet_core::VirtualLine;
+use karet_core::VirtualText;
+use karet_core::VirtualTextPlacement;
+use karet_text::TextBuffer;
+use karet_theme::Rgba;
+use karet_theme::Theme;
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
+use ratatui::style::Modifier;
+use ratatui::style::Style;
+use ratatui::text::Line;
+use ratatui::text::Span;
+use ratatui::widgets::StatefulWidget;
+
 use super::hint::BlockIndex;
 use super::hint::EolItem;
 use super::hint::HintIndex;
@@ -11,7 +35,12 @@ use super::hint::text_width;
 use super::hint::truncate;
 use super::text::*;
 use super::visual::*;
-use super::*;
+use crate::EditorState;
+use crate::Fold;
+use crate::WrappingIndent;
+use crate::cluster_bounds;
+use crate::cluster_widths;
+use crate::diagnostic;
 
 mod decorate;
 mod display;

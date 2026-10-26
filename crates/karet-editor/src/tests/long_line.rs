@@ -6,9 +6,8 @@ use karet_core::Change;
 use karet_core::TextEdit;
 use karet_core::TokenId;
 
-use crate::text::*;
+use super::*;
 use crate::visual::horizontal_extent;
-use crate::*;
 
 /// A highlight of bytes `[start, end)` as token `token`.
 fn hs(start: usize, end: usize, token: u16) -> HighlightSpan {

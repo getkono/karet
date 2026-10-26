@@ -1,8 +1,7 @@
 //! Selection painting: a selected line break shows as one cell past the line
 //! end, so blank lines and line ends inside a selection are visible.
 
-use crate::text::*;
-use crate::*;
+use super::*;
 
 /// The gutter width for a buffer of fewer than ten lines: marker, digit, space.
 const GUTTER: u16 = 3;

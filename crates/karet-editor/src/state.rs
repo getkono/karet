@@ -1,12 +1,25 @@
 use std::cell::Cell;
 use std::ops::RangeInclusive;
 
+use karet_core::CursorState;
+use karet_core::Highlights;
+use karet_core::LineCol;
+use karet_core::Range;
+use karet_core::Selection;
+use karet_text::TextBuffer;
+use ratatui::layout::Rect;
+
 use super::hint::BlockIndex;
 use super::hint::HintIndex;
 use super::hint::LineHints;
 use super::text::*;
 use super::visual::*;
-use super::*;
+use crate::LineNumbers;
+use crate::WrappingIndent;
+use crate::line_span;
+use crate::next_word_boundary;
+use crate::previous_word_boundary;
+use crate::view::gutter_width;
 
 mod caret_ops;
 mod gutter;

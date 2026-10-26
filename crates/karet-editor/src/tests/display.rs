@@ -2,7 +2,7 @@
 //! rulers, the keyboard reveal's vertical margin (`scroll_off`), and the
 //! soft-wrap geometry: the wrap column and continuation-row indentation.
 
-use crate::*;
+use super::*;
 
 /// `count` numbered lines.
 fn lines(count: u32) -> TextBuffer {

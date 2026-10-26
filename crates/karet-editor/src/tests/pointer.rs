@@ -1,8 +1,8 @@
 //! Pointer-originated caret moves never scroll visible text, and the vertical
 //! reveal counts rows — collapsed folds, sticky headers — not buffer lines.
 
+use super::*;
 use crate::visual::*;
-use crate::*;
 
 /// A 200-character line, so every column is distinct and off-screen columns
 /// exist on both sides.

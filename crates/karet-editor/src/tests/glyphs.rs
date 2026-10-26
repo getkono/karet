@@ -6,7 +6,7 @@ use karet_core::BytePos;
 use karet_core::Span;
 use karet_core::StandardToken;
 
-use crate::*;
+use super::*;
 
 /// The gutter `LineNumbers::Off` keeps: content starts at this column.
 const X: u16 = 2;

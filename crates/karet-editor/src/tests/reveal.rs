@@ -4,8 +4,8 @@
 //! view that mirrors this editor's offset (the merge-conflict side panes) reads
 //! it before the editor paints.
 
+use super::*;
 use crate::visual::*;
-use crate::*;
 
 /// One line, a 3-cell gutter, so a 33-cell area leaves 30 content cells.
 const AREA: Rect = Rect::new(0, 0, 33, 1);

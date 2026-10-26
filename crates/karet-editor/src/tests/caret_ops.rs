@@ -5,7 +5,7 @@
 use karet_core::Change;
 use karet_core::TextEdit;
 
-use crate::*;
+use super::*;
 
 fn span(line: u32, start: u32, end: u32) -> Range {
     Range {

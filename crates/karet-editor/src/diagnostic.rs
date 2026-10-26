@@ -6,8 +6,19 @@
 //! end-of-line slot with every other producer on the same terms: the
 //! application orders the lane and picks the slot priority.
 
+use karet_core::Decoration;
+use karet_core::DecorationKind;
+use karet_core::Diagnostic;
+use karet_core::DiagnosticTag;
+use karet_core::LineCol;
+use karet_core::Range;
+use karet_core::Severity;
+use karet_core::VirtualText;
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
+use ratatui::style::Modifier;
+
 use super::text::col_in_range;
-use super::*;
 
 /// Which lines show their diagnostics' messages at the end of the line (see
 /// [`diagnostic_messages`]).
@@ -183,6 +194,9 @@ pub(crate) fn tag_modifiers(diagnostics: &[Diagnostic], l: u32, col: u32) -> Mod
 
 #[cfg(test)]
 mod tests {
+    use karet_core::ThemeRole;
+    use karet_core::VirtualTextPlacement;
+
     use super::*;
 
     fn diagnostic(line: u32, severity: Severity, message: &str) -> Diagnostic {

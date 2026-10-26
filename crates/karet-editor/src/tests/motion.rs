@@ -5,7 +5,7 @@
 use karet_core::Change;
 use karet_core::TextEdit;
 
-use crate::*;
+use super::*;
 
 fn at(line: u32, col: u32) -> LineCol {
     LineCol::new(line, col)

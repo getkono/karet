@@ -7,7 +7,7 @@ use karet_core::Highlights;
 use karet_core::Span;
 use karet_core::StandardToken;
 
-use crate::*;
+use super::*;
 
 fn at(line: u32, col: u32) -> LineCol {
     LineCol::new(line, col)

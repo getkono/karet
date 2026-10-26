@@ -1,8 +1,8 @@
 //! Caret, multi-caret, and screen-cell geometry tests, split from the main
 //! test module to respect the per-file code-line ceiling.
 
+use super::*;
 use crate::text::*;
-use crate::*;
 
 #[test]
 fn render_draws_a_caret_for_every_cursor() {

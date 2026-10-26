@@ -1,12 +1,18 @@
 use std::ops::RangeInclusive;
 
+use karet_core::LineCol;
+use karet_text::TextBuffer;
+use ratatui::layout::Rect;
 use unicode_segmentation::UnicodeSegmentation;
 
 use super::hint::BlockIndex;
 use super::hint::HintIndex;
 use super::hint::LineHints;
 use super::text::*;
-use super::*;
+use crate::EditorState;
+use crate::Fold;
+use crate::cluster_bounds;
+use crate::view::gutter_width;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct VisualAnchor {
