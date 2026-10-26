@@ -139,20 +139,6 @@ impl Session {
         }
     }
 
-    /// Serve a [`Command::Hover`] or a [`Command::SignatureHelp`]: the
-    /// requests about the caret whose answers the client shows in a popup.
-    pub(super) fn at_caret(&mut self, id: RequestId, cmd: Command) {
-        match cmd {
-            Command::Hover { doc, position } => self.hover(id, doc, position),
-            Command::SignatureHelp {
-                doc,
-                position,
-                manual,
-            } => self.signature_help(id, doc, position, manual),
-            _ => {},
-        }
-    }
-
     /// Forward a [`Command::SelectionRanges`], or answer it with an empty
     /// chain per position when no server serves the document.
     pub(super) fn selection_ranges(
@@ -297,9 +283,9 @@ impl Session {
         self.emit(Some(request), event);
     }
 
-    /// Forward a [`Command::SignatureHelp`], or answer it empty when no
-    /// server serves the document.
-    fn signature_help(&mut self, id: RequestId, doc_id: DocumentId, at: LineCol, manual: bool) {
+    /// Forward a [`LspCommand::SignatureHelp`](crate::api::LspCommand::SignatureHelp),
+    /// or answer it empty when no server serves the document.
+    pub(super) fn signature_help(&mut self, id: RequestId, doc_id: DocumentId, at: LineCol, manual: bool) {
         let Some(doc) = Self::doc_or_report(&self.store, &self.events, id, doc_id) else {
             return;
         };
@@ -321,7 +307,9 @@ impl Session {
         }
     }
 
-    fn hover(&mut self, id: RequestId, doc_id: DocumentId, position: LineCol) {
+    /// Forward a [`LspCommand::Hover`](crate::api::LspCommand::Hover) to the
+    /// document's language server.
+    pub(super) fn hover(&mut self, id: RequestId, doc_id: DocumentId, position: LineCol) {
         let Some(doc) = Self::doc_or_report(&self.store, &self.events, id, doc_id) else {
             return;
         };

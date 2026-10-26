@@ -1,6 +1,143 @@
 use super::*;
+use crate::api::VcsCommand;
+use crate::vcs_worker::VcsJob;
 
 impl Session {
+    /// Serve one [`VcsCommand`]. Index writes run inline; everything that reads
+    /// history or prepares a diff goes to the VCS worker.
+    pub(super) fn handle_vcs(&mut self, id: RequestId, command: VcsCommand) {
+        let syntax = self.diff_syntax;
+        match command {
+            VcsCommand::Refresh => self.emit_vcs_status(Some(id)),
+            VcsCommand::Stage { paths } => self.vcs_write(id, |repo| repo.stage(&paths)),
+            VcsCommand::Unstage { paths } => self.vcs_write(id, |repo| repo.unstage(&paths)),
+            VcsCommand::Discard { paths } => self.vcs_write(id, |repo| repo.discard(&paths)),
+            VcsCommand::ApplyIndexPatch { patch, reverse } => {
+                self.vcs_write(id, |repo| repo.apply_index_patch(&patch, reverse));
+            },
+            VcsCommand::StageAll => self.vcs_write(id, Repository::stage_all),
+            VcsCommand::UnstageAll => self.vcs_write(id, Repository::unstage_all),
+            VcsCommand::Commit { message } => {
+                self.submit_vcs(id, |id, cancel| VcsJob::Commit {
+                    id,
+                    message,
+                    cancel,
+                });
+            },
+            VcsCommand::GenerateCommitMessage => self.generate_commit_message(id),
+            VcsCommand::ProbeAiCommit => self.emit_ai_commit_availability(Some(id)),
+            VcsCommand::SetAiCommitOptions { options } => {
+                self.set_ai_commit_options(id, *options);
+            },
+            VcsCommand::MergeConflict { path } => {
+                self.submit_vcs(id, |id, cancel| VcsJob::MergeConflict { id, path, cancel });
+            },
+            VcsCommand::RepositorySnapshot => {
+                self.submit_vcs(id, |id, cancel| VcsJob::Snapshot { id, cancel });
+            },
+            VcsCommand::NestedRepositoryStatus { path } => {
+                self.submit_vcs(id, |id, cancel| VcsJob::NestedRepositoryStatus {
+                    id,
+                    path,
+                    cancel,
+                });
+            },
+            VcsCommand::Action { action } => {
+                self.emit(
+                    Some(id),
+                    Event::VcsOperationStarted {
+                        action: action.clone(),
+                    },
+                );
+                let _ = self.vcs_worker.send(VcsJob::Action { id, action });
+            },
+            VcsCommand::PullRequests {
+                remote,
+                page,
+                per_page,
+            } => {
+                self.submit_vcs(id, |id, cancel| VcsJob::PullRequests {
+                    id,
+                    remote,
+                    page,
+                    per_page,
+                    cancel,
+                });
+            },
+            VcsCommand::Blame { doc, version, line } => self.request_blame(id, doc, version, line),
+            VcsCommand::SetBlameEnabled { enabled } => self.set_blame_enabled(id, enabled),
+            VcsCommand::LineChanges { doc } => self.request_line_changes(id, doc),
+            VcsCommand::Log { skip, limit } => {
+                self.submit_vcs(id, |id, cancel| VcsJob::Log {
+                    id,
+                    skip,
+                    limit,
+                    cancel,
+                });
+            },
+            VcsCommand::CommitDetail { rev } => {
+                self.submit_vcs(id, |id, cancel| VcsJob::CommitDetail {
+                    id,
+                    rev,
+                    syntax,
+                    cancel,
+                });
+            },
+            VcsCommand::RangeChanges { spec } => {
+                self.submit_vcs(id, |id, cancel| VcsJob::RangeChanges {
+                    id,
+                    spec,
+                    syntax,
+                    cancel,
+                });
+            },
+            VcsCommand::FileHistory { path, skip, limit } => {
+                self.submit_vcs(id, |id, cancel| VcsJob::FileHistory {
+                    id,
+                    path,
+                    skip,
+                    limit,
+                    cancel,
+                });
+            },
+            VcsCommand::FetchCommitVerification { hash } => {
+                self.fetch_commit_verification(id, hash);
+            },
+            VcsCommand::RemoteFacts { path } => {
+                self.submit_vcs(id, |id, cancel| VcsJob::RemoteFacts { id, path, cancel });
+            },
+            VcsCommand::PrepareChange { path, staged } => {
+                self.submit_vcs(id, |id, cancel| VcsJob::PrepareChange {
+                    id,
+                    path,
+                    staged,
+                    syntax,
+                    cancel,
+                });
+            },
+            VcsCommand::PrepareDiff { path, old, new } => {
+                self.submit_vcs(id, |id, cancel| VcsJob::PrepareTexts {
+                    id,
+                    path,
+                    old,
+                    new,
+                    syntax,
+                    cancel,
+                });
+            },
+            VcsCommand::DiffWithRev { path, rev, live } => {
+                self.submit_vcs(id, |id, cancel| VcsJob::DiffWithRev {
+                    id,
+                    path,
+                    rev,
+                    live,
+                    syntax,
+                    cancel,
+                });
+            },
+        }
+    }
+
     /// Register a cancellation for `id` and hand the worker a job built from it —
     /// the single submission shape for every cancellable VCS request.
     pub(super) fn submit_vcs(

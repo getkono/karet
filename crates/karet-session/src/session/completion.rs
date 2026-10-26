@@ -1,7 +1,8 @@
 //! Completion through the session seam: asking the document's language server
-//! for candidates ([`Command::Completion`]) and for what it deferred about one
-//! of them ([`Command::ResolveCompletion`]), and handing the answers back with
-//! every range in buffer columns.
+//! for candidates ([`LspCommand::Completion`](crate::api::LspCommand::Completion))
+//! and for what it deferred about one of them
+//! ([`LspCommand::ResolveCompletion`](crate::api::LspCommand::ResolveCompletion)),
+//! and handing the answers back with every range in buffer columns.
 
 use karet_core::CompletionItem;
 use karet_core::CompletionOptions;
@@ -11,24 +12,11 @@ use super::columns::utf16_caret;
 use super::*;
 
 impl Session {
-    /// Serve a [`Command::Completion`] or [`Command::ResolveCompletion`];
-    /// any other command is not this module's and is ignored.
-    pub(super) fn completion_command(&mut self, id: RequestId, command: Command) {
-        match command {
-            Command::Completion {
-                doc,
-                position,
-                trigger,
-            } => self.completion(id, doc, (position, trigger)),
-            Command::ResolveCompletion { doc, item } => self.resolve_completion(id, doc, item),
-            _ => {},
-        }
-    }
-
-    /// Serve [`Command::Completion`]: convert the caret to the server's UTF-16
-    /// encoding and forward to the document's language server. Languages with no
-    /// server answer immediately with an empty set, so the client never waits.
-    fn completion(
+    /// Serve [`LspCommand::Completion`](crate::api::LspCommand::Completion):
+    /// convert the caret to the server's UTF-16 encoding and forward to the
+    /// document's language server. Languages with no server answer immediately
+    /// with an empty set, so the client never waits.
+    pub(super) fn completion(
         &mut self,
         id: RequestId,
         doc_id: DocumentId,
@@ -56,10 +44,11 @@ impl Session {
         }
     }
 
-    /// Serve [`Command::ResolveCompletion`] from the server that completes in
-    /// the document. With no server to ask, the answer is that nothing was
-    /// resolved, so the client stops waiting and does not ask again.
-    fn resolve_completion(&mut self, id: RequestId, doc_id: DocumentId, item: CompletionItem) {
+    /// Serve [`LspCommand::ResolveCompletion`](crate::api::LspCommand::ResolveCompletion)
+    /// from the server that completes in the document. With no server to ask,
+    /// the answer is that nothing was resolved, so the client stops waiting and
+    /// does not ask again.
+    pub(super) fn resolve_completion(&mut self, id: RequestId, doc_id: DocumentId, item: CompletionItem) {
         let Some(doc) = Self::doc_or_report(&self.store, &self.events, id, doc_id) else {
             return;
         };
