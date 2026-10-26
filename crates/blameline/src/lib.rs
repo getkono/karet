@@ -107,9 +107,12 @@ pub enum BlameError {
 
 /// Semantic blame narrowed to the function/block enclosing `line` (0-based).
 ///
-/// Parses `source` with tree-sitter to find the innermost enclosing function, then
-/// clips whole-file blame to that line range. Falls back to the whole file when the
-/// language is unsupported or no enclosing function is found.
+/// With the `treesitter` feature, parses `source` with tree-sitter to find the
+/// innermost enclosing function, then clips whole-file blame to that line range.
+/// Falls back to the whole file when the language is unsupported (no matching
+/// `lang-*` feature) or no enclosing function is found. Without the `treesitter`
+/// feature, `source` and `line` are ignored and this always returns whole-file
+/// blame, the same as [`blame_file`].
 ///
 /// # Errors
 /// Returns [`BlameError`] if the repository can't be opened or blamed — including
