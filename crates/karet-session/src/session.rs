@@ -800,45 +800,6 @@ impl Session {
         }
     }
 
-    // --- source control ---------------------------------------------------
-
-    /// Register a cancellation for `id` and hand the worker a job built from it —
-    /// the single submission shape for every cancellable VCS request.
-    fn submit_vcs(
-        &self,
-        id: RequestId,
-        make: impl FnOnce(RequestId, crate::cancellation::Cancellation) -> crate::vcs_worker::VcsJob,
-    ) {
-        let cancel = self.cancellations.register(id);
-        let _ = self.vcs_worker.send(make(id, cancel));
-    }
-
-    fn request_blame(&self, id: RequestId, doc: DocumentId, version: u64, line: u32) {
-        let Some(document) = self.store.docs.get(&doc) else {
-            self.emit(
-                Some(id),
-                Event::Notification {
-                    severity: Severity::Error,
-                    kind: NotificationKind::Vcs,
-                    message: "blame: unknown document".to_string(),
-                },
-            );
-            return;
-        };
-        if document.buffer.version() != version {
-            return;
-        }
-        let _ = self.vcs_worker.send(crate::vcs_worker::VcsJob::Blame {
-            id,
-            doc,
-            version,
-            path: document.path.clone(),
-            text: document.buffer.text(),
-            line,
-            cancel: self.cancellations.register(id),
-        });
-    }
-
     fn request_latex_build(&mut self, id: RequestId, doc: DocumentId) {
         match self.save_for_external_build(doc) {
             Ok(source) => {
