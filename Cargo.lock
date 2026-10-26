@@ -4005,7 +4005,6 @@ dependencies = [
  "command-group",
  "gix",
  "imara-diff",
- "karet-core",
  "serde",
  "ssh-key",
  "thiserror 2.0.19",
