@@ -468,7 +468,7 @@ pub(super) fn draw_completion(f: &mut Frame, app: &mut App, theme: &Theme, hits:
     // the hit test over the editor bar it floats above.
     hits.record_track(list.track(), ScrollSurface::Completion);
     let docs = ranked
-        .get(list.selected)
+        .get(list.selected())
         .and_then(|&index| items.get(index))
         .and_then(|item| item.documentation.as_ref());
     if let Some(docs) = docs {

@@ -9,9 +9,6 @@
 //! model, which the [dialog](crate::dialog) widget uses too; this module adds
 //! only what makes a menu a menu — anchoring at a point and clamping into view.
 
-use std::ops::Deref;
-use std::ops::DerefMut;
-
 use karet_core::ThemeRole;
 use karet_theme::Theme;
 use ratatui::Frame;
@@ -34,35 +31,23 @@ pub type ContextMenuEntry<A> = Choice<A>;
 
 /// A positioned context menu (opened from a tree row, a pane, a word, …).
 ///
-/// Dereferences to its [`ChoiceList`], so the row model — `entries`,
-/// `selected`, `hover`, [`select_by`](ChoiceList::select_by),
-/// [`selected_entry`](ChoiceList::selected_entry) — is reached directly on the
-/// menu. `Clone` is derived so `menu.clone()` copies the placement too, rather
-/// than resolving through the deref to a bare `ChoiceList`.
+/// The row model is the shared [`ChoiceList`], reached through the menu's own
+/// methods — [`entries`](Self::entries), [`selected`](Self::selected),
+/// [`select_by`](Self::select_by), [`select_row`](Self::select_row), … — so
+/// every selection goes through the rule that keeps the cursor off disabled
+/// rows.
 #[derive(Clone)]
 pub struct ContextMenu<A> {
     /// The column where the menu should be anchored.
     pub x: u16,
     /// The row where the menu should be anchored.
     pub y: u16,
-    /// The menu rect from the last render (for hit-testing).
-    pub rect: Rect,
+    /// The menu rect from the last render (for hit-testing). Private because
+    /// only [`draw`](Self::draw) may set it: a hand-set rect would desync the
+    /// hit test from the pixels.
+    rect: Rect,
     /// The rows and the cursor over them.
     rows: ChoiceList<A>,
-}
-
-impl<A> Deref for ContextMenu<A> {
-    type Target = ChoiceList<A>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.rows
-    }
-}
-
-impl<A> DerefMut for ContextMenu<A> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.rows
-    }
 }
 
 impl<A> ContextMenu<A> {
@@ -76,6 +61,62 @@ impl<A> ContextMenu<A> {
             rect: Rect::default(),
             rows: ChoiceList::new(entries),
         }
+    }
+
+    /// The menu rect the last [`draw`](Self::draw) painted (for hit-testing and
+    /// dismissal); empty before the first draw and after an empty one.
+    #[must_use]
+    pub fn rect(&self) -> Rect {
+        self.rect
+    }
+
+    /// The rows, in display order.
+    #[must_use]
+    pub fn entries(&self) -> &[ContextMenuEntry<A>] {
+        self.rows.entries()
+    }
+
+    /// Consume the menu, yielding its rows in display order.
+    #[must_use]
+    pub fn into_entries(self) -> Vec<ContextMenuEntry<A>> {
+        self.rows.into_entries()
+    }
+
+    /// The number of rows.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// Whether the menu has no rows at all.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+
+    /// The selected row index.
+    #[must_use]
+    pub fn selected(&self) -> usize {
+        self.rows.selected()
+    }
+
+    /// The activatable row under the pointer, if any.
+    #[must_use]
+    pub fn hover(&self) -> Option<usize> {
+        self.rows.hover()
+    }
+
+    /// The entry painted on the first row by the last [`draw`](Self::draw) —
+    /// not `0` once a menu clamped shorter than its list has scrolled.
+    #[must_use]
+    pub fn first_visible(&self) -> usize {
+        self.rows.first_visible()
+    }
+
+    /// Put the cursor on `row` when it exists and can be activated, reporting
+    /// whether it moved there (see [`ChoiceList::select_row`]).
+    pub fn select_row(&mut self, row: usize) -> bool {
+        self.rows.select_row(row)
     }
 
     /// The rows' click target: the borders bracket them, so the first row sits
@@ -131,7 +172,7 @@ impl<A> ContextMenu<A> {
 
     /// Draw the menu into `area`, clamping it inside, and record its rect for
     /// hit-testing. `labels` and `hints` are the consumer-resolved row texts,
-    /// index-aligned with [`entries`](ChoiceList::entries).
+    /// index-aligned with [`entries`](Self::entries).
     pub fn draw(
         &mut self,
         f: &mut Frame,
@@ -209,35 +250,57 @@ mod tests {
 
     #[test]
     fn initial_selection_lands_on_the_first_enabled_row() {
-        assert_eq!(menu(&[false, false, true, true]).selected, 2);
-        assert_eq!(menu(&[true, false]).selected, 0);
+        assert_eq!(menu(&[false, false, true, true]).selected(), 2);
+        assert_eq!(menu(&[true, false]).selected(), 0);
     }
 
     #[test]
     fn selection_skips_disabled_rows_in_both_directions() {
         let mut m = menu(&[true, false, true, false, true]);
         m.select_by(1);
-        assert_eq!(m.selected, 2);
+        assert_eq!(m.selected(), 2);
         m.select_by(1);
-        assert_eq!(m.selected, 4);
+        assert_eq!(m.selected(), 4);
         m.select_by(-2);
-        assert_eq!(m.selected, 0);
+        assert_eq!(m.selected(), 0);
     }
 
     #[test]
     fn selection_stops_at_the_last_enabled_row() {
         let mut m = menu(&[true, true, false]);
         m.select_by(5);
-        assert_eq!(m.selected, 1, "overshoot lands on the last enabled row");
+        assert_eq!(m.selected(), 1, "overshoot lands on the last enabled row");
         m.select_by(-5);
-        assert_eq!(m.selected, 0);
+        assert_eq!(m.selected(), 0);
+    }
+
+    #[test]
+    fn a_pointer_pick_never_rests_the_cursor_on_a_disabled_row() {
+        let mut m = menu(&[true, false, true]);
+        assert!(!m.select_row(1), "the disabled row refuses the cursor");
+        assert_eq!(m.selected(), 0);
+        assert!(m.select_row(2));
+        assert_eq!(m.selected(), 2);
+        assert_eq!(m.selected_entry().map(|e| e.action), Some(2));
+    }
+
+    #[test]
+    fn the_menu_reports_its_rows_and_last_rect() {
+        let m = menu(&[true, false]);
+        assert_eq!(m.len(), 2);
+        assert!(!m.is_empty());
+        assert_eq!(m.entries().len(), 2);
+        assert_eq!(m.rect(), Rect::default(), "nothing drawn yet");
+        assert_eq!(m.first_visible(), 0);
+        let actions: Vec<u8> = m.into_entries().into_iter().map(|e| e.action).collect();
+        assert_eq!(actions, vec![0, 1]);
     }
 
     /// Draw `m` into a test terminal, returning the painted buffer.
     fn draw(m: &mut ContextMenu<u8>) -> Option<Buffer> {
         let theme = Theme::dark();
-        let labels: Vec<String> = (0..m.entries.len()).map(|i| format!("row {i}")).collect();
-        let hints = vec![None; m.entries.len()];
+        let labels: Vec<String> = (0..m.len()).map(|i| format!("row {i}")).collect();
+        let hints = vec![None; m.len()];
         let mut terminal = Terminal::new(TestBackend::new(20, 8)).ok()?;
         terminal
             .draw(|f| m.draw(f, &theme, f.area(), &labels, &hints))
@@ -266,12 +329,12 @@ mod tests {
         assert_eq!(m.row_at(20, 2), None, "right of the menu");
 
         m.set_hover(Some((4, 4)));
-        assert_eq!(m.hover, Some(2));
+        assert_eq!(m.hover(), Some(2));
         m.set_hover(Some((4, 3)));
-        assert_eq!(m.hover, None, "a disabled row clears the highlight");
+        assert_eq!(m.hover(), None, "a disabled row clears the highlight");
         m.set_hover(Some((4, 4)));
         m.set_hover(None);
-        assert_eq!(m.hover, None);
+        assert_eq!(m.hover(), None);
     }
 
     #[test]
@@ -312,7 +375,7 @@ mod tests {
             return;
         };
 
-        assert_eq!(m.hover, None);
+        assert_eq!(m.hover(), None);
         assert_ne!(buffer[(2u16, 2u16)].bg, hover);
     }
 
@@ -357,12 +420,12 @@ mod tests {
         // `List` scrolls the selection into view.
         let mut m = menu(&[true; 10]);
         m.select_by(9);
-        assert_eq!(m.selected, 9);
+        assert_eq!(m.selected(), 9);
         let Some(buffer) = draw(&mut m) else {
             return;
         };
         assert!(
-            usize::from(m.rect.height - 2) < m.entries.len(),
+            usize::from(m.rect.height - 2) < m.len(),
             "fewer painted rows than entries"
         );
         assert_eq!(m.first_visible(), 4, "the list scrolled off the top");

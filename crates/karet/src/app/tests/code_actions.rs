@@ -88,7 +88,7 @@ fn menu_labels(app: &App) -> Vec<String> {
     app.context_menu
         .as_ref()
         .map(|menu| {
-            menu.entries
+            menu.entries()
                 .iter()
                 .map(|entry| entry.label.clone().unwrap_or_default())
                 .collect()

@@ -362,7 +362,7 @@ fn a_right_click_opens_the_menu_with_cut_copy_and_paste_first() {
         panic!("a right click on text opens the menu");
     };
     let commands: Vec<Command> = menu
-        .entries
+        .entries()
         .iter()
         .take(3)
         .filter_map(ContextMenuEntry::command)
