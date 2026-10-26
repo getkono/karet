@@ -200,6 +200,7 @@ impl App {
             seam_index_req: None,
             seam_query_req: None,
             seam_node_req: None,
+            seam_discovery: seam::roots::RootDiscovery::default(),
             cancelled_requests: HashSet::new(),
             open_docs: HashSet::new(),
             next_view: 1,
