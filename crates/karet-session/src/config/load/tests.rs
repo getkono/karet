@@ -498,6 +498,20 @@ fn the_system_layer_is_a_karet_file_under_a_config_dir() {
     assert!(system_config_path().is_some_and(|path| path.ends_with("karet/setting.jsonc")));
 }
 
+#[cfg(unix)]
+#[test]
+fn the_system_layer_follows_the_first_xdg_config_dir() {
+    let path = |dirs: Option<&str>| system_config_path_in(dirs.map(Into::into));
+    assert_eq!(
+        path(Some("/opt/conf:/etc/xdg")),
+        Some(PathBuf::from("/opt/conf/karet/setting.jsonc"))
+    );
+    // Unset, or an empty first entry, falls back to `/etc/xdg`.
+    let fallback = Some(PathBuf::from("/etc/xdg/karet/setting.jsonc"));
+    assert_eq!(path(None), fallback);
+    assert_eq!(path(Some(":/opt/conf")), fallback);
+}
+
 #[test]
 fn layers_have_stable_labels() {
     assert_eq!(ConfigLayer::System.label(), "system");

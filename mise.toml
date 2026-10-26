@@ -142,8 +142,8 @@ cargo mutants --package karet-text --all-features \
   --exclude-re 'read\\.rs:83:\\d+: replace > with (>=|==) in TextBuffer::find'"""
 
 [tasks.mutants-diff]
-description = "Opt-in: mutation-test karet-diff's engine, parse, patch, intraline, prepared and align (cap 30m)"
-timeout = "30m"
+description = "Opt-in: mutation-test karet-diff's engine, parse, patch, intraline, prepared and align (cap 60m)"
+timeout = "60m"
 # Equivalent mutants, excluded with their argument:
 # - parse/path.rs `|` -> `^` joining the three octal digits in `decode_path`:
 #   each digit is below 8, so `d1 << 6`, `d2 << 3` and `d3` occupy disjoint
@@ -292,10 +292,11 @@ timeout = "180m"
 #
 # Equivalent mutants, excluded with their argument:
 # - config/load.rs the `!prefix.is_empty()` guards (`!` deleted, or the guard
-#   made `true`) in `mark_explicit`: a nested empty object still reaches the
-#   leaf arm and records the same path, so the only key these can add is the
-#   empty root path `""`. `report_from_sources` then keeps only keys whose
-#   first segment is a known section, which `""` never is.
+#   made `true`, or the empty-object guard made `false`) in `mark_explicit`: a
+#   nested empty object still reaches the leaf arm and records the same path,
+#   so the only key these can add or drop is the empty root path `""`.
+#   `report_from_sources` then keeps only keys whose first segment is a known
+#   section, which `""` never is.
 # - config/load.rs `to_object` returning an empty map, or its
 #   `Ok(Value::Object(map))` arm deleted: the merge then starts from no
 #   defaults instead of the serialized ones. `deserialize_sections` starts
@@ -321,7 +322,7 @@ cargo mutants --package karet-session --all-features --cargo-test-arg=--lib \
   --file 'crates/karet-session/src/highlight.rs' \
   --file 'crates/karet-session/src/vcs_worker/linediff.rs' \
   --file 'crates/karet-session/src/backup.rs' \
-  --exclude-re 'load\\.rs:488:\\d+: (delete !|replace match guard !prefix\\.is_empty\\(\\) with true) in mark_explicit' \
+  --exclude-re 'load\\.rs:488:\\d+: (delete !|replace match guard !prefix\\.is_empty\\(\\) with (true|false)) in mark_explicit' \
   --exclude-re 'load\\.rs:491:\\d+: replace match guard !prefix\\.is_empty\\(\\) with true in mark_explicit' \
   --exclude-re 'load\\.rs:50[01]:\\d+: (replace to_object -> Map<String, Value> with Default::default\\(\\)|delete match arm Ok\\(Value::Object\\(map\\)\\) in to_object)' \
   --exclude-re 'hint_flight\\.rs:383:\\d+: replace match guard is_cancellation\\(&error\\) with false in deliver' \

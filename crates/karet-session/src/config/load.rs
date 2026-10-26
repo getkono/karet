@@ -550,8 +550,13 @@ pub fn user_config_dir() -> Option<PathBuf> {
 /// `<system config dir>/karet/setting.jsonc`. On Unix this is the first entry of
 /// `$XDG_CONFIG_DIRS` (default `/etc/xdg`); other platforms have no system tier.
 fn system_config_path() -> Option<PathBuf> {
+    system_config_path_in(std::env::var_os("XDG_CONFIG_DIRS"))
+}
+
+/// [`system_config_path`] for a given `$XDG_CONFIG_DIRS` value.
+fn system_config_path_in(xdg_config_dirs: Option<std::ffi::OsString>) -> Option<PathBuf> {
     if cfg!(unix) {
-        let base = std::env::var_os("XDG_CONFIG_DIRS")
+        let base = xdg_config_dirs
             .and_then(|dirs| {
                 dirs.to_str()
                     .and_then(|s| s.split(':').next())
