@@ -17,8 +17,10 @@
 //! once over the context rows (and the packages the last discovery found), and the
 //! packages fill in when the walk lands.
 
+use std::cell::Cell;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Once;
 
 use karet_seam::Discovered;
 use tokio::sync::mpsc;
@@ -107,10 +109,9 @@ impl RootDiscovery {
             .spawn(move || {
                 // A panicking walk must still answer, or `running` stays set and no later
                 // picker ever starts another discovery.
-                let packages = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let packages = contain_discovery_panics(|| {
                     karet_seam::discover(&root, karet_seam::DiscoveryOptions::default())
-                }))
-                .ok();
+                });
                 // The receiver is gone only when the app is shutting down.
                 let _ = tx.send(Discovery { root, packages });
             });
@@ -147,6 +148,45 @@ impl RootDiscovery {
             packages,
         ))
     }
+}
+
+thread_local! {
+    /// Set only while [`contain_discovery_panics`] runs a walk on this thread: a panic
+    /// here is logged rather than handed to the host's hook.
+    static CONTAINED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Run `walk`, returning `None` when it panics, without the panic reaching the host's
+/// panic hook.
+///
+/// `catch_unwind` alone is not enough: the process-wide hook runs before unwinding
+/// starts, and the hook `ratatui::init` installs restores the terminal, so a panicking
+/// walk would leave the editor running on a reset screen. The hook installed here wraps
+/// whatever hook is current, so a panic on any other thread still reaches it unchanged.
+fn contain_discovery_panics<T>(walk: impl FnOnce() -> T) -> Option<T> {
+    static INSTALL: Once = Once::new();
+    INSTALL.call_once(wrap_panic_hook);
+    let mark = |contained: bool| {
+        // Unavailable only while the thread is being torn down, when no walk runs.
+        let _ = CONTAINED.try_with(|slot| slot.set(contained));
+    };
+    mark(true);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(walk)).ok();
+    mark(false);
+    result
+}
+
+/// Wrap the current panic hook so a panic inside [`contain_discovery_panics`] is logged
+/// instead of passed on.
+fn wrap_panic_hook() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if CONTAINED.try_with(Cell::get).unwrap_or(false) {
+            tracing::error!(%info, "seam: package discovery panicked");
+        } else {
+            previous(info);
+        }
+    }));
 }
 
 /// Where a candidate came from, shown as the row's tail so the order reads rather than
@@ -483,6 +523,60 @@ mod tests {
         assert!(!discoveries.running);
         assert!(discoveries.awaiting.is_none());
         assert_eq!(discoveries.known(Path::new("/repo")), found);
+    }
+
+    #[test]
+    fn a_contained_panic_skips_the_host_hook_and_others_still_reach_it() {
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::atomic::Ordering;
+
+        // The host hook stands in for the one `ratatui::init` installs. It counts only
+        // this test's panics, so another test panicking meanwhile is passed through.
+        const CONTAINED_PANIC: &str = "seam-discovery-contained-panic";
+        const OTHER_PANIC: &str = "seam-discovery-other-thread-panic";
+        let contained_seen = Arc::new(AtomicUsize::new(0));
+        let other_seen = Arc::new(AtomicUsize::new(0));
+        let original: Arc<dyn Fn(&std::panic::PanicHookInfo<'_>) + Send + Sync> =
+            Arc::from(std::panic::take_hook());
+        {
+            let (original, contained_seen, other_seen) =
+                (original.clone(), contained_seen.clone(), other_seen.clone());
+            std::panic::set_hook(Box::new(move |info| {
+                match info.payload().downcast_ref::<&str>() {
+                    Some(&CONTAINED_PANIC) => contained_seen.fetch_add(1, Ordering::SeqCst),
+                    Some(&OTHER_PANIC) => other_seen.fetch_add(1, Ordering::SeqCst),
+                    _ => {
+                        original(info);
+                        0
+                    },
+                };
+            }));
+        }
+        wrap_panic_hook();
+
+        let walked: Option<()> =
+            contain_discovery_panics(|| std::panic::panic_any(CONTAINED_PANIC));
+        let elsewhere = std::thread::spawn(|| std::panic::panic_any(OTHER_PANIC)).join();
+
+        // Restore before asserting, so a failure here leaves the next test a sane hook.
+        let _ = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| original(info)));
+
+        assert!(walked.is_none(), "a panicked walk must report no packages");
+        assert_eq!(
+            contained_seen.load(Ordering::SeqCst),
+            0,
+            "the host hook ran"
+        );
+        assert!(elsewhere.is_err());
+        assert_eq!(
+            other_seen.load(Ordering::SeqCst),
+            1,
+            "a panic on another thread must still reach the host hook"
+        );
+        // The marker is cleared on the way out: this thread's later panics are not hidden.
+        assert!(!CONTAINED.with(Cell::get));
     }
 
     #[test]
