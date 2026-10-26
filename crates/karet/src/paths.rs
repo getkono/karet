@@ -66,18 +66,22 @@ pub(crate) fn abbreviate_home(path: &Path, home: Option<&Path>) -> String {
 /// record says), so `HOME=/mnt/scratch/ada` must still match a cwd of
 /// `/var/mnt/scratch/ada/dev` when `/mnt` links to `/var/mnt`.
 ///
-/// The returned remainder always comes from the comparison that matched, keeping the
-/// display free of the resolved prefix.
+/// The returned remainder is always a lexical tail of `absolute`: only an ancestor
+/// of `absolute` that itself resolves to `home` is replaced by `~`. A path whose
+/// resolved form lands under `home` through a symlink below that point (`/srv/link`
+/// -> `/home/ada/x`) is not under `home` as typed, so it stays absolute rather than
+/// borrowing the resolved remainder (`~/x`) another entry may already show.
 fn strip_home(absolute: &Path, home: &Path) -> Option<PathBuf> {
     if let Ok(rest) = absolute.strip_prefix(home) {
         return Some(rest.to_path_buf());
     }
     let real_home = std::fs::canonicalize(home).ok()?;
-    // A path that does not exist yet contributes its tail verbatim, so a workspace
-    // root the user is about to create still abbreviates.
-    canonical_nearest(absolute)
-        .strip_prefix(real_home)
-        .ok()
+    // Ancestors that do not exist yet fail to resolve and are skipped, so a workspace
+    // root the user is about to create still abbreviates through an existing parent.
+    absolute
+        .ancestors()
+        .find(|ancestor| std::fs::canonicalize(ancestor).is_ok_and(|real| real == real_home))
+        .and_then(|ancestor| absolute.strip_prefix(ancestor).ok())
         .map(Path::to_path_buf)
 }
 
@@ -228,6 +232,39 @@ mod tests {
         assert_eq!(
             title_path(Path::new("new/project"), &real_home, Some(&home)),
             format!("~{sep}new{sep}project", sep = std::path::MAIN_SEPARATOR)
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_from_outside_home_into_home_keeps_its_own_path()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::symlink;
+
+        // `/srv/link` -> `/home/ada/x` resolves under home, but labelling it `~/x`
+        // would show the resolved path and collide with a real `~/x` entry.
+        let dir = tempfile::tempdir()?;
+        let home = dir.path().join("home").join("ada");
+        std::fs::create_dir_all(home.join("x"))?;
+        std::fs::create_dir_all(dir.path().join("srv"))?;
+        let link = dir.path().join("srv").join("link");
+        symlink(home.join("x"), &link)?;
+
+        assert_eq!(
+            abbreviate_home(&link, Some(&home)),
+            link.display().to_string()
+        );
+        assert_eq!(
+            abbreviate_home(&link.join("sub"), Some(&home)),
+            link.join("sub").display().to_string()
+        );
+        // A link that points at home itself does stand for home.
+        let home_link = dir.path().join("srv").join("home");
+        symlink(&home, &home_link)?;
+        assert_eq!(
+            abbreviate_home(&home_link.join("x"), Some(&home)),
+            format!("~{}x", std::path::MAIN_SEPARATOR)
         );
         Ok(())
     }
