@@ -191,6 +191,7 @@ impl App {
             pending_prepared_diffs: HashMap::new(),
             pending_conversions: HashMap::new(),
             pending_startup_diffs: Vec::new(),
+            startup_surface_requested: false,
             pending_commit_verification: HashMap::new(),
             pending_merge_conflicts: HashMap::new(),
             graph_log_reqs: HashMap::new(),
@@ -454,6 +455,7 @@ impl App {
     /// explicit focus request still has the last word.
     pub fn apply_startup_view(&mut self, view: crate::cli::ViewChoice) {
         self.select_view(view.into());
+        self.startup_surface_requested = true;
     }
 
     pub fn apply_startup_focus(&mut self, focus: crate::cli::FocusChoice) {
@@ -461,6 +463,7 @@ impl App {
             crate::cli::FocusChoice::Sidebar if self.sidebar_visible => Focus::Sidebar,
             crate::cli::FocusChoice::Sidebar | crate::cli::FocusChoice::Editor => Focus::Editor,
         };
+        self.startup_surface_requested = true;
     }
 
     /// Whether the active tab is a diff (enables diff-specific keys).
