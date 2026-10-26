@@ -115,7 +115,7 @@ impl Repository {
     pub(crate) fn git_commit(&self, message: &str) -> Result<String, VcsError> {
         // One commit path, so hooks behave identically whether or not the caller
         // wants their output. Nothing holds the token, so nothing can cancel it.
-        match self.commit_streaming(message, &CommitCancel::new(), &mut |_| {})? {
+        match self.commit_with_output(message, &CommitCancel::new(), &mut |_| {})? {
             CommitOutcome::Created(oid) => Ok(oid),
             CommitOutcome::Cancelled => Err(VcsError::Git(
                 "commit was cancelled without a canceller".to_string(),
