@@ -3926,7 +3926,6 @@ name = "karet-theme"
 version = "0.7.1"
 dependencies = [
  "karet-core",
- "palette",
  "ratatui",
  "serde",
  "serde_json",
@@ -4896,7 +4895,6 @@ dependencies = [
  "fast-srgb8",
  "libm",
  "palette_derive",
- "phf 0.11.3",
 ]
 
 [[package]]
