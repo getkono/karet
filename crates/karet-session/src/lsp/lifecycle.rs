@@ -134,6 +134,7 @@ impl LspManager {
             connector,
             generation: self.generation,
             semantic,
+            primary,
         }));
         Some(())
     }

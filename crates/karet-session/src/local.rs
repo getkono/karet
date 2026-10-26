@@ -32,7 +32,9 @@ pub struct DocSnapshot {
     pub buffer: TextBuffer,
     /// Syntax highlights for this version.
     pub highlights: Arc<Highlights>,
-    /// Foldable regions for this version (tree-sitter fold ranges).
+    /// Foldable regions for this version: the primary language server's
+    /// folding ranges when it offers them, else tree-sitter's fold ranges (or
+    /// indentation's, for text no grammar parses).
     pub folds: Arc<FoldRegions>,
     /// Semantic block headers and scope ranges for sticky-scroll rendering.
     pub semantic_blocks: Arc<SemanticBlocks>,

@@ -309,6 +309,7 @@ impl Session {
             LspUpdate::DiagnosticsCleared { server, .. } => {
                 self.clear_lsp_diagnostic_layer(&server, None);
                 self.clear_semantic_tokens_of(&server);
+                self.clear_server_folds_of(&server);
             },
             // The server is up, but no longer answers pulls for a document
             // it was pulled for: what it last answered would otherwise stay
@@ -317,6 +318,7 @@ impl Session {
                 self.clear_lsp_diagnostic_layer(&server, Some(crate::lsp::DiagnosticFeed::Pulled));
             },
             update @ LspUpdate::SemanticTokens { .. } => self.adopt_semantic_tokens(update),
+            update @ LspUpdate::FoldingRanges { .. } => self.adopt_server_folds(update),
             LspUpdate::SyncFailed { server, reason, .. } => self.emit(
                 None,
                 Event::Notification {

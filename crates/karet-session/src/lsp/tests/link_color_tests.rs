@@ -41,6 +41,9 @@ pub(super) fn double_reply(msg: &Value) -> Value {
         Some("textDocument/documentColor") => json!([
             {"range": on(0, 2, 4), "color": {"red": 1.0, "green": 0.0, "blue": 0.0, "alpha": 1.0}}
         ]),
+        // Answered from the same arm of the double, which is at its line
+        // ceiling; the ranges are the folding tests'.
+        Some("textDocument/foldingRange") => super::folding_tests::double_reply(),
         _ => Value::Null,
     }
 }

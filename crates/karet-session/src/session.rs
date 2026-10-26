@@ -45,6 +45,7 @@ mod reload;
 mod retirement;
 mod search;
 mod semantic_tokens;
+mod server_folds;
 mod spelling;
 mod streams;
 mod syntax_state;
@@ -238,6 +239,9 @@ struct Document {
     /// The semantic-token owner's last overlay, translated across edits like
     /// [`highlights`](Self::highlights) (see [`semantic_tokens`]).
     semantic_tokens: Option<semantic_tokens::SemanticLayer>,
+    /// The primary server's folding ranges, preferred over the grammar's folds
+    /// on every snapshot while held (see [`server_folds`]).
+    server_folds: Option<server_folds::ServerFolds>,
     /// Open reference count (a path opened in N views shares one document).
     refs: u32,
     /// When the buffer first became dirty (session-clock ms), or `None` when clean.
@@ -868,6 +872,7 @@ fn update_syntax(
     edits: Option<&[AppliedEdit]>,
 ) -> bool {
     doc.translate_semantic_tokens(edits);
+    doc.translate_server_folds(edits);
     let Some(lang) = doc.lang_id else {
         // Plaintext: nothing to parse, and no worker round-trip to wait for.
         // No worker result will replace this, so ranges from a previous grammar

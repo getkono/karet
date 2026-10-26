@@ -765,6 +765,20 @@ pub(crate) enum LspUpdate {
         /// The tokens, in UTF-16 columns.
         tokens: Vec<karet_core::SemanticToken>,
     },
+    /// A document's folding ranges from its primary server, replacing the
+    /// grammar's fold regions on its snapshots (see `super::folding`).
+    FoldingRanges {
+        /// The incarnation of the slot that answered.
+        token: SlotToken,
+        /// The slot whose server answered.
+        server: SlotKey,
+        /// The document they fold.
+        path: PathBuf,
+        /// The document version they were asked at.
+        version: i32,
+        /// The regions, normalized.
+        folds: karet_core::FoldRegions,
+    },
     /// The server binary could not be started (reported once per language).
     SpawnFailed {
         /// The incarnation of the slot that failed to start.

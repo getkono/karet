@@ -139,6 +139,9 @@ pub(super) enum Behavior {
     /// Offer semantic tokens like [`Behavior::SemanticTokens`], but cancel
     /// the first request (`ServerCancelled`, `-32802`) and answer the rest.
     CancelsSemanticTokensOnce,
+    /// Serve normally, and offer folding ranges (see
+    /// `folding_tests::double_reply`).
+    Folds,
 }
 
 /// What the scripted server advertises at the handshake.
@@ -224,6 +227,9 @@ fn advertised_capabilities(behavior: Behavior) -> Value {
             "legend": {"tokenTypes": ["variable", "macro"], "tokenModifiers": ["mutable"]},
             "full": {"delta": true}
         });
+    }
+    if matches!(behavior, Behavior::Folds) {
+        capabilities["foldingRangeProvider"] = json!(true);
     }
     capabilities
 }
@@ -885,7 +891,8 @@ pub(super) fn test_connector(
                         Some(
                             "textDocument/documentLink"
                             | "documentLink/resolve"
-                            | "textDocument/documentColor",
+                            | "textDocument/documentColor"
+                            | "textDocument/foldingRange",
                         ) => {
                             let result = super::link_color_tests::double_reply(&msg);
                             write_msg(
