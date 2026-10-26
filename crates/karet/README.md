@@ -31,7 +31,7 @@ attribution, with line and semantic-scope modes.
 ├ breadcrumb (collapses when the tab has no path) ─────┤
 │  crates › karet › src › app.rs                       │
 ├──────────────┬──────────────────────────────────────┤
-│ EXPLORER 1·2·3│  1 //! …                             │
+│ EXPLORER 1 … 7│  1 //! …                             │
 │  ▾ crates     │  2                                    │  ← main area
 │   ▾ karet     │     (the active tab)                  │     (code / diff /
 │     app.rs  M │                                       │      image / hex /
@@ -51,27 +51,22 @@ pages stack on top of it, and `Esc` goes back. Opening a pull request's *Files
 changed* hands you to the Editor view, because a diff *is* a document. In a checkout
 whose `origin` is not on GitHub the view says so rather than sitting empty.
 
-Below it, a single switchable **sidebar** (Explorer / Search / Source Control) sits
-beside the **main area**. Overlays (quick-open, command palette) draw centered on
+Below it, a single switchable **sidebar** with seven panels (Explorer / Search /
+Source Control / Spelling / TODOs / Debug / Problems) sits beside the **main area**;
+Spelling is offered while spell check is on, and TODOs while codetag highlighting
+is. Overlays (quick-open, command palette) draw centered on
 top; the find bar is a one-line strip above the main area.
 
 ### File-type dispatch (the code window)
 
-Opening a file classifies it (`karet-widgets::viewer::classify`) and picks a
-renderer — everything unsupported fails gracefully:
-
-| kind | renderer |
-|---|---|
-| text / code | read-only `karet-editor` with tree-sitter highlights |
-| markdown | the editor (highlighted **source**; rich preview is deferred) |
-| image (png/jpg/gif/webp/bmp) | kitty graphics → halfblocks → placeholder |
-| PDF | placeholder (name / size — rasterization is deferred) |
-| binary | `karet-widgets::HexView` |
-| too large (>10 MiB) | placeholder |
+Opening a file classifies it (`karet-fileview::viewer::classify`) and picks a renderer —
+everything unsupported fails gracefully. Text and code open in the editable
+`karet-editor` with tree-sitter highlights; the other kinds and their renderers are
+listed in [docs/file-formats.md](../../docs/file-formats.md#non-text-renderers).
 
 Image and PDF rendering are optional, **default-on** features (`images`, `pdf`).
 Build with `cargo build --no-default-features` to drop their heavy dependency
-trees (`image` codecs, `hayro`); those kinds then show the placeholder instead.
+trees (Gamut image codecs, `hayro`); those kinds then show the placeholder instead.
 See [docs/binary-size.md](../../docs/binary-size.md).
 
 ## Keymap
@@ -80,7 +75,7 @@ See [docs/binary-size.md](../../docs/binary-size.md).
 opens a file at a line) · `Ctrl+G` go to line (`LINE[:COL]`) · `Ctrl+R` open a
 recent workspace · `Ctrl+Shift+P` (or `F1`) command palette · `Ctrl+F`
 find in file · `Ctrl+Shift+F` workspace search · `Ctrl+B` toggle sidebar ·
-`Ctrl+1/2/3` Explorer/Search/Source Control · `Ctrl+K 1/2` Editor/GitHub
+`Ctrl+1`…`7` Explorer/Search/Source Control/Spelling/TODOs/Debug/Problems · `Ctrl+K 1/2` Editor/GitHub
 view · `Ctrl+C` copy · `Ctrl+Shift+E` switch focus (`Tab` too, except in
 the editor, where `Tab` / `Shift+Tab` indent / outdent) · `Ctrl+Q` quit (`q` also quits in a
 viewer). The view switcher's buttons are also clickable, and each view has a
@@ -94,7 +89,7 @@ viewer). The view switcher's buttons are also clickable, and each view has a
 > sees them; **`Ctrl+Shift+P` is the most common casualty** — use **`F1`** for the
 > command palette instead, or click the ` +N` overflow marker at the right of the
 > status bar (it opens the palette, keeping every command reachable). All bindings
-> live in one table (`keymap/mod.rs`), the single place to change or rebind them.
+> live in one table (`keymap/bindings.rs`), the single place to change or rebind them.
 
 **Tabs:** `Ctrl+Tab` / `Ctrl+Shift+Tab` (or `Ctrl+PageDown`/`Ctrl+PageUp`) next /
 previous · `Ctrl+Shift+PageUp`/`PageDown` move left / right · `Alt+1`…`9` go to tab
@@ -228,7 +223,7 @@ a result cap was reached.
 
 **Mouse** (every element is interactive): click a tab to switch, its `×` (or
 middle-click) to close, drag to reorder; click explorer rows to open files /
-toggle folders and the header `1 2 3` to switch panels; click SCM / search rows to
+toggle folders and the header's panel icons to switch panels; click SCM / search rows to
 open them; click to place the caret and drag to select text (double / triple-click
 select word / line, and *dragging* from one extends by whole words / lines); a
 drag that leaves the viewport keeps scrolling and selecting; `Alt+Click`/`Alt+Drag`
@@ -249,7 +244,7 @@ and the explorer's inline rename field have a real caret, selection, and
 **Where these live (source of truth).** Every key and mouse interaction is defined in
 a few files, so there is one place to read or change each behavior:
 
-- **Keybindings** — the single `BINDINGS` table in `keymap/mod.rs`; it drives both
+- **Keybindings** — the single `BINDINGS` table in `keymap/bindings.rs`; it drives both
   the resolver and the palette's shortcut hints, so a binding and its displayed hint
   can never drift.
 - **Commands** — every named operation a binding fires is a `Command` in
@@ -258,26 +253,19 @@ a few files, so there is one place to read or change each behavior:
   `app/mouse.rs`; the editor's own click and drag in `app/editor.rs`
   (`handle_editor_click`) and `app/drag.rs` (drag granularity and autoscroll).
 - **Caret & selection model** — the multi-caret `EditorState` in the `karet-editor`
-  crate (`lib.rs`), built on `karet_core::CursorState`.
+  crate (`state.rs`), built on `karet_core::CursorState`.
 - **Selection on the read-only surfaces** — `app/select.rs` owns the model (a
   `karet_widgets::RowSelection` over absolute rows) and answers what a row's
   copyable text is; `ui/content/select.rs` lays it over the rendered cells.
 
 ## Architecture notes
 
-- The shell calls the engines directly (`karet-text`, `karet-search`,
-  `karet-treesitter`/`karet-syntax`, `karet-vcs`). Routing through the headless
-  `karet-session` backend is additive future work — its `Command`/`Event`
-  variants already map onto open / save / search.
-- Diff rendering is reused from `render.rs` (the original diff viewer).
-
-## Deferred (documented TODOs)
-
-- **Editing** (insert/delete/undo/save) — the code window is read-only; needs
-  `karet-text` edits + history + `karet-session`. Text selection + copy already
-  work (read-only), via mouse drag / `Shift`+arrows and `Ctrl+C`.
-- **Kitty image lifecycle** across scroll/resize — minimal active-tab transmit.
-- **Rich markdown preview** (`karet-markdown`), **PDF rasterization**.
-- **Parallel workspace search** and **replace**; **explorer git-status overlay**.
-- **`karet-fuzzy` ranking** for quick-open / palette (currently subsequence).
+- Editing, language intelligence, and source control route through the headless
+  `karet-session` backend. The app still calls some engines directly, and those
+  calls are being migrated behind the same seam; among them are diff rendering via
+  `karet-diff`, in-file find, occurrences and replace via `karet-search`, markdown
+  editing, table formatting and lint via `karet-markdown`, and Seam package
+  discovery via `karet_seam::discover`.
+- `render.rs` presents a backend-prepared diff: the session diffs and highlights
+  off the UI thread, and the app only paints the result.
 ```
