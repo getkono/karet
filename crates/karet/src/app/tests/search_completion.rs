@@ -243,6 +243,55 @@ async fn search_replace_all_rewrites_matching_files() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A replace that left files unwritten, or stopped on an error, surfaces as a
+/// failure naming what went wrong rather than as a plain success count.
+#[test]
+fn a_partial_or_failed_replace_is_reported_as_a_failure() {
+    let mut app = app();
+    let root = app.root.clone();
+    app.on_backend_event(
+        Some(RequestId(1)),
+        SessionEvent::SearchReplaced {
+            files_changed: 1,
+            replacements: 2,
+            failures: vec![karet_search::WriteFailure {
+                path: root.join("locked.rs"),
+                error: "Permission denied".to_owned(),
+            }],
+            error: None,
+        },
+    );
+    let note = app.notifications.active().first().cloned();
+    assert_eq!(
+        note.as_ref().map(|n| (n.severity, n.title.as_str())),
+        Some((
+            Severity::Error,
+            "replaced 2 occurrence(s) in 1 file(s); 1 file(s) could not be written"
+        ))
+    );
+    assert_eq!(
+        note.and_then(|n| n.body.clone()),
+        Some("locked.rs: Permission denied".to_owned())
+    );
+
+    app.on_backend_event(
+        Some(RequestId(2)),
+        SessionEvent::SearchReplaced {
+            files_changed: 0,
+            replacements: 0,
+            failures: Vec::new(),
+            error: Some("invalid search pattern".to_owned()),
+        },
+    );
+    assert_eq!(
+        last_report(&app),
+        Some((
+            Severity::Error,
+            "replace stopped: invalid search pattern".to_owned()
+        ))
+    );
+}
+
 #[test]
 fn search_option_toggle_button_click_dispatches() {
     let mut app = App::new(PathBuf::from("."), Vec::new(), Vec::new(), false);
