@@ -720,6 +720,10 @@ pub struct App {
     pub(crate) startup_commands: Vec<Command>,
     /// Parser-backed resolver for the seeded inline-macro catalog.
     inline_macro_engine: karet_syntax::InlineMacroEngine,
+    /// The last layered tree-sitter parse a UI-thread reader asked for (comment
+    /// toggling, Enter and paste indentation, Expand Selection), reused while the
+    /// document and its buffer version are unchanged.
+    layered_trees: syntax_select::LayeredTreeCache,
     /// In-flight commit-detail requests, mapping request id → where its result goes
     /// (a new standalone commit tab, or the graph browser's detail pane).
     pending_commit_detail: HashMap<RequestId, ViewId>,

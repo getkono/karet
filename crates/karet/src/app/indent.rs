@@ -4,37 +4,35 @@
 //! syntax-aware indentation a line break opens with, which Enter and a
 //! multi-line paste consult.
 
+use super::syntax_select::ParsedText;
 use super::*;
 
 /// One parse of a buffer, with the indent queries of its languages, answering
 /// what indentation a line break over a range of it opens with.
 pub(super) struct SyntaxIndent {
-    tree: karet_treesitter::LayeredTree,
+    parsed: Arc<ParsedText>,
     indenter: karet_syntax::Indenter,
-    text: String,
     unit: String,
 }
 
 impl SyntaxIndent {
-    /// Parse `buffer` as the language `path` names, with `unit` as one level.
-    fn new(path: &Path, buffer: &TextBuffer, unit: String) -> Option<Self> {
-        let lang = karet_treesitter::language_id_from_path(path)?;
-        if karet_treesitter::indents_query(lang).is_none()
-            && karet_treesitter::injections_query(lang).is_none()
-        {
-            return None;
-        }
-        let text = buffer.text();
-        let tree = karet_treesitter::LayeredParser::new()
-            .parse(lang, &text)
-            .ok()?;
-        let indenter = karet_syntax::Indenter::for_tree(&tree);
-        Some(Self {
-            tree,
-            indenter,
-            text,
-            unit,
+    /// Whether `path`'s language has an indent query to consult, or injects a
+    /// language that might.
+    fn applies(path: &Path) -> bool {
+        karet_treesitter::language_id_from_path(path).is_some_and(|lang| {
+            karet_treesitter::indents_query(lang).is_some()
+                || karet_treesitter::injections_query(lang).is_some()
         })
+    }
+
+    /// Answer line breaks over `parsed`, with `unit` as one level.
+    fn new(parsed: Arc<ParsedText>, unit: String) -> Self {
+        let indenter = karet_syntax::Indenter::for_tree(&parsed.tree);
+        Self {
+            parsed,
+            indenter,
+            unit,
+        }
     }
 
     /// The new line's indentation for a break replacing `range` of `buffer`
@@ -42,8 +40,12 @@ impl SyntaxIndent {
     pub(super) fn for_range(&self, buffer: &TextBuffer, range: Range) -> Option<String> {
         let before = buffer.line_col_to_byte(range.start).ok()?;
         let after = buffer.line_col_to_byte(range.end).ok()?;
-        self.indenter
-            .newline_indent(&self.tree, &self.text, (before, after), &self.unit)
+        self.indenter.newline_indent(
+            &self.parsed.tree,
+            &self.parsed.text,
+            (before, after),
+            &self.unit,
+        )
     }
 }
 
@@ -79,19 +81,18 @@ impl App {
     pub(super) fn syntax_indent(&self) -> Option<SyntaxIndent> {
         let unit = self.active_indentation();
         let Some(Tab {
-            kind:
-                TabKind::Code {
-                    path,
-                    doc: Some(_),
-                    buffer,
-                    ..
-                },
+            kind: TabKind::Code {
+                path, doc: Some(_), ..
+            },
             ..
         }) = self.tabs.get(self.active)
         else {
             return None;
         };
-        SyntaxIndent::new(path, buffer, unit)
+        if !SyntaxIndent::applies(path) {
+            return None;
+        }
+        Some(SyntaxIndent::new(self.layered_tree()?, unit))
     }
 
     /// Whether the active tab is a code tab whose document has opened.

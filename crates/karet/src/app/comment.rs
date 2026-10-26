@@ -7,6 +7,7 @@ use karet_editor::editing::LineComment;
 use karet_filetype::CommentTokens;
 use karet_treesitter::LanguageId;
 
+use super::syntax_select::ParsedText;
 use super::*;
 
 impl App {
@@ -28,7 +29,8 @@ impl App {
             return;
         };
         let (cursors, base) = (editor.cursors(), *next_version);
-        let tokens = comment_tokens_at(path, buffer, probe(buffer, cursors.primary().range()));
+        let pos = probe(buffer, cursors.primary().range());
+        let tokens = comment_tokens_at(path, buffer, pos, || self.layered_tree());
         let edit = if block {
             tokens.block().and_then(|(open, close)| {
                 editing::toggle_block_comment(buffer, cursors, base, open, close)
@@ -77,7 +79,15 @@ fn probe(buffer: &TextBuffer, range: Range) -> LineCol {
 /// Layers nested inside a comment of their host (Markdown injected into a Rust doc
 /// comment, and a doctest fence inside that) are not candidates: the line is still
 /// the host's source, so toggling it must use the host's comment syntax.
-fn comment_tokens_at(path: &Path, buffer: &TextBuffer, pos: LineCol) -> CommentTokens {
+///
+/// `parse` yields the document's layered parse; it is asked only when the
+/// file's language can inject another.
+fn comment_tokens_at(
+    path: &Path,
+    buffer: &TextBuffer,
+    pos: LineCol,
+    parse: impl FnOnce() -> Option<Arc<ParsedText>>,
+) -> CommentTokens {
     let own = karet_filetype::file_type_for_path(path).comment_tokens();
     let Some(root) = karet_treesitter::language_id_from_path(path) else {
         return own;
@@ -88,11 +98,10 @@ fn comment_tokens_at(path: &Path, buffer: &TextBuffer, pos: LineCol) -> CommentT
     let Ok(byte) = buffer.line_col_to_byte(pos) else {
         return own;
     };
-    let text = buffer.text();
-    let Ok(tree) = karet_treesitter::LayeredParser::new().parse(root, &text) else {
+    let Some(parsed) = parse() else {
         return own;
     };
-    let layers = tree.layers_at(byte);
+    let layers = parsed.tree.layers_at(byte);
     // Outermost first: keep descending until a layer is inside a comment of its own.
     let host = layers
         .iter()
