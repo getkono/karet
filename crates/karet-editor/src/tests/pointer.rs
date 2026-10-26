@@ -123,7 +123,7 @@ fn a_click_below_a_collapsed_fold_counts_rows_not_lines() {
 
     // The keyboard counts rows the same way: one line down stays put, and a
     // line off the bottom lands on the last row.
-    state.move_down(&buffer);
+    state.extend_down(&buffer);
     render(&mut state, &mut target);
     assert_eq!(state.scroll_line, 0, "line 61 is on row 12");
     state.goto(&buffer, LineCol::new(80, 0));
@@ -158,7 +158,7 @@ fn a_sticky_header_that_appears_does_not_hide_the_caret() {
     };
     render(&mut state, &mut target);
     for _ in 0..12 {
-        state.move_down(&buffer);
+        state.extend_down(&buffer);
         render(&mut state, &mut target);
         let line = state.cursor().line;
         assert!(

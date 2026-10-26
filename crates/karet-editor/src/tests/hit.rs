@@ -186,8 +186,8 @@ fn a_keyboard_move_drops_the_wrap_affinity() {
     let (buffer, area, mut state) = wrapped(3);
     let pos = state.pos_at(area, &buffer, &[], GUTTER + 8, 0);
     state.set_caret(&buffer, pos);
-    state.move_right(&buffer);
-    state.move_left(&buffer);
+    state.extend_right(&buffer);
+    state.extend_left(&buffer);
     assert_eq!(state.cursor(), pos);
     assert_eq!(
         caret_after_render(&buffer, area, &mut state),

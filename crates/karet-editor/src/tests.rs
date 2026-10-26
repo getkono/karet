@@ -260,9 +260,9 @@ fn motions_clamp_to_buffer() {
     let buffer = TextBuffer::from_text("ab\ncde\nf");
     let mut state = EditorState::new();
     state.last_height = 4;
-    state.move_down(&buffer);
-    state.move_down(&buffer);
-    state.move_down(&buffer); // past the end clamps to the last line
+    state.extend_down(&buffer);
+    state.extend_down(&buffer);
+    state.extend_down(&buffer); // past the end clamps to the last line
     assert_eq!(state.cursor().line, 2);
     state.goto(&buffer, LineCol::new(1, 99)); // col clamps to the line length
     assert_eq!(state.cursor(), LineCol::new(1, 3));
@@ -545,23 +545,23 @@ fn line_word_and_doc_motions() {
     let buffer = TextBuffer::from_text("foo bar\nbaz");
     let mut state = EditorState::new();
     state.last_height = 4;
-    state.move_line_end(&buffer);
+    state.extend_line_end(&buffer);
     assert_eq!(state.cursor(), LineCol::new(0, 7));
-    state.move_line_start(&buffer);
+    state.extend_line_start(&buffer);
     assert_eq!(state.cursor(), LineCol::new(0, 0));
     // Word-right lands at the end of each word, then wraps to the next line.
-    state.move_word_right(&buffer);
+    state.extend_word_right(&buffer);
     assert_eq!(state.cursor(), LineCol::new(0, 3));
-    state.move_word_right(&buffer);
+    state.extend_word_right(&buffer);
     assert_eq!(state.cursor(), LineCol::new(0, 7));
-    state.move_word_right(&buffer);
+    state.extend_word_right(&buffer);
     assert_eq!(state.cursor(), LineCol::new(1, 0));
     // Word-left from column 0 wraps to the previous line's end.
-    state.move_word_left(&buffer);
+    state.extend_word_left(&buffer);
     assert_eq!(state.cursor(), LineCol::new(0, 7));
-    state.move_doc_end(&buffer);
+    state.extend_doc_end(&buffer);
     assert_eq!(state.cursor(), LineCol::new(1, 3));
-    state.move_doc_start(&buffer);
+    state.extend_doc_start(&buffer);
     assert_eq!(state.cursor(), LineCol::new(0, 0));
 }
 

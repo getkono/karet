@@ -622,68 +622,71 @@ impl EditorState {
         self.normalize();
     }
 
-    /// Move every caret down one line, keeping each anchor
-    /// (`move_carets(buffer, Motion::Down, true)`).
-    pub fn move_down(&mut self, buffer: &TextBuffer) {
+    /// Extend every selection down one line: each caret moves and keeps its
+    /// anchor (`move_carets(buffer, Motion::Down, true)`). For a plain caret
+    /// move that collapses the selection, call [`Self::move_carets`] with
+    /// `extend = false`.
+    pub fn extend_down(&mut self, buffer: &TextBuffer) {
         self.move_carets(buffer, Motion::Down, true);
     }
 
-    /// Move every caret up one line, keeping each anchor.
-    pub fn move_up(&mut self, buffer: &TextBuffer) {
+    /// Extend every selection up one line, keeping each anchor.
+    pub fn extend_up(&mut self, buffer: &TextBuffer) {
         self.move_carets(buffer, Motion::Up, true);
     }
 
-    /// Move every caret left one column, wrapping to the previous line's end and
-    /// keeping each anchor.
-    pub fn move_left(&mut self, buffer: &TextBuffer) {
+    /// Extend every selection left one column, wrapping to the previous line's
+    /// end and keeping each anchor.
+    pub fn extend_left(&mut self, buffer: &TextBuffer) {
         self.move_carets(buffer, Motion::Left, true);
     }
 
-    /// Move every caret right one column, wrapping to the next line's start and
-    /// keeping each anchor.
-    pub fn move_right(&mut self, buffer: &TextBuffer) {
+    /// Extend every selection right one column, wrapping to the next line's
+    /// start and keeping each anchor.
+    pub fn extend_right(&mut self, buffer: &TextBuffer) {
         self.move_carets(buffer, Motion::Right, true);
     }
 
-    /// Move every caret down one page, keeping each anchor.
-    pub fn page_down(&mut self, buffer: &TextBuffer) {
+    /// Extend every selection down one page, keeping each anchor.
+    pub fn extend_page_down(&mut self, buffer: &TextBuffer) {
         self.move_carets(buffer, Motion::PageDown, true);
     }
 
-    /// Move every caret up one page, keeping each anchor.
-    pub fn page_up(&mut self, buffer: &TextBuffer) {
+    /// Extend every selection up one page, keeping each anchor.
+    pub fn extend_page_up(&mut self, buffer: &TextBuffer) {
         self.move_carets(buffer, Motion::PageUp, true);
     }
 
-    /// Move every caret to the start of its line (column 0), keeping each anchor.
-    pub fn move_line_start(&mut self, buffer: &TextBuffer) {
+    /// Extend every selection to the start of its line (column 0), keeping
+    /// each anchor.
+    pub fn extend_line_start(&mut self, buffer: &TextBuffer) {
         self.move_carets(buffer, Motion::LineStart, true);
     }
 
-    /// Move every caret to the end of its line, keeping each anchor.
-    pub fn move_line_end(&mut self, buffer: &TextBuffer) {
+    /// Extend every selection to the end of its line, keeping each anchor.
+    pub fn extend_line_end(&mut self, buffer: &TextBuffer) {
         self.move_carets(buffer, Motion::LineEnd, true);
     }
 
-    /// Move every caret to the start of the document, keeping each anchor.
-    pub fn move_doc_start(&mut self, buffer: &TextBuffer) {
+    /// Extend every selection to the start of the document, keeping each anchor.
+    pub fn extend_doc_start(&mut self, buffer: &TextBuffer) {
         self.move_carets(buffer, Motion::DocStart, true);
     }
 
-    /// Move every caret to the end of the document, keeping each anchor.
-    pub fn move_doc_end(&mut self, buffer: &TextBuffer) {
+    /// Extend every selection to the end of the document, keeping each anchor.
+    pub fn extend_doc_end(&mut self, buffer: &TextBuffer) {
         self.move_carets(buffer, Motion::DocEnd, true);
     }
 
-    /// Move every caret to the start of the previous word (wrapping across
-    /// lines), keeping each anchor.
-    pub fn move_word_left(&mut self, buffer: &TextBuffer) {
+    /// Extend every selection to the start of the previous word (wrapping
+    /// across lines), keeping each anchor.
+    pub fn extend_word_left(&mut self, buffer: &TextBuffer) {
         self.move_carets(buffer, Motion::WordLeft, true);
     }
 
-    /// Move every caret to the end of the next word (wrapping across lines),
-    /// keeping each anchor.
-    pub fn move_word_right(&mut self, buffer: &TextBuffer) {
+    /// Extend every selection to the end of the next word (wrapping across
+    /// lines), keeping each anchor.
+    pub fn extend_word_right(&mut self, buffer: &TextBuffer) {
         self.move_carets(buffer, Motion::WordRight, true);
     }
 
