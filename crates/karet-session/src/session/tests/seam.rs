@@ -560,6 +560,23 @@
         (session, events)
     }
 
+    /// Wait until the worker has stored the index it just finished.
+    ///
+    /// The worker reports `SeamIndexFinished` *before* it writes the cache, so the
+    /// reader is not kept waiting on the disk. A test that starts a second session
+    /// straight after the finish can therefore load the cache before it exists. The
+    /// worker runs jobs in order, so the answer to a query sent after the finish proves
+    /// the write that preceded it is done.
+    fn await_cache_stored(
+        session: &mut Session,
+        events: &mut crate::session::EventRx,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        session.handle(RequestId(99), Command::SeamQuery {
+            text: "lens:api".to_owned(),
+        });
+        next_seam_answer(events, "SeamQueryResult").map(|_| ())
+    }
+
     #[test]
     fn an_index_arrives_as_one_event_per_package_closed_by_one_finish() -> TestResult {
         let dir = tempfile::tempdir()?;
@@ -610,6 +627,7 @@
         });
         let cold = await_index_stream(&mut events).ok_or(NO_STREAM)?;
         assert_eq!(cold.parsed, cold.files);
+        await_cache_stored(&mut session, &mut events)?;
         drop(session);
 
         // Warm: the same workspace, a fresh session, nothing changed on disk.
@@ -635,6 +653,7 @@
             mode: crate::api::SeamSync::Incremental,
         });
         await_index_stream(&mut events).ok_or(NO_STREAM)?;
+        await_cache_stored(&mut session, &mut events)?;
         drop(session);
 
         let touched = dir.path().join("crates").join("alpha").join("src").join("inner.rs");

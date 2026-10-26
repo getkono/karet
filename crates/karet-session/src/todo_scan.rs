@@ -22,11 +22,10 @@ use crate::api::Event;
 use crate::api::RequestId;
 use crate::api::TodoHit;
 use crate::cancellation::Cancellation;
-
-/// Flush a partial batch after this many files (see `spell_scan`).
-const FILES_PER_BATCH: usize = 200;
-/// Flush a partial batch once it holds this many hits.
-const HITS_PER_BATCH: usize = 64;
+use crate::scan_walk::BatchedScan;
+use crate::scan_walk::Walk;
+use crate::scan_walk::resolve_path;
+use crate::scan_walk::send;
 
 /// One workspace codetag scan request.
 pub(crate) struct TodoScanJob {
@@ -82,14 +81,41 @@ struct ParseHost {
     highlighter: LayeredHighlighter,
 }
 
-/// Everything one scan accumulates while walking.
-struct ScanState {
-    hits: Vec<TodoHit>,
-    files_scanned: usize,
-    files_since_flush: usize,
+/// One scan as the shared walk sees it.
+struct TodoScan<'a> {
+    job: &'a TodoScanJob,
+    host: &'a mut ParseHost,
+    /// The open documents' resolved paths, which the walk skips.
+    open_paths: Vec<PathBuf>,
     total_hits: usize,
-    truncated: bool,
-    cancelled: bool,
+}
+
+impl BatchedScan for TodoScan<'_> {
+    type Hit = TodoHit;
+
+    fn visit(&mut self, path: &Path, text: &str, hits: &mut Vec<TodoHit>) -> ControlFlow<()> {
+        if !self
+            .open_paths
+            .iter()
+            .any(|open| *open == resolve_path(path))
+        {
+            check_file(path, text, self.job, self.host, &mut self.total_hits, hits);
+        }
+        if self.total_hits >= self.job.limit {
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
+    }
+
+    /// An empty batch sends nothing: unlike the other scans, this one never
+    /// reports a bare scanned count.
+    fn progress(&self, hits: Vec<TodoHit>, files_scanned: usize) -> Option<Event> {
+        (!hits.is_empty()).then_some(Event::TodoScanProgress {
+            hits,
+            files_scanned,
+        })
+    }
 }
 
 /// Walk the workspace, streaming batches as it goes.
@@ -98,78 +124,51 @@ fn scan(
     host: &mut ParseHost,
     events: &tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
 ) -> ControlFlow<()> {
-    let mut state = ScanState {
-        hits: Vec::new(),
-        files_scanned: 0,
-        files_since_flush: 0,
-        total_hits: 0,
-        truncated: false,
-        cancelled: false,
-    };
     // Open buffers first: their live text wins over the disk copy the walk
     // would read, and skipping them below keeps every path scanned once.
-    let open_paths: Vec<PathBuf> = job
-        .open
-        .iter()
-        .map(|(path, _)| crate::spell_scan::resolve_path(path))
-        .collect();
+    let mut hits = Vec::new();
+    let mut total_hits = 0;
     for (path, text) in &job.open {
-        check_file(path, text, job, host, &mut state);
+        check_file(path, text, job, host, &mut total_hits, &mut hits);
     }
-    let mut disconnected = false;
-    for root in &job.roots {
-        let _ = karet_search::walk_text_files(root, &[], &job.excludes, |path, text| {
-            if job.cancel.is_cancelled() {
-                state.cancelled = true;
-                return ControlFlow::Break(());
-            }
-            state.files_scanned += 1;
-            state.files_since_flush += 1;
-            if !open_paths
-                .iter()
-                .any(|open| *open == crate::spell_scan::resolve_path(path))
-            {
-                check_file(path, &text, job, host, &mut state);
-            }
-            if state.total_hits >= job.limit {
-                state.truncated = true;
-                return ControlFlow::Break(());
-            }
-            if state.hits.len() >= HITS_PER_BATCH || state.files_since_flush >= FILES_PER_BATCH {
-                state.files_since_flush = 0;
-                if flush(&mut state, job.id, events).is_break() {
-                    disconnected = true;
-                    return ControlFlow::Break(());
-                }
-            }
-            ControlFlow::Continue(())
-        });
-        if disconnected || state.cancelled || state.truncated {
-            break;
-        }
-    }
-    if disconnected {
-        return ControlFlow::Break(());
-    }
-    flush(&mut state, job.id, events)?;
+    let mut scan = TodoScan {
+        job,
+        host,
+        open_paths: job
+            .open
+            .iter()
+            .map(|(path, _)| resolve_path(path))
+            .collect(),
+        total_hits,
+    };
+    let walk = Walk {
+        roots: &job.roots,
+        includes: &[],
+        excludes: &job.excludes,
+        cancel: &job.cancel,
+    };
+    // A walk error is a bad exclude glob from the settings; the scan has never
+    // reported one, and finishes with whatever the open documents held.
+    let walked = crate::scan_walk::walk_batched(&walk, &mut scan, job.id, events, hits)?;
     send(
         events,
         job.id,
         Event::TodoScanFinished {
-            files_scanned: state.files_scanned,
-            truncated: state.truncated,
-            cancelled: state.cancelled,
+            files_scanned: walked.files_scanned,
+            truncated: walked.truncated,
+            cancelled: walked.cancelled,
         },
     )
 }
 
-/// Find the codetags of one file.
+/// Find the codetags of one file, appending them to `hits`.
 fn check_file(
     path: &Path,
     text: &str,
     job: &TodoScanJob,
     host: &mut ParseHost,
-    state: &mut ScanState,
+    total_hits: &mut usize,
+    hits: &mut Vec<TodoHit>,
 ) {
     // No compiled grammar means no comment spans — nothing to find. (Markdown
     // and plain prose have no comment vocabulary, matching the editor's tint.)
@@ -179,51 +178,18 @@ fn check_file(
         return;
     };
     let highlights = host.highlighter.highlight(&tree, text);
-    let room = job.limit.saturating_sub(state.total_hits);
+    let room = job.limit.saturating_sub(*total_hits);
     for hit in karet_syntax::find_codetags(text, &highlights, &job.config)
         .into_iter()
         .take(room)
     {
-        state.total_hits += 1;
-        state.hits.push(TodoHit {
+        *total_hits += 1;
+        hits.push(TodoHit {
             path: path.to_path_buf(),
             line: hit.line,
             tag: hit.tag,
             message: hit.message,
         });
-    }
-}
-
-/// Emit the accumulated partial batch, if any.
-fn flush(
-    state: &mut ScanState,
-    id: RequestId,
-    events: &tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
-) -> ControlFlow<()> {
-    if state.hits.is_empty() {
-        return ControlFlow::Continue(());
-    }
-    let hits = std::mem::take(&mut state.hits);
-    send(
-        events,
-        id,
-        Event::TodoScanProgress {
-            hits,
-            files_scanned: state.files_scanned,
-        },
-    )
-}
-
-/// Send one event, breaking when the session is gone.
-fn send(
-    events: &tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
-    id: RequestId,
-    event: Event,
-) -> ControlFlow<()> {
-    if events.send((Some(id), event)).is_err() {
-        ControlFlow::Break(())
-    } else {
-        ControlFlow::Continue(())
     }
 }
 

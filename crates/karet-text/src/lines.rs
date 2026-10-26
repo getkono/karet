@@ -33,7 +33,7 @@ pub fn lines(text: &str) -> impl Iterator<Item = &str> + '_ {
 }
 
 /// Whether `ch` ends a line in the rope (`\r\n` is handled by the caller).
-fn is_break(ch: char) -> bool {
+pub(crate) fn is_break(ch: char) -> bool {
     matches!(
         ch,
         '\n' | '\u{0B}' | '\u{0C}' | '\r' | '\u{85}' | '\u{2028}' | '\u{2029}'

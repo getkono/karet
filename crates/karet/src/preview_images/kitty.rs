@@ -10,11 +10,8 @@
 //!
 //! See <https://sw.kovidgoyal.net/kitty/graphics-protocol/#unicode-placeholders>.
 
-use std::io::Write as _;
 use std::num::NonZeroU16;
 
-use base64::Engine as _;
-use karet_fileview::image::Image;
 use ratatui::buffer::Buffer;
 use ratatui::buffer::CellDiffOption;
 use ratatui::layout::Rect;
@@ -22,9 +19,6 @@ use ratatui::style::Color;
 
 /// The character a terminal replaces with a cell of a virtually placed image.
 pub(crate) const PLACEHOLDER: char = '\u{10EEEE}';
-
-/// The most base64 bytes one escape carries.
-const CHUNK: usize = 4096;
 
 /// The combining marks numbering a placeholder cell's row and column, in order: the
 /// `n`th mark means `n`. Kitty's `rowcolumn-diacritics.txt`, verbatim.
@@ -327,45 +321,6 @@ pub(crate) const DIACRITICS: [char; 297] = [
     '\u{1D243}',
     '\u{1D244}',
 ];
-
-/// The escapes transmitting `image` under `id`: zlib-compressed RGBA, base64, chunked,
-/// with the terminal's replies silenced. Nothing is displayed until it is placed.
-pub(crate) fn transmit(image: &Image, id: u32) -> String {
-    let mut zlib = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
-    let compressed = zlib
-        .write_all(image.rgba())
-        .and_then(|()| zlib.finish())
-        .ok();
-    let (payload, keys) = match compressed {
-        Some(bytes) => (bytes, ",o=z"),
-        None => (image.rgba().to_vec(), ""),
-    };
-    let payload = base64::engine::general_purpose::STANDARD.encode(payload);
-    let chunks: Vec<&str> = payload
-        .as_bytes()
-        .chunks(CHUNK)
-        .filter_map(|chunk| std::str::from_utf8(chunk).ok())
-        .collect();
-    let mut out = String::with_capacity(payload.len() + chunks.len() * 16);
-    for (i, chunk) in chunks.iter().enumerate() {
-        let more = u8::from(i + 1 != chunks.len());
-        if i == 0 {
-            out.push_str(&format!(
-                "\x1b_Ga=t,i={id},f=32,s={},v={}{keys},q=2,m={more};{chunk}\x1b\\",
-                image.width(),
-                image.height()
-            ));
-        } else {
-            out.push_str(&format!("\x1b_Gm={more},q=2;{chunk}\x1b\\"));
-        }
-    }
-    out
-}
-
-/// The escape giving image `id` virtual placement `placement`, `cols`×`rows` cells.
-pub(crate) fn place(id: u32, placement: u32, cols: u16, rows: u16) -> String {
-    format!("\x1b_Ga=p,U=1,i={id},p={placement},c={cols},r={rows},q=2\x1b\\")
-}
 
 /// A 24-bit value as a truecolor colour, which is how a placeholder names its ids.
 fn id_color(value: u32) -> Color {

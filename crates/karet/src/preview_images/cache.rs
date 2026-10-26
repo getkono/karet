@@ -579,7 +579,7 @@ fn place(kitty: &mut Kitty, id: u32, ready: &mut Ready, cells: (u16, u16)) -> Pa
         let payload = ready
             .payload
             .take()
-            .unwrap_or_else(|| super::kitty::transmit(&ready.image, id));
+            .unwrap_or_else(|| ready.image.kitty_transmit(id, true));
         output.push_str(&payload);
         Vec::new()
     });
@@ -590,7 +590,7 @@ fn place(kitty: &mut Kitty, id: u32, ready: &mut Ready, cells: (u16, u16)) -> Pa
             boxes.push(cells);
             let index = boxes.len() - 1;
             let placement = u32::try_from(index + 1).unwrap_or(u32::MAX);
-            output.push_str(&super::kitty::place(id, placement, cells.0, cells.1));
+            output.push_str(&image::kitty_place(id, placement, cells.0, cells.1));
             index
         });
     let placement = u32::try_from(index + 1).unwrap_or(u32::MAX);
@@ -668,7 +668,7 @@ fn decode_file(job: Job) -> Decoded {
     let payload = job
         .kitty_id
         .zip(image.as_deref())
-        .map(|(id, image)| super::kitty::transmit(image, id));
+        .map(|(id, image)| image.kitty_transmit(id, true));
     Decoded {
         path: job.path,
         stamp: job.stamp,
