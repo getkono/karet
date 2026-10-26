@@ -45,7 +45,7 @@ impl GraphicsCaret {
 
 /// Delete the graphical editor caret image, leaving unrelated Kitty images alone.
 fn delete_graphics_caret() -> String {
-    format!("\x1b_Ga=d,d=I,i={CARET_IMAGE_ID}\x1b\\")
+    image::kitty_delete_image(CARET_IMAGE_ID)
 }
 
 fn caret_rgba() -> Vec<u8> {
@@ -226,7 +226,9 @@ mod tests {
     #[test]
     fn graphics_caret_escape_uses_a_cell_scaled_image_and_specific_delete() {
         let esc = GraphicsCaret { x: 4, y: 2 }.escape();
-        assert!(esc.contains("a=d,d=I"));
+        // The previous caret goes first, by its id alone and with replies silenced.
+        assert!(esc.starts_with(&image::kitty_delete_image(CARET_IMAGE_ID)));
+        assert!(esc.contains(&format!("a=d,d=I,i={CARET_IMAGE_ID},q=2")));
         assert!(esc.contains("\x1b[3;5H"));
         assert!(esc.contains("s=32"));
         assert!(esc.contains("v=64"));

@@ -290,6 +290,98 @@ fn an_id_scoped_kitty_escape_is_deletable_by_that_id_alone() {
     );
 }
 
+/// The keys of each escape in `escapes`, and the base64 payload they carry, joined.
+#[cfg(feature = "raster")]
+fn kitty_split(escapes: &str) -> (Vec<String>, Vec<u8>) {
+    let mut keys = Vec::new();
+    let mut payload = String::new();
+    for escape in escapes.split("\x1b\\").filter(|escape| !escape.is_empty()) {
+        let body = escape.trim_start_matches("\x1b_G");
+        let (head, data) = body.split_once(';').unwrap_or((body, ""));
+        keys.push(head.to_owned());
+        payload.push_str(data);
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(payload)
+        .unwrap_or_default();
+    (keys, bytes)
+}
+
+/// A `width`×`height` image of xorshift noise, which zlib cannot shrink much, so
+/// its compressed transmission still spans several chunks.
+#[cfg(feature = "raster")]
+fn noisy(width: u32, height: u32) -> Image {
+    let mut state = 0x9e37_79b9_u32;
+    let rgba = (0..width * height * 4)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state.to_be_bytes()[0]
+        })
+        .collect();
+    Image::from_rgba(rgba, width, height)
+}
+
+#[cfg(feature = "raster")]
+#[test]
+fn a_compressed_transmission_carries_every_pixel_losslessly_under_its_id() {
+    use std::io::Read as _;
+
+    let image = noisy(128, 96);
+    let (keys, compressed) = kitty_split(&image.kitty_transmit(7, true));
+    assert!(
+        keys.len() > 2,
+        "a payload past two chunks has middle chunks"
+    );
+    assert_eq!(
+        keys.first().map(String::as_str),
+        Some("a=t,i=7,f=32,s=128,v=96,o=z,q=2,m=1")
+    );
+    assert!(keys[1..keys.len() - 1].iter().all(|k| k == "m=1,q=2"));
+    assert_eq!(keys.last().map(String::as_str), Some("m=0,q=2"));
+    let mut rgba = Vec::new();
+    let _ = flate2::read::ZlibDecoder::new(compressed.as_slice()).read_to_end(&mut rgba);
+    assert_eq!(rgba, image.rgba());
+}
+
+#[cfg(feature = "raster")]
+#[test]
+fn an_uncompressed_transmission_sends_the_raw_pixels_without_o_z() {
+    let image = noisy(64, 48);
+    let (keys, rgba) = kitty_split(&image.kitty_transmit(3, false));
+    assert_eq!(
+        keys.first().map(String::as_str),
+        Some("a=t,i=3,f=32,s=64,v=48,q=2,m=1")
+    );
+    assert_eq!(rgba, image.rgba());
+    // No escape's base64 runs past the protocol's 4096-byte chunk limit.
+    let escapes = image.kitty_transmit(3, false);
+    assert!(
+        escapes
+            .split("\x1b\\")
+            .filter_map(|escape| escape.split_once(';'))
+            .all(|(_, data)| data.len() <= 4096)
+    );
+}
+
+#[cfg(feature = "raster")]
+#[test]
+fn a_small_transmission_is_one_escape_and_displays_nothing() {
+    let (keys, _) = kitty_split(&noisy(2, 2).kitty_transmit(1, true));
+    // `a=t` transmits only: no `a=T`, so nothing appears until a placement.
+    assert_eq!(keys, vec!["a=t,i=1,f=32,s=2,v=2,o=z,q=2,m=0"]);
+}
+
+#[cfg(feature = "raster")]
+#[test]
+fn a_placement_is_virtual_and_sized_in_cells() {
+    assert_eq!(
+        kitty_place(9, 2, 40, 12),
+        "\x1b_Ga=p,U=1,i=9,p=2,c=40,r=12,q=2\x1b\\"
+    );
+}
+
 #[cfg(feature = "images")]
 #[test]
 fn halfblocks_fill_cells() {

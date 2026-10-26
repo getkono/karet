@@ -17,7 +17,7 @@ default = []
 # The shared terminal-image primitives (Kitty escape + dependency-free halfblock
 # resampling). Enabled automatically by `images`; a consumer rarely selects it
 # directly.
-raster = ["dep:base64"]
+raster = ["dep:base64", "dep:flate2"]
 # Decode & render raster image FILES through Gamut. The codec stays absent from
 # raster-only consumers.
 images = ["raster", "dep:gamut", "dep:thiserror"]
@@ -29,6 +29,7 @@ karet-theme = { workspace = true, features = ["view"] }  # role colors for the v
 ratatui.workspace = true
 gamut = { workspace = true, optional = true }  # pure-Rust PNG/JPEG/WebP/TIFF decoding (behind `images`)
 base64 = { workspace = true, optional = true }  # Kitty graphics protocol payload encoding (behind `raster`)
+flate2 = { workspace = true, optional = true }  # zlib-compressed Kitty transmission, pure-Rust miniz_oxide backend (behind `raster`)
 thiserror = { workspace = true, optional = true }  # ImageError (behind `images`)
 
 [lints]
