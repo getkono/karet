@@ -61,7 +61,6 @@ use github::GithubJob;
 use karet_core::BytePos;
 use karet_core::Change;
 use karet_core::CursorState;
-use karet_core::Decoration;
 use karet_core::LineCol;
 use karet_core::NotificationKind;
 use karet_core::Range;
@@ -171,20 +170,6 @@ impl Default for SessionConfig {
     }
 }
 
-impl SessionConfig {
-    /// Whether format-on-save is enabled (`editor.formatOnSave`).
-    #[must_use]
-    pub fn format_on_save(&self) -> bool {
-        self.settings.editor.format_on_save
-    }
-
-    /// Whether spell-checking is enabled (`spellcheck.enabled`).
-    #[must_use]
-    pub fn spellcheck(&self) -> bool {
-        self.settings.spellcheck.enabled
-    }
-}
-
 /// How a document's edit buffer maps to its on-disk bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DocFormat {
@@ -256,7 +241,6 @@ struct Document {
     /// The semantic-token owner's last overlay, translated across edits like
     /// [`highlights`](Self::highlights) (see [`semantic_tokens`]).
     semantic_tokens: Option<semantic_tokens::SemanticLayer>,
-    decorations: Vec<Decoration>,
     /// Open reference count (a path opened in N views shares one document).
     refs: u32,
     /// When the buffer first became dirty (session-clock ms), or `None` when clean.
@@ -771,49 +755,49 @@ impl Session {
             Command::SearchReplaceAll { query, replacement } => {
                 self.search_replace_all(id, query, replacement);
             },
-            // Language-server management commands are consumed by the
-            // `handle_lsp_command` pre-dispatch above and never reach this match.
-            _ => {},
+            // Consumed by the pre-dispatch functions above, so they never reach
+            // this match. Named rather than matched by a wildcard so that a new
+            // `Command` variant nobody routed fails to compile instead of being
+            // silently dropped. The notebook-kernel commands land here only in a
+            // build without the `notebook-kernel` feature, where there is no
+            // kernel to drive.
+            Command::DebugStart { .. }
+            | Command::DebugStop
+            | Command::DebugContinue
+            | Command::DebugStepOver
+            | Command::DebugStepIn
+            | Command::DebugStepOut
+            | Command::DebugPause
+            | Command::DebugSetBreakpoints { .. }
+            | Command::DebugStackTrace
+            | Command::DebugScopes { .. }
+            | Command::DebugVariables { .. }
+            | Command::DebugEvaluate { .. }
+            | Command::NotebookRunAll { .. }
+            | Command::NotebookRunCell { .. }
+            | Command::NotebookInterrupt
+            | Command::NotebookRestart
+            | Command::LanguageServerStatus
+            | Command::InstallLanguageServer { .. }
+            | Command::DeclineLanguageServer { .. }
+            | Command::UndeclineLanguageServer { .. }
+            | Command::CheckLanguageServerUpdates { .. }
+            | Command::ApplyLanguageServerPlan { .. }
+            | Command::UninstallLanguageServer { .. }
+            | Command::Format(_)
+            | Command::SelectionRanges { .. }
+            | Command::DocumentHighlights { .. }
+            | Command::PrepareHierarchy { .. }
+            | Command::ExpandHierarchy { .. }
+            | Command::LinkedEditingRanges { .. }
+            | Command::FormatOnType { .. }
+            | Command::CodeLenses { .. }
+            | Command::RunCodeLens { .. }
+            | Command::RestartLanguageServer { .. }
+            | Command::CancelLanguageServerWork { .. }
+            | Command::AnswerLanguageServerMessage { .. }
+            | Command::LanguageServerLog { .. } => {},
         }
-    }
-
-    // --- source control ---------------------------------------------------
-
-    /// Register a cancellation for `id` and hand the worker a job built from it —
-    /// the single submission shape for every cancellable VCS request.
-    fn submit_vcs(
-        &self,
-        id: RequestId,
-        make: impl FnOnce(RequestId, crate::cancellation::Cancellation) -> crate::vcs_worker::VcsJob,
-    ) {
-        let cancel = self.cancellations.register(id);
-        let _ = self.vcs_worker.send(make(id, cancel));
-    }
-
-    fn request_blame(&self, id: RequestId, doc: DocumentId, version: u64, line: u32) {
-        let Some(document) = self.store.docs.get(&doc) else {
-            self.emit(
-                Some(id),
-                Event::Notification {
-                    severity: Severity::Error,
-                    kind: NotificationKind::Vcs,
-                    message: "blame: unknown document".to_string(),
-                },
-            );
-            return;
-        };
-        if document.buffer.version() != version {
-            return;
-        }
-        let _ = self.vcs_worker.send(crate::vcs_worker::VcsJob::Blame {
-            id,
-            doc,
-            version,
-            path: document.path.clone(),
-            text: document.buffer.text(),
-            line,
-            cancel: self.cancellations.register(id),
-        });
     }
 
     fn request_latex_build(&mut self, id: RequestId, doc: DocumentId) {

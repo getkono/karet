@@ -79,7 +79,6 @@ fn snapshot_of(app: &App) -> DocSnapshot {
         highlights: Arc::new(karet_syntax::Highlights::default()),
         semantic_blocks: Arc::new(karet_syntax::SemanticBlocks::default()),
         folds: Arc::new(FoldRegions::default()),
-        decorations: Arc::new(Vec::new()),
         syntax_error_lines: Arc::new(Vec::new()),
         table_lines: Arc::default(),
         language: Some("Rust"),

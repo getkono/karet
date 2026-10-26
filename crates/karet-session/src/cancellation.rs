@@ -129,6 +129,22 @@ impl Drop for Cancellation {
 mod tests {
     use super::*;
 
+    #[test]
+    fn cancellation_hub_signals_live_job_and_forgets_finished_job() {
+        let hub = CancellationHub::default();
+        let token = hub.register(RequestId(41));
+        assert!(!token.is_cancelled());
+        hub.cancel(RequestId(41));
+        assert!(token.is_cancelled());
+        drop(token);
+
+        // Cancelling after completion is a harmless no-op and does not poison a
+        // later request that happens to use a different id.
+        hub.cancel(RequestId(41));
+        let next = hub.register(RequestId(42));
+        assert!(!next.is_cancelled());
+    }
+
     #[tokio::test]
     async fn cancellation_wakes_an_async_reader() {
         let hub = CancellationHub::default();
