@@ -4,7 +4,8 @@
 
 A single, reusable tree-sitter front end — parser pooling, incremental re-parsing, and query
 execution — so syntax highlighting and structural navigation share one parse of each buffer.
-(Diffing in `karet-diff` is purely textual and does not use it.) Tree-sitter is the sole syntax backend, by design.
+(Diffing in `karet-diff` is purely textual and does not use it.) Tree-sitter is the sole
+syntax backend, by design.
 
 It also resolves **language injection**: `LayeredParser` parses a document as a root tree
 plus one tree per embedded region, so a markdown code fence is parsed as the language it

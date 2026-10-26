@@ -44,9 +44,8 @@ impl TokenId {
 /// document models (DOCX runs), and markup rendering. It is not the only
 /// attribute type: a [`Decoration`](crate::Decoration) carries its own
 /// [`TextModifiers`](crate::TextModifiers) flags, kept separate on purpose.
-/// Markup tokens carry
-/// weight/slant as much as color: a markdown heading reads as a heading because
-/// it is **bold**, not merely blue.
+/// Markup tokens carry weight/slant as much as color: a markdown heading reads as
+/// a heading because it is **bold**, not merely blue.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Emphasis {
