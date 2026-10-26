@@ -74,8 +74,10 @@ impl LspManager {
         providers
             .into_values()
             .map(|(server, languages, managed, manual_install_reason)| {
-                let installed =
-                    crate::lsp_registry::installed_version(self.registry_root.as_deref(), &server);
+                let installed = crate::lsp_registry::store::installed_version(
+                    self.registry_root.as_deref(),
+                    &server,
+                );
                 let instances = known_roots
                     .iter()
                     .map(|root| self.inventory_instance(&server, &languages, root))
@@ -90,9 +92,9 @@ impl LspManager {
                     // the user had explicitly switched off.
                     enabled: self.settings.enabled && !self.provider_disabled(&server, &languages),
                     installed,
-                    ever_installed: crate::lsp_registry::ever_installed(root, &server),
-                    declined: crate::lsp_registry::read_declined(root, &server).is_some(),
-                    cleanup_pending: crate::lsp_registry::cleanup_pending(
+                    ever_installed: crate::lsp_registry::store::ever_installed(root, &server),
+                    declined: crate::lsp_registry::store::read_declined(root, &server).is_some(),
+                    cleanup_pending: crate::lsp_registry::store::cleanup_pending(
                         self.registry_root.as_deref(),
                         &server,
                     ),

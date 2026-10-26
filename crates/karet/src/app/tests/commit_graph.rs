@@ -12,7 +12,6 @@ use crate::app::*;
 fn graph_commit(hash: &str, parents: Vec<String>) -> Commit {
     Commit {
         hash: hash.to_string(),
-        short_hash: hash.chars().take(7).collect(),
         summary: format!("summary {hash}"),
         author: "Tester".to_string(),
         time: 0,

@@ -84,6 +84,9 @@ const SAMPLE_FILES: &[(&str, &str, &str)] = &[
     ("biome", "index.js", "export const a = 1;\n"),
     ("lua-language-server", "main.lua", "print('hi')\n"),
     ("clojure-lsp", "main.clj", "(println 1)\n"),
+    // Attached to every document once karet installed it; no sign-in is
+    // needed for it to start.
+    ("copilot-language-server", "main.rs", "fn main() {}\n"),
     ("buf", "api.proto", "syntax = \"proto3\";\n"),
     ("marksman", "README.md", "# hi\n"),
     ("neocmakelsp", "CMakeLists.txt", "project(x)\n"),

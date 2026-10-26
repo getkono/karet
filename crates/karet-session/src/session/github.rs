@@ -29,6 +29,7 @@ use crate::api::GithubVerification;
 use crate::api::GithubWorkflow;
 use crate::api::GithubWorkflowRun;
 use crate::api::RequestId;
+use crate::event_tx::EventTx;
 
 pub(super) enum GithubJob {
     Refresh,
@@ -153,44 +154,44 @@ impl Session {
             let mut client = match GitHubClient::discover().await {
                 Ok(client) => client,
                 Err(error) => {
-                    let _ = events.send((
+                    events.emit(
                         None,
                         Event::GithubError {
                             operation: GithubOperation::Authentication,
                             message: error.to_string(),
                         },
-                    ));
+                    );
                     return;
                 },
             };
-            let _ = events.send((
+            events.emit(
                 None,
                 Event::GithubAvailability {
                     repository: Some(map_repository(&repository)),
                     auth: map_auth(client.auth_state()),
                 },
-            ));
+            );
             while let Some((id, job, cancel)) = rx.recv().await {
                 if let GithubJob::Login { token } = job {
                     match GitHubClient::authenticate(token).await {
                         Ok(authenticated) => {
                             client = authenticated;
-                            let _ = events.send((
+                            events.emit(
                                 Some(id),
                                 Event::GithubAvailability {
                                     repository: Some(map_repository(&repository)),
                                     auth: map_auth(client.auth_state()),
                                 },
-                            ));
+                            );
                         },
                         Err(error) => {
-                            let _ = events.send((
+                            events.emit(
                                 Some(id),
                                 Event::GithubError {
                                     operation: GithubOperation::SignIn,
                                     message: error.to_string(),
                                 },
-                            ));
+                            );
                         },
                     }
                     continue;
@@ -236,7 +237,7 @@ async fn run_job(
     repository: &RepositoryIdentity,
     id: RequestId,
     job: GithubJob,
-    events: &mpsc::UnboundedSender<(Option<RequestId>, Event)>,
+    events: &EventTx,
 ) {
     let operation = operation_name(&job);
     let result = match job {
@@ -396,7 +397,7 @@ async fn run_job(
             message: error.to_string(),
         },
     };
-    let _ = events.send((Some(id), event));
+    events.emit(Some(id), event);
 }
 
 fn operation_name(job: &GithubJob) -> GithubOperation {

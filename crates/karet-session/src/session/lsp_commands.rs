@@ -1,6 +1,7 @@
 use super::*;
 
 mod code_lens;
+mod link_color;
 
 impl Session {
     pub(super) fn handle_lsp_command(&mut self, id: RequestId, command: &Command) -> bool {
@@ -28,8 +29,9 @@ impl Session {
                 let Some(root) = self.config.lsp_registry_dir.clone() else {
                     return true;
                 };
-                let declined = crate::lsp_registry::Declined::now();
-                if let Err(message) = crate::lsp_registry::write_declined(&root, server, &declined)
+                let declined = crate::lsp_registry::store::Declined::now();
+                if let Err(message) =
+                    crate::lsp_registry::store::write_declined(&root, server, &declined)
                 {
                     self.emit(
                         Some(id),
@@ -46,7 +48,7 @@ impl Session {
                 let Some(root) = self.config.lsp_registry_dir.clone() else {
                     return true;
                 };
-                if let Err(message) = crate::lsp_registry::clear_declined(&root, server) {
+                if let Err(message) = crate::lsp_registry::store::clear_declined(&root, server) {
                     self.emit(
                         Some(id),
                         Event::Notification {
@@ -113,12 +115,40 @@ impl Session {
                 self.format_on_type(id, *doc, *position, *ch);
                 return true;
             },
+            Command::InlineCompletion {
+                doc,
+                position,
+                trigger,
+            } => {
+                self.inline_completion(id, *doc, (*position, *trigger));
+                return true;
+            },
+            Command::SignInLanguageServer { server } => {
+                self.language_server_account(id, server, true);
+                return true;
+            },
+            Command::SignOutLanguageServer { server } => {
+                self.language_server_account(id, server, false);
+                return true;
+            },
+            Command::AcceptInlineCompletion { doc, server, item } => {
+                self.accept_inline_completion(id, *doc, server, item.clone());
+                return true;
+            },
             Command::CodeLenses { doc, lines } => {
                 self.code_lenses(id, *doc, *lines);
                 return true;
             },
             Command::RunCodeLens { doc, lens } => {
                 self.run_code_lens(id, *doc, lens.clone());
+                return true;
+            },
+            Command::LinksAndColors { doc } => {
+                self.links_and_colors(id, *doc);
+                return true;
+            },
+            Command::ResolveDocumentLink { doc, link } => {
+                self.resolve_document_link(id, *doc, link.clone());
                 return true;
             },
             Command::RestartLanguageServer { server } => {

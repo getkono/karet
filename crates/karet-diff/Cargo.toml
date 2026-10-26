@@ -23,6 +23,9 @@ view = ["dep:ratatui", "dep:unicode-width"]
 
 [dependencies]
 karet-core.workspace = true
+# The shared binary sniff (`looks_binary`), so diff agrees with the explorer and
+# search about which files are binary. Dependency-free.
+karet-filetype.workspace = true
 imara-diff.workspace = true
 ratatui = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }

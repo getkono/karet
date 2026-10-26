@@ -412,7 +412,6 @@ pub(crate) fn commit_detail(hash: &str, summary: &str) -> CommitDetail {
     };
     CommitDetail {
         hash: hash.to_string(),
-        short_hash: hash.chars().take(7).collect(),
         summary: summary.to_string(),
         body: String::new(),
         author: id.clone(),
@@ -488,7 +487,6 @@ pub(crate) fn responsive_commit_app() -> App {
 pub(crate) fn commit(hash: &str, summary: &str) -> Commit {
     Commit {
         hash: hash.to_string(),
-        short_hash: hash.chars().take(7).collect(),
         summary: summary.to_string(),
         author: "T".to_string(),
         time: 0,

@@ -17,10 +17,9 @@ use std::time::Duration;
 
 use secrecy::ExposeSecret;
 use secrecy::SecretString;
-use tokio::sync::mpsc as tokio_mpsc;
 
 use crate::api::Event;
-use crate::api::RequestId;
+use crate::event_tx::EventTx;
 
 /// The write gate: a plain typing heartbeat for the same file is suppressed
 /// for this long (WakaTime's standard two-minute rule).
@@ -151,9 +150,7 @@ fn queue_path() -> Option<PathBuf> {
 
 /// Start the worker; the session sends [`Beat`]s and the status-bar text
 /// arrives as unsolicited [`Event::WakatimeStatus`] events.
-pub(crate) fn spawn(
-    events: tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>,
-) -> Sender<Beat> {
+pub(crate) fn spawn(events: EventTx) -> Sender<Beat> {
     let (beats_tx, beats_rx) = std::sync::mpsc::channel();
     let _ = std::thread::Builder::new()
         .name("karet-wakatime".to_owned())
@@ -161,7 +158,7 @@ pub(crate) fn spawn(
     beats_tx
 }
 
-fn run(beats: &Receiver<Beat>, events: &tokio_mpsc::UnboundedSender<(Option<RequestId>, Event)>) {
+fn run(beats: &Receiver<Beat>, events: &EventTx) {
     let config = WakaConfig::discover();
     let Some(api_key) = config.api_key.clone() else {
         // No key, nothing to do — drain silently so senders never block.
@@ -223,7 +220,9 @@ fn run(beats: &Receiver<Beat>, events: &tokio_mpsc::UnboundedSender<(Option<Requ
         if now.saturating_sub(last_status) >= STATUS_INTERVAL {
             last_status = now;
             if let Some(text) = fetch_today(&client, &config.api_url, &api_key)
-                && events.send((None, Event::WakatimeStatus { text })).is_err()
+                && events
+                    .try_emit(None, Event::WakatimeStatus { text })
+                    .is_break()
             {
                 save_queue(&pending);
                 return;
