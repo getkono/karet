@@ -185,6 +185,42 @@ fn quick_requests_fill_their_own_tabs_and_stale_answers_are_dropped() {
 }
 
 #[test]
+fn an_uncorrelated_answer_opens_its_own_filled_tab_and_leaves_reserved_ones_alone() {
+    let (mut app, _backend) = compare_app();
+    app.dispatch(Command::DiffSinceBase);
+    let reserved = app.tabs[app.active].view;
+
+    app.on_backend_event(
+        None,
+        range_ready(
+            "main",
+            "HEAD",
+            vec![prepared_change("a.rs", StatusKind::Modified)],
+        ),
+    );
+
+    // One new tab, filled and focused; the reserved tab still waits for its answer.
+    assert_eq!(compare_tabs(&app), 2);
+    let opened = app.tabs[app.active].view;
+    assert_ne!(opened, reserved);
+    assert_eq!(
+        compare_state(&app, opened),
+        Some((
+            "\u{21c4} main\u{2026}HEAD".to_string(),
+            "main".to_string(),
+            "HEAD".to_string(),
+            1,
+            false,
+            None,
+        ))
+    );
+    assert!(
+        compare_state(&app, reserved)
+            .is_some_and(|(_, base, _, files, loading, _)| base == "base" && files == 0 && loading)
+    );
+}
+
+#[test]
 fn an_unresolvable_range_marks_its_reserved_tab_failed() {
     let (mut app, _backend) = compare_app();
     app.dispatch(Command::DiffUnpushed);
