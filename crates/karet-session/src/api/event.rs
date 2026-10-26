@@ -456,6 +456,15 @@ pub enum Event {
         /// The resolved locations; empty when there are none, or no server to ask.
         locations: Vec<Location>,
     },
+    /// Hierarchy items answering a [`Command::PrepareHierarchy`] (the roots)
+    /// or a [`Command::ExpandHierarchy`] (one level), in server order and in
+    /// buffer columns.
+    Hierarchy {
+        /// Which way the hierarchy was asked to grow.
+        direction: HierarchyDirection,
+        /// The items; empty when there are none, or no server to ask.
+        items: Vec<HierarchyItem>,
+    },
     /// Workspace symbols answering a [`Command::WorkspaceSymbols`] query.
     WorkspaceSymbols {
         /// Matching symbols from the active repository servers, each with the

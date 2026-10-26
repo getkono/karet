@@ -532,7 +532,7 @@ fn parse_entry(raw: RawEntry) -> Result<Op, String> {
 
 /// Parse a key sequence: one or more chords separated by spaces
 /// (`"ctrl+k ctrl+w"`).
-fn parse_sequence(text: &str) -> Result<Vec<KeyChord>, String> {
+pub(super) fn parse_sequence(text: &str) -> Result<Vec<KeyChord>, String> {
     let seq: Vec<KeyChord> = text
         .split_whitespace()
         .map(parse_chord)

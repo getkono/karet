@@ -205,7 +205,7 @@ impl App {
     /// view is what strands a caller from another view: the tab becomes active and
     /// takes the keyboard while staying invisible, and `FocusTarget::from` then routes
     /// keys to whatever view is still on screen.
-    fn show_editor(&mut self) {
+    pub(super) fn show_editor(&mut self) {
         self.view = View::Editor;
         self.focus = Focus::Editor;
     }

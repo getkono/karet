@@ -1,7 +1,7 @@
 //! `karet-jsonrpc` — a protocol-agnostic async JSON-RPC 2.0 client core.
 //!
-//! JSON-RPC 2.0 is the transport under LSP, DAP, and ACP alike, and the parts
-//! that are *not* protocol-specific are substantial: allocating request ids,
+//! JSON-RPC 2.0 is the message layer under LSP and many other protocols, and the
+//! parts that are *not* protocol-specific are substantial: allocating request ids,
 //! correlating responses through a pending map, bounding every request with a
 //! timeout, draining a bounded outbound queue, failing all in-flight requests on
 //! EOF, and closing politely. That machinery lives here once, with **no karet
@@ -11,7 +11,8 @@
 //! Two seams keep it protocol-agnostic:
 //!
 //! - [`Framing`] — how a message body is delimited on the wire.
-//!   [`framing::content_length`] is the LSP/DAP base protocol;
+//!   [`framing::content_length`] is the LSP base-protocol framing (DAP shares
+//!   this framing alone, since its messages are not JSON-RPC);
 //!   [`framing::line_delimited`] is newline-delimited JSON. Framing moves
 //!   **bytes**, so an implementation never touches serde.
 //! - [`Handler`] — the broadcast payload built from peer notifications, the

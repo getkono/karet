@@ -33,9 +33,12 @@
 //!
 //! Facts arrive from sources of differing latency. The **structural** tier is
 //! synchronous and always available: it produces a usable tree even from a syntactically
-//! invalid buffer. The **semantic** tier resolves edges and effective visibility
-//! asynchronously and never gates rendering. The **manifest** tier supplies the
-//! configuration set. Nothing structural ever waits on anything semantic.
+//! invalid buffer. The **semantic** tier is a seam to be populated later: the model
+//! already has room for what it would supply — effective visibility ([`Effective`]) and
+//! type-aware edges, such as a language server's call hierarchy — but nothing in this
+//! crate resolves them yet, and when something does it must never gate rendering. The
+//! call tier's name-resolved edges (below) are structural, not semantic. The
+//! **manifest** tier supplies the configuration set. Nothing structural ever waits on anything semantic.
 //!
 //! # Calls
 //!

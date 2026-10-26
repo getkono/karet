@@ -722,18 +722,27 @@ impl Session {
                 match_limit,
             } => self.search_workspace(id, query, file_limit, match_limit),
             Command::IndexSeams { root, mode } => {
-                if let Some(root) = root.or_else(|| self.config.roots.first().cloned()) {
-                    let _ = self.seam_worker.send(crate::seam_worker::SeamJob::Index {
-                        id,
-                        root,
-                        mode,
-                        // The cap stops being theoretical once the root is a whole
-                        // repository rather than one crate.
-                        options: karet_seam::IndexOptions {
-                            max_files: self.config.settings.seam.max_indexed_files,
+                let Some(root) = root.or_else(|| self.config.roots.first().cloned()) else {
+                    // Answered, not dropped: a request is never left outstanding
+                    // just because there is nothing to index (see `Backend`).
+                    self.emit(
+                        Some(id),
+                        Event::SeamIndexFailed {
+                            message: "no workspace root is open to index".to_string(),
                         },
-                    });
-                }
+                    );
+                    return;
+                };
+                let _ = self.seam_worker.send(crate::seam_worker::SeamJob::Index {
+                    id,
+                    root,
+                    mode,
+                    // The cap stops being theoretical once the root is a whole
+                    // repository rather than one crate.
+                    options: karet_seam::IndexOptions {
+                        max_files: self.config.settings.seam.max_indexed_files,
+                    },
+                });
             },
             Command::ReindexSeams { path, text } => {
                 let _ =

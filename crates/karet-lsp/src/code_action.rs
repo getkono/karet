@@ -57,8 +57,10 @@ impl LspClient {
     ///
     /// # Errors
     /// Returns [`LspError::Unsupported`] **without issuing a request** when the
-    /// server did not advertise the capability, else [`LspError::Server`] or
-    /// [`LspError::Timeout`].
+    /// server did not advertise the capability, else [`LspError::Server`],
+    /// [`LspError::Timeout`], [`LspError::Protocol`] for an unconvertible
+    /// path, a request that does not encode or a result that does not decode,
+    /// or [`LspError::Closed`] if the connection is gone.
     pub async fn code_actions(
         &self,
         doc: &Path,
@@ -107,8 +109,10 @@ impl LspClient {
     /// server, or the server does not resolve actions.
     ///
     /// # Errors
-    /// Returns [`LspError::Server`], [`LspError::Protocol`] (an answer that is
-    /// not an action), or [`LspError::Timeout`].
+    /// Returns [`LspError::Server`], [`LspError::Timeout`],
+    /// [`LspError::Protocol`] for a request that does not encode or an answer
+    /// that is not an action, or
+    /// [`LspError::Closed`] if the connection is gone.
     pub async fn resolve_code_action(&self, action: &CodeAction) -> Result<CodeAction, LspError> {
         if action.edit.is_some() || !self.supports(ServerFeature::CodeActionResolve) {
             return Ok(action.clone());
@@ -134,7 +138,9 @@ impl LspClient {
     /// # Errors
     /// Returns [`LspError::Unsupported`] **without issuing a request** when the
     /// server does not execute commands, or listed the ones it does and this
-    /// is not among them; else [`LspError::Server`] or [`LspError::Timeout`].
+    /// is not among them; else [`LspError::Server`], [`LspError::Timeout`],
+    /// [`LspError::Protocol`] for arguments that do not encode, or
+    /// [`LspError::Closed`] if the connection is gone.
     pub async fn execute_command(
         &self,
         command: &str,

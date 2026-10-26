@@ -231,6 +231,12 @@ impl Session {
                 ..
             } => self.adopt_save_format(request, (doc, version), (formatted, edits), &scope),
             LspUpdate::Editing { answer, .. } => self.adopt_editing(answer),
+            LspUpdate::Hierarchy {
+                request,
+                direction,
+                items,
+                ..
+            } => self.adopt_hierarchy(request, direction, items),
             LspUpdate::Unsupported {
                 request,
                 server,

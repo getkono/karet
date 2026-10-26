@@ -730,10 +730,26 @@ impl App {
     // Editing routes through the headless session backend and reflects its
     // snapshots back into the active code tab.
     /// Register every already-open code tab with the session (called once the
-    /// backend is attached at startup).
+    /// backend is attached at startup), in every pane: a `--split` or a
+    /// restored layout leaves tabs in panes that are not focused.
     pub(super) fn register_open_tabs(&mut self) {
         for idx in 0..self.tabs.len() {
             self.register_doc(idx);
+        }
+        let panes: Vec<PaneId> = self.stored.keys().copied().collect();
+        for pane in panes {
+            let Some(mut stored) = self.stored.remove(&pane) else {
+                continue;
+            };
+            // `register_doc` reads the focused pane's tabs; lend it this
+            // pane's for the duration, without moving focus or recording an
+            // activation.
+            std::mem::swap(&mut self.tabs, &mut stored.tabs);
+            for idx in 0..self.tabs.len() {
+                self.register_doc(idx);
+            }
+            std::mem::swap(&mut self.tabs, &mut stored.tabs);
+            self.stored.insert(pane, stored);
         }
     }
 

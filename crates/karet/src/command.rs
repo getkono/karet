@@ -431,6 +431,18 @@ pub enum Command {
     GoToImplementation,
     /// List every reference to the symbol at the caret (Shift+F12).
     FindReferences,
+    /// Open the call hierarchy of the function at the caret, growing toward
+    /// its callers (Shift+Alt+H).
+    ShowIncomingCalls,
+    /// Open the call hierarchy of the function at the caret, growing toward
+    /// the functions it calls.
+    ShowOutgoingCalls,
+    /// Open the type hierarchy of the type at the caret, growing toward what
+    /// it derives from or implements.
+    ShowSupertypes,
+    /// Open the type hierarchy of the type at the caret, growing toward what
+    /// derives from or implements it.
+    ShowSubtypes,
     /// Rename the symbol at the caret across the workspace (F2).
     RenameSymbol,
     /// Apply the name typed into the rename prompt.
@@ -1018,6 +1030,10 @@ impl Command {
             Self::GoToTypeDefinition => "Go to Type Definition",
             Self::GoToImplementation => "Go to Implementation",
             Self::FindReferences => "Find All References",
+            Self::ShowIncomingCalls => "Show Incoming Calls",
+            Self::ShowOutgoingCalls => "Show Outgoing Calls",
+            Self::ShowSupertypes => "Show Supertypes",
+            Self::ShowSubtypes => "Show Subtypes",
             Self::RenameSymbol => "Rename Symbol",
             Self::RenameSubmit => "Rename Symbol: Confirm",
             Self::RenameCancel => "Rename Symbol: Cancel",

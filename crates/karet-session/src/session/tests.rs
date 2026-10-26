@@ -23,3 +23,4 @@ include!("tests/github.rs");
 include!("tests/debug_notebooks.rs");
 include!("tests/lsp_registry_contract.rs");
 include!("tests/config_reload.rs");
+include!("tests/rootless_answers.rs");

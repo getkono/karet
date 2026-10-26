@@ -124,8 +124,21 @@ impl Session {
     /// filesystem event) emits only when the status changed (the worker keeps the
     /// last emitted status), collapsing event bursts and absorbing the feedback
     /// from the session's own index writes.
+    ///
+    /// Without a repository a requested refresh still answers, with an empty
+    /// status: there is nothing to report, and a notification here would fire on
+    /// every explorer refresh of a folder that is simply not under git.
     pub(super) fn emit_vcs_status(&mut self, id: Option<RequestId>) {
         if self.vcs.is_none() {
+            if id.is_some() {
+                self.emit(
+                    id,
+                    Event::VcsStatus {
+                        staged: Vec::new(),
+                        working: Vec::new(),
+                    },
+                );
+            }
             return;
         }
         let _ = self
@@ -134,14 +147,19 @@ impl Session {
     }
 
     /// Run a write action against the repository, then force a fresh status (so the
-    /// user always sees the result of their action). Failures surface as an
-    /// [`Event::Notification`].
+    /// user always sees the result of their action). Failures — including there
+    /// being no repository to write to — surface as an [`Event::Notification`].
     pub(super) fn vcs_write(
         &mut self,
         id: RequestId,
         action: impl FnOnce(&Repository) -> Result<(), VcsError>,
     ) {
         let Some(repo) = self.vcs.as_ref() else {
+            self.emit_vcs_notice(
+                id,
+                Severity::Error,
+                "no workspace repository is open".to_string(),
+            );
             return;
         };
         match action(repo) {

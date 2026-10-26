@@ -54,8 +54,12 @@ pub(super) fn run_commit_detail(
     if cancel.is_cancelled() {
         return;
     }
-    let Ok(repo) = repository(root) else {
-        return;
+    let repo = match repository(root) {
+        Ok(repo) => repo,
+        Err(message) => {
+            notify_cancellable(events, id, cancel, message);
+            return;
+        },
     };
     let detail = match repo.commit_detail(rev) {
         Ok(detail) => detail,

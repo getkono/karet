@@ -156,8 +156,10 @@ impl LspClient {
     /// Returns [`LspError::Unsupported`] **without issuing a request** when the
     /// server did not advertise semantic tokens for `doc`;
     /// [`LspError::Protocol`] for a delta that does not fit `previous` (ask
-    /// again without one); else [`LspError::Server`] or
-    /// [`LspError::Timeout`].
+    /// again without one), an unconvertible path, a request that does not
+    /// encode or a result that does not decode; else [`LspError::Server`],
+    /// [`LspError::Timeout`], or [`LspError::Closed`] if the connection is
+    /// gone.
     pub async fn semantic_tokens(
         &self,
         doc: &Path,

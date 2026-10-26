@@ -5,8 +5,9 @@
 //! ratatui [`Placeholder`] widget. The application opens a file by
 //! [`classify`]ing it and then choosing a renderer: [`FileKind::Text`] /
 //! [`FileKind::Markdown`] → the editor widget, [`FileKind::Image`] → the image
-//! widget, [`FileKind::Binary`] → the hex view, and [`FileKind::Pdf`] /
-//! [`FileKind::TooLarge`] (or an image that fails to decode) → a [`Placeholder`].
+//! widget, [`FileKind::Binary`] → the hex view, [`FileKind::Pdf`] → the
+//! consumer's document renderer, and [`FileKind::TooLarge`] (or an image or
+//! document that fails to render) → a [`Placeholder`].
 
 use std::path::Path;
 
@@ -122,8 +123,9 @@ impl Widget for Placeholder {
 fn describe(kind: FileKind) -> &'static str {
     match kind {
         FileKind::Image => "Image preview unavailable",
-        // Shown only when PDF rendering is not compiled in (the `pdf` feature); when
-        // it is, a PDF either renders or shows the requires-Kitty placeholder.
+        // Shown only when the consumer has no PDF renderer (the `karet` app's `pdf`
+        // feature is off, say); when it has one, a PDF either renders or shows the
+        // requires-Kitty placeholder.
         FileKind::Pdf => "PDF document",
         FileKind::Docx => "DOCX rendering is not available yet",
         FileKind::Notebook => "Notebook rendering is not available yet",
