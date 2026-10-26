@@ -60,16 +60,10 @@ fn languages() -> Vec<u16> {
 ///
 /// Deliberately not `DefaultHasher`: the standard library does not promise its output
 /// stays the same across releases, and this names a file that has to be found again after
-/// a toolchain upgrade. FNV-1a is fixed by its definition.
+/// a toolchain upgrade. [`karet_text::content_fingerprint`] is FNV-1a, fixed by its
+/// definition.
 fn workspace_key(root: &Path) -> u64 {
-    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-    const PRIME: u64 = 0x0000_0100_0000_01b3;
-    let mut hash = OFFSET;
-    for byte in root.as_os_str().as_encoded_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(PRIME);
-    }
-    hash
+    karet_text::content_fingerprint(root.as_os_str().as_encoded_bytes())
 }
 
 /// The per-user directory seam caches belong in, for a host that wants the default.
@@ -339,6 +333,21 @@ mod tests {
                 loose_sites: 1,
             },
         }
+    }
+
+    #[test]
+    fn the_cache_file_name_is_fixed_by_its_definition() {
+        // The name must still be found after a toolchain upgrade, so these are
+        // golden FNV-1a values, not whatever a std hasher produces today.
+        let dir = Path::new("/cache");
+        assert_eq!(
+            path_for(dir, Path::new("")),
+            dir.join("cbf29ce484222325.cbor")
+        );
+        assert_eq!(
+            path_for(dir, Path::new("a")),
+            dir.join("af63dc4c8601ec8c.cbor")
+        );
     }
 
     #[test]

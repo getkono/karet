@@ -452,19 +452,10 @@ fn text_hash(rope: &ropey::Rope) -> u64 {
     // against one recorded by an earlier run, so it cannot move with the
     // toolchain. The length is folded in first so a chunk boundary cannot
     // collide with a different split of the same bytes.
-    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-    const PRIME: u64 = 0x0000_0100_0000_01b3;
-    let mut hash = OFFSET;
-    let mut fold = |bytes: &[u8]| {
-        for byte in bytes {
-            hash = (hash ^ u64::from(*byte)).wrapping_mul(PRIME);
-        }
-    };
-    fold(&rope.len_bytes().to_le_bytes());
-    for chunk in rope.chunks() {
-        fold(chunk.as_bytes());
-    }
-    hash
+    let hash = save::fnv1a_extend(save::FNV1A_OFFSET, &rope.len_bytes().to_le_bytes());
+    rope.chunks().fold(hash, |hash, chunk| {
+        save::fnv1a_extend(hash, chunk.as_bytes())
+    })
 }
 
 /// The number of `char`s in `line`, excluding a trailing `\n` or `\r\n`.
@@ -482,6 +473,16 @@ fn line_content_chars(line: ropey::RopeSlice<'_>) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_text_hash_is_fixed_by_its_definition() {
+        // A restored history snapshot is matched against this value from an
+        // earlier run: golden FNV-1a over the little-endian length, then the text.
+        assert_eq!(
+            text_hash(&ropey::Rope::from_str("hello")),
+            0xff7a_61ff_1132_0f78
+        );
+    }
 
     #[test]
     fn buffer_basics() {
