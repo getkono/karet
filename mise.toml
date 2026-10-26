@@ -308,9 +308,6 @@ timeout = "180m"
 #   a cancelled request then takes the generic-error arm, which also charges
 #   nothing and reports the request failed. The two arms differ only in the
 #   level of the log line they write.
-# - highlight.rs `byte < self.at` -> `<=` in `LineCounter::line_of`: at
-#   `byte == self.at` the counter restarts from 0 and recounts the newlines up
-#   to the same byte, arriving at the line it already held.
 run = """trap 'test $? -eq 3 && exit 0' EXIT
 export CARGO_MUTANTS_JOBS="${CARGO_MUTANTS_JOBS:-4}"
 cargo mutants --package karet-session --all-features --cargo-test-arg=--lib \
@@ -325,8 +322,7 @@ cargo mutants --package karet-session --all-features --cargo-test-arg=--lib \
   --exclude-re 'load\\.rs:488:\\d+: (delete !|replace match guard !prefix\\.is_empty\\(\\) with (true|false)) in mark_explicit' \
   --exclude-re 'load\\.rs:491:\\d+: replace match guard !prefix\\.is_empty\\(\\) with true in mark_explicit' \
   --exclude-re 'load\\.rs:50[01]:\\d+: (replace to_object -> Map<String, Value> with Default::default\\(\\)|delete match arm Ok\\(Value::Object\\(map\\)\\) in to_object)' \
-  --exclude-re 'hint_flight\\.rs:383:\\d+: replace match guard is_cancellation\\(&error\\) with false in deliver' \
-  --exclude-re 'highlight\\.rs:368:\\d+: replace < with <= in LineCounter<.a>::line_of'"""
+  --exclude-re 'hint_flight\\.rs:383:\\d+: replace match guard is_cancellation\\(&error\\) with false in deliver'"""
 
 [tasks.mutants-app]
 description = "Opt-in: mutation-test the app's chord resolver, terminal input, CLI and command resolution (cap 180m)"
