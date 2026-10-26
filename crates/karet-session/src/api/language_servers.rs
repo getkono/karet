@@ -247,7 +247,8 @@ pub enum AccountOutcome {
     /// when the server named it. Nothing opens the browser for them: the
     /// client is to show both. A second outcome of the same sign-in,
     /// [`SignedIn`](Self::SignedIn) or [`Failed`](Self::Failed), follows once
-    /// the server says whether it landed.
+    /// the server says whether it landed, unless a later sign-in or sign-out
+    /// supersedes this one first: a superseded sign-in gets no second outcome.
     DeviceCode {
         /// The code to enter.
         user_code: String,
