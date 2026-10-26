@@ -258,7 +258,7 @@ async fn a_project_local_astro_is_given_the_project_typescript_sdk() -> TestResu
     let spec = launches.first().ok_or("astro-ls was never launched")?;
     assert_eq!(spec.command, bin.join("astro-ls").to_string_lossy());
     assert_eq!(
-        spec.initialization_options,
+        spec.options.initialization_options,
         Some(json!({ "typescript": { "tsdk": tsdk.to_string_lossy() } })),
         "a project-local Astro was launched without a TypeScript SDK"
     );
@@ -318,7 +318,7 @@ fn a_managed_astro_keeps_the_sdk_its_install_recorded() -> TestResult {
     let astro = LanguageServerId::new("astro-language-server");
 
     assert!(manager.astro_launch_gate(&mut spec, Some(&astro), "astro", Path::new("/nowhere")));
-    assert_eq!(spec.initialization_options, Some(options));
+    assert_eq!(spec.options.initialization_options, Some(options));
     Ok(())
 }
 

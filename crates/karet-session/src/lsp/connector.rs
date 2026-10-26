@@ -5,7 +5,6 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use karet_lsp::ConnectOptions;
 use karet_lsp::LaunchFailure;
 use karet_lsp::LspClient;
 use karet_lsp::LspError;
@@ -138,7 +137,7 @@ pub(super) fn spawn_connector(
             // has neither.
             #[cfg(feature = "toml-lsp")]
             if crate::toml_lsp::is_builtin(&spec) {
-                return crate::toml_lsp::connect(&root, ConnectOptions::from(&spec)).await;
+                return crate::toml_lsp::connect(&root, spec.options).await;
             }
             let Some(supervisor) = supervisor else {
                 // Not `Host`: a host problem may be over by the next attempt,
@@ -172,21 +171,19 @@ pub(super) fn spawn_connector(
                     }
                 })?;
                 let (read, write) = tokio::io::split(stream);
-                return LspClient::connect_configured(
-                    read,
-                    write,
-                    &root,
-                    ConnectOptions::from(&spec),
-                )
-                .await
-                .map_err(|error| {
-                    // Only the broker that served this connection can convict
-                    // the server, and only through the report it stamped with
-                    // its own process id.
-                    let reported =
-                        karet_supervisor::broker::reported_failure(&registry_root, &launch, broker);
-                    brokered_handshake_failure(&spec, error, reported.as_ref())
-                });
+                return LspClient::connect_configured(read, write, &root, spec.options.clone())
+                    .await
+                    .map_err(|error| {
+                        // Only the broker that served this connection can convict
+                        // the server, and only through the report it stamped with
+                        // its own process id.
+                        let reported = karet_supervisor::broker::reported_failure(
+                            &registry_root,
+                            &launch,
+                            broker,
+                        );
+                        brokered_handshake_failure(&spec, error, reported.as_ref())
+                    });
             }
             let command = karet_supervisor::supervisor::command(
                 &supervisor,
@@ -195,13 +192,7 @@ pub(super) fn spawn_connector(
                 &root,
             )
             .map_err(|error| host_failure(&spec, error))?;
-            LspClient::spawn_command_configured(
-                command,
-                &spec.command,
-                &root,
-                ConnectOptions::from(&spec),
-            )
-            .await
+            LspClient::spawn_command_configured(command, &spec.command, &root, spec.options).await
         })
     })
 }

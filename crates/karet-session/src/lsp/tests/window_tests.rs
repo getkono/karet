@@ -22,7 +22,7 @@ fn scripted(after_open: Vec<Value>, observed: mpsc::UnboundedSender<Value>) -> C
     Arc::new(move |spec: LspSpec, _root| {
         let after_open = after_open.clone();
         let observed = observed.clone();
-        let options = karet_lsp::ConnectOptions::from(&spec);
+        let options = spec.options;
         Box::pin(async move {
             let (client_end, server_end) = tokio::io::duplex(1 << 20);
             let (server_read, mut server_write) = tokio::io::split(server_end);
@@ -386,7 +386,7 @@ async fn watched_file_changes_reach_only_a_server_that_asked() -> TestResult {
 fn asking(count: usize, batch: usize, observed: mpsc::UnboundedSender<Value>) -> Connector {
     Arc::new(move |spec: LspSpec, _root| {
         let observed = observed.clone();
-        let options = karet_lsp::ConnectOptions::from(&spec);
+        let options = spec.options;
         Box::pin(async move {
             let (client_end, server_end) = tokio::io::duplex(1 << 20);
             let (server_read, mut server_write) = tokio::io::split(server_end);

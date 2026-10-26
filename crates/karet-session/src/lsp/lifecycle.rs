@@ -112,7 +112,8 @@ impl LspManager {
         let handle = tokio::runtime::Handle::try_current().ok()?;
         let (tx, rx) = mpsc::channel(SERVER_COMMAND_CAPACITY);
         let token = self.take_token();
-        let settings: SettingsCell = Arc::new(std::sync::RwLock::new(spec.settings.clone()));
+        let settings: SettingsCell =
+            Arc::new(std::sync::RwLock::new(spec.options.settings.clone()));
         let connector = with_settings(&self.connector, Arc::clone(&settings));
         // Inserted before the task is spawned, not after. The task's first act
         // is to report `Starting`, and a report is accepted only against a live
@@ -192,9 +193,10 @@ impl LspManager {
             .find(|key| servers.contains_key(*key))
             .unwrap_or(provider.key());
         if let Some(entry) = servers.get(key) {
-            spec.settings.clone_from(&entry.settings);
+            spec.options.settings.clone_from(&entry.settings);
             if entry.initialization_options.is_some() {
-                spec.initialization_options
+                spec.options
+                    .initialization_options
                     .clone_from(&entry.initialization_options);
             }
         }
@@ -233,7 +235,7 @@ fn with_settings(inner: &Connector, cell: SettingsCell) -> Connector {
     let inner = Arc::clone(inner);
     Arc::new(move |mut spec: LspSpec, root| {
         if let Ok(current) = cell.read() {
-            spec.settings.clone_from(&current);
+            spec.options.settings.clone_from(&current);
         }
         inner(spec, root)
     })

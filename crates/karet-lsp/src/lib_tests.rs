@@ -609,6 +609,27 @@ async fn spawn_missing_binary_names_the_command_and_why_it_failed() -> TestResul
     Ok(())
 }
 
+/// A spec's builders write the one [`ConnectOptions`] it launches with, so what
+/// [`LspClient::spawn`] sends is exactly what the spec was given.
+#[test]
+fn a_spec_carries_its_connect_options() {
+    let spec = LspSpec::new("astro-ls", vec!["--stdio".into()], vec!["astro".into()]);
+    assert_eq!(
+        spec.options,
+        ConnectOptions::default(),
+        "none until attached"
+    );
+    let spec = spec
+        .with_initialization_options(Some(json!({"typescript": {"tsdk": "/sdk"}})))
+        .with_settings(Some(json!({"astro": {"format": true}})));
+    assert_eq!(
+        spec.options,
+        ConnectOptions::default()
+            .with_initialization_options(Some(json!({"typescript": {"tsdk": "/sdk"}})))
+            .with_settings(Some(json!({"astro": {"format": true}})))
+    );
+}
+
 /// A server that prints usage and exits -- bare `taplo` is exactly this -- used
 /// to surface as a bare `Closed`, indistinguishable from a clean shutdown.
 #[tokio::test]
@@ -763,7 +784,7 @@ async fn a_dying_servers_last_words_are_never_raced_away() -> TestResult {
 // probabilistic test has no place in the merge gate.
 
 /// How a launch failure is classified when a child running `script` ends its
-/// handshake with `error` — the seam [`LspClient::spawn_command_with`] reaches
+/// handshake with `error` — the seam [`LspClient::spawn_command_configured`] reaches
 /// once the handshake has failed.
 async fn classify(script: &str, error: LspError) -> Result<LspError, std::io::Error> {
     let mut child = tokio::process::Command::new("sh")
