@@ -688,6 +688,7 @@ impl Session {
                 });
             },
             Command::ConvertDocument { path } => self.convert_document(id, path),
+            Command::FixMarkdownLint { doc } => self.fix_markdown_lint(id, doc),
             Command::PrepareDiff { path, old, new } => {
                 let syntax = self.diff_syntax;
                 self.submit_vcs(id, |id, cancel| crate::vcs_worker::VcsJob::PrepareTexts {

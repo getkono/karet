@@ -701,6 +701,20 @@ pub enum Command {
     /// does not offer the method, and an [`Event::Notification`] when nothing
     /// can format the document or it changed before the answer arrived.
     Format(FormatRequest),
+    /// Apply every markdownlint autofix to a document as one undoable change,
+    /// under the workspace lint configuration -- the `.markdownlint.json(c)`
+    /// the diagnostics layer lints with, found across every root.
+    ///
+    /// The fixes land as a new snapshot, so they undo as one step and every
+    /// caret follows the text it sat in. Answered by
+    /// [`Event::MarkdownLintFixed`], whose count is `0` when nothing was
+    /// fixable (the document is then left as it was). The caller decides
+    /// what is Markdown: the document is linted whatever its language. A build
+    /// without the `mdlint` feature answers with an [`Event::Notification`].
+    FixMarkdownLint {
+        /// The target document.
+        doc: DocumentId,
+    },
     /// Apply a workspace edit -- text edits to open and unopened files, and
     /// file creates, renames, and deletes -- answered by
     /// [`Event::WorkspaceEdit`].

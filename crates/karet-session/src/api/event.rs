@@ -705,6 +705,15 @@ pub enum Event {
         /// source beneath another node's relations.
         preview: Result<SeamPreview, String>,
     },
+    /// The markdownlint autofixes were applied, answering
+    /// [`Command::FixMarkdownLint`].
+    MarkdownLintFixed {
+        /// The document that was fixed.
+        doc: DocumentId,
+        /// How many lint issues were fixed; `0` when none was fixable and the
+        /// document is unchanged.
+        fixed: usize,
+    },
     /// A dictionary word was persisted, answering [`Command::AddDictionaryWord`].
     DictionaryWordAdded {
         /// The accepted word.
