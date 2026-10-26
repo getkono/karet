@@ -622,7 +622,7 @@ impl Session {
             | Command::GithubCreatePullRequest { .. } => self.emit(
                 Some(id),
                 Event::GithubError {
-                    operation: "github".to_string(),
+                    operation: crate::api::GithubOperation::FeatureDisabled,
                     message: "the backend was built without the github feature".to_string(),
                 },
             ),

@@ -561,7 +561,11 @@ fn a_github_error_for_a_superseded_request_leaves_the_dashboard_loading() {
     assert!(app.github_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL)));
     let second = dashboard_pending(&app);
 
-    app.apply_github_error(first, "issues".to_string(), "HTTP 502".to_string());
+    app.apply_github_error(
+        first,
+        karet_session::GithubOperation::Issues,
+        "HTTP 502".to_string(),
+    );
     let dashboard = app.github.dashboard();
     assert_eq!(dashboard.and_then(|d| d.error.clone()), None);
     assert_eq!(dashboard.and_then(|d| d.pending), second);

@@ -1024,8 +1024,8 @@ pub enum Event {
     },
     /// A GitHub operation failed without disrupting the session actor.
     GithubError {
-        /// Short operation name.
-        operation: String,
+        /// The operation that failed.
+        operation: GithubOperation,
         /// Safe error message.
         message: String,
     },

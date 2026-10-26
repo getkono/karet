@@ -1,6 +1,7 @@
 use karet_session::GithubAuth;
 use karet_session::GithubAuthSource;
 use karet_session::GithubCheckRun;
+use karet_session::GithubOperation;
 use karet_session::GithubPage;
 use karet_session::GithubPullRequest;
 use karet_session::GithubPullRequestActivity;
@@ -537,7 +538,7 @@ fn a_failed_commit_verification_stays_quiet() {
     let mut app = app();
     app.apply_github_error(
         Some(RequestId(1)),
-        "commit verification".to_owned(),
+        GithubOperation::CommitVerification,
         "GitHub returned HTTP 422: No commit found for SHA: deadbeef".to_owned(),
     );
     assert!(
@@ -553,7 +554,7 @@ fn other_github_failures_still_reach_the_user() {
     let mut app = app();
     app.apply_github_error(
         Some(RequestId(1)),
-        "merge pull request".to_owned(),
+        GithubOperation::MergePullRequest,
         "GitHub returned HTTP 405: not mergeable".to_owned(),
     );
     let active = app.notifications.active();
@@ -561,6 +562,23 @@ fn other_github_failures_still_reach_the_user() {
     let rendered = format!("{active:?}");
     assert!(
         rendered.contains("Could not merge the pull request"),
+        "{rendered}"
+    );
+}
+
+#[test]
+fn a_refused_github_request_reports_the_sessions_reason() {
+    // An ineligible worktree has no action-specific wording; the session's own
+    // message carries the reason, behind the generic lead.
+    let mut app = app();
+    app.apply_github_error(
+        Some(RequestId(1)),
+        GithubOperation::Eligibility,
+        "the workspace root is not an eligible github.com worktree".to_owned(),
+    );
+    let rendered = format!("{:?}", app.notifications.active());
+    assert!(
+        rendered.contains("GitHub request failed. the workspace root is not an eligible"),
         "{rendered}"
     );
 }

@@ -63,7 +63,7 @@
                 matches!(
                     &event,
                     Event::GithubError { operation, message }
-                        if operation == "eligibility" && message.contains("not an eligible")
+                        if *operation == crate::api::GithubOperation::Eligibility && message.contains("not an eligible")
                 ),
                 "{event:?}"
             );
