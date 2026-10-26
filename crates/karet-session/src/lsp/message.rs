@@ -787,6 +787,18 @@ pub(crate) enum LspUpdate {
         /// the markers published by the root that is still healthy.
         server: SlotKey,
     },
+    /// The server withdrew pull diagnostics for a document it was pulled
+    /// for: drop the slot's [`DiagnosticFeed::Pulled`] layer from every
+    /// document, related documents' reports included.
+    ///
+    /// Only that feed goes: the server is still up, so what it publishes
+    /// stays, and the documents it still answers pulls for are pulled again.
+    PulledDiagnosticsWithdrawn {
+        /// The incarnation of the slot whose pulls were withdrawn.
+        token: SlotToken,
+        /// The slot whose pulled layer is dropped.
+        server: SlotKey,
+    },
     /// A built-in provider karet can install is locally absent. No network
     /// operation was attempted.
     InstallRequired {

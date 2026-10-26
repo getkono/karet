@@ -9,14 +9,6 @@
 use super::*;
 
 impl Session {
-    /// Drop one server instance's diagnostic layer, republishing the documents
-    /// that carried it.
-    ///
-    /// The layer key is the slot's -- `{provider}@{root}` -- so removing it is
-    /// already scoped to the instance that died: a provider still running at
-    /// another repository root keeps its own markers. Other servers'
-    /// diagnostics, spell-check and lint results share the merged set and are
-    /// untouched.
     /// Settle what a retirement owes the user: markers off the screen, and the
     /// client told the provider is no longer serving.
     ///
@@ -37,7 +29,7 @@ impl Session {
             return;
         }
         for key in keys {
-            self.clear_lsp_diagnostic_layer(&key);
+            self.clear_lsp_diagnostic_layer(&key, None);
             self.clear_semantic_tokens_of(&key);
             self.emit(
                 None,
@@ -81,17 +73,28 @@ impl Session {
         }
     }
 
-    pub(super) fn clear_lsp_diagnostic_layer(&mut self, server: &crate::lsp::SlotKey) {
+    /// Drop one server instance's diagnostic layers -- every feed's, or only
+    /// `feed`'s -- republishing the documents that carried them.
+    ///
+    /// The layer key is the slot's -- `{provider}@{root}` -- so removing it is
+    /// already scoped to the one instance: a provider still running at
+    /// another repository root keeps its own markers. Other servers'
+    /// diagnostics, spell-check and lint results share the merged set and are
+    /// untouched.
+    pub(super) fn clear_lsp_diagnostic_layer(
+        &mut self,
+        server: &crate::lsp::SlotKey,
+        feed: Option<crate::lsp::DiagnosticFeed>,
+    ) {
         let affected = self
             .store
             .docs
             .iter_mut()
             .filter_map(|(doc_id, document)| {
-                // Every feed's layer for this slot goes with it.
                 let before = document.lsp_diagnostics.len();
-                document
-                    .lsp_diagnostics
-                    .retain(|(layer, _), _| layer != server);
+                document.lsp_diagnostics.retain(|(slot, layer_feed), _| {
+                    slot != server || feed.is_some_and(|feed| feed != *layer_feed)
+                });
                 (document.lsp_diagnostics.len() != before).then_some(*doc_id)
             })
             .collect::<Vec<_>>();

@@ -24,12 +24,20 @@
 //! reload) that no document's version records. The versions themselves are
 //! kept, so an edit buffered across the refresh still reads as an edit when it
 //! is flushed, and still re-pulls the documents that depend on it.
+//!
+//! A server may also withdraw pull support (`client/unregisterCapability`)
+//! for a document it was pulled for. Nothing it says afterwards replaces what
+//! it last answered -- its publications land in their own layer -- so the
+//! slot's whole pulled layer is dropped, related documents' reports included,
+//! and the documents still covered are pulled again to restore theirs.
 
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::PoisonError;
 
 use karet_core::ServerFeature;
 use karet_lsp::LspClient;
@@ -65,6 +73,16 @@ pub(super) struct Pulls {
     registrations: Option<watch::Receiver<()>>,
     /// The connection's refresh requests, subscribed on its first launch.
     refreshes: Option<broadcast::Receiver<ServerRefresh>>,
+    /// Every document pulled since the slot's pulled layer was last cleared,
+    /// open or not: a closed document's related reports may still be shown
+    /// on the documents they named. Kept across a reconnect, so a successor
+    /// that does not offer pulls clears what its predecessor answered.
+    pulled: HashSet<PathBuf>,
+    /// Serialises relaying an answer against clearing the pulled layer, and
+    /// counts the clears: a pull relays only while the count is still the
+    /// one it was launched under, so an answer racing its own abort cannot
+    /// land after the clear that superseded it.
+    clears: Arc<Mutex<u64>>,
 }
 
 impl Pulls {
@@ -97,6 +115,14 @@ impl Pulls {
             }
             open && !handle.is_finished()
         });
+        if self
+            .pulled
+            .iter()
+            .any(|path| !client.supports_for(ServerFeature::PullDiagnostics, path))
+        {
+            self.withdraw(client, (updates, key, token));
+        }
+        let clears = *self.clears.lock().unwrap_or_else(PoisonError::into_inner);
         let ready = |path: &PathBuf, document: &OpenDocument| {
             pending != Some(path.as_path())
                 && !document.resync
@@ -124,6 +150,7 @@ impl Pulls {
             }
             self.asked.insert(path.clone(), document.version);
             self.refreshed.remove(path);
+            self.pulled.insert(path.clone());
             if let Some(superseded) = self.in_flight.remove(path) {
                 superseded.abort();
             }
@@ -132,9 +159,43 @@ impl Pulls {
                 path.clone(),
                 document.version,
                 (updates.clone(), key.clone(), token),
+                (Arc::clone(&self.clears), clears),
             ));
             self.in_flight.insert(path.clone(), handle);
         }
+    }
+
+    /// The server withdrew pull support for a document it was pulled for:
+    /// drop the slot's pulled layer, and pull again what is still covered.
+    ///
+    /// The whole layer goes, not only the withdrawn documents' own sets: a
+    /// pull's related reports land on other documents, and which pull put
+    /// them there is not recorded. A document still covered is marked to be
+    /// pulled again, which restores its set (and its related reports) at
+    /// once, so only a partial withdrawal costs a re-pull.
+    fn withdraw(
+        &mut self,
+        client: &LspClient,
+        (updates, key, token): (&mpsc::UnboundedSender<LspUpdate>, &SlotKey, SlotToken),
+    ) {
+        for (_, handle) in self.in_flight.drain() {
+            handle.abort();
+        }
+        {
+            // Held across the send, so no pull relays between the count
+            // moving and the clear being queued.
+            let mut clears = self.clears.lock().unwrap_or_else(PoisonError::into_inner);
+            *clears = clears.wrapping_add(1);
+            let _ = updates.send(LspUpdate::PulledDiagnosticsWithdrawn {
+                token,
+                server: key.clone(),
+            });
+        }
+        self.asked
+            .retain(|path, _| client.supports_for(ServerFeature::PullDiagnostics, path));
+        self.refreshed.retain(|path| self.asked.contains_key(path));
+        self.refreshed.extend(self.asked.keys().cloned());
+        self.pulled.clear();
     }
 
     /// Stop every pull and forget what was asked: the connection they were
@@ -234,12 +295,15 @@ enum PullWake {
     RefreshesClosed,
 }
 
-/// Pull `path`'s diagnostics at `version` and relay what the server said.
+/// Pull `path`'s diagnostics at `version` and relay what the server said,
+/// unless the pulled layer was cleared since `launched` (see
+/// [`Pulls::withdraw`]).
 async fn pull(
     client: Arc<LspClient>,
     path: PathBuf,
     version: i32,
     (updates, key, token): (mpsc::UnboundedSender<LspUpdate>, SlotKey, SlotToken),
+    (clears, launched): (Arc<Mutex<u64>>, u64),
 ) {
     // No previous result id is handed back: an "unchanged" answer would be
     // about a set the session may have dropped as stale, leaving nothing to
@@ -251,6 +315,10 @@ async fn pull(
             return;
         },
     };
+    let clears = clears.lock().unwrap_or_else(PoisonError::into_inner);
+    if *clears != launched {
+        return;
+    }
     if let Some(diagnostics) = pulled.diagnostics {
         let _ = updates.send(LspUpdate::Diagnostics {
             token,

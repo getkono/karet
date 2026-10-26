@@ -115,7 +115,8 @@ pub(super) enum Behavior {
     PushesAndPulls,
     /// Advertise no pull diagnostics, but register them dynamically
     /// (`client/registerCapability`) once a document is opened, then answer
-    /// pulls like [`Behavior::Pulls`].
+    /// pulls like [`Behavior::Pulls`]. Withdraws that registration
+    /// (`client/unregisterCapability`) whenever a document is saved.
     RegistersPulls,
     /// Pull like [`Behavior::Pulls`], with `interFileDependencies` declared.
     PullsAcrossFiles,
@@ -821,6 +822,20 @@ pub(super) fn test_connector(
                             write_msg(
                                 &mut server_write,
                                 &json!({"jsonrpc": "2.0", "id": msg["id"], "result": result}),
+                            )
+                            .await;
+                        },
+                        Some("textDocument/didSave")
+                            if matches!(behavior, Behavior::RegistersPulls) =>
+                        {
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": "unregister-pull",
+                                "method": "client/unregisterCapability",
+                                "params": {"unregisterations": [{
+                                    "id": "pull",
+                                    "method": "textDocument/diagnostic"
+                                }]}}),
                             )
                             .await;
                         },

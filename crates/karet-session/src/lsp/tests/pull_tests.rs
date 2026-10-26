@@ -1,6 +1,8 @@
 //! Pull diagnostics through the server task: every version the server is sent
 //! is pulled, and the answer joins the diagnostic stream stamped with it.
 
+use std::collections::HashSet;
+
 use karet_core::Diagnostic;
 use karet_text::TextBuffer;
 use serde_json::Value;
@@ -582,4 +584,158 @@ async fn both_shown(events: &mut EventRx, pulled: &str) -> TestResult {
             return Ok(());
         }
     }
+}
+
+/// Wait on `pulls` until the server covers `path` with pull diagnostics.
+async fn registered(
+    pulls: &mut super::super::pull::Pulls,
+    client: &karet_lsp::LspClient,
+    path: &Path,
+) -> Option<()> {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !client.supports_for(karet_core::ServerFeature::PullDiagnostics, path) {
+            pulls.woken().await;
+        }
+    })
+    .await
+    .ok()
+}
+
+/// The next update the pulls relay that is not a diagnostic set's.
+async fn next_clear(updates: &mut mpsc::UnboundedReceiver<LspUpdate>) -> Option<LspUpdate> {
+    loop {
+        let update = tokio::time::timeout(Duration::from_secs(5), updates.recv())
+            .await
+            .ok()??;
+        if !matches!(update, LspUpdate::Diagnostics { .. }) {
+            return Some(update);
+        }
+    }
+}
+
+/// A `client/unregisterCapability` for `textDocument/diagnostic` clears the
+/// slot's pulled layer -- for a document already closed too, whose related
+/// reports may still be shown elsewhere -- and the withdrawn document is not
+/// pulled again. Falsified by never checking for a withdrawal, or by
+/// checking only the documents still open.
+///
+/// On tokio's virtual clock, for the reason
+/// `a_server_without_pull_diagnostics_is_not_asked` gives.
+#[tokio::test(start_paused = true)]
+async fn withdrawing_pull_support_clears_the_pulled_layer() -> TestResult {
+    use super::super::pull::Pulls;
+
+    let (client, mut observed) = connected(Behavior::RegistersPulls).await?;
+    let mut documents = HashMap::new();
+    let one = open_at_one(&client, &mut documents, "one.rs").await?;
+    let (updates_tx, mut updates) = mpsc::unbounded_channel();
+    let key = SlotKey::new(crate::api::LanguageServerId::new("rust"), "/tmp");
+    let slot = (&updates_tx, &key, SlotToken::default());
+    let mut pulls = Pulls::default();
+    pulls.launch_ready(&client, &documents, None, slot);
+    registered(&mut pulls, &client, &one)
+        .await
+        .ok_or("the double never registered pulls")?;
+    pulls.launch_ready(&client, &documents, None, slot);
+    pulled_all(&mut observed, &["one.rs"])
+        .await
+        .ok_or("never pulled")?;
+    let (own, _, _) = next_set(&mut updates).await.ok_or("no pulled set")?;
+    assert_eq!(own, one);
+
+    // Closed before the withdrawal: its related report outlives it.
+    client.did_save(&one, None).await?;
+    documents.clear();
+    tokio::time::timeout(Duration::from_secs(5), pulls.woken()).await?;
+    pulls.launch_ready(&client, &documents, None, slot);
+    match next_clear(&mut updates).await {
+        Some(LspUpdate::PulledDiagnosticsWithdrawn { server, .. }) => assert_eq!(server, key),
+        _ => return Err("the withdrawal cleared nothing".into()),
+    }
+
+    // Open again, it is not pulled: nothing covers it any more. Recorded
+    // without a `didOpen`, which would have the double register pulls anew.
+    documents.insert(
+        one.clone(),
+        super::super::commands::OpenDocument {
+            language: "rust".into(),
+            version: 2,
+            text: "fn main() {}\n".into(),
+            lines_agree: true,
+            resync: false,
+        },
+    );
+    pulls.launch_ready(&client, &documents, None, slot);
+    while let Ok(Some(message)) =
+        tokio::time::timeout(Duration::from_millis(500), observed.recv()).await
+    {
+        assert_eq!(
+            pulled_uri(&message),
+            None,
+            "a withdrawn document was pulled"
+        );
+    }
+    assert!(
+        updates.try_recv().is_err(),
+        "the pulled layer was cleared or relayed again"
+    );
+    pulls.shutdown().await;
+    Ok(())
+}
+
+/// End to end: once the server withdraws pull diagnostics, each open
+/// document's pulled set leaves the screen -- the related document's, put
+/// there by another document's pull, as well as the withdrawn document's
+/// own. Falsified by leaving the pulled layer in place, or by clearing only
+/// the documents whose own pull was withdrawn.
+#[tokio::test]
+async fn withdrawn_pull_diagnostics_leave_every_document() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let asking = rust_file(&dir, "asking.rs", "fn main() {}\nlet x;\n").ok_or("write failed")?;
+    let elsewhere = rust_file(&dir, "elsewhere.rs", "fn other() {}\n").ok_or("write failed")?;
+    let spawns = Arc::new(AtomicUsize::new(0));
+    let connector = test_connector(Behavior::RegistersPulls, None, spawns);
+    let (session, mut events) = session_with_connector(connector);
+    let backend = local_session(session, None);
+    for path in [asking, elsewhere] {
+        backend.send(
+            backend.next_id(),
+            Command::OpenDocument {
+                path,
+                language: None,
+            },
+        )?;
+    }
+
+    let (mut docs, mut shown) = (Vec::new(), HashSet::new());
+    while docs.len() < 2 || docs.iter().any(|doc| !shown.contains(doc)) {
+        match next_event(&mut events)
+            .await
+            .ok_or("the pulled sets were never shown")?
+        {
+            (_, Event::Opened { doc, .. }) => docs.push(doc),
+            (_, Event::DiagnosticsPublished { doc, diagnostics }) if !diagnostics.is_empty() => {
+                shown.insert(doc);
+            },
+            _ => {},
+        }
+    }
+
+    let doc = *docs.first().ok_or("nothing opened")?;
+    let cause = crate::api::SaveCause::Manual;
+    backend.send(backend.next_id(), Command::Save { doc, cause })?;
+    let mut cleared = HashSet::new();
+    while cleared.len() < docs.len() {
+        let (_, event) = next_event(&mut events)
+            .await
+            .ok_or("a pulled set outlived the withdrawal")?;
+        if let Event::DiagnosticsPublished { doc, diagnostics } = event {
+            if diagnostics.is_empty() {
+                cleared.insert(doc);
+            } else {
+                cleared.remove(&doc);
+            }
+        }
+    }
+    Ok(())
 }
