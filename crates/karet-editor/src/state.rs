@@ -1044,7 +1044,7 @@ impl EditorState {
     fn next_occurrence(&self, buffer: &TextBuffer) -> (Option<Range>, bool) {
         let whole_word = self.whole_word_run();
         let primary = self.cursors.primary().range();
-        let needle = range_text(buffer, primary);
+        let needle = buffer.slice_range(primary).unwrap_or_default();
         let taken = |r: Range| {
             self.cursors.selections.iter().any(|s| {
                 let s = s.range();

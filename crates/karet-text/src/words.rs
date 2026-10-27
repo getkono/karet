@@ -196,9 +196,12 @@ fn class_run(chars: &[char], col: u32) -> (u32, u32) {
     (col_of(start), col_of(end))
 }
 
-/// The clusters of `chars` as `(start, end)` column spans, with the first
-/// `char` of each, which decides its word class.
-fn clusters(chars: &[char]) -> Vec<(u32, u32, char)> {
+/// The extended grapheme clusters of `chars` as `(start, end, first)`: each
+/// cluster's `[start, end)` column span and its first `char`, which decides its
+/// [`karet_core::WordClass`] — a base letter carries its combining marks into a
+/// word, and an emoji sequence stays one symbol. Empty for an empty line.
+#[must_use]
+pub fn clusters(chars: &[char]) -> Vec<(u32, u32, char)> {
     cluster_bounds(chars)
         .windows(2)
         .filter_map(|pair| {
@@ -208,9 +211,21 @@ fn clusters(chars: &[char]) -> Vec<(u32, u32, char)> {
         .collect()
 }
 
+/// The cluster boundary strictly before `col` in `chars` (`0` at the start):
+/// where a caret one user-perceived character left of `col` rests.
+#[must_use]
+pub fn previous_cluster(chars: &[char], col: u32) -> u32 {
+    cluster_bounds(chars)
+        .into_iter()
+        .rev()
+        .find(|&bound| bound < col)
+        .unwrap_or(0)
+}
+
 /// The cluster boundary strictly after `col` in `chars` (the line's length at
-/// its end).
-fn next_cluster(chars: &[char], col: u32) -> u32 {
+/// its end): where a caret one user-perceived character right of `col` rests.
+#[must_use]
+pub fn next_cluster(chars: &[char], col: u32) -> u32 {
     cluster_bounds(chars)
         .into_iter()
         .find(|&bound| bound > col)
@@ -279,6 +294,34 @@ mod tests {
         );
         assert_eq!(cluster_bounds(&chars(FLAGS)), vec![0, 2, 4]);
         assert_eq!(cluster_bounds(&chars("日本")), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn clusters_pair_each_span_with_its_first_char() {
+        assert_eq!(clusters(&chars("")), vec![]);
+        assert_eq!(
+            clusters(&chars(&format!("{E_ACUTE}x"))),
+            vec![(0, 2, 'e'), (2, 3, 'x')]
+        );
+        assert_eq!(
+            clusters(&chars(&format!("a{FAMILY}"))),
+            vec![(0, 1, 'a'), (1, 6, '\u{1F468}')]
+        );
+    }
+
+    #[test]
+    fn cluster_steps_never_land_inside_a_cluster() {
+        let line = chars(&format!("a{FAMILY}b"));
+        assert_eq!(next_cluster(&line, 0), 1);
+        assert_eq!(next_cluster(&line, 1), 6);
+        // From inside a cluster, a step leaves it rather than stopping mid-way.
+        assert_eq!(next_cluster(&line, 3), 6);
+        assert_eq!(previous_cluster(&line, 3), 1);
+        assert_eq!(previous_cluster(&line, 6), 1);
+        // The line's two ends are where the steps stop.
+        assert_eq!(next_cluster(&line, 7), 7);
+        assert_eq!(previous_cluster(&line, 0), 0);
+        assert_eq!(next_cluster(&[], 0), 0);
     }
 
     #[test]

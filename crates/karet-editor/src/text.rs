@@ -3,6 +3,9 @@ use karet_core::LineCol;
 use karet_core::Range;
 use karet_core::TokenId;
 use karet_text::TextBuffer;
+pub(crate) use karet_text::words::clusters;
+pub(crate) use karet_text::words::next_cluster;
+pub(crate) use karet_text::words::previous_cluster;
 pub(crate) use karet_text::words::word_at;
 use karet_theme::Rgba;
 use karet_theme::Theme;
@@ -10,7 +13,6 @@ use ratatui::style::Style;
 
 use super::hint::LineHints;
 use crate::Fold;
-use crate::cluster_bounds;
 use crate::cluster_widths;
 
 /// Whether the cell at line `l`, column `col` lies within any of `selections`.
@@ -29,33 +31,6 @@ pub(super) fn newline_in_any(selections: &[Range], l: u32, line_len: u32) -> boo
 /// Whether `c` is part of a word, on the shared [`karet_core::word_class`] model.
 pub(super) fn is_word_char(c: char) -> bool {
     karet_core::is_word_char(c)
-}
-
-/// The text within `range`, read line by line so the document is never copied
-/// whole. Lines are joined with `\n`, the buffer's normalized line break.
-pub(super) fn range_text(buffer: &TextBuffer, range: Range) -> String {
-    (range.start.line..=range.end.line)
-        .map(|l| {
-            let chars = line_chars(buffer, l);
-            let n = chars.len();
-            let lo = if l == range.start.line {
-                (range.start.col as usize).min(n)
-            } else {
-                0
-            };
-            let hi = if l == range.end.line {
-                (range.end.col as usize).clamp(lo, n)
-            } else {
-                n
-            };
-            chars
-                .get(lo..hi)
-                .unwrap_or_default()
-                .iter()
-                .collect::<String>()
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 /// The first occurrence of `needle` starting at or after `from`, wrapping past the
@@ -335,24 +310,6 @@ pub(super) fn line_chars(buffer: &TextBuffer, line: u32) -> Vec<char> {
         .collect()
 }
 
-/// The cluster boundary strictly before `col` in `chars` (`0` at the start).
-pub(super) fn previous_cluster(chars: &[char], col: u32) -> u32 {
-    cluster_bounds(chars)
-        .into_iter()
-        .rev()
-        .find(|&bound| bound < col)
-        .unwrap_or(0)
-}
-
-/// The cluster boundary strictly after `col` in `chars` (the line's length at
-/// its end).
-pub(super) fn next_cluster(chars: &[char], col: u32) -> u32 {
-    cluster_bounds(chars)
-        .into_iter()
-        .find(|&bound| bound > col)
-        .unwrap_or(chars.len() as u32)
-}
-
 /// The column one grapheme cluster left of `pos` on its line.
 pub(crate) fn previous_cluster_col(buffer: &TextBuffer, pos: LineCol) -> u32 {
     previous_cluster(&line_chars(buffer, pos.line), pos.col)
@@ -361,19 +318,6 @@ pub(crate) fn previous_cluster_col(buffer: &TextBuffer, pos: LineCol) -> u32 {
 /// The column one grapheme cluster right of `pos` on its line.
 pub(crate) fn next_cluster_col(buffer: &TextBuffer, pos: LineCol) -> u32 {
     next_cluster(&line_chars(buffer, pos.line), pos.col)
-}
-
-/// The clusters of `chars` as `(start, end)` column spans, with the first
-/// `char` of each, which decides its word class: a base letter carries its
-/// combining marks into a word, and an emoji sequence stays one symbol.
-pub(super) fn clusters(chars: &[char]) -> Vec<(u32, u32, char)> {
-    cluster_bounds(chars)
-        .windows(2)
-        .filter_map(|pair| {
-            let (start, end) = (pair[0], pair[1]);
-            Some((start, end, *chars.get(start as usize)?))
-        })
-        .collect()
 }
 
 /// The number of decimal digits needed to print `n`.
