@@ -1,10 +1,9 @@
 //! Settling a retirement: what the user is owed when a provider stops serving.
 //!
-//! Split out of [`super::updates`] to keep that module under the workspace's
-//! per-file code-line ceiling. The pieces belong together in any case -- a
-//! retirement clears the provider's markers, reports that it stopped, and
-//! republishes the inventory the panel is drawn from, and doing only some of
-//! those is the defect this change exists to remove.
+//! A retirement clears the provider's markers, reports that it stopped, and
+//! republishes the inventory the panel is drawn from. The three belong together:
+//! a path that did only some of them would leave a retired provider's squiggles
+//! on screen or keep reporting it as running.
 
 use super::*;
 
@@ -13,10 +12,10 @@ impl Session {
     /// client told the provider is no longer serving.
     ///
     /// Both halves happen here, together, for every path that retires a slot --
-    /// a document closing, a settings change, an explicit restart. They used to
-    /// be spread across those paths in different combinations, and no path did
-    /// both, which is how a retired provider kept its squiggles *and* went on
-    /// being reported as running.
+    /// a document closing, a settings change, an explicit restart. Keeping them
+    /// in one place is what stops any path from doing only one half, which would
+    /// leave a retired provider's squiggles on screen or keep it reported as
+    /// running.
     ///
     /// The report is emitted directly rather than routed back through the task
     /// channel. It is the manager's own statement about a slot it has already

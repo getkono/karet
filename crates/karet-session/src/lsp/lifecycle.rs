@@ -1,3 +1,10 @@
+//! A slot's lifecycle on the manager: spawn, retire, restart, and reconfigure.
+//!
+//! This module hands out each incarnation's [`SlotToken`], spawns a slot's
+//! server task (the task loop itself lives in `runtime`), retires slots, which
+//! is the only way one leaves the manager, records runtime-state reports, and
+//! pushes changed settings to running servers.
+
 use super::*;
 
 impl LspManager {

@@ -7,8 +7,9 @@
 //! swap left behind by a crash and warn when the underlying file changed meanwhile.
 //!
 //! A swap is a single-line JSON header ([`SwapMeta`]) followed by a newline and the raw
-//! UTF-8 buffer contents. Swaps are removed on a successful save, on close, and when
-//! the user declines to save on exit.
+//! UTF-8 buffer contents. Swaps are removed on a successful save and on close. Quitting
+//! closes no document, so a discard-and-quit leaves its swaps behind, and the next
+//! launch offers to recover them like a crash's.
 //!
 //! The same directory holds **persisted undo history** (`files.persistentUndo`): one
 //! JSON file per document, keyed by path alone so the next session finds it. Its

@@ -1,3 +1,13 @@
+//! The actor's source-control surface: serving [`VcsCommand`]s.
+//!
+//! Index writes run inline here through `vcs_write`. Status, history pages,
+//! commit details, diffs, blame and line changes are sent as jobs to the VCS
+//! worker (`crate::vcs_worker`), which performs those reads off the actor. Not
+//! every read goes there: the log events `emit_vcs_log` emits and the open log
+//! `reconcile_vcs_log` keeps in step with the repository are read on the actor
+//! itself, and `generate_commit_message` reads the staged diff on a blocking
+//! task of its own before asking the agent for an AI commit message.
+
 use super::*;
 use crate::api::VcsCommand;
 use crate::vcs_worker::VcsJob;

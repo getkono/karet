@@ -1,8 +1,5 @@
 //! Reading a document off disk and writing it back: format classification,
 //! the per-document serialization settings, and the save normalization.
-//!
-//! Split out of `session.rs` to keep that file under the workspace code-line
-//! ceiling — a pure relocation, no behaviour change.
 
 use super::*;
 

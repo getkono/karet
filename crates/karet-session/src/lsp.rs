@@ -1,9 +1,12 @@
-//! LSP orchestration: lazy per-language server tasks and completion serving.
+//! LSP orchestration: lazy server tasks, one per provider at a repository root.
 //!
 //! The [`LspManager`] lives on the session actor and owns one background task per
-//! language. A task is spawned lazily on the first open of a matching document; it
-//! owns the [`LspClient`], serializes document sync ahead of requests (a
-//! completion always sees the latest text), debounces `didChange` forwards --
+//! slot -- a [`SlotKey`]: one provider at one repository root. A task is spawned
+//! lazily on the first open of a matching document; it owns the [`LspClient`],
+//! serves every request the session routes to that provider (completion, hover,
+//! formatting, code actions and lenses, pulled diagnostics, inlay hints, and the
+//! server's window traffic), serializes document sync ahead of requests (a
+//! request always sees the latest text), debounces `didChange` forwards --
 //! sent as ranges to a server that asked for incremental sync, else as the
 //! full text (see `delta`) -- and reports back to the actor on an [`LspUpdate`]
 //! channel — the session converts positions (LSP UTF-16 ↔ buffer UTF-32)
@@ -115,9 +118,9 @@ use crate::api::LanguageServerSource;
 use crate::api::RequestId;
 use crate::config::schema::Lsp as LspSettings;
 
-/// How long an edited document may sit before its full text is forwarded as
-/// `didChange`. A pending forward is also flushed immediately ahead of any
-/// request the user is waiting on, so completions never see stale text; an
+/// How long an edited document may sit before its pending edits are forwarded
+/// as `didChange`. A pending forward is also flushed immediately ahead of any
+/// request the user is waiting on, so requests never see stale text; an
 /// inlay-hint request waits for the debounced flush instead (see
 /// `hint_flight`).
 ///
@@ -140,7 +143,7 @@ const CIRCUIT_COOLDOWN: Duration = Duration::from_secs(300);
 /// its squiggles pointing at lines the user has since edited away.
 const DIAGNOSTIC_GRACE: Duration = Duration::from_secs(1);
 
-/// Lazy per-language language-server orchestration (see the module docs).
+/// Lazy per-slot language-server orchestration (see the module docs).
 pub(crate) struct LspManager {
     settings: LspSettings,
     generation: u64,
