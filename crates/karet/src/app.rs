@@ -167,6 +167,8 @@ use karet_session::DocumentSettings;
 use karet_session::Event as SessionEvent;
 use karet_session::EventRx;
 use karet_session::GithubCommand;
+use karet_session::GithubPage;
+use karet_session::GithubPullRequest;
 use karet_session::GithubVerification;
 use karet_session::LanguageServerChange;
 use karet_session::LanguageServerCommand;
@@ -181,7 +183,6 @@ use karet_session::LocationKind;
 use karet_session::LspCommand;
 use karet_session::NotebookCommand;
 use karet_session::PreparedChange;
-use karet_session::PullRequestSummary;
 use karet_session::RangeSpec;
 use karet_session::RepositorySnapshot;
 use karet_session::RequestId;
@@ -437,7 +438,7 @@ pub struct App {
     /// Open-pull-request query currently filling the picker.
     pub(crate) pending_pull_requests: Option<RequestId>,
     /// Pull-request pages accumulated until GitHub has no next page.
-    pub(crate) pull_request_items: Vec<PullRequestSummary>,
+    pub(crate) pull_request_items: Vec<GithubPullRequest>,
     /// Remote associated with the accumulating pull-request query.
     pub(crate) pull_request_remote: Option<String>,
     /// Repository action parked until all dirty editors save successfully.

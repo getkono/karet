@@ -138,7 +138,6 @@ pub use api::ManifestHint;
 pub use api::ManifestHintState;
 pub use api::NotebookCommand;
 pub use api::PreparedChange;
-pub use api::PullRequestSummary;
 pub use api::RangeSpec;
 pub use api::RemoteFacts;
 pub use api::RenameTarget;

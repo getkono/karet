@@ -23,6 +23,10 @@
                 query: "is:open".to_owned(),
                 page: 1,
             },
+            GithubCommand::ListOpenPullRequests {
+                remote: "origin".to_owned(),
+                page: 1,
+            },
             GithubCommand::Actions { page: 1 },
             GithubCommand::Issue { number: 1 },
             GithubCommand::PullRequest { number: 1 },
