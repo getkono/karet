@@ -2,6 +2,8 @@
 //! Ctrl/Cmd+click opens them, with no language server involved.
 
 use karet_core::DecorationKind;
+use karet_core::FoldRegion;
+use karet_core::FoldRegions;
 
 use super::support::*;
 use crate::app::*;
@@ -345,6 +347,69 @@ fn a_wrapped_source_link_links_every_row_it_occupies() {
         .count();
     assert!(rows >= 2, "the link spans {rows} rows");
     assert_eq!(linked_cells(&buffer, url), url.len());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn a_source_link_under_a_collapsed_fold_is_not_painted() {
+    let (mut app, root) = workspace_app(
+        "source-link-osc8-fold",
+        b"# Title\nsee https://example.com/hidden\nmore\nhttps://example.com/shown\n",
+    );
+    let idx = app.active;
+    if let TabKind::Code { folds, folded, .. } = &mut app.tabs[idx].kind {
+        *folds = FoldRegions::from_sorted_regions(vec![FoldRegion::new(0, 2)]);
+        folded.insert(0);
+    }
+    let buffer = frame(&mut app, 100, 12);
+
+    assert_eq!(linked_cells(&buffer, "hidden"), 0);
+    assert_eq!(
+        linked_cells(&buffer, "shown"),
+        "https://example.com/shown".len(),
+        "the line after the fold still links, on the row the fold freed"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn a_source_link_scrolled_half_out_of_view_links_only_its_drawn_cells() {
+    // Code does not wrap, so the line scrolls horizontally.
+    let url = "https://example.com/scrolled/out/of/view";
+    let (mut app, root) = workspace_app("source-link-osc8-scroll", b"\n");
+    write_file(
+        &root,
+        "main.rs",
+        format!("// 3456789 {url} tail\n").as_bytes(),
+    );
+    app.open_path(&root.join("main.rs"));
+    fill_reserved_tabs(&mut app);
+    app.sidebar_visible = false;
+    let _ = frame(&mut app, 40, 8);
+    // Scrolled right past the URL's start at column 11, in a pane too narrow
+    // for its end: it is cut off on both sides.
+    let wheel = MouseEvent {
+        kind: MouseEventKind::ScrollRight,
+        column: app.editor_rect.x.saturating_add(5),
+        row: app.editor_rect.y,
+        modifiers: KeyModifiers::NONE,
+    };
+    for _ in 0..4 {
+        app.handle_mouse(wheel);
+    }
+    let buffer = frame(&mut app, 40, 8);
+
+    let editor = &app.tabs[app.active].editor;
+    let (left, width) = (
+        editor.scroll_col() as usize,
+        editor.content_width() as usize,
+    );
+    assert!(left > 11, "scrolled to {left}");
+    assert!(
+        left + width < 11 + url.len(),
+        "{width} columns show the URL's end"
+    );
+    assert_eq!(linked_cells(&buffer, url), width);
     let _ = std::fs::remove_dir_all(root);
 }
 
