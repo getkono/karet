@@ -146,6 +146,22 @@
             .collect()
     }
 
+    /// Keymap paths alone start the config watch: with no roots and no settings
+    /// layers, a session given only keymap files still watches them. Falsified
+    /// by not adding `keymap_paths` to the watched paths in `Session::new`.
+    #[test]
+    fn keymap_paths_alone_start_the_watch() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let (unwatched, _events, _snaps) = Session::new(SessionConfig::default());
+        assert!(unwatched.watcher.is_none(), "nothing to watch, so no watcher");
+        let (watched, _events, _snaps) = Session::new(SessionConfig {
+            keymap_paths: vec![dir.path().join("keymap.jsonc")],
+            ..SessionConfig::default()
+        });
+        assert!(watched.watcher.is_some(), "the keymap file must be watched");
+        Ok(())
+    }
+
     /// The user's keymap lives outside every root: its change reaches the client
     /// as `KeymapChanged` and, being configuration, raises no `FsChanged`.
     /// Falsified by dropping the keymap filter in `handle_fs_event`.

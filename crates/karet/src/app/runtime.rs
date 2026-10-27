@@ -583,7 +583,31 @@ impl Drop for KeyboardEnhancementGuard {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::farewell_line;
+    use super::session_config;
+    use crate::app::tests::support::app;
+    use crate::keymap::user::Source;
+
+    /// The session watches exactly the keymap files the app re-reads, in order;
+    /// without them it never reports `KeymapChanged` and a saved
+    /// `keymap.jsonc` stops rebinding live.
+    #[test]
+    fn session_config_hands_the_keymap_files_to_the_session_watch() {
+        let mut app = app();
+        app.keymap_files = vec![
+            (Source::User, PathBuf::from("/u/karet/keymap.jsonc")),
+            (Source::Project, PathBuf::from("/p/.karet/keymap.jsonc")),
+        ];
+        assert_eq!(
+            session_config(&app, None).keymap_paths,
+            vec![
+                PathBuf::from("/u/karet/keymap.jsonc"),
+                PathBuf::from("/p/.karet/keymap.jsonc"),
+            ]
+        );
+    }
 
     #[test]
     fn a_farewell_line_escapes_control_characters_and_keeps_the_rest() {
