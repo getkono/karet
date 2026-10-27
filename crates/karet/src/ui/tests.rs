@@ -778,11 +778,14 @@ fn the_activity_switcher_reserves_a_cell_pair_for_every_panel()
     let mut terminal = Terminal::new(TestBackend::new(40, 1))?;
     let theme = app.theme.clone();
     let mut header = |app: &mut App| {
+        let mut hits = crate::app::FrameHits::default();
         let _ = terminal.draw(|frame| {
             let area = frame.area();
-            super::sidebar::draw_sidebar_header(frame, app, &theme, area);
+            super::sidebar::draw_sidebar_header(frame, app, &theme, area, &mut hits);
         });
-        app.panel_hits
+        app.last_frame = hits;
+        app.last_frame
+            .panel_hits
             .iter()
             .map(|&(_, _, panel)| panel)
             .collect::<Vec<_>>()
@@ -830,13 +833,13 @@ fn the_activity_switcher_reserves_a_cell_pair_for_every_panel()
         header(&mut app).last(),
         Some(&SidebarPanel::Hierarchy),
         "{:?}",
-        app.panel_hits
+        app.last_frame.panel_hits
     );
     // Two cells each, marching left to right and staying inside the header.
-    for window in app.panel_hits.windows(2) {
-        assert_eq!(window[1].0, window[0].1, "{:?}", app.panel_hits);
+    for window in app.last_frame.panel_hits.windows(2) {
+        assert_eq!(window[1].0, window[0].1, "{:?}", app.last_frame.panel_hits);
     }
-    for &(start, end, _) in &app.panel_hits {
+    for &(start, end, _) in &app.last_frame.panel_hits {
         assert_eq!(end - start, 2);
         assert!(
             end <= 40,

@@ -641,7 +641,11 @@ fn land_symbols(app: &mut App, symbols: Vec<karet_core::Symbol>) {
 /// Draw the shell and return the only pane's painted breadcrumb row.
 fn breadcrumb_row(app: &mut App) -> String {
     let painted = screen(app, 120, 12);
-    let row = app.pane_frames.first().map_or(0, |f| f.breadcrumb_rect.y);
+    let row = app
+        .last_frame
+        .panes
+        .first()
+        .map_or(0, |f| f.breadcrumb_rect.y);
     painted.get(usize::from(row)).cloned().unwrap_or_default()
 }
 
@@ -668,7 +672,8 @@ fn the_breadcrumb_asks_for_symbols_and_names_those_around_the_caret() {
         "the chain follows the file name: {row}"
     );
     let targets: Vec<BreadcrumbTarget> = app
-        .pane_frames
+        .last_frame
+        .panes
         .first()
         .map(|f| f.breadcrumb_hits.iter().map(|h| h.target.clone()).collect())
         .unwrap_or_default();
@@ -692,7 +697,8 @@ fn clicking_a_symbol_segment_opens_its_siblings_and_accepting_one_jumps_there() 
         .set_carets(&[LineCol::new(2, 5)]);
     let _ = screen(&mut app, 120, 12);
     let (row, stop) = app
-        .pane_frames
+        .last_frame
+        .panes
         .first()
         .and_then(|f| {
             let hit = f

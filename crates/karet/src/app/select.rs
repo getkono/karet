@@ -186,7 +186,7 @@ impl App {
         col: u16,
         row: u16,
     ) -> Option<(karet_widgets::PaneId, SelectRegion)> {
-        self.pane_frames.iter().find_map(|frame| {
+        self.last_frame.panes.iter().find_map(|frame| {
             frame
                 .select_regions
                 .iter()
@@ -198,7 +198,8 @@ impl App {
     /// The focused pane's recorded region for `surface`.
     pub(crate) fn select_region(&self, surface: SelectSurface) -> Option<SelectRegion> {
         let focused = self.focus_pane();
-        self.pane_frames
+        self.last_frame
+            .panes
             .iter()
             .find(|frame| frame.pane == focused)?
             .select_regions
@@ -231,7 +232,7 @@ impl App {
     /// only ever answers for the stacked one.
     fn on_commit_index_row(&self, col: u16, row: u16) -> bool {
         let point = (col, row);
-        self.pane_frames.iter().any(|frame| {
+        self.last_frame.panes.iter().any(|frame| {
             frame
                 .commit_file_hits
                 .iter()

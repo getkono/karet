@@ -21,7 +21,7 @@ fn workspace(name: &str) -> (PathBuf, PathBuf) {
 
 fn fresh(root: &Path) -> App {
     let mut app = App::new(root.to_path_buf(), Vec::new(), Vec::new(), false);
-    app.main_rect = Rect::new(0, 0, 160, 40);
+    app.last_frame.main_rect = Rect::new(0, 0, 160, 40);
     app
 }
 

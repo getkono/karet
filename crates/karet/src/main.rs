@@ -212,7 +212,7 @@ fn main() -> color_eyre::Result<()> {
             .map(|spec| (spec.cols, spec.rows))
             .or_else(|| crossterm::terminal::size().ok())
         {
-            app.main_rect = ratatui::layout::Rect::new(0, 0, w, h);
+            app.last_frame.main_rect = ratatui::layout::Rect::new(0, 0, w, h);
         }
         for file in &cli.split {
             app.open_startup_split(&resolve_under_root(&root, file));

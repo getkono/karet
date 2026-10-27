@@ -10,15 +10,15 @@ fn commit_view_switches_at_104_columns_and_records_file_rows() {
     };
     assert_eq!(view.layout, Some(crate::tab::CommitLayoutMode::Stacked));
     assert_eq!(view.file_anchors.len(), 3);
-    assert_eq!(app.pane_frames[0].commit_file_hits.len(), 3);
-    assert!(!app.pane_frames[0].commit_collapse_hits.is_empty());
+    assert_eq!(app.last_frame.panes[0].commit_file_hits.len(), 3);
+    assert!(!app.last_frame.panes[0].commit_collapse_hits.is_empty());
 
     let painted = screen(&mut app, 104, 16);
     let TabKind::Commit { view, .. } = &app.tabs[app.active].kind else {
         panic!("expected commit tab");
     };
     assert_eq!(view.layout, Some(crate::tab::CommitLayoutMode::Wide));
-    assert_eq!(app.pane_frames[0].commit_file_hits.len(), 3);
+    assert_eq!(app.last_frame.panes[0].commit_file_hits.len(), 3);
     assert!(
         painted
             .iter()
@@ -71,8 +71,8 @@ fn file_header_disclosures_collapse_and_expand_cards_in_both_layouts() {
             view.scroll = view.file_anchors[0].saturating_add(1);
         }
         let sticky = screen(&mut app, width, 16);
-        let content_top = app.pane_frames[0].content_rect.y;
-        let hit = app.pane_frames[0]
+        let content_top = app.last_frame.panes[0].content_rect.y;
+        let hit = app.last_frame.panes[0]
             .commit_collapse_hits
             .iter()
             .find(|hit| hit.file == 0 && hit.rect.y == content_top)
@@ -109,7 +109,7 @@ fn file_header_disclosures_collapse_and_expand_cards_in_both_layouts() {
                 .any(|row| row.contains("\u{25b8}") && row.contains("src/first.rs"))
         );
 
-        let expand = app.pane_frames[0]
+        let expand = app.last_frame.panes[0]
             .commit_collapse_hits
             .iter()
             .find(|hit| hit.file == 0)

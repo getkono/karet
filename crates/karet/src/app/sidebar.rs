@@ -1,6 +1,17 @@
 use super::*;
 
 impl App {
+    /// The sidebar panel whose header switcher cell is at `(col, row_y)`, if any.
+    pub(super) fn panel_at(&self, col: u16, row_y: u16) -> Option<SidebarPanel> {
+        if row_y != self.last_frame.sidebar_rect.y {
+            return None;
+        }
+        self.last_frame
+            .panel_hits
+            .iter()
+            .find_map(|&(start, end, panel)| (col >= start && col < end).then_some(panel))
+    }
+
     /// Move focus between the sidebar and the editor.
     pub(super) fn toggle_focus(&mut self) {
         // A Problems filter edit belongs to one visit: leaving ends it, and

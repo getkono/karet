@@ -8,7 +8,7 @@ impl App {
     /// than [`SIDEBAR_MIN_WIDTH`] is read as intent to collapse. The responsive upper
     /// bound (terminal width) is applied when the layout is next computed.
     pub(super) fn resize_sidebar_to(&mut self, col: u16) {
-        let width = col.saturating_sub(self.sidebar_rect.x);
+        let width = col.saturating_sub(self.last_frame.sidebar_rect.x);
         if width < SIDEBAR_MIN_WIDTH {
             self.sidebar_visible = false;
             self.sidebar_resizing = false;
@@ -21,7 +21,7 @@ impl App {
     /// divider) sits at `row`. The list area's bottom is fixed, so the commit region
     /// grows as the divider moves up; both regions keep at least [`MIN_SCM_REGION`].
     pub(super) fn resize_scm_commits_to(&mut self, row: u16) {
-        let content = self.sidebar_content_rect;
+        let content = self.last_frame.sidebar_content_rect;
         let bottom = content.y + content.height;
         let list_top = self.scm_ui.changes_rect.y;
         let total = bottom.saturating_sub(list_top);
@@ -42,39 +42,40 @@ impl App {
         if !self.caps.pointer_shapes {
             return;
         }
+        let over_seam_affordance = self.seam_affordance_at(mouse.column, mouse.row);
+        let hits = &self.last_frame;
+        let point = (mouse.column, mouse.row);
         let over_sidebar_divider = self.sidebar_resizing
-            || (self.sidebar_visible && mouse.column == self.sidebar_divider_x);
+            || (self.sidebar_visible && mouse.column == hits.sidebar_divider_x);
         let over_scm_divider = self.scm_ui.resizing
             || (self.sidebar_panel == SidebarPanel::SourceControl
                 && self.scm_ui.divider_y != 0
                 && mouse.row == self.scm_ui.divider_y
-                && rect_contains(self.sidebar_rect, (mouse.column, mouse.row)));
+                && rect_contains(hits.sidebar_rect, point));
         let pane_axis = self
             .pane_resize
             .map(|resize| resize.divider.axis)
             .or_else(|| {
-                self.pane_dividers
+                hits.pane_dividers
                     .iter()
-                    .find(|divider| divider.contains(mouse.column, mouse.row))
+                    .find(|divider| divider.contains(point.0, point.1))
                     .map(|divider| divider.axis)
             });
-        let over_blame = self
-            .blame_rect
-            .is_some_and(|rect| rect_contains(rect, (mouse.column, mouse.row)));
-        let over_markdown_link = self
-            .markdown_link_hits
-            .iter()
-            .any(|hit| rect_contains(hit.rect, (mouse.column, mouse.row)));
-        let over_seam_affordance = self.seam_affordance_at(mouse.column, mouse.row);
+        let over_blame = hits
+            .blame_rect()
+            .is_some_and(|rect| rect_contains(rect, point));
+        let over_markdown_link = hits
+            .markdown_link_hits()
+            .any(|hit| rect_contains(hit.rect, point));
         let over_commits_title = self.sidebar_panel == SidebarPanel::SourceControl
-            && rect_contains(self.scm_ui.commits_title_rect, (mouse.column, mouse.row));
+            && rect_contains(self.scm_ui.commits_title_rect, point);
         // A thumb is draggable, and this shell hints every draggable it has. The grab
         // shape outlives the pointer leaving the track, because the drag does too.
-        let over_thumb = self
-            .scroll_hits
-            .at(mouse.column, mouse.row)
-            .and_then(|hit| hit.track.hit(mouse.column, mouse.row))
-            == Some(TrackHit::Thumb);
+        let thumb = hits
+            .scroll
+            .at(point.0, point.1)
+            .and_then(|hit| hit.track.hit(point.0, point.1));
+        let over_thumb = thumb == Some(TrackHit::Thumb);
         let shape = if self.scroll_drag.is_some() {
             Some("grabbing")
         } else if over_sidebar_divider || pane_axis == Some(SplitAxis::Cols) {
@@ -184,7 +185,7 @@ impl App {
                     };
                     let current = self
                         .layout
-                        .dividers(self.main_rect)
+                        .dividers(self.last_frame.main_rect)
                         .into_iter()
                         .find(|divider| {
                             divider.axis == resize.divider.axis
@@ -201,8 +202,11 @@ impl App {
                         }
                     });
                     if delta != 0 {
-                        self.layout
-                            .resize_divider(resize.divider, delta, self.main_rect);
+                        self.layout.resize_divider(
+                            resize.divider,
+                            delta,
+                            self.last_frame.main_rect,
+                        );
                     }
                 },
                 MouseEventKind::Up(MouseButton::Left) => self.pane_resize = None,
@@ -263,6 +267,7 @@ impl App {
         }
         if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
             && let Some(divider) = self
+                .last_frame
                 .pane_dividers
                 .iter()
                 .copied()
@@ -329,9 +334,9 @@ impl App {
             return;
         }
         let point = (mouse.column, mouse.row);
-        let in_sidebar = self.sidebar_visible && rect_contains(self.sidebar_rect, point);
+        let in_sidebar = self.sidebar_visible && rect_contains(self.last_frame.sidebar_rect, point);
         let in_outline = self.outline.visible && rect_contains(self.outline.rect, point);
-        let in_editor = rect_contains(self.editor_rect, point);
+        let in_editor = rect_contains(self.last_frame.editor_rect(), point);
         if in_editor && !in_outline && !matches!(mouse.kind, MouseEventKind::Moved) {
             self.dismiss_outline_overlay();
         }
@@ -363,10 +368,11 @@ impl App {
             MouseEventKind::Down(MouseButton::Right)
                 if in_sidebar && self.sidebar_panel == SidebarPanel::Explorer =>
             {
-                let row = rect_contains(self.sidebar_content_rect, point)
+                let row = rect_contains(self.last_frame.sidebar_content_rect, point)
                     .then(|| {
-                        self.explorer
-                            .visible_index((mouse.row - self.sidebar_content_rect.y) as usize)
+                        self.explorer.visible_index(
+                            (mouse.row - self.last_frame.sidebar_content_rect.y) as usize,
+                        )
                     })
                     .flatten();
                 self.open_context_menu(mouse.column, mouse.row, row);
@@ -375,7 +381,8 @@ impl App {
                 // Right-click in a pane's content area opens the pane context menu
                 // for that pane's active tab.
                 if let Some((pane, area)) = self
-                    .pane_frames
+                    .last_frame
+                    .panes
                     .iter()
                     .find(|f| rect_contains(f.content_rect, point))
                     .map(|f| (f.pane, f.editor_rect))
@@ -388,7 +395,7 @@ impl App {
                 }
             },
             MouseEventKind::Down(MouseButton::Left) => {
-                if self.sidebar_visible && mouse.column == self.sidebar_divider_x {
+                if self.sidebar_visible && mouse.column == self.last_frame.sidebar_divider_x {
                     // Grab the sidebar-width divider to start a resize drag.
                     self.sidebar_resizing = true;
                 } else if in_sidebar
@@ -412,32 +419,26 @@ impl App {
             // Track the hover position for the secondary-accent row highlight in the
             // explorer / source-control lists (cleared when off the content area).
             MouseEventKind::Moved => {
-                self.hover = rect_contains(self.sidebar_content_rect, point).then_some(point);
+                self.hover =
+                    rect_contains(self.last_frame.sidebar_content_rect, point).then_some(point);
                 self.pane_action_hover = None;
                 self.update_language_server_hover(mouse.column, mouse.row);
                 self.pane_divider_hover = self
+                    .last_frame
                     .pane_dividers
                     .iter()
                     .copied()
                     .find(|divider| divider.contains(mouse.column, mouse.row));
                 self.sidebar_header_hover =
-                    (in_sidebar && mouse.row == self.sidebar_rect.y).then_some(point);
+                    (in_sidebar && mouse.row == self.last_frame.sidebar_rect.y).then_some(point);
                 self.markdown_link_hover = self
-                    .markdown_link_hits
-                    .iter()
+                    .last_frame
+                    .markdown_link_hits()
                     .any(|hit| rect_contains(hit.rect, point))
                     .then_some(point);
             },
             _ => {},
         }
-    }
-
-    /// The absolute explorer row index under the hover cursor, if the mouse is over
-    /// the explorer's content (accounts for the current scroll offset).
-    pub(crate) fn hovered_explorer_row(&self) -> Option<usize> {
-        let (_, hy) = self.hover?;
-        let top = self.sidebar_content_rect.y;
-        (hy >= top).then(|| self.explorer.offset() + usize::from(hy - top))
     }
 
     /// The source-control change index under the hover cursor, if any (mirrors the
@@ -456,16 +457,6 @@ impl App {
     pub(crate) fn hovered_scm_commits_title(&self) -> bool {
         self.hover
             .is_some_and(|point| rect_contains(self.scm_ui.commits_title_rect, point))
-    }
-
-    /// The sidebar panel whose header switcher cell is at `(col, row_y)`, if any.
-    pub(super) fn panel_at(&self, col: u16, row_y: u16) -> Option<SidebarPanel> {
-        if row_y != self.sidebar_rect.y {
-            return None;
-        }
-        self.panel_hits
-            .iter()
-            .find_map(|&(start, end, panel)| (col >= start && col < end).then_some(panel))
     }
 
     /// Handle a left click inside the sidebar: switch panels via the header (a
@@ -509,8 +500,9 @@ impl App {
         }
         self.commit_input.focused = false;
         // Explorer header toolbar buttons sit on the header row alongside the switcher.
-        if row_y == self.sidebar_rect.y
+        if row_y == self.last_frame.sidebar_rect.y
             && let Some(cmd) = self
+                .last_frame
                 .header_action_hits
                 .iter()
                 .find_map(|&(start, end, cmd)| (col >= start && col < end).then_some(cmd))
@@ -555,7 +547,7 @@ impl App {
             SidebarPanel::Problems => self.problems_click(col, row_y),
             SidebarPanel::Hierarchy => self.hierarchy_click(col, row_y),
             SidebarPanel::Explorer => {
-                if !rect_contains(self.sidebar_content_rect, (col, row_y)) {
+                if !rect_contains(self.last_frame.sidebar_content_rect, (col, row_y)) {
                     return;
                 }
                 // An open inline rename owns clicks on its own row: they place the
@@ -574,7 +566,7 @@ impl App {
                     self.text_field_drag = Some(TextFieldTarget::ExplorerRename);
                     return;
                 }
-                let view_row = (row_y - self.sidebar_content_rect.y) as usize;
+                let view_row = (row_y - self.last_frame.sidebar_content_rect.y) as usize;
                 let root = self.root.clone();
                 self.explorer.ensure_built(&root);
                 if self.explorer.visible_index(view_row).is_none() {
@@ -760,9 +752,9 @@ impl App {
             TextFieldTarget::FindQuery | TextFieldTarget::FindReplace => {
                 let query = target == TextFieldTarget::FindQuery;
                 let rect = if query {
-                    Some(self.find_rects.query)
+                    Some(self.last_frame.find_rects().query)
                 } else {
-                    self.find_rects.replace
+                    self.last_frame.find_rects().replace
                 };
                 let Some(rect) = rect else {
                     return;

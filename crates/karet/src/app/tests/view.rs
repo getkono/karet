@@ -79,7 +79,7 @@ fn the_chrome_row_offers_every_view_and_marks_the_active_one() {
     // The active view is the bold one; the others are not.
     let buffer = frame(&mut app, 100, 12);
     let bold = |x: u16| buffer[(x, 0)].style().add_modifier.contains(Modifier::BOLD);
-    let hits = app.view_hits.clone();
+    let hits = app.last_frame.view_hits.clone();
     assert_eq!(hits.len(), View::ALL.len());
     for (start, _, view) in hits {
         assert_eq!(
@@ -104,8 +104,8 @@ fn a_narrow_chrome_row_drops_every_label_at_once() {
         );
     }
     // Still one button per view, still clickable.
-    assert_eq!(app.view_hits.len(), View::ALL.len());
-    let (start, end, _) = app.view_hits[View::ALL.len() - 1];
+    assert_eq!(app.last_frame.view_hits.len(), View::ALL.len());
+    let (start, end, _) = app.last_frame.view_hits[View::ALL.len() - 1];
     assert!(end <= 16, "the last button fits the row: {start}..{end}");
 }
 
@@ -114,6 +114,7 @@ fn clicking_the_chrome_row_switches_view() {
     let mut app = app();
     let _ = screen(&mut app, 100, 12);
     let (start, _, view) = app
+        .last_frame
         .view_hits
         .iter()
         .copied()
@@ -182,14 +183,14 @@ fn a_view_over_the_editor_drops_the_panes_hit_regions() {
     let mut app = app();
     app.open_path(std::path::Path::new("Cargo.toml"));
     let _ = screen(&mut app, 100, 12);
-    assert!(!app.pane_frames.is_empty());
-    assert_ne!(app.editor_rect, Rect::default());
+    assert!(!app.last_frame.panes.is_empty());
+    assert_ne!(app.last_frame.editor_rect(), Rect::default());
 
     app.dispatch(Command::SelectView(View::GitHub));
     let _ = screen(&mut app, 100, 12);
-    assert!(app.pane_frames.is_empty());
-    assert_eq!(app.editor_rect, Rect::default());
-    assert!(app.pane_dividers.is_empty());
+    assert!(app.last_frame.panes.is_empty());
+    assert_eq!(app.last_frame.editor_rect(), Rect::default());
+    assert!(app.last_frame.pane_dividers.is_empty());
 }
 
 #[test]
@@ -222,7 +223,7 @@ fn the_sidebar_survives_a_round_trip_through_another_view() {
     app.dispatch(Command::SelectView(View::Editor));
     let _ = screen(&mut app, 100, 12);
     assert!(app.sidebar_visible);
-    assert!(app.sidebar_rect.width > 0);
+    assert!(app.last_frame.sidebar_rect.width > 0);
 }
 
 #[test]
@@ -232,12 +233,12 @@ fn zen_mode_gives_the_whole_screen_to_the_panes_and_restores_the_chrome() {
     app.outline.visible = true;
     app.focus = Focus::Outline;
     let _ = screen(&mut app, 100, 12);
-    let tiled = app.main_rect;
+    let tiled = app.last_frame.main_rect;
 
     app.dispatch(Command::ToggleZenMode);
     let rows = screen(&mut app, 100, 12);
     assert_eq!(
-        app.main_rect,
+        app.last_frame.main_rect,
         Rect::new(0, 0, 100, 12),
         "every row and column"
     );
@@ -252,18 +253,18 @@ fn zen_mode_gives_the_whole_screen_to_the_panes_and_restores_the_chrome() {
         rows[11]
     );
     // Nothing drawn, so nothing may keep claiming clicks.
-    assert_eq!(app.status_rect, Rect::default());
-    assert!(app.status_hits.is_empty());
-    assert_eq!(app.view_chrome_rect, Rect::default());
-    assert!(app.view_hits.is_empty());
+    assert_eq!(app.last_frame.status_rect, Rect::default());
+    assert!(app.last_frame.status_hits.is_empty());
+    assert_eq!(app.last_frame.view_chrome_rect, Rect::default());
+    assert!(app.last_frame.view_hits.is_empty());
 
     app.dispatch(Command::ToggleZenMode);
     let rows = screen(&mut app, 100, 12);
     assert!(app.sidebar_visible);
     assert!(app.outline.visible);
-    assert_eq!(app.main_rect, tiled);
+    assert_eq!(app.last_frame.main_rect, tiled);
     assert!(rows[11].contains("EDITOR"), "{:?}", rows[11]);
-    assert_ne!(app.view_chrome_rect, Rect::default());
+    assert_ne!(app.last_frame.view_chrome_rect, Rect::default());
 }
 
 #[test]
@@ -274,8 +275,12 @@ fn a_panel_opened_in_zen_mode_shows_and_stays_open_after_it() {
     // Opening a panel must not strand focus on a sidebar that is not drawn.
     app.dispatch(Command::SelectPanel(SidebarPanel::Search));
     let _ = screen(&mut app, 100, 12);
-    assert!(app.sidebar_rect.width > 0);
-    assert_eq!(app.status_rect, Rect::default(), "still in Zen Mode");
+    assert!(app.last_frame.sidebar_rect.width > 0);
+    assert_eq!(
+        app.last_frame.status_rect,
+        Rect::default(),
+        "still in Zen Mode"
+    );
 
     app.dispatch(Command::ToggleZenMode);
     assert!(app.sidebar_visible, "what was opened meanwhile stays");
@@ -289,27 +294,33 @@ fn maximise_draws_only_the_focused_pane_until_toggled_back() {
     let _ = screen(&mut app, 100, 12);
     app.dispatch(Command::SplitRight);
     let _ = screen(&mut app, 100, 12);
-    assert_eq!(app.pane_frames.len(), 2);
-    assert!(!app.pane_dividers.is_empty());
+    assert_eq!(app.last_frame.panes.len(), 2);
+    assert!(!app.last_frame.pane_dividers.is_empty());
     let focused = app.focus_pane();
 
     app.dispatch(Command::ToggleMaximizePane);
     let _ = screen(&mut app, 100, 12);
-    assert_eq!(app.pane_frames.len(), 1);
-    assert_eq!(app.pane_frames[0].pane, focused);
-    assert_eq!(app.pane_frames[0].tabstrip_rect.x, app.main_rect.x);
+    assert_eq!(app.last_frame.panes.len(), 1);
+    assert_eq!(app.last_frame.panes[0].pane, focused);
     assert_eq!(
-        app.pane_frames[0].tabstrip_rect.width, app.main_rect.width,
+        app.last_frame.panes[0].tabstrip_rect.x,
+        app.last_frame.main_rect.x
+    );
+    assert_eq!(
+        app.last_frame.panes[0].tabstrip_rect.width, app.last_frame.main_rect.width,
         "the pane spans the whole content area"
     );
-    assert!(app.pane_dividers.is_empty(), "no divider to drag");
+    assert!(
+        app.last_frame.pane_dividers.is_empty(),
+        "no divider to drag"
+    );
     // The other pane is hidden, not closed.
     assert_eq!(app.layout.pane_count(), 2);
 
     app.dispatch(Command::ToggleMaximizePane);
     let _ = screen(&mut app, 100, 12);
-    assert_eq!(app.pane_frames.len(), 2);
-    assert!(!app.pane_dividers.is_empty());
+    assert_eq!(app.last_frame.panes.len(), 2);
+    assert!(!app.last_frame.pane_dividers.is_empty());
 }
 
 #[test]
@@ -320,15 +331,15 @@ fn focusing_another_pane_tiles_a_maximised_layout_again() {
     app.dispatch(Command::SplitRight);
     app.dispatch(Command::ToggleMaximizePane);
     let _ = screen(&mut app, 100, 12);
-    assert_eq!(app.pane_frames.len(), 1);
+    assert_eq!(app.last_frame.panes.len(), 1);
 
     app.dispatch(Command::FocusNextPane);
     let _ = screen(&mut app, 100, 12);
-    assert_eq!(app.pane_frames.len(), 2);
+    assert_eq!(app.last_frame.panes.len(), 2);
     // Returning focus does not maximise it again: the mode ended.
     app.dispatch(Command::FocusNextPane);
     let _ = screen(&mut app, 100, 12);
-    assert_eq!(app.pane_frames.len(), 2);
+    assert_eq!(app.last_frame.panes.len(), 2);
     assert_eq!(app.maximized_pane(), None);
 }
 
@@ -340,7 +351,8 @@ fn keyboard_resize_leaves_the_hidden_layout_alone_while_maximised() {
     app.dispatch(Command::SplitRight);
     let _ = screen(&mut app, 100, 12);
     let widths = |app: &App| {
-        app.pane_frames
+        app.last_frame
+            .panes
             .iter()
             .map(|frame| (frame.pane, frame.tabstrip_rect.width))
             .collect::<Vec<_>>()

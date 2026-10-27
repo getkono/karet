@@ -330,7 +330,8 @@ fn the_panel_paints_its_rows_with_their_locations() {
     assert!(painted.contains("▾ main  main.rs:1"), "{painted}");
     assert!(painted.contains("  ▸ caller  lib.rs:3"), "{painted}");
     assert!(
-        app.panel_hits
+        app.last_frame
+            .panel_hits
             .iter()
             .any(|&(_, _, panel)| panel == SidebarPanel::Hierarchy)
     );

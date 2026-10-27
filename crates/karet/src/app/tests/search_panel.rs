@@ -468,7 +468,7 @@ fn a_restored_cursor_clamps_into_a_shorter_result_set() {
 fn seed_result_click_layout(app: &mut App) {
     app.sidebar_panel = SidebarPanel::Search;
     app.sidebar_visible = true;
-    app.sidebar_rect = Rect::new(0, 0, 30, 20);
+    app.last_frame.sidebar_rect = Rect::new(0, 0, 30, 20);
     app.search_ui.results_rect = Rect::new(0, 5, 30, 10);
     app.search_ui.offset = 0;
 }

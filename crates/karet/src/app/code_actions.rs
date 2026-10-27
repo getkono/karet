@@ -266,7 +266,7 @@ impl App {
 
     /// Open the menu over `actions`, anchored on the line under the caret.
     fn open_code_action_menu(&mut self, doc: DocumentId, version: u64, actions: Vec<CodeAction>) {
-        let editor = self.editor_rect;
+        let editor = self.last_frame.editor_rect();
         let anchor = self.tabs.get(self.active).and_then(|tab| {
             let TabKind::Code {
                 buffer,

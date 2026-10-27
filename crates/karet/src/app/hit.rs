@@ -118,6 +118,183 @@ pub(crate) struct PaneFrame {
     pub(crate) commit_collapse_hits: Vec<CommitCollapseHit>,
     /// Read-only surfaces in this pane whose rows the pointer can select.
     pub(crate) select_regions: Vec<super::select::SelectRegion>,
+    /// Visible committed-attribution text, for click routing.
+    pub(crate) blame_rect: Option<Rect>,
+    /// The commit view's signature badge, for double-click hit-testing. `None`
+    /// when no badge is on screen.
+    pub(crate) commit_badge_rect: Option<Rect>,
+    /// The rect reserved for a Kitty image placement, if any.
+    pub(crate) image_area: Option<Rect>,
+    /// Where the find-in-file bar's editable fields landed (focused pane only).
+    pub(crate) find_rects: FindBarRects,
+    /// Visible Markdown link runs. A background pane's links are as live as the
+    /// focused pane's: the Ctrl+click that follows one focuses the pane first.
+    pub(crate) markdown_link_hits: Vec<MarkdownLinkHit>,
+}
+
+#[cfg(test)]
+impl PaneFrame {
+    /// A frame for `pane` that recorded nothing, for tests to fill in.
+    pub(crate) fn empty(pane: PaneId) -> Self {
+        Self {
+            pane,
+            tabstrip_rect: Rect::default(),
+            tab_hits: Vec::new(),
+            action_hits: Vec::new(),
+            breadcrumb_rect: Rect::default(),
+            breadcrumb_hits: Vec::new(),
+            lsp_badge_hit: None,
+            content_rect: Rect::default(),
+            editor_rect: Rect::default(),
+            markdown_preview_rect: Rect::default(),
+            commit_file_hits: Vec::new(),
+            commit_dir_hits: Vec::new(),
+            commit_rail_rect: Rect::default(),
+            commit_collapse_hits: Vec::new(),
+            select_regions: Vec::new(),
+            blame_rect: None,
+            commit_badge_rect: None,
+            image_area: None,
+            find_rects: FindBarRects::default(),
+            markdown_link_hits: Vec::new(),
+        }
+    }
+}
+
+/// Where the find bar's two editable fields landed, for pointer hit-testing.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct FindBarRects {
+    /// The query field.
+    pub(crate) query: Rect,
+    /// The replacement field, when the replace row is shown.
+    pub(crate) replace: Option<Rect>,
+}
+
+/// Every hit region and rect the last frame recorded for the mouse.
+///
+/// [`ui::draw`](crate::ui::draw) builds one locally and assigns it to
+/// [`App::last_frame`] once, at the end of the frame, so no region can outlive
+/// the frame that painted it and none is reset piecemeal. A surface the frame did
+/// not paint (a hidden sidebar, the panes under the GitHub view, the chrome rows
+/// in Zen Mode) records nothing and so claims no clicks.
+#[derive(Clone, Default)]
+pub(crate) struct FrameHits {
+    /// The chrome row carrying the top-level view switcher.
+    pub(crate) view_chrome_rect: Rect,
+    /// Column spans of the view-switcher buttons on the chrome row.
+    pub(crate) view_hits: Vec<(u16, u16, View)>,
+    /// The sidebar, header included.
+    pub(crate) sidebar_rect: Rect,
+    /// The column of the sidebar's drag divider; `0` with no sidebar shown.
+    pub(crate) sidebar_divider_x: u16,
+    /// The sidebar's content area below its header.
+    pub(crate) sidebar_content_rect: Rect,
+    /// The header panel-switcher cells.
+    pub(crate) panel_hits: Vec<(u16, u16, SidebarPanel)>,
+    /// The explorer header toolbar-button cells `(start, end, command)` (new
+    /// file / new folder / refresh / collapse all).
+    pub(crate) header_action_hits: Vec<(u16, u16, Command)>,
+    /// The main content area: the panes, or the view drawn in their place.
+    pub(crate) main_rect: Rect,
+    /// The pane that held focus when the frame was painted.
+    pub(crate) focused_pane: Option<PaneId>,
+    /// Each painted pane's clickable regions.
+    pub(crate) panes: Vec<PaneFrame>,
+    /// Draggable split boundaries.
+    pub(crate) pane_dividers: Vec<PaneDivider>,
+    /// The status bar.
+    pub(crate) status_rect: Rect,
+    /// Clickable status-bar segments `(start, end, command)`.
+    pub(crate) status_hits: Vec<(u16, u16, Command)>,
+    /// Clickable toast cards.
+    pub(crate) toast_hits: Vec<ToastHit>,
+    /// Every scrollbar track painted, in draw order.
+    pub(crate) scroll: ScrollHits,
+}
+
+impl FrameHits {
+    /// The frame of the pane that held focus when this frame was painted.
+    #[must_use]
+    pub(crate) fn focused_frame(&self) -> Option<&PaneFrame> {
+        let focused = self.focused_pane?;
+        self.panes.iter().find(|frame| frame.pane == focused)
+    }
+
+    /// The focused pane's exact editable editor viewport; zero-sized when no
+    /// editor is on screen.
+    #[must_use]
+    pub(crate) fn editor_rect(&self) -> Rect {
+        self.focused_frame()
+            .map_or_else(Rect::default, |frame| frame.editor_rect)
+    }
+
+    /// The focused pane's in-editor Markdown preview; zero-sized when none is shown.
+    /// The mouse reads every pane's preview through [`PaneFrame`]; tests ask for
+    /// the focused one.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn markdown_preview_rect(&self) -> Rect {
+        self.focused_frame()
+            .map_or_else(Rect::default, |frame| frame.markdown_preview_rect)
+    }
+
+    /// The focused pane's visible committed-attribution text.
+    #[must_use]
+    pub(crate) fn blame_rect(&self) -> Option<Rect> {
+        self.focused_frame().and_then(|frame| frame.blame_rect)
+    }
+
+    /// The focused commit view's signature badge.
+    #[must_use]
+    pub(crate) fn commit_badge_rect(&self) -> Option<Rect> {
+        self.focused_frame()
+            .and_then(|frame| frame.commit_badge_rect)
+    }
+
+    /// The focused pane's Kitty image placement rect.
+    #[must_use]
+    pub(crate) fn image_area(&self) -> Option<Rect> {
+        self.focused_frame().and_then(|frame| frame.image_area)
+    }
+
+    /// Where the focused pane's find bar fields landed.
+    #[must_use]
+    pub(crate) fn find_rects(&self) -> FindBarRects {
+        self.focused_frame()
+            .map_or_else(FindBarRects::default, |frame| frame.find_rects)
+    }
+
+    /// Every visible Markdown link run, in every pane.
+    pub(crate) fn markdown_link_hits(&self) -> impl Iterator<Item = &MarkdownLinkHit> {
+        self.panes
+            .iter()
+            .flat_map(|frame| frame.markdown_link_hits.iter())
+    }
+
+    /// The focused pane's frame, created empty when the last frame painted none,
+    /// so a test can place geometry without drawing.
+    #[cfg(test)]
+    pub(crate) fn focused_frame_mut(&mut self, focused: PaneId) -> &mut PaneFrame {
+        self.focused_pane = Some(focused);
+        let index = match self.panes.iter().position(|frame| frame.pane == focused) {
+            Some(index) => index,
+            None => {
+                self.panes.push(PaneFrame::empty(focused));
+                self.panes.len() - 1
+            },
+        };
+        &mut self.panes[index]
+    }
+}
+
+#[cfg(test)]
+impl App {
+    /// The focused pane's last-frame geometry, created empty when no frame has
+    /// been painted, so a test can place a rect without drawing.
+    pub(crate) fn focused_frame_mut(&mut self) -> &mut PaneFrame {
+        let focused = self.focus_pane();
+        self.last_frame.focused_frame_mut(focused)
+    }
 }
 
 /// An in-progress tab drag: the pane it started from and the current drop target
@@ -291,4 +468,75 @@ pub(crate) struct ToastHit {
     pub(crate) rect: Rect,
     /// The notification the card shows.
     pub(crate) id: NotificationId,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A frame for `pane` whose editor and blame label sit at `x`.
+    fn pane_at(pane: u64, x: u16) -> PaneFrame {
+        PaneFrame {
+            editor_rect: Rect::new(x, 1, 10, 5),
+            blame_rect: Some(Rect::new(x, 2, 4, 1)),
+            markdown_link_hits: vec![MarkdownLinkHit {
+                rect: Rect::new(x, 3, 2, 1),
+                target: format!("pane-{pane}.md"),
+            }],
+            ..PaneFrame::empty(PaneId(pane))
+        }
+    }
+
+    #[test]
+    fn the_focused_accessors_read_the_pane_focused_at_paint_time() {
+        let hits = FrameHits {
+            focused_pane: Some(PaneId(2)),
+            panes: vec![pane_at(1, 0), pane_at(2, 20)],
+            ..FrameHits::default()
+        };
+        assert_eq!(
+            hits.focused_frame().map(|frame| frame.pane),
+            Some(PaneId(2))
+        );
+        assert_eq!(hits.editor_rect(), Rect::new(20, 1, 10, 5));
+        assert_eq!(hits.blame_rect(), Some(Rect::new(20, 2, 4, 1)));
+    }
+
+    #[test]
+    fn a_frame_that_painted_no_focused_pane_claims_no_focused_geometry() {
+        // Under another view no pane is painted, and a focused pane that was not
+        // drawn (the frame holds only another one) answers nothing either.
+        for hits in [
+            FrameHits {
+                focused_pane: Some(PaneId(1)),
+                ..FrameHits::default()
+            },
+            FrameHits {
+                focused_pane: Some(PaneId(3)),
+                panes: vec![pane_at(1, 0)],
+                ..FrameHits::default()
+            },
+        ] {
+            assert!(hits.focused_frame().is_none());
+            assert_eq!(hits.editor_rect(), Rect::default());
+            assert_eq!(hits.blame_rect(), None);
+            assert_eq!(hits.commit_badge_rect(), None);
+            assert_eq!(hits.image_area(), None);
+            assert_eq!(hits.find_rects().query, Rect::default());
+        }
+    }
+
+    #[test]
+    fn markdown_links_are_live_in_every_pane() {
+        let hits = FrameHits {
+            focused_pane: Some(PaneId(1)),
+            panes: vec![pane_at(1, 0), pane_at(2, 20)],
+            ..FrameHits::default()
+        };
+        let targets: Vec<_> = hits
+            .markdown_link_hits()
+            .map(|hit| hit.target.as_str())
+            .collect();
+        assert_eq!(targets, vec!["pane-1.md", "pane-2.md"]);
+    }
 }

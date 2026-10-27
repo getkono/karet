@@ -121,7 +121,8 @@ impl App {
     /// The viewport `drag`'s pane was last painted at, or the one it began in
     /// when no frame has recorded that pane.
     fn drag_area(&self, drag: &EditorDrag) -> Rect {
-        self.pane_frames
+        self.last_frame
+            .panes
             .iter()
             .find(|frame| frame.pane == drag.pane)
             .map(|frame| frame.editor_rect)

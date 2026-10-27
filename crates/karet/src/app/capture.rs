@@ -88,7 +88,7 @@ async fn settle(
     // Preview images decode off-thread; a decode landing is progress like any event.
     let mut decoded_images = super::runtime::preview_image_results(app);
     loop {
-        terminal.draw(|f| ui::draw(f, app))?;
+        draw_frame(terminal, app)?;
         // A capture never calls `App::flush_graphics`: it writes Kitty escapes
         // straight to stdout, which is where the captured grid is going.
         //
@@ -139,6 +139,14 @@ async fn settle(
         }
         app.notifications.expire(Instant::now());
     }
+    draw_frame(terminal, app)?;
+    Ok(())
+}
+
+/// Prepare and paint one frame, as the interactive loop does: the requests and
+/// clamps a frame depends on run in [`App::prepare_frame`], never in the paint.
+fn draw_frame(terminal: &mut Terminal<TestBackend>, app: &mut App) -> color_eyre::Result<()> {
+    app.prepare_frame(terminal.size()?.into());
     terminal.draw(|f| ui::draw(f, app))?;
     Ok(())
 }

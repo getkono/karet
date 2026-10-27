@@ -184,7 +184,8 @@ fn a_middle_click_on_a_tab_still_closes_it_rather_than_pasting() {
     let mut rig = middle_click_rig("ab|cd", Some("XY"), true);
     let tab = rig
         .app
-        .pane_frames
+        .last_frame
+        .panes
         .iter()
         .find_map(|frame| Some((frame.tab_hits.first()?.start, frame.tabstrip_rect.y)));
     let Some((col, row)) = tab else {
@@ -205,7 +206,7 @@ fn a_middle_click_on_a_tab_still_closes_it_rather_than_pasting() {
 /// which holds `tab` and has focus.
 fn left_width_after_the_box_chord(tab: Tab) -> Option<u16> {
     let mut app = super::support::app();
-    app.main_rect = Rect::new(0, 0, 80, 24);
+    app.last_frame.main_rect = Rect::new(0, 0, 80, 24);
     app.tabs = vec![tab];
     app.active = 0;
     app.focus = Focus::Editor;
@@ -214,7 +215,7 @@ fn left_width_after_the_box_chord(tab: Tab) -> Option<u16> {
     app.layout.set_focus(right);
     super::support::send_key(&mut app, KeyCode::Left, CTRL | SHIFT | ALT);
     app.layout
-        .pane_rect(left, app.main_rect)
+        .pane_rect(left, app.last_frame.main_rect)
         .map(|rect| rect.width)
 }
 

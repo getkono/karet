@@ -184,6 +184,7 @@ pub(crate) fn frame(app: &mut App, width: u16, height: u16) -> ratatui::buffer::
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test terminal");
+    app.prepare_frame(Rect::new(0, 0, width, height));
     terminal
         .draw(|f| crate::ui::draw(f, app))
         .expect("draw the shell");
@@ -206,21 +207,9 @@ pub(crate) fn screen(app: &mut App, width: u16, height: u16) -> Vec<String> {
 /// tests route through the pane hit-testing.
 pub(crate) fn content_frame(app: &App, rect: Rect) -> PaneFrame {
     PaneFrame {
-        pane: app.focus_pane(),
-        tabstrip_rect: Rect::default(),
-        tab_hits: Vec::new(),
-        action_hits: Vec::new(),
-        breadcrumb_rect: Rect::default(),
-        breadcrumb_hits: Vec::new(),
-        lsp_badge_hit: None,
         content_rect: rect,
         editor_rect: rect,
-        markdown_preview_rect: Rect::default(),
-        commit_file_hits: Vec::new(),
-        commit_dir_hits: Vec::new(),
-        commit_rail_rect: Rect::default(),
-        commit_collapse_hits: Vec::new(),
-        select_regions: Vec::new(),
+        ..PaneFrame::empty(app.focus_pane())
     }
 }
 

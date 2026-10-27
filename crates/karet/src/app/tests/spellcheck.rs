@@ -26,7 +26,7 @@ fn spelling_app(root: PathBuf, message: &str) -> App {
     app.docs
         .diagnostics
         .insert(DocumentId(9), vec![spell_diagnostic(message)]);
-    app.pane_frames = vec![content_frame(
+    app.last_frame.panes = vec![content_frame(
         &app,
         Rect {
             x: 0,

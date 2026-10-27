@@ -79,8 +79,8 @@ fn horizontal_mouse_events_scroll_code_and_pager_overflow() {
         "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz\nsecond\nthird\nfourth",
     ));
     let _ = screen(&mut app, 24, 8);
-    let column = app.editor_rect.x.saturating_add(5);
-    let row = app.editor_rect.y;
+    let column = app.last_frame.editor_rect().x.saturating_add(5);
+    let row = app.last_frame.editor_rect().y;
     let mouse = |kind, modifiers| MouseEvent {
         kind,
         column,
@@ -164,7 +164,7 @@ fn markdown_app(text: &str) -> App {
         *language = "Markdown";
     }
     app.push_tab(tab);
-    app.main_rect = Rect::new(0, 0, 80, 24);
+    app.last_frame.main_rect = Rect::new(0, 0, 80, 24);
     app
 }
 
@@ -187,7 +187,7 @@ fn markdown_preview_is_view_local_editor_state() {
 fn markdown_preview_is_a_no_op_on_a_non_markdown_tab() {
     let mut app = app();
     app.push_tab(text_tab("main.rs", "fn main() {}"));
-    app.main_rect = Rect::new(0, 0, 80, 24);
+    app.last_frame.main_rect = Rect::new(0, 0, 80, 24);
 
     app.dispatch(Command::MarkdownPreviewSide);
 
@@ -266,14 +266,14 @@ fn scrolling_the_in_editor_preview_moves_the_source_to_its_anchor() {
 #[test]
 fn preview_geometry_and_wheel_are_routed_inside_the_editor_view() {
     let mut app = rendered_preview_app();
-    assert!(app.editor_rect.width > 0);
-    assert!(app.markdown_preview_rect.width > 0);
-    assert!(app.editor_rect.right() < app.markdown_preview_rect.x);
+    assert!(app.last_frame.editor_rect().width > 0);
+    assert!(app.last_frame.markdown_preview_rect().width > 0);
+    assert!(app.last_frame.editor_rect().right() < app.last_frame.markdown_preview_rect().x);
 
     app.handle_mouse(MouseEvent {
         kind: MouseEventKind::ScrollDown,
-        column: app.markdown_preview_rect.x,
-        row: app.markdown_preview_rect.y,
+        column: app.last_frame.markdown_preview_rect().x,
+        row: app.last_frame.markdown_preview_rect().y,
         modifiers: KeyModifiers::NONE,
     });
 
@@ -317,7 +317,7 @@ fn docx_preview_tab(md: &str, scroll: u16) -> Tab {
 fn preview_side_is_a_no_op_on_a_focused_docx_preview() {
     let mut app = app();
     app.push_tab(docx_preview_tab("# doc", 0));
-    app.main_rect = Rect::new(0, 0, 80, 24);
+    app.last_frame.main_rect = Rect::new(0, 0, 80, 24);
 
     app.dispatch(Command::MarkdownPreviewSide);
 

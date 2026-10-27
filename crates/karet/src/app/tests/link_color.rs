@@ -250,7 +250,7 @@ fn a_server_state_change_asks_again_without_dropping_what_is_shown() {
 /// The front tab drawn in one focused pane at the origin, so screen column
 /// `3 + c` of row `l` is buffer column `c` of line `l`.
 fn framed(app: &mut App) {
-    app.pane_frames = vec![content_frame(app, Rect::new(0, 0, 60, 5))];
+    app.last_frame.panes = vec![content_frame(app, Rect::new(0, 0, 60, 5))];
 }
 
 fn pointer(kind: MouseEventKind, col: u16, row: u16, mods: KeyModifiers) -> MouseEvent {
@@ -315,7 +315,7 @@ fn workspace(name: &str) -> (Arc<RecordingBackend>, App, PathBuf) {
     if let TabKind::Code { doc, .. } = &mut app.tabs[idx].kind {
         *doc = Some(DOC);
     }
-    app.pane_frames = vec![content_frame(&app, Rect::new(0, 0, 60, 5))];
+    app.last_frame.panes = vec![content_frame(&app, Rect::new(0, 0, 60, 5))];
     (backend, app, root)
 }
 

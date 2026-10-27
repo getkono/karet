@@ -24,14 +24,15 @@ impl App {
             return;
         }
         self.layout
-            .resize_pane(self.focus_pane(), dir, STEP, self.main_rect);
+            .resize_pane(self.focus_pane(), dir, STEP, self.last_frame.main_rect);
     }
 
     /// While dragging, move the active tab under column `x` within the focused pane.
     pub(super) fn drag_tab_to(&mut self, x: u16) {
         let focused = self.focus_pane();
         let hit = self
-            .pane_frames
+            .last_frame
+            .panes
             .iter()
             .find(|f| f.pane == focused)
             .and_then(|f| tab_at(&f.tab_hits, x));
@@ -44,7 +45,8 @@ impl App {
 
     /// The pane whose *content* area contains `(x, y)`, and that content rect.
     pub(super) fn pane_at_content(&self, x: u16, y: u16) -> Option<(PaneId, Rect)> {
-        self.pane_frames
+        self.last_frame
+            .panes
             .iter()
             .find(|f| rect_contains(f.content_rect, (x, y)))
             .map(|f| (f.pane, f.content_rect))
@@ -58,7 +60,8 @@ impl App {
         };
         // Over the origin pane's own tab strip: reorder in place, no drop target.
         let on_from_strip = self
-            .pane_frames
+            .last_frame
+            .panes
             .iter()
             .find(|f| f.pane == drag.from_pane)
             .is_some_and(|f| rect_contains(f.tabstrip_rect, (x, y)));

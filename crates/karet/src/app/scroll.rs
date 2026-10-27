@@ -69,7 +69,7 @@ impl App {
     /// where the gesture does nothing — the column belongs to the bar, and a press
     /// there must never fall through to the view beside it.
     pub(super) fn scrollbar_mouse(&mut self, mouse: MouseEvent) -> bool {
-        let Some(hit) = self.scroll_hits.at(mouse.column, mouse.row) else {
+        let Some(hit) = self.last_frame.scroll.at(mouse.column, mouse.row) else {
             return false;
         };
         let extent = hit.track.extent();

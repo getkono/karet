@@ -370,7 +370,8 @@ fn a_markdown_selection_carries_the_rendered_decorations() {
 /// The commit-card region recorded in the focused pane, whatever prefix the
 /// current layout gave it.
 fn cards_region(app: &App) -> Option<SelectRegion> {
-    app.pane_frames
+    app.last_frame
+        .panes
         .first()?
         .select_regions
         .iter()
@@ -534,7 +535,7 @@ fn dragging_the_find_field_selects_the_text_under_the_pointer() {
     }
     screen(&mut app, 80, 24);
 
-    let field = app.find_rects.query;
+    let field = app.last_frame.find_rects().query;
     assert!(field.width > 0, "the find bar records its query field");
     drag(&mut app, (field.x + 5, field.y), (field.x + 8, field.y));
 
@@ -559,7 +560,8 @@ fn clicking_the_replace_row_moves_the_edited_field() {
     screen(&mut app, 80, 24);
 
     let replace = app
-        .find_rects
+        .last_frame
+        .find_rects()
         .replace
         .expect("the replace row records its field");
 

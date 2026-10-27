@@ -201,7 +201,7 @@ fn open_startup_split_creates_a_second_pane_with_the_file() {
     write_file(&dir, "b.rs", b"fn b() {}\n");
 
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
-    app.main_rect = Rect::new(0, 0, 120, 40);
+    app.last_frame.main_rect = Rect::new(0, 0, 120, 40);
     app.open_initial(&dir.join("a.rs"));
     app.open_startup_split(&dir.join("b.rs"));
 
@@ -233,7 +233,7 @@ fn open_startup_split_chains_panes_left_to_right() {
     write_file(&dir, "c.rs", b"fn c() {}\n");
 
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
-    app.main_rect = Rect::new(0, 0, 200, 40);
+    app.last_frame.main_rect = Rect::new(0, 0, 200, 40);
     app.open_initial(&dir.join("a.rs"));
     app.open_startup_split(&dir.join("b.rs"));
     app.open_startup_split(&dir.join("c.rs"));
@@ -256,7 +256,7 @@ fn open_startup_split_falls_back_to_a_tab_when_there_is_no_room() {
 
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
     // Too narrow for two panes at the minimum pane width.
-    app.main_rect = Rect::new(0, 0, 12, 10);
+    app.last_frame.main_rect = Rect::new(0, 0, 12, 10);
     app.open_initial(&dir.join("a.rs"));
     app.open_startup_split(&dir.join("b.rs"));
 
@@ -517,7 +517,7 @@ trailer<</Size 5/Root 1 0 R>>\n%%EOF";
 #[test]
 fn sidebar_resize_sets_width_and_collapses_below_min() {
     let mut app = app();
-    app.sidebar_rect = Rect::new(0, 0, DEFAULT_SIDEBAR_WIDTH, 20);
+    app.last_frame.sidebar_rect = Rect::new(0, 0, DEFAULT_SIDEBAR_WIDTH, 20);
     app.sidebar_resizing = true;
     // Dragging the divider to column 45 widens the sidebar.
     app.resize_sidebar_to(45);
@@ -535,7 +535,7 @@ fn sidebar_resize_sets_width_and_collapses_below_min() {
 fn scm_commit_divider_resizes_and_clamps() {
     let mut app = app();
     // A 20-row list area (rows 2..22); the changes list starts at row 2.
-    app.sidebar_content_rect = Rect::new(0, 2, 30, 20);
+    app.last_frame.sidebar_content_rect = Rect::new(0, 2, 30, 20);
     app.scm_ui.changes_rect = Rect::new(0, 2, 30, 10);
     // Drag the divider up to row 12 → commits region = rows 13..22 = 9 rows.
     app.resize_scm_commits_to(12);
@@ -553,7 +553,7 @@ fn pointer_shape_hint_tracks_divider_hover_when_supported() {
     let mut app = app();
     app.caps.pointer_shapes = true;
     app.sidebar_visible = true;
-    app.sidebar_divider_x = 30;
+    app.last_frame.sidebar_divider_x = 30;
 
     let moved = |col, row| MouseEvent {
         kind: MouseEventKind::Moved,
@@ -576,7 +576,7 @@ fn pointer_shape_hint_is_a_no_op_when_unsupported() {
     let mut app = app();
     // `pointer_shapes_supported` defaults to false (never confirmed at startup).
     app.sidebar_visible = true;
-    app.sidebar_divider_x = 30;
+    app.last_frame.sidebar_divider_x = 30;
     app.update_pointer_shape_hint(&MouseEvent {
         kind: MouseEventKind::Moved,
         column: 30,
@@ -612,7 +612,7 @@ fn graphical_cursor_blink_schedules_a_repaint_when_active() {
     let mut app = app();
     app.push_tab(text_tab("t.rs", "x"));
     app.focus = Focus::Editor;
-    app.editor_rect = Rect::new(0, 0, 20, 5);
+    app.focused_frame_mut().editor_rect = Rect::new(0, 0, 20, 5);
     app.caps.graphics = GraphicsProtocol::Kitty;
     app.caps.kitty_graphics = true;
     app.caps.kitty_keyboard = true;
@@ -626,7 +626,7 @@ fn graphical_cursor_is_suppressed_during_the_hidden_blink_phase() {
     let mut app = app();
     app.push_tab(text_tab("t.rs", "x"));
     app.focus = Focus::Editor;
-    app.editor_rect = Rect::new(0, 0, 20, 5);
+    app.focused_frame_mut().editor_rect = Rect::new(0, 0, 20, 5);
     app.caps.graphics = GraphicsProtocol::Kitty;
     app.caps.kitty_graphics = true;
     app.caps.kitty_keyboard = true;

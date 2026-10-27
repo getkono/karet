@@ -90,42 +90,25 @@ impl App {
             hierarchy: hierarchy::HierarchyPanel::default(),
             hierarchy_ui: hierarchy::HierarchyChrome::default(),
             notifications: NotificationCenter::default(),
-            toast_hits: Vec::new(),
-            sidebar_rect: Rect::default(),
-            main_rect: Rect::default(),
+            last_frame: FrameHits::default(),
             sidebar_width: DEFAULT_SIDEBAR_WIDTH,
-            sidebar_divider_x: 0,
             sidebar_resizing: false,
             diff_layout: ViewMode::Unified,
-            pane_frames: Vec::new(),
-            pane_dividers: Vec::new(),
             pane_divider_hover: None,
             pane_resize: None,
-            scroll_hits: ScrollHits::default(),
             scroll_drag: None,
             tab_drag: None,
-            sidebar_content_rect: Rect::default(),
             hover: None,
             pane_action_hover: None,
             sidebar_header_hover: None,
-            panel_hits: Vec::new(),
-            view_chrome_rect: Rect::default(),
-            view_hits: Vec::new(),
             outline: OutlinePanel::default(),
             modes: ScreenModes::default(),
-            header_action_hits: Vec::new(),
             nested_repository_status: HashMap::new(),
             nested_repository_pending: HashMap::new(),
             scm_ui: ScmChrome::default(),
             text_field_drag: None,
             search_ui: SearchChrome::default(),
             spelling_ui: SpellingChrome::default(),
-            status_rect: Rect::default(),
-            status_hits: Vec::new(),
-            editor_rect: Rect::default(),
-            markdown_preview_rect: Rect::default(),
-            blame_rect: None,
-            markdown_link_hits: Vec::new(),
             pending_definition: None,
             rename: None,
             pending_rename: None,
@@ -135,17 +118,14 @@ impl App {
             nav_history: HashMap::new(),
             definition_hover: None,
             markdown_link_hover: None,
-            commit_badge_rect: None,
             editor_drag: None,
             column_select: None,
-            find_rects: crate::ui::FindBarRects::default(),
             surface_selection: None,
             surface_selecting: None,
             last_click: None,
             click_streak: 0,
             click_origin: (editor::ClickSurface::Other, KeyModifiers::NONE),
             clipboard: Clipboard::new(),
-            image_area: None,
             preview_images: crate::preview_images::PreviewImages::default(),
             #[cfg(feature = "terminal")]
             terminals: crate::terminal::TerminalHost::default(),
@@ -324,7 +304,10 @@ impl App {
     /// warning notification says so — automation gets its file either way.
     pub fn open_startup_split(&mut self, path: &Path) {
         let from = self.focus_pane();
-        if !self.layout.can_split(from, SplitDir::Right, self.main_rect) {
+        if !self
+            .layout
+            .can_split(from, SplitDir::Right, self.last_frame.main_rect)
+        {
             let name = path
                 .file_name()
                 .and_then(|n| n.to_str())

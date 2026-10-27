@@ -576,7 +576,7 @@ fn a_wheel_notch_over_a_background_seam_split_moves_its_selection() {
     app.dispatch(Command::SplitRight);
     let focused = app.focus_pane();
     assert_ne!(focused, frame.pane, "the new split took the focus");
-    app.pane_frames = vec![frame];
+    app.last_frame.panes = vec![frame];
 
     wheel(&mut app, MouseEventKind::ScrollDown, 22, 1);
     assert_eq!(
