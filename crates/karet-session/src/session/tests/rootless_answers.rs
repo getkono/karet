@@ -21,131 +21,154 @@
         vec![
             (
                 "IndexSeams",
-                Command::IndexSeams {
+                SeamCommand::Index {
                     root: None,
                     mode: crate::api::SeamSync::Incremental,
-                },
+                }
+                .into(),
                 |event| matches!(event, Event::SeamIndexFailed { .. }),
             ),
             (
                 "ReindexSeams",
-                Command::ReindexSeams {
+                SeamCommand::Reindex {
                     path: PathBuf::from("lib.rs"),
                     text: String::new(),
-                },
+                }
+                .into(),
                 |event| matches!(event, Event::SeamIndexFailed { .. }),
             ),
             (
                 "SetSeamConfiguration",
-                Command::SetSeamConfiguration {
+                SeamCommand::SetConfiguration {
                     name: "default".to_owned(),
-                },
+                }
+                .into(),
                 |event| matches!(event, Event::SeamIndexFailed { .. }),
             ),
-            ("DependencyGraph", Command::DependencyGraph, is_error_notice),
+            (
+                "DependencyGraph",
+                WorkspaceCommand::DependencyGraph.into(),
+                is_error_notice,
+            ),
             (
                 "Stage",
-                Command::Stage {
+                VcsCommand::Stage {
                     paths: vec![PathBuf::from("a.txt")],
-                },
+                }
+                .into(),
                 is_error_notice,
             ),
             (
                 "Unstage",
-                Command::Unstage {
+                VcsCommand::Unstage {
                     paths: vec![PathBuf::from("a.txt")],
-                },
+                }
+                .into(),
                 is_error_notice,
             ),
             (
                 "Discard",
-                Command::Discard {
+                VcsCommand::Discard {
                     paths: vec![PathBuf::from("a.txt")],
-                },
+                }
+                .into(),
                 is_error_notice,
             ),
             (
                 "ApplyIndexPatch",
-                Command::ApplyIndexPatch {
+                VcsCommand::ApplyIndexPatch {
                     patch: String::new(),
                     reverse: false,
-                },
+                }
+                .into(),
                 is_error_notice,
             ),
-            ("StageAll", Command::StageAll, is_error_notice),
-            ("UnstageAll", Command::UnstageAll, is_error_notice),
-            ("RefreshVcs", Command::RefreshVcs, |event| {
+            ("StageAll", VcsCommand::StageAll.into(), is_error_notice),
+            ("UnstageAll", VcsCommand::UnstageAll.into(), is_error_notice),
+            ("RefreshVcs", VcsCommand::Refresh.into(), |event| {
                 matches!(event, Event::VcsStatus { staged, working }
                     if staged.is_empty() && working.is_empty())
             }),
             (
                 "VcsLog",
-                Command::VcsLog { skip: 0, limit: 10 },
+                VcsCommand::Log { skip: 0, limit: 10 }.into(),
                 is_error_notice,
             ),
-            ("RepositorySnapshot", Command::RepositorySnapshot, is_error_notice),
+            (
+                "RepositorySnapshot",
+                VcsCommand::RepositorySnapshot.into(),
+                is_error_notice,
+            ),
             (
                 "CommitDetail",
-                Command::CommitDetail {
+                VcsCommand::CommitDetail {
                     rev: "HEAD".to_owned(),
-                },
+                }
+                .into(),
                 is_error_notice,
             ),
             (
                 "FileHistory",
-                Command::FileHistory {
+                VcsCommand::FileHistory {
                     path: PathBuf::from("a.txt"),
                     skip: 0,
                     limit: 10,
-                },
+                }
+                .into(),
                 is_error_notice,
             ),
             // Rows whose answer shape other tests pin; here only that one arrives.
             (
                 "Commit",
-                Command::Commit {
+                VcsCommand::Commit {
                     message: "c".to_owned(),
-                },
+                }
+                .into(),
                 any_answer,
             ),
             (
                 "PrepareChange",
-                Command::PrepareChange {
+                VcsCommand::PrepareChange {
                     path: PathBuf::from("a.txt"),
                     staged: false,
-                },
+                }
+                .into(),
                 |event| matches!(event, Event::ChangePrepared { result: Err(_), .. }),
             ),
             (
                 "MergeConflict",
-                Command::MergeConflict {
+                VcsCommand::MergeConflict {
                     path: PathBuf::from("a.txt"),
-                },
+                }
+                .into(),
                 any_answer,
             ),
             (
                 "NestedRepositoryStatus",
-                Command::NestedRepositoryStatus {
+                VcsCommand::NestedRepositoryStatus {
                     path: PathBuf::from("nested"),
-                },
+                }
+                .into(),
                 is_error_notice,
             ),
             (
                 "PullRequests",
-                Command::PullRequests {
+                VcsCommand::PullRequests {
                     remote: "origin".to_owned(),
                     page: 1,
                     per_page: 10,
-                },
+                }
+                .into(),
                 is_error_notice,
             ),
             (
                 "Search",
-                Command::Search {
+                WorkspaceCommand::Search {
                     query: literal_query("needle"),
                     file_limit: 10,
                     match_limit: 10,
-                },
+                }
+                .into(),
                 |event| matches!(event, Event::SearchFinished { .. }),
             ),
         ]
@@ -178,7 +201,7 @@
         };
         // No language maps this file, so the re-index fails; the request must
         // still answer, with the tree as it stood.
-        session.handle(RequestId(2), Command::ReindexSeams {
+        session.handle(RequestId(2), SeamCommand::Reindex {
             path: dir.path().join("notes.unmapped"),
             text: "not source\n".to_owned(),
         });

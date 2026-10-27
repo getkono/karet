@@ -6,6 +6,7 @@
 
 use std::sync::Arc;
 
+use karet_session::SeamCommand;
 use karet_session::api::SeamNodeView;
 use karet_session::api::SeamSummary;
 
@@ -20,9 +21,9 @@ fn index_requests(backend: &RecordingBackend) -> Vec<(RequestId, PathBuf)> {
         .map(|sent| {
             sent.iter()
                 .filter_map(|(id, command)| match command {
-                    SessionCommand::IndexSeams {
+                    SessionCommand::Seam(SeamCommand::Index {
                         root: Some(root), ..
-                    } => Some((*id, root.clone())),
+                    }) => Some((*id, root.clone())),
                     _ => None,
                 })
                 .collect()
@@ -38,7 +39,7 @@ fn reindex_paths(backend: &RecordingBackend) -> Vec<PathBuf> {
         .map(|sent| {
             sent.iter()
                 .filter_map(|(_, command)| match command {
-                    SessionCommand::ReindexSeams { path, .. } => Some(path.clone()),
+                    SessionCommand::Seam(SeamCommand::Reindex { path, .. }) => Some(path.clone()),
                     _ => None,
                 })
                 .collect()
@@ -439,7 +440,7 @@ fn node_requests(backend: &RecordingBackend) -> Vec<String> {
         .map(|sent| {
             sent.iter()
                 .filter_map(|(_, command)| match command {
-                    SessionCommand::SeamNode { path } => Some(path.clone()),
+                    SessionCommand::Seam(SeamCommand::Node { path }) => Some(path.clone()),
                     _ => None,
                 })
                 .collect()
@@ -512,8 +513,12 @@ fn clicking_the_configuration_marker_cycles_it() {
     }
     press(&mut app, 31, 0);
     let cycled = backend.sent.lock().is_ok_and(|sent| {
-        sent.iter()
-            .any(|(_, c)| matches!(c, SessionCommand::SetSeamConfiguration { .. }))
+        sent.iter().any(|(_, c)| {
+            matches!(
+                c,
+                SessionCommand::Seam(SeamCommand::SetConfiguration { .. })
+            )
+        })
     });
     assert!(
         cycled,

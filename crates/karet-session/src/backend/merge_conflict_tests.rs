@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use super::*;
 use crate::api::Event;
+use crate::api::VcsCommand;
 use crate::session::SessionConfig;
 
 #[tokio::test]
@@ -54,9 +55,10 @@ async fn local_backend_reports_both_merge_conflict_sides() -> Result<(), Box<dyn
     let id = backend.next_id();
     backend.send(
         id,
-        Command::MergeConflict {
+        VcsCommand::MergeConflict {
             path: PathBuf::from("a.txt"),
-        },
+        }
+        .into(),
     )?;
 
     let ready = tokio::time::timeout(Duration::from_secs(10), async {

@@ -641,11 +641,7 @@ fn to_point(point: karet_core::BytePoint) -> tree_sitter::Point {
 /// The `(row, byte-column)` of `byte`, resolved against the shared
 /// [`karet_core::LineIndex`] (the one line-index implementation in the toolkit).
 fn point_at(starts: &karet_core::LineIndex, byte: usize) -> tree_sitter::Point {
-    let (row, column) = starts.point_at(karet_core::BytePos(byte));
-    tree_sitter::Point {
-        row: row as usize,
-        column,
-    }
+    to_point(starts.point_at(karet_core::BytePos(byte)))
 }
 
 /// Convert byte [`Span`]s into the `tree_sitter::Range`s `set_included_ranges` wants,

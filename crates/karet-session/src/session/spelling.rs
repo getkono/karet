@@ -12,7 +12,7 @@ use crate::spell::check::word_in_line;
 
 impl Session {
     /// Spell-check the whole workspace on the scan worker, answering
-    /// [`Command::ScanWorkspaceSpelling`].
+    /// [`WorkspaceCommand::ScanSpelling`].
     ///
     /// Open documents are answered here, from their live buffers, and their paths are
     /// handed to the worker as a skip list — the scan reads from disk, which is stale

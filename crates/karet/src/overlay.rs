@@ -66,6 +66,13 @@ pub enum OverlayEvent {
     AcceptSeamRoot(PathBuf),
     /// Apply the chosen color theme for this session.
     AcceptTheme(crate::app::theme_picker::ThemeChoice),
+    /// Run the configured task with this label.
+    AcceptTask {
+        /// The task's `tasks` key.
+        label: String,
+        /// Its command line, shown beside the label but not matched.
+        command: String,
+    },
     /// Jump to one of several definition locations.
     AcceptLocation {
         /// The defining file.
@@ -764,6 +771,7 @@ impl Overlay {
                     },
                     OverlayEvent::AcceptSymbol { detail, .. } => Some(detail.clone()),
                     OverlayEvent::AcceptTheme(choice) => Some(choice.source.label().into()),
+                    OverlayEvent::AcceptTask { command, .. } => Some(command.clone()),
                     _ => None,
                 })
                 .collect(),

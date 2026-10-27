@@ -236,6 +236,7 @@ const SECTIONS: &[&str] = &[
     "toml",
     "debug",
     "notebook",
+    "tasks",
 ];
 
 /// Load the merged, verified [`Settings`] for a workspace rooted at `roots`, plus any
@@ -428,6 +429,7 @@ fn deserialize_sections(
             "toml" => section(value, |v| settings.toml = v),
             "debug" => section(value, |v| settings.debug = v),
             "notebook" => section(value, |v| settings.notebook = v),
+            "tasks" => section(value, |v| settings.tasks = v),
             // Unreachable: `SECTIONS` gates the loop above, and
             // `every_section_round_trips_a_value` proves each entry lands.
             _ => Ok(()),

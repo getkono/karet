@@ -34,7 +34,7 @@ impl App {
 
         self.push_tab(Tab::latex_preview(source));
         let view = self.tabs[self.active].view;
-        if let Some(request) = self.send(SessionCommand::BuildLatex { doc }) {
+        if let Some(request) = self.send(DocumentCommand::BuildLatex { doc }) {
             self.latex_previews.insert(request, view);
         } else if let TabKind::LatexPreview { error, .. } = &mut self.tabs[self.active].kind {
             *error = Some("LaTeX backend is unavailable".to_owned());

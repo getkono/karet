@@ -8,8 +8,8 @@
 //! not just the hint.
 
 use karet_core::Markup;
-use karet_session::api::Command as SessionCommand;
 use karet_session::api::DocumentId;
+use karet_session::api::LspCommand;
 use karet_session::api::RequestId;
 
 use super::super::App;
@@ -234,7 +234,7 @@ impl App {
             }
             return;
         }
-        let command = SessionCommand::ResolveInlayHint {
+        let command = LspCommand::ResolveInlayHint {
             doc: hit.doc,
             hint: hint.clone(),
         };

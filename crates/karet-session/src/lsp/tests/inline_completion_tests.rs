@@ -73,21 +73,23 @@ async fn an_ask_round_trips_with_utf16_conversion_and_an_accept_runs_its_command
     let backend = local_session(session, None);
     backend.send(
         backend.next_id(),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path,
             language: None,
-        },
+        }
+        .into(),
     )?;
     let (doc, version) = await_opened(&mut events).await.ok_or("no Opened")?;
 
     let request = backend.next_id();
     backend.send(
         request,
-        Command::InlineCompletion {
+        LspCommand::InlineCompletion {
             doc,
             position: LineCol::new(0, 3),
             trigger: InlineCompletionTrigger::Automatic,
-        },
+        }
+        .into(),
     )?;
     let asked = await_method(&mut observed, "textDocument/inlineCompletion").await?;
     assert_eq!(
@@ -113,7 +115,7 @@ async fn an_ask_round_trips_with_utf16_conversion_and_an_accept_runs_its_command
 
     backend.send(
         backend.next_id(),
-        Command::AcceptInlineCompletion { doc, server, item },
+        LspCommand::AcceptInlineCompletion { doc, server, item }.into(),
     )?;
     let ran = await_method(&mut observed, "workspace/executeCommand").await?;
     assert_eq!(ran["params"]["command"], json!("double.accept"));
@@ -135,10 +137,11 @@ async fn an_accept_for_another_server_reaches_nobody() -> TestResult {
     let backend = local_session(session, None);
     backend.send(
         backend.next_id(),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path,
             language: None,
-        },
+        }
+        .into(),
     )?;
     let (doc, _) = await_opened(&mut events).await.ok_or("no Opened")?;
     let item = karet_core::InlineCompletionItem {
@@ -150,20 +153,22 @@ async fn an_accept_for_another_server_reaches_nobody() -> TestResult {
     };
     backend.send(
         backend.next_id(),
-        Command::AcceptInlineCompletion {
+        LspCommand::AcceptInlineCompletion {
             doc,
             server: LanguageServerId::new("copilot-language-server"),
             item,
-        },
+        }
+        .into(),
     )?;
     // A hover goes out after it on the same connection, so once the server
     // has seen the hover it would already have seen any accept.
     backend.send(
         backend.next_id(),
-        Command::Hover {
+        LspCommand::Hover {
             doc,
             position: LineCol::new(0, 0),
-        },
+        }
+        .into(),
     )?;
     loop {
         let message = tokio::time::timeout(Duration::from_secs(10), observed.recv())
@@ -214,10 +219,11 @@ async fn sign_in_answers_the_device_code_and_runs_the_completing_command() -> Te
     let backend = local_session(session, None);
     backend.send(
         backend.next_id(),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path,
             language: None,
-        },
+        }
+        .into(),
     )?;
     await_opened(&mut events).await.ok_or("no Opened")?;
     await_method(&mut observed, "textDocument/didOpen").await?;
@@ -225,9 +231,10 @@ async fn sign_in_answers_the_device_code_and_runs_the_completing_command() -> Te
     let request = backend.next_id();
     backend.send(
         request,
-        Command::SignInLanguageServer {
+        LanguageServerCommand::SignIn {
             server: LanguageServerId::RustAnalyzer,
-        },
+        }
+        .into(),
     )?;
     let (server, outcome) = await_account(&mut events, request)
         .await
@@ -265,9 +272,10 @@ async fn sign_in_with_no_server_running_fails_at_once() -> TestResult {
     let request = backend.next_id();
     backend.send(
         request,
-        Command::SignInLanguageServer {
+        LanguageServerCommand::SignIn {
             server: LanguageServerId::new("copilot-language-server"),
-        },
+        }
+        .into(),
     )?;
     let (_, outcome) = await_account(&mut events, request)
         .await

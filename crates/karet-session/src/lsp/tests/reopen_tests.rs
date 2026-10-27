@@ -79,9 +79,10 @@ async fn a_provider_that_was_not_restarted_is_not_reopened() -> TestResult {
 
     backend.send(
         backend.next_id(),
-        Command::RestartLanguageServer {
+        LanguageServerCommand::Restart {
             server: LanguageServerId::new("python"),
-        },
+        }
+        .into(),
     )?;
 
     // The restarted provider opens it again on its fresh task. The companion,
@@ -181,9 +182,10 @@ async fn a_document_opened_by_an_unnormalised_path_is_still_reopened() -> TestRe
 
     backend.send(
         backend.next_id(),
-        Command::RestartLanguageServer {
+        LanguageServerCommand::Restart {
             server: LanguageServerId::new("rust"),
-        },
+        }
+        .into(),
     )?;
 
     let mut restarted = false;

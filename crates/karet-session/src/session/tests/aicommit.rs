@@ -50,7 +50,7 @@
         let (mut session, mut events) = ai_session(root);
         session.config.settings.git.ai_commit.enabled = false;
 
-        session.handle(RequestId(1), Command::GenerateCommitMessage);
+        session.handle(RequestId(1), VcsCommand::GenerateCommitMessage);
 
         let (id, message) =
             failure(&drain(&mut events)).ok_or("a refusal answers the request")?;
@@ -73,7 +73,7 @@
         // how long it takes.
         let (id, message) = runtime
             .block_on(async {
-                session.handle(RequestId(1), Command::GenerateCommitMessage);
+                session.handle(RequestId(1), VcsCommand::GenerateCommitMessage);
                 next_event(&mut events, EVENT_DEADLINE, |id, event| match event {
                     Event::CommitMessageFailed { message } => Some((id, message)),
                     _ => None,
@@ -95,7 +95,7 @@
         let (mut session, mut events) = ai_session(root);
 
         // No runtime here at all: the request must still be answered.
-        session.handle(RequestId(1), Command::GenerateCommitMessage);
+        session.handle(RequestId(1), VcsCommand::GenerateCommitMessage);
 
         let (id, message) =
             failure(&drain(&mut events)).ok_or("answered even without a reactor")?;
@@ -113,7 +113,7 @@
         let (mut session, mut events) = ai_session(root);
         session.config.settings.git.ai_commit.enabled = false;
 
-        session.handle(RequestId(1), Command::ProbeAiCommit);
+        session.handle(RequestId(1), VcsCommand::ProbeAiCommit);
 
         let status = availability(&drain(&mut events)).ok_or("availability is pushed")?;
         assert!(!status.enabled);

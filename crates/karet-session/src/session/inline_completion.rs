@@ -1,9 +1,9 @@
 //! Inline completions through the session seam: asking every server attached
-//! to a document for ghost text ([`Command::InlineCompletion`]), handing what
+//! to a document for ghost text ([`LspCommand::InlineCompletion`](crate::api::LspCommand::InlineCompletion)), handing what
 //! each proposes back with its ranges in buffer columns, and telling the
 //! proposing server when one of its items was accepted
-//! ([`Command::AcceptInlineCompletion`]) -- and signing in to the account such
-//! a server proposes for ([`Command::SignInLanguageServer`]).
+//! ([`LspCommand::AcceptInlineCompletion`](crate::api::LspCommand::AcceptInlineCompletion)) -- and signing in to the account such
+//! a server proposes for ([`LanguageServerCommand::SignIn`](crate::api::LanguageServerCommand::SignIn)).
 
 use karet_core::InlineCompletionItem;
 use karet_core::InlineCompletionTrigger;
@@ -15,7 +15,7 @@ use crate::api::AccountOutcome;
 use crate::api::LanguageServerId;
 
 impl Session {
-    /// Serve [`Command::InlineCompletion`]: convert the caret to the
+    /// Serve [`LspCommand::InlineCompletion`](crate::api::LspCommand::InlineCompletion): convert the caret to the
     /// servers' UTF-16 encoding and ask each attached server. Nothing is
     /// answered when no server takes it: there is no empty answer to send
     /// (see the command's docs).
@@ -36,7 +36,7 @@ impl Session {
         tracing::trace!(doc = doc_id.0, asked, "inline completion asked");
     }
 
-    /// Serve [`Command::AcceptInlineCompletion`] by telling the server that
+    /// Serve [`LspCommand::AcceptInlineCompletion`](crate::api::LspCommand::AcceptInlineCompletion) by telling the server that
     /// proposed the item. A server gone since has nobody left to tell.
     pub(super) fn accept_inline_completion(
         &mut self,
@@ -56,8 +56,8 @@ impl Session {
         }
     }
 
-    /// Serve [`Command::SignInLanguageServer`] (`sign_in`) or
-    /// [`Command::SignOutLanguageServer`] on a running instance of `server`.
+    /// Serve [`LanguageServerCommand::SignIn`](crate::api::LanguageServerCommand::SignIn) (`sign_in`) or
+    /// [`LanguageServerCommand::SignOut`](crate::api::LanguageServerCommand::SignOut) on a running instance of `server`.
     /// With none running the answer is why, at once.
     pub(super) fn language_server_account(
         &mut self,

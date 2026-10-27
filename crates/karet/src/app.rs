@@ -64,6 +64,7 @@ mod startup;
 mod state;
 mod syntax_select;
 mod tabs;
+mod tasks;
 #[cfg(feature = "terminal")]
 mod terminal;
 pub(crate) mod theme_picker;
@@ -158,13 +159,17 @@ use karet_session::BackendError;
 use karet_session::ChangeSummary;
 use karet_session::Command as SessionCommand;
 use karet_session::ConfigDiagnostic;
+use karet_session::DebugCommand;
 use karet_session::DocSnapshot;
+use karet_session::DocumentCommand;
 use karet_session::DocumentId;
 use karet_session::DocumentSettings;
 use karet_session::Event as SessionEvent;
 use karet_session::EventRx;
+use karet_session::GithubCommand;
 use karet_session::GithubVerification;
 use karet_session::LanguageServerChange;
+use karet_session::LanguageServerCommand;
 use karet_session::LanguageServerId;
 use karet_session::LanguageServerLogEntry;
 use karet_session::LanguageServerMessageId;
@@ -173,6 +178,8 @@ use karet_session::LanguageServerRuntimeState;
 use karet_session::LanguageServerStatus;
 use karet_session::LoadedConfig;
 use karet_session::LocationKind;
+use karet_session::LspCommand;
+use karet_session::NotebookCommand;
 use karet_session::PreparedChange;
 use karet_session::PullRequestSummary;
 use karet_session::RangeSpec;
@@ -186,8 +193,10 @@ use karet_session::SnapshotRx;
 use karet_session::SpellingHit;
 use karet_session::SwapInfo;
 use karet_session::VcsAction;
+use karet_session::VcsCommand;
 use karet_session::VcsOutcome;
 use karet_session::ViewId;
+use karet_session::WorkspaceCommand;
 use karet_session::config::schema::AutoSave;
 use karet_session::local;
 #[cfg(test)]
@@ -643,6 +652,9 @@ pub struct App {
     /// The frame cap terminal output repaints under.
     #[cfg(feature = "terminal")]
     terminal_frame: terminal::TerminalFrame,
+    /// The configured tasks running (or run) in terminals.
+    #[cfg(feature = "terminal")]
+    tasks: tasks::TaskRuns,
     /// The tab index whose image is currently transmitted to the terminal.
     shown_image: Option<ViewId>,
     /// The document page currently transmitted, so paging a PDF re-transmits even

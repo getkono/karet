@@ -26,8 +26,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 use std::time::Instant;
 
-use karet_session::api::Command;
+use karet_session::api::DocumentCommand;
 use karet_session::api::Event;
+use karet_session::api::LanguageServerCommand;
 use karet_session::api::LanguageServerId;
 use karet_session::api::LanguageServerRuntimeState;
 use karet_session::backend::Backend;
@@ -194,7 +195,7 @@ async fn managed_servers() -> Vec<LanguageServerId> {
         return Vec::new();
     };
     if backend
-        .send(backend.next_id(), Command::LanguageServerStatus)
+        .send(backend.next_id(), LanguageServerCommand::Status.into())
         .is_err()
     {
         return Vec::new();
@@ -243,9 +244,10 @@ async fn exercise(server: &LanguageServerId, supervisor: &Path) -> Row {
     if backend
         .send(
             backend.next_id(),
-            Command::InstallLanguageServer {
+            LanguageServerCommand::Install {
                 server: server.clone(),
-            },
+            }
+            .into(),
         )
         .is_err()
     {
@@ -306,10 +308,11 @@ async fn exercise(server: &LanguageServerId, supervisor: &Path) -> Row {
     if backend
         .send(
             backend.next_id(),
-            Command::OpenDocument {
+            DocumentCommand::Open {
                 path,
                 language: None,
-            },
+            }
+            .into(),
         )
         .is_err()
     {

@@ -1,5 +1,5 @@
 //! The seam contract for the requests an edit or a save makes:
-//! [`Command::LinkedEditingRanges`] and [`Command::FormatOnType`] are always
+//! [`LspCommand::LinkedEditingRanges`] and [`LspCommand::FormatOnType`] are always
 //! answered, in buffer columns, and a save asks for the server's will-save
 //! edits and writes them, formatting after them when it formats.
 
@@ -44,10 +44,11 @@ async fn opened(
     let backend = local_session(session, None);
     backend.send(
         backend.next_id(),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path: path.clone(),
             language: None,
-        },
+        }
+        .into(),
     )?;
     let (doc, version) = await_opened(&mut events).await.ok_or("no Opened")?;
     Ok((backend, events, doc, version, path))
@@ -94,14 +95,20 @@ async fn on_type_answer(
 fn ask_linked(backend: &impl Backend, doc: DocumentId) -> Result<RequestId, Failure> {
     let request = backend.next_id();
     let position = CARET;
-    backend.send(request, Command::LinkedEditingRanges { doc, position })?;
+    backend.send(
+        request,
+        LspCommand::LinkedEditingRanges { doc, position }.into(),
+    )?;
     Ok(request)
 }
 
 fn ask_on_type(backend: &impl Backend, doc: DocumentId, ch: char) -> Result<RequestId, Failure> {
     let request = backend.next_id();
     let position = CARET;
-    backend.send(request, Command::FormatOnType { doc, position, ch })?;
+    backend.send(
+        request,
+        LspCommand::FormatOnType { doc, position, ch }.into(),
+    )?;
     Ok(request)
 }
 
@@ -114,7 +121,7 @@ async fn save(
 ) -> Result<String, Failure> {
     let request = backend.next_id();
     let cause = crate::api::SaveCause::Manual;
-    backend.send(request, Command::Save { doc, cause })?;
+    backend.send(request, DocumentCommand::Save { doc, cause }.into())?;
     loop {
         let (id, event) = next_event(events).await.ok_or("no Saved")?;
         if matches!(event, Event::Saved { .. }) && id == Some(request) {
@@ -275,7 +282,7 @@ async fn on_type_edits_for_text_that_moved_on_are_dropped() -> TestResult {
     let cause = EditCause::Type;
     backend.send(
         backend.next_id(),
-        Command::ApplyChange { doc, change, cause },
+        DocumentCommand::ApplyChange { doc, change, cause }.into(),
     )?;
     let (edits, _, _) = on_type_answer(&mut events, request).await?;
 
@@ -450,7 +457,7 @@ async fn a_save_tells_the_server_why_it_saves() -> TestResult {
         let (backend, mut events, doc, _, _) =
             opened(&dir, text, (Behavior::WillSaves, Some(tx)), false).await?;
         let request = backend.next_id();
-        backend.send(request, Command::Save { doc, cause })?;
+        backend.send(request, DocumentCommand::Save { doc, cause }.into())?;
         loop {
             let (id, event) = next_event(&mut events).await.ok_or("no Saved")?;
             if matches!(event, Event::Saved { .. }) && id == Some(request) {
@@ -477,7 +484,7 @@ fn answers_from_a_retired_generation_still_answer_with_nothing() -> TestResult {
     let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
     session.handle(
         RequestId(1),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path,
             language: None,
         },

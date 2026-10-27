@@ -94,7 +94,7 @@ fn stepping_down_then_accepting_runs_the_destructive_answer() {
     assert!(
         sent(&backend)
             .iter()
-            .any(|c| matches!(c, SessionCommand::Discard { .. })),
+            .any(|c| matches!(c, SessionCommand::Vcs(VcsCommand::Discard { .. }))),
         "the discard reached the backend only after a deliberate step"
     );
 }
@@ -312,7 +312,7 @@ fn declining_recovery_keeps_the_backups() {
     assert!(
         !sent(&backend)
             .iter()
-            .any(|c| matches!(c, SessionCommand::DiscardSwaps)),
+            .any(|c| matches!(c, SessionCommand::Document(DocumentCommand::DiscardSwaps))),
         "backing out must never delete the backups"
     );
 }
@@ -331,7 +331,7 @@ fn recovery_discards_the_backups_only_on_the_third_row() {
     assert!(
         sent(&backend)
             .iter()
-            .any(|c| matches!(c, SessionCommand::DiscardSwaps))
+            .any(|c| matches!(c, SessionCommand::Document(DocumentCommand::DiscardSwaps)))
     );
 }
 
@@ -374,7 +374,7 @@ fn a_displaced_recovery_prompt_keeps_the_backups() {
     assert!(
         !sent(&backend)
             .iter()
-            .any(|c| matches!(c, SessionCommand::DiscardSwaps)),
+            .any(|c| matches!(c, SessionCommand::Document(DocumentCommand::DiscardSwaps))),
         "being displaced must never delete a backup"
     );
 }

@@ -11,7 +11,7 @@ fn line_change_requests(backend: &RecordingBackend) -> Vec<(RequestId, DocumentI
         .map(|sent| {
             sent.iter()
                 .filter_map(|(id, command)| match command {
-                    SessionCommand::LineChanges { doc } => Some((*id, *doc)),
+                    SessionCommand::Vcs(VcsCommand::LineChanges { doc }) => Some((*id, *doc)),
                     _ => None,
                 })
                 .collect()

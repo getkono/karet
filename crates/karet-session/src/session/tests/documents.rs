@@ -6,6 +6,13 @@
     use super::*;
     use super::documents::DocumentLanguage;
     use crate::api::Command;
+    use crate::api::DebugCommand;
+    use crate::api::DocumentCommand;
+    use crate::api::LanguageServerCommand;
+    use crate::api::LspCommand;
+    use crate::api::SeamCommand;
+    use crate::api::VcsCommand;
+    use crate::api::WorkspaceCommand;
 
     /// What a session test returns: a missing or wrong answer is an `Err`, so it fails
     /// instead of returning early to a pass. Shared by every file `tests.rs` includes.
@@ -99,7 +106,7 @@
         });
 
         // A sentinel behind anything `Session::new` queued on the VCS worker.
-        session.handle(RequestId(1), Command::RepositorySnapshot);
+        session.handle(RequestId(1), VcsCommand::RepositorySnapshot);
         let mut walked = false;
         await_event(&mut events, EVENT_DEADLINE, |id, event| {
             walked |= matches!(event, Event::VcsStatus { .. });
@@ -125,7 +132,7 @@
         let (mut session, mut events, mut snaps) = Session::new(SessionConfig::default());
         session.handle(
             RequestId(1),
-            Command::OpenDocument {
+            DocumentCommand::Open {
                 path: path.clone(),
                 language: None,
             },
@@ -154,7 +161,7 @@
         let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
         session.handle(
             RequestId(1),
-            Command::OpenDocument {
+            DocumentCommand::Open {
                 path,
                 language: None,
             },
@@ -236,7 +243,7 @@
 
         session.handle(
             RequestId(1),
-            Command::OpenDocument {
+            DocumentCommand::Open {
                 path: path.clone(),
                 language: None,
             },
@@ -255,7 +262,7 @@
         assert_eq!(settings.tab_width, 4);
         assert!(!settings.insert_spaces);
 
-        session.handle(RequestId(2), Command::Save {
+        session.handle(RequestId(2), DocumentCommand::Save {
                 doc,
                 cause: SaveCause::Manual,
             });
@@ -276,7 +283,7 @@
         let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
         session.handle(
             RequestId(1),
-            Command::OpenDocument {
+            DocumentCommand::Open {
                 path,
                 language: None,
             },
@@ -308,14 +315,14 @@
         let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
         session.handle(
             RequestId(1),
-            Command::OpenDocument {
+            DocumentCommand::Open {
                 path: path.clone(),
                 language: None,
             },
         );
         let doc = opened_doc(&mut events).ok_or("no Opened event")?;
 
-        session.handle(RequestId(2), Command::Save {
+        session.handle(RequestId(2), DocumentCommand::Save {
                 doc,
                 cause: SaveCause::Manual,
             });
@@ -334,14 +341,14 @@
         let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
         session.handle(
             RequestId(1),
-            Command::OpenDocument {
+            DocumentCommand::Open {
                 path: path.clone(),
                 language: None,
             },
         );
         let doc = opened_doc(&mut events).ok_or("no Opened event")?;
 
-        session.handle(RequestId(2), Command::Save {
+        session.handle(RequestId(2), DocumentCommand::Save {
                 doc,
                 cause: SaveCause::Manual,
             });
@@ -362,7 +369,7 @@
 
         session.handle(
             RequestId(1),
-            Command::OpenDocument {
+            DocumentCommand::Open {
                 path,
                 language: None,
             },
@@ -381,7 +388,7 @@
             );
             session.handle(
                 RequestId(2 + i),
-                Command::ApplyChange {
+                DocumentCommand::ApplyChange {
                     doc,
                     change,
                     cause: EditCause::Replace,
@@ -407,7 +414,7 @@
 
         session.handle(
             RequestId(1),
-            Command::OpenDocument {
+            DocumentCommand::Open {
                 path: path.clone(),
                 language: None,
             },
@@ -428,7 +435,7 @@
         );
         session.handle(
             RequestId(2),
-            Command::ApplyChange {
+            DocumentCommand::ApplyChange {
                 doc,
                 change,
                 cause: EditCause::Replace,
@@ -454,7 +461,7 @@
         assert_eq!(snap.buffer.line_count(), 3);
 
         // Save: the file on disk reflects the edit and the doc goes clean.
-        session.handle(RequestId(3), Command::Save {
+        session.handle(RequestId(3), DocumentCommand::Save {
                 doc,
                 cause: SaveCause::Manual,
             });
@@ -482,7 +489,7 @@
         assert!(clean_snapshot, "save should publish a clean snapshot");
 
         // Undo restores the original content ("fn main() {}\n" → two lines).
-        session.handle(RequestId(4), Command::Undo { doc });
+        session.handle(RequestId(4), DocumentCommand::Undo { doc });
         assert!(
             session
                 .document(doc)
@@ -499,7 +506,7 @@
 
         session.handle(
             RequestId(1),
-            Command::OpenDocument {
+            DocumentCommand::Open {
                 path: path.clone(),
                 language: None,
             },
@@ -509,7 +516,7 @@
 
         session.handle(
             RequestId(2),
-            Command::RetargetDocument {
+            DocumentCommand::Retarget {
                 doc,
                 path: new_path.clone(),
             },
@@ -534,14 +541,14 @@
         );
         session.handle(
             RequestId(3),
-            Command::ApplyChange {
+            DocumentCommand::ApplyChange {
                 doc,
                 change,
                 cause: EditCause::Replace,
             },
         );
         while events.try_recv().is_some() {}
-        session.handle(RequestId(4), Command::Save {
+        session.handle(RequestId(4), DocumentCommand::Save {
                 doc,
                 cause: SaveCause::Manual,
             });
@@ -560,7 +567,7 @@
         let (mut session, mut events, mut snaps) = Session::new(SessionConfig::default());
         session.handle(
             RequestId(1),
-            Command::OpenDocument {
+            DocumentCommand::Open {
                 path: path.clone(),
                 language: None,
             },
@@ -581,7 +588,7 @@
         );
         session.handle(
             RequestId(2),
-            Command::ApplyChange {
+            DocumentCommand::ApplyChange {
                 doc,
                 change,
                 cause: EditCause::Replace,
@@ -593,7 +600,7 @@
         // Someone else changes the file on disk before we save.
         std::fs::write(&path, "fn main() { /* external */ }\n")?;
 
-        session.handle(RequestId(3), Command::Save {
+        session.handle(RequestId(3), DocumentCommand::Save {
                 doc,
                 cause: SaveCause::Manual,
             });
@@ -632,7 +639,7 @@
         let (mut session, mut events, mut snaps) = Session::new(SessionConfig::default());
         session.handle(
             RequestId(1),
-            Command::OpenDocument {
+            DocumentCommand::Open {
                 path: path.clone(),
                 language: None,
             },
@@ -653,7 +660,7 @@
         );
         session.handle(
             RequestId(2),
-            Command::ApplyChange {
+            DocumentCommand::ApplyChange {
                 doc,
                 change,
                 cause: EditCause::Replace,
@@ -690,7 +697,7 @@
         let (mut session, mut events, mut snaps) = Session::new(SessionConfig::default());
         session.handle(
             RequestId(1),
-            Command::OpenDocument {
+            DocumentCommand::Open {
                 path: path.clone(),
                 language: None,
             },
@@ -720,7 +727,7 @@
         );
         session.handle(
             RequestId(2),
-            Command::ApplyChange {
+            DocumentCommand::ApplyChange {
                 doc,
                 change,
                 cause: EditCause::Replace,
@@ -733,14 +740,14 @@
         );
 
         // Undo publishes a snapshot that carries the caret to jump to.
-        session.handle(RequestId(3), Command::Undo { doc });
+        session.handle(RequestId(3), DocumentCommand::Undo { doc });
         assert!(
             drain(&mut snaps).is_some_and(|s| s.cursor.is_some()),
             "undo must carry a caret so the editor jumps to the change"
         );
 
         // Redo (which records no cursor) still carries a derived caret at the edit.
-        session.handle(RequestId(4), Command::Redo { doc });
+        session.handle(RequestId(4), DocumentCommand::Redo { doc });
         assert!(
             drain(&mut snaps).is_some_and(|s| s.cursor.is_some()),
             "redo must carry a caret derived from the re-applied edit"
@@ -754,7 +761,7 @@
         let (mut session, mut events, mut snaps) = Session::new(SessionConfig::default());
         session.handle(
             RequestId(1),
-            Command::OpenDocument {
+            DocumentCommand::Open {
                 path: path.clone(),
                 language: None,
             },
@@ -792,7 +799,7 @@
         let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
         session.handle(
             RequestId(1),
-            Command::OpenDocument {
+            DocumentCommand::Open {
                 path: path.clone(),
                 language: None,
             },
@@ -801,7 +808,7 @@
         // Second open of the same path reuses the document.
         session.handle(
             RequestId(2),
-            Command::OpenDocument {
+            DocumentCommand::Open {
                 path,
                 language: None,
             },
@@ -809,9 +816,9 @@
         let same = opened_doc(&mut events);
         assert_eq!(same, Some(doc));
         // Two opens → two refs; one close keeps it, the second drops it.
-        session.handle(RequestId(3), Command::CloseDocument { doc });
+        session.handle(RequestId(3), DocumentCommand::Close { doc });
         assert!(session.document(doc).is_some());
-        session.handle(RequestId(4), Command::CloseDocument { doc });
+        session.handle(RequestId(4), DocumentCommand::Close { doc });
         assert!(session.document(doc).is_none());
         Ok(())
     }
@@ -825,7 +832,7 @@
         let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
         session.handle(
             RequestId(1),
-            Command::OpenDocument {
+            DocumentCommand::Open {
                 path,
                 language: language.map(str::to_owned),
             },
@@ -874,7 +881,7 @@
         let (mut session, _events, mut snaps) = Session::new(SessionConfig::default());
         session.handle(
             RequestId(1),
-            Command::OpenDocument {
+            DocumentCommand::Open {
                 path,
                 language: None,
             },

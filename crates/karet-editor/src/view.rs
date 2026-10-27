@@ -246,7 +246,7 @@ impl<'a> Editor<'a> {
     }
 
     /// Supply virtual text: inlay hints (convert them with
-    /// `VirtualText::from`), inline blame, dependency versions, and anything
+    /// `InlayHint::virtual_texts`), inline blame, dependency versions, and anything
     /// else painted on a line without being in the buffer.
     ///
     /// Inline text takes part in wrapping, caret placement, hit-testing and

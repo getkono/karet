@@ -87,12 +87,12 @@ impl App {
             _ => karet_editor::word_bounds(buffer, caret).0,
         };
         let id = backend.next_id();
-        let command = SessionCommand::Completion {
+        let command = LspCommand::Completion {
             doc,
             position: caret,
             trigger,
         };
-        if backend.send(id, command).is_ok() {
+        if backend.send(id, command.into()).is_ok() {
             self.completion.pending = Some(crate::completion::PendingCompletion {
                 id,
                 doc,

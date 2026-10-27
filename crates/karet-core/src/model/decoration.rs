@@ -2,6 +2,7 @@
 //! background, an underline, a gutter marker, a recolouring, text modifiers.
 
 use crate::coord::Range;
+use crate::token::Emphasis;
 use crate::token::ThemeRole;
 use crate::token::TokenId;
 
@@ -55,64 +56,6 @@ pub enum DecorationKind {
     TextStyle,
 }
 
-/// Text attributes a [`Decoration`] adds to the cells it covers: a small set
-/// of flags combined with `|`.
-///
-/// Overlapping decorations *blend* their modifiers: a cell shows the union of
-/// every covering decoration's flags, whatever their priorities.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-#[cfg_attr(
-    feature = "serde",
-    derive(serde::Serialize, serde::Deserialize),
-    serde(transparent)
-)]
-pub struct TextModifiers(u8);
-
-impl TextModifiers {
-    /// No attributes.
-    pub const NONE: Self = Self(0);
-    /// Bold (heavier) text.
-    pub const BOLD: Self = Self(1);
-    /// Italic text.
-    pub const ITALIC: Self = Self(1 << 1);
-    /// Struck-through text.
-    pub const STRIKETHROUGH: Self = Self(1 << 2);
-    /// Dimmed (faint) text.
-    pub const DIM: Self = Self(1 << 3);
-
-    /// Whether every flag of `other` is set in `self`.
-    #[must_use]
-    pub const fn contains(self, other: Self) -> bool {
-        self.0 & other.0 == other.0
-    }
-
-    /// Whether no flag is set.
-    #[must_use]
-    pub const fn is_empty(self) -> bool {
-        self.0 == 0
-    }
-
-    /// The flags set in either `self` or `other`.
-    #[must_use]
-    pub const fn union(self, other: Self) -> Self {
-        Self(self.0 | other.0)
-    }
-}
-
-impl std::ops::BitOr for TextModifiers {
-    type Output = Self;
-
-    fn bitor(self, other: Self) -> Self {
-        self.union(other)
-    }
-}
-
-impl std::ops::BitOrAssign for TextModifiers {
-    fn bitor_assign(&mut self, other: Self) {
-        *self = self.union(other);
-    }
-}
-
 /// A theme-resolved color a [`Decoration`] recolours its text with: a UI
 /// [`ThemeRole`], or a code [`TokenId`] class (e.g. a semantic token), whose
 /// color the renderer's theme supplies.
@@ -147,7 +90,7 @@ impl From<TokenId> for DecorationColor {
 /// foreground, an underline color, a gutter glyph) comes from the covering
 /// decoration with the highest [`priority`](Self::priority); among equal
 /// priorities the one supplied first wins. [`modifiers`](Self::modifiers)
-/// blend instead (see [`TextModifiers`]).
+/// blend instead (see [`Emphasis`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Decoration {
@@ -167,9 +110,11 @@ pub struct Decoration {
     #[cfg_attr(feature = "serde", serde(default))]
     pub fg: Option<DecorationColor>,
     /// Text attributes added to the covered text (text-level kinds only, as
-    /// with [`fg`](Self::fg)).
+    /// with [`fg`](Self::fg)). Overlapping decorations *blend* these: a cell
+    /// shows the union of every covering decoration's flags, whatever their
+    /// priorities.
     #[cfg_attr(feature = "serde", serde(default))]
-    pub modifiers: TextModifiers,
+    pub modifiers: Emphasis,
     /// The overlap priority: higher wins (default `0`).
     #[cfg_attr(feature = "serde", serde(default))]
     pub priority: i32,
@@ -185,7 +130,7 @@ impl Decoration {
             kind,
             role,
             fg: None,
-            modifiers: TextModifiers::NONE,
+            modifiers: Emphasis::NONE,
             priority: 0,
         }
     }
@@ -199,7 +144,7 @@ impl Decoration {
 
     /// Add `modifiers` to the covered text.
     #[must_use]
-    pub const fn with_modifiers(mut self, modifiers: TextModifiers) -> Self {
+    pub const fn with_modifiers(mut self, modifiers: Emphasis) -> Self {
         self.modifiers = self.modifiers.union(modifiers);
         self
     }
@@ -273,44 +218,14 @@ mod tests {
         let styled = dec
             .clone()
             .with_fg(TokenId::KEYWORD)
-            .with_modifiers(TextModifiers::BOLD)
-            .with_modifiers(TextModifiers::ITALIC)
+            .with_modifiers(Emphasis::BOLD)
+            .with_modifiers(Emphasis::ITALIC)
             .with_priority(-3);
         assert_eq!(styled.fg, Some(DecorationColor::Token(TokenId::KEYWORD)));
         // `with_modifiers` adds; it never drops a flag set earlier.
-        assert_eq!(
-            styled.modifiers,
-            TextModifiers::BOLD | TextModifiers::ITALIC
-        );
+        assert_eq!(styled.modifiers, Emphasis::BOLD | Emphasis::ITALIC);
         assert_eq!(styled.priority, -3);
         let role = dec.with_fg(ThemeRole::Muted);
         assert_eq!(role.fg, Some(DecorationColor::Role(ThemeRole::Muted)));
-    }
-
-    #[test]
-    fn text_modifiers_combine_as_flags() {
-        let mut both = TextModifiers::BOLD;
-        both |= TextModifiers::STRIKETHROUGH;
-        assert!(both.contains(TextModifiers::BOLD));
-        assert!(both.contains(TextModifiers::STRIKETHROUGH));
-        assert!(both.contains(TextModifiers::BOLD | TextModifiers::STRIKETHROUGH));
-        assert!(!both.contains(TextModifiers::ITALIC));
-        assert!(!both.contains(TextModifiers::BOLD | TextModifiers::DIM));
-        // The empty set is contained in every set, and is the default.
-        assert!(both.contains(TextModifiers::NONE));
-        assert_eq!(TextModifiers::default(), TextModifiers::NONE);
-        assert!(TextModifiers::NONE.is_empty());
-        assert!(!both.is_empty());
-        let flags = [
-            TextModifiers::BOLD,
-            TextModifiers::ITALIC,
-            TextModifiers::STRIKETHROUGH,
-            TextModifiers::DIM,
-        ];
-        for (i, a) in flags.iter().enumerate() {
-            for b in &flags[i + 1..] {
-                assert!(!a.contains(*b), "{a:?} overlaps {b:?}");
-            }
-        }
     }
 }

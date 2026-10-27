@@ -111,6 +111,7 @@ command_ids! {
     TerminalScrollPageDown => "terminalScrollPageDown",
     TerminalScrollToTop => "terminalScrollToTop",
     TerminalScrollToBottom => "terminalScrollToBottom",
+    RunTask => "runTask",
     DismissNotification => "dismissNotification",
     DismissAllNotifications => "dismissAllNotifications",
     MarkdownPreviewSide => "markdownPreviewSide",

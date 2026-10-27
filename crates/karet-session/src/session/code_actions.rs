@@ -26,7 +26,8 @@ use crate::lsp::CodeActionCmd;
 const STALE: &str = "the document changed since the actions were listed; try again";
 
 impl Session {
-    /// Serve [`Command::CodeActions`]: ask the document's server, answering at
+    /// Serve [`LspCommand::CodeActions`](crate::api::LspCommand::CodeActions):
+    /// ask the document's server, answering at
     /// once when no server runs for it.
     pub(super) fn code_actions(
         &mut self,
@@ -57,7 +58,8 @@ impl Session {
         }
     }
 
-    /// Serve [`Command::ApplyCodeAction`]: refuse an action that cannot run
+    /// Serve [`LspCommand::ApplyCodeAction`](crate::api::LspCommand::ApplyCodeAction):
+    /// refuse an action that cannot run
     /// as listed, resolve a deferred edit, or go straight to applying.
     pub(super) fn apply_code_action(
         &mut self,

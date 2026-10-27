@@ -15,7 +15,7 @@ use crate::lsp::LinkColorCmd;
 use crate::lsp::NO_TARGET;
 
 impl Session {
-    /// Serve [`Command::LinksAndColors`]: ask the document's server,
+    /// Serve [`LspCommand::LinksAndColors`]: ask the document's server,
     /// answering at once with none of either when no server runs for it.
     pub(in crate::session) fn links_and_colors(&mut self, id: RequestId, doc_id: DocumentId) {
         let Some(doc) = Self::doc_or_report(&self.store, &self.events, id, doc_id) else {
@@ -32,7 +32,7 @@ impl Session {
         }
     }
 
-    /// Serve [`Command::ResolveDocumentLink`]: ask the document's server for
+    /// Serve [`LspCommand::ResolveDocumentLink`]: ask the document's server for
     /// the link's target. A link that already has one is answered as it is,
     /// and one with no payload has nothing to hand the server, so it is
     /// answered as having no target.

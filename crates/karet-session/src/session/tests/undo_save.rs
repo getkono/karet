@@ -16,7 +16,7 @@
         });
         session.handle(
             RequestId(1),
-            Command::OpenDocument {
+            DocumentCommand::Open {
                 path: path.to_path_buf(),
                 language: None,
             },
@@ -33,7 +33,7 @@
     /// Undo, and return the caret head the resulting snapshot carries.
     fn undo_caret(session: &mut Session, snaps: &mut SnapshotRx, doc: DocumentId) -> Option<LineCol> {
         while snaps.try_recv().is_some() {}
-        session.handle(RequestId(90), Command::Undo { doc });
+        session.handle(RequestId(90), DocumentCommand::Undo { doc });
         let mut last = None;
         while let Some((_, snap)) = snaps.try_recv() {
             last = Some(snap);
@@ -51,7 +51,7 @@
     fn report_cursor(session: &mut Session, doc: DocumentId, cursors: CursorState) {
         session.handle(
             RequestId(80),
-            Command::SetCursor {
+            DocumentCommand::SetCursor {
                 doc,
                 view: crate::api::ViewId(1),
                 cursors,
@@ -62,7 +62,7 @@
     fn save_now(session: &mut Session, doc: DocumentId) {
         session.handle(
             RequestId(81),
-            Command::Save {
+            DocumentCommand::Save {
                 doc,
                 cause: SaveCause::Manual,
             },
@@ -125,7 +125,7 @@
         );
         session.handle(
             RequestId(2),
-            Command::ApplyChange {
+            DocumentCommand::ApplyChange {
                 doc,
                 change,
                 cause: EditCause::Replace,
@@ -208,7 +208,7 @@
         let (mut session, mut events, mut snaps) = Session::new(SessionConfig::default());
         session.handle(
             RequestId(1),
-            Command::OpenDocument {
+            DocumentCommand::Open {
                 path: path.clone(),
                 language: None,
             },
@@ -269,9 +269,9 @@
     ) -> Option<CursorState> {
         while snaps.try_recv().is_some() {}
         let command = if undo {
-            Command::Undo { doc }
+            DocumentCommand::Undo { doc }
         } else {
-            Command::Redo { doc }
+            DocumentCommand::Redo { doc }
         };
         session.handle(RequestId(91), command);
         let mut last = None;
@@ -297,7 +297,7 @@
             .ok_or("edited document is not registered")?;
         session.handle(
             RequestId(2),
-            Command::ApplyChange {
+            DocumentCommand::ApplyChange {
                 doc,
                 change: Change::new(version, edits),
                 cause: EditCause::Replace,

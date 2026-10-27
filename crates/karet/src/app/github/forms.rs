@@ -286,9 +286,9 @@ impl App {
             _ => return,
         };
         let command = match submission {
-            Submission::Issue(issue) => SessionCommand::GithubCreateIssue { issue },
+            Submission::Issue(issue) => GithubCommand::CreateIssue { issue },
             Submission::PullRequest(pull_request) => {
-                SessionCommand::GithubCreatePullRequest { pull_request }
+                GithubCommand::CreatePullRequest { pull_request }
             },
         };
         let request = self.send(command);

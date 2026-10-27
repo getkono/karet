@@ -26,8 +26,8 @@
         })
     }
 
-    fn replace_all(pattern: &str, replacement: &str) -> Command {
-        Command::SearchReplaceAll {
+    fn replace_all(pattern: &str, replacement: &str) -> WorkspaceCommand {
+        WorkspaceCommand::ReplaceAll {
             query: karet_search::SearchQuery {
                 pattern: pattern.to_owned(),
                 case_sensitive: true,
@@ -120,7 +120,7 @@
         let (mut session, mut events, _snaps) = search_session(dir.path());
         session.handle(
             RequestId(1),
-            Command::SearchReplaceAll {
+            WorkspaceCommand::ReplaceAll {
                 query: karet_search::SearchQuery {
                     pattern: "(".to_owned(),
                     regex: true,

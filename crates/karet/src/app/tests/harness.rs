@@ -293,7 +293,7 @@ impl Rig {
         }
         let last = self.backend.sent.lock().ok().and_then(|sent| {
             sent.iter().rev().find_map(|(id, command)| match command {
-                SessionCommand::SelectionRanges { doc, positions } => {
+                SessionCommand::Lsp(LspCommand::SelectionRanges { doc, positions }) => {
                     Some((*id, *doc, positions.len()))
                 },
                 _ => None,

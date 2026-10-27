@@ -56,6 +56,52 @@ fn later_layers_override_earlier_and_merge_deeply() -> TestResult {
 }
 
 #[test]
+fn a_project_task_overrides_a_user_task_by_label_and_keeps_the_rest() -> TestResult {
+    let (dir, user) = scratch(
+        "user.jsonc",
+        r#"{ "tasks": {
+            "build": { "command": "make", "env": { "CC": "gcc" } },
+            "test": { "command": "make test" }
+        } }"#,
+    )?;
+    let project = dir.path().join("project.jsonc");
+    std::fs::write(
+        &project,
+        r#"{ "tasks": { "build": { "command": "cargo build" } } }"#,
+    )?;
+    let (settings, diags) = load_layers([user, project]);
+    assert!(diags.is_empty(), "{diags:?}");
+    let build = settings.tasks.get("build").ok_or("no build task")?;
+    assert_eq!(build.command, "cargo build");
+    assert_eq!(
+        build.env.get("CC").map(String::as_str),
+        Some("gcc"),
+        "a task's own keys merge too"
+    );
+    assert!(
+        settings.tasks.contains_key("test"),
+        "the user's other task survives"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_bad_matcher_resets_the_tasks_section_and_warns() -> TestResult {
+    let (_dir, path) = scratch(
+        "setting.jsonc",
+        r#"{ "tasks": { "build": { "command": "make", "problemMatcher": ["$nope"] } } }"#,
+    )?;
+    let (settings, diags) = load_layers([path]);
+    assert!(settings.tasks.is_empty());
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    assert!(
+        diags[0].message.contains("invalid `tasks` settings"),
+        "{diags:?}"
+    );
+    Ok(())
+}
+
+#[test]
 fn ordered_layers_lists_system_then_user_then_project_skipping_absent_tiers() {
     let (system, user, project) = (
         PathBuf::from("/s.jsonc"),
@@ -417,6 +463,9 @@ fn every_section_round_trips_a_value() -> TestResult {
         }),
         ("notebook", r#"{"kernel": {"autoStart": true}}"#, |s| {
             s.notebook.kernel.auto_start
+        }),
+        ("tasks", r#"{"build": {"command": "make"}}"#, |s| {
+            s.tasks.get("build").is_some_and(|t| t.command == "make")
         }),
     ];
     assert_eq!(

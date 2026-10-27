@@ -540,10 +540,11 @@ async fn pulled_and_pushed_sets_from_one_server_are_shown_together() -> TestResu
     let backend = local_session(session, None);
     backend.send(
         backend.next_id(),
-        Command::OpenDocument {
+        DocumentCommand::Open {
             path,
             language: None,
-        },
+        }
+        .into(),
     )?;
     let (doc, version) = await_opened(&mut events).await.ok_or("no Opened")?;
     let opened = format!("pulled at version {}", crate::lsp::version_i32(version));
@@ -551,7 +552,7 @@ async fn pulled_and_pushed_sets_from_one_server_are_shown_together() -> TestResu
 
     backend.send(
         backend.next_id(),
-        Command::ApplyChange {
+        DocumentCommand::ApplyChange {
             doc,
             change: Change::new(
                 version,
@@ -564,7 +565,8 @@ async fn pulled_and_pushed_sets_from_one_server_are_shown_together() -> TestResu
                 }],
             ),
             cause: EditCause::Type,
-        },
+        }
+        .into(),
     )?;
     let edited = format!("pulled at version {}", crate::lsp::version_i32(version + 1));
     both_shown(&mut events, &edited).await
@@ -700,10 +702,11 @@ async fn withdrawn_pull_diagnostics_leave_every_document() -> TestResult {
     for path in [asking, elsewhere] {
         backend.send(
             backend.next_id(),
-            Command::OpenDocument {
+            DocumentCommand::Open {
                 path,
                 language: None,
-            },
+            }
+            .into(),
         )?;
     }
 
@@ -723,7 +726,10 @@ async fn withdrawn_pull_diagnostics_leave_every_document() -> TestResult {
 
     let doc = *docs.first().ok_or("nothing opened")?;
     let cause = crate::api::SaveCause::Manual;
-    backend.send(backend.next_id(), Command::Save { doc, cause })?;
+    backend.send(
+        backend.next_id(),
+        DocumentCommand::Save { doc, cause }.into(),
+    )?;
     let mut cleared = HashSet::new();
     while cleared.len() < docs.len() {
         let (_, event) = next_event(&mut events)

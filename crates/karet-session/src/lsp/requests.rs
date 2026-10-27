@@ -367,7 +367,7 @@ impl LspManager {
     }
 
     /// Forward a definition request, or with a `kind` the navigation request a
-    /// [`crate::api::Command::FindLocations`] names.
+    /// [`crate::api::LspCommand::FindLocations`] names.
     #[allow(clippy::too_many_arguments)] // one request's identity, flattened as its siblings are
     pub(crate) fn definition(
         &self,

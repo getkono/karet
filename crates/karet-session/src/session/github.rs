@@ -14,6 +14,7 @@ use crate::api::Event;
 use crate::api::GithubAuth;
 use crate::api::GithubAuthSource;
 use crate::api::GithubCheckRun;
+use crate::api::GithubCommand;
 use crate::api::GithubComment;
 use crate::api::GithubIssue;
 use crate::api::GithubLabel;
@@ -102,6 +103,47 @@ pub(super) fn eligible_repository(
 }
 
 impl Session {
+    /// Serve one [`GithubCommand`] on the GitHub manager.
+    pub(super) fn handle_github(&mut self, id: RequestId, command: GithubCommand) {
+        let job = match command {
+            GithubCommand::Refresh => return self.refresh_github(id),
+            GithubCommand::Login { token } => GithubJob::Login {
+                token: token.into_inner(),
+            },
+            GithubCommand::SearchIssues { query, page } => GithubJob::Issues { query, page },
+            GithubCommand::SearchPullRequests { query, page } => {
+                GithubJob::PullRequests { query, page }
+            },
+            GithubCommand::Actions { page } => GithubJob::Actions { page },
+            GithubCommand::Issue { number } => GithubJob::Issue { number },
+            GithubCommand::PullRequest { number } => GithubJob::PullRequest { number },
+            GithubCommand::UpdatePullRequestBody { number, body } => {
+                GithubJob::UpdatePullRequestBody { number, body }
+            },
+            GithubCommand::CommentPullRequest { number, body } => {
+                GithubJob::CommentPullRequest { number, body }
+            },
+            GithubCommand::MergePullRequest { number, head_sha } => {
+                GithubJob::MergePullRequest { number, head_sha }
+            },
+            GithubCommand::SetPullRequestDraft {
+                node_id,
+                number,
+                draft,
+            } => GithubJob::SetPullRequestDraft {
+                node_id,
+                number,
+                draft,
+            },
+            GithubCommand::IssueMetadata => GithubJob::IssueMetadata,
+            GithubCommand::CreateIssue { issue } => GithubJob::CreateIssue { issue },
+            GithubCommand::CreatePullRequest { pull_request } => {
+                GithubJob::CreatePullRequest { pull_request }
+            },
+        };
+        self.send_github(id, job);
+    }
+
     pub(super) fn refresh_github(&mut self, id: RequestId) {
         let next = eligible_repository(&self.config.roots, self.vcs.as_ref());
         if next != self.github_repository {

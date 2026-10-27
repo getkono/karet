@@ -97,7 +97,7 @@ impl App {
             self.send(SessionCommand::Cancel { request: previous });
         }
         self.spelling.clear();
-        self.spelling.scanning = self.send(SessionCommand::ScanWorkspaceSpelling {
+        self.spelling.scanning = self.send(WorkspaceCommand::ScanSpelling {
             limit: SPELLING_SCAN_RESULT_CAP,
         });
     }

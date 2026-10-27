@@ -141,7 +141,7 @@ fn stage_hunk_applies_the_hunk_patch_and_reloads_the_diff() {
     assert!(
         !backend.sent.lock().is_ok_and(|sent| sent
             .iter()
-            .any(|(_, c)| matches!(c, SessionCommand::ApplyIndexPatch { .. }))),
+            .any(|(_, c)| matches!(c, SessionCommand::Vcs(VcsCommand::ApplyIndexPatch { .. })))),
         "mismatched verb sends nothing"
     );
 
@@ -149,7 +149,9 @@ fn stage_hunk_applies_the_hunk_patch_and_reloads_the_diff() {
     app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE));
     let patch = backend.sent.lock().ok().and_then(|sent| {
         sent.iter().find_map(|(_, command)| match command {
-            SessionCommand::ApplyIndexPatch { patch, reverse } => Some((patch.clone(), *reverse)),
+            SessionCommand::Vcs(VcsCommand::ApplyIndexPatch { patch, reverse }) => {
+                Some((patch.clone(), *reverse))
+            },
             _ => None,
         })
     });
@@ -171,7 +173,7 @@ fn stage_hunk_applies_the_hunk_patch_and_reloads_the_diff() {
     ));
     let requested = backend.sent.lock().is_ok_and(|sent| {
         sent.iter().any(
-            |(_, c)| matches!(c, SessionCommand::PrepareChange { path, staged: false } if path == Path::new("a.rs")),
+            |(_, c)| matches!(c, SessionCommand::Vcs(VcsCommand::PrepareChange { path, staged: false }) if path == Path::new("a.rs")),
         )
     });
     assert!(requested, "the diff is re-requested after the apply");

@@ -125,6 +125,9 @@ pub(crate) struct ProblemsPanel {
     pub(crate) filter: String,
     /// Whether keys are being typed into `filter`.
     pub(crate) filter_input: bool,
+    /// What each task's problem matchers found in its output, by task label:
+    /// listed beside the documents' diagnostics until that task runs again.
+    pub(crate) task_problems: std::collections::BTreeMap<String, Vec<ProblemEntry>>,
 }
 
 impl ProblemsPanel {
@@ -236,8 +239,10 @@ pub(crate) fn step_problem(starts: &[LineCol], caret: LineCol, forward: bool) ->
 }
 
 impl App {
-    /// Rebuild the Problems panel from the held diagnostic sets.
+    /// Rebuild the Problems panel from the held diagnostic sets and the
+    /// problems tasks' output matched.
     pub(super) fn refresh_problems(&mut self) {
+        let tasks = self.problems.task_problems.values().flatten().cloned();
         let entries = self
             .docs
             .diagnostics
@@ -252,8 +257,23 @@ impl App {
                         diagnostic: diagnostic.clone(),
                     })
             })
+            .chain(tasks)
             .collect();
         self.problems.set_entries(entries);
+    }
+
+    /// Replace what task `label`'s matchers found (an empty set drops the
+    /// task's entries), then rebuild the panel.
+    #[cfg(feature = "terminal")]
+    pub(super) fn set_task_problems(&mut self, label: &str, entries: Vec<ProblemEntry>) {
+        if entries.is_empty() {
+            self.problems.task_problems.remove(label);
+        } else {
+            self.problems
+                .task_problems
+                .insert(label.to_owned(), entries);
+        }
+        self.refresh_problems();
     }
 
     /// Show the Problems panel with the keyboard in it.

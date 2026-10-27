@@ -1,7 +1,7 @@
 //! Application wiring for Expand and Shrink Selection (Shift+Alt+Right/Left).
 //!
 //! Expand asks the document's language server for its selection ranges at
-//! every caret ([`SessionCommand::SelectionRanges`]) and grows each selection
+//! every caret ([`LspCommand::SelectionRanges`]) and grows each selection
 //! along the server's chain. Where the server has nothing that encloses a
 //! selection — no server runs, it does not offer selection ranges, or it found
 //! none there — that caret grows along the tree-sitter parse of the document
@@ -67,7 +67,7 @@ impl App {
             .map(|selection| selection.range().start)
             .collect();
         if backend
-            .send(id, SessionCommand::SelectionRanges { doc, positions })
+            .send(id, LspCommand::SelectionRanges { doc, positions }.into())
             .is_err()
         {
             self.grow_selection(&[]);

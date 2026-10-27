@@ -37,9 +37,9 @@ impl App {
             self.docs.history_view.insert(doc, tab.view);
         }
         let _ = self.send(if undo {
-            SessionCommand::Undo { doc }
+            DocumentCommand::Undo { doc }
         } else {
-            SessionCommand::Redo { doc }
+            DocumentCommand::Redo { doc }
         });
     }
 
@@ -441,15 +441,16 @@ impl App {
             let cursors = tab.editor.cursors().clone();
             let _ = backend.send(
                 backend.next_id(),
-                SessionCommand::SetCursor {
+                DocumentCommand::SetCursor {
                     doc,
                     view: tab.view,
                     cursors,
-                },
+                }
+                .into(),
             );
         }
         let id = backend.next_id();
-        match backend.send(id, SessionCommand::Save { doc, cause }) {
+        match backend.send(id, DocumentCommand::Save { doc, cause }.into()) {
             Ok(()) => {
                 self.pending_saves.insert(id, PendingSave { doc });
                 if self

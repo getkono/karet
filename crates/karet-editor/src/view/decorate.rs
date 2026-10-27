@@ -6,7 +6,7 @@
 use std::cmp::Reverse;
 
 use karet_core::DecorationColor;
-use karet_core::TextModifiers;
+use karet_theme::EmphasisExt;
 
 use super::*;
 
@@ -113,19 +113,6 @@ fn resolve_color(color: DecorationColor, theme: &Theme) -> Option<Rgba> {
     }
 }
 
-/// The ratatui modifiers for a decoration's text modifiers.
-pub(super) fn to_modifier(modifiers: TextModifiers) -> Modifier {
-    [
-        (TextModifiers::BOLD, Modifier::BOLD),
-        (TextModifiers::ITALIC, Modifier::ITALIC),
-        (TextModifiers::STRIKETHROUGH, Modifier::CROSSED_OUT),
-        (TextModifiers::DIM, Modifier::DIM),
-    ]
-    .into_iter()
-    .filter(|(flag, _)| modifiers.contains(*flag))
-    .fold(Modifier::empty(), |all, (_, modifier)| all | modifier)
-}
-
 /// The text styling the decorations of one line give one of its cells.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct CellDecoration {
@@ -173,7 +160,7 @@ impl Editor<'_> {
             .copied()
             .filter(|d| covers_text(d, l, col))
         {
-            cell.modifiers |= to_modifier(d.modifiers);
+            cell.modifiers |= d.modifiers.to_ratatui();
             if cell.fg.is_none() {
                 cell.fg = d.fg.and_then(|color| resolve_color(color, theme));
             }
@@ -327,19 +314,5 @@ mod tests {
         let decorations = [reversed, on_lines(3, 3)];
         let index = DecorationIndex::new(&decorations);
         assert_eq!(index.on_line(&decorations, 3), vec![1]);
-    }
-
-    #[test]
-    fn every_modifier_maps_to_its_ratatui_flag() {
-        assert_eq!(to_modifier(TextModifiers::NONE), Modifier::empty());
-        assert_eq!(
-            to_modifier(
-                TextModifiers::BOLD
-                    | TextModifiers::ITALIC
-                    | TextModifiers::STRIKETHROUGH
-                    | TextModifiers::DIM
-            ),
-            Modifier::BOLD | Modifier::ITALIC | Modifier::CROSSED_OUT | Modifier::DIM
-        );
     }
 }

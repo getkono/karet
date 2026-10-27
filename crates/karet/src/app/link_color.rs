@@ -140,7 +140,7 @@ impl App {
             if current || state.quiet_until.contains_key(&doc) {
                 continue;
             }
-            let Some(id) = self.send(SessionCommand::LinksAndColors { doc }) else {
+            let Some(id) = self.send(LspCommand::LinksAndColors { doc }) else {
                 continue;
             };
             self.links_colors.pending.insert(doc, (id, version, epoch));
@@ -291,7 +291,7 @@ impl App {
             self.open_server_link_target(target);
             return;
         }
-        let id = self.send(SessionCommand::ResolveDocumentLink { doc, link });
+        let id = self.send(LspCommand::ResolveDocumentLink { doc, link });
         self.links_colors.resolving = id;
     }
 

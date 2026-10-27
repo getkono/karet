@@ -18,7 +18,9 @@ fn linked_asks(backend: &RecordingBackend) -> Vec<(RequestId, LineCol)> {
         .map(|sent| {
             sent.iter()
                 .filter_map(|(id, command)| match command {
-                    SessionCommand::LinkedEditingRanges { position, .. } => Some((*id, *position)),
+                    SessionCommand::Lsp(LspCommand::LinkedEditingRanges { position, .. }) => {
+                        Some((*id, *position))
+                    },
                     _ => None,
                 })
                 .collect()
@@ -34,7 +36,7 @@ fn on_type_asks(backend: &RecordingBackend) -> Vec<(RequestId, LineCol, char)> {
         .map(|sent| {
             sent.iter()
                 .filter_map(|(id, command)| match command {
-                    SessionCommand::FormatOnType { position, ch, .. } => {
+                    SessionCommand::Lsp(LspCommand::FormatOnType { position, ch, .. }) => {
                         Some((*id, *position, *ch))
                     },
                     _ => None,
@@ -286,7 +288,7 @@ fn a_moved_document_is_offered_typed_characters_again() {
     assert!(
         backend.sent.lock().is_ok_and(|sent| sent
             .iter()
-            .any(|(_, command)| matches!(command, SessionCommand::RetargetDocument { doc, .. } if *doc == DOC))),
+            .any(|(_, command)| matches!(command, SessionCommand::Document(DocumentCommand::Retarget { doc, .. }) if *doc == DOC))),
         "the move reaches the session"
     );
     assert_offered_again(&backend, &mut app);

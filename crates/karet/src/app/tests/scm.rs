@@ -353,7 +353,7 @@ fn discard_prompt_confirms_and_cancels_through_the_keymap() {
             .lock()
             .map(|sent| {
                 sent.iter()
-                    .any(|(_, c)| matches!(c, SessionCommand::Discard { .. }))
+                    .any(|(_, c)| matches!(c, SessionCommand::Vcs(VcsCommand::Discard { .. })))
             })
             .unwrap_or(false)
     };
@@ -513,7 +513,7 @@ fn commit_editor_supports_multiline_navigation_paste_and_submit() {
         .unwrap_or_default();
     assert!(sent.iter().any(|(_, command)| matches!(
         command,
-        SessionCommand::Commit { message } if message == "subject\n>body\nmore"
+        SessionCommand::Vcs(VcsCommand::Commit { message }) if message == "subject\n>body\nmore"
     )));
 
     let pending = app.commit_input.pending;
@@ -808,7 +808,7 @@ fn conflicted_change_opens_editable_merged_view_with_read_only_sides() {
     assert!(app.tabs[app.active].merge_conflict.is_some());
     let request = backend.sent.lock().ok().and_then(|sent| {
         sent.iter().find_map(|(request, command)| {
-            matches!(command, SessionCommand::MergeConflict { path } if path == Path::new("a.rs"))
+            matches!(command, SessionCommand::Vcs(VcsCommand::MergeConflict { path }) if path == Path::new("a.rs"))
                 .then_some(*request)
         })
     });

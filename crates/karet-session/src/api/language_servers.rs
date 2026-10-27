@@ -239,7 +239,7 @@ impl LanguageServerStatus {
 }
 
 /// What came of signing in to, or out of, the account a language server
-/// proposes for (see `Command::SignInLanguageServer`).
+/// proposes for (see `LanguageServerCommand::SignIn`).
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub enum AccountOutcome {

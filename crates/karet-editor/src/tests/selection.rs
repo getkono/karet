@@ -185,9 +185,7 @@ fn a_break_scrolled_off_to_the_left_is_not_painted_at_the_margin() {
 
 #[test]
 fn newline_in_any_covers_the_slot_past_the_last_character() {
-    let Ok(range) = Range::new(LineCol::new(0, 1), LineCol::new(2, 0)) else {
-        return;
-    };
+    let range = Range::new(LineCol::new(0, 1), LineCol::new(2, 0));
     let selections = [range];
     assert!(newline_in_any(&selections, 0, 3), "start line");
     assert!(newline_in_any(&selections, 1, 0), "blank interior line");

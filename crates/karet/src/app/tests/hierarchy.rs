@@ -25,8 +25,10 @@ fn sent(backend: &RecordingBackend) -> Vec<(RequestId, SessionCommand)> {
                 .filter(|(_, command)| {
                     matches!(
                         command,
-                        SessionCommand::PrepareHierarchy { .. }
-                            | SessionCommand::ExpandHierarchy { .. }
+                        SessionCommand::Lsp(
+                            LspCommand::PrepareHierarchy { .. }
+                                | LspCommand::ExpandHierarchy { .. }
+                        )
                     )
                 })
                 .cloned()
@@ -117,7 +119,7 @@ fn each_command_opens_its_tree_at_once_asking_at_the_caret() {
         assert!(
             matches!(
                 requests.as_slice(),
-                [(_, SessionCommand::PrepareHierarchy { doc, position, direction: asked })]
+                [(_, SessionCommand::Lsp(LspCommand::PrepareHierarchy { doc, position, direction: asked }))]
                     if *doc == DocumentId(9) && *position == LineCol::new(0, 4) && *asked == direction
             ),
             "{command:?}: {requests:?}"
@@ -151,9 +153,9 @@ fn the_roots_fill_the_tree_and_the_first_is_expanded() {
     let requests = sent(&backend);
     let Some((
         expand,
-        SessionCommand::ExpandHierarchy {
+        SessionCommand::Lsp(LspCommand::ExpandHierarchy {
             doc, item: asked, ..
-        },
+        }),
     )) = requests.get(1).cloned()
     else {
         panic!("the first root is expanded: {requests:?}");
@@ -452,7 +454,10 @@ struct RefusingExpansion(RecordingBackend);
 
 impl Backend for RefusingExpansion {
     fn send(&self, id: RequestId, command: SessionCommand) -> Result<(), BackendError> {
-        if matches!(command, SessionCommand::ExpandHierarchy { .. }) {
+        if matches!(
+            command,
+            SessionCommand::Lsp(LspCommand::ExpandHierarchy { .. })
+        ) {
             return Err(BackendError::Closed);
         }
         self.0.send(id, command)
@@ -667,7 +672,7 @@ fn an_expansion_after_the_origin_closes_goes_through_an_open_document() {
     assert!(
         matches!(
             requests.get(2),
-            Some((_, SessionCommand::ExpandHierarchy { doc, .. })) if *doc == DocumentId(12)
+            Some((_, SessionCommand::Lsp(LspCommand::ExpandHierarchy { doc, .. }))) if *doc == DocumentId(12)
         ),
         "{requests:?}"
     );

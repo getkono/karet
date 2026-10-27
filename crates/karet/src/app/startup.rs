@@ -151,6 +151,8 @@ impl App {
             terminals: crate::terminal::TerminalHost::default(),
             #[cfg(feature = "terminal")]
             terminal_frame: super::terminal::TerminalFrame::default(),
+            #[cfg(feature = "terminal")]
+            tasks: super::tasks::TaskRuns::default(),
             shown_image: None,
             shown_page: 0,
             shown_graphics_caret: None,
@@ -277,6 +279,8 @@ impl App {
             self.forget_on_type_triggers();
         }
         self.settings = settings;
+        #[cfg(feature = "terminal")]
+        self.forget_removed_tasks();
         if inlay_changed {
             self.inlay_ui.flipped = false;
         }
@@ -411,7 +415,7 @@ impl App {
     /// right after the backend attaches (the tabs were reserved at CLI time).
     pub(super) fn request_pending_startup_diffs(&mut self) {
         for (view, path, old, new) in std::mem::take(&mut self.pending_startup_diffs) {
-            match self.send(SessionCommand::PrepareDiff { path, old, new }) {
+            match self.send(VcsCommand::PrepareDiff { path, old, new }) {
                 Some(request) => {
                     self.pending_prepared_diffs.insert(request, (view, None));
                 },

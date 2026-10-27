@@ -106,7 +106,7 @@ pub(crate) fn refresh_count(backend: &RecordingBackend) -> usize {
         .lock()
         .map(|sent| {
             sent.iter()
-                .filter(|(_, command)| matches!(command, SessionCommand::RefreshVcs))
+                .filter(|(_, command)| matches!(command, SessionCommand::Vcs(VcsCommand::Refresh)))
                 .count()
         })
         .unwrap_or_default()
@@ -119,7 +119,9 @@ pub(crate) fn retarget_commands(backend: &RecordingBackend) -> Vec<(DocumentId, 
         .map(|sent| {
             sent.iter()
                 .filter_map(|(_, command)| match command {
-                    SessionCommand::RetargetDocument { doc, path } => Some((*doc, path.clone())),
+                    SessionCommand::Document(DocumentCommand::Retarget { doc, path }) => {
+                        Some((*doc, path.clone()))
+                    },
                     _ => None,
                 })
                 .collect()
@@ -134,7 +136,7 @@ pub(crate) fn blame_commands(backend: &RecordingBackend) -> Vec<(RequestId, Docu
         .map(|sent| {
             sent.iter()
                 .filter_map(|(id, command)| match command {
-                    SessionCommand::Blame { doc, version, line } => {
+                    SessionCommand::Vcs(VcsCommand::Blame { doc, version, line }) => {
                         Some((*id, *doc, *version, *line))
                     },
                     _ => None,
@@ -395,7 +397,9 @@ pub(crate) fn completion_requests(backend: &RecordingBackend) -> Vec<(RequestId,
         .map(|sent| {
             sent.iter()
                 .filter_map(|(id, command)| match command {
-                    SessionCommand::Completion { position, .. } => Some((*id, *position)),
+                    SessionCommand::Lsp(LspCommand::Completion { position, .. }) => {
+                        Some((*id, *position))
+                    },
                     _ => None,
                 })
                 .collect()
@@ -433,7 +437,7 @@ pub(crate) fn saved_docs(backend: &RecordingBackend) -> Vec<DocumentId> {
         .map(|sent| {
             sent.iter()
                 .filter_map(|(_, command)| match command {
-                    SessionCommand::Save { doc, .. } => Some(*doc),
+                    SessionCommand::Document(DocumentCommand::Save { doc, .. }) => Some(*doc),
                     _ => None,
                 })
                 .collect()
