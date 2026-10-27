@@ -6,14 +6,14 @@ use karet_core::LineCol;
 use karet_core::Range;
 use karet_core::Selection;
 use karet_text::TextBuffer;
+use karet_text::words::line_span;
+use karet_text::words::next_word_boundary;
+use karet_text::words::previous_word_boundary;
 use ratatui::layout::Rect;
 
 use super::hint::LineHints;
 use super::text::*;
 use super::visual::*;
-use crate::line_span;
-use crate::next_word_boundary;
-use crate::previous_word_boundary;
 use crate::view::gutter_width;
 
 mod caret_ops;

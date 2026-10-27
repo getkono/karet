@@ -39,16 +39,10 @@ use crate::WrappingIndent;
 use crate::bracket;
 use crate::bracket_decorations;
 use crate::bracket_pair_at;
-use crate::class_run_at;
-use crate::cluster_bounds;
 use crate::diagnostic_messages;
 use crate::diagnostic_signs;
 use crate::enclosing_pair;
-use crate::identifier_at;
 use crate::matching_pair;
-use crate::next_word_boundary;
-use crate::previous_word_boundary;
-use crate::word_bounds;
 
 mod brackets;
 mod caret_ops;
@@ -609,31 +603,6 @@ fn line_word_and_doc_motions() {
     assert_eq!(state.cursor(), LineCol::new(1, 3));
     state.extend_doc_start(&buffer);
     assert_eq!(state.cursor(), LineCol::new(0, 0));
-}
-
-#[test]
-fn public_word_boundaries_cover_whitespace_punctuation_and_lines() {
-    let buffer = TextBuffer::from_text("foo  bar.baz\nnext");
-    assert_eq!(
-        previous_word_boundary(&buffer, LineCol::new(0, 8)),
-        LineCol::new(0, 5)
-    );
-    assert_eq!(
-        previous_word_boundary(&buffer, LineCol::new(1, 0)),
-        LineCol::new(0, 12)
-    );
-    assert_eq!(
-        next_word_boundary(&buffer, LineCol::new(0, 3)),
-        LineCol::new(0, 8)
-    );
-    assert_eq!(
-        next_word_boundary(&buffer, LineCol::new(0, 8)),
-        LineCol::new(0, 9)
-    );
-    assert_eq!(
-        next_word_boundary(&buffer, LineCol::new(0, 12)),
-        LineCol::new(1, 0)
-    );
 }
 
 #[test]

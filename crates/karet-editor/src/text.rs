@@ -3,13 +3,14 @@ use karet_core::LineCol;
 use karet_core::Range;
 use karet_core::TokenId;
 use karet_text::TextBuffer;
+pub(crate) use karet_text::words::word_at;
 use karet_theme::Rgba;
 use karet_theme::Theme;
 use ratatui::style::Style;
-use unicode_segmentation::UnicodeSegmentation;
 
 use super::hint::LineHints;
 use crate::Fold;
+use crate::cluster_bounds;
 use crate::cluster_widths;
 
 /// Whether the cell at line `l`, column `col` lies within any of `selections`.
@@ -28,99 +29,6 @@ pub(super) fn newline_in_any(selections: &[Range], l: u32, line_len: u32) -> boo
 /// Whether `c` is part of a word, on the shared [`karet_core::word_class`] model.
 pub(super) fn is_word_char(c: char) -> bool {
     karet_core::is_word_char(c)
-}
-
-/// The `(start, end)` of the word (alphanumeric + `_`) around `pos` on its line, or a
-/// single-cluster span when `pos` is not on a word character. Mirrors the span a
-/// double-click selects; reused by the app's click handling.
-#[must_use]
-pub fn word_bounds(buffer: &TextBuffer, pos: LineCol) -> (LineCol, LineCol) {
-    word_at(buffer, pos).unwrap_or_else(|| {
-        let chars = line_chars(buffer, pos.line);
-        let col = pos.col.min(chars.len() as u32);
-        let start = cluster_bounds(&chars)
-            .into_iter()
-            .rev()
-            .find(|&bound| bound <= col)
-            .unwrap_or(0);
-        let end = next_cluster(&chars, start);
-        (LineCol::new(pos.line, start), LineCol::new(pos.line, end))
-    })
-}
-
-/// The `(start, end)` of the word touching `pos` on its line — the word `pos` is
-/// inside, or ends or starts at — or `None` when no word character touches it.
-/// Walks whole grapheme clusters, so a letter's combining marks stay in its word.
-pub(super) fn word_at(buffer: &TextBuffer, pos: LineCol) -> Option<(LineCol, LineCol)> {
-    let chars = line_chars(buffer, pos.line);
-    let n = chars.len() as u32;
-    let col = pos.col.min(n);
-    let runs = clusters(&chars);
-    let word = |i: usize| runs.get(i).is_some_and(|c| is_word_char(c.2));
-    let bound = |i: usize| runs.get(i).map_or(n, |c| c.0);
-    let at = runs.partition_point(|c| c.1 <= col);
-    let mut start = at;
-    while start > 0 && word(start - 1) {
-        start -= 1;
-    }
-    let mut end = at;
-    while end < runs.len() && word(end) {
-        end += 1;
-    }
-    let (start, end) = (bound(start), bound(end));
-    (start < end).then(|| (LineCol::new(pos.line, start), LineCol::new(pos.line, end)))
-}
-
-/// The `(start, end)` a double-click at `pos` selects: the run of characters
-/// sharing the [`karet_core::WordClass`] of the character under `pos` — a word,
-/// a punctuation run, or a whitespace run. The character under `pos` decides
-/// alone, so a double-click on the `.` of `foo.bar` selects the `.`, never the
-/// word beside it.
-///
-/// Past the end of a line the last character decides, so a double-click right
-/// of `foo bar` selects `bar`. An empty line yields the empty span at its start.
-#[must_use]
-pub fn class_run_at(buffer: &TextBuffer, pos: LineCol) -> (LineCol, LineCol) {
-    let (start, end) = class_run(&line_chars(buffer, pos.line), pos.col);
-    (LineCol::new(pos.line, start), LineCol::new(pos.line, end))
-}
-
-/// The `(start, end)` of the identifier (alphanumeric + `_`) under the character
-/// at `pos`, or `None` when that character is punctuation or whitespace, or `pos`
-/// is past the end of its line. Unlike [`word_bounds`], a word that merely ends
-/// at `pos` does not count: this answers what the pointer is *on*.
-#[must_use]
-pub fn identifier_at(buffer: &TextBuffer, pos: LineCol) -> Option<(LineCol, LineCol)> {
-    let chars = line_chars(buffer, pos.line);
-    clusters(&chars)
-        .into_iter()
-        .find(|c| c.1 > pos.col)
-        .filter(|c| c.0 <= pos.col && is_word_char(c.2))?;
-    let (start, end) = class_run(&chars, pos.col);
-    Some((LineCol::new(pos.line, start), LineCol::new(pos.line, end)))
-}
-
-/// The run of one [`karet_core::WordClass`] in `chars` around column `col`: the
-/// grapheme cluster holding `col` decides, or the last one when `col` is past
-/// the end. `(0, 0)` for an empty line.
-fn class_run(chars: &[char], col: u32) -> (u32, u32) {
-    let runs = clusters(chars);
-    let Some(last) = runs.len().checked_sub(1) else {
-        return (0, 0);
-    };
-    let at = runs.partition_point(|c| c.1 <= col).min(last);
-    let class_of = |i: usize| runs.get(i).map(|c| karet_core::word_class(c.2));
-    let class = class_of(at);
-    let mut start = at;
-    while start > 0 && class_of(start - 1) == class {
-        start -= 1;
-    }
-    let mut end = at + 1;
-    while end < runs.len() && class_of(end) == class {
-        end += 1;
-    }
-    let col_of = |i: usize| runs.get(i).map_or(chars.len() as u32, |c| c.0);
-    (col_of(start), col_of(end))
 }
 
 /// The text within `range`, read line by line so the document is never copied
@@ -244,62 +152,6 @@ fn matches_on_line(buffer: &TextBuffer, line: u32, parts: &[&str], whole_word: b
             }
         },
     }
-}
-
-/// The start of the word before `pos`, wrapping to the previous line's end when at
-/// column 0. Skips trailing whitespace, then a single word/punctuation run.
-#[must_use]
-pub fn previous_word_boundary(buffer: &TextBuffer, pos: LineCol) -> LineCol {
-    if pos.col == 0 {
-        return if pos.line > 0 {
-            let line = pos.line - 1;
-            LineCol::new(line, line_len(buffer, line))
-        } else {
-            pos
-        };
-    }
-    let chars = line_chars(buffer, pos.line);
-    let runs = clusters(&chars);
-    let first = |i: usize| runs.get(i).map_or(' ', |c| c.2);
-    let mut i = runs.partition_point(|c| c.0 < pos.col);
-    while i > 0 && first(i - 1).is_whitespace() {
-        i -= 1;
-    }
-    if i > 0 {
-        let word = is_word_char(first(i - 1));
-        while i > 0 && !first(i - 1).is_whitespace() && is_word_char(first(i - 1)) == word {
-            i -= 1;
-        }
-    }
-    LineCol::new(pos.line, runs.get(i).map_or(chars.len() as u32, |c| c.0))
-}
-
-/// The end of the word after `pos`, wrapping to the next line's start at end of line.
-/// Skips leading whitespace, then a single word/punctuation run.
-#[must_use]
-pub fn next_word_boundary(buffer: &TextBuffer, pos: LineCol) -> LineCol {
-    let chars = line_chars(buffer, pos.line);
-    let n = chars.len() as u32;
-    if pos.col >= n {
-        return if pos.line < last_line(buffer) {
-            LineCol::new(pos.line + 1, 0)
-        } else {
-            pos
-        };
-    }
-    let runs = clusters(&chars);
-    let first = |i: usize| runs.get(i).map_or(' ', |c| c.2);
-    let mut i = runs.partition_point(|c| c.1 <= pos.col);
-    while i < runs.len() && first(i).is_whitespace() {
-        i += 1;
-    }
-    if i < runs.len() {
-        let word = is_word_char(first(i));
-        while i < runs.len() && !first(i).is_whitespace() && is_word_char(first(i)) == word {
-            i += 1;
-        }
-    }
-    LineCol::new(pos.line, runs.get(i).map_or(n, |c| c.0))
 }
 
 /// Whether line `l` is hidden inside the interior of a collapsed fold in `folds`.
@@ -483,23 +335,6 @@ pub(super) fn line_chars(buffer: &TextBuffer, line: u32) -> Vec<char> {
         .collect()
 }
 
-/// The column of every extended grapheme cluster boundary in `chars`, ascending:
-/// `0`, each later cluster's start, and `chars.len()`. These are the only columns
-/// a caret rests on, so a step or a delete never splits a user-perceived
-/// character (a combining mark, a ZWJ emoji sequence, a flag).
-#[must_use]
-pub fn cluster_bounds(chars: &[char]) -> Vec<u32> {
-    let text: String = chars.iter().collect();
-    let mut bounds = Vec::with_capacity(chars.len().saturating_add(1));
-    let mut col = 0_u32;
-    bounds.push(col);
-    for cluster in text.graphemes(true) {
-        col = col.saturating_add(cluster.chars().count() as u32);
-        bounds.push(col);
-    }
-    bounds
-}
-
 /// The cluster boundary strictly before `col` in `chars` (`0` at the start).
 pub(super) fn previous_cluster(chars: &[char], col: u32) -> u32 {
     cluster_bounds(chars)
@@ -593,64 +428,5 @@ pub(super) fn token_style(
     match token_at(abs, hl) {
         Some(token) => theme.token_style(token),
         None => Style::default().fg(default_fg.to_ratatui()),
-    }
-}
-
-/// The text within `range`, sliced from `source` (the buffer's full text) using
-/// byte offsets derived from `buffer`. `None` if the range cannot be resolved.
-#[must_use]
-pub fn selection_text(buffer: &TextBuffer, source: &str, range: Range) -> Option<String> {
-    let start = buffer.line_col_to_byte(range.start).ok()?.0;
-    let end = buffer.line_col_to_byte(range.end).ok()?.0;
-    source.get(start..end).map(str::to_string)
-}
-
-/// The `(anchor, head)` span covering all of `line` and the line break ending
-/// it: from the line's start to the next line's start, so a triple-click
-/// selection deletes or copies the whole line. The last line has no break, so
-/// its span ends at its own end.
-#[must_use]
-pub fn line_span(buffer: &TextBuffer, line: u32) -> (LineCol, LineCol) {
-    let head = if line < last_line(buffer) {
-        LineCol::new(line + 1, 0)
-    } else {
-        LineCol::new(line, line_len(buffer, line))
-    };
-    (LineCol::new(line, 0), head)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn range(start: (u32, u32), end: (u32, u32)) -> Range {
-        Range {
-            start: LineCol::new(start.0, start.1),
-            end: LineCol::new(end.0, end.1),
-        }
-    }
-
-    #[test]
-    fn selection_text_slices_by_char_columns_across_lines() {
-        let source = "h\u{e9}llo\nw\u{f6}rld\n";
-        let buffer = TextBuffer::from_text(source);
-        assert_eq!(
-            selection_text(&buffer, source, range((0, 1), (1, 2))).as_deref(),
-            Some("\u{e9}llo\nw\u{f6}")
-        );
-        assert_eq!(
-            selection_text(&buffer, source, range((1, 1), (1, 1))).as_deref(),
-            Some("")
-        );
-    }
-
-    #[test]
-    fn selection_text_is_none_for_an_unresolvable_range() {
-        let source = "ab\ncd";
-        let buffer = TextBuffer::from_text(source);
-        // A line past the end, a reversed range, and a source shorter than the buffer.
-        assert_eq!(selection_text(&buffer, source, range((0, 0), (9, 0))), None);
-        assert_eq!(selection_text(&buffer, source, range((1, 1), (0, 1))), None);
-        assert_eq!(selection_text(&buffer, "a", range((0, 0), (1, 1))), None);
     }
 }

@@ -2,7 +2,6 @@
 //! test module to respect the per-file code-line ceiling.
 
 use super::*;
-use crate::text::*;
 
 #[test]
 fn render_draws_a_caret_for_every_cursor() {
@@ -557,75 +556,6 @@ fn the_original_caret_survives_a_merge_and_a_reset() {
 }
 
 #[test]
-fn word_bounds_spans_the_word_under_pos() {
-    let buffer = TextBuffer::from_text("foo bar");
-    assert_eq!(
-        word_bounds(&buffer, LineCol::new(0, 5)),
-        (LineCol::new(0, 4), LineCol::new(0, 7))
-    );
-}
-
-/// The `(start, end)` columns of the run a double-click at `col` on line 0 selects.
-fn run_cols(text: &str, col: u32) -> (u32, u32) {
-    let (start, end) = class_run_at(&TextBuffer::from_text(text), LineCol::new(0, col));
-    (start.col, end.col)
-}
-
-#[test]
-fn class_run_at_selects_the_run_under_the_character_alone() {
-    // A word, wherever in it the pointer is.
-    assert_eq!(run_cols("foo.bar", 0), (0, 3));
-    assert_eq!(run_cols("foo.bar", 2), (0, 3));
-    // Punctuation right after a word is its own run, not the word before it.
-    assert_eq!(run_cols("foo.bar", 3), (3, 4));
-    assert_eq!(run_cols("a::b", 2), (1, 3));
-    // Whitespace between words is a run of its own.
-    assert_eq!(run_cols("foo  bar", 3), (3, 5));
-    assert_eq!(run_cols("foo bar", 3), (3, 4));
-    // Past the end of the line, the last character decides.
-    assert_eq!(run_cols("foo bar", 9), (4, 7));
-    assert_eq!(run_cols("foo;", 4), (3, 4));
-    // An empty line has nothing to select.
-    assert_eq!(run_cols("", 0), (0, 0));
-}
-
-#[test]
-fn identifier_at_answers_only_on_a_word_character() {
-    let buffer = TextBuffer::from_text("let x = foo(bar);");
-    let at = |col| identifier_at(&buffer, LineCol::new(0, col)).map(|(s, e)| (s.col, e.col));
-    assert_eq!(at(9), Some((8, 11)));
-    assert_eq!(at(4), Some((4, 5)));
-    // `(` directly after `foo` is not on `foo`, unlike `word_bounds`.
-    assert_eq!(at(11), None);
-    assert_eq!(at(3), None, "whitespace");
-    assert_eq!(at(17), None, "past the end of the line");
-    assert_eq!(
-        identifier_at(&buffer, LineCol::new(4, 0)),
-        None,
-        "past the last line"
-    );
-}
-
-#[test]
-fn line_span_includes_the_line_break_except_on_the_last_line() {
-    let buffer = TextBuffer::from_text("alpha\nbravo");
-    assert_eq!(
-        line_span(&buffer, 0),
-        (LineCol::new(0, 0), LineCol::new(1, 0))
-    );
-    assert_eq!(
-        line_span(&buffer, 1),
-        (LineCol::new(1, 0), LineCol::new(1, 5))
-    );
-    // A trailing newline leaves an empty last line, which the line before ends at.
-    let buffer = TextBuffer::from_text("alpha\n");
-    assert_eq!(
-        line_span(&buffer, 0),
-        (LineCol::new(0, 0), LineCol::new(1, 0))
-    );
-}
-
-#[test]
 fn gutter_marker_line_hits_only_the_marker_column() {
     let buffer = TextBuffer::from_text("a\nb\nc\nd\n");
     let mut state = EditorState::new();
@@ -855,4 +785,80 @@ fn a_multi_line_needle_must_match_every_line_it_spans() {
     // A middle line that differs rejects the match even though both ends agree.
     let broken = TextBuffer::from_text("xa\nZ\nc y\n");
     assert!(find_all(&broken, "a\nb\nc", false).is_empty());
+}
+
+/// The deprecated word paths answer exactly what `karet_text::words` answers,
+/// so a consumer still on them gets a warning, not a different selection.
+/// Falsified by a wrapper that drifts from the function it forwards to.
+#[test]
+#[allow(deprecated)] // Exercising the deprecated paths is the point.
+fn deprecated_word_paths_delegate_to_karet_text() {
+    use karet_text::words;
+    let buffer = TextBuffer::from_text("let caf\u{e9} = foo(bar);\n  next\n");
+    for line in 0..3 {
+        for col in 0..20 {
+            let pos = LineCol::new(line, col);
+            assert_eq!(
+                crate::word_bounds(&buffer, pos),
+                words::word_bounds(&buffer, pos)
+            );
+            assert_eq!(
+                crate::class_run_at(&buffer, pos),
+                words::class_run_at(&buffer, pos)
+            );
+            assert_eq!(
+                crate::identifier_at(&buffer, pos),
+                words::identifier_at(&buffer, pos)
+            );
+            assert_eq!(
+                crate::previous_word_boundary(&buffer, pos),
+                words::previous_word_boundary(&buffer, pos)
+            );
+            assert_eq!(
+                crate::next_word_boundary(&buffer, pos),
+                words::next_word_boundary(&buffer, pos)
+            );
+        }
+        assert_eq!(
+            crate::line_span(&buffer, line),
+            words::line_span(&buffer, line)
+        );
+    }
+}
+
+fn range(start: (u32, u32), end: (u32, u32)) -> Range {
+    Range {
+        start: LineCol::new(start.0, start.1),
+        end: LineCol::new(end.0, end.1),
+    }
+}
+
+#[test]
+#[allow(deprecated)] // The deprecated `selection_text` keeps its old contract.
+fn selection_text_slices_by_char_columns_across_lines() {
+    let source = "h\u{e9}llo\nw\u{f6}rld\n";
+    let buffer = TextBuffer::from_text(source);
+    assert_eq!(
+        crate::selection_text(&buffer, source, range((0, 1), (1, 2))).as_deref(),
+        Some("\u{e9}llo\nw\u{f6}")
+    );
+    assert_eq!(
+        crate::selection_text(&buffer, source, range((1, 1), (1, 1))).as_deref(),
+        Some("")
+    );
+}
+
+#[test]
+#[allow(deprecated)] // The deprecated `selection_text` keeps its old contract.
+fn selection_text_is_none_for_an_unresolvable_range() {
+    let source = "ab\ncd";
+    let buffer = TextBuffer::from_text(source);
+    // A line past the end, a reversed range, and a source shorter than the buffer.
+    let none = |range| crate::selection_text(&buffer, source, range);
+    assert_eq!(none(range((0, 0), (9, 0))), None);
+    assert_eq!(none(range((1, 1), (0, 1))), None);
+    assert_eq!(
+        crate::selection_text(&buffer, "a", range((0, 0), (1, 1))),
+        None
+    );
 }
