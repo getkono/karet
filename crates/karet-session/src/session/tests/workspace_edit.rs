@@ -643,7 +643,7 @@
         async fn read_json(
             reader: &mut tokio::io::BufReader<tokio::io::ReadHalf<tokio::io::DuplexStream>>,
         ) -> Option<serde_json::Value> {
-            let bytes = karet_lsp::codec::read_frame(reader).await.ok()??;
+            let bytes = karet_jsonrpc::framing::content_length::read_frame(reader).await.ok()??;
             serde_json::from_slice(&bytes).ok()
         }
 
@@ -664,7 +664,10 @@
                 let init = read_json(&mut reader).await?;
                 let reply = serde_json::json!({"jsonrpc": "2.0", "id": init["id"],
                                                "result": {"capabilities": {}}});
-                karet_lsp::codec::write_frame(&mut server_write, reply.to_string().as_bytes())
+                karet_jsonrpc::framing::content_length::write_frame(
+                    &mut server_write,
+                    reply.to_string().as_bytes(),
+                )
                     .await
                     .ok()?;
                 read_json(&mut reader).await?; // initialized
@@ -677,7 +680,10 @@
                         "newText": "new"
                     }]}}}
                 });
-                karet_lsp::codec::write_frame(&mut server_write, request.to_string().as_bytes())
+                karet_jsonrpc::framing::content_length::write_frame(
+                    &mut server_write,
+                    request.to_string().as_bytes(),
+                )
                     .await
                     .ok()?;
                 read_json(&mut reader).await

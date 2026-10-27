@@ -73,10 +73,89 @@ pub use karet_core::DocumentHighlight;
 pub use karet_core::HighlightKind;
 /// `Content-Length` message framing (the LSP base protocol).
 ///
-/// Re-exported from [`karet_jsonrpc::framing::content_length`], which is where
-/// the implementation now lives; the `karet_lsp::codec` path is kept because it
-/// is this crate's published surface.
-pub use karet_jsonrpc::framing::content_length as codec;
+/// Deprecated: a second public path to [`karet_jsonrpc::framing::content_length`],
+/// where the implementation lives. Use that module directly; this alias is kept
+/// for one release so existing callers keep compiling with a warning.
+///
+/// A `#[deprecated]` module warns only where the module itself is named
+/// (`use karet_lsp::codec;`), not on `karet_lsp::codec::read_frame`, so every
+/// item here is a deprecated forwarder of its own: each path through the module
+/// warns, whichever way it is written.
+#[deprecated(
+    since = "0.8.0",
+    note = "use `karet_jsonrpc::framing::content_length`, which this re-exports"
+)]
+pub mod codec {
+    use std::io;
+
+    use karet_jsonrpc::framing::content_length;
+    use tokio::io::AsyncBufRead;
+    use tokio::io::AsyncWrite;
+
+    /// Deprecated alias of [`content_length::MAX_MESSAGE_BYTES`].
+    #[deprecated(
+        since = "0.8.0",
+        note = "use `karet_jsonrpc::framing::content_length::MAX_MESSAGE_BYTES`"
+    )]
+    pub const MAX_MESSAGE_BYTES: usize = content_length::MAX_MESSAGE_BYTES;
+
+    /// Deprecated alias of the [`content_length::ContentLength`] framing type.
+    #[deprecated(
+        since = "0.8.0",
+        note = "use `karet_jsonrpc::framing::content_length::ContentLength`"
+    )]
+    pub type ContentLength = content_length::ContentLength;
+
+    /// Deprecated alias of the [`content_length::ContentLength`] unit value, so
+    /// `codec::ContentLength` keeps working in expression position too.
+    #[deprecated(
+        since = "0.8.0",
+        note = "use `karet_jsonrpc::framing::content_length::ContentLength`"
+    )]
+    #[allow(non_upper_case_globals)] // must keep the unit struct's own name
+    pub const ContentLength: content_length::ContentLength = content_length::ContentLength;
+
+    /// Deprecated alias of [`content_length::CodecError`].
+    #[deprecated(
+        since = "0.8.0",
+        note = "use `karet_jsonrpc::framing::content_length::CodecError`"
+    )]
+    pub type CodecError = content_length::CodecError;
+
+    /// Deprecated forwarder to [`content_length::read_frame`].
+    ///
+    /// # Errors
+    ///
+    /// As [`content_length::read_frame`].
+    #[deprecated(
+        since = "0.8.0",
+        note = "use `karet_jsonrpc::framing::content_length::read_frame`"
+    )]
+    pub async fn read_frame<R>(
+        reader: &mut R,
+    ) -> Result<Option<Vec<u8>>, content_length::CodecError>
+    where
+        R: AsyncBufRead + Unpin,
+    {
+        content_length::read_frame(reader).await
+    }
+
+    /// Deprecated forwarder to [`content_length::write_frame`].
+    ///
+    /// # Errors
+    ///
+    /// As [`content_length::write_frame`].
+    #[deprecated(
+        since = "0.8.0",
+        note = "use `karet_jsonrpc::framing::content_length::write_frame`"
+    )]
+    pub async fn write_frame<W>(writer: &mut W, body: &[u8]) -> io::Result<()>
+    where
+        W: AsyncWrite + Unpin,
+    {
+        content_length::write_frame(writer, body).await
+    }
+}
 pub use launch::ExitReport;
 pub use launch::LaunchCause;
 pub use launch::LaunchFailure;
@@ -251,17 +330,15 @@ pub struct LspSpec {
     pub args: Vec<String>,
     /// Language identifiers this server handles (e.g. `"rust"`).
     pub languages: Vec<String>,
-    /// Server-specific `initializationOptions`, sent verbatim with
-    /// `initialize`.
+    /// What the connection sends at the handshake and answers with afterwards:
+    /// the server's `initializationOptions` and the settings
+    /// `workspace/configuration` is answered from (see [`ConnectOptions`]).
     ///
-    /// Some servers cannot start without one. Astro's, for instance, refuses
-    /// the handshake unless it is told where a TypeScript SDK lives, rather
-    /// than looking for one itself — no argv can substitute, because the option
-    /// is part of the protocol rather than the command line.
-    pub initialization_options: Option<Value>,
-    /// The settings `workspace/configuration` is answered from, keyed by
-    /// section (see [`ConnectOptions::settings`]).
-    pub settings: Option<Value>,
+    /// Some servers cannot start without `initializationOptions`. Astro's, for
+    /// instance, refuses the handshake unless it is told where a TypeScript SDK
+    /// lives, rather than looking for one itself — no argv can substitute,
+    /// because the option is part of the protocol rather than the command line.
+    pub options: ConnectOptions,
 }
 
 impl LspSpec {
@@ -275,22 +352,21 @@ impl LspSpec {
             command: command.into(),
             args,
             languages,
-            initialization_options: None,
-            settings: None,
+            options: ConnectOptions::default(),
         }
     }
 
     /// Attach the `initializationOptions` sent verbatim with `initialize`.
     #[must_use]
     pub fn with_initialization_options(mut self, options: Option<Value>) -> Self {
-        self.initialization_options = options;
+        self.options.initialization_options = options;
         self
     }
 
     /// Attach the settings `workspace/configuration` is answered from.
     #[must_use]
     pub fn with_settings(mut self, settings: Option<Value>) -> Self {
-        self.settings = settings;
+        self.options.settings = settings;
         self
     }
 }
@@ -378,8 +454,7 @@ impl LspClient {
     pub async fn spawn(spec: LspSpec, root: &Path) -> Result<Self, LspError> {
         let mut command = tokio::process::Command::new(&spec.command);
         command.args(&spec.args).current_dir(root);
-        Self::spawn_command_configured(command, &spec.command, root, ConnectOptions::from(&spec))
-            .await
+        Self::spawn_command_configured(command, &spec.command, root, spec.options).await
     }
 
     /// Spawn and initialize a server through a caller-prepared command.
@@ -400,22 +475,7 @@ impl LspClient {
         display_name: &str,
         root: &Path,
     ) -> Result<Self, LspError> {
-        Self::spawn_command_with(command, display_name, root, None).await
-    }
-
-    /// Spawn as [`Self::spawn_command`], sending `initialization_options` with
-    /// the handshake.
-    ///
-    /// # Errors
-    /// As [`Self::spawn_command`].
-    pub async fn spawn_command_with(
-        command: tokio::process::Command,
-        display_name: &str,
-        root: &Path,
-        initialization_options: Option<Value>,
-    ) -> Result<Self, LspError> {
-        let options = ConnectOptions::default().with_initialization_options(initialization_options);
-        Self::spawn_command_configured(command, display_name, root, options).await
+        Self::spawn_command_configured(command, display_name, root, ConnectOptions::default()).await
     }
 
     /// Spawn as [`Self::spawn_command`], connecting with `options` (see
@@ -550,31 +610,7 @@ impl LspClient {
         R: AsyncRead + Send + Unpin + 'static,
         W: AsyncWrite + Send + Unpin + 'static,
     {
-        Self::connect_with(read, write, root, None).await
-    }
-
-    /// Connect as [`Self::connect`], sending `initialization_options` with the
-    /// handshake.
-    ///
-    /// Separate from [`Self::connect`] rather than a parameter on it, so the
-    /// common case stays a three-argument call. Some servers cannot start
-    /// without their options: Astro's refuses the handshake unless it is told
-    /// where a TypeScript SDK lives.
-    ///
-    /// # Errors
-    /// As [`Self::connect`].
-    pub async fn connect_with<R, W>(
-        read: R,
-        write: W,
-        root: &Path,
-        initialization_options: Option<Value>,
-    ) -> Result<Self, LspError>
-    where
-        R: AsyncRead + Send + Unpin + 'static,
-        W: AsyncWrite + Send + Unpin + 'static,
-    {
-        let options = ConnectOptions::default().with_initialization_options(initialization_options);
-        Self::connect_configured(read, write, root, options).await
+        Self::connect_configured(read, write, root, ConnectOptions::default()).await
     }
 
     /// Connect as [`Self::connect`], with `options`: `initializationOptions`
@@ -582,6 +618,11 @@ impl LspClient {
     /// answered from -- held before `initialize` goes out, so a server that
     /// asks at once is answered from them, and pushed once with
     /// `workspace/didChangeConfiguration` after `initialized`.
+    ///
+    /// Separate from [`Self::connect`] rather than a parameter on it, so the
+    /// common case stays a three-argument call. Some servers cannot start
+    /// without their options: Astro's refuses the handshake unless it is told
+    /// where a TypeScript SDK lives.
     ///
     /// # Errors
     /// As [`Self::connect`].

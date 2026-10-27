@@ -19,8 +19,9 @@ use super::Framing;
 /// The largest message body we will read, guarding against a corrupt or hostile
 /// `Content-Length` allocating unbounded memory.
 ///
-/// Re-exported from [`super::MAX_MESSAGE_BYTES`] so the historical
-/// `karet_lsp::codec::MAX_MESSAGE_BYTES` path keeps resolving.
+/// Re-exported from [`super::MAX_MESSAGE_BYTES`], the one definition, so the
+/// deprecated `karet_lsp::codec::MAX_MESSAGE_BYTES` path keeps resolving until
+/// that alias is removed.
 pub use super::MAX_MESSAGE_BYTES;
 
 /// `Content-Length`-framed bodies: the LSP/DAP base protocol.

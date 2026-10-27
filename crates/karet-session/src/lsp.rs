@@ -478,7 +478,7 @@ impl LspManager {
         language: &str,
         root: &Path,
     ) -> bool {
-        if !provider::is_astro(provider, spec) || spec.initialization_options.is_some() {
+        if !provider::is_astro(provider, spec) || spec.options.initialization_options.is_some() {
             return true;
         }
         let managed = || {
@@ -487,13 +487,13 @@ impl LspManager {
                 &LanguageServerId::new(provider::ASTRO),
                 language,
             )
-            .and_then(|managed| managed.initialization_options)
+            .and_then(|managed| managed.options.initialization_options)
         };
         if let Some(options) = provider::project_typescript_sdk(Path::new(&spec.command), root)
             .map(|tsdk| provider::typescript_sdk_options(&tsdk))
             .or_else(managed)
         {
-            spec.initialization_options = Some(options);
+            spec.options.initialization_options = Some(options);
             return true;
         }
         // Refusing to launch is the honest outcome: Astro would reject the
