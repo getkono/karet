@@ -15,9 +15,9 @@ use std::ops::RangeInclusive;
 use std::sync::Arc;
 
 use karet_core::CursorState;
-use karet_syntax::FoldRegions;
-use karet_syntax::Highlights;
-use karet_syntax::SemanticBlocks;
+use karet_core::FoldRegions;
+use karet_core::Highlights;
+use karet_core::SemanticBlocks;
 use karet_text::TextBuffer;
 use tokio::sync::mpsc;
 

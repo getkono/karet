@@ -3,9 +3,9 @@
 
 use karet_core::BytePos;
 use karet_core::HighlightSpan;
+use karet_core::Highlights;
 use karet_core::Span;
 use karet_core::TokenId;
-use karet_syntax::Highlights;
 
 /// Lay `semantic` -- a language server's semantic tokens as byte spans, in
 /// order and not overlapping -- over `base`, the tree-sitter highlights, into

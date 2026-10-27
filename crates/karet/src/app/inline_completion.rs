@@ -20,6 +20,7 @@ use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
 use karet_core::Change;
+use karet_core::EditCause;
 use karet_core::InlineAsk;
 use karet_core::InlineCompletionItem;
 use karet_core::InlineCompletionTrigger;
@@ -37,7 +38,6 @@ use karet_session::LanguageServerId;
 use karet_session::LspCommand;
 use karet_session::RequestId;
 use karet_session::api::AccountOutcome;
-use karet_text::EditCause;
 
 use crate::app::App;
 use crate::app::notifications::Report;

@@ -14,7 +14,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use karet_core::Diagnostic;
-use karet_syntax::Highlights;
+use karet_core::Highlights;
 use spellbook::Dictionary;
 use tokio::sync::mpsc as tokio_mpsc;
 

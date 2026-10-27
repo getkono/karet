@@ -3,19 +3,19 @@
 
 use std::collections::HashMap;
 
+use karet_core::AppliedEdit;
 use karet_core::BytePos;
+use karet_core::HighlightSpan;
+use karet_core::Highlights;
 use karet_core::Span;
 use karet_core::TokenId;
-use karet_treesitter::Edit;
+use karet_core::merge_spans;
+use karet_core::shift_span;
 use karet_treesitter::LanguageId;
 use karet_treesitter::LayeredTree;
 use karet_treesitter::Query;
 use karet_treesitter::SyntaxTree;
-use karet_treesitter::merge_spans;
-use karet_treesitter::shift_span;
 
-use crate::HighlightSpan;
-use crate::Highlights;
 use crate::SyntaxError;
 use crate::map::map_capture;
 
@@ -46,7 +46,7 @@ impl Highlighter {
     pub fn new(lang: LanguageId) -> Result<Self, SyntaxError> {
         let source =
             karet_treesitter::highlights_query(lang).ok_or(SyntaxError::UnsupportedLanguage)?;
-        let query = Query::compile(lang, source).map_err(|e| SyntaxError::Query(e.to_string()))?;
+        let query = Query::compile(lang, source)?;
         let lut: Vec<Option<(TokenId, u8)>> = query
             .capture_names()
             .iter()
@@ -144,7 +144,7 @@ impl LayeredHighlighter {
         tree: &LayeredTree,
         text: &str,
         previous: &Highlights,
-        edits: &[Edit],
+        edits: &[AppliedEdit],
         changed: &[Span],
     ) -> Highlights {
         let most = |regions: &[Span]| {
@@ -608,11 +608,11 @@ mod tests {
     }
 
     /// Replace `text[start..end]` with `with` in place, returning the edit.
-    fn splice(text: &mut String, start: usize, end: usize, with: &str) -> Edit {
+    fn splice(text: &mut String, start: usize, end: usize, with: &str) -> AppliedEdit {
         let old = text.clone();
         text.replace_range(start..end, with);
         let new_end = start + with.len();
-        Edit {
+        AppliedEdit {
             start_byte: start,
             old_end_byte: end,
             new_end_byte: new_end,

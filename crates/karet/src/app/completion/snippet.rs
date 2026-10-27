@@ -6,11 +6,11 @@ use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
 use crossterm::event::KeyModifiers;
 use karet_core::CompletionItem;
+use karet_core::EditCause;
 use karet_core::LineCol;
 use karet_core::TextEdit;
 use karet_editor::editing;
 use karet_session::ViewId;
-use karet_text::EditCause;
 
 use crate::app::App;
 use crate::completion::SnippetSession;

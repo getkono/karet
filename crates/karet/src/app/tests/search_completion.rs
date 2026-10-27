@@ -4,7 +4,7 @@ use crate::app::*;
 /// Push a minimal empty code tab and open Find over it, for tests that only
 /// exercise the find-bar state machine (not real match content).
 fn app_with_find_open() -> App {
-    use karet_syntax::Highlights;
+    use karet_core::Highlights;
     use karet_text::TextBuffer;
 
     let mut app = app();
@@ -18,7 +18,7 @@ fn app_with_find_open() -> App {
             buffer: TextBuffer::from_text("").into(),
             text: Default::default(),
             highlights: Highlights::default(),
-            semantic_blocks: karet_syntax::SemanticBlocks::default(),
+            semantic_blocks: karet_core::SemanticBlocks::default(),
             folds: FoldRegions::default(),
             folded: BTreeSet::new(),
             decos: Vec::new(),
@@ -112,8 +112,8 @@ fn switching_tabs_does_not_show_a_stale_find_bar() {
             next_version: 0,
             buffer: karet_text::TextBuffer::from_text("").into(),
             text: Default::default(),
-            highlights: karet_syntax::Highlights::default(),
-            semantic_blocks: karet_syntax::SemanticBlocks::default(),
+            highlights: karet_core::Highlights::default(),
+            semantic_blocks: karet_core::SemanticBlocks::default(),
             folds: FoldRegions::default(),
             folded: BTreeSet::new(),
             decos: Vec::new(),

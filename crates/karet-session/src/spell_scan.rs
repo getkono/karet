@@ -18,9 +18,9 @@ use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
 
+use karet_core::Highlights;
 use karet_core::NotificationKind;
 use karet_core::Severity;
-use karet_syntax::Highlights;
 use karet_syntax::LayeredHighlighter;
 use karet_treesitter::LayeredParser;
 use spellbook::Dictionary;

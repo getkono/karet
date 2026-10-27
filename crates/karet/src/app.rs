@@ -111,6 +111,8 @@ pub(crate) use hit::TabHit;
 use hit::TextFieldTarget;
 pub(crate) use hit::ToastHit;
 pub(crate) use inlay::InlayHintHit;
+#[cfg(test)]
+use karet_core::FoldRegions;
 use karet_core::NotificationKind;
 pub(crate) use karet_editor::resolve_folds;
 use karet_filetype::IconStyle;
@@ -124,8 +126,6 @@ use karet_session::Settings;
 use karet_session::SwapInfo;
 use karet_session::VcsAction;
 use karet_session::ViewId;
-#[cfg(test)]
-use karet_syntax::FoldRegions;
 use karet_theme::Theme;
 use karet_vcs::RepositorySummary;
 use karet_widgets::FileTreeState;

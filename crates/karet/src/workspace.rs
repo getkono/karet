@@ -13,13 +13,13 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use std::path::PathBuf;
 
+use karet_core::FoldRegions;
+use karet_core::Highlights;
 use karet_core::LineCol;
+use karet_core::SemanticBlocks;
 use karet_filetype::FileKind;
 #[cfg(feature = "images")]
 use karet_fileview::image;
-use karet_syntax::FoldRegions;
-use karet_syntax::Highlights;
-use karet_syntax::SemanticBlocks;
 use karet_text::TextSnapshot;
 
 use crate::tab::Tab;

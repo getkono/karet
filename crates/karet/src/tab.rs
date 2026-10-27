@@ -16,6 +16,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use karet_core::Decoration;
+use karet_core::FoldRegions;
+use karet_core::Highlights;
+use karet_core::SemanticBlocks;
 use karet_editor::EditorState;
 use karet_filetype::FileKind;
 #[cfg(any(feature = "images", feature = "pdf"))]
@@ -29,9 +32,6 @@ use karet_session::LanguageServerId;
 use karet_session::LanguageServerLogEntry;
 use karet_session::LoadedConfig;
 use karet_session::ViewId;
-use karet_syntax::FoldRegions;
-use karet_syntax::Highlights;
-use karet_syntax::SemanticBlocks;
 use karet_text::TextBuffer;
 use karet_text::TextSnapshot;
 pub(crate) use language_servers::LanguageServerAction;
