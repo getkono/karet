@@ -34,7 +34,7 @@ use crate::command::Command;
 use crate::keymap::SidebarPanel;
 use crate::overlay::Overlay;
 use crate::pending::Pending;
-use crate::render::Section;
+use crate::tab::Section;
 use crate::tab::Tab;
 use crate::tab::TabKind;
 

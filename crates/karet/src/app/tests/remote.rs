@@ -140,7 +140,7 @@ fn facts_app(root: PathBuf) -> (App, EventRx) {
 
 /// Reconstruct the `(old, new)` texts from a prepared diff's hunk lines
 /// (complete for these small single-hunk fixtures).
-fn diff_sides(file: &FileView) -> (String, String) {
+fn diff_sides(file: &ChangedFile) -> (String, String) {
     let mut old = String::new();
     let mut new = String::new();
     for hunk in &file.change.diff.diff().hunks {

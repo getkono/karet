@@ -18,7 +18,7 @@ use ratatui::layout::Rect;
 
 use super::App;
 use super::util::rect_contains;
-use crate::render::FileView;
+use crate::tab::ChangedFile;
 use crate::tab::TabKind;
 use crate::tab::ViewMode;
 
@@ -108,7 +108,11 @@ pub(crate) fn hex_row(bytes: &[u8], row: usize) -> Option<SurfaceRow> {
     })
 }
 
-pub(crate) fn diff_row(file: &FileView, surface: SelectSurface, row: usize) -> Option<SurfaceRow> {
+pub(crate) fn diff_row(
+    file: &ChangedFile,
+    surface: SelectSurface,
+    row: usize,
+) -> Option<SurfaceRow> {
     let content = match surface {
         SelectSurface::Unified => karet_diff::unified_row(&file.change.diff, row),
         SelectSurface::OldColumn => karet_diff::side_by_side_row(&file.change.diff, row).0,

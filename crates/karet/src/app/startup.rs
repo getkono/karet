@@ -71,8 +71,8 @@ use crate::keymap::Focus;
 use crate::keymap::FocusTarget;
 use crate::keymap::SidebarPanel;
 use crate::notify::NotificationCenter;
-use crate::render::FileView;
-use crate::render::Section;
+use crate::tab::ChangedFile;
+use crate::tab::Section;
 use crate::tab::Tab;
 use crate::tab::TabKind;
 use crate::tab::ViewMode;
@@ -461,7 +461,7 @@ impl App {
                     .push((view, new.to_path_buf(), old_text, new_text));
                 return;
             },
-            _ => Box::new(FileView::new(diffs::binary_prepared_change(new))),
+            _ => Box::new(ChangedFile::new(diffs::binary_prepared_change(new))),
         };
         self.push_tab(Tab::diff(
             title,

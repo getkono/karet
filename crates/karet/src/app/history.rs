@@ -21,7 +21,7 @@ use crate::app::util::rect_contains;
 use crate::command::Command;
 use crate::overlay::Overlay;
 use crate::pending::Pending;
-use crate::render::FileView;
+use crate::tab::ChangedFile;
 use crate::tab::CommitFiles;
 use crate::tab::CommitViewState;
 use crate::tab::Tab;
@@ -642,8 +642,8 @@ impl App {
 }
 
 /// Wrap backend-prepared commit/range changes for display.
-fn commit_file_views(changes: Vec<PreparedChange>) -> Vec<FileView> {
-    changes.into_iter().map(FileView::new).collect()
+fn commit_file_views(changes: Vec<PreparedChange>) -> Vec<ChangedFile> {
+    changes.into_iter().map(ChangedFile::new).collect()
 }
 
 impl App {

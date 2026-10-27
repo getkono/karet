@@ -729,7 +729,10 @@ fn commit_view_scrolls_by_wheel_and_page_and_edges() {
         parents: Vec::new(),
         signature: None,
     };
-    let files = vec![FileView::new(prepared_change("a.rs", StatusKind::Modified))];
+    let files = vec![ChangedFile::new(prepared_change(
+        "a.rs",
+        StatusKind::Modified,
+    ))];
     app.push_tab(Tab::commit(Box::new(detail), CommitFiles::ready(files)));
     assert!(matches!(
         &app.tabs[app.active].kind,
@@ -775,7 +778,10 @@ fn double_click_badge_reveals_and_wakes_to_hide() {
         parents: Vec::new(),
         signature: None,
     };
-    let files = vec![FileView::new(prepared_change("a.rs", StatusKind::Modified))];
+    let files = vec![ChangedFile::new(prepared_change(
+        "a.rs",
+        StatusKind::Modified,
+    ))];
     app.push_tab(Tab::commit(Box::new(detail), CommitFiles::ready(files)));
     let area = Rect {
         x: 0,

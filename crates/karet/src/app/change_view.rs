@@ -6,8 +6,8 @@ use karet_session::VcsCommand;
 
 use crate::app::App;
 use crate::app::util::canonical;
-use crate::render::Section;
 use crate::tab::MergeConflictState;
+use crate::tab::Section;
 use crate::tab::Tab;
 use crate::tab::TabKind;
 

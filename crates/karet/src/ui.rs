@@ -137,6 +137,7 @@ pub(super) fn text_field_text(
 }
 
 pub(crate) use commit::responsive::document_row as commit_document_row;
+use content::diff as diff_paint;
 pub(crate) use karet_widgets::scroll::ScrollAxes;
 pub(crate) use karet_widgets::scroll::ScrollAxis;
 pub(crate) use karet_widgets::scroll::ScrollBar;
@@ -155,7 +156,6 @@ pub(crate) use crate::app::ScrollSurface;
 use crate::keymap::SidebarPanel;
 use crate::keymap::{self};
 use crate::overlay::Overlay;
-use crate::render::{self};
 use crate::tab::FindState;
 use crate::tab::MergeConflictState;
 use crate::tab::Tab;

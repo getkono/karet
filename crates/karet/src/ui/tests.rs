@@ -368,7 +368,7 @@ fn verified_badge_reflects_forge_and_signature() {
 
 #[test]
 fn file_cards_are_boxed_and_width_sized() {
-    let files = [crate::render::test_file_view(
+    let files = [crate::tab::test_changed_file(
         "src/main.rs",
         "fn a() {}\n",
         "fn b() {}\n",
@@ -431,9 +431,9 @@ fn pane_diff_backgrounds_fill_unified_and_split_widths() {
     use ratatui::widgets::Widget;
 
     let theme = Theme::dark();
-    let file = crate::render::test_file_view("notes.txt", "old\n", "new\n");
-    let mut lines = render::unified_lines(&file, &theme);
-    render::pad_diff_lines(&mut lines, 40);
+    let file = crate::tab::test_changed_file("notes.txt", "old\n", "new\n");
+    let mut lines = diff_paint::unified_lines(&file, &theme);
+    karet_diff::view::pad_diff_lines(&mut lines, 40);
     let removed = lines
         .iter()
         .position(|line| line.style.bg == Some(theme.role(ThemeRole::DiffRemoved).to_ratatui()))
@@ -456,9 +456,9 @@ fn pane_diff_backgrounds_fill_unified_and_split_widths() {
         theme.role(ThemeRole::DiffAdded).to_ratatui()
     );
 
-    let (mut left, mut right) = render::side_by_side_lines(&file, &theme);
-    render::pad_diff_lines(&mut left, 20);
-    render::pad_diff_lines(&mut right, 20);
+    let (mut left, mut right) = diff_paint::side_by_side_lines(&file, &theme);
+    karet_diff::view::pad_diff_lines(&mut left, 20);
+    karet_diff::view::pad_diff_lines(&mut right, 20);
     let changed: Vec<_> = [left, right]
         .into_iter()
         .filter_map(|lines| lines.into_iter().find(|line| line.style.bg.is_some()))
@@ -483,7 +483,7 @@ fn narrow_file_card_headers_never_exceed_the_pane() {
     use unicode_width::UnicodeWidthStr;
 
     let file =
-        crate::render::test_file_view("very/long/\u{65e5}\u{672c}\u{8a9e}/filename.rs", "", "x\n");
+        crate::tab::test_changed_file("very/long/\u{65e5}\u{672c}\u{8a9e}/filename.rs", "", "x\n");
     for width in 1..24u16 {
         let top = file_card_header(&Theme::dark(), &file, width, false);
         let text: String = top.spans.iter().map(|span| span.content.as_ref()).collect();

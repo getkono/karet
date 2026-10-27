@@ -2,7 +2,7 @@ use super::*;
 
 mod color;
 mod conflict_side;
-mod diff;
+pub(in crate::ui) mod diff;
 mod overview;
 mod scans;
 pub(in crate::ui) mod select;

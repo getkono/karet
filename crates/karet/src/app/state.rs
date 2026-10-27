@@ -40,7 +40,7 @@ use crate::app::OUTLINE_WIDTH;
 use crate::command::Command;
 use crate::pending::Pending;
 use crate::remote;
-use crate::render::Section;
+use crate::tab::Section;
 use crate::tab::Tab;
 
 /// What the terminal was confirmed to support at startup. Capabilities are

@@ -21,7 +21,7 @@ fn deep_commit_app() -> App {
         CommitFiles::ready(
             paths
                 .iter()
-                .map(|path| FileView::new(prepared_change(path, StatusKind::Modified)))
+                .map(|path| ChangedFile::new(prepared_change(path, StatusKind::Modified)))
                 .collect(),
         ),
     ));

@@ -49,10 +49,13 @@ pub(crate) use view_state::PreviewKey;
 pub use view_state::ViewMode;
 
 use crate::pending::Pending;
-use crate::render::FileView;
-use crate::render::Section;
 
+mod changed_file;
 mod commit;
+pub use changed_file::ChangedFile;
+pub use changed_file::Section;
+#[cfg(test)]
+pub(crate) use changed_file::test_changed_file;
 mod file_tree;
 mod merge_conflict;
 pub(crate) use commit::CommitLayoutMode;
@@ -143,7 +146,7 @@ pub struct PagerState {
 #[derive(Default)]
 pub struct CommitFiles {
     /// Each changed file, diffed and highlighted for display.
-    pub files: Vec<FileView>,
+    pub files: Vec<ChangedFile>,
     /// The in-flight changed-file extraction, if metadata is visible but the
     /// files are not yet.
     pub loading_since: Option<Pending>,
@@ -157,7 +160,7 @@ pub struct CommitFiles {
 impl CommitFiles {
     /// A fully loaded block.
     #[must_use]
-    pub fn ready(files: Vec<FileView>) -> Self {
+    pub fn ready(files: Vec<ChangedFile>) -> Self {
         Self {
             files,
             ..Self::default()
@@ -314,7 +317,7 @@ pub enum TabKind {
         /// The Source-Control group the diff belongs to.
         section: Section,
         /// The prepared file diff, once the backend has answered.
-        file: Option<Box<FileView>>,
+        file: Option<Box<ChangedFile>>,
         /// The in-flight preparation request, if any.
         loading_since: Option<Pending>,
         /// A load error, when the diff could not be prepared.
@@ -681,7 +684,7 @@ impl Tab {
         title: String,
         path: PathBuf,
         section: Section,
-        file: Option<Box<FileView>>,
+        file: Option<Box<ChangedFile>>,
         view: ViewMode,
     ) -> Self {
         let loading_since = file.is_none().then(Pending::start);
@@ -896,7 +899,7 @@ impl Tab {
             TabKind::Hex { .. } => "binary",
             TabKind::Placeholder { .. } => "preview",
             TabKind::LatexPreview { .. } => "latex preview",
-            TabKind::Diff { file, .. } => file.as_deref().map_or("diff", FileView::language),
+            TabKind::Diff { file, .. } => file.as_deref().map_or("diff", ChangedFile::language),
             TabKind::StashPreview { .. } => "stash",
             TabKind::ServerLog { .. } => "log",
             TabKind::Seam(_) => "seams",

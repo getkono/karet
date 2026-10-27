@@ -13,7 +13,7 @@ use crate::keymap::Modal;
 use crate::overlay::DiffTarget;
 use crate::overlay::Overlay;
 use crate::remote;
-use crate::render::Section;
+use crate::tab::Section;
 use crate::tab::Tab;
 use crate::tab::TabKind;
 use crate::ui;

@@ -33,7 +33,6 @@ mod paths;
 mod pending;
 mod preview_images;
 mod remote;
-mod render;
 mod seam_query;
 mod tab;
 mod term_caps;
