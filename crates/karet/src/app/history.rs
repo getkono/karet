@@ -16,8 +16,8 @@ use crate::app::App;
 use crate::app::GRAPH_LOG_PAGE;
 use crate::app::GRAPH_PREFETCH_SCREENS;
 use crate::app::confirm::ConfirmAction;
+use crate::app::hit::rect_contains;
 use crate::app::notifications::Report;
-use crate::app::util::rect_contains;
 use crate::command::Command;
 use crate::overlay::Overlay;
 use crate::pending::Pending;
@@ -379,7 +379,7 @@ impl App {
                 // A page that neither replaces nor continues the loaded run is stale.
                 return;
             }
-            *rails = crate::app::commit_rails(loaded);
+            *rails = crate::tab::commit_rails(loaded);
             break;
         }
         // Chain the next page while the viewport is still short of the end.

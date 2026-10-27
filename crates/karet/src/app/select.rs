@@ -17,7 +17,7 @@ use karet_widgets::RowSelection;
 use ratatui::layout::Rect;
 
 use super::App;
-use super::util::rect_contains;
+use crate::app::hit::rect_contains;
 use crate::tab::ChangedFile;
 use crate::tab::TabKind;
 use crate::tab::ViewMode;

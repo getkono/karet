@@ -1,7 +1,7 @@
 use super::support::*;
-use crate::app::util::canonical;
-use crate::app::util::parse_rev_range;
+use crate::app::scm::parse_rev_range;
 use crate::app::*;
+use crate::paths::canonical_nearest as canonical;
 
 #[test]
 fn toggle_sidebar_and_focus() {

@@ -34,7 +34,7 @@ use karet_session::LanguageServerPlanId;
 use karet_session::VcsAction;
 
 use crate::app::App;
-use crate::app::util::rect_contains;
+use crate::app::hit::rect_contains;
 use crate::command::Command;
 
 /// What accepting one confirmation row does.

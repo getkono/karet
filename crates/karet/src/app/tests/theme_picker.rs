@@ -1,8 +1,8 @@
 use super::support::*;
 use crate::app::theme_picker::THEME_PICKER_TITLE;
 use crate::app::theme_picker::discover;
+use crate::app::theme_picker::load_theme;
 use crate::app::theme_picker::same_theme;
-use crate::app::util::load_theme;
 use crate::app::*;
 use crate::overlay::ThemeSource;
 

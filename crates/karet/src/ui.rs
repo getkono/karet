@@ -109,7 +109,9 @@ use crate::app::TabHit;
 use crate::app::TextFieldState;
 use crate::app::ToastHit;
 use crate::app::clamp_sidebar_width;
-pub(crate) use crate::app::relative_time;
+mod time;
+pub(crate) use time::relative_time;
+
 use crate::command::Command;
 use crate::keymap::ChordStyle;
 use crate::keymap::Context;

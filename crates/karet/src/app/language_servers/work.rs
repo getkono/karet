@@ -33,7 +33,7 @@ use crate::app::confirm::ConfirmAction;
 use crate::app::confirm::ConfirmChoice;
 use crate::app::confirm::ConfirmDialog;
 use crate::app::notifications::Report;
-use crate::app::util::path_under;
+use crate::paths::path_under;
 use crate::pending::Pending;
 use crate::tab::Tab;
 use crate::tab::TabKind;

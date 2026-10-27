@@ -21,10 +21,10 @@ use karet_widgets::pane::tree::PaneTree;
 use ratatui::layout::Rect;
 
 use crate::app::App;
+use crate::app::hit::rect_contains;
+use crate::app::hit::tab_at;
 use crate::app::notifications::Report;
 use crate::app::state::StoredPane;
-use crate::app::util::rect_contains;
-use crate::app::util::tab_at;
 use crate::tab::FillView;
 use crate::tab::MarkdownPreviewState;
 use crate::tab::Tab;

@@ -21,7 +21,6 @@ use crate::app::state::CloseRequest;
 use crate::app::state::OperationBlocker;
 use crate::app::state::PendingAutoSave;
 use crate::app::state::PendingSave;
-use crate::app::util::close_prompt_choices;
 use crate::command::Command;
 use crate::keymap::Focus;
 use crate::tab::FindState;
@@ -645,6 +644,28 @@ impl App {
         for (doc, version) in versions {
             self.schedule_auto_save(doc, version, now);
         }
+    }
+}
+
+/// The unsaved-changes confirmation's title and its two action verbs, phrased for
+/// the scope `request` closes and its `count` at-risk files.
+fn close_prompt_choices(
+    request: CloseRequest,
+    count: usize,
+) -> (String, &'static str, &'static str) {
+    let files = if count == 1 { "file" } else { "files" };
+    if matches!(request, CloseRequest::Quit) {
+        (
+            format!("Quit with {count} unsaved {files}?"),
+            "Save all and quit",
+            "Discard and quit",
+        )
+    } else {
+        (
+            format!("Close with {count} unsaved {files}?"),
+            "Save and close",
+            "Discard and close",
+        )
     }
 }
 

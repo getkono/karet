@@ -19,13 +19,10 @@ use crate::app::state::ContextMenu;
 use crate::app::state::ContextMenuEntry;
 use crate::app::state::ExplorerFileClipboard;
 use crate::app::state::ExplorerFileOp;
-use crate::app::util::copy_path_recursive;
-use crate::app::util::move_path;
-use crate::app::util::path_under;
-use crate::app::util::same_path;
-use crate::app::util::unique_child_path;
 use crate::command::Command;
 use crate::keymap::SidebarPanel;
+use crate::paths::path_under;
+use crate::paths::same_path;
 use crate::pending::Pending;
 
 impl App {
@@ -623,4 +620,80 @@ fn repository_summary_label(summary: RepositorySummary, icons: IconStyle) -> Str
         parts.push(format!("-{}", summary.removed));
     }
     parts.join(" ")
+}
+
+/// Recursively copy a file or directory tree.
+fn copy_path_recursive(from: &Path, to: &Path) -> std::io::Result<()> {
+    if from.is_dir() {
+        std::fs::create_dir_all(to)?;
+        for entry in std::fs::read_dir(from)? {
+            let entry = entry?;
+            copy_path_recursive(&entry.path(), &to.join(entry.file_name()))?;
+        }
+        Ok(())
+    } else {
+        if let Some(parent) = to.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::copy(from, to).map(|_| ())
+    }
+}
+
+/// Move a file or directory, falling back to copy-then-delete for cross-device moves.
+fn move_path(from: &Path, to: &Path) -> std::io::Result<()> {
+    match std::fs::rename(from, to) {
+        Ok(()) => Ok(()),
+        Err(rename_err) => {
+            copy_path_recursive(from, to)?;
+            let remove = if from.is_dir() {
+                std::fs::remove_dir_all(from)
+            } else {
+                std::fs::remove_file(from)
+            };
+            remove.map_err(|_| rename_err)
+        },
+    }
+}
+
+/// A destination path under `dir`, suffixing when the source name already exists.
+fn unique_child_path(dir: &Path, source: &Path) -> PathBuf {
+    let name = source
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "item".to_string());
+    let first = dir.join(&name);
+    if !first.exists() {
+        return first;
+    }
+
+    for n in 1usize.. {
+        let candidate = dir.join(copy_name(source, &name, n));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+
+    unreachable!("unbounded suffix search should always return");
+}
+
+/// Build `name copy.ext`, `name copy 2.ext`, or `dir copy` style conflict names.
+fn copy_name(source: &Path, fallback: &str, n: usize) -> String {
+    let suffix = if n == 1 {
+        " copy".to_string()
+    } else {
+        format!(" copy {n}")
+    };
+    if source.is_dir() {
+        return format!("{fallback}{suffix}");
+    }
+    let stem = source
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .filter(|stem| !stem.is_empty())
+        .unwrap_or_else(|| fallback.to_string());
+    match source.extension().map(|ext| ext.to_string_lossy()) {
+        Some(ext) if !ext.is_empty() => format!("{stem}{suffix}.{ext}"),
+        _ => format!("{stem}{suffix}"),
+    }
 }

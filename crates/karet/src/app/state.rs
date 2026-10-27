@@ -343,7 +343,7 @@ impl LiveBlame {
             BlameAttribution::Commit(commit) => Some(format!(
                 "  {} {}",
                 commit.author,
-                crate::app::relative_time(commit.author_time)
+                crate::ui::relative_time(commit.author_time)
             )),
             BlameAttribution::Uncommitted => Some("  Uncommitted changes".to_string()),
             _ => None,

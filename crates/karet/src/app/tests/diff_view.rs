@@ -1,6 +1,6 @@
 use super::support::*;
-use crate::app::util::canonical;
 use crate::app::*;
+use crate::paths::canonical_nearest as canonical;
 
 #[test]
 fn enter_on_a_focused_diff_opens_the_file_at_its_first_changed_line() {

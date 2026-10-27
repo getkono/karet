@@ -13,12 +13,12 @@ use karet_text::EditCause;
 use ratatui::layout::Rect;
 
 use crate::app::App;
+use crate::app::hit::rect_contains;
 use crate::app::notifications::Report;
 use crate::app::state::ContextMenu;
 use crate::app::state::ContextMenuAction;
 use crate::app::state::ContextMenuEntry;
 use crate::app::state::DictionaryTarget;
-use crate::app::util::rect_contains;
 use crate::tab::Tab;
 use crate::tab::TabKind;
 

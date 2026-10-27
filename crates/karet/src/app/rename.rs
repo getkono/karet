@@ -31,8 +31,8 @@ use karet_widgets::textfield::TextFieldState;
 
 use crate::app::App;
 use crate::app::notifications::Report;
-use crate::app::util::canonical;
-use crate::app::util::rebase_path;
+use crate::paths::canonical_nearest as canonical;
+use crate::paths::rebase_path;
 use crate::tab::Tab;
 use crate::tab::TabKind;
 

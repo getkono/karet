@@ -357,6 +357,19 @@ impl App {
     }
 }
 
+/// Scroll `offset` the minimum distance that brings row `cursor` inside a viewport of
+/// `height` rows. The three commit lists and the change list all need exactly this.
+#[must_use]
+pub(crate) fn keep_visible(cursor: usize, offset: usize, height: usize) -> usize {
+    if cursor < offset {
+        cursor
+    } else if height > 0 && cursor >= offset + height {
+        cursor + 1 - height
+    } else {
+        offset
+    }
+}
+
 /// The row that must be selected for a minimal-scroll list to settle its window's
 /// top on `position` — the bottom row of that window.
 fn window_bottom(position: usize, viewport: usize, len: usize) -> usize {
@@ -394,4 +407,23 @@ fn clamp_u32(position: usize) -> u32 {
 pub(in crate::app) fn adjust(offset: &mut u16, delta: i32) {
     let next = (i64::from(*offset) + i64::from(delta)).clamp(0, i64::from(u16::MAX));
     *offset = next as u16;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::keep_visible;
+
+    /// The clamp only moves the viewport when the cursor is actually outside it, and
+    /// then by the minimum distance.
+    #[test]
+    fn keep_visible_scrolls_the_minimum_distance() {
+        // Already inside: unchanged.
+        assert_eq!(keep_visible(5, 3, 10), 3);
+        // Above the viewport: the cursor becomes the top row.
+        assert_eq!(keep_visible(1, 4, 10), 1);
+        // Below the viewport: the cursor becomes the bottom row.
+        assert_eq!(keep_visible(20, 4, 10), 11);
+        // A zero-height viewport can't scroll anywhere.
+        assert_eq!(keep_visible(20, 4, 0), 4);
+    }
 }

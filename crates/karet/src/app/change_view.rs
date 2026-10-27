@@ -5,7 +5,7 @@ use karet_session::ChangeSummary;
 use karet_session::VcsCommand;
 
 use crate::app::App;
-use crate::app::util::canonical;
+use crate::paths::canonical_nearest as canonical;
 use crate::tab::MergeConflictState;
 use crate::tab::Section;
 use crate::tab::Tab;

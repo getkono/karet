@@ -73,7 +73,6 @@ mod terminal;
 pub(crate) mod theme_picker;
 mod todos;
 mod unsupported;
-mod util;
 pub(crate) mod vi;
 
 #[cfg(test)]
@@ -147,6 +146,7 @@ pub(crate) use problems::is_problem;
 use ratatui::layout::Rect;
 pub(crate) use runtime::clamp_sidebar_width;
 pub(crate) use runtime::run;
+pub(crate) use scroll::keep_visible;
 pub(crate) use search::SearchPanel;
 pub(crate) use search::SearchPanelField;
 pub(crate) use search::SearchRow;
@@ -180,9 +180,6 @@ pub(crate) use state::TerminalCaps;
 use state::TodosChrome;
 pub(crate) use todos::TodoRow;
 pub(crate) use todos::TodosPanel;
-pub(crate) use util::commit_rails;
-pub(crate) use util::keep_visible;
-pub(crate) use util::relative_time;
 
 use crate::clipboard::Clipboard;
 use crate::command::Command;

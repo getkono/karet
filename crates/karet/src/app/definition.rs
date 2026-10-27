@@ -32,9 +32,9 @@ use karet_session::ViewId;
 use ratatui::layout::Rect;
 
 use crate::app::App;
+use crate::app::hit::rect_contains;
 use crate::app::language_servers::LanguageServerBadge;
 use crate::app::notifications::Report;
-use crate::app::util::rect_contains;
 use crate::overlay::Overlay;
 use crate::tab::Tab;
 use crate::tab::TabKind;

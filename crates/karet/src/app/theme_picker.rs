@@ -22,7 +22,6 @@ use karet_theme::Theme;
 
 use crate::app::App;
 use crate::app::notifications::Report;
-use crate::app::util::load_theme;
 use crate::overlay::Overlay;
 use crate::overlay::OverlayEvent;
 use crate::overlay::Picker;
@@ -64,6 +63,30 @@ struct Pick {
     configured: String,
     /// The setting of the theme picked.
     setting: String,
+}
+
+/// Resolve a `workbench.colorTheme` setting to a [`Theme`]: the built-in `"dark"`
+/// (also the empty string), or a path to a VS Code `.json` theme file.
+/// Returns a human-readable message on a read/parse failure so the caller can warn
+/// and fall back to the default.
+pub(crate) fn load_theme(name: &str) -> Result<Theme, String> {
+    if name.is_empty() || name == "dark" {
+        return Ok(Theme::dark());
+    }
+    let path = Path::new(name);
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if ext != "json" {
+        return Err(format!(
+            "theme `{name}`: only the built-in `dark` theme and VS Code JSON theme files are supported"
+        ));
+    }
+    let bytes = std::fs::read(path).map_err(|e| format!("theme `{name}`: {e}"))?;
+    let text = String::from_utf8(bytes).map_err(|e| format!("theme `{name}`: {e}"))?;
+    Theme::load_vscode(&text).map_err(|e| format!("theme `{name}`: {e}"))
 }
 
 /// The `themes` directories searched, user first: beside the user's

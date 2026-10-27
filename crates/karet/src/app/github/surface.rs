@@ -26,7 +26,7 @@ use crate::app::github::state::GithubDashboard;
 use crate::app::github::state::GithubPullRequestSection;
 use crate::app::github::state::GithubPullRequestView;
 use crate::app::github::state::GithubViewState;
-use crate::app::util::rect_contains;
+use crate::app::hit::rect_contains;
 use crate::pending::Pending;
 
 /// The pages the GitHub view is showing, and which of them is in front.

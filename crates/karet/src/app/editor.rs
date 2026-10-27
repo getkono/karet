@@ -29,10 +29,10 @@ use crate::app::App;
 use crate::app::MULTI_CLICK_INTERVAL;
 use crate::app::drag::DragGranularity;
 use crate::app::drag::EditorDrag;
+use crate::app::hit::rect_contains;
 use crate::app::notifications::Report;
 use crate::app::scroll::adjust;
 use crate::app::state::PendingOpen;
-use crate::app::util::rect_contains;
 use crate::tab::Tab;
 use crate::tab::TabKind;
 

@@ -25,9 +25,9 @@ use karet_session::RequestId;
 use karet_widgets::ListSelection;
 
 use crate::app::App;
+use crate::app::hit::rect_contains;
 use crate::app::notifications::Report;
 use crate::app::state::DebugChrome;
-use crate::app::util::rect_contains;
 
 /// How many console lines the app buffers for the Debug panel.
 const DEBUG_OUTPUT_CAP: usize = 500;

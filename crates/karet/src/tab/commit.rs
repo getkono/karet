@@ -62,3 +62,19 @@ pub(crate) struct CommitViewState {
 pub(crate) fn commit_title(short: &str) -> String {
     format!("Commit {short}")
 }
+
+/// Build the lane layout for `commits` (newest first): the `rails` a commit
+/// graph tab caches beside its commits. Lane assignment is sequential from the
+/// tip, so callers recompute this only when the commit list changes.
+pub(crate) fn commit_rails(commits: &[karet_vcs::Commit]) -> Vec<karet_graph::RailRow> {
+    let inputs: Vec<karet_graph::LaneInput> = commits
+        .iter()
+        .enumerate()
+        .map(|(i, commit)| karet_graph::LaneInput {
+            id: commit.hash.clone(),
+            parents: commit.parents.clone(),
+            head: i == 0,
+        })
+        .collect();
+    karet_graph::assign_lanes(&inputs)
+}

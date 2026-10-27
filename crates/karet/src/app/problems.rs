@@ -19,9 +19,9 @@ use karet_core::Severity;
 use karet_widgets::ListSelection;
 
 use crate::app::App;
+use crate::app::hit::rect_contains;
 use crate::app::notifications::Report;
 use crate::app::state::SpellingChrome;
-use crate::app::util::rect_contains;
 use crate::keymap::SidebarPanel;
 use crate::tab::TabKind;
 use crate::view::View;

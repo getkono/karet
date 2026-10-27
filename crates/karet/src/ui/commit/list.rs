@@ -50,7 +50,7 @@ pub(in crate::ui) fn lane_style(theme: &Theme, lane: u8) -> Style {
     theme.style(LANE_ROLES[lane as usize % LANE_ROLES.len()])
 }
 
-/// The lane layout [`crate::app::commit_rails`] builds from a `karet-vcs` log, from
+/// The lane layout [`crate::tab::commit_rails`] builds from a `karet-vcs` log, from
 /// already-built render entries (the `List`-based callers, whose rows do not come from
 /// a log).
 pub(in crate::ui) fn rails_from_entries(entries: &[CommitListEntry<'_>]) -> Vec<RailRow> {
@@ -164,7 +164,7 @@ pub(in crate::ui) fn commit_list_items(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::commit_rails;
+    use crate::tab::commit_rails;
 
     fn commit(hash: &str, parents: Vec<String>) -> karet_vcs::Commit {
         karet_vcs::Commit {

@@ -18,8 +18,8 @@ use karet_session::ViewId;
 use karet_widgets::PaneId;
 
 use crate::app::App;
+use crate::app::hit::rect_contains;
 use crate::app::notifications::Report;
-use crate::app::util::rect_contains;
 use crate::command::Command;
 use crate::keymap;
 use crate::keymap::Context;
