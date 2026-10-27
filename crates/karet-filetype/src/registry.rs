@@ -1,10 +1,10 @@
 //! The static catalogue of recognized file types and the path → [`FileType`]
 //! resolver.
 //!
-//! One table is the single source of truth, keyed by well-known **filename**
-//! (matched first, case-insensitively) and by lowercase **extension**. Adding a
-//! format is a one-line edit here; see [`docs/file-formats.md`] for the rendered
-//! catalogue.
+//! One table ([`table`]) is the single source of truth, keyed by well-known
+//! **filename** (matched first, case-insensitively) and by lowercase
+//! **extension**. Adding a format is a one-row edit there; see
+//! [`docs/file-formats.md`] for the rendered catalogue.
 //!
 //! [`docs/file-formats.md`]: https://github.com/getkono/karet/blob/master/docs/file-formats.md
 
@@ -16,6 +16,9 @@ use crate::icon::IconStyle;
 
 #[cfg(test)]
 mod structured_tests;
+mod table;
+
+use table::REGISTRY;
 
 /// The default long-line behavior for an editable file type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,9 +47,20 @@ pub struct FileType {
     extensions: &'static [&'static str],
     filenames: &'static [&'static str],
     wrap_mode: WrapMode,
+    comments: CommentTokens,
+    pairs: &'static [(char, char)],
 }
 
 impl FileType {
+    /// This row with its comment tokens and auto-closing pairs set (a row that
+    /// never calls it has no comment syntax and closes brackets and double
+    /// quotes only).
+    const fn syntax(mut self, comments: CommentTokens, pairs: &'static [(char, char)]) -> Self {
+        self.comments = comments;
+        self.pairs = pairs;
+        self
+    }
+
     /// The human-readable display name (e.g. `"Rust"`, `"Markdown"`).
     #[must_use]
     pub fn name(&self) -> &'static str {
@@ -109,7 +123,7 @@ impl FileType {
     /// file type ([`CommentTokens::NONE`] for data formats and unknown files).
     #[must_use]
     pub fn comment_tokens(&self) -> CommentTokens {
-        crate::comment::tokens_for(self.lsp_language_id.unwrap_or(self.name))
+        self.comments
     }
 
     /// The `(open, close)` bracket and quote pairs an editor auto-closes for this
@@ -118,7 +132,7 @@ impl FileType {
     /// A pair with the same character twice is a quote.
     #[must_use]
     pub fn auto_pairs(&self) -> &'static [(char, char)] {
-        crate::pairs::pairs_for(self.lsp_language_id.unwrap_or(self.name))
+        self.pairs
     }
 }
 
@@ -133,568 +147,9 @@ const UNKNOWN: FileType = FileType {
     extensions: &[],
     filenames: &[],
     wrap_mode: WrapMode::Overflow,
+    comments: CommentTokens::NONE,
+    pairs: crate::pairs::DOUBLE,
 };
-
-/// Compact constructor for an overflow-mode registry entry.
-const fn overflow(
-    name: &'static str,
-    category: Category,
-    nerd: Option<char>,
-    extensions: &'static [&'static str],
-    filenames: &'static [&'static str],
-) -> FileType {
-    FileType {
-        name,
-        grammar: None,
-        lsp_language_id: None,
-        config_selector: None,
-        category,
-        nerd,
-        extensions,
-        filenames,
-        wrap_mode: WrapMode::Overflow,
-    }
-}
-
-/// Compact constructor for a source/config format with explicit identities.
-const fn language(
-    name: &'static str,
-    category: Category,
-    nerd: Option<char>,
-    extensions: &'static [&'static str],
-    filenames: &'static [&'static str],
-    identities: (Option<&'static str>, &'static str, &'static str),
-) -> FileType {
-    let (grammar, lsp_language_id, config_selector) = identities;
-    FileType {
-        name,
-        grammar,
-        lsp_language_id: Some(lsp_language_id),
-        config_selector: Some(config_selector),
-        category,
-        nerd,
-        extensions,
-        filenames,
-        wrap_mode: WrapMode::Overflow,
-    }
-}
-
-/// Compact constructor when grammar, protocol, and configuration identities match.
-const fn language_named(
-    name: &'static str,
-    category: Category,
-    nerd: Option<char>,
-    extensions: &'static [&'static str],
-    filenames: &'static [&'static str],
-    identity: &'static str,
-) -> FileType {
-    language(
-        name,
-        category,
-        nerd,
-        extensions,
-        filenames,
-        (Some(identity), identity, identity),
-    )
-}
-
-/// Compact constructor for a soft-wrapping language with one shared identity.
-const fn language_wrap(
-    name: &'static str,
-    category: Category,
-    nerd: Option<char>,
-    extensions: &'static [&'static str],
-    filenames: &'static [&'static str],
-    identity: &'static str,
-) -> FileType {
-    let mut file_type = language_named(name, category, nerd, extensions, filenames, identity);
-    file_type.wrap_mode = WrapMode::Wrap;
-    file_type
-}
-
-/// Compact constructor for a soft-wrapping registry entry.
-const fn wrap(
-    name: &'static str,
-    category: Category,
-    nerd: Option<char>,
-    extensions: &'static [&'static str],
-    filenames: &'static [&'static str],
-) -> FileType {
-    FileType {
-        name,
-        grammar: None,
-        lsp_language_id: None,
-        config_selector: None,
-        category,
-        nerd,
-        extensions,
-        filenames,
-        wrap_mode: WrapMode::Wrap,
-    }
-}
-
-use Category::Archive;
-use Category::Binary;
-use Category::Code;
-use Category::Config;
-use Category::Data;
-use Category::Document;
-use Category::Image;
-use Category::Markup;
-use Category::Shell;
-
-/// The recognized file types. Filenames win over extensions; first match wins, so
-/// keep entries unambiguous (no two entries should claim the same extension).
-static REGISTRY: &[FileType] = &[
-    // --- programming languages ---
-    language_named("Rust", Code, Some('\u{e7a8}'), &["rs"], &[], "rust"),
-    language_named(
-        "Python",
-        Code,
-        Some('\u{e606}'),
-        &["py", "pyi", "pyw"],
-        &[],
-        "python",
-    ),
-    language_named("C", Code, Some('\u{e61e}'), &["c", "h"], &[], "c"),
-    language(
-        "C++",
-        Code,
-        Some('\u{e61d}'),
-        &["cc", "cpp", "cxx", "hpp", "hh", "hxx"],
-        &[],
-        (Some("cpp"), "cpp", "c++"),
-    ),
-    language(
-        "C#",
-        Code,
-        None,
-        &["cs"],
-        &[],
-        (Some("c_sharp"), "csharp", "c#"),
-    ),
-    language_named("Java", Code, Some('\u{e738}'), &["java"], &[], "java"),
-    language_named("Kotlin", Code, None, &["kt", "kts"], &[], "kotlin"),
-    language_named("Go", Code, Some('\u{e627}'), &["go"], &[], "go"),
-    language_named("Ruby", Code, Some('\u{e739}'), &["rb"], &[], "ruby"),
-    language_named("PHP", Code, Some('\u{e73d}'), &["php"], &[], "php"),
-    language_named("Swift", Code, None, &["swift"], &[], "swift"),
-    language_named("Scala", Code, None, &["scala", "sbt", "sc"], &[], "scala"),
-    language_named("Lua", Code, Some('\u{e620}'), &["lua"], &[], "lua"),
-    language_named("Haskell", Code, None, &["hs", "lhs"], &[], "haskell"),
-    language_named("OCaml", Code, None, &["ml"], &[], "ocaml"),
-    language(
-        "OCaml",
-        Code,
-        None,
-        &["mli"],
-        &[],
-        (Some("ocaml-interface"), "ocaml", "ocaml"),
-    ),
-    language_named("Elixir", Code, None, &["ex", "exs"], &[], "elixir"),
-    language_named("Erlang", Code, None, &["erl", "hrl"], &[], "erlang"),
-    language_named("Dart", Code, None, &["dart"], &[], "dart"),
-    language_named("R", Code, None, &["r"], &[], "r"),
-    language_named("Zig", Code, None, &["zig"], &[], "zig"),
-    language_named("Perl", Code, None, &["pl", "pm"], &[], "perl"),
-    language_named(
-        "Clojure",
-        Code,
-        None,
-        &["clj", "cljs", "cljc"],
-        &[],
-        "clojure",
-    ),
-    language_named("EDN", Data, None, &["edn"], &[], "edn"),
-    language_named("Emacs Lisp", Code, None, &["el"], &[], "elisp"),
-    language_named("Vim script", Code, None, &["vim"], &[], "vim"),
-    // --- web ---
-    language_named(
-        "JavaScript",
-        Code,
-        Some('\u{e74e}'),
-        &["js", "mjs", "cjs"],
-        &[],
-        "javascript",
-    ),
-    language(
-        "JSX",
-        Code,
-        Some('\u{e7ba}'),
-        &["jsx"],
-        &[],
-        (Some("javascript"), "javascriptreact", "jsx"),
-    ),
-    language_named(
-        "TypeScript",
-        Code,
-        Some('\u{e628}'),
-        &["ts", "mts", "cts"],
-        &[],
-        "typescript",
-    ),
-    language(
-        "TSX",
-        Code,
-        Some('\u{e7ba}'),
-        &["tsx"],
-        &[],
-        (Some("tsx"), "typescriptreact", "tsx"),
-    ),
-    language_named(
-        "HTML",
-        Markup,
-        Some('\u{e736}'),
-        &["html", "htm"],
-        &[],
-        "html",
-    ),
-    language(
-        "HTML",
-        Markup,
-        Some('\u{e736}'),
-        &["xhtml"],
-        &[],
-        (Some("html"), "html", "html"),
-    ),
-    language_named("CSS", Markup, Some('\u{e749}'), &["css"], &[], "css"),
-    language(
-        "Sass",
-        Markup,
-        Some('\u{e74b}'),
-        &["scss"],
-        &[],
-        (Some("scss"), "scss", "sass"),
-    ),
-    language(
-        "Sass",
-        Markup,
-        Some('\u{e74b}'),
-        &["sass"],
-        &[],
-        (Some("sass"), "sass", "sass"),
-    ),
-    language_named("Less", Markup, None, &["less"], &[], "less"),
-    language_named("Vue", Markup, None, &["vue"], &[], "vue"),
-    language_named("Svelte", Markup, None, &["svelte"], &[], "svelte"),
-    language_named("Astro", Markup, None, &["astro"], &[], "astro"),
-    language_named("ERB", Markup, Some('\u{e739}'), &["erb"], &[], "erb"),
-    // --- data / config ---
-    language_named("JSON", Data, Some('\u{e60b}'), &["json"], &[], "json"),
-    language(
-        "JSON",
-        Data,
-        Some('\u{e60b}'),
-        &["jsonc"],
-        &[],
-        (Some("json"), "jsonc", "json"),
-    ),
-    language_named("JSON5", Data, Some('\u{e60b}'), &["json5"], &[], "json5"),
-    language_named("YAML", Config, None, &["yml", "yaml"], &[], "yaml"),
-    language_named("TOML", Config, None, &["toml"], &[], "toml"),
-    language_named("INI", Config, None, &["ini", "cfg", "conf"], &[], "ini"),
-    language_named(
-        "Properties",
-        Config,
-        None,
-        &["properties"],
-        &[],
-        "properties",
-    ),
-    // No tree-sitter grammar for Pkl is bundled: recognized (name, LSP id,
-    // config selector) but explicitly grammar-less until one exists.
-    language("Pkl", Config, None, &["pkl"], &[], (None, "pkl", "pkl")),
-    // Mermaid sources open as plain text; the markdown preview is where
-    // diagrams render (no dedicated grammar is bundled).
-    wrap("Mermaid", Markup, None, &["mmd", "mermaid"], &[]),
-    language_named("XML", Markup, None, &["xml"], &[], "xml"),
-    language(
-        "SVG",
-        Markup,
-        None,
-        &["svg"],
-        &[],
-        (Some("xml"), "xml", "svg"),
-    ),
-    overflow("CSV", Data, None, &["csv", "tsv"], &[]),
-    language_named("SQL", Data, Some('\u{f1c0}'), &["sql"], &[], "sql"),
-    language_named(
-        "GraphQL",
-        Data,
-        None,
-        &["graphql", "gql", "graphqls"],
-        &[],
-        "graphql",
-    ),
-    language_named("Protobuf", Data, None, &["proto"], &[], "protobuf"),
-    language_named("CBOR", Data, None, &["cbor"], &[], "cbor"),
-    language(
-        "Cargo lockfile",
-        Config,
-        Some('\u{f023}'),
-        &[],
-        &["Cargo.lock", "poetry.lock"],
-        (Some("toml"), "toml", "toml"),
-    ),
-    language(
-        "JSON lockfile",
-        Config,
-        Some('\u{f023}'),
-        &[],
-        &["package-lock.json", "composer.lock", "Pipfile.lock"],
-        (Some("json"), "json", "json"),
-    ),
-    language(
-        "YAML lockfile",
-        Config,
-        Some('\u{f023}'),
-        &[],
-        &["pnpm-lock.yaml"],
-        (Some("yaml"), "yaml", "yaml"),
-    ),
-    language(
-        "Yarn lockfile",
-        Config,
-        Some('\u{f023}'),
-        &[],
-        &["yarn.lock"],
-        (Some("lockfile"), "lockfile", "lockfile"),
-    ),
-    overflow("Lockfile", Config, Some('\u{f023}'), &["lock"], &[]),
-    // --- shell ---
-    language(
-        "Shell",
-        Shell,
-        Some('\u{f489}'),
-        &["sh", "bash"],
-        &[],
-        (Some("bash"), "shellscript", "shell"),
-    ),
-    language_named("Zsh", Shell, Some('\u{f489}'), &["zsh"], &[], "zsh"),
-    language_named("Fish", Shell, Some('\u{f489}'), &["fish"], &[], "fish"),
-    // Ksh remains a labelled text format, but has no maintained, compatible
-    // grammar. Do not claim a Bash-compatible parser or protocol identity.
-    overflow("Ksh", Shell, Some('\u{f489}'), &["ksh"], &[]),
-    language_named(
-        "PowerShell",
-        Shell,
-        None,
-        &["ps1", "psm1"],
-        &[],
-        "powershell",
-    ),
-    language_named("Batch", Shell, None, &["bat", "cmd"], &[], "batch"),
-    // --- docs / prose ---
-    FileType {
-        name: "Markdown",
-        grammar: Some("markdown"),
-        lsp_language_id: Some("markdown"),
-        config_selector: Some("markdown"),
-        category: Markup,
-        nerd: Some('\u{e73e}'),
-        extensions: crate::classify::MARKDOWN_EXTENSIONS,
-        filenames: &[],
-        wrap_mode: WrapMode::Wrap,
-    },
-    FileType {
-        name: "MDX",
-        grammar: Some("mdx"),
-        lsp_language_id: Some("mdx"),
-        config_selector: Some("mdx"),
-        category: Markup,
-        nerd: Some('\u{e73e}'),
-        extensions: &["mdx"],
-        filenames: &[],
-        wrap_mode: WrapMode::Wrap,
-    },
-    wrap(
-        "Plain Text",
-        Document,
-        Some('\u{f15c}'),
-        &["txt", "text"],
-        &[],
-    ),
-    language_wrap(
-        "reStructuredText",
-        Markup,
-        None,
-        &["rst"],
-        &[],
-        "restructuredtext",
-    ),
-    language_wrap(
-        "AsciiDoc",
-        Markup,
-        None,
-        &["adoc", "asciidoc"],
-        &[],
-        "asciidoc",
-    ),
-    language(
-        "TeX",
-        Document,
-        None,
-        &["tex", "sty", "cls"],
-        &[],
-        (Some("latex"), "latex", "tex"),
-    ),
-    overflow("PDF", Document, Some('\u{f1c1}'), &["pdf"], &[]),
-    wrap(
-        "Word",
-        Document,
-        Some('\u{f1c2}'),
-        &["doc", "docx", "odt", "rtf"],
-        &[],
-    ),
-    wrap(
-        "Jupyter notebook",
-        Document,
-        Some('\u{e678}'),
-        &["ipynb"],
-        &[],
-    ),
-    overflow(
-        "Spreadsheet",
-        Data,
-        Some('\u{f1c3}'),
-        &["xls", "xlsx", "ods"],
-        &[],
-    ),
-    overflow(
-        "Presentation",
-        Document,
-        Some('\u{f1c4}'),
-        &["ppt", "pptx", "odp"],
-        &[],
-    ),
-    // --- images ---
-    overflow(
-        "Image",
-        Image,
-        Some('\u{f1c5}'),
-        crate::classify::IMAGE_EXTENSIONS,
-        &[],
-    ),
-    // --- archives ---
-    overflow(
-        "Archive",
-        Archive,
-        Some('\u{f1c6}'),
-        &[
-            "zip", "tar", "gz", "tgz", "bz2", "xz", "7z", "rar", "zst", "jar", "war",
-        ],
-        &[],
-    ),
-    // --- media / binary ---
-    overflow(
-        "Audio",
-        Binary,
-        Some('\u{f1c7}'),
-        &["mp3", "wav", "flac", "ogg", "m4a", "aac"],
-        &[],
-    ),
-    overflow(
-        "Video",
-        Binary,
-        Some('\u{f1c8}'),
-        &["mp4", "mkv", "mov", "avi", "webm", "wmv"],
-        &[],
-    ),
-    overflow(
-        "Font",
-        Binary,
-        Some('\u{f031}'),
-        &["ttf", "otf", "woff", "woff2", "eot"],
-        &[],
-    ),
-    overflow(
-        "Database",
-        Data,
-        Some('\u{f1c0}'),
-        &["db", "sqlite", "sqlite3"],
-        &[],
-    ),
-    overflow(
-        "Binary",
-        Binary,
-        None,
-        &[
-            "exe", "dll", "so", "dylib", "o", "a", "bin", "wasm", "class",
-        ],
-        &[],
-    ),
-    // --- special filenames (matched before extensions) ---
-    language_named(
-        "Dockerfile",
-        Config,
-        Some('\u{e7b0}'),
-        &[],
-        &["Dockerfile", "Containerfile"],
-        "dockerfile",
-    ),
-    language_named(
-        "Makefile",
-        Config,
-        None,
-        &["mk"],
-        &["Makefile", "GNUmakefile", "makefile"],
-        "make",
-    ),
-    language_named(
-        "CMake",
-        Config,
-        None,
-        &["cmake"],
-        &["CMakeLists.txt"],
-        "cmake",
-    ),
-    language_wrap(
-        "Markdown",
-        Markup,
-        Some('\u{e73e}'),
-        &[],
-        &["README"],
-        "markdown",
-    ),
-    overflow(
-        "Git config",
-        Config,
-        Some('\u{f1d3}'),
-        &[],
-        &[".gitignore", ".gitattributes", ".gitkeep"],
-    ),
-    wrap(
-        "License",
-        Document,
-        Some('\u{f02d}'),
-        &[],
-        &["LICENSE", "LICENCE", "COPYING", "AUTHORS"],
-    ),
-    language(
-        "Git modules",
-        Config,
-        Some('\u{f1d3}'),
-        &[],
-        &[".gitmodules"],
-        (Some("ini"), "gitconfig", "gitconfig"),
-    ),
-    language(
-        "EditorConfig",
-        Config,
-        None,
-        &[],
-        &[".editorconfig"],
-        (Some("ini"), "editorconfig", "editorconfig"),
-    ),
-    language(
-        "Environment",
-        Config,
-        None,
-        &[],
-        &[".env"],
-        (Some("properties"), "dotenv", "dotenv"),
-    ),
-];
 
 /// Resolve a path to its [`FileType`], or the `"File"` fallback when unrecognized.
 ///
