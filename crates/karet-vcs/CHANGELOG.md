@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0](https://github.com/getkono/karet/compare/karet-vcs-v0.7.1...karet-vcs-v0.8.0) - 2026-10-27
+
+### Other
+
+- *(vcs)* [**breaking**] one commit entry point, one subprocess module, derived short hash ([#781](https://github.com/getkono/karet/pull/781))
+- *(filetype)* share one binary sniffer with diff and search ([#770](https://github.com/getkono/karet/pull/770))
+- *(vcs)* [**breaking**] drop the unused karet-core dependency ([#758](https://github.com/getkono/karet/pull/758))
+- unify the remote-URL parser in karet-vcs ([#705](https://github.com/getkono/karet/pull/705))
+- correct drifted prose in protocol, VCS, seam and widget crates ([#690](https://github.com/getkono/karet/pull/690))
+- remove duplicated framing, git command setup and dead items in unpublished crates ([#669](https://github.com/getkono/karet/pull/669))
+- make karet-vcs and karet-github tests isolated and non-vacuous ([#659](https://github.com/getkono/karet/pull/659))
+- deflake the LSP companion launch and hook-tree reaping tests ([#462](https://github.com/getkono/karet/pull/462))
+
 ## [0.6.1](https://github.com/getkono/karet/compare/karet-vcs-v0.6.0...karet-vcs-v0.6.1) - 2026-09-01
 
 ### Added

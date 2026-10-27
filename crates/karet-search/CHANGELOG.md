@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0](https://github.com/getkono/karet/compare/karet-search-v0.7.1...karet-search-v0.8.0) - 2026-10-27
+
+### Added
+
+- find bar current-match style, search in selection, matches to carets, preserve case ([#465](https://github.com/getkono/karet/pull/465))
+
+### Fixed
+
+- *(search)* never match an empty query, and report replace write failures ([#694](https://github.com/getkono/karet/pull/694))
+
+### Other
+
+- [**breaking**] tighten small-engine surfaces (text, filetype, pdf, search, notebook, markdown, xtask) ([#809](https://github.com/getkono/karet/pull/809))
+- *(filetype)* share one binary sniffer with diff and search ([#770](https://github.com/getkono/karet/pull/770))
+- *(karet)* list quick-open files through karet_search::walk_files ([#750](https://github.com/getkono/karet/pull/750))
+- remove duplicated helpers and dead code in the leaf engine crates ([#717](https://github.com/getkono/karet/pull/717))
+- pin karet-search, karet-watch and karet-fuzzy behaviours ([#639](https://github.com/getkono/karet/pull/639))
+- run in-file find and search highlights over the rope ([#435](https://github.com/getkono/karet/pull/435))
+
 ## [0.6.0](https://github.com/getkono/karet/compare/karet-search-v0.5.0...karet-search-v0.6.0) - 2026-08-29
 
 ### Added

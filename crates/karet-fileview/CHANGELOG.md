@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0](https://github.com/getkono/karet/compare/karet-fileview-v0.7.1...karet-fileview-v0.8.0) - 2026-10-27
+
+### Fixed
+
+- *(app)* chunk the graphical caret's Kitty transmit at the 4096-byte limit ([#775](https://github.com/getkono/karet/pull/775))
+
+### Other
+
+- *(fileview)* [**breaking**] one path per item and a public hex row_count ([#762](https://github.com/getkono/karet/pull/762))
+- *(fileview)* build Kitty transmit and place escapes in the image API ([#733](https://github.com/getkono/karet/pull/733))
+- share karet-fileview's human_size byte formatter with the app ([#712](https://github.com/getkono/karet/pull/712))
+- correct drifted prose in protocol, VCS, seam and widget crates ([#690](https://github.com/getkono/karet/pull/690))
+- render-test karet-editor, karet-widgets and karet-fileview gaps ([#625](https://github.com/getkono/karet/pull/625))
+
 ### Added
 
 - `hex::row_count(bytes)`, the hex dump's row count without building a `HexView`, so a consumer clamps scroll from the crate's own row geometry

@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0](https://github.com/getkono/karet/compare/karet-text-v0.7.1...karet-text-v0.8.0) - 2026-10-27
+
+### Added
+
+- cap undo history and persist it across restarts ([#467](https://github.com/getkono/karet/pull/467))
+
+### Fixed
+
+- *(text)* clamp utf16_to_line_col's column to the line content ([#748](https://github.com/getkono/karet/pull/748))
+- *(text)* strip every rope line break in the line accessors ([#741](https://github.com/getkono/karet/pull/741))
+- map carets through external edits; undo/redo restore the full selection set in the issuing view ([#430](https://github.com/getkono/karet/pull/430))
+
+### Other
+
+- [**breaking**] tighten small-engine surfaces (text, filetype, pdf, search, notebook, markdown, xtask) ([#809](https://github.com/getkono/karet/pull/809))
+- *(syntax,text,treesitter)* [**breaking**] name shared vocabulary only from karet-core ([#806](https://github.com/getkono/karet/pull/806))
+- *(text,editor)* move the word model and buffer slicing into karet-text ([#797](https://github.com/getkono/karet/pull/797))
+- extend opt-in mutation testing to the pure, fast modules ([#681](https://github.com/getkono/karet/pull/681))
+- remove duplicated helpers and dead code in the leaf engine crates ([#717](https://github.com/getkono/karet/pull/717))
+- correct drifted prose and doc comments in the leaf engine crates ([#692](https://github.com/getkono/karet/pull/692))
+- *(text)* make karet-text's save, apply and line-break tests fail when the behaviour breaks ([#632](https://github.com/getkono/karet/pull/632))
+- run in-file find and search highlights over the rope ([#435](https://github.com/getkono/karet/pull/435))
+- remove whole-document copies per keystroke ([#419](https://github.com/getkono/karet/pull/419))
+
 ### Added
 
 - `karet_text::words`: the grapheme-aware word model (`word_at`, `word_bounds`, `class_run_at`, `identifier_at`, `previous_word_boundary`, `next_word_boundary`, `line_span`, and the cluster primitives `cluster_bounds`, `clusters`, `previous_cluster`, `next_cluster`), moved here from `karet-editor` so headless consumers share it

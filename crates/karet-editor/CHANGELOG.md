@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0](https://github.com/getkono/karet/compare/karet-editor-v0.7.1...karet-editor-v0.8.0) - 2026-10-27
+
+### Added
+
+- *(app)* open a source link from the caret and paint source links as OSC 8 ([#789](https://github.com/getkono/karet/pull/789))
+- *(editor)* word wrap at a column and indent wrapped continuation rows ([#666](https://github.com/getkono/karet/pull/666))
+- *(core)* decoration foreground/modifier styles, priority, interval index ([#504](https://github.com/getkono/karet/pull/504))
+- multi-cursor select all occurrences, skip occurrence, line-end carets and cursor undo ([#501](https://github.com/getkono/karet/pull/501))
+- pull diagnostics, related information and codeDescription links ([#494](https://github.com/getkono/karet/pull/494))
+- indentation guides, whitespace rendering, opt-in rainbow brackets ([#485](https://github.com/getkono/karet/pull/485))
+- auto-indent from tree-sitter indent queries ([#469](https://github.com/getkono/karet/pull/469))
+- *(editor)* virtual lines above and below buffer lines ([#466](https://github.com/getkono/karet/pull/466))
+- *(editor)* a change-marker lane of its own in the gutter ([#452](https://github.com/getkono/karet/pull/452))
+- expand and shrink selection along the syntax tree ([#450](https://github.com/getkono/karet/pull/450))
+- editor.inlineDiagnostics setting, undercurl diagnostics, merged-pane signs ([#446](https://github.com/getkono/karet/pull/446))
+- show diagnostics in place — gutter signs, end-of-line messages, tag styling ([#441](https://github.com/getkono/karet/pull/441))
+- auto-close brackets and quotes with type-over, pair delete, wrap and smart Enter ([#439](https://github.com/getkono/karet/pull/439))
+- Tab and Shift+Tab indent and outdent in the editor ([#434](https://github.com/getkono/karet/pull/434))
+- highlight matching bracket and jump to bracket ([#427](https://github.com/getkono/karet/pull/427))
+- *(editor)* [**breaking**] unified column-anchored virtual text in layout and hit-testing ([#415](https://github.com/getkono/karet/pull/415))
+- toggle line and block comments ([#398](https://github.com/getkono/karet/pull/398))
+
+### Fixed
+
+- *(text)* strip every rope line break in the line accessors ([#741](https://github.com/getkono/karet/pull/741))
+- *(editor)* grapheme-cluster-aware motions, deletes and widths ([#457](https://github.com/getkono/karet/pull/457))
+- *(editor)* vertical and line motions — goal column, document ends, pages, folds, wrap, smart Home ([#454](https://github.com/getkono/karet/pull/454))
+- *(editor)* gutter lanes — chevron folds, line numbers select lines ([#448](https://github.com/getkono/karet/pull/448))
+- honour editor.rulers, scrollOff, lineNumbers and cursorLine ([#437](https://github.com/getkono/karet/pull/437))
+- map carets through external edits; undo/redo restore the full selection set in the issuing view ([#430](https://github.com/getkono/karet/pull/430))
+- *(karet)* keep every caret through multi-caret edit batches ([#426](https://github.com/getkono/karet/pull/426))
+- *(karet)* multi-click and modifier semantics ([#425](https://github.com/getkono/karet/pull/425))
+- *(editor)* Ctrl+D reaches every occurrence and matches whole words from a caret ([#421](https://github.com/getkono/karet/pull/421))
+- *(editor)* paint selected line breaks and blank lines ([#418](https://github.com/getkono/karet/pull/418))
+- *(core,editor)* multi-caret motion collapses before moving and keeps every caret ([#414](https://github.com/getkono/karet/pull/414))
+- *(editor)* click hit-testing precision ([#407](https://github.com/getkono/karet/pull/407))
+- *(editor)* a click never scrolls visible text ([#403](https://github.com/getkono/karet/pull/403))
+
+### Other
+
+- *(editor,diff,lsp,session)* [**breaking**] drop the remaining karet-core re-exports ([#808](https://github.com/getkono/karet/pull/808))
+- *(text,editor)* move the word model and buffer slicing into karet-text ([#797](https://github.com/getkono/karet/pull/797))
+- *(core)* [**breaking**] trim karet-core to shared vocabulary and make its constructors honest ([#785](https://github.com/getkono/karet/pull/785))
+- *(editor)* [**breaking**] encapsulate scroll and per-frame geometry state ([#737](https://github.com/getkono/karet/pull/737))
+- extend opt-in mutation testing to the pure, fast modules ([#681](https://github.com/getkono/karet/pull/681))
+- remove duplicated helpers and dead code in the leaf engine crates ([#717](https://github.com/getkono/karet/pull/717))
+- *(editor)* [**breaking**] rename the selection-extending shorthands to extend_* ([#707](https://github.com/getkono/karet/pull/707))
+- correct drifted prose in protocol, VCS, seam and widget crates ([#690](https://github.com/getkono/karet/pull/690))
+- *(editor)* drop the karet-syntax dependency by moving SemanticBlock(s) into karet-core ([#662](https://github.com/getkono/karet/pull/662))
+- render-test karet-editor, karet-widgets and karet-fileview gaps ([#625](https://github.com/getkono/karet/pull/625))
+- *(editor)* cap row_window doubling on zero-width-only lines ([#495](https://github.com/getkono/karet/pull/495))
+- *(editor)* bound per-row work on very long lines ([#475](https://github.com/getkono/karet/pull/475))
+- remove whole-document copies per keystroke ([#419](https://github.com/getkono/karet/pull/419))
+
 ### Changed
 
 - The word model moved to `karet_text::words`: `word_bounds`, `class_run_at`, `identifier_at`, `previous_word_boundary`, `next_word_boundary` and `line_span` remain here as deprecated forwarding paths for one release, and `cluster_bounds` is now a re-export of `karet_text::words::cluster_bounds`
