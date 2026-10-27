@@ -584,7 +584,7 @@ async fn editing_republishes_highlights_for_the_new_text() -> TestResult {
     let (doc, version) = open(&backend, &mut events, path).await?;
 
     // Type a rust code fence at the end of the buffer.
-    let range = Range::new(LineCol::new(1, 0), LineCol::new(1, 0))?;
+    let range = Range::new(LineCol::new(1, 0), LineCol::new(1, 0));
     let change = Change::new(
         version,
         vec![TextEdit {

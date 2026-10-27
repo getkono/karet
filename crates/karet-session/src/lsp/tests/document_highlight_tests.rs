@@ -147,7 +147,7 @@ async fn an_answer_to_a_document_that_moved_on_carries_no_highlights() -> TestRe
     let (backend, mut events, doc, version) = opened(&dir, "main.rs", Behavior::Normal).await?;
 
     let request = ask(&backend, doc)?;
-    let at = Range::new(LineCol::new(1, 0), LineCol::new(1, 0)).map_err(|e| format!("{e}"))?;
+    let at = Range::new(LineCol::new(1, 0), LineCol::new(1, 0));
     backend.send(
         backend.next_id(),
         Command::ApplyChange {

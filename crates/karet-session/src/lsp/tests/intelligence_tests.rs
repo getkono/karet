@@ -56,7 +56,7 @@ fn insert(
     base: u64,
     text: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let at = Range::new(LineCol::new(1, 0), LineCol::new(1, 0)).map_err(|e| format!("{e}"))?;
+    let at = Range::new(LineCol::new(1, 0), LineCol::new(1, 0));
     backend.send(
         backend.next_id(),
         Command::ApplyChange {

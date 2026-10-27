@@ -8,8 +8,6 @@
 //! Conversions between the two require the text buffer and therefore live on
 //! `karet_text::TextBuffer`, not here.
 
-use crate::error::CoreError;
-
 /// An absolute byte offset into a UTF-8 text buffer.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -73,15 +71,16 @@ pub struct Span {
 }
 
 impl Span {
-    /// Create a span, returning [`CoreError::InvalidSpan`] when `start > end`.
+    /// The span between byte offsets `a` and `b`, whichever order they come in:
+    /// the earlier one starts it.
     ///
-    /// # Errors
-    /// Returns [`CoreError::InvalidSpan`] if `start` is after `end`.
-    pub fn new(start: BytePos, end: BytePos) -> Result<Self, CoreError> {
-        if start.0 <= end.0 {
-            Ok(Self { start, end })
-        } else {
-            Err(CoreError::InvalidSpan)
+    /// The fields stay public, so a literal can still be built backwards; this
+    /// is the constructor that cannot be.
+    #[must_use]
+    pub fn new(a: BytePos, b: BytePos) -> Self {
+        Self {
+            start: a.min(b),
+            end: a.max(b),
         }
     }
 
@@ -118,15 +117,16 @@ pub struct Range {
 }
 
 impl Range {
-    /// Create a range, returning [`CoreError::InvalidRange`] when `start > end`.
+    /// The range between positions `a` and `b`, whichever order they come in:
+    /// the earlier one starts it.
     ///
-    /// # Errors
-    /// Returns [`CoreError::InvalidRange`] if `start` is ordered after `end`.
-    pub fn new(start: LineCol, end: LineCol) -> Result<Self, CoreError> {
-        if start <= end {
-            Ok(Self { start, end })
-        } else {
-            Err(CoreError::InvalidRange)
+    /// The fields stay public, so a literal can still be built backwards; this
+    /// is the constructor that cannot be.
+    #[must_use]
+    pub fn new(a: LineCol, b: LineCol) -> Self {
+        Self {
+            start: a.min(b),
+            end: a.max(b),
         }
     }
 
@@ -263,11 +263,11 @@ mod tests {
             }
             .is_empty()
         );
-        assert_eq!(Span::new(BytePos(2), BytePos(5)), Ok(s));
-        assert_eq!(
-            Span::new(BytePos(5), BytePos(2)),
-            Err(CoreError::InvalidSpan)
-        );
+        assert_eq!(Span::new(BytePos(2), BytePos(5)), s);
+        // Backwards ends are put in order rather than refused: the earlier
+        // offset always starts the span.
+        assert_eq!(Span::new(BytePos(5), BytePos(2)), s);
+        assert!(Span::new(BytePos(4), BytePos(4)).is_empty());
     }
 
     #[test]
@@ -288,11 +288,19 @@ mod tests {
             }
             .is_empty()
         );
-        assert_eq!(Range::new(LineCol::new(1, 0), LineCol::new(3, 4)), Ok(r));
+        assert_eq!(Range::new(LineCol::new(1, 0), LineCol::new(3, 4)), r);
+        // Backwards ends are put in order rather than refused, comparing the
+        // line before the column: (3, 4) ends the range even though (1, 0)
+        // has the smaller column too, and (1, 9) starts one before (2, 0).
+        assert_eq!(Range::new(LineCol::new(3, 4), LineCol::new(1, 0)), r);
         assert_eq!(
-            Range::new(LineCol::new(3, 0), LineCol::new(1, 0)),
-            Err(CoreError::InvalidRange)
+            Range::new(LineCol::new(2, 0), LineCol::new(1, 9)),
+            Range {
+                start: LineCol::new(1, 9),
+                end: LineCol::new(2, 0),
+            }
         );
+        assert!(Range::new(caret, caret).is_empty());
     }
 
     #[test]

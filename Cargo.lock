@@ -3631,7 +3631,6 @@ version = "0.7.1"
 dependencies = [
  "serde",
  "serde_json",
- "thiserror 2.0.19",
 ]
 
 [[package]]

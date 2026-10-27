@@ -101,7 +101,7 @@ async fn lenses_arrive_in_buffer_columns_with_the_asked_lines_resolved() -> Test
     // The server's UTF-16 2..4 is buffer columns 1..3, after the emoji.
     assert_eq!(
         run.range,
-        Range::new(LineCol::new(0, 1), LineCol::new(0, 3)).map_err(|e| format!("{e}"))?
+        Range::new(LineCol::new(0, 1), LineCol::new(0, 3))
     );
     assert_eq!(run.title.as_deref(), Some("Run"));
     assert_eq!(run.command, Some(CommandId("double.run".into())));
@@ -292,8 +292,7 @@ fn a_listing_for_a_superseded_version_is_answered_failed() -> TestResult {
             change: Change::new(
                 old,
                 vec![TextEdit {
-                    range: Range::new(LineCol::new(1, 0), LineCol::new(1, 0))
-                        .map_err(|e| format!("{e}"))?,
+                    range: Range::new(LineCol::new(1, 0), LineCol::new(1, 0)),
                     new_text: "x".to_owned(),
                 }],
             ),

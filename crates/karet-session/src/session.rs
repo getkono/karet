@@ -951,13 +951,10 @@ struct PendingFormatSave {
     issued_ms: u64,
 }
 
-fn whole_document_change(doc: &Document, new_text: String) -> Option<Change> {
+fn whole_document_change(doc: &Document, new_text: String) -> Change {
     let end = doc.buffer.byte_to_line_col(BytePos(doc.buffer.len_bytes()));
-    let range = Range::new(LineCol::new(0, 0), end).ok()?;
-    Some(Change::new(
-        doc.buffer.version(),
-        vec![TextEdit { range, new_text }],
-    ))
+    let range = Range::new(LineCol::new(0, 0), end);
+    Change::new(doc.buffer.version(), vec![TextEdit { range, new_text }])
 }
 
 fn edit_context(tick_ms: u64, cause: EditCause, doc: &Document, change: &Change) -> EditContext {
