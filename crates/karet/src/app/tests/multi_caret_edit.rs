@@ -3,7 +3,6 @@
 //! when the buffer rejects a change.
 
 use super::harness::*;
-use super::support::*;
 use crate::app::*;
 
 /// A no-op edit keeps its caret, and the primary stays on the same caret.

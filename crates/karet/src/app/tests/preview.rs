@@ -179,7 +179,7 @@ fn markdown_preview_is_view_local_editor_state() {
     assert_eq!(app.tabs.len(), 1, "no preview tab was created");
     assert_eq!(app.tabs[app.active].view, source_view);
     assert!(app.tabs[app.active].markdown_preview.is_some());
-    assert_eq!(app.focus, Focus::Editor);
+    assert_eq!(app.keyboard.focus(), Focus::Editor);
     assert!(matches!(app.tabs[app.active].kind, TabKind::Code { .. }));
 }
 

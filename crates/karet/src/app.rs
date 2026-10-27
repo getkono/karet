@@ -21,6 +21,7 @@ mod diffs;
 mod drag;
 mod editor;
 mod explorer;
+mod focus;
 pub(crate) mod github;
 mod graphics;
 pub(crate) mod hierarchy;
@@ -76,13 +77,8 @@ pub(crate) mod vi;
 #[cfg(test)]
 pub(crate) mod tests;
 
-use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::collections::VecDeque;
-use std::io::Write;
-use std::io::{self};
-use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -90,143 +86,55 @@ use std::time::Instant;
 
 pub(crate) use capture::capture;
 pub(crate) use code_lens::code_lens_rows;
-use color_eyre::eyre::eyre;
-use confirm::ConfirmAction;
-use confirm::ConfirmChoice;
-use confirm::ConfirmDialog;
-use confirm::describe_paths;
-use crossterm::event::DisableBracketedPaste;
-use crossterm::event::DisableFocusChange;
-use crossterm::event::DisableMouseCapture;
-use crossterm::event::EnableBracketedPaste;
-use crossterm::event::EnableFocusChange;
-use crossterm::event::EnableMouseCapture;
-use crossterm::event::Event;
-use crossterm::event::KeyCode;
-use crossterm::event::KeyEvent;
-use crossterm::event::KeyEventKind;
 use crossterm::event::KeyModifiers;
-use crossterm::event::KeyboardEnhancementFlags;
-use crossterm::event::MouseButton;
 use crossterm::event::MouseEvent;
 use crossterm::event::MouseEventKind;
-use crossterm::event::PopKeyboardEnhancementFlags;
-use crossterm::event::PushKeyboardEnhancementFlags;
-use crossterm::event::{self};
-use crossterm::terminal::SetTitle;
 #[cfg(test)]
 pub(crate) use debugging::DebugPanel;
 pub(crate) use debugging::DebugRow;
-pub(crate) use drag::DragGranularity;
-pub(crate) use drag::EditorDrag;
 pub(crate) use editor::column::ColumnSelect;
-pub(crate) use editor::column::ColumnStep;
 use graphics::GraphicsCaret;
-pub(crate) use hit::*;
+pub(crate) use hit::BreadcrumbHit;
+pub(crate) use hit::CommitCollapseHit;
+pub(crate) use hit::CommitDirHit;
+pub(crate) use hit::CommitFileHit;
+pub(crate) use hit::FindBarRects;
+pub(crate) use hit::FrameHits;
+pub(crate) use hit::MarkdownLinkHit;
+pub(crate) use hit::PaneFrame;
+use hit::PaneResize;
+use hit::ScrollDrag;
+pub(crate) use hit::ScrollHits;
+pub(crate) use hit::ScrollSurface;
+pub(crate) use hit::TabDrag;
+pub(crate) use hit::TabHit;
+use hit::TextFieldTarget;
+pub(crate) use hit::ToastHit;
 pub(crate) use inlay::InlayHintHit;
-use karet_core::BlameAttribution;
-use karet_core::BytePos;
-use karet_core::Change;
-use karet_core::Decoration;
-use karet_core::DecorationKind;
-use karet_core::Diagnostic;
-use karet_core::LineCol;
-use karet_core::Notification;
-use karet_core::NotificationId;
 use karet_core::NotificationKind;
-use karet_core::Range;
-use karet_core::Severity;
-use karet_core::Symbol;
-use karet_core::TextEdit;
-use karet_core::ThemeRole;
-use karet_editor::EditorState;
-use karet_editor::editing;
 pub(crate) use karet_editor::resolve_folds;
-use karet_filetype::FileKind;
 use karet_filetype::IconStyle;
-use karet_filetype::WrapMode;
-use karet_filetype::file_type_for_path;
-use karet_fileview::image::GraphicsProtocol;
-use karet_fileview::image::{self};
-use karet_fileview::viewer::human_size;
-use karet_search::SearchQuery;
-use karet_search::search_chunks;
 use karet_session::Backend;
-use karet_session::BackendError;
-use karet_session::ChangeSummary;
-use karet_session::Command as SessionCommand;
 use karet_session::ConfigDiagnostic;
-use karet_session::DebugCommand;
-use karet_session::DocSnapshot;
-use karet_session::DocumentCommand;
 use karet_session::DocumentId;
-use karet_session::DocumentSettings;
-use karet_session::Event as SessionEvent;
-use karet_session::EventRx;
-use karet_session::GithubCommand;
-use karet_session::GithubPage;
 use karet_session::GithubPullRequest;
-use karet_session::GithubVerification;
-use karet_session::LanguageServerChange;
-use karet_session::LanguageServerCommand;
-use karet_session::LanguageServerId;
-use karet_session::LanguageServerLogEntry;
-use karet_session::LanguageServerMessageId;
-use karet_session::LanguageServerPlanId;
-use karet_session::LanguageServerRuntimeState;
-use karet_session::LanguageServerStatus;
 use karet_session::LoadedConfig;
-use karet_session::LocationKind;
-use karet_session::LspCommand;
-use karet_session::NotebookCommand;
-use karet_session::PreparedChange;
-use karet_session::RangeSpec;
-use karet_session::RepositorySnapshot;
 use karet_session::RequestId;
-use karet_session::SaveCause;
-use karet_session::SearchHit;
-use karet_session::SessionConfig;
 use karet_session::Settings;
-use karet_session::SnapshotRx;
-use karet_session::SpellingHit;
 use karet_session::SwapInfo;
 use karet_session::VcsAction;
-use karet_session::VcsCommand;
-use karet_session::VcsOutcome;
 use karet_session::ViewId;
-use karet_session::WorkspaceCommand;
-use karet_session::config::schema::AutoSave;
-use karet_session::local;
 #[cfg(test)]
 use karet_syntax::FoldRegions;
-use karet_text::EditCause;
-use karet_text::TextBuffer;
-use karet_text::words::class_run_at;
-use karet_text::words::line_span;
 use karet_theme::Theme;
-use karet_vcs::Commit;
-use karet_vcs::CommitDetail;
 use karet_vcs::RepositorySummary;
-use karet_vcs::StatusKind;
-use karet_widgets::DropZone;
 use karet_widgets::FileTreeState;
-use karet_widgets::ListSelection;
 use karet_widgets::PaneDivider;
 use karet_widgets::PaneId;
 use karet_widgets::PaneLayout;
-use karet_widgets::PendingEdit;
-use karet_widgets::Spinner;
-use karet_widgets::SplitAxis;
-use karet_widgets::SplitDir;
-use karet_widgets::drop_zone;
-use karet_widgets::scroll::PaintedTracks;
-use karet_widgets::scroll::ScrollTrack;
-use karet_widgets::scroll::TrackHit;
-pub(crate) use karet_widgets::textarea::TextAreaState;
 pub(crate) use karet_widgets::textfield::TextFieldState;
 pub(crate) use language_servers::LanguageServerBadge;
 pub(crate) use language_servers::LanguageServerBadgeSummary;
-pub(crate) use language_servers::LanguageServerQuestion;
 pub(crate) use link_color::HeldColors;
 pub(crate) use link_color::current_items;
 pub(crate) use notifications::Report;
@@ -247,66 +155,46 @@ pub(crate) use select::SurfaceRow;
 pub(crate) use select::SurfaceSelection;
 pub(crate) use spelling::SpellingPanel;
 pub(crate) use spelling::SpellingRow;
-pub(crate) use state::*;
+use state::CloseRequest;
+pub(crate) use state::CommitInput;
+use state::ContextMenu;
+pub(crate) use state::ContextMenuEntryExt;
+use state::DocState;
+use state::ExplorerFileClipboard;
+pub(crate) use state::LiveBlame;
+pub(crate) use state::OperationBlocker;
+use state::OutlinePanel;
+use state::PendingAutoSave;
+use state::PendingOpen;
+use state::PendingRemoteAction;
+use state::PendingSave;
+use state::RemoteFacts;
+use state::Scm;
+use state::ScmChrome;
+use state::ScreenModes;
+use state::SearchChrome;
+use state::SpellingChrome;
+use state::StoredPane;
+pub(crate) use state::TerminalCaps;
+use state::TodosChrome;
 pub(crate) use todos::TodoRow;
 pub(crate) use todos::TodosPanel;
-use tokio::sync::mpsc;
-use util::KeyboardEnhancementGuard;
-use util::canonical;
-use util::close_prompt_choices;
 pub(crate) use util::commit_rails;
-use util::copy_path_recursive;
 pub(crate) use util::effective_word_wrap;
 pub(crate) use util::is_markdown;
 pub(crate) use util::keep_visible;
-use util::load_theme;
-use util::move_path;
-use util::parse_rev_range;
-use util::path_under;
-use util::rebase_path;
-use util::rect_contains;
 pub(crate) use util::relative_time;
-use util::retarget_tab_path;
-use util::row_in_rect;
-use util::same_path;
-use util::tab_at;
 pub(crate) use util::tab_language;
-use util::unique_child_path;
 
 use crate::clipboard::Clipboard;
 use crate::command::Command;
-use crate::keymap::Context;
-use crate::keymap::EditorTab;
-use crate::keymap::Focus;
-use crate::keymap::FocusTarget;
 use crate::keymap::KeyChord;
-use crate::keymap::Modal;
-use crate::keymap::Resolved;
 use crate::keymap::SidebarPanel;
 use crate::keymap::{self};
 use crate::notify::NotificationCenter;
-use crate::outline::OutlineRow;
-use crate::outline::OutlineTarget;
-use crate::overlay::DiffTarget;
-use crate::overlay::Overlay;
-use crate::overlay::OverlayEvent;
-use crate::overlay::StashAction;
-use crate::overlay::TextPurpose;
-use crate::remote;
-use crate::render::FileView;
-use crate::render::Section;
-use crate::tab::CommitFiles;
-use crate::tab::CommitViewState;
-use crate::tab::FindState;
-use crate::tab::MarkdownPreviewState;
-use crate::tab::MergeConflictState;
-use crate::tab::PagerState;
-use crate::tab::SearchField;
 use crate::tab::Tab;
 use crate::tab::TabKind;
 use crate::tab::ViewMode;
-use crate::tab::commit_title;
-use crate::ui;
 use crate::view::View;
 use crate::workspace;
 
@@ -400,8 +288,8 @@ pub struct App {
     pub(crate) view: View,
     /// The GitHub view's pages. Empty while the workspace is not GitHub-eligible.
     pub(crate) github: github::GithubSurface,
-    /// Which area has keyboard focus.
-    pub(crate) focus: Focus,
+    /// Who holds the keyboard: the focused pane, the commit box, the overlay.
+    pub(crate) keyboard: focus::KeyboardOwner,
     /// The active sidebar panel.
     pub(crate) sidebar_panel: SidebarPanel,
     /// Whether the sidebar is shown.
@@ -460,8 +348,6 @@ pub struct App {
     /// read, so no pruning pass is needed. `ViewId(0)` never enters, being the
     /// unassigned sentinel every welcome tab shares.
     pub(crate) view_history: Vec<ViewId>,
-    /// The open modal overlay (quick-open / command palette), if any.
-    pub(crate) overlay: Option<Overlay>,
     /// The workspace's file list behind quick-open, walked off the UI thread.
     pub(crate) file_index: workspace::FileIndex,
     /// Quick-open's `#` mode: the workspace-symbol query and its request.
@@ -780,6 +666,10 @@ impl App {
 /// defaults, so the process-wide keymap every other test reads never changes.
 #[cfg(test)]
 mod keymap_reload_tests {
+    use crossterm::event::KeyCode;
+    use crossterm::event::KeyEvent;
+    use karet_core::Severity;
+
     use super::tests::support::app;
     use super::*;
     use crate::keymap::KeyChord;

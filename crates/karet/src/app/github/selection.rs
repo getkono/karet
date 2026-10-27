@@ -1,6 +1,22 @@
 //! Opening GitHub selections and refreshing the GitHub page in front.
 
-use super::*;
+use karet_core::NotificationKind;
+use karet_session::GithubCommand;
+use karet_session::GithubPullRequest;
+use karet_session::GithubRepository;
+use karet_session::GithubWorkflow;
+use karet_session::GithubWorkflowRun;
+
+use crate::app::App;
+use crate::app::github::state::GithubSection;
+use crate::app::github::state::GithubViewState;
+use crate::app::github::surface::github_issue;
+use crate::app::github::surface::github_new_issue;
+use crate::app::github::surface::github_new_pull_request;
+use crate::app::github::surface::github_pull_request;
+use crate::app::github::surface::github_workflow_run;
+use crate::app::notifications::Report;
+use crate::app::pending::Pending;
 
 impl App {
     pub(super) fn refresh_active_github(&mut self) -> bool {

@@ -1,4 +1,22 @@
-use super::*;
+use std::path::Path;
+use std::path::PathBuf;
+
+use karet_core::NotificationKind;
+use karet_session::VcsCommand;
+
+use crate::app::App;
+use crate::app::notifications::Report;
+use crate::app::state::PendingRemoteAction;
+use crate::app::state::RemoteFacts;
+use crate::keymap::FocusTarget;
+use crate::keymap::Modal;
+use crate::overlay::DiffTarget;
+use crate::overlay::Overlay;
+use crate::remote;
+use crate::render::Section;
+use crate::tab::Tab;
+use crate::tab::TabKind;
+use crate::ui;
 
 impl App {
     /// Copy `text` to the clipboard, reporting the outcome either way.
@@ -388,7 +406,7 @@ impl App {
                 (display, target)
             })
             .collect();
-        self.overlay = Some(Overlay::diff_target("Open Changes: With Revision", items));
+        self.open_overlay(Overlay::diff_target("Open Changes: With Revision", items));
     }
 
     /// Open the diff-target picker over the workspace repository's local
@@ -429,6 +447,6 @@ impl App {
                 (display, target)
             })
             .collect();
-        self.overlay = Some(Overlay::diff_target("Open Changes: With Branch", items));
+        self.open_overlay(Overlay::diff_target("Open Changes: With Branch", items));
     }
 }

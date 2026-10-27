@@ -39,7 +39,7 @@ pub(super) fn draw_panes(
     };
     let color_highlight = app.settings.editor.color_highlight.enabled;
     let language_servers = &app.lsp_runtime.servers;
-    let editor_focused = app.focus == Focus::Editor;
+    let editor_focused = app.keyboard.focus() == Focus::Editor;
     let graphics = app.caps.graphics;
     let graphical_cursor = app.graphical_cursor_enabled();
     // Resolved up front, for every pane, because `PaneCtx` is assembled while

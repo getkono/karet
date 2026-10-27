@@ -2,7 +2,30 @@ mod documents;
 mod shell;
 mod vcs;
 
-use super::*;
+use std::path::PathBuf;
+use std::time::Duration;
+use std::time::Instant;
+
+use karet_core::NotificationKind;
+use karet_session::DocumentId;
+use karet_session::Event as SessionEvent;
+use karet_session::LoadedConfig;
+use karet_session::RequestId;
+use karet_session::SwapInfo;
+use karet_widgets::Spinner;
+
+use crate::app::App;
+use crate::app::COMMIT_REVEAL;
+use crate::app::confirm::ConfirmAction;
+use crate::app::confirm::ConfirmChoice;
+use crate::app::confirm::ConfirmDialog;
+use crate::app::confirm::describe_paths;
+use crate::app::language_servers::LanguageServerQuestion;
+use crate::app::notifications::Report;
+use crate::app::state::CloseRequest;
+use crate::command::Command;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 
 impl App {
     /// The soonest the event loop should wake for time-based UI: notification expiry,

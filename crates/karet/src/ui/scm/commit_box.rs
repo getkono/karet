@@ -42,7 +42,7 @@ pub(super) fn draw_commit_input(
     let block = Block::default()
         .borders(Borders::ALL)
         .title(title)
-        .border_style(Style::default().fg(if app.commit_input.focused {
+        .border_style(Style::default().fg(if app.keyboard.commit_box_focused() {
             accent
         } else {
             muted
@@ -79,7 +79,7 @@ pub(super) fn draw_commit_input(
     let selection = theme.role(ThemeRole::Selection).to_ratatui();
     f.render_widget(
         TextArea::new(&app.commit_input.text, &app.commit_input.edit)
-            .focused(app.commit_input.focused)
+            .focused(app.keyboard.commit_box_focused())
             .style(TextAreaStyle::new(
                 Style::default().fg(foreground),
                 Style::default().fg(foreground).bg(selection),
@@ -216,7 +216,7 @@ mod tests {
             });
         }
         app.commit_input.text = draft.to_string();
-        app.commit_input.focused = true;
+        app.keyboard.focus_commit_box();
         let theme = app.theme.clone();
         let area = Rect::new(0, 0, 30, height);
         let box_height = commit_box_height(area, draft);

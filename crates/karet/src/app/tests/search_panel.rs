@@ -177,7 +177,7 @@ fn leaving_the_search_panel_does_not_quit_the_editor() {
     app.start_global_search();
     app.dispatch(Command::SearchQuit);
     assert!(!app.should_quit, "Esc in the results list must not quit");
-    assert_eq!(app.focus, Focus::Editor);
+    assert_eq!(app.keyboard.focus(), Focus::Editor);
 }
 
 #[test]
@@ -546,7 +546,11 @@ fn clicking_a_result_moves_focus_out_of_the_fields() {
 
     app.handle_sidebar_click(3, 5, KeyModifiers::NONE);
     assert!(!app.search.input, "the results hold the focus now");
-    assert_eq!(app.focus, Focus::Sidebar, "and the panel still has them");
+    assert_eq!(
+        app.keyboard.focus(),
+        Focus::Sidebar,
+        "and the panel still has them"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -564,7 +568,7 @@ fn opening_a_result_leaves_the_keyboard_with_the_panel() {
     );
     let mut app = app();
     app.root = dir.clone();
-    app.focus = Focus::Sidebar;
+    app.keyboard.focus_sidebar();
     app.sidebar_panel = SidebarPanel::Search;
     app.search.hits = vec![search_hit(&dir.join("a.rs"), 3)];
     app.search.rebuild_rows();
@@ -579,7 +583,11 @@ fn opening_a_result_leaves_the_keyboard_with_the_panel() {
         LineCol::new(1, 4),
         "the file opened at the match"
     );
-    assert_eq!(app.focus, Focus::Sidebar, "but the panel kept the keyboard");
+    assert_eq!(
+        app.keyboard.focus(),
+        Focus::Sidebar,
+        "but the panel kept the keyboard"
+    );
 
     // …so the browse carries on where it left off.
     send_key(&mut app, KeyCode::Down, KeyModifiers::NONE);
@@ -661,7 +669,7 @@ fn collapse_on_the_first_shut_heading_stays_put() {
 #[test]
 fn an_arrow_never_leaves_the_field_it_starts_in() {
     let mut app = app();
-    app.focus = Focus::Sidebar;
+    app.keyboard.focus_sidebar();
     app.sidebar_panel = SidebarPanel::Search;
     app.search.hits = vec![search_hit(std::path::Path::new("/w/a.rs"), 2)];
     app.search.rebuild_rows();
@@ -692,7 +700,7 @@ fn an_arrow_never_leaves_the_field_it_starts_in() {
 #[test]
 fn an_arrow_in_the_lone_query_field_neither_enters_the_list_nor_reveals_a_section() {
     let mut app = app();
-    app.focus = Focus::Sidebar;
+    app.keyboard.focus_sidebar();
     app.sidebar_panel = SidebarPanel::Search;
     app.search.hits = vec![search_hit(std::path::Path::new("/w/a.rs"), 1)];
     app.search.rebuild_rows();
@@ -714,7 +722,7 @@ fn an_arrow_in_the_lone_query_field_neither_enters_the_list_nor_reveals_a_sectio
 #[test]
 fn an_arrow_never_leaves_the_result_list() {
     let mut app = app();
-    app.focus = Focus::Sidebar;
+    app.keyboard.focus_sidebar();
     app.sidebar_panel = SidebarPanel::Search;
     app.search.hits = vec![search_hit(std::path::Path::new("/w/a.rs"), 2)];
     app.search.rebuild_rows();
@@ -748,7 +756,7 @@ fn an_arrow_never_leaves_the_result_list() {
 #[test]
 fn a_command_arrow_still_moves_the_caret_in_a_field() {
     let mut app = app();
-    app.focus = Focus::Sidebar;
+    app.keyboard.focus_sidebar();
     app.sidebar_panel = SidebarPanel::Search;
     app.search.query = "needle".into();
     app.search_focus_field(SearchPanelField::Find);

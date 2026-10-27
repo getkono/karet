@@ -226,19 +226,19 @@ fn an_answer_arriving_after_a_cancel_is_ignored() {
 #[test]
 fn escape_stops_a_generation_before_it_blurs_the_field() {
     let mut app = app();
-    app.commit_input.focused = true;
+    app.keyboard.focus_commit_box();
     generating(&mut app, "wip");
 
     app.commit_cancel();
     assert!(
-        app.commit_input.focused,
+        app.keyboard.commit_box_focused(),
         "the first Esc reaches the run, not the focus"
     );
     assert_eq!(app.ai_commit.state, AiCommitState::Idle);
 
     // With nothing running, Esc goes back to meaning "leave the field".
     app.commit_cancel();
-    assert!(!app.commit_input.focused);
+    assert!(!app.keyboard.commit_box_focused());
     assert_eq!(app.commit_input.text, "wip", "the draft is kept either way");
 }
 

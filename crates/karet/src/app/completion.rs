@@ -1,7 +1,18 @@
+use std::collections::HashMap;
+
+use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
+use crossterm::event::KeyModifiers;
 use karet_core::CompletionOptions;
 use karet_core::CompletionTrigger;
+use karet_core::LineCol;
+use karet_session::DocumentId;
+use karet_session::LspCommand;
+use karet_session::RequestId;
 
-use super::*;
+use crate::app::App;
+use crate::app::util::tab_language;
+use crate::tab::TabKind;
 
 mod accept;
 mod snippet;

@@ -32,8 +32,8 @@ fn land(app: &mut App, rx: &mut tokio::sync::mpsc::UnboundedReceiver<workspace::
 }
 
 fn rows(app: &App) -> Vec<String> {
-    app.overlay
-        .as_ref()
+    app.keyboard
+        .overlay()
         .map(|overlay| overlay.rows().into_iter().map(str::to_string).collect())
         .unwrap_or_default()
 }
@@ -42,7 +42,7 @@ fn rows(app: &App) -> Vec<String> {
 fn quick_open_opens_before_the_walk_and_fills_in_keeping_the_query() {
     let (_dir, mut app, mut rx) = workspace_app(&["alpha.rs", "beta.rs", "gamma.rs"]);
     app.dispatch(Command::OpenQuickOpen);
-    assert!(app.overlay.as_ref().is_some_and(Overlay::is_quick_open));
+    assert!(app.keyboard.overlay().is_some_and(Overlay::is_quick_open));
     assert!(rows(&app).is_empty(), "nothing is walked on the UI thread");
     assert!(app.quick_open_loading().is_some());
     assert!(
@@ -50,7 +50,7 @@ fn quick_open_opens_before_the_walk_and_fills_in_keeping_the_query() {
             .contains(&app.quick_open_loading().expect("loading")),
         "the indexing placeholder schedules its own reveal"
     );
-    if let Some(overlay) = app.overlay.as_mut() {
+    if let Some(overlay) = app.keyboard.overlay_mut() {
         overlay.push_char('b');
     }
     land(&mut app, &mut rx);
@@ -68,7 +68,7 @@ fn recently_opened_files_rank_first() {
     app.dispatch(Command::OpenQuickOpen);
     land(&mut app, &mut rx);
     assert_eq!(rows(&app), ["a.rs", "b.rs", "c.rs"]);
-    app.overlay = None;
+    app.close_overlay();
     app.open_path(&dir.path().join("c.rs"));
     app.open_path(&dir.path().join("b.rs"));
     app.dispatch(Command::OpenQuickOpen);
@@ -123,7 +123,7 @@ fn open_recent_with_nothing_to_offer_says_so() {
     let (dir, mut app, _rx) = workspace_app(&[]);
     app.recent.touch_workspace(dir.path());
     app.dispatch(Command::OpenRecentWorkspace);
-    assert!(app.overlay.is_none());
+    assert!(app.keyboard.overlay().is_none());
     assert_eq!(
         last_message(&app).as_deref(),
         Some("open recent: no other recent workspaces")
@@ -279,7 +279,7 @@ fn symbol_requests(backend: &RecordingBackend) -> usize {
 fn go_to_symbol_opens_at_once_and_fills_in_when_the_symbols_land() {
     let (_dir, mut app, backend) = symbol_app();
     app.dispatch(Command::GoToSymbolInEditor);
-    let overlay = app.overlay.as_ref().expect("the picker opens at once");
+    let overlay = app.keyboard.overlay().expect("the picker opens at once");
     assert_eq!(
         overlay.quick_open_mode(),
         Some(QuickOpenMode::DocumentSymbols)
@@ -293,7 +293,7 @@ fn go_to_symbol_opens_at_once_and_fills_in_when_the_symbols_land() {
         "the note schedules its own reveal"
     );
 
-    if let Some(overlay) = app.overlay.as_mut() {
+    if let Some(overlay) = app.keyboard.overlay_mut() {
         overlay.push_str("sto");
     }
     app.on_backend_event(
@@ -306,7 +306,7 @@ fn go_to_symbol_opens_at_once_and_fills_in_when_the_symbols_land() {
     assert!(app.quick_open_loading().is_none());
     assert_eq!(rows(&app), ["stop"], "the typed query survives");
     app.overlay_accept();
-    assert!(app.overlay.is_none());
+    assert!(app.keyboard.overlay().is_none());
     assert_eq!(app.tabs[app.active].editor.cursor(), LineCol::new(2, 3));
 
     // A second open is served from the cache: nothing more is asked.
@@ -322,11 +322,11 @@ fn typing_the_sigil_in_quick_open_switches_to_symbols_and_back() {
     app.dispatch(Command::OpenQuickOpen);
     let key = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
     app.overlay_input(key('@'));
-    let mode = |app: &App| app.overlay.as_ref().and_then(Overlay::quick_open_mode);
+    let mode = |app: &App| app.keyboard.overlay().and_then(Overlay::quick_open_mode);
     assert_eq!(mode(&app), Some(QuickOpenMode::DocumentSymbols));
     assert_eq!(symbol_requests(&backend), 1);
     app.overlay_input(key('r'));
-    assert_eq!(app.overlay.as_ref().map(Overlay::query), Some("@r"));
+    assert_eq!(app.keyboard.overlay().map(Overlay::query), Some("@r"));
     app.overlay_input(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
     app.overlay_input(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
     assert_eq!(
@@ -337,7 +337,7 @@ fn typing_the_sigil_in_quick_open_switches_to_symbols_and_back() {
     // Pasting a sigilled query goes straight to symbols, keeping the rest.
     app.modal_paste(Modal::Overlay, "@ru");
     assert_eq!(mode(&app), Some(QuickOpenMode::DocumentSymbols));
-    assert_eq!(app.overlay.as_ref().map(Overlay::query), Some("@ru"));
+    assert_eq!(app.keyboard.overlay().map(Overlay::query), Some("@ru"));
 }
 
 fn type_keys(app: &mut App, text: &str) {
@@ -353,7 +353,7 @@ fn backspace(app: &mut App, times: usize) {
 }
 
 fn mode(app: &App) -> Option<QuickOpenMode> {
-    app.overlay.as_ref().and_then(Overlay::quick_open_mode)
+    app.keyboard.overlay().and_then(Overlay::quick_open_mode)
 }
 
 #[test]
@@ -361,7 +361,7 @@ fn go_to_line_opens_on_the_caret_and_jumps_to_what_is_typed() {
     let (_dir, mut app, _backend) = symbol_app();
     app.dispatch(Command::GoToLine);
     assert_eq!(mode(&app), Some(QuickOpenMode::Line));
-    assert_eq!(app.overlay.as_ref().map(Overlay::query), Some(":"));
+    assert_eq!(app.keyboard.overlay().map(Overlay::query), Some(":"));
     assert_eq!(
         rows(&app),
         ["Current line 1, column 1 · type a line number between 1 and 4"]
@@ -373,7 +373,7 @@ fn go_to_line_opens_on_the_caret_and_jumps_to_what_is_typed() {
     backspace(&mut app, 2);
     assert_eq!(rows(&app), ["Go to line 3"], "each edit recomputes the row");
     app.overlay_accept();
-    assert!(app.overlay.is_none());
+    assert!(app.keyboard.overlay().is_none());
     assert_eq!(app.tabs[app.active].editor.cursor(), LineCol::new(2, 0));
 }
 
@@ -409,7 +409,7 @@ fn a_file_query_ending_in_a_line_opens_the_file_there() {
     assert_eq!(mode(&app), Some(QuickOpenMode::FileAtLine));
     assert_eq!(rows(&app), ["b.rs"]);
     type_keys(&mut app, ":3");
-    assert_eq!(app.overlay.as_ref().map(Overlay::query), Some("rs:2:3"));
+    assert_eq!(app.keyboard.overlay().map(Overlay::query), Some("rs:2:3"));
     app.overlay_accept();
     fill_reserved_tabs(&mut app);
     let tab = &app.tabs[app.active];
@@ -446,7 +446,7 @@ fn a_key_that_edits_nothing_keeps_the_highlighted_file_at_line() {
     app.dispatch(Command::OpenQuickOpen);
     land(&mut app, &mut rx);
     type_keys(&mut app, "rs:2");
-    if let Some(overlay) = app.overlay.as_mut() {
+    if let Some(overlay) = app.keyboard.overlay_mut() {
         overlay.select_down();
     }
     let b = dir.path().join("b.rs");
@@ -459,7 +459,7 @@ fn a_key_that_edits_nothing_keeps_the_highlighted_file_at_line() {
     ] {
         app.overlay_input(KeyEvent::new(code, KeyModifiers::NONE));
         assert_eq!(
-            app.overlay.as_ref().and_then(Overlay::selected_file),
+            app.keyboard.overlay().and_then(Overlay::selected_file),
             Some(b.as_path()),
             "{code:?} edits no text, so the list is not rebuilt"
         );
@@ -506,7 +506,7 @@ fn ctrl_t_searches_the_workspace_once_typing_pauses_and_opens_the_pick() {
     let _ = std::fs::write(&lib, "\n\n\nfn launch() {}\n");
     app.dispatch(Command::GoToSymbolInWorkspace);
     assert_eq!(mode(&app), Some(QuickOpenMode::WorkspaceSymbols));
-    assert_eq!(app.overlay.as_ref().map(Overlay::query), Some("#"));
+    assert_eq!(app.keyboard.overlay().map(Overlay::query), Some("#"));
     settle(&mut app);
     assert!(
         workspace_queries(&backend).is_empty(),
@@ -552,7 +552,7 @@ fn ctrl_t_searches_the_workspace_once_typing_pauses_and_opens_the_pick() {
     );
     app.overlay_accept();
     fill_reserved_tabs(&mut app);
-    assert!(app.overlay.is_none());
+    assert!(app.keyboard.overlay().is_none());
     let tab = &app.tabs[app.active];
     assert_eq!(tab.path(), Some(lib.as_path()));
     assert_eq!(tab.editor.cursor(), LineCol::new(3, 3));
@@ -601,7 +601,7 @@ fn an_answer_after_the_picker_closed_is_dropped() {
     type_keys(&mut app, "run");
     settle(&mut app);
     let sent = workspace_queries(&backend);
-    app.overlay = None;
+    app.close_overlay();
     settle(&mut app);
     // A file picker opened since is not filled with symbols either.
     app.dispatch(Command::OpenQuickOpen);
@@ -717,15 +717,15 @@ fn clicking_a_symbol_segment_opens_its_siblings_and_accepting_one_jumps_there() 
     });
     assert_eq!(rows(&app), ["run", "stop"]);
     assert_eq!(
-        app.overlay.as_ref().map(Overlay::selected),
+        app.keyboard.overlay().map(Overlay::selected),
         Some(1),
         "the clicked symbol is highlighted"
     );
-    if let Some(overlay) = app.overlay.as_mut() {
+    if let Some(overlay) = app.keyboard.overlay_mut() {
         overlay.select_up();
     }
     app.overlay_accept();
-    assert!(app.overlay.is_none());
+    assert!(app.keyboard.overlay().is_none());
     assert_eq!(app.tabs[app.active].editor.cursor(), LineCol::new(0, 3));
 }
 
@@ -734,7 +734,7 @@ fn a_symbol_depth_the_chain_no_longer_reaches_opens_nothing() {
     let (_dir, mut app, _backend) = symbol_app();
     land_symbols(&mut app, module_tree());
     app.open_sibling_symbols(3);
-    assert!(app.overlay.is_none());
+    assert!(app.keyboard.overlay().is_none());
     app.open_sibling_symbols(0);
     assert_eq!(rows(&app), ["m"], "the top level, at the caret's module");
 }

@@ -1,6 +1,9 @@
 //! Tasks end to end: the picker, a run in a terminal tab, its problems in the
 //! panel, and the transcript the matchers read.
 
+use std::time::Duration;
+use std::time::Instant;
+
 use alacritty_terminal::event::VoidListener;
 use alacritty_terminal::vte::ansi::Processor;
 use karet_session::config::schema::BuiltinMatcher;
@@ -9,6 +12,9 @@ use karet_session::config::schema::Task;
 
 use super::*;
 use crate::app::tests::support::*;
+use crate::command::Command;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 use crate::terminal::Emulator;
 use crate::terminal::TerminalEvent;
 use crate::terminal::TerminalEventKind;
@@ -134,7 +140,7 @@ fn task_messages(app: &App) -> Vec<String> {
 fn run_task_with_nothing_configured_says_where_tasks_go() -> TestResult {
     let (_dir, mut app, _events) = task_app(&[])?;
     app.dispatch(Command::RunTask);
-    assert!(app.overlay.is_none());
+    assert!(app.keyboard.overlay().is_none());
     assert!(
         last_message(&app).is_some_and(|m| m.contains("`tasks`")),
         "{:?}",
@@ -148,7 +154,7 @@ fn the_picker_lists_tasks_by_label_with_their_commands_beside() -> TestResult {
     let (_dir, mut app, _events) =
         task_app(&[("test", task("make test")), ("build", task("make"))])?;
     app.dispatch(Command::RunTask);
-    let overlay = app.overlay.as_ref().ok_or("no picker")?;
+    let overlay = app.keyboard.overlay().ok_or("no picker")?;
     assert_eq!(overlay.picker_kind(), Some(PickerKind::Tasks));
     assert_eq!(overlay.title(), RUN_TASK_TITLE);
     assert_eq!(overlay.rows(), ["build", "test"]);

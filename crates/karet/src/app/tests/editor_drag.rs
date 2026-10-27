@@ -247,9 +247,9 @@ fn a_release_under_an_overlay_ends_the_drag() {
     // it, close it. The release must not be lost to the overlay's swallow.
     let mut rig = drag_below(1);
     rig.step(Step::Cmd(Command::OpenQuickOpen));
-    assert!(rig.app.overlay.is_some());
+    assert!(rig.app.keyboard.overlay().is_some());
     rig.step(Step::Up(At::Cell(1, 1), KeyModifiers::NONE));
-    rig.app.overlay = None;
+    rig.app.close_overlay();
     assert_drag_ended(&mut rig, "release under the picker");
 }
 

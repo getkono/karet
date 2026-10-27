@@ -12,15 +12,31 @@
 //! only the answer to the latest query is adopted: one to a query typed over
 //! since is dropped.
 
-use karet_core::WorkspaceSymbol;
-use karet_session::LSP_CHANGE_DEBOUNCE;
+use std::path::Path;
+use std::path::PathBuf;
+use std::time::Duration;
+use std::time::Instant;
 
-use super::*;
+use karet_core::NotificationKind;
+use karet_core::WorkspaceSymbol;
+use karet_session::DocumentId;
+use karet_session::LSP_CHANGE_DEBOUNCE;
+use karet_session::LspCommand;
+use karet_session::RequestId;
+
+use crate::app::App;
+use crate::app::notifications::Report;
+use crate::app::pending::Pending;
+use crate::app::state::CloseRequest;
 use crate::overlay::DOCUMENT_SYMBOL_PREFIX;
 use crate::overlay::GO_TO_LINE_PREFIX;
 use crate::overlay::LineTarget;
+use crate::overlay::Overlay;
 use crate::overlay::QuickOpenMode;
 use crate::overlay::WORKSPACE_SYMBOL_PREFIX;
+use crate::tab::Tab;
+use crate::tab::TabKind;
+use crate::workspace;
 
 /// Go to Symbol in Workspace's conversation with the backend: the query the
 /// open picker wants answered, when it goes out, and which answer to adopt.
@@ -45,7 +61,7 @@ impl App {
     /// index holds; a walk still in flight fills it in when it lands.
     pub(super) fn open_quick_open(&mut self) {
         self.file_index.ensure_started();
-        self.overlay = Some(self.quick_open_overlay());
+        self.open_overlay(self.quick_open_overlay());
     }
 
     /// The quick-open picker: recently opened files first, then the rest.
@@ -73,7 +89,7 @@ impl App {
     /// workspace, or the active document's symbols — which its delayed loading
     /// note anchors on.
     pub(crate) fn quick_open_loading(&self) -> Option<Pending> {
-        match self.overlay.as_ref()?.quick_open_mode()? {
+        match self.keyboard.overlay()?.quick_open_mode()? {
             QuickOpenMode::Files | QuickOpenMode::FileAtLine => self.file_index.loading(),
             QuickOpenMode::DocumentSymbols => self.active_outline_loading(),
             QuickOpenMode::WorkspaceSymbols => self.workspace_symbols.loading,
@@ -84,7 +100,7 @@ impl App {
 
     /// Open quick-open already in its `:` mode: Go to Line in the active editor.
     pub(super) fn open_go_to_line(&mut self) {
-        self.overlay = Some(Overlay::go_to_line(GO_TO_LINE_PREFIX, self.line_target()));
+        self.open_overlay(Overlay::go_to_line(GO_TO_LINE_PREFIX, self.line_target()));
     }
 
     /// The active text editor, as Go to Line moves in it; `None` when the
@@ -104,7 +120,7 @@ impl App {
     /// Open quick-open already in its `@` mode: Go to Symbol in Editor over the
     /// active document's symbols, asking for them when none are current.
     pub(super) fn open_document_symbols(&mut self) {
-        self.overlay = Some(self.document_symbols_overlay());
+        self.open_overlay(self.document_symbols_overlay());
         self.request_active_symbols();
     }
 
@@ -135,7 +151,7 @@ impl App {
             Some(Overlay::sibling_symbols(path, siblings, current))
         });
         if let Some(overlay) = overlay {
-            self.overlay = Some(overlay);
+            self.open_overlay(overlay);
         }
     }
 
@@ -144,7 +160,7 @@ impl App {
     /// nothing (an arrow, Home, Tab) keeps the computed line lists, and the row
     /// highlighted in them, as they are.
     pub(super) fn edit_overlay_query(&mut self, edit: impl FnOnce(&mut Overlay)) {
-        let Some(overlay) = self.overlay.as_mut() else {
+        let Some(overlay) = self.keyboard.overlay_mut() else {
             return;
         };
         let before = overlay.query().to_string();
@@ -159,7 +175,7 @@ impl App {
     /// the workspace's, `:` goes to a line, a trailing `:LINE` opens the chosen
     /// file there, and deleting them goes back to files. What was typed is kept.
     fn sync_quick_open_mode(&mut self) {
-        let Some(overlay) = self.overlay.as_ref() else {
+        let Some(overlay) = self.keyboard.overlay() else {
             return;
         };
         let Some(mode) = overlay.quick_open_mode() else {
@@ -196,7 +212,7 @@ impl App {
                 symbols
             },
         };
-        self.overlay = Some(next);
+        self.open_overlay(next);
         if wanted == QuickOpenMode::DocumentSymbols {
             self.request_active_symbols();
         }
@@ -206,7 +222,7 @@ impl App {
     /// Open quick-open already in its `#` mode: Go to Symbol in Workspace,
     /// which lists nothing until a query is typed.
     pub(super) fn open_workspace_symbols(&mut self) {
-        self.overlay = Some(Overlay::workspace_symbols(&self.root, &[]));
+        self.open_overlay(Overlay::workspace_symbols(&self.root, &[]));
         self.follow_workspace_symbol_query(Instant::now());
     }
 
@@ -216,8 +232,8 @@ impl App {
     /// no such picker open the search is forgotten.
     fn follow_workspace_symbol_query(&mut self, now: Instant) {
         let query = self
-            .overlay
-            .as_ref()
+            .keyboard
+            .overlay()
             .and_then(Overlay::workspace_symbol_query)
             .map(str::to_string);
         let search = &mut self.workspace_symbols;
@@ -232,7 +248,7 @@ impl App {
         if query.trim().is_empty() {
             search.due = None;
             search.loading = None;
-            if let Some(overlay) = self.overlay.as_mut() {
+            if let Some(overlay) = self.keyboard.overlay_mut() {
                 overlay.set_workspace_symbols(&self.root, &[]);
             }
         } else {
@@ -249,8 +265,8 @@ impl App {
     /// forgets the search instead.
     pub(crate) fn probe_workspace_symbols(&mut self, now: Instant) {
         let open = self
-            .overlay
-            .as_ref()
+            .keyboard
+            .overlay()
             .is_some_and(|overlay| overlay.workspace_symbol_query().is_some());
         if !open {
             if self.workspace_symbols.query.is_some() {
@@ -296,7 +312,7 @@ impl App {
         search.sent = None;
         search.loading = None;
         let root = workspace::absolute(&self.root);
-        if let Some(overlay) = self.overlay.as_mut() {
+        if let Some(overlay) = self.keyboard.overlay_mut() {
             overlay.set_workspace_symbols(&root, symbols);
         }
     }
@@ -310,7 +326,7 @@ impl App {
         }
         let path = tab.and_then(Tab::path).map(Path::to_path_buf);
         let symbols = self.docs.symbols.get(&doc).map_or(&[][..], Vec::as_slice);
-        if let Some(overlay) = self.overlay.as_mut() {
+        if let Some(overlay) = self.keyboard.overlay_mut() {
             overlay.set_document_symbols(path.as_deref(), symbols);
         }
     }
@@ -333,8 +349,8 @@ impl App {
     /// typed and, where it is still listed, the row they had highlighted.
     fn refresh_quick_open(&mut self) {
         let Some(open) = self
-            .overlay
-            .as_ref()
+            .keyboard
+            .overlay()
             .filter(|o| o.quick_open_mode().is_some_and(QuickOpenMode::lists_files))
         else {
             return;
@@ -345,7 +361,7 @@ impl App {
         if let Some(selected) = selected {
             overlay.select_file(&selected);
         }
-        self.overlay = Some(overlay);
+        self.open_overlay(overlay);
     }
 
     /// Remember that `path` was opened, for quick-open's recency ranking. Only
@@ -376,7 +392,7 @@ impl App {
             );
             return;
         }
-        self.overlay = Some(Overlay::recent_workspaces(items));
+        self.open_overlay(Overlay::recent_workspaces(items));
     }
 
     /// Reopen karet on `root`: quit this window (through the usual unsaved

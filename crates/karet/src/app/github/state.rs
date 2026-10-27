@@ -1,6 +1,24 @@
 //! GitHub view, dashboard, and pull-request page state.
 
-use super::*;
+use std::collections::BTreeSet;
+
+use karet_session::GithubAuth;
+use karet_session::GithubCheckRun;
+use karet_session::GithubComment;
+use karet_session::GithubIssue;
+use karet_session::GithubPage;
+use karet_session::GithubPullRequest;
+use karet_session::GithubPullRequestActivity;
+use karet_session::GithubPullRequestCommit;
+use karet_session::GithubRepository;
+use karet_session::GithubWorkflow;
+use karet_session::GithubWorkflowRun;
+use karet_session::RequestId;
+use ratatui::layout::Rect;
+
+use crate::app::github::forms::GithubIssueForm;
+use crate::app::github::forms::GithubPullRequestForm;
+use crate::app::pending::Pending;
 
 /// Dashboard subsection.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

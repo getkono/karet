@@ -59,7 +59,7 @@ fn a_save_of_a_background_document_reports_the_tab_showing_it() {
     app.settings.files.auto_save = AutoSave::OnFocusChange;
     let background = caret_tab(&mut app, 2, LineCol::new(1, 2));
     caret_tab(&mut app, 3, LineCol::new(0, 1));
-    app.focus = Focus::Sidebar;
+    app.keyboard.focus_sidebar();
 
     app.schedule_auto_save(DocumentId(2), 1, Instant::now());
 

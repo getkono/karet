@@ -1,5 +1,6 @@
 use super::harness::*;
 use super::support::*;
+use crate::app::util::tab_at;
 use crate::app::*;
 
 #[test]
@@ -84,7 +85,7 @@ fn markdown_table_formatting_is_one_undoable_document_edit() {
 fn copy_reports_status() {
     let mut app = app();
     app.push_tab(text_tab("t.rs", "hello world"));
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     app.dispatch(Command::SelectRight);
     app.dispatch(Command::Copy);
     assert_eq!(last_message(&app).as_deref(), Some("copied selection"));
@@ -218,11 +219,11 @@ fn esc_collapses_extra_carets_and_keeps_editor_focus() {
     assert!(rig.tab().editor.has_multiple_cursors());
     rig.step(key(KeyCode::Esc));
     assert!(!rig.tab().editor.has_multiple_cursors());
-    assert_eq!(rig.app.focus, Focus::Editor);
+    assert_eq!(rig.app.keyboard.focus(), Focus::Editor);
 
     // With one caret Esc is a no-op that never leaves the editor.
     rig.step(key(KeyCode::Esc));
-    assert_eq!(rig.app.focus, Focus::Editor);
+    assert_eq!(rig.app.keyboard.focus(), Focus::Editor);
 }
 
 #[test]
@@ -455,14 +456,14 @@ fn status_segment_click_dispatches_its_command() {
     assert_eq!(app.status_command_at(15), Some(Command::OpenQuickOpen));
     assert_eq!(app.status_command_at(40), None);
     // Clicking the focus segment toggles focus.
-    let before = app.focus;
+    let before = app.keyboard.focus();
     app.handle_status_mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
         column: 3,
         row: 9,
         modifiers: KeyModifiers::NONE,
     });
-    assert_ne!(app.focus, before);
+    assert_ne!(app.keyboard.focus(), before);
 }
 
 #[test]
@@ -811,7 +812,7 @@ fn closing_the_last_tab_collapses_its_tile_when_another_remains() {
     assert_eq!(app.layout.pane_count(), 1);
     assert_eq!(app.tabs.len(), 1);
     assert_eq!(app.tabs[0].title, "a.rs");
-    assert_eq!(app.focus, Focus::Editor);
+    assert_eq!(app.keyboard.focus(), Focus::Editor);
 }
 
 #[test]

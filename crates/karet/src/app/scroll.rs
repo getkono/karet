@@ -15,7 +15,17 @@
 //! moving the cursor into the window the pointer asked for, which is also what their
 //! wheel already does.
 
-use super::*;
+use crossterm::event::MouseButton;
+use crossterm::event::MouseEvent;
+use crossterm::event::MouseEventKind;
+use karet_widgets::scroll::TrackHit;
+
+use crate::app::App;
+use crate::app::hit::ScrollDrag;
+use crate::app::hit::ScrollSurface;
+use crate::app::util::effective_word_wrap;
+use crate::app::util::tab_language;
+use crate::tab::TabKind;
 
 /// A cursor pulled into the window `[position, position + viewport)`, left alone when
 /// it is already inside it.
@@ -310,6 +320,43 @@ impl App {
                 }
             },
         }
+    }
+
+    /// Scroll the active code tab's in-editor Markdown preview and align the
+    /// source editor to the preview's nearest source anchor.
+    pub(super) fn scroll_markdown_preview(&mut self, delta: i32) {
+        let current = self
+            .tabs
+            .get(self.active)
+            .and_then(|tab| tab.markdown_preview.as_ref())
+            .map_or(0, |preview| usize::from(preview.scroll));
+        let next = (current as i64 + i64::from(delta)).max(0) as usize;
+        self.set_markdown_preview_scroll(next);
+    }
+
+    /// Put the in-editor Markdown preview's first visible wrapped line at `position`.
+    ///
+    /// The source pane follows, exactly as it does for the wheel: the two are kept in
+    /// sync through the preview's source anchors, so a dragged preview bar must not
+    /// leave the code beside it behind.
+    pub(super) fn set_markdown_preview_scroll(&mut self, position: usize) {
+        let Some(tab) = self.tabs.get_mut(self.active) else {
+            return;
+        };
+        let TabKind::Code { buffer, .. } = &tab.kind else {
+            return;
+        };
+        let Some(preview) = tab.markdown_preview.as_mut() else {
+            return;
+        };
+        let max = preview.wrapped.lines.len().saturating_sub(1);
+        preview.scroll = u16::try_from(position.min(max)).unwrap_or(u16::MAX);
+        let source = preview
+            .wrapped
+            .source_line_for_wrapped(usize::from(preview.scroll));
+        let last = buffer.line_count().saturating_sub(1);
+        tab.editor
+            .scroll_to_line(u32::try_from(source.min(last)).unwrap_or(u32::MAX));
     }
 }
 

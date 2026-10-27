@@ -15,7 +15,7 @@ fn deep_commit_app() -> App {
     }
     let mut app = app();
     app.sidebar_visible = false;
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     app.push_tab(Tab::commit(
         Box::new(commit_detail(&"a".repeat(40), "a wide commit")),
         CommitFiles::ready(

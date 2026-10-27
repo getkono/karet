@@ -110,7 +110,7 @@ fn focus_change_auto_save_only_fires_when_the_edited_document_loses_focus() {
         saved_docs(&backend).is_empty(),
         "the same editor keeps focus"
     );
-    app.focus = Focus::Sidebar;
+    app.keyboard.focus_sidebar();
     app.auto_save_context_changed(Some(DocumentId(2)));
     assert_eq!(saved_docs(&backend), [DocumentId(2)]);
 }
@@ -125,7 +125,7 @@ fn a_late_dirty_snapshot_saves_when_its_document_already_lost_focus() {
     if let TabKind::Code { doc, .. } = &mut app.tabs[app.active].kind {
         *doc = Some(DocumentId(2));
     }
-    app.focus = Focus::Sidebar;
+    app.keyboard.focus_sidebar();
 
     app.schedule_auto_save(DocumentId(2), 1, Instant::now());
 
@@ -371,7 +371,7 @@ fn esc_dismisses_a_toast_before_normal_handling() {
 #[test]
 fn starts_explorer_focused_with_welcome_tab() {
     let app = app();
-    assert_eq!(app.focus, Focus::Sidebar);
+    assert_eq!(app.keyboard.focus(), Focus::Sidebar);
     assert_eq!(app.sidebar_panel, SidebarPanel::Explorer);
     assert!(matches!(app.tabs[0].kind, TabKind::Welcome));
 }
@@ -382,7 +382,7 @@ fn focus_target_tracks_focus_and_panel() {
     assert_eq!(app.focus_target(), FocusTarget::Explorer);
     app.sidebar_panel = SidebarPanel::SourceControl;
     assert_eq!(app.focus_target(), FocusTarget::SourceControl);
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     assert_eq!(app.focus_target(), FocusTarget::Editor);
 }
 
@@ -408,7 +408,7 @@ fn open_anyway_bypasses_the_guard_and_decodes_in_place() {
         },
     )];
     app.active = 0;
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     // A too-large placeholder gets the override layer, so Enter is bound.
     assert_eq!(app.focus_target(), FocusTarget::Oversize);
 
@@ -635,7 +635,7 @@ fn each_save_trigger_reports_the_cause_the_session_judges_it_by() {
     assert_eq!(
         causes(|app, doc| {
             app.settings.files.auto_save = AutoSave::OnFocusChange;
-            app.focus = Focus::Editor;
+            app.keyboard.focus_editor();
             app.schedule_auto_save(doc, 1, Instant::now());
             app.auto_save_focus_lost();
         }),

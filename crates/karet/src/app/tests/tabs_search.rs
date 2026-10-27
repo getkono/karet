@@ -1,4 +1,6 @@
 use super::support::*;
+use crate::app::util::canonical;
+use crate::app::util::parse_rev_range;
 use crate::app::*;
 
 #[test]
@@ -7,7 +9,7 @@ fn toggle_sidebar_and_focus() {
     app.dispatch(Command::ToggleSidebar);
     assert!(!app.sidebar_visible);
     app.dispatch(Command::ToggleFocus);
-    assert_eq!(app.focus, Focus::Editor);
+    assert_eq!(app.keyboard.focus(), Focus::Editor);
 }
 
 #[test]
@@ -23,7 +25,7 @@ fn focus_by_file_line_opens_at_the_target_and_focuses_the_editor() {
     fill_reserved_tabs(&mut app);
 
     assert!(matches!(app.tabs[app.active].kind, TabKind::Code { .. }));
-    assert_eq!(app.focus, Focus::Editor);
+    assert_eq!(app.keyboard.focus(), Focus::Editor);
     assert_eq!(app.tabs[app.active].editor.cursor(), LineCol::new(2, 4));
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -38,11 +40,15 @@ fn focus_by_file_line_can_open_without_taking_the_focus() {
     write_file(&dir, "a.rs", b"fn a() {}\nlet x = 1;\nlet y = 2;\n");
 
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
-    app.focus = Focus::Sidebar;
+    app.keyboard.focus_sidebar();
     app.focus_by_file_line(&dir.join("a.rs"), LineCol::new(2, 4), false);
     fill_reserved_tabs(&mut app);
 
-    assert_eq!(app.focus, Focus::Sidebar, "the sidebar keeps the keyboard");
+    assert_eq!(
+        app.keyboard.focus(),
+        Focus::Sidebar,
+        "the sidebar keeps the keyboard"
+    );
     assert!(matches!(app.tabs[app.active].kind, TabKind::Code { .. }));
     assert_eq!(
         app.tabs[app.active].editor.cursor(),
@@ -362,7 +368,7 @@ fn arrowing_the_explorer_previews_files_without_stealing_focus() {
     write_file(&dir, "b.rs", b"fn b() {}\n");
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
     app.sidebar_panel = SidebarPanel::Explorer;
-    app.focus = Focus::Sidebar;
+    app.keyboard.focus_sidebar();
     app.explorer.ensure_built(&dir);
     let a_idx = explorer_row_index(&app, "a.rs");
     let b_idx = explorer_row_index(&app, "b.rs");
@@ -371,7 +377,11 @@ fn arrowing_the_explorer_previews_files_without_stealing_focus() {
     // Arrow onto b.rs: it opens in the pane's preview slot, and the sidebar
     // keeps keyboard focus so the user can keep arrowing.
     app.sidebar_step((b_idx as i32 - a_idx as i32).signum());
-    assert_eq!(app.focus, Focus::Sidebar, "arrowing must not steal focus");
+    assert_eq!(
+        app.keyboard.focus(),
+        Focus::Sidebar,
+        "arrowing must not steal focus"
+    );
     assert_eq!(app.tabs.len(), 1);
     assert!(app.tabs[0].is_preview, "the arrowed-to file is a preview");
     assert_eq!(
@@ -391,7 +401,7 @@ fn arrowing_the_explorer_previews_files_without_stealing_focus() {
         app.tabs[0].path().map(canonical),
         Some(canonical(&dir.join("a.rs")))
     );
-    assert_eq!(app.focus, Focus::Sidebar);
+    assert_eq!(app.keyboard.focus(), Focus::Sidebar);
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -403,7 +413,7 @@ fn wheel_scrolling_the_explorer_moves_selection_without_previewing() {
     write_file(&dir, "b.rs", b"fn b() {}\n");
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
     app.sidebar_panel = SidebarPanel::Explorer;
-    app.focus = Focus::Sidebar;
+    app.keyboard.focus_sidebar();
     app.explorer.ensure_built(&dir);
     let before = app.explorer.cursor();
 
@@ -427,7 +437,7 @@ fn arrowing_onto_a_directory_row_leaves_the_editor_untouched() {
     write_file(&dir, "a.rs", b"fn a() {}\n");
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
     app.sidebar_panel = SidebarPanel::Explorer;
-    app.focus = Focus::Sidebar;
+    app.keyboard.focus_sidebar();
     app.explorer.ensure_built(&dir);
     // Preview a.rs first, then arrow onto the `sub` directory row.
     let a_idx = explorer_row_index(&app, "a.rs");
@@ -460,12 +470,12 @@ fn arrowing_onto_an_already_open_file_activates_it_without_a_new_tab() {
     write_file(&dir, "b.rs", b"fn b() {}\n");
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
     app.sidebar_panel = SidebarPanel::Explorer;
-    app.focus = Focus::Sidebar;
+    app.keyboard.focus_sidebar();
     app.explorer.ensure_built(&dir);
     // b.rs is open as a permanent tab (not a preview).
     app.open_path(&dir.join("b.rs"));
     assert!(!app.tabs[0].is_preview);
-    app.focus = Focus::Sidebar;
+    app.keyboard.focus_sidebar();
 
     // Arrow onto b.rs from a.rs: it activates the existing permanent tab
     // rather than opening a preview, and does not steal focus.
@@ -479,7 +489,7 @@ fn arrowing_onto_an_already_open_file_activates_it_without_a_new_tab() {
         "an already-permanent tab stays permanent"
     );
     assert_eq!(app.active, 0);
-    assert_eq!(app.focus, Focus::Sidebar);
+    assert_eq!(app.keyboard.focus(), Focus::Sidebar);
 
     let _ = std::fs::remove_dir_all(&dir);
 }

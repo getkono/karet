@@ -3,12 +3,22 @@
 //! a `<script>` body in HTML or a fenced code block in Markdown — and submit the
 //! pure toggle from `karet_editor::editing` over every selection at once.
 
+use std::path::Path;
+use std::sync::Arc;
+
+use karet_core::LineCol;
+use karet_core::Range;
+use karet_editor::editing;
 use karet_editor::editing::LineComment;
 use karet_filetype::CommentTokens;
+use karet_text::EditCause;
+use karet_text::TextBuffer;
 use karet_treesitter::LanguageId;
 
 use super::syntax_select::ParsedText;
-use super::*;
+use crate::app::App;
+use crate::tab::Tab;
+use crate::tab::TabKind;
 
 impl App {
     /// Toggle a line comment (`block == false`) or a block comment on the active

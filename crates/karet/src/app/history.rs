@@ -1,4 +1,32 @@
-use super::*;
+use std::collections::BTreeSet;
+use std::path::Path;
+
+use karet_core::NotificationKind;
+use karet_session::GithubVerification;
+use karet_session::PreparedChange;
+use karet_session::RangeSpec;
+use karet_session::RequestId;
+use karet_session::VcsAction;
+use karet_session::VcsCommand;
+use karet_session::ViewId;
+use karet_vcs::Commit;
+use karet_vcs::CommitDetail;
+
+use crate::app::App;
+use crate::app::GRAPH_LOG_PAGE;
+use crate::app::GRAPH_PREFETCH_SCREENS;
+use crate::app::confirm::ConfirmAction;
+use crate::app::notifications::Report;
+use crate::app::pending::Pending;
+use crate::app::util::rect_contains;
+use crate::command::Command;
+use crate::overlay::Overlay;
+use crate::render::FileView;
+use crate::tab::CommitFiles;
+use crate::tab::CommitViewState;
+use crate::tab::Tab;
+use crate::tab::TabKind;
+use crate::tab::commit_title;
 use crate::tab::compare_title;
 
 impl App {
@@ -635,7 +663,7 @@ impl App {
             return;
         };
         let short: String = hash.chars().take(7).collect();
-        self.overlay = Some(Overlay::commands(
+        self.open_overlay(Overlay::commands(
             format!("Commit {short}"),
             vec![
                 Command::CommitGraphTag,
@@ -659,7 +687,7 @@ impl App {
             return;
         };
         let short: String = rev.chars().take(7).collect();
-        self.overlay = Some(Overlay::text(
+        self.open_overlay(Overlay::text(
             format!("Tag name for {short}"),
             crate::overlay::TextPurpose::TagCreate { rev },
         ));
@@ -732,7 +760,7 @@ impl App {
                 )
             })
             .collect();
-        self.overlay = Some(Overlay::rebase_todo(onto, steps));
+        self.open_overlay(Overlay::rebase_todo(onto, steps));
     }
 
     /// Copy the issue URLs referenced (`#123`) by the selected commit's

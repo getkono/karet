@@ -6,7 +6,18 @@
 //! lifetime (how long the card stays) are derived from the tier, so there is
 //! exactly one place to tune either.
 
-use super::*;
+use std::time::Duration;
+use std::time::Instant;
+
+use karet_core::Diagnostic;
+use karet_core::Notification;
+use karet_core::NotificationId;
+use karet_core::NotificationKind;
+use karet_core::Severity;
+use karet_session::BackendError;
+use karet_session::DocumentId;
+
+use crate::app::App;
 
 /// How long a refusal stays before it clears itself.
 const REFUSAL_TIMEOUT: Duration = Duration::from_secs(5);
@@ -265,6 +276,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     #[test]

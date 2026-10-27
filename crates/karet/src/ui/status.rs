@@ -12,7 +12,7 @@ pub(super) fn draw_status(
 ) {
     frame.status_rect = area;
 
-    let focus = match app.focus {
+    let focus = match app.keyboard.focus() {
         Focus::Sidebar => "SIDEBAR",
         // The content area belongs to whichever view is showing, so name that
         // rather than the editor shell behind it.

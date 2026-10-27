@@ -24,7 +24,7 @@ fn markdown_app(text: &str, caret: LineCol) -> App {
         *doc = Some(DocumentId(9));
     }
     app.push_tab(tab);
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     let idx = app.active;
     app.tabs[idx].editor.set_carets(&[caret]);
     app
@@ -39,7 +39,7 @@ fn rust_app(text: &str) -> App {
         *doc = Some(DocumentId(9));
     }
     app.push_tab(tab);
-    app.focus = Focus::Editor;
+    app.keyboard.focus_editor();
     app
 }
 
