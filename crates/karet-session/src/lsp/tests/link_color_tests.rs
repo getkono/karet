@@ -116,8 +116,8 @@ fn ask(
     Ok(request)
 }
 
-fn span(line: u32, start: u32, end: u32) -> Result<Range, String> {
-    Range::new(LineCol::new(line, start), LineCol::new(line, end)).map_err(|e| format!("{e}"))
+fn span(line: u32, start: u32, end: u32) -> Range {
+    Range::new(LineCol::new(line, start), LineCol::new(line, end))
 }
 
 #[tokio::test]
@@ -135,7 +135,7 @@ async fn links_and_colours_arrive_in_buffer_columns() -> TestResult {
         return Err(format!("expected two links, got {links:?}").into());
     };
     // The server's UTF-16 2..4 is buffer columns 1..3, after the emoji.
-    assert_eq!(web.range, span(0, 1, 3)?);
+    assert_eq!(web.range, span(0, 1, 3));
     assert_eq!(web.target.as_deref(), Some("https://example.com/"));
     assert_eq!(web.tooltip.as_deref(), Some("Example"));
     assert!(!deferred.is_resolved());
@@ -143,7 +143,7 @@ async fn links_and_colours_arrive_in_buffer_columns() -> TestResult {
     assert_eq!(
         colors,
         [DocumentColor {
-            range: span(0, 1, 3)?,
+            range: span(0, 1, 3),
             rgba: [255, 0, 0, 255],
         }]
     );
@@ -358,7 +358,7 @@ fn a_listing_for_a_superseded_version_learns_nothing() -> TestResult {
             change: Change::new(
                 old,
                 vec![TextEdit {
-                    range: span(1, 0, 0)?,
+                    range: span(1, 0, 0),
                     new_text: "x".to_owned(),
                 }],
             ),

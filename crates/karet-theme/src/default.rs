@@ -1,9 +1,9 @@
 //! The built-in dark theme palette (Tokyo-Night-flavored).
 
+use karet_core::Emphasis;
 use karet_core::StandardToken;
 use karet_core::ThemeRole;
 
-use crate::Emphasis;
 use crate::ROLE_COUNT;
 use crate::Rgba;
 use crate::TOKEN_COUNT;

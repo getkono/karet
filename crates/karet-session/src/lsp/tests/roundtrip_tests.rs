@@ -117,8 +117,7 @@ async fn open_and_debounced_changes_reach_the_server() -> TestResult {
 
     // Two rapid single-char inserts; the debounce coalesces them.
     for (i, ch) in ["x", "y"].iter().enumerate() {
-        let range =
-            Range::new(LineCol::new(1, 0), LineCol::new(1, 0)).map_err(|e| format!("{e}"))?;
+        let range = Range::new(LineCol::new(1, 0), LineCol::new(1, 0));
         backend.send(
             backend.next_id(),
             Command::ApplyChange {

@@ -19,7 +19,6 @@ use karet_core::LineCol;
 use karet_core::SemanticToken;
 use karet_core::SemanticTokenModifiers;
 use karet_core::SemanticTokenType;
-use karet_core::SemanticTokensLegend;
 use karet_core::ServerFeature;
 use karet_core::TokenId;
 use serde::Deserialize;
@@ -27,6 +26,20 @@ use serde::Deserialize;
 use crate::LspClient;
 use crate::LspError;
 use crate::uri;
+
+/// The token types and modifiers a server will emit, in the order its packed
+/// results index into.
+///
+/// The order is the whole meaning of a semantic-token result: an index is only
+/// interpretable against the legend the same connection advertised, so this
+/// must be re-read whenever a server is replaced.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SemanticTokensLegend {
+    /// Token types, indexed by the value in a token's `type` slot.
+    pub token_types: Vec<String>,
+    /// Token modifiers, indexed by bit position in a token's modifier mask.
+    pub token_modifiers: Vec<String>,
+}
 
 /// A document's semantic tokens as a server last answered them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -224,7 +237,7 @@ impl LspClient {
     /// the server emits semantic tokens.
     #[must_use]
     pub fn semantic_tokens_legend(&self) -> Option<SemanticTokensLegend> {
-        self.capabilities().semantic_tokens_legend
+        self.server_options().semantic_tokens_legend
     }
 }
 

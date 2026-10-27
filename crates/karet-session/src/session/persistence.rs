@@ -38,7 +38,7 @@ impl Session {
                 .store
                 .docs
                 .get(&doc_id)
-                .and_then(|doc| whole_document_change(doc, record.content.clone()));
+                .map(|doc| whole_document_change(doc, record.content.clone()));
             if let Some(change) = change {
                 self.apply(id, doc_id, &change, EditCause::Replace);
                 discard(&record.swap_path);

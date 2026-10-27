@@ -96,9 +96,8 @@ impl Session {
         let issues = lint::lint(&original, &self.lint_config);
         let fixable = issues.iter().filter(|issue| issue.fix.is_some()).count();
         let fixed_text = lint::apply_fixes(&original, &issues);
-        let change = (fixable > 0 && fixed_text != original)
-            .then(|| whole_document_change(doc, fixed_text))
-            .flatten();
+        let change =
+            (fixable > 0 && fixed_text != original).then(|| whole_document_change(doc, fixed_text));
         let applied =
             change.is_some_and(|change| self.apply_format_edits(doc_id, change.edits, false));
         let fixed = if applied { fixable } else { 0 };

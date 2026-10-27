@@ -4,8 +4,8 @@
 
 The dependency-light foundation every other `karet-*` crate speaks: byte/line-column
 text coordinates, and the neutral models (diagnostics, decorations, symbols,
-completions, hovers, edits, …) plus the provider traits that let producers and renderers
-interoperate without depending on each other.
+completions, hovers, edits, …) that let producers and renderers interoperate without
+depending on each other.
 
 Part of the [karet](https://github.com/getkono/karet) workspace.
 

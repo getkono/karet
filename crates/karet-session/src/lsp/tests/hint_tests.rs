@@ -237,7 +237,7 @@ async fn non_flushing_commands_do_not_postpone_the_debounced_flush() -> TestResu
     let backend = local_session(session, None);
     let (doc, version) = open_served(&backend, &mut events, &mut observed, path).await?;
 
-    let at = Range::new(LineCol::new(1, 0), LineCol::new(1, 0)).map_err(|e| format!("{e}"))?;
+    let at = Range::new(LineCol::new(1, 0), LineCol::new(1, 0));
     let edited = tokio::time::Instant::now();
     backend.send(
         backend.next_id(),
