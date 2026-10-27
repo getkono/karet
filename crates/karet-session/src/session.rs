@@ -173,6 +173,13 @@ pub struct SessionConfig {
     /// ([`crate::default_seam_cache_dir`]); left `None` (as in tests) every index
     /// is built from source and no user directory is touched.
     pub seam_cache_dir: Option<PathBuf>,
+    /// The client's keymap files, watched alongside the settings layers.
+    ///
+    /// The session does not read them: a change to one is reported as
+    /// [`Event::KeymapChanged`](crate::api::Event::KeymapChanged), so the client
+    /// reloads its own key bindings without running a watcher of its own. A path
+    /// may name a file that does not exist yet; creating it is reported too.
+    pub keymap_paths: Vec<PathBuf>,
 }
 
 impl Default for SessionConfig {
@@ -185,6 +192,7 @@ impl Default for SessionConfig {
             process_supervisor: None,
             lsp_registry_dir: None,
             seam_cache_dir: None,
+            keymap_paths: Vec::new(),
         }
     }
 }

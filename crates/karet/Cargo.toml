@@ -102,7 +102,6 @@ base64.workspace = true              # `clipboard` module (OSC 52), merged from 
 serde_json.workspace = true          # loaded-settings inspector formatting
 serde.workspace = true               # deserialize keymap.jsonc entries
 jsonc-parser.workspace = true        # parse keymap.jsonc (same JSONC dialect as setting.jsonc)
-karet-watch.workspace = true         # live-reload keymap.jsonc on save
 
 [target.'cfg(unix)'.dependencies]
 filedescriptor = { workspace = true, optional = true } # wake the terminal's PTY reader on close; behind `terminal`

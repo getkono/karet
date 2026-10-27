@@ -26,10 +26,13 @@ impl Session {
             .map(Repository::metadata_dirs)
             .unwrap_or_default();
         let config_manager = ConfigManager::from_loaded(&config.loaded_config);
-        let config_paths = config_manager
+        // The settings layers plus the client's keymap files: one watcher serves
+        // every configuration file, so the client runs none of its own.
+        let mut config_paths = config_manager
             .as_ref()
             .map(ConfigManager::paths)
             .unwrap_or_default();
+        config_paths.extend(config.keymap_paths.iter().cloned());
         // Best-effort: a watcher failure (or no roots) just disables external-change
         // detection; editing still works.
         let (watcher, fs_rx) = if config.roots.is_empty() && config_paths.is_empty() {

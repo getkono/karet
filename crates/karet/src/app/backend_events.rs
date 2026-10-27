@@ -361,6 +361,9 @@ impl App {
             SessionEvent::NotUtf8 { path } => self.on_not_utf8(id, path),
             SessionEvent::FsChanged { paths } => self.on_fs_changed(&paths),
             SessionEvent::ConfigChanged { report } => self.on_config_changed(*report),
+            // A saved `keymap.jsonc` (user or project): the session's watcher has
+            // already debounced the save, so reload the whole merged keymap now.
+            SessionEvent::KeymapChanged { .. } => self.reload_keymap(),
             // Language-server chatter (jdtls-style `language/status` during a long
             // first import). Tagged so successive ticks rewrite one card instead of
             // stacking, and on the self-expiring `Activity` tier because the stream

@@ -753,6 +753,20 @@ impl Session {
         if let Some(report) = changed_config {
             self.apply_config_report(report);
         }
+        let keymap_paths: Vec<PathBuf> = event
+            .paths
+            .iter()
+            .filter(|path| self.config.keymap_paths.contains(path))
+            .cloned()
+            .collect();
+        if !keymap_paths.is_empty() {
+            self.emit(
+                None,
+                Event::KeymapChanged {
+                    paths: keymap_paths.clone(),
+                },
+            );
+        }
 
         if event
             .paths
@@ -763,10 +777,17 @@ impl Session {
             self.refresh_document_settings(&docs);
         }
 
+        // A keymap file inside a root (the project's `.karet/keymap.jsonc`) is
+        // still workspace content -- it can be open, tracked, or searched -- but
+        // the user's own keymap outside every root is not.
+        let roots = &self.config.roots;
         let workspace_paths: Vec<PathBuf> = event
             .paths
             .into_iter()
             .filter(|path| !config_paths.contains(path))
+            .filter(|path| {
+                !keymap_paths.contains(path) || roots.iter().any(|root| path.starts_with(root))
+            })
             .collect();
         for path in &workspace_paths {
             if let Some(&doc_id) = self.store.by_path.get(path) {
