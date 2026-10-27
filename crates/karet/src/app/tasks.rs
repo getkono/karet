@@ -226,8 +226,11 @@ mod running {
                 .map(|due| due.saturating_duration_since(now))
         }
 
-        /// Run every scan the throttle scheduled for `now` or earlier.
-        pub(in crate::app) fn fire_task_scans(&mut self, now: Instant) {
+        /// Run every scan the throttle scheduled for `now` or earlier, and say
+        /// whether any of them changed its task's problems (the Problems panel
+        /// and status bar then need a repaint).
+        #[must_use]
+        pub(in crate::app) fn fire_task_scans(&mut self, now: Instant) -> bool {
             let due: Vec<TerminalId> = self
                 .tasks
                 .runs
@@ -235,9 +238,11 @@ mod running {
                 .filter(|(_, run)| run.due.is_some_and(|due| due <= now))
                 .map(|(id, _)| *id)
                 .collect();
+            let mut changed = false;
             for id in due {
-                self.scan_task(id, now);
+                changed |= self.scan_task(id, now) == Some(true);
             }
+            changed
         }
 
         /// Settings were applied: forget the runs and problems of tasks they no
