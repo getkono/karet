@@ -22,6 +22,7 @@ mod matcher;
 
 use super::*;
 use crate::overlay::Picker;
+use crate::overlay::PickerKind;
 
 /// The Run Task picker's title.
 const RUN_TASK_TITLE: &str = "Run Task";
@@ -49,7 +50,10 @@ impl App {
                 (label.clone(), event)
             })
             .collect();
-        self.overlay = Some(Overlay::Picker(Picker::new(RUN_TASK_TITLE, items)));
+        self.overlay = Some(Overlay::picker(
+            PickerKind::Tasks,
+            Picker::new(RUN_TASK_TITLE, items),
+        ));
     }
 
     /// A lean build has no integrated terminal for a task to run in.

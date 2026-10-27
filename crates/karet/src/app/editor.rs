@@ -109,12 +109,6 @@ impl App {
                 let next = (i64::from(*scroll) + i64::from(delta)).clamp(0, max);
                 *scroll = next as u16;
             },
-            TabKind::Diff { pager, .. }
-            | TabKind::StashPreview { pager, .. }
-            | TabKind::ServerLog { pager, .. }
-            | TabKind::Graph { pager, .. }
-            | TabKind::LoadedConfig { pager, .. }
-            | TabKind::CommitLoading { pager, .. } => adjust(&mut pager.scroll, delta),
             TabKind::Commit { view, .. } | TabKind::Compare { view, .. } => {
                 adjust(&mut view.scroll, delta);
             },
@@ -140,7 +134,11 @@ impl App {
                 let step = i64::from(delta.signum());
                 *page = (*page as i64 + step).clamp(0, max) as usize;
             },
-            _ => {},
+            kind => {
+                if let Some(pager) = kind.pager_mut() {
+                    adjust(&mut pager.scroll, delta);
+                }
+            },
         }
     }
 
@@ -200,14 +198,6 @@ impl App {
                 let last = u16::try_from(wrapped.lines.len().saturating_sub(1)).unwrap_or(u16::MAX);
                 *scroll = if top { 0 } else { last };
             },
-            TabKind::Diff { pager, .. }
-            | TabKind::StashPreview { pager, .. }
-            | TabKind::ServerLog { pager, .. }
-            | TabKind::Graph { pager, .. }
-            | TabKind::LoadedConfig { pager, .. }
-            | TabKind::CommitLoading { pager, .. } => {
-                pager.scroll = if top { 0 } else { u16::MAX };
-            },
             TabKind::Commit { view, .. } | TabKind::Compare { view, .. } => {
                 view.scroll = if top { 0 } else { u16::MAX };
             },
@@ -228,7 +218,11 @@ impl App {
                     (*page_count).saturating_sub(1)
                 };
             },
-            _ => {},
+            kind => {
+                if let Some(pager) = kind.pager_mut() {
+                    pager.scroll = if top { 0 } else { u16::MAX };
+                }
+            },
         }
     }
 

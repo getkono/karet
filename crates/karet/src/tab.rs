@@ -4,6 +4,7 @@
 //! [`EditorState`] used by code tabs for scroll/cursor. Diff and hex tabs keep
 //! their own scroll inside the kind.
 
+mod kind;
 mod language_servers;
 mod view_state;
 

@@ -111,47 +111,12 @@ impl App {
             {
                 pendings.push(conflict.loading_since);
             }
-            match &tab.kind {
-                // A code tab waiting for the session to load its text sends
-                // nothing until the first snapshot, so its reveal is scheduled.
-                TabKind::Code { .. } if tab.fill_caret.is_some() => {
-                    pendings.extend(tab.fill_since);
-                },
-                TabKind::LanguageServers(view) => pendings.extend(view.loading_since),
-                // Indexing a repository takes seconds, so the reveal has to be scheduled
-                // rather than left to whenever a key happens to arrive.
-                // Indexing takes seconds and a node's source is read from disk, so both
-                // reveals have to be scheduled rather than left to the next keypress.
-                TabKind::Seam(state) => {
-                    pendings.extend(state.loading_since);
-                    pendings.extend(state.detail_since);
-                },
-                TabKind::CommitLoading {
-                    loading_since,
-                    error: None,
-                    ..
-                }
-                | TabKind::LatexPreview {
-                    loading_since,
-                    error: None,
-                    ..
-                } => pendings.push(*loading_since),
-                TabKind::MarkdownPreview { pending_since, .. } => {
-                    pendings.extend(*pending_since);
-                },
-                TabKind::ServerLog { loading_since, .. } => pendings.extend(*loading_since),
-                TabKind::Commit { files, .. } | TabKind::Compare { files, .. } => {
-                    pendings.extend(files.loading_since);
-                },
-                TabKind::Diff {
-                    file: None,
-                    loading_since,
-                    error: None,
-                    ..
-                } => pendings.extend(*loading_since),
-                TabKind::CommitGraph { loading_since, .. } => pendings.extend(*loading_since),
-                _ => {},
+            // A code tab waiting for the session to load its text sends
+            // nothing until the first snapshot, so its reveal is scheduled.
+            if matches!(tab.kind, TabKind::Code { .. }) && tab.fill_caret.is_some() {
+                pendings.extend(tab.fill_since);
             }
+            pendings.extend(tab.kind.pendings());
         }
         // The GitHub surface is not a tab, so its waits have to be collected in their
         // own right — a page whose wait is invisible here never schedules its reveal

@@ -51,17 +51,15 @@ impl App {
             TabKind::Code { buffer, .. } if !word_wrap => {
                 tab.editor.scroll_columns(buffer, delta);
             },
-            TabKind::Diff { pager, .. }
-            | TabKind::StashPreview { pager, .. }
-            | TabKind::ServerLog { pager, .. }
-            | TabKind::Graph { pager, .. }
-            | TabKind::LoadedConfig { pager, .. }
-            | TabKind::CommitLoading { pager, .. } => adjust(&mut pager.column, delta),
             TabKind::CommitGraph { column, .. } => adjust(column, delta),
             TabKind::Commit { view, .. } | TabKind::Compare { view, .. } => {
                 adjust(&mut view.column, delta);
             },
-            _ => {},
+            kind => {
+                if let Some(pager) = kind.pager_mut() {
+                    adjust(&mut pager.column, delta);
+                }
+            },
         }
     }
 
@@ -235,12 +233,6 @@ impl App {
             // Buffer lines, the unit `visible_lines()` reports the extent in.
             TabKind::Code { .. } => tab.editor.scroll_to_line(clamp_u32(position)),
             TabKind::MarkdownPreview { scroll, .. } => *scroll = clamp_u16(position),
-            TabKind::Diff { pager, .. }
-            | TabKind::StashPreview { pager, .. }
-            | TabKind::ServerLog { pager, .. }
-            | TabKind::Graph { pager, .. }
-            | TabKind::LoadedConfig { pager, .. }
-            | TabKind::CommitLoading { pager, .. } => pager.scroll = clamp_u16(position),
             TabKind::Commit { view, .. } | TabKind::Compare { view, .. } => {
                 view.scroll = clamp_u16(position);
             },
@@ -273,7 +265,11 @@ impl App {
             TabKind::Document {
                 page, page_count, ..
             } => *page = position.min(page_count.saturating_sub(1)),
-            _ => {},
+            kind => {
+                if let Some(pager) = kind.pager_mut() {
+                    pager.scroll = clamp_u16(position);
+                }
+            },
         }
     }
 
@@ -304,17 +300,15 @@ impl App {
         };
         match &mut tab.kind {
             TabKind::Code { .. } => tab.editor.scroll_to_column(clamp_u32(position)),
-            TabKind::Diff { pager, .. }
-            | TabKind::StashPreview { pager, .. }
-            | TabKind::ServerLog { pager, .. }
-            | TabKind::Graph { pager, .. }
-            | TabKind::LoadedConfig { pager, .. }
-            | TabKind::CommitLoading { pager, .. } => pager.column = clamp_u16(position),
             TabKind::CommitGraph { column, .. } => *column = clamp_u16(position),
             TabKind::Commit { view, .. } | TabKind::Compare { view, .. } => {
                 view.column = clamp_u16(position);
             },
-            _ => {},
+            kind => {
+                if let Some(pager) = kind.pager_mut() {
+                    pager.column = clamp_u16(position);
+                }
+            },
         }
     }
 }
