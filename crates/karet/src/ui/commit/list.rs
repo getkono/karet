@@ -3,8 +3,9 @@
 //!
 //! Keeping the rail/hash/refs/summary/age composition and the lane palette in one
 //! place is what stops those three screens from drifting apart. The lane layout of
-//! a `karet-vcs` log, the keep-the-cursor-visible clamp, and the relative-age format
-//! are app logic and live in `app/util.rs`.
+//! a `karet-vcs` log lives with the tab that caches it (`tab::commit`), the
+//! keep-the-cursor-visible clamp in `app::scroll`, and the relative-age format in
+//! `ui::time`.
 
 use std::collections::HashMap;
 
