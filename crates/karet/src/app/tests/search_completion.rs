@@ -324,7 +324,7 @@ fn a_partial_or_failed_replace_is_reported_as_a_failure() {
 fn search_option_toggle_button_click_dispatches() {
     let mut app = App::new(PathBuf::from("."), Vec::new(), Vec::new(), false);
     app.sidebar_panel = SidebarPanel::Search;
-    app.sidebar_rect = Rect {
+    app.last_frame.sidebar_rect = Rect {
         x: 0,
         y: 1,
         width: 30,

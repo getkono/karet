@@ -274,7 +274,7 @@ fn scm_log_pages_replace_then_append() {
 #[test]
 fn hover_maps_to_explorer_and_scm_rows() {
     let mut app = app();
-    app.sidebar_content_rect = Rect {
+    app.last_frame.sidebar_content_rect = Rect {
         x: 0,
         y: 2,
         width: 20,
@@ -282,10 +282,16 @@ fn hover_maps_to_explorer_and_scm_rows() {
     };
     // Explorer: hover at y=4 with offset 0 → absolute row 2.
     app.hover = Some((5, 4));
-    assert_eq!(app.hovered_explorer_row(), Some(2));
+    assert_eq!(
+        app.hovered_explorer_row(app.last_frame.sidebar_content_rect.y),
+        Some(2)
+    );
     // Above the content area → no hovered row.
     app.hover = Some((5, 1));
-    assert_eq!(app.hovered_explorer_row(), None);
+    assert_eq!(
+        app.hovered_explorer_row(app.last_frame.sidebar_content_rect.y),
+        None
+    );
 
     // Source control: display 0 is a section header, 1 and 2 are changes. Hover
     // maps against the changes region rect.
@@ -307,13 +313,13 @@ fn hover_maps_to_explorer_and_scm_rows() {
 fn sidebar_header_hover_tracks_header_only() {
     let mut app = app();
     app.sidebar_visible = true;
-    app.sidebar_rect = Rect {
+    app.last_frame.sidebar_rect = Rect {
         x: 0,
         y: 1,
         width: 20,
         height: 8,
     };
-    app.sidebar_content_rect = Rect {
+    app.last_frame.sidebar_content_rect = Rect {
         x: 0,
         y: 2,
         width: 20,
@@ -437,14 +443,14 @@ fn a_message_no_longer_takes_the_hint_bar_or_its_click_targets() {
     // named no shortcuts and every shortcut on it stopped answering clicks.
     let mut app = app();
     let _ = frame(&mut app, 120, 8);
-    let hints_before = app.status_hits.len();
+    let hints_before = app.last_frame.status_hits.len();
     assert!(hints_before > 0, "the bar starts with clickable hints");
 
     app.notify(Report::Failure, NotificationKind::Io, "save failed");
     let rows = screen(&mut app, 120, 8).join("\n");
 
     assert_eq!(
-        app.status_hits.len(),
+        app.last_frame.status_hits.len(),
         hints_before,
         "the hints and their click targets survive an active notification"
     );

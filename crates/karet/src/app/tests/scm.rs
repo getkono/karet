@@ -96,7 +96,7 @@ fn source_control_commit_click_opens_pending_commit_tab_immediately() {
     let mut app = app();
     app.backend = Some(backend.clone());
     app.sidebar_panel = SidebarPanel::SourceControl;
-    app.sidebar_rect = Rect {
+    app.last_frame.sidebar_rect = Rect {
         x: 0,
         y: 0,
         width: 30,
@@ -629,7 +629,7 @@ fn scm_double_click_materializes_the_previewed_diff_without_duplicating() {
     app.sidebar_visible = true;
     // Seed the layout state a render would have produced: the changes region
     // starts at row 2, whose first display row is change index 0.
-    app.sidebar_rect = Rect::new(0, 0, 20, 20);
+    app.last_frame.sidebar_rect = Rect::new(0, 0, 20, 20);
     app.scm_ui.changes_rect = Rect::new(0, 2, 20, 10);
     app.scm_ui.row_map = vec![Some(0), Some(1)];
 
@@ -834,13 +834,13 @@ fn conflicted_change_opens_editable_merged_view_with_read_only_sides() {
     assert!(painted.contains("fn current() {}"));
     assert!(painted.contains("<<<<<<< HEAD"));
     assert!(painted.contains("fn incoming() {}"));
-    assert!(app.editor_rect.x > app.pane_frames[0].content_rect.x);
-    assert!(app.editor_rect.right() < app.pane_frames[0].content_rect.right());
+    assert!(app.last_frame.editor_rect().x > app.last_frame.panes[0].content_rect.x);
+    assert!(app.last_frame.editor_rect().right() < app.last_frame.panes[0].content_rect.right());
     let caret = app.tabs[app.active].editor.cursor();
     app.handle_editor_click(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
-        column: app.pane_frames[0].content_rect.x.saturating_add(2),
-        row: app.editor_rect.y.saturating_add(2),
+        column: app.last_frame.panes[0].content_rect.x.saturating_add(2),
+        row: app.last_frame.editor_rect().y.saturating_add(2),
         modifiers: KeyModifiers::NONE,
     });
     assert_eq!(
@@ -858,7 +858,7 @@ fn conflicted_change_opens_editable_merged_view_with_read_only_sides() {
 fn clicking_the_commits_title_opens_the_graph_view() {
     let mut app = app();
     app.sidebar_panel = SidebarPanel::SourceControl;
-    app.sidebar_rect = Rect {
+    app.last_frame.sidebar_rect = Rect {
         x: 0,
         y: 0,
         width: 30,

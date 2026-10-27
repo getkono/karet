@@ -354,7 +354,7 @@ impl App {
         // Within the editor as last drawn: a view drawn over it clears the
         // rect, while the editor's own record of its rows outlives the frame.
         if !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
-            || !rect_contains(self.editor_rect, (mouse.column, mouse.row))
+            || !rect_contains(self.last_frame.editor_rect(), (mouse.column, mouse.row))
         {
             return false;
         }

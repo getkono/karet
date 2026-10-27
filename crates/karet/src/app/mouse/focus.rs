@@ -27,9 +27,10 @@ impl App {
         {
             self.explorer_commit_edit();
         }
-        let in_find_field = rect_contains(self.find_rects.query, point)
+        let in_find_field = rect_contains(self.last_frame.find_rects().query, point)
             || self
-                .find_rects
+                .last_frame
+                .find_rects()
                 .replace
                 .is_some_and(|rect| rect_contains(rect, point));
         if self.find_open
@@ -45,10 +46,11 @@ impl App {
     /// selection drag; whether the click landed on one.
     pub(super) fn handle_find_bar_click(&mut self, mouse: MouseEvent) -> bool {
         let point = (mouse.column, mouse.row);
-        let target = if rect_contains(self.find_rects.query, point) {
+        let target = if rect_contains(self.last_frame.find_rects().query, point) {
             TextFieldTarget::FindQuery
         } else if self
-            .find_rects
+            .last_frame
+            .find_rects()
             .replace
             .is_some_and(|r| rect_contains(r, point))
         {

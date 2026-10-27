@@ -1,33 +1,16 @@
 use super::*;
 
-/// Drop every rect and hit region the pane shell records for the mouse.
-///
-/// Called at the top of [`draw_panes`], and by the view layer when a view other
-/// than the editor owns the content area: last frame's editor and pane rects
-/// would otherwise still claim clicks aimed at the view drawn over them.
-pub(super) fn clear_pane_render_state(app: &mut App) {
-    app.pane_frames.clear();
-    app.pane_dividers.clear();
-    app.image_area = None;
-    app.editor_rect = Rect::default();
-    app.markdown_preview_rect = Rect::default();
-    app.blame_rect = None;
-    app.inlay_ui.hits.clear();
-    app.markdown_link_hits.clear();
-    app.commit_badge_rect = None;
-    app.find_rects = crate::ui::FindBarRects::default();
-}
-
 /// Draw every pane (tab strip + breadcrumb + content) tiled across `area`, recording
-/// each pane's clickable regions for mouse routing.
+/// each pane's clickable regions and the split dividers into `frame`.
 pub(super) fn draw_panes(
     f: &mut Frame,
     app: &mut App,
     theme: &Theme,
     area: Rect,
-    hits: &mut ScrollHits,
+    frame: &mut FrameHits,
 ) {
-    clear_pane_render_state(app);
+    app.inlay_ui.hits.clear();
+    let hits = &mut frame.scroll;
     let focused = app.focus_pane();
     // A maximised pane takes the whole area alone, with no dividers to drag. One
     // that lost focus since it was maximised is dropped by `App::prepare_frame`;
@@ -225,18 +208,9 @@ pub(super) fn draw_panes(
             continue;
         };
         if is_focused {
-            app.editor_rect = rendered.editor_rect;
-            app.markdown_preview_rect = rendered.markdown_preview_rect;
-            app.image_area = rendered.image_area;
-            app.blame_rect = rendered.blame_rect;
             app.inlay_ui.hits = rendered.inlay_hits;
-            app.commit_badge_rect = rendered.commit_badge_rect;
-            app.find_rects = rendered.find_rects;
         }
-        // A background pane's links are as live as the focused pane's: the
-        // Ctrl+click that follows one focuses the pane it lands in first.
-        app.markdown_link_hits.extend(rendered.markdown_link_hits);
-        app.pane_frames.push(crate::app::PaneFrame {
+        frame.panes.push(crate::app::PaneFrame {
             pane,
             tabstrip_rect: rendered.tabstrip_rect,
             tab_hits: rendered.tab_hits,
@@ -252,14 +226,19 @@ pub(super) fn draw_panes(
             commit_rail_rect: rendered.commit_rail_rect,
             commit_collapse_hits: rendered.commit_collapse_hits,
             select_regions: rendered.select_regions,
+            blame_rect: rendered.blame_rect,
+            commit_badge_rect: rendered.commit_badge_rect,
+            image_area: rendered.image_area,
+            find_rects: rendered.find_rects,
+            markdown_link_hits: rendered.markdown_link_hits,
         });
     }
-    app.pane_dividers = if maximized {
+    frame.pane_dividers = if maximized {
         Vec::new()
     } else {
         app.layout.dividers(area)
     };
-    for divider in app.pane_dividers.iter().copied() {
+    for divider in frame.pane_dividers.iter().copied() {
         let emphasized = app.pane_divider_hover == Some(divider)
             || app.pane_resize.is_some_and(|resize| {
                 resize.divider.axis == divider.axis
@@ -367,7 +346,12 @@ pub(super) fn render_pane(
 
 /// While dragging a tab over another pane, tint the region it would land in (a half
 /// for an edge split, the whole pane for a center move) — VS Code's drop preview.
-pub(super) fn draw_drop_preview(f: &mut Frame, app: &App, theme: &Theme) {
+pub(super) fn draw_drop_preview(
+    f: &mut Frame,
+    app: &App,
+    theme: &Theme,
+    panes: &[crate::app::PaneFrame],
+) {
     let Some(TabDrag {
         hover: Some((pane, zone)),
         ..
@@ -375,7 +359,7 @@ pub(super) fn draw_drop_preview(f: &mut Frame, app: &App, theme: &Theme) {
     else {
         return;
     };
-    let Some(frame) = app.pane_frames.iter().find(|fr| fr.pane == pane) else {
+    let Some(frame) = panes.iter().find(|fr| fr.pane == pane) else {
         return;
     };
     let preview = karet_widgets::drop_preview_rect(frame.content_rect, zone);
@@ -387,14 +371,18 @@ pub(super) fn draw_drop_preview(f: &mut Frame, app: &App, theme: &Theme) {
     );
 }
 
-/// Draw the notification toast stack (bottom-right) and record each card's clickable
-/// region for dismissal hit-testing. A no-op when there are no active notifications.
-/// Draw the completion popup anchored at the caret: aligned with the start of
-/// the word being completed, below the caret's line, or above it when there is
-/// not enough room below. Sized so the widest label+detail row is fully
-/// visible within the editor area (the widget truncates details with an
+/// Draw the completion popup anchored at the caret inside `editor`: aligned with
+/// the start of the word being completed, below the caret's line, or above it
+/// when there is not enough room below. Sized so the widest label+detail row is
+/// fully visible within the editor area (the widget truncates details with an
 /// ellipsis when the editor itself is too narrow).
-pub(super) fn draw_completion(f: &mut Frame, app: &mut App, theme: &Theme, hits: &mut ScrollHits) {
+pub(super) fn draw_completion(
+    f: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    editor: Rect,
+    hits: &mut ScrollHits,
+) {
     // Forgotten first, so a frame that ends up not painting it leaves nothing for
     // the pointer to hit; the render below records where it went.
     if let Some(ui) = app.completion.popup.as_mut() {
@@ -404,7 +392,6 @@ pub(super) fn draw_completion(f: &mut Frame, app: &mut App, theme: &Theme, hits:
     let Some(filter) = app.completion_filter() else {
         return;
     };
-    let editor = app.editor_rect;
     if editor.width == 0 || editor.height == 0 {
         return;
     }
@@ -508,14 +495,13 @@ fn draw_completion_docs(
 /// above it when there is room (the line under discussion stays visible),
 /// below otherwise. Content is pre-wrapped to the chosen width; overflow past
 /// the available height is clipped, and scrolls into view under the wheel.
-pub(super) fn draw_hover(f: &mut Frame, app: &mut App, theme: &Theme) {
+pub(super) fn draw_hover(f: &mut Frame, app: &mut App, theme: &Theme, editor: Rect) {
     let Some(ui) = app.hover_ui.as_mut() else {
         return;
     };
     // Forgotten first, so a frame that does not paint the popup leaves nothing
     // for the pointer to hit.
     ui.rect = Rect::default();
-    let editor = app.editor_rect;
     let caret_cell = {
         let Some(tab) = app.tabs.get(app.active) else {
             return;
@@ -598,21 +584,26 @@ fn place_hover_popup(
 /// cells of the part it describes: above them when there is room, so the
 /// line it annotates stays readable, below otherwise. Clipped to the editor,
 /// like the hover popup.
-pub(super) fn draw_inlay_tooltip(f: &mut Frame, app: &App, theme: &Theme) {
+pub(super) fn draw_inlay_tooltip(f: &mut Frame, app: &App, theme: &Theme, editor: Rect) {
     let Some(tooltip) = app.inlay_ui.tooltip.as_ref() else {
         return;
     };
     let anchor = tooltip.anchor;
     let popup = karet_widgets::hover::HoverPopup::new(&tooltip.markup, theme);
-    if let Some((rect, _)) =
-        place_hover_popup(f, app.editor_rect, (anchor.x, anchor.y), &popup, theme)
-    {
+    if let Some((rect, _)) = place_hover_popup(f, editor, (anchor.x, anchor.y), &popup, theme) {
         f.render_widget(popup, rect);
     }
 }
 
-pub(super) fn draw_toasts(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
-    app.toast_hits.clear();
+/// Draw the notification toast stack (bottom-right) and record each card's clickable
+/// region for dismissal hit-testing. A no-op when there are no active notifications.
+pub(super) fn draw_toasts(
+    f: &mut Frame,
+    app: &App,
+    theme: &Theme,
+    area: Rect,
+    frame: &mut FrameHits,
+) {
     if app.notifications.is_empty() {
         return;
     }
@@ -623,7 +614,7 @@ pub(super) fn draw_toasts(f: &mut Frame, app: &mut App, theme: &Theme, area: Rec
         corner: Corner::BottomRight,
     };
     for slot in toasts.layout(area) {
-        app.toast_hits.push(ToastHit {
+        frame.toast_hits.push(ToastHit {
             rect: slot.rect,
             id: slot.id,
         });
@@ -634,15 +625,7 @@ pub(super) fn draw_toasts(f: &mut Frame, app: &mut App, theme: &Theme, area: Rec
 /// Draw the find-in-file bar: a find row (query, match count, option toggles) and,
 /// when the replace field is shown, a replace row. Mirrors the workspace Search
 /// panel's model on the status-bar strip for a consistent find/replace experience.
-/// Where the find bar's two editable fields landed, for pointer hit-testing.
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct FindBarRects {
-    /// The query field.
-    pub(crate) query: Rect,
-    /// The replacement field, when the replace row is shown.
-    pub(crate) replace: Option<Rect>,
-}
-
+/// Returns where its two editable fields landed, for pointer hit-testing.
 pub(super) fn draw_find_bar(
     f: &mut Frame,
     find: &FindState,

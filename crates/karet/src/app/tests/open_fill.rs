@@ -164,7 +164,7 @@ fn an_edit_before_the_fill_is_refused_rather_than_sent_against_the_placeholder()
 fn the_first_fill_redraws_a_markdown_preview_drawn_from_the_placeholder() {
     let (mut app, _backend, dir) = reserved("fill-preview", "# Loaded heading\n");
     app.focus = Focus::Editor;
-    app.main_rect = Rect::new(0, 0, 100, 20);
+    app.last_frame.main_rect = Rect::new(0, 0, 100, 20);
     app.dispatch(Command::MarkdownPreviewSide);
     // Drawn once from the empty placeholder, at version 0.
     let before = screen(&mut app, 100, 20).join("\n");

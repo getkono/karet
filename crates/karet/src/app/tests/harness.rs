@@ -361,12 +361,13 @@ impl Rig {
 
     /// Every pane's id and editor rect, in layout order.
     fn frames(&self) -> Vec<(PaneId, Rect)> {
-        let order = self.app.layout.layout(self.app.main_rect);
+        let order = self.app.layout.layout(self.app.last_frame.main_rect);
         order
             .into_iter()
             .filter_map(|(pane, _)| {
                 self.app
-                    .pane_frames
+                    .last_frame
+                    .panes
                     .iter()
                     .find(|frame| frame.pane == pane)
                     .map(|frame| (pane, frame.editor_rect))

@@ -773,7 +773,7 @@ fn double_click_badge_reveals_and_wakes_to_hide() {
         width: 80,
         height: 20,
     };
-    app.pane_frames = vec![content_frame(&app, area)];
+    app.last_frame.panes = vec![content_frame(&app, area)];
     // Pretend the last frame placed the badge here.
     let badge = Rect {
         x: 20,
@@ -781,7 +781,7 @@ fn double_click_badge_reveals_and_wakes_to_hide() {
         width: 8,
         height: 1,
     };
-    app.commit_badge_rect = Some(badge);
+    app.focused_frame_mut().commit_badge_rect = Some(badge);
     let click = |col, row| MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
         column: col,

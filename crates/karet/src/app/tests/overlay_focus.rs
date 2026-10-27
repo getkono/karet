@@ -237,7 +237,7 @@ fn replace_after_edit(marked: &str, steps_to_match: usize, edit: &[Step], target
     rig.run(&[click(target)]);
     republish(&mut rig.app);
     rig.render();
-    if let Some(field) = rig.app.find_rects.replace {
+    if let Some(field) = rig.app.last_frame.find_rects().replace {
         rig.run(&[click(At::Cell(field.x + 1, field.y))]);
     }
     rig
@@ -329,7 +329,7 @@ fn clicking_the_find_field_takes_the_keyboard_back() {
     let mut rig = Rig::new("|foo bar\n");
     rig.run(&find("fo"));
     rig.run(&[click(text(0, 5))]);
-    let query = rig.app.find_rects.query;
+    let query = rig.app.last_frame.find_rects().query;
     // Even from the commit box, which outranks the bar while it is focused.
     rig.app.commit_input.focused = true;
     rig.run(&[click(At::Cell(query.x + 2, query.y))]);

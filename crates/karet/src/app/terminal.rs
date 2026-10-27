@@ -151,7 +151,8 @@ impl App {
     /// The grid a new terminal in the focused pane starts on: the pane's content
     /// area, or a default before the first paint has measured it.
     pub(super) fn terminal_grid_size(&self) -> (u16, u16) {
-        self.pane_frames
+        self.last_frame
+            .panes
             .iter()
             .find(|frame| frame.pane == self.focus_pane())
             .map(|frame| (frame.content_rect.width, frame.content_rect.height))

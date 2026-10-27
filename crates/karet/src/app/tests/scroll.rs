@@ -22,7 +22,7 @@ fn a_click_on_the_last_text_column_resolves_to_the_character_drawn_there() {
     app.push_tab(text_tab("wide.rs", &text));
     let rows = screen(&mut app, 40, 12);
 
-    let rect = app.editor_rect;
+    let rect = app.last_frame.editor_rect();
     let (x, y) = (rect.right() - 1, rect.y);
     app.handle_editor_click(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
@@ -49,7 +49,7 @@ fn the_editor_paints_its_bars_outside_the_text() {
     app.push_tab(text_tab("wide.rs", &long_line()));
     let rows = screen(&mut app, 40, 12);
 
-    let rect = app.editor_rect;
+    let rect = app.last_frame.editor_rect();
     let track_x = rect.right();
     let track_y = rect.bottom();
     assert!(track_x < 40, "no vertical track was reserved");
@@ -77,7 +77,7 @@ fn a_tall_document_paints_a_vertical_bar_that_tracks_the_scroll() {
     let mut app = app();
     app.push_tab(text_tab("tall.rs", &text));
     let rows = screen(&mut app, 40, 12);
-    let track_x = app.editor_rect.right();
+    let track_x = app.last_frame.editor_rect().right();
 
     let thumb_rows = |rows: &[String]| -> Vec<usize> {
         rows.iter()
@@ -138,7 +138,7 @@ fn a_wheel_notch_over_the_track_moves_one_line_while_the_text_moves_three() {
     let mut app = app();
     app.push_tab(text_tab("tall.rs", &"line\n".repeat(200)));
     screen(&mut app, 40, 12);
-    let rect = app.editor_rect;
+    let rect = app.last_frame.editor_rect();
 
     wheel(&mut app, rect.right(), rect.y + 1, true);
     assert_eq!(
@@ -162,7 +162,7 @@ fn the_wheel_over_a_track_stops_at_the_ends() {
     let mut app = app();
     app.push_tab(text_tab("tall.rs", &"line\n".repeat(200)));
     screen(&mut app, 40, 12);
-    let rect = app.editor_rect;
+    let rect = app.last_frame.editor_rect();
 
     wheel(&mut app, rect.right(), rect.y + 1, false);
     assert_eq!(app.tabs[app.active].editor.scroll_line(), 0);
@@ -173,10 +173,11 @@ fn dragging_the_thumb_scrolls_the_editor_and_reaches_the_last_line() {
     let mut app = app();
     app.push_tab(text_tab("tall.rs", &"line\n".repeat(200)));
     screen(&mut app, 40, 12);
-    let rect = app.editor_rect;
+    let rect = app.last_frame.editor_rect();
     let track_x = rect.right();
     let hit = app
-        .scroll_hits
+        .last_frame
+        .scroll
         .at(track_x, rect.y)
         .expect("the editor's track should be registered");
     let (start, _) = hit.track.thumb_span().unwrap_or_default();
@@ -210,9 +211,10 @@ fn a_drag_keeps_scrolling_after_the_pointer_leaves_the_track() {
     let mut app = app();
     app.push_tab(text_tab("tall.rs", &"line\n".repeat(200)));
     screen(&mut app, 40, 12);
-    let rect = app.editor_rect;
+    let rect = app.last_frame.editor_rect();
     let hit = app
-        .scroll_hits
+        .last_frame
+        .scroll
         .at(rect.right(), rect.y)
         .expect("the editor's track should be registered");
     let (start, _) = hit.track.thumb_span().unwrap_or_default();
@@ -235,7 +237,7 @@ fn clicking_the_groove_below_the_thumb_pages_down() {
     let mut app = app();
     app.push_tab(text_tab("tall.rs", &"line\n".repeat(200)));
     screen(&mut app, 40, 12);
-    let rect = app.editor_rect;
+    let rect = app.last_frame.editor_rect();
 
     press(&mut app, rect.right(), rect.bottom() - 1);
 
@@ -254,10 +256,10 @@ fn a_track_for_content_that_fits_is_inert_and_still_swallows_the_click() {
     let mut app = app();
     app.push_tab(text_tab("short.rs", "one\ntwo\nthree\n"));
     screen(&mut app, 40, 12);
-    let rect = app.editor_rect;
+    let rect = app.last_frame.editor_rect();
 
     assert!(
-        app.scroll_hits.at(rect.right(), rect.y).is_none(),
+        app.last_frame.scroll.at(rect.right(), rect.y).is_none(),
         "a suppressed bar should not be registered"
     );
     press(&mut app, rect.right(), rect.y + 2);
@@ -272,12 +274,12 @@ fn the_registry_is_rebuilt_every_frame() {
     let mut app = app();
     app.push_tab(text_tab("tall.rs", &"line\n".repeat(200)));
     screen(&mut app, 40, 12);
-    assert!(app.scroll_hits.of(ScrollSurface::TabRows).is_some());
+    assert!(app.last_frame.scroll.of(ScrollSurface::TabRows).is_some());
 
     app.tabs[app.active] = text_tab("short.rs", "one\n");
     screen(&mut app, 40, 12);
     assert!(
-        app.scroll_hits.of(ScrollSurface::TabRows).is_none(),
+        app.last_frame.scroll.of(ScrollSurface::TabRows).is_none(),
         "the previous frame's track should not survive"
     );
 }
@@ -297,7 +299,8 @@ fn dragging_the_explorer_thumb_scrolls_the_tree_without_it_snapping_back() {
     screen(&mut app, 60, 20);
 
     let hit = app
-        .scroll_hits
+        .last_frame
+        .scroll
         .of(ScrollSurface::Explorer)
         .expect("a 60-row tree in a 20-row sidebar should paint a bar");
     let track = hit.track.rect();
@@ -332,7 +335,8 @@ fn the_sidebar_track_scrolls_the_sidebar_and_not_the_editor() {
     screen(&mut app, 60, 20);
 
     let track = app
-        .scroll_hits
+        .last_frame
+        .scroll
         .of(ScrollSurface::Explorer)
         .expect("the explorer should paint a bar")
         .track
@@ -398,7 +402,8 @@ fn select_server(app: &mut App, index: usize) {
 
 /// The inventory's live scrollbar track.
 fn inventory_track(app: &App) -> ScrollHit {
-    app.scroll_hits
+    app.last_frame
+        .scroll
         .of(ScrollSurface::TabRows)
         .expect("an overflowing inventory should paint a bar")
 }

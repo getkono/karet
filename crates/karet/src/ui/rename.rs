@@ -19,9 +19,9 @@ use crate::tab::TabKind;
 const MIN_WIDTH: u16 = 24;
 
 /// Draw the rename prompt anchored at the symbol: on the line below it when
-/// there is room, so the name being replaced stays visible, else above it.
-pub(super) fn draw_rename(f: &mut Frame, app: &mut App, theme: &Theme) {
-    let editor = app.editor_rect;
+/// there is room, so the name being replaced stays visible, else above it, within
+/// the focused `editor` this frame painted.
+pub(super) fn draw_rename(f: &mut Frame, app: &mut App, theme: &Theme, editor: Rect) {
     let Some(prompt) = app.rename.as_ref().filter(|prompt| prompt.shown) else {
         return;
     };

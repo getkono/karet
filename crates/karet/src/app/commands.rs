@@ -175,8 +175,12 @@ impl App {
             Command::EnterNormalMode => self.vi_enter_normal(),
             Command::ScrollUp => self.scroll_lines(-1),
             Command::ScrollDown => self.scroll_lines(1),
-            Command::PageUp => self.scroll_lines(-i32::from(self.main_rect.height.max(1))),
-            Command::PageDown => self.scroll_lines(i32::from(self.main_rect.height.max(1))),
+            Command::PageUp => {
+                self.scroll_lines(-i32::from(self.last_frame.main_rect.height.max(1)))
+            },
+            Command::PageDown => {
+                self.scroll_lines(i32::from(self.last_frame.main_rect.height.max(1)))
+            },
             Command::Top => self.scroll_edge(true),
             Command::Bottom => self.scroll_edge(false),
             Command::ToggleDiffLayout => self.toggle_diff_layout(),
@@ -612,7 +616,7 @@ impl App {
         if is_code {
             self.caret_motion(false, motion);
         } else {
-            let page = i32::from(self.main_rect.height.max(1));
+            let page = i32::from(self.last_frame.main_rect.height.max(1));
             self.scroll_lines(if motion == Motion::PageUp {
                 -page
             } else {

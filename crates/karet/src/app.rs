@@ -506,37 +506,24 @@ pub struct App {
     pub(crate) spelling: SpellingPanel,
     /// The centralized notification stack (errors, out-of-band conditions).
     pub(crate) notifications: NotificationCenter,
-    /// Clickable toast cards from the last frame (mouse hit-testing).
-    pub(crate) toast_hits: Vec<ToastHit>,
-    /// The sidebar rect from the last frame (mouse hit-testing).
-    pub(crate) sidebar_rect: Rect,
-    /// The main content rect from the last frame.
-    pub(crate) main_rect: Rect,
+    /// Every hit region and rect the last frame recorded for the mouse, assigned
+    /// once per frame by [`ui::draw`].
+    pub(crate) last_frame: FrameHits,
     /// The user-controlled sidebar width in columns (draggable; clamped responsively
     /// to the terminal width each frame).
     pub(crate) sidebar_width: u16,
-    /// The x column of the sidebar's drag divider from the last frame (hit-testing).
-    pub(crate) sidebar_divider_x: u16,
     /// Whether a sidebar-resize drag is currently in progress.
     pub(crate) sidebar_resizing: bool,
     /// The last-used diff layout; newly-opened diffs adopt it so the choice sticks.
     pub(crate) diff_layout: ViewMode,
-    /// Per-pane clickable regions from the last frame (mouse hit-testing).
-    pub(crate) pane_frames: Vec<PaneFrame>,
-    /// Draggable split boundaries from the last rendered frame.
-    pub(crate) pane_dividers: Vec<PaneDivider>,
     /// Current pointer-hovered split boundary.
     pub(crate) pane_divider_hover: Option<PaneDivider>,
     /// Active pane-boundary drag.
     pub(crate) pane_resize: Option<PaneResize>,
-    /// Every scrollbar track the last frame painted, in draw order (hit-testing).
-    pub(crate) scroll_hits: ScrollHits,
     /// The in-progress scrollbar-thumb drag, if one is under way.
     pub(crate) scroll_drag: Option<ScrollDrag>,
     /// The in-progress tab drag, if the pointer is dragging a tab.
     pub(crate) tab_drag: Option<TabDrag>,
-    /// The sidebar's content area (below the header) from the last frame.
-    pub(crate) sidebar_content_rect: Rect,
     /// The current mouse position while hovering the sidebar content, for a
     /// secondary-accent row highlight (explorer / source-control lists).
     pub(crate) hover: Option<(u16, u16)>,
@@ -544,19 +531,10 @@ pub struct App {
     pub(crate) pane_action_hover: Option<(u16, u16)>,
     /// The current mouse position while hovering the sidebar header controls.
     pub(crate) sidebar_header_hover: Option<(u16, u16)>,
-    /// The header panel-switcher cells (`1 2 3`) from the last frame.
-    pub(crate) panel_hits: Vec<(u16, u16, SidebarPanel)>,
-    /// The chrome row carrying the top-level view switcher.
-    pub(crate) view_chrome_rect: Rect,
-    /// Column spans of the view-switcher buttons on the chrome row.
-    pub(crate) view_hits: Vec<(u16, u16, View)>,
     /// The right-side outline panel.
     pub(crate) outline: OutlinePanel,
     /// Zen Mode and the maximised pane.
     pub(crate) modes: ScreenModes,
-    /// The explorer header toolbar-button cells `(start, end, command)` from the last
-    /// frame (new file / new folder / refresh / collapse all).
-    pub(crate) header_action_hits: Vec<(u16, u16, Command)>,
 
     /// Last completed compact status for nested repositories in the explorer.
     nested_repository_status: HashMap<PathBuf, RepositorySummary>,
@@ -566,8 +544,6 @@ pub struct App {
     pub(crate) scm_ui: ScmChrome,
     /// Text field currently being extended by a left-button drag.
     pub(crate) text_field_drag: Option<TextFieldTarget>,
-    /// Where the find-in-file bar's editable fields landed last frame.
-    pub(crate) find_rects: crate::ui::FindBarRects,
     /// The Search panel's last-frame render chrome.
     pub(crate) search_ui: SearchChrome,
     /// The Spelling panel's last-frame render chrome.
@@ -588,18 +564,6 @@ pub struct App {
     pub(crate) hierarchy: hierarchy::HierarchyPanel,
     /// The Hierarchy panel's per-frame chrome.
     pub(crate) hierarchy_ui: hierarchy::HierarchyChrome,
-    /// The status bar rect from the last frame (mouse hit-testing).
-    pub(crate) status_rect: Rect,
-    /// Clickable status-bar segments `(start, end, command)` from the last frame.
-    pub(crate) status_hits: Vec<(u16, u16, Command)>,
-    /// The active code tab's editor content area from the last frame.
-    pub(crate) editor_rect: Rect,
-    /// The active code tab's in-editor Markdown preview area from the last frame.
-    pub(crate) markdown_preview_rect: Rect,
-    /// Visible committed-attribution text from the last frame, for click routing.
-    pub(crate) blame_rect: Option<Rect>,
-    /// Visible Markdown link runs from the focused preview's last frame.
-    pub(crate) markdown_link_hits: Vec<MarkdownLinkHit>,
     /// Current mouse position when it rests over a visible Markdown link.
     pub(crate) markdown_link_hover: Option<(u16, u16)>,
     /// The definition request awaiting an answer, if any.
@@ -620,9 +584,6 @@ pub struct App {
     pub(crate) nav_history: HashMap<PaneId, navigation::NavHistory>,
     /// The Ctrl-hovered symbol the editor should underline as navigable.
     pub(crate) definition_hover: Option<definition::DefinitionHover>,
-    /// The focused commit view's signature-badge rect (screen coords) from the last
-    /// frame, for double-click hit-testing. `None` when no badge is on screen.
-    pub(crate) commit_badge_rect: Option<Rect>,
     /// The editor's in-progress pointer selection drag, if one is under way.
     pub(crate) editor_drag: Option<drag::EditorDrag>,
     /// The box selection last made, so the next Shift+Alt press or
@@ -642,8 +603,6 @@ pub struct App {
     click_origin: (editor::ClickSurface, KeyModifiers),
     /// The system clipboard (OSC 52).
     clipboard: Clipboard,
-    /// The active Kitty image placement rect (set by the renderer), if any.
-    pub(crate) image_area: Option<Rect>,
     /// Local images the markdown preview paints, decoded off the UI thread.
     pub(crate) preview_images: crate::preview_images::PreviewImages,
     /// Starts integrated terminals and owns the channel their output and exit

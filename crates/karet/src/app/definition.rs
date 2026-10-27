@@ -310,7 +310,8 @@ impl App {
     /// (see [`Self::pane_source_link`]).
     pub(crate) fn focused_editor_area(&self, point: (u16, u16)) -> Option<Rect> {
         let frame = self
-            .pane_frames
+            .last_frame
+            .panes
             .iter()
             .find(|frame| rect_contains(frame.content_rect, point))?;
         (frame.pane == self.focus_pane() && rect_contains(frame.editor_rect, point))
@@ -356,7 +357,8 @@ impl App {
     /// editor's viewport.
     fn pane_tab_at(&self, point: (u16, u16)) -> Option<(&Tab, Rect)> {
         let frame = self
-            .pane_frames
+            .last_frame
+            .panes
             .iter()
             .find(|frame| rect_contains(frame.content_rect, point))?;
         if !rect_contains(frame.editor_rect, point) {

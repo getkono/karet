@@ -62,7 +62,7 @@ fn wheel(app: &mut App, kind: MouseEventKind, x: u16, y: u16) {
 fn the_rail_states_a_shared_directory_once() {
     let mut app = deep_commit_app();
     let painted = screen(&mut app, 120, 24);
-    let rail = app.pane_frames[0].commit_rail_rect;
+    let rail = app.last_frame.panes[0].commit_rail_rect;
     let column = painted
         .iter()
         .skip(usize::from(rail.y))
@@ -92,7 +92,7 @@ fn the_rail_states_a_shared_directory_once() {
 fn the_rail_wheel_scrolls_the_rail_and_not_the_diff() {
     let mut app = deep_commit_app();
     let _ = screen(&mut app, 120, 12);
-    let rail = app.pane_frames[0].commit_rail_rect;
+    let rail = app.last_frame.panes[0].commit_rail_rect;
     assert!(rail.height > 0, "the wide layout paints a rail");
     let diff_before = view(&app).scroll;
 
@@ -113,7 +113,7 @@ fn the_rail_wheel_scrolls_the_rail_and_not_the_diff() {
 fn the_wheel_beside_the_rail_still_scrolls_the_diff() {
     let mut app = deep_commit_app();
     let _ = screen(&mut app, 120, 12);
-    let rail = app.pane_frames[0].commit_rail_rect;
+    let rail = app.last_frame.panes[0].commit_rail_rect;
     wheel(
         &mut app,
         MouseEventKind::ScrollDown,
@@ -131,20 +131,20 @@ fn clicking_a_directory_row_folds_and_unfolds_it() {
     for width in [80, 120] {
         let mut app = deep_commit_app();
         let _ = screen(&mut app, width, 24);
-        let files_before = app.pane_frames[0].commit_file_hits.len();
-        let hit = app.pane_frames[0].commit_dir_hits[0].clone();
+        let files_before = app.last_frame.panes[0].commit_file_hits.len();
+        let hit = app.last_frame.panes[0].commit_dir_hits[0].clone();
         assert!(files_before > 0, "at width {width}");
 
         click(&mut app, hit.rect.x + 1, hit.rect.y);
         let _ = screen(&mut app, width, 24);
         assert!(
-            app.pane_frames[0].commit_file_hits.len() < files_before,
+            app.last_frame.panes[0].commit_file_hits.len() < files_before,
             "folding hides files at width {width}"
         );
         assert!(view(&app).collapsed_dirs.contains(&hit.path));
 
         // The row the fold left behind is the row that unfolds it.
-        let again = app.pane_frames[0]
+        let again = app.last_frame.panes[0]
             .commit_dir_hits
             .iter()
             .find(|dir| dir.path == hit.path)
@@ -153,7 +153,7 @@ fn clicking_a_directory_row_folds_and_unfolds_it() {
         click(&mut app, again.rect.x + 1, again.rect.y);
         let _ = screen(&mut app, width, 24);
         assert_eq!(
-            app.pane_frames[0].commit_file_hits.len(),
+            app.last_frame.panes[0].commit_file_hits.len(),
             files_before,
             "unfolding restores them at width {width}"
         );
@@ -167,7 +167,7 @@ fn clicking_a_directory_row_folds_and_unfolds_it() {
 fn clicking_a_file_row_still_jumps_the_diff() {
     let mut app = deep_commit_app();
     let _ = screen(&mut app, 120, 24);
-    let hit = app.pane_frames[0].commit_file_hits[2];
+    let hit = app.last_frame.panes[0].commit_file_hits[2];
     click(&mut app, hit.rect.x + 4, hit.rect.y);
     assert_eq!(view(&app).scroll, hit.scroll);
 }
@@ -242,7 +242,7 @@ fn the_rail_reveals_a_new_active_file_without_fighting_a_manual_scroll() {
     let _ = screen(&mut app, 120, 14);
     assert_eq!(view(&app).rail_scroll, revealed);
     // ...nor may a repaint undo a scroll the user just made.
-    let rail = app.pane_frames[0].commit_rail_rect;
+    let rail = app.last_frame.panes[0].commit_rail_rect;
     wheel(&mut app, MouseEventKind::ScrollUp, rail.x + 1, rail.y + 1);
     let manual = view(&app).rail_scroll;
     assert!(manual < revealed);
@@ -256,13 +256,13 @@ fn the_rail_reveals_a_new_active_file_without_fighting_a_manual_scroll() {
 fn the_fold_all_command_folds_every_directory_and_unfold_all_restores_them() {
     let mut app = deep_commit_app();
     let _ = screen(&mut app, 120, 24);
-    let files = app.pane_frames[0].commit_file_hits.len();
+    let files = app.last_frame.panes[0].commit_file_hits.len();
     assert!(files > 0);
 
     app.dispatch(Command::CommitFoldFileTree);
     let _ = screen(&mut app, 120, 24);
     assert!(
-        app.pane_frames[0].commit_file_hits.is_empty(),
+        app.last_frame.panes[0].commit_file_hits.is_empty(),
         "no file row survives a full fold"
     );
     assert!(
@@ -276,7 +276,7 @@ fn the_fold_all_command_folds_every_directory_and_unfold_all_restores_them() {
     app.dispatch(Command::CommitUnfoldFileTree);
     let _ = screen(&mut app, 120, 24);
     assert!(view(&app).collapsed_dirs.is_empty());
-    assert_eq!(app.pane_frames[0].commit_file_hits.len(), files);
+    assert_eq!(app.last_frame.panes[0].commit_file_hits.len(), files);
 }
 
 /// A fold survives the layout breakpoint, and *both* layouts honour it: a fold no
@@ -289,7 +289,7 @@ fn a_fold_survives_a_resize_and_both_layouts_honour_it() {
             TabKind::Commit { files, .. } => &files.files,
             _ => panic!("expected commit tab"),
         };
-        app.pane_frames[0]
+        app.last_frame.panes[0]
             .commit_file_hits
             .iter()
             .filter_map(|hit| files.get(hit.file).map(|f| f.change.path.clone()))
@@ -298,7 +298,7 @@ fn a_fold_survives_a_resize_and_both_layouts_honour_it() {
 
     let mut app = deep_commit_app();
     let _ = screen(&mut app, 120, 24);
-    let hit = app.pane_frames[0].commit_dir_hits[0].clone();
+    let hit = app.last_frame.panes[0].commit_dir_hits[0].clone();
     assert_eq!(hit.path, PathBuf::from("crates/karet/src"));
     assert!(listed(&app).iter().any(|path| path.starts_with(&hit.path)));
 
@@ -326,7 +326,7 @@ fn the_stacked_index_rows_win_the_press_from_the_card_selection() {
     let _ = screen(&mut app, 80, 24);
 
     // A directory row folds rather than starting a selection over it.
-    let dir = app.pane_frames[0].commit_dir_hits[0].clone();
+    let dir = app.last_frame.panes[0].commit_dir_hits[0].clone();
     click(&mut app, dir.rect.x + 1, dir.rect.y);
     assert!(view(&app).collapsed_dirs.contains(&dir.path));
     assert!(
@@ -336,7 +336,7 @@ fn the_stacked_index_rows_win_the_press_from_the_card_selection() {
 
     // And a file row jumps the diff.
     let _ = screen(&mut app, 80, 24);
-    let file = app.pane_frames[0].commit_file_hits[0];
+    let file = app.last_frame.panes[0].commit_file_hits[0];
     click(&mut app, file.rect.x + 6, file.rect.y);
     assert_eq!(view(&app).scroll, file.scroll);
     assert!(app.surface_selection.is_none());
@@ -356,11 +356,11 @@ fn a_press_on_a_diff_row_still_starts_a_selection() {
     }
     let _ = screen(&mut app, 80, 24);
     assert!(
-        app.pane_frames[0].commit_file_hits.is_empty()
-            && app.pane_frames[0].commit_dir_hits.is_empty(),
+        app.last_frame.panes[0].commit_file_hits.is_empty()
+            && app.last_frame.panes[0].commit_dir_hits.is_empty(),
         "the index has scrolled away, so only card rows are on screen"
     );
-    let region = app.pane_frames[0].select_regions[0].area;
+    let region = app.last_frame.panes[0].select_regions[0].area;
     click(&mut app, region.x + 8, region.y + 4);
     assert!(
         app.surface_selection.is_some(),
@@ -423,7 +423,8 @@ fn an_unfocused_panes_rail_takes_the_wheel_without_taking_focus() {
     let _ = screen(&mut app, 240, 24);
     let focused = app.focus_pane();
     let Some((pane, other)) = app
-        .pane_frames
+        .last_frame
+        .panes
         .iter()
         .find(|frame| frame.pane != focused && frame.commit_rail_rect.height > 0)
         .map(|frame| (frame.pane, frame.commit_rail_rect))

@@ -34,7 +34,7 @@ fn reload(rig: &mut Rig, edit: impl FnOnce(&mut Settings)) {
 fn a_reload_repaints_the_gutter_cursor_line_and_rulers() {
     let mut rig = Rig::sized(&thirty_lines(), SIZE.0, SIZE.1);
     let screen = frame(&mut rig.app, SIZE.0, SIZE.1);
-    let area = rig.app.editor_rect;
+    let area = rig.app.last_frame.editor_rect();
     // Thirty-one lines: a marker cell, two digits, the change lane and the
     // fold lane.
     assert_eq!(screen[(area.x + 5, area.y)].symbol(), "l");
@@ -51,7 +51,7 @@ fn a_reload_repaints_the_gutter_cursor_line_and_rulers() {
         settings.editor.rulers = vec![2];
     });
     let screen = frame(&mut rig.app, SIZE.0, SIZE.1);
-    let area = rig.app.editor_rect;
+    let area = rig.app.last_frame.editor_rect();
     assert_eq!(
         screen[(area.x + 3, area.y)].symbol(),
         "l",
@@ -75,7 +75,7 @@ fn a_reload_repaints_the_gutter_cursor_line_and_rulers() {
         settings.editor.line_numbers = LineNumbers::Relative;
     });
     let screen = frame(&mut rig.app, SIZE.0, SIZE.1);
-    let area = rig.app.editor_rect;
+    let area = rig.app.last_frame.editor_rect();
     let number = |row: u16| -> String {
         (1..3)
             .map(|x| screen[(area.x + x, area.y + row)].symbol().to_owned())
@@ -93,7 +93,7 @@ fn a_reload_sets_the_keyboard_scroll_margin() {
     let mut rig = Rig::sized(&thirty_lines(), SIZE.0, SIZE.1);
     reload(&mut rig, |settings| settings.editor.scroll_off = 0);
     rig.render();
-    let rows = u32::from(rig.app.editor_rect.height);
+    let rows = u32::from(rig.app.last_frame.editor_rect().height);
     for _ in 0..rows {
         rig.step(Step::Key(KeyCode::Down, KeyModifiers::NONE));
     }

@@ -5,13 +5,13 @@ use crate::app::*;
 fn explorer_header_toolbar_click_begins_new_file() {
     let mut app = App::new(PathBuf::from("."), Vec::new(), Vec::new(), false);
     app.sidebar_panel = SidebarPanel::Explorer;
-    app.sidebar_rect = Rect {
+    app.last_frame.sidebar_rect = Rect {
         x: 0,
         y: 1,
         width: 30,
         height: 10,
     };
-    app.header_action_hits = vec![
+    app.last_frame.header_action_hits = vec![
         (20, 22, Command::ExplorerNewFile),
         (22, 24, Command::ExplorerNewFolder),
         (24, 26, Command::ExplorerRefresh),
@@ -28,13 +28,13 @@ fn explorer_blank_area_click_does_not_open_the_last_row() {
     write_file(&dir, "a.txt", b"a");
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
     app.sidebar_panel = SidebarPanel::Explorer;
-    app.sidebar_rect = Rect {
+    app.last_frame.sidebar_rect = Rect {
         x: 0,
         y: 0,
         width: 30,
         height: 8,
     };
-    app.sidebar_content_rect = Rect {
+    app.last_frame.sidebar_content_rect = Rect {
         x: 0,
         y: 1,
         width: 30,
@@ -338,6 +338,7 @@ fn breadcrumb_frame(app: &App, segment: PathBuf) -> PaneFrame {
         commit_rail_rect: Rect::default(),
         commit_collapse_hits: Vec::new(),
         select_regions: Vec::new(),
+        ..PaneFrame::empty(app.focus_pane())
     }
 }
 
@@ -349,7 +350,7 @@ fn clicking_a_breadcrumb_segment_reveals_its_path_in_the_explorer() {
     app.sidebar_visible = false;
     app.focus = Focus::Editor;
     let target = dir.join("a/b");
-    app.pane_frames = vec![breadcrumb_frame(&app, target.clone())];
+    app.last_frame.panes = vec![breadcrumb_frame(&app, target.clone())];
 
     app.handle_mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
@@ -371,7 +372,7 @@ fn a_breadcrumb_gap_click_is_swallowed_not_forwarded_to_the_editor() {
     write_file(&dir, "a/b/c.rs", b"code");
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
     app.focus = Focus::Sidebar;
-    app.pane_frames = vec![breadcrumb_frame(&app, dir.join("a/b"))];
+    app.last_frame.panes = vec![breadcrumb_frame(&app, dir.join("a/b"))];
 
     // Column 16 is past the segment (a separator gap): the click lands on the
     // breadcrumb row but maps to no segment. Had it fallen through, the editor
@@ -401,7 +402,7 @@ fn the_frame_records_breadcrumb_hits_only_within_the_workspace() {
         "the breadcrumb separator did not paint:\n{painted}"
     );
 
-    let frame = app.pane_frames.first().expect("a pane frame");
+    let frame = app.last_frame.panes.first().expect("a pane frame");
     assert_eq!(frame.breadcrumb_rect.height, 1);
     let paths: Vec<_> = frame
         .breadcrumb_hits
@@ -497,13 +498,13 @@ fn explorer_right_click_selects_the_row_and_offers_path_commands() {
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
     app.sidebar_visible = true;
     app.sidebar_panel = SidebarPanel::Explorer;
-    app.sidebar_rect = Rect {
+    app.last_frame.sidebar_rect = Rect {
         x: 0,
         y: 0,
         width: 30,
         height: 8,
     };
-    app.sidebar_content_rect = Rect {
+    app.last_frame.sidebar_content_rect = Rect {
         x: 0,
         y: 1,
         width: 30,
@@ -522,7 +523,7 @@ fn explorer_right_click_selects_the_row_and_offers_path_commands() {
     app.handle_mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Right),
         column: 2,
-        row: app.sidebar_content_rect.y + row as u16,
+        row: app.last_frame.sidebar_content_rect.y + row as u16,
         modifiers: KeyModifiers::NONE,
     });
 
@@ -545,7 +546,7 @@ fn explorer_keyboard_context_menu_uses_blank_items_when_empty() {
     let dir = test_dir("context-empty");
     let mut app = App::new(dir.clone(), Vec::new(), Vec::new(), false);
     app.sidebar_panel = SidebarPanel::Explorer;
-    app.sidebar_content_rect = Rect {
+    app.last_frame.sidebar_content_rect = Rect {
         x: 0,
         y: 1,
         width: 30,
@@ -749,9 +750,12 @@ fn left_click(app: &mut App, column: u16, row: u16) {
 
 /// The first header cell of `panel`'s tab, as the last painted frame placed it.
 fn panel_tab(app: &App, panel: SidebarPanel) -> Option<(u16, u16)> {
-    app.panel_hits
+    app.last_frame
+        .panel_hits
         .iter()
-        .find_map(|&(start, _, hit)| (hit == panel).then_some((start, app.sidebar_rect.y)))
+        .find_map(|&(start, _, hit)| {
+            (hit == panel).then_some((start, app.last_frame.sidebar_rect.y))
+        })
 }
 
 /// #315: double-clicking the tab of the panel already open folds the sidebar.

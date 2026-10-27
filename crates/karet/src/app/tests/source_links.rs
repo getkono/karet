@@ -23,7 +23,7 @@ fn source_app(name: &str, text: &str) -> App {
     let mut app = app();
     app.push_tab(text_tab(name, text));
     app.focus = Focus::Editor;
-    app.pane_frames = vec![content_frame(&app, Rect::new(0, 0, 60, 5))];
+    app.last_frame.panes = vec![content_frame(&app, Rect::new(0, 0, 60, 5))];
     app
 }
 
@@ -91,7 +91,7 @@ fn ctrl_click_opens_a_markdown_source_link_to_a_workspace_file() {
     app.open_path(&root.join("README.md"));
     fill_reserved_tabs(&mut app);
     app.focus = Focus::Editor;
-    app.pane_frames = vec![content_frame(&app, Rect::new(0, 0, 60, 5))];
+    app.last_frame.panes = vec![content_frame(&app, Rect::new(0, 0, 60, 5))];
     let down = MouseEventKind::Down(MouseButton::Left);
 
     // A plain click and a Ctrl+Shift click stay the editor's.
@@ -124,7 +124,7 @@ fn ctrl_click_on_an_unsafe_source_link_is_blocked_not_opened() {
     app.open_path(&root.join("README.md"));
     fill_reserved_tabs(&mut app);
     app.focus = Focus::Editor;
-    app.pane_frames = vec![content_frame(&app, Rect::new(0, 0, 60, 5))];
+    app.last_frame.panes = vec![content_frame(&app, Rect::new(0, 0, 60, 5))];
 
     let click = pointer(
         MouseEventKind::Down(MouseButton::Left),
@@ -163,7 +163,8 @@ fn ctrl_click_on_a_source_link_in_an_unfocused_split_opens_it_there() {
 
     // The `[` the left split draws on its first text row.
     let Some(area) = app
-        .pane_frames
+        .last_frame
+        .panes
         .iter()
         .find(|frame| frame.pane == left)
         .map(|frame| frame.editor_rect)

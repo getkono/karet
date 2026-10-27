@@ -116,7 +116,8 @@ fn each_pane_badges_its_own_file() {
     // Both panes recorded a badge, at different columns, and each carries the
     // colour of its own file's condition.
     let hits = app
-        .pane_frames
+        .last_frame
+        .panes
         .iter()
         .filter_map(|frame| frame.lsp_badge_hit.map(|hit| (frame.breadcrumb_rect, hit)))
         .collect::<Vec<_>>();
@@ -162,7 +163,8 @@ fn clicking_a_pane_badge_opens_the_manager_and_nothing_else() {
         .draw(|frame| crate::ui::draw(frame, &mut app))
         .expect("draw shell");
     let frame = app
-        .pane_frames
+        .last_frame
+        .panes
         .first()
         .cloned()
         .expect("the pane recorded a frame");

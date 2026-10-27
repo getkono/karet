@@ -11,7 +11,7 @@ impl App {
     /// to cycle). Returns `true` when the event was consumed.
     pub(in crate::app) fn handle_tabstrip_mouse(&mut self, mouse: MouseEvent) -> bool {
         let point = (mouse.column, mouse.row);
-        let Some((pane, hit, action)) = self.pane_frames.iter().find_map(|f| {
+        let Some((pane, hit, action)) = self.last_frame.panes.iter().find_map(|f| {
             rect_contains(f.tabstrip_rect, point).then(|| {
                 let action = f.action_hits.iter().find_map(|&(start, end, command)| {
                     (mouse.column >= start && mouse.column < end).then_some(command)
@@ -21,7 +21,7 @@ impl App {
         }) else {
             return false;
         };
-        // Act on the clicked pane (borrow of `pane_frames` has ended).
+        // Act on the clicked pane (borrow of `last_frame.panes` has ended).
         match mouse.kind {
             MouseEventKind::ScrollDown => {
                 self.focus_pane_switch(pane);
@@ -87,7 +87,7 @@ impl App {
         let point = (mouse.column, mouse.row);
         // The badge is checked before the path segments because it is painted over
         // the row's right edge, which the breadcrumb no longer occupies.
-        if self.pane_frames.iter().any(|f| {
+        if self.last_frame.panes.iter().any(|f| {
             rect_contains(f.breadcrumb_rect, point)
                 && f.lsp_badge_hit
                     .is_some_and(|(start, end)| mouse.column >= start && mouse.column < end)
@@ -99,7 +99,7 @@ impl App {
             self.dispatch(Command::ManageLanguageServers);
             return true;
         }
-        let Some((pane, hit)) = self.pane_frames.iter().find_map(|f| {
+        let Some((pane, hit)) = self.last_frame.panes.iter().find_map(|f| {
             rect_contains(f.breadcrumb_rect, point).then(|| {
                 let target = f
                     .breadcrumb_hits
@@ -135,6 +135,7 @@ impl App {
         }
         let point = (mouse.column, mouse.row);
         let Some(hit) = self
+            .last_frame
             .toast_hits
             .iter()
             .find(|h| rect_contains(h.rect, point))
@@ -162,14 +163,15 @@ impl App {
 
     /// The command bound to the status-bar segment at column `x`, if any.
     pub(in crate::app) fn status_command_at(&self, x: u16) -> Option<Command> {
-        self.status_hits
+        self.last_frame
+            .status_hits
             .iter()
             .find_map(|&(start, end, cmd)| (x >= start && x < end).then_some(cmd))
     }
 
     /// Handle a left click on a status-bar segment. Returns `true` when consumed.
     pub(in crate::app) fn handle_status_mouse(&mut self, mouse: MouseEvent) -> bool {
-        if !rect_contains(self.status_rect, (mouse.column, mouse.row)) {
+        if !rect_contains(self.last_frame.status_rect, (mouse.column, mouse.row)) {
             return false;
         }
         if let MouseEventKind::Down(MouseButton::Left) = mouse.kind
@@ -183,13 +185,17 @@ impl App {
     /// Handle a left click on the top-level view switcher. Returns `true` when the
     /// event was over the chrome row — clicks there never fall through to the body.
     pub(in crate::app) fn handle_view_chrome_mouse(&mut self, mouse: MouseEvent) -> bool {
-        if !rect_contains(self.view_chrome_rect, (mouse.column, mouse.row)) {
+        if !rect_contains(self.last_frame.view_chrome_rect, (mouse.column, mouse.row)) {
             return false;
         }
         if let MouseEventKind::Down(MouseButton::Left) = mouse.kind
-            && let Some(view) = self.view_hits.iter().find_map(|&(start, end, view)| {
-                (mouse.column >= start && mouse.column < end).then_some(view)
-            })
+            && let Some(view) = self
+                .last_frame
+                .view_hits
+                .iter()
+                .find_map(|&(start, end, view)| {
+                    (mouse.column >= start && mouse.column < end).then_some(view)
+                })
         {
             self.dispatch(Command::SelectView(view));
         }
@@ -204,13 +210,15 @@ impl App {
         let point = (mouse.column, mouse.row);
         if !matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
             || !self
-                .blame_rect
+                .last_frame
+                .blame_rect()
                 .is_some_and(|rect| rect_contains(rect, point))
         {
             return false;
         }
         if let Some(pane) = self
-            .pane_frames
+            .last_frame
+            .panes
             .iter()
             .find(|frame| rect_contains(frame.content_rect, point))
             .map(|frame| frame.pane)
@@ -243,8 +251,8 @@ impl App {
         }
         let point = (mouse.column, mouse.row);
         let preview = self
-            .markdown_link_hits
-            .iter()
+            .last_frame
+            .markdown_link_hits()
             .find(|hit| rect_contains(hit.rect, point))
             .map(|hit| hit.target.clone());
         let plain = !mouse
@@ -268,7 +276,8 @@ impl App {
         // Every pane's links are live. The link resolves against the file it is
         // in, so the click focuses that pane first, as any click on its text does.
         if let Some(pane) = self
-            .pane_frames
+            .last_frame
+            .panes
             .iter()
             .find(|frame| rect_contains(frame.content_rect, point))
             .map(|frame| frame.pane)
@@ -390,7 +399,8 @@ impl App {
             _ => return false,
         };
         let Some((pane, in_editor, in_rail, in_preview)) = self
-            .pane_frames
+            .last_frame
+            .panes
             .iter()
             .find(|frame| rect_contains(frame.content_rect, point))
             .map(|frame| {
@@ -439,7 +449,8 @@ impl App {
         // Only the bars that scroll a pane's own tab; anything floating over a pane
         // (the outline overlay) is not the pane's to lend.
         let tab_scoped = self
-            .scroll_hits
+            .last_frame
+            .scroll
             .at(mouse.column, mouse.row)
             .is_some_and(|hit| {
                 matches!(
@@ -455,7 +466,8 @@ impl App {
         }
         let focused = self.focus_pane();
         let Some(pane) = self
-            .pane_frames
+            .last_frame
+            .panes
             .iter()
             .find(|frame| frame.pane != focused && rect_contains(frame.content_rect, point))
             .map(|frame| frame.pane)

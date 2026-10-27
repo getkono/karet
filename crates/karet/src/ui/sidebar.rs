@@ -93,11 +93,12 @@ pub(super) fn draw_sidebar(
     app: &mut App,
     theme: &Theme,
     area: Rect,
-    hits: &mut ScrollHits,
+    frame: &mut FrameHits,
 ) {
     let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
-    app.sidebar_content_rect = rows[1];
-    draw_sidebar_header(f, app, theme, rows[0]);
+    frame.sidebar_content_rect = rows[1];
+    draw_sidebar_header(f, app, theme, rows[0], frame);
+    let hits = &mut frame.scroll;
     match app.sidebar_panel {
         SidebarPanel::Explorer => {
             let root = app.root.clone();
@@ -122,14 +123,14 @@ pub(super) fn draw_sidebar(
                 .collect();
             let explorer_focused =
                 app.focus == Focus::Sidebar && app.sidebar_panel == SidebarPanel::Explorer;
-            let hover = app.hovered_explorer_row();
             let cut_paths = app.explorer_cut_paths().to_vec();
             let repository_badges = app.nested_repository_badges(Instant::now());
             // The tree's rect is also its click target, so narrowing it here is what
             // makes a click on the track column fall outside the tree instead of
             // selecting whatever row it happens to sit beside.
             let (tree, tracks) = reserve_tracks(rows[1], ScrollAxes::VERTICAL);
-            app.sidebar_content_rect = tree;
+            frame.sidebar_content_rect = tree;
+            let hover = app.hovered_explorer_row(tree.y);
             f.render_stateful_widget(
                 FileTree::new(&root)
                     .theme(theme)
@@ -223,7 +224,13 @@ pub(super) fn context_menu_label(command: Command) -> &'static str {
     }
 }
 
-pub(super) fn draw_sidebar_header(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
+pub(super) fn draw_sidebar_header(
+    f: &mut Frame,
+    app: &App,
+    theme: &Theme,
+    area: Rect,
+    frame: &mut FrameHits,
+) {
     let name = match app.sidebar_panel {
         SidebarPanel::Explorer => "EXPLORER",
         SidebarPanel::Search => "SEARCH",
@@ -299,7 +306,6 @@ pub(super) fn draw_sidebar_header(f: &mut Frame, app: &mut App, theme: &Theme, a
 
     // The Explorer toolbar (new file / new folder / refresh / collapse all), each
     // glyph occupying 2 cells; hit regions march in twos like the switcher.
-    app.header_action_hits = Vec::new();
     if actions_w > 0 {
         let a = cols[2];
         let actions = [
@@ -311,8 +317,8 @@ pub(super) fn draw_sidebar_header(f: &mut Frame, app: &mut App, theme: &Theme, a
         let mut spans = Vec::with_capacity(actions.len());
         for (i, (ui_icon, cmd)) in actions.into_iter().enumerate() {
             let x = a.x + i as u16 * 2;
-            app.header_action_hits.push((x, x + 2, cmd));
-            let hovered = header_hovered(app, x, x + 2);
+            frame.header_action_hits.push((x, x + 2, cmd));
+            let hovered = header_hovered(app, area.y, x, x + 2);
             let state = if hovered {
                 ChromeButtonState::Hovered
             } else {
@@ -330,36 +336,32 @@ pub(super) fn draw_sidebar_header(f: &mut Frame, app: &mut App, theme: &Theme, a
     // plus the space after it (2 cells), so the hit regions march in twos.
     let switch = cols[3];
     let active = app.sidebar_panel;
-    app.panel_hits = vec![
+    let panel_hits = &mut frame.panel_hits;
+    panel_hits.extend([
         (switch.x, switch.x + 2, SidebarPanel::Explorer),
         (switch.x + 2, switch.x + 4, SidebarPanel::Search),
         (switch.x + 4, switch.x + 6, SidebarPanel::SourceControl),
-    ];
+    ]);
     let mut next_hit = switch.x + 6;
     if spelling {
-        app.panel_hits
-            .push((next_hit, next_hit + 2, SidebarPanel::Spelling));
+        panel_hits.push((next_hit, next_hit + 2, SidebarPanel::Spelling));
         next_hit += 2;
     }
     let todos = app.todos_available();
     if todos {
-        app.panel_hits
-            .push((next_hit, next_hit + 2, SidebarPanel::Todos));
+        panel_hits.push((next_hit, next_hit + 2, SidebarPanel::Todos));
         next_hit += 2;
     }
-    app.panel_hits
-        .push((next_hit, next_hit + 2, SidebarPanel::Debug));
-    app.panel_hits
-        .push((next_hit + 2, next_hit + 4, SidebarPanel::Problems));
+    panel_hits.push((next_hit, next_hit + 2, SidebarPanel::Debug));
+    panel_hits.push((next_hit + 2, next_hit + 4, SidebarPanel::Problems));
     if hierarchy {
-        app.panel_hits
-            .push((next_hit + 4, next_hit + 6, SidebarPanel::Hierarchy));
+        panel_hits.push((next_hit + 4, next_hit + 6, SidebarPanel::Hierarchy));
     }
+    let panel_hits = &*panel_hits;
     let icon = |ui: UiIcon, panel: SidebarPanel| {
-        let hovered = app
-            .panel_hits
+        let hovered = panel_hits
             .iter()
-            .any(|&(start, end, p)| p == panel && header_hovered(app, start, end));
+            .any(|&(start, end, p)| p == panel && header_hovered(app, area.y, start, end));
         let state = match (active == panel, hovered) {
             (true, true) => ChromeButtonState::ActiveHovered,
             (true, false) => ChromeButtonState::Active,
@@ -411,9 +413,10 @@ pub(super) fn chrome_button_style(theme: &Theme, state: ChromeButtonState) -> St
     }
 }
 
-pub(super) fn header_hovered(app: &App, start: u16, end: u16) -> bool {
+/// Whether the pointer rests on the sidebar header row `y` within `start..end`.
+pub(super) fn header_hovered(app: &App, y: u16, start: u16, end: u16) -> bool {
     app.sidebar_header_hover
-        .is_some_and(|(col, row)| row == app.sidebar_rect.y && col >= start && col < end)
+        .is_some_and(|(col, row)| row == y && col >= start && col < end)
 }
 
 pub(super) fn root_header_label(root: &Path, max_width: u16) -> String {

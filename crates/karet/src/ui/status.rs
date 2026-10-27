@@ -3,9 +3,14 @@ use super::*;
 /// What joins the right strip's segments. Three cells wide.
 const SEPARATOR: &str = " \u{b7} ";
 
-pub(super) fn draw_status(f: &mut Frame, app: &mut App, theme: &Theme, area: Rect) {
-    app.status_rect = area;
-    app.status_hits.clear();
+pub(super) fn draw_status(
+    f: &mut Frame,
+    app: &mut App,
+    theme: &Theme,
+    area: Rect,
+    frame: &mut FrameHits,
+) {
+    frame.status_rect = area;
 
     let focus = match app.focus {
         Focus::Sidebar => "SIDEBAR",
@@ -129,7 +134,7 @@ pub(super) fn draw_status(f: &mut Frame, app: &mut App, theme: &Theme, area: Rec
     let focus_text = format!(" {focus} ");
     let fw = cell_width(&focus_text);
     spans.push(Span::styled(focus_text, key));
-    app.status_hits.push((x, x + fw, Command::ToggleFocus));
+    frame.status_hits.push((x, x + fw, Command::ToggleFocus));
     x += fw;
     // A modal preset names its mode beside the focus, with the macro being
     // recorded and the command typed so far (vim's `showcmd`).
@@ -171,7 +176,7 @@ pub(super) fn draw_status(f: &mut Frame, app: &mut App, theme: &Theme, area: Rec
         render_hints(
             &comps,
             &mut spans,
-            &mut app.status_hits,
+            &mut frame.status_hits,
             &mut x,
             rest,
             bar,
@@ -182,7 +187,7 @@ pub(super) fn draw_status(f: &mut Frame, app: &mut App, theme: &Theme, area: Rec
         render_hints(
             &hints,
             &mut spans,
-            &mut app.status_hits,
+            &mut frame.status_hits,
             &mut x,
             avail,
             bar,
@@ -199,7 +204,7 @@ pub(super) fn draw_status(f: &mut Frame, app: &mut App, theme: &Theme, area: Rec
         .saturating_add(area.width.saturating_sub(right_width));
     let (right_line, action_hits) = status_right(&segments, &actions, strip_x, bar);
     if right_width <= area.width {
-        app.status_hits.extend(action_hits);
+        frame.status_hits.extend(action_hits);
     }
     karet_widgets::status::StatusBar {
         bar,

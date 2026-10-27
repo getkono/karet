@@ -1,6 +1,15 @@
 use super::*;
 
 impl App {
+    /// The absolute explorer row index under the hover cursor, if the mouse is over
+    /// the explorer's content starting at row `top` (accounts for the current
+    /// scroll offset). The painter passes the row it is laying the tree out at,
+    /// which last frame's geometry may not match yet.
+    pub(crate) fn hovered_explorer_row(&self, top: u16) -> Option<usize> {
+        let (_, hy) = self.hover?;
+        (hy >= top).then(|| self.explorer.offset() + usize::from(hy - top))
+    }
+
     /// Start background status reads for nested repository rows not already cached.
     pub(crate) fn request_nested_repository_statuses(&mut self) {
         self.explorer.ensure_built(&self.root);
@@ -544,13 +553,13 @@ impl App {
         self.focus = Focus::Sidebar;
         self.explorer.ensure_built(&self.root);
         let cursor = self.explorer.cursor();
-        let y = self.sidebar_content_rect.y.saturating_add(
+        let y = self.last_frame.sidebar_content_rect.y.saturating_add(
             cursor
                 .saturating_sub(self.explorer.offset())
                 .try_into()
                 .unwrap_or(0),
         );
-        let x = self.sidebar_content_rect.x.saturating_add(2);
+        let x = self.last_frame.sidebar_content_rect.x.saturating_add(2);
         let row = (!self.explorer.rows().is_empty()).then_some(cursor);
         self.open_context_menu(x, y, row);
     }

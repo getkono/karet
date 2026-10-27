@@ -130,7 +130,7 @@ impl App {
                 }) => Some(image),
                 _ => None,
             };
-            match self.image_area {
+            match self.last_frame.image_area() {
                 Some(area) if self.shown_image != current || self.shown_page != current_page => {
                     let _ = write!(stdout, "{}", image::kitty_delete_image(TAB_IMAGE_ID));
                     let _ = write!(stdout, "\x1b[{};{}H", area.y + 1, area.x + 1);
@@ -192,9 +192,9 @@ impl App {
             return None;
         };
         let fold_lines = resolve_folds(folds, folded);
-        let (x, y) = tab
-            .editor
-            .primary_caret_cell(self.editor_rect, buffer, &fold_lines)?;
+        let (x, y) =
+            tab.editor
+                .primary_caret_cell(self.last_frame.editor_rect(), buffer, &fold_lines)?;
         Some(GraphicsCaret { x, y })
     }
 

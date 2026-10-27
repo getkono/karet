@@ -651,7 +651,10 @@ mod prepare_frame_tests {
 
         paint_only(&mut app, 80, 24);
         assert_eq!(app.sidebar_width, 200, "a paint leaves the model alone");
-        assert_eq!(app.sidebar_rect.width, 79, "but shows the clamped width");
+        assert_eq!(
+            app.last_frame.sidebar_rect.width, 79,
+            "but shows the clamped width"
+        );
 
         app.prepare_frame(Rect::new(0, 0, 80, 24));
         assert_eq!(app.sidebar_width, 79);

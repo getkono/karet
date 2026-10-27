@@ -147,9 +147,10 @@ pub(crate) use karet_widgets::scroll::ScrollbarStyles;
 pub(crate) use karet_widgets::scroll::draw_scrollable_lines;
 pub(crate) use karet_widgets::scroll::line_width;
 pub(crate) use karet_widgets::scroll::reserve_tracks;
-pub(crate) use panes::FindBarRects;
 
 use crate::app::ContextMenuEntryExt;
+pub(crate) use crate::app::FindBarRects;
+use crate::app::FrameHits;
 pub(crate) use crate::app::ScrollHits;
 pub(crate) use crate::app::ScrollSurface;
 use crate::keymap::SidebarPanel;
@@ -170,11 +171,16 @@ use crate::tab::ViewMode;
 pub fn draw(f: &mut Frame, app: &mut App) {
     let theme = app.theme.clone();
     let area = f.area();
-    // Collected into a local and handed over at the end rather than cleared on `app`
-    // up front: the panel draws already borrow `app` mutably, so a field sink would
-    // not compile. One assignment is also one clear — no half-rebuilt registry can
-    // survive a frame that returns early.
-    let mut hits = ScrollHits::default();
+    // Every hit region is collected into a local and handed over at the end rather
+    // than cleared on `app` up front: the panel draws already borrow `app` mutably,
+    // so a field sink would not compile. One assignment is also one clear — no
+    // half-rebuilt region can survive a frame that returns early, and a surface this
+    // frame does not paint (Zen Mode's chrome rows, the panes under the GitHub
+    // view, a hidden sidebar) records nothing and so claims no clicks.
+    let mut hits = FrameHits {
+        focused_pane: Some(app.focus_pane()),
+        ..FrameHits::default()
+    };
 
     // Top level: a one-row view switcher, the body (sidebar + panes) it sits above,
     // and a one-row status bar. Tab strips and breadcrumbs live *inside* each pane.
@@ -187,14 +193,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Constraint::Length(chrome_height),
     ])
     .split(area);
-    if zen {
-        // Neither row is drawn, so neither may keep claiming clicks.
-        app.view_chrome_rect = Rect::default();
-        app.view_hits.clear();
-        app.status_rect = Rect::default();
-        app.status_hits.clear();
-    } else {
-        draw_view_chrome(f, app, &theme, rows[0]);
+    if !zen {
+        draw_view_chrome(f, app, &theme, rows[0], &mut hits);
     }
     let body = rows[1];
 
@@ -208,14 +208,12 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             Constraint::Min(0),
         ])
         .split(body);
-        app.sidebar_rect = cols[0];
-        app.sidebar_divider_x = cols[1].x;
-        app.main_rect = cols[2];
+        hits.sidebar_rect = cols[0];
+        hits.sidebar_divider_x = cols[1].x;
+        hits.main_rect = cols[2];
         Some((cols[0], cols[1]))
     } else {
-        app.sidebar_rect = Rect::default();
-        app.sidebar_divider_x = 0;
-        app.main_rect = body;
+        hits.main_rect = body;
         None
     };
 
@@ -230,25 +228,26 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let mut outline_divider = None;
     app.outline.overlay = false;
     let outline_shown = app.outline.visible && app.view == View::Editor;
-    if outline_shown && app.main_rect.width > app.outline.width + 8 {
-        let region = app.main_rect;
+    if outline_shown && hits.main_rect.width > app.outline.width + 8 {
+        let region = hits.main_rect;
         let cols = Layout::horizontal([
             Constraint::Min(0),
             Constraint::Length(1),
             Constraint::Length(app.outline.width),
         ])
         .split(region);
-        app.main_rect = cols[0];
+        hits.main_rect = cols[0];
         app.outline.rect = cols[2];
         outline_area = Some(cols[2]);
         outline_divider = Some(cols[1]);
-    } else if outline_shown && app.main_rect.width > 0 {
-        let width = app.outline.width.min(app.main_rect.width);
+    } else if outline_shown && hits.main_rect.width > 0 {
+        let main = hits.main_rect;
+        let width = app.outline.width.min(main.width);
         let rect = Rect::new(
-            app.main_rect.right().saturating_sub(width),
-            app.main_rect.y,
+            main.right().saturating_sub(width),
+            main.y,
             width,
-            app.main_rect.height,
+            main.height,
         );
         app.outline.rect = rect;
         app.outline.overlay = true;
@@ -258,41 +257,42 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         app.outline.content_rect = Rect::default();
     }
 
+    let main = hits.main_rect;
     match app.view {
-        View::Editor => draw_panes(f, app, &theme, app.main_rect, &mut hits),
-        // `clear_pane_render_state` before every non-Editor body: the panes are not
-        // redrawn under it, so last frame's hit regions would keep claiming clicks
-        // aimed at whatever is now on screen.
+        View::Editor => draw_panes(f, app, &theme, main, &mut hits),
+        // The panes are not drawn under another view, so they record no hit
+        // regions; the inlay hints kept on the app are dropped with them.
         View::GitHub => {
-            clear_pane_render_state(app);
-            draw_github_view(f, app, &theme, app.main_rect, &mut hits);
+            app.inlay_ui.hits.clear();
+            draw_github_view(f, app, &theme, main, &mut hits.scroll);
         },
     }
     if let Some(divider) = outline_divider {
         draw_sidebar_divider(f, &theme, divider, false);
     }
     if let Some(area) = outline_area {
-        draw_outline(f, app, &theme, area, &mut hits);
+        draw_outline(f, app, &theme, area, &mut hits.scroll);
     }
-    draw_drop_preview(f, app, &theme);
+    draw_drop_preview(f, app, &theme, &hits.panes);
     if !zen {
-        draw_status(f, app, &theme, rows[2]);
+        draw_status(f, app, &theme, rows[2], &mut hits);
     }
 
     // The signature popup sits above the caret, under the completion popup
     // that may open below it (and over it, where the editor is too short).
-    draw_signature(f, app, &theme);
+    let editor = hits.editor_rect();
+    draw_signature(f, app, &theme, editor);
     // The completion popup floats over the editor, anchored at the caret; it
     // sits under modal overlays and toasts.
-    draw_completion(f, app, &theme, &mut hits);
+    draw_completion(f, app, &theme, editor, &mut hits.scroll);
     // The hover popup floats the same way (they never overlap in practice —
     // one follows typing, the other an explicit keystroke).
-    draw_hover(f, app, &theme);
+    draw_hover(f, app, &theme, editor);
     // An inlay hint's tooltip, against the hint the pointer rests on.
-    draw_inlay_tooltip(f, app, &theme);
+    draw_inlay_tooltip(f, app, &theme, editor);
     // The rename prompt floats over both: while it is open, nothing else is
     // being typed into.
-    rename::draw_rename(f, app, &theme);
+    rename::draw_rename(f, app, &theme, editor);
     draw_diagnostic_view(f, app, &theme, area);
 
     if let Some(overlay) = &app.overlay {
@@ -316,12 +316,12 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
     // The commit console sits above the pickers but below a confirmation and the
     // toasts: it is a log to read, not a question to answer.
-    commit_console::draw_commit_console(f, app, &theme, area, &mut hits);
+    commit_console::draw_commit_console(f, app, &theme, area, &mut hits.scroll);
 
     // Toasts float above everything, including the modal overlay.
-    draw_toasts(f, app, &theme, area);
+    draw_toasts(f, app, &theme, area, &mut hits);
 
-    app.scroll_hits = hits;
+    app.last_frame = hits;
     // Every preview has looked up the images it shows: the rest may be evicted.
     app.preview_images.end_frame();
 }
@@ -353,11 +353,10 @@ fn draw_operation_blocker(f: &mut Frame, blocker: &OperationBlocker, theme: &The
 /// below it can show at the same time; below the caret only when there is no
 /// row above. Shifted left to stay inside the editor, and not drawn under an
 /// open hover popup, which the user asked for more recently.
-fn draw_signature(f: &mut Frame, app: &App, theme: &Theme) {
+fn draw_signature(f: &mut Frame, app: &App, theme: &Theme, editor: Rect) {
     let Some(ui) = app.signature.ui.as_ref() else {
         return;
     };
-    let editor = app.editor_rect;
     if app.hover_ui.is_some() || editor.width == 0 || editor.height == 0 {
         return;
     }

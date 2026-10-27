@@ -91,7 +91,7 @@ fn right_click_opens_the_pane_menu_from_the_tab_strip_and_the_content_area() {
         end: 12,
         close: 11,
     }];
-    app.pane_frames = vec![frame];
+    app.last_frame.panes = vec![frame];
     let right = |col, row| MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Right),
         column: col,

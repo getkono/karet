@@ -99,7 +99,7 @@ fn right_clicking_an_error_toast_copies_it_without_dismissing() {
     let mut app = app();
     app.notify(Report::Failure, NotificationKind::Lsp, "server failed");
     let id = app.notifications.active()[0].id;
-    app.toast_hits = vec![ToastHit {
+    app.last_frame.toast_hits = vec![ToastHit {
         rect: Rect::new(5, 3, 20, 4),
         id,
     }];
@@ -236,7 +236,7 @@ fn markdown_links_require_a_modifier_and_open_workspace_files() {
     write_file(&root, "docs/guide.md", b"guide");
     let mut app = App::new(root.clone(), Vec::new(), Vec::new(), false);
     app.open_path(&root.join("README.md"));
-    app.markdown_link_hits = vec![MarkdownLinkHit {
+    app.focused_frame_mut().markdown_link_hits = vec![MarkdownLinkHit {
         rect: Rect::new(4, 3, 5, 1),
         target: "docs/guide.md".to_string(),
     }];
@@ -268,7 +268,7 @@ fn markdown_file_links_outside_the_workspace_require_confirmation() {
     write_file(&parent, "outside.md", b"outside");
     let mut app = App::new(root.clone(), Vec::new(), Vec::new(), false);
     app.open_path(&root.join("README.md"));
-    app.markdown_link_hits = vec![MarkdownLinkHit {
+    app.focused_frame_mut().markdown_link_hits = vec![MarkdownLinkHit {
         rect: Rect::new(1, 1, 7, 1),
         target: "../outside.md".to_string(),
     }];
@@ -445,13 +445,13 @@ fn tab_at_maps_columns_to_tabs_and_close() {
 #[test]
 fn status_segment_click_dispatches_its_command() {
     let mut app = app();
-    app.status_rect = Rect {
+    app.last_frame.status_rect = Rect {
         x: 0,
         y: 9,
         width: 80,
         height: 1,
     };
-    app.status_hits = vec![
+    app.last_frame.status_hits = vec![
         (0, 9, Command::ToggleFocus),
         (12, 19, Command::OpenQuickOpen),
     ];
@@ -472,13 +472,13 @@ fn status_segment_click_dispatches_its_command() {
 #[test]
 fn sidebar_header_click_switches_panel() {
     let mut app = app();
-    app.sidebar_rect = Rect {
+    app.last_frame.sidebar_rect = Rect {
         x: 0,
         y: 1,
         width: 30,
         height: 10,
     };
-    app.panel_hits = vec![
+    app.last_frame.panel_hits = vec![
         (23, 25, SidebarPanel::Explorer),
         (25, 27, SidebarPanel::Search),
         (27, 29, SidebarPanel::SourceControl),
@@ -491,13 +491,13 @@ fn sidebar_header_click_switches_panel() {
 fn sidebar_click_selects_and_opens_scm_change() {
     let mut app = app(); // staged a.rs, working b.rs
     app.sidebar_panel = SidebarPanel::SourceControl;
-    app.sidebar_rect = Rect {
+    app.last_frame.sidebar_rect = Rect {
         x: 0,
         y: 1,
         width: 30,
         height: 10,
     };
-    app.sidebar_content_rect = Rect {
+    app.last_frame.sidebar_content_rect = Rect {
         x: 0,
         y: 2,
         width: 30,
@@ -528,7 +528,7 @@ fn dragging_moves_the_active_tab() {
     app.push_tab(code_tab("a.rs"));
     app.push_tab(code_tab("b.rs"));
     app.push_tab(code_tab("c.rs"));
-    app.pane_frames = vec![PaneFrame {
+    app.last_frame.panes = vec![PaneFrame {
         pane: app.focus_pane(),
         tabstrip_rect: Rect::default(),
         tab_hits: vec![
@@ -560,6 +560,7 @@ fn dragging_moves_the_active_tab() {
         commit_rail_rect: Rect::default(),
         commit_collapse_hits: Vec::new(),
         select_regions: Vec::new(),
+        ..PaneFrame::empty(app.focus_pane())
     }];
     app.active = 0;
     app.tab_drag = Some(TabDrag {
@@ -576,7 +577,7 @@ fn dragging_moves_the_active_tab() {
 fn pane_action_click_wins_over_the_underlying_tab_hit() {
     let mut app = app();
     app.push_tab(text_tab("README.md", "# Title\n"));
-    app.pane_frames = vec![PaneFrame {
+    app.last_frame.panes = vec![PaneFrame {
         pane: app.focus_pane(),
         tabstrip_rect: Rect::new(0, 0, 30, 1),
         tab_hits: vec![TabHit {
@@ -596,6 +597,7 @@ fn pane_action_click_wins_over_the_underlying_tab_hit() {
         commit_rail_rect: Rect::default(),
         commit_collapse_hits: Vec::new(),
         select_regions: Vec::new(),
+        ..PaneFrame::empty(app.focus_pane())
     }];
 
     app.handle_mouse(MouseEvent {
@@ -665,7 +667,7 @@ fn keyboard_split_opens_a_second_view_and_focus_cycles() {
 #[test]
 fn keyboard_resize_grows_the_focused_pane_toward_the_requested_edge() {
     let mut app = app();
-    app.main_rect = Rect::new(0, 0, 80, 24);
+    app.last_frame.main_rect = Rect::new(0, 0, 80, 24);
     let left = app.layout.root_pane();
     let right = app.layout.split(left, SplitDir::Right);
     app.layout.set_focus(right);
@@ -674,13 +676,13 @@ fn keyboard_resize_grows_the_focused_pane_toward_the_requested_edge() {
 
     assert_eq!(
         app.layout
-            .pane_rect(left, app.main_rect)
+            .pane_rect(left, app.last_frame.main_rect)
             .map(|rect| rect.width),
         Some(38)
     );
     assert_eq!(
         app.layout
-            .pane_rect(right, app.main_rect)
+            .pane_rect(right, app.last_frame.main_rect)
             .map(|rect| rect.width),
         Some(42)
     );
@@ -689,10 +691,10 @@ fn keyboard_resize_grows_the_focused_pane_toward_the_requested_edge() {
 #[test]
 fn mouse_drag_resizes_a_pane_divider_and_releases_cleanly() {
     let mut app = app();
-    app.main_rect = Rect::new(0, 0, 80, 24);
+    app.last_frame.main_rect = Rect::new(0, 0, 80, 24);
     let left = app.layout.root_pane();
     let right = app.layout.split(left, SplitDir::Right);
-    app.pane_dividers = app.layout.dividers(app.main_rect);
+    app.last_frame.pane_dividers = app.layout.dividers(app.last_frame.main_rect);
 
     app.handle_mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
@@ -715,7 +717,7 @@ fn mouse_drag_resizes_a_pane_divider_and_releases_cleanly() {
     });
     assert_eq!(
         app.layout
-            .pane_rect(left, app.main_rect)
+            .pane_rect(left, app.last_frame.main_rect)
             .map(|rect| rect.width),
         Some(70)
     );
@@ -728,7 +730,7 @@ fn mouse_drag_resizes_a_pane_divider_and_releases_cleanly() {
     });
     assert_eq!(
         app.layout
-            .pane_rect(left, app.main_rect)
+            .pane_rect(left, app.last_frame.main_rect)
             .map(|rect| rect.width),
         Some(70)
     );
@@ -747,13 +749,13 @@ fn mouse_drag_resizes_a_pane_divider_and_releases_cleanly() {
 
     assert_eq!(
         app.layout
-            .pane_rect(left, app.main_rect)
+            .pane_rect(left, app.last_frame.main_rect)
             .map(|rect| rect.width),
         Some(61)
     );
     assert_eq!(
         app.layout
-            .pane_rect(right, app.main_rect)
+            .pane_rect(right, app.last_frame.main_rect)
             .map(|rect| rect.width),
         Some(19)
     );

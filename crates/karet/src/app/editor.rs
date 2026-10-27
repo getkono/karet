@@ -451,7 +451,8 @@ impl App {
         let point = (mouse.column, mouse.row);
         // Route the click to the pane whose content it landed in, focusing it.
         let Some((pane, area, file_hit, dir_hit, collapse_hit)) = self
-            .pane_frames
+            .last_frame
+            .panes
             .iter()
             .find(|f| rect_contains(f.content_rect, point))
             .map(|f| {
@@ -519,7 +520,8 @@ impl App {
         // what its "Verified" / "Signed" state means.
         if streak == 2
             && self
-                .commit_badge_rect
+                .last_frame
+                .commit_badge_rect()
                 .is_some_and(|r| rect_contains(r, point))
             && let Some(Tab {
                 kind: TabKind::Commit { explain_since, .. },
@@ -670,7 +672,8 @@ impl App {
         }
         let point = (mouse.column, mouse.row);
         let Some((pane, area)) = self
-            .pane_frames
+            .last_frame
+            .panes
             .iter()
             .find(|frame| rect_contains(frame.editor_rect, point))
             .map(|frame| (frame.pane, frame.editor_rect))
