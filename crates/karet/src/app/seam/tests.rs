@@ -461,6 +461,81 @@ fn a_pivot_serializes_to_its_pivot_term() {
     assert_eq!(state.as_query(), "pivot:implements:pkg::net::connect");
 }
 
+/// `pkg` holding one impl block, whose braced segment carries spaces, with one method.
+fn impl_view() -> SeamViewState {
+    let block = "pkg::{impl Render for Widget}";
+    let method = "pkg::{impl Render for Widget}::render";
+    let nodes = vec![
+        node("pkg", None, &[block], [1, 0, 0, 0, 0]),
+        node(block, Some("pkg"), &[method], [1, 0, 0, 0, 0]),
+        node(method, Some(block), &[], [1, 0, 0, 0, 0]),
+    ];
+    let mut state = SeamViewState::pending(PathBuf::new());
+    state.adopt(SeamSummary::default(), nodes);
+    state
+}
+
+#[test]
+fn a_reroot_onto_a_braced_segment_with_a_space_parses_back() -> Result<(), String> {
+    let mut state = impl_view();
+    state.select_path("pkg::{impl Render for Widget}");
+    assert_eq!(state.reroot(), Reroot::Narrowed);
+
+    let query = state.as_query();
+    // Written bare, the space splits the path into three terms and leaves an unbalanced
+    // `{`; the quoting form keeps it one term.
+    assert_eq!(query, r#"in:"pkg::{impl Render for Widget}""#);
+    let parsed = karet_seam::query::parse(&query).map_err(|error| error.message)?;
+    let expected: SeamPath = "pkg::{impl Render for Widget}"
+        .parse()
+        .map_err(|error: karet_seam::SeamPathError| error.to_string())?;
+    assert_eq!(parsed.root(), Some(&expected));
+    assert_eq!(parsed.to_string(), query);
+    Ok(())
+}
+
+#[test]
+fn a_pivot_from_a_braced_segment_with_a_space_parses_back() -> Result<(), String> {
+    let mut state = impl_view();
+    let block = "pkg::{impl Render for Widget}";
+    let from = "pkg::{impl Render for Widget}::render";
+    state.select_path(from);
+    assert!(state.pivot("calls", from, vec![block.to_owned()]));
+
+    let query = state.as_query();
+    assert_eq!(
+        query,
+        r#"pivot:calls:"pkg::{impl Render for Widget}::render""#
+    );
+    let parsed = karet_seam::query::parse(&query).map_err(|error| error.message)?;
+    let target: SeamPath = from
+        .parse()
+        .map_err(|error: karet_seam::SeamPathError| error.to_string())?;
+    assert_eq!(parsed.terms.len(), 1);
+    assert!(
+        matches!(
+            &parsed.terms[0].kind,
+            TermKind::Pivot { edge: EdgeKind::Calls, target: t } if *t == target
+        ),
+        "{parsed:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_narrow_the_query_language_cannot_name_keeps_its_bare_text() {
+    // An edge name the query language does not know cannot be built as a term; the text
+    // the reader would have typed is the honest fallback, not an empty query.
+    let mut state = view();
+    state.select_path("pkg::net::connect");
+    assert!(state.pivot(
+        "no-such-edge",
+        "pkg::net::connect",
+        vec!["pkg::model::Symbol".to_owned()],
+    ));
+    assert_eq!(state.as_query(), "pivot:no-such-edge:pkg::net::connect");
+}
+
 #[test]
 fn an_unnarrowed_view_serializes_to_an_empty_query() {
     let state = view();
