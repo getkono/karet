@@ -64,6 +64,7 @@ mod startup;
 mod state;
 mod syntax_select;
 mod tabs;
+mod tasks;
 #[cfg(feature = "terminal")]
 mod terminal;
 pub(crate) mod theme_picker;
@@ -643,6 +644,9 @@ pub struct App {
     /// The frame cap terminal output repaints under.
     #[cfg(feature = "terminal")]
     terminal_frame: terminal::TerminalFrame,
+    /// The configured tasks running (or run) in terminals.
+    #[cfg(feature = "terminal")]
+    tasks: tasks::TaskRuns,
     /// The tab index whose image is currently transmitted to the terminal.
     shown_image: Option<ViewId>,
     /// The document page currently transmitted, so paging a PDF re-transmits even

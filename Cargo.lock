@@ -3603,6 +3603,7 @@ dependencies = [
  "karet-widgets",
  "portable-pty",
  "ratatui",
+ "regex",
  "serde",
  "serde_json",
  "tempfile",

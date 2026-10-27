@@ -151,6 +151,8 @@ impl App {
             terminals: crate::terminal::TerminalHost::default(),
             #[cfg(feature = "terminal")]
             terminal_frame: super::terminal::TerminalFrame::default(),
+            #[cfg(feature = "terminal")]
+            tasks: super::tasks::TaskRuns::default(),
             shown_image: None,
             shown_page: 0,
             shown_graphics_caret: None,
@@ -277,6 +279,8 @@ impl App {
             self.forget_on_type_triggers();
         }
         self.settings = settings;
+        #[cfg(feature = "terminal")]
+        self.forget_removed_tasks();
         if inlay_changed {
             self.inlay_ui.flipped = false;
         }

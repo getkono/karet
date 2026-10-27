@@ -106,6 +106,7 @@ impl Command {
             Self::TerminalScrollPageDown => "scroll down",
             Self::TerminalScrollToTop => "top",
             Self::TerminalScrollToBottom => "bottom",
+            Self::RunTask => "run task",
             Self::DismissNotification => "dismiss",
             Self::Copy => "copy",
             // Sidebar.

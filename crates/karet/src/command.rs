@@ -115,6 +115,9 @@ pub enum Command {
     TerminalScrollToTop,
     /// Scroll the active terminal back to the live screen.
     TerminalScrollToBottom,
+    /// Pick one of the configured `tasks` and run it in a new integrated
+    /// terminal, its problem matchers feeding the Problems panel.
+    RunTask,
     /// Dismiss the most recent notification.
     DismissNotification,
     /// Dismiss all notifications.
@@ -886,6 +889,7 @@ impl Command {
             Self::TerminalScrollPageDown => "Terminal: Scroll Down (Page)",
             Self::TerminalScrollToTop => "Terminal: Scroll to Top",
             Self::TerminalScrollToBottom => "Terminal: Scroll to Bottom",
+            Self::RunTask => "Tasks: Run Task",
             Self::DismissNotification => "Notifications: Dismiss",
             Self::DismissAllNotifications => "Notifications: Dismiss All",
             Self::MarkdownPreviewSide => "Markdown: Toggle Preview to the Side",

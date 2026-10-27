@@ -353,6 +353,8 @@ async fn event_loop(
         app.notifications.expire(Instant::now());
         app.expire_operation_blocker(Instant::now());
         app.fire_auto_save(Instant::now());
+        #[cfg(feature = "terminal")]
+        app.fire_task_scans(Instant::now());
 
         // Drain everything else that is ready so a burst collapses into one frame.
         while let Ok(event) = input_rx.try_recv() {
