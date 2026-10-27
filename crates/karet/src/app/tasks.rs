@@ -197,18 +197,22 @@ mod running {
         /// once per [`LIVE_SCAN_INTERVAL`] while it runs; output arriving sooner
         /// schedules the scan for when the interval is up. After the exit every
         /// batch rescans, since it is output the exit's own scan may have missed.
-        pub(in crate::app) fn task_output(&mut self, id: TerminalId, now: Instant) {
+        ///
+        /// Returns whether a scan ran and changed the task's problems, so the
+        /// Problems panel and the status bar repaint even when no pane shows
+        /// the terminal.
+        #[must_use]
+        pub(in crate::app) fn task_output(&mut self, id: TerminalId, now: Instant) -> bool {
             let Some(run) = self.tasks.runs.get_mut(&id) else {
-                return;
+                return false;
             };
             let next = run.scanned.map(|scanned| scanned + LIVE_SCAN_INTERVAL);
             match next {
                 Some(next) if !run.exited && now < next => {
                     run.due.get_or_insert(next);
+                    false
                 },
-                _ => {
-                    self.scan_task(id, now);
-                },
+                _ => self.scan_task(id, now) == Some(true),
             }
         }
 
@@ -260,7 +264,7 @@ mod running {
             };
             run.exited = true;
             let label = run.label.clone();
-            if !self.scan_task(id, Instant::now()) {
+            if self.scan_task(id, Instant::now()).is_none() {
                 return;
             }
             let count = self.problems.task_problems.get(&label).map_or(0, Vec::len);
@@ -283,11 +287,12 @@ mod running {
         }
 
         /// Match task terminal `id`'s whole output and publish what was found.
-        /// Returns `false`, forgetting the run, once its terminal is closed.
+        /// Returns whether the task's problems changed, or `None`, forgetting
+        /// the run, once its terminal is closed.
         ///
         /// The scan acknowledges the terminal's output, as painting it would, so
         /// the terminal announces its next batch even when no pane shows it.
-        fn scan_task(&mut self, id: TerminalId, now: Instant) -> bool {
+        fn scan_task(&mut self, id: TerminalId, now: Instant) -> Option<bool> {
             let lines = self.all_tabs().find_map(|tab| match &tab.kind {
                 TabKind::Terminal(pane) if pane.id() == id => {
                     // Before reading, so output parsed after the read is announced.
@@ -298,11 +303,9 @@ mod running {
             });
             let Some(lines) = lines else {
                 self.tasks.runs.remove(&id);
-                return false;
+                return None;
             };
-            let Some(run) = self.tasks.runs.get_mut(&id) else {
-                return false;
-            };
+            let run = self.tasks.runs.get_mut(&id)?;
             run.scanned = Some(now);
             run.due = None;
             let context = matcher::ScanContext {
@@ -312,8 +315,10 @@ mod running {
             };
             let found = matcher::scan(&run.matchers, &lines, &context);
             let label = run.label.clone();
+            let before = self.problems.task_problems.get(&label);
+            let changed = before.map_or(&[][..], Vec::as_slice) != found.as_slice();
             self.set_task_problems(&label, found);
-            true
+            Some(changed)
         }
     }
 
