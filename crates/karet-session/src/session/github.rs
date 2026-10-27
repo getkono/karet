@@ -1,5 +1,7 @@
 //! GitHub eligibility and asynchronous request worker.
 
+mod open_pulls;
+
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -121,10 +123,12 @@ impl Session {
             GithubCommand::SearchPullRequests { query, page } => {
                 GithubJob::PullRequests { query, page }
             },
-            GithubCommand::ListOpenPullRequests { remote, page } => GithubJob::OpenPullRequests {
-                root: self.vcs.as_ref().and_then(Repository::worktree_root),
-                remote,
-                page,
+            GithubCommand::ListOpenPullRequests { remote, page } => {
+                let root = self.vcs.as_ref().and_then(Repository::worktree_root);
+                if self.github_tx.is_none() {
+                    return self.open_pull_requests_without_worker(id, root, remote, page);
+                }
+                GithubJob::OpenPullRequests { root, remote, page }
             },
             GithubCommand::Actions { page } => GithubJob::Actions { page },
             GithubCommand::Issue { number } => GithubJob::Issue { number },
@@ -328,7 +332,7 @@ async fn run_job(
                 },
             }),
         GithubJob::OpenPullRequests { root, remote, page } => {
-            open_pull_requests(client, root, remote, page).await
+            Ok(open_pulls::open_pull_requests(client, root, remote, page).await)
         },
         GithubJob::Actions { page } => match client.workflows(repository, page).await {
             Ok(workflows) => {
@@ -529,51 +533,6 @@ async fn load_pull_request(
     })
 }
 
-/// One page of the open pull requests of the repository `remote` names, read
-/// with the worker's authenticated client.
-async fn open_pull_requests(
-    client: &GitHubClient,
-    root: Option<PathBuf>,
-    remote: String,
-    page: u32,
-) -> Result<Event, karet_github::GitHubError> {
-    // `git remote get-url` is a subprocess; keep it off the async worker.
-    let repository = tokio::task::spawn_blocking(move || remote_repository(root, &remote))
-        .await
-        .map_err(|error| karet_github::GitHubError::Request(error.to_string()))??;
-    let page = client.open_pull_requests(&repository, page).await?;
-    Ok(Event::GithubPullRequests {
-        page: GithubPage {
-            items: page.items.into_iter().map(map_pull_request).collect(),
-            page: page.page,
-            next_page: page.next_page,
-            total_count: page.total_count,
-        },
-    })
-}
-
-/// The github.com repository the configured remote `name` points at, in the
-/// repository whose worktree is `root`.
-fn remote_repository(
-    root: Option<PathBuf>,
-    name: &str,
-) -> Result<RepositoryIdentity, karet_github::GitHubError> {
-    let refuse = |message: String| karet_github::GitHubError::Request(message);
-    let root = root.ok_or_else(|| refuse("no repository is open".to_string()))?;
-    let repository = Repository::discover(&root).map_err(|error| refuse(error.to_string()))?;
-    let url = repository
-        .remotes()
-        .map_err(|error| refuse(error.to_string()))?
-        .into_iter()
-        .find(|remote| remote.name == name)
-        .ok_or_else(|| refuse(format!("unknown remote: {name}")))?
-        .url
-        .ok_or_else(|| refuse(format!("remote {name} has no fetch URL")))?;
-    GitHubRemote::parse(&url)
-        .map(GitHubRemote::into_identity)
-        .ok_or_else(|| refuse(format!("remote {name} is not hosted on github.com")))
-}
-
 async fn load_all_comments(
     client: &GitHubClient,
     repository: &RepositoryIdentity,
@@ -761,50 +720,6 @@ mod tests {
             Some("getkono/karet")
         );
         assert!(eligible_repository(&[dir.path().join("nested")], Some(&repository)).is_none());
-        Ok(())
-    }
-
-    /// The open-pull-request listing reads whichever remote it is given, not only
-    /// `origin`, and refuses one it cannot place on github.com.
-    #[test]
-    fn remote_repository_resolves_any_named_github_remote() -> Result<(), String> {
-        let dir = TempDir::new().map_err(|error| error.to_string())?;
-        let git = |args: &[&str]| -> Result<(), String> {
-            let status = Command::new("git")
-                .args(args)
-                .current_dir(dir.path())
-                .status()
-                .map_err(|error| error.to_string())?;
-            status
-                .success()
-                .then_some(())
-                .ok_or_else(|| format!("git {args:?} failed"))
-        };
-        git(&["init", "-q"])?;
-        git(&["remote", "add", "origin", "https://gitlab.com/me/karet.git"])?;
-        git(&[
-            "remote",
-            "add",
-            "upstream",
-            "git@github.com:getkono/karet.git",
-        ])?;
-        let root = Some(dir.path().to_path_buf());
-
-        let upstream = remote_repository(root.clone(), "upstream").map_err(|e| e.to_string())?;
-        assert_eq!(upstream.full_name(), "getkono/karet");
-        let refusal = |name| match remote_repository(root.clone(), name) {
-            Err(karet_github::GitHubError::Request(message)) => message,
-            other => format!("unexpected: {other:?}"),
-        };
-        assert_eq!(
-            refusal("origin"),
-            "remote origin is not hosted on github.com"
-        );
-        assert_eq!(refusal("missing"), "unknown remote: missing");
-        assert!(matches!(
-            remote_repository(None, "origin"),
-            Err(karet_github::GitHubError::Request(message)) if message == "no repository is open"
-        ));
         Ok(())
     }
 

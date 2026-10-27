@@ -23,10 +23,6 @@
                 query: "is:open".to_owned(),
                 page: 1,
             },
-            GithubCommand::ListOpenPullRequests {
-                remote: "origin".to_owned(),
-                page: 1,
-            },
             GithubCommand::Actions { page: 1 },
             GithubCommand::Issue { number: 1 },
             GithubCommand::PullRequest { number: 1 },
@@ -75,6 +71,39 @@
             // The token must never come back out, even inside an error.
             assert!(!format!("{event:?}").contains("github_pat_never_sent"));
         }
+    }
+
+    /// The branch picker's listing is not scoped to the eligible worker, so an
+    /// ineligible workspace serves it rather than refusing; a session with no
+    /// async runtime still answers it, on its own id, with a listing error.
+    #[cfg(feature = "github")]
+    #[test]
+    fn the_open_pull_request_listing_answers_without_a_runtime() {
+        let (mut session, mut events, _snaps) = Session::new(SessionConfig::default());
+
+        session.handle(
+            RequestId(1),
+            crate::api::GithubCommand::ListOpenPullRequests {
+                remote: "origin".to_owned(),
+                page: 1,
+            },
+        );
+
+        let answer = events.try_recv();
+        assert!(
+            matches!(
+                &answer,
+                Some((
+                    Some(RequestId(1)),
+                    Event::GithubError {
+                        operation: crate::api::GithubOperation::PullRequests,
+                        ..
+                    }
+                ))
+            ),
+            "{answer:?}"
+        );
+        assert!(events.try_recv().is_none(), "exactly one answer");
     }
 
     /// Refreshing an ineligible workspace is an availability answer, not an
