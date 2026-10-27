@@ -31,8 +31,6 @@ pub struct FileHit {
 /// The maximum file size (in bytes) the workspace search will read; larger files
 /// are skipped. Tune later alongside the deferred parallel walk.
 pub(crate) const MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
-/// How many leading bytes to inspect when sniffing for binary content.
-pub(crate) const BINARY_SNIFF_BYTES: usize = 8192;
 
 /// A gitignore-aware workspace search.
 #[derive(Default)]
@@ -289,9 +287,8 @@ fn read_searchable(entry: &ignore::DirEntry) -> Option<String> {
         return None;
     }
     let bytes = std::fs::read(entry.path()).ok()?;
-    // Skip binary files: a NUL byte in the head, or invalid UTF-8.
-    let head = &bytes[..bytes.len().min(BINARY_SNIFF_BYTES)];
-    if head.contains(&0) {
+    // Skip binary files: the shared NUL sniff, or invalid UTF-8.
+    if karet_filetype::looks_binary(&bytes) {
         return None;
     }
     String::from_utf8(bytes).ok()

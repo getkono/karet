@@ -201,6 +201,7 @@ impl Session {
             lint_diagnostics: Vec::new(),
             lsp_diagnostics: HashMap::new(),
             semantic_tokens: None,
+            server_folds: None,
             refs: 1,
             dirty_since: None,
             backed_up_version: None,
@@ -790,6 +791,7 @@ impl Session {
         // `update_syntax` would keep it.
         if doc.language_selector != old_language || doc.lsp_language_id != old_lsp_language {
             doc.semantic_tokens = None;
+            doc.server_folds = None;
         }
         // The language may have changed with the extension; re-highlight from scratch.
         let spell_without_syntax =

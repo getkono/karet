@@ -34,6 +34,7 @@ mod inline_macros;
 mod input;
 mod language_servers;
 mod lifecycle;
+mod link_color;
 mod linked_editing;
 mod markdown_edit;
 mod mouse;
@@ -217,6 +218,8 @@ pub(crate) use karet_widgets::textfield::TextFieldState;
 pub(crate) use language_servers::LanguageServerBadge;
 pub(crate) use language_servers::LanguageServerBadgeSummary;
 pub(crate) use language_servers::LanguageServerQuestion;
+pub(crate) use link_color::HeldColors;
+pub(crate) use link_color::current_items;
 pub(crate) use notifications::Report;
 pub(crate) use pending::Pending;
 pub(crate) use problems::ProblemRow;
@@ -571,6 +574,10 @@ pub struct App {
     pub(crate) problems: ProblemsPanel,
     /// The Problems panel's per-frame chrome.
     pub(crate) problems_ui: ProblemsChrome,
+    /// The Hierarchy panel state: the call or type tree being walked.
+    pub(crate) hierarchy: hierarchy::HierarchyPanel,
+    /// The Hierarchy panel's per-frame chrome.
+    pub(crate) hierarchy_ui: hierarchy::HierarchyChrome,
     /// The status bar rect from the last frame (mouse hit-testing).
     pub(crate) status_rect: Rect,
     /// Clickable status-bar segments `(start, end, command)` from the last frame.
@@ -698,6 +705,9 @@ pub struct App {
     /// Each document's code lenses, the requests for them, and a lens run
     /// awaiting its answer (see [`code_lens`]).
     pub(crate) code_lenses: code_lens::CodeLensState,
+    /// Each document's language-server links and colours, the requests for
+    /// them, and a link resolve awaiting its answer (see [`link_color`]).
+    pub(crate) links_colors: link_color::LinkColorState,
     /// The open scrollable diagnostic detail view, if any.
     pub(crate) diagnostic_view: Option<crate::hover::DiagnosticView>,
     /// The debug session: lifecycle, console, Debug panel, and stop location

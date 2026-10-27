@@ -45,6 +45,7 @@ mod reload;
 mod retirement;
 mod search;
 mod semantic_tokens;
+mod server_folds;
 mod spelling;
 mod streams;
 mod syntax_state;
@@ -75,7 +76,9 @@ use karet_core::Selection;
 use karet_core::Severity;
 use karet_core::Symbol;
 use karet_core::TextEdit;
+#[cfg(feature = "cbor")]
 use karet_filetype::FileKind;
+#[cfg(feature = "cbor")]
 use karet_filetype::classify_ignoring_size;
 use karet_syntax::FoldRegions;
 use karet_syntax::Highlights;
@@ -196,6 +199,12 @@ enum DocumentLoadError {
     /// A known binary format whose decode-to-text failed (corrupt CBOR): the
     /// client should fall back to a read-only byte view, like non-UTF-8 text.
     #[error("file is not decodable to text")]
+    // Only CBOR has a decode step today; the variant stays ungated so the
+    // open path's match arm in `documents.rs` reads the same in every build.
+    #[cfg_attr(
+        not(feature = "cbor"),
+        expect(dead_code, reason = "constructed only by the cbor decode path")
+    )]
     Undecodable,
     #[error(transparent)]
     Load(#[from] LoadError),
@@ -238,6 +247,9 @@ struct Document {
     /// The semantic-token owner's last overlay, translated across edits like
     /// [`highlights`](Self::highlights) (see [`semantic_tokens`]).
     semantic_tokens: Option<semantic_tokens::SemanticLayer>,
+    /// The primary server's folding ranges, preferred over the grammar's folds
+    /// on every snapshot while held (see [`server_folds`]).
+    server_folds: Option<server_folds::ServerFolds>,
     /// Open reference count (a path opened in N views shares one document).
     refs: u32,
     /// When the buffer first became dirty (session-clock ms), or `None` when clean.
@@ -790,6 +802,8 @@ impl Session {
             | Command::FormatOnType { .. }
             | Command::CodeLenses { .. }
             | Command::RunCodeLens { .. }
+            | Command::LinksAndColors { .. }
+            | Command::ResolveDocumentLink { .. }
             | Command::RestartLanguageServer { .. }
             | Command::CancelLanguageServerWork { .. }
             | Command::AnswerLanguageServerMessage { .. }
@@ -866,6 +880,7 @@ fn update_syntax(
     edits: Option<&[AppliedEdit]>,
 ) -> bool {
     doc.translate_semantic_tokens(edits);
+    doc.translate_server_folds(edits);
     let Some(lang) = doc.lang_id else {
         // Plaintext: nothing to parse, and no worker round-trip to wait for.
         // No worker result will replace this, so ranges from a previous grammar

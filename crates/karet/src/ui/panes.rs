@@ -130,6 +130,7 @@ pub(super) fn draw_panes(
                 diagnostics: &app.docs.diagnostics,
                 inlay_hints: &app.docs.inlay_hints,
                 code_lenses: &app.code_lenses.held,
+                document_colors: &app.links_colors.colors,
                 symbols: &app.docs.symbols,
                 line_changes: app
                     .settings
@@ -197,6 +198,7 @@ pub(super) fn draw_panes(
                 diagnostics: &app.docs.diagnostics,
                 inlay_hints: &app.docs.inlay_hints,
                 code_lenses: &app.code_lenses.held,
+                document_colors: &app.links_colors.colors,
                 symbols: &app.docs.symbols,
                 line_changes: app
                     .settings

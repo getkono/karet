@@ -15,7 +15,6 @@ fn commit_graph_header_reports_branch_divergence_and_tip() -> Result<(), std::co
 
     let commits = vec![karet_vcs::Commit {
         hash: "aaaa1111".to_string(),
-        short_hash: "aaaa111".to_string(),
         summary: "feat: land the graph view".to_string(),
         author: "Ada".to_string(),
         time: 0,
@@ -105,7 +104,6 @@ fn the_graph_view_survives_degenerate_pane_sizes() -> Result<(), std::convert::I
     let commits: Vec<karet_vcs::Commit> = (0..5)
         .map(|i| karet_vcs::Commit {
             hash: format!("{i:040}"),
-            short_hash: format!("{i:07}"),
             summary: "a summary long enough to overflow a narrow pane".to_string(),
             author: "Ada".to_string(),
             time: 0,

@@ -17,6 +17,7 @@ mod hierarchy;
 mod inlay;
 mod inline_completion;
 mod lens;
+mod link;
 mod virtual_text;
 
 pub use completion::CompletionItem;
@@ -38,6 +39,8 @@ pub use inline_completion::InlineCompletionItem;
 pub use inline_completion::InlineCompletionTrigger;
 pub use inline_completion::InlineGhost;
 pub use lens::CodeLens;
+pub use link::DocumentColor;
+pub use link::DocumentLink;
 pub use virtual_text::EolAlign;
 pub use virtual_text::VirtualLine;
 pub use virtual_text::VirtualLineSide;
@@ -258,6 +261,32 @@ pub struct Hover {
     pub range: Option<Range>,
 }
 
+/// How a [`DocumentHighlight`] uses the symbol it is an occurrence of (LSP
+/// `DocumentHighlightKind`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum HighlightKind {
+    /// A textual occurrence the producer does not class as a read or a write;
+    /// also what a highlight that names no kind is, as the protocol defines.
+    #[default]
+    Text,
+    /// A read of the symbol, such as a variable's use.
+    Read,
+    /// A write to the symbol, such as an assignment or the declaration.
+    Write,
+}
+
+/// One occurrence of the symbol at a position, which an editor paints while
+/// the caret rests on that symbol.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct DocumentHighlight {
+    /// The occurrence, in the column encoding its producer documents.
+    pub range: Range,
+    /// How the occurrence uses the symbol.
+    pub kind: HighlightKind,
+}
+
 /// One parameter within a [`Signature`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -475,6 +504,16 @@ mod tests {
             },
             range: None,
         })?;
+        for kind in [
+            HighlightKind::Text,
+            HighlightKind::Read,
+            HighlightKind::Write,
+        ] {
+            rt(&DocumentHighlight {
+                range: Range::default(),
+                kind,
+            })?;
+        }
         rt(&SignatureHelp {
             signatures: vec![Signature {
                 label: "f(x)".into(),

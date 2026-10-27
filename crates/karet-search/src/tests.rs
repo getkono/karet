@@ -221,9 +221,9 @@ fn zero_width_pattern_terminates() {
 use std::ops::ControlFlow;
 use std::path::Path;
 
+use karet_filetype::BINARY_SNIFF_LEN;
 use tempfile::TempDir;
 
-use crate::walk::BINARY_SNIFF_BYTES;
 use crate::walk::MAX_FILE_BYTES;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -572,6 +572,21 @@ fn walked_names(root: &Path) -> Vec<String> {
         .collect()
 }
 
+/// Search sniffs with the shared window, so it agrees with diff and the
+/// explorer: a NUL on the window's last byte is binary, one just past it is text.
+#[test]
+fn walk_sniffs_nul_only_inside_the_shared_window() -> TestResult {
+    let dir = temp_dir()?;
+    let mut inside = vec![b'a'; BINARY_SNIFF_LEN + 1];
+    inside[BINARY_SNIFF_LEN - 1] = 0;
+    write(dir.path(), "inside.txt", &inside)?;
+    let mut past = vec![b'a'; BINARY_SNIFF_LEN + 1];
+    past[BINARY_SNIFF_LEN] = 0;
+    write(dir.path(), "past.txt", &past)?;
+    assert_eq!(walked_names(dir.path()), ["past.txt"]);
+    Ok(())
+}
+
 #[test]
 fn walk_skips_non_utf8_files_without_a_nul() -> TestResult {
     let dir = temp_dir()?;
@@ -592,7 +607,7 @@ fn walk_reads_a_file_at_the_size_cap_and_skips_one_past_it() -> TestResult {
         ("at_cap.txt", MAX_FILE_BYTES),
         ("over_cap.txt", MAX_FILE_BYTES + 1),
     ] {
-        write(dir.path(), name, &[b'a'; BINARY_SNIFF_BYTES])?;
+        write(dir.path(), name, &[b'a'; BINARY_SNIFF_LEN])?;
         std::fs::OpenOptions::new()
             .write(true)
             .open(dir.path().join(name))?
