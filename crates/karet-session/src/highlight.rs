@@ -16,18 +16,18 @@ use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
 
-use karet_syntax::FoldRegions;
+use karet_core::AppliedEdit;
+use karet_core::FoldRegions;
+use karet_core::Highlights;
+use karet_core::SemanticBlocks;
 use karet_syntax::Folder;
-use karet_syntax::Highlights;
 use karet_syntax::LayeredHighlighter;
 use karet_syntax::OutlineExtractor;
 use karet_syntax::SemanticBlocker;
-use karet_syntax::SemanticBlocks;
 use karet_syntax::SemanticCommentConfig;
 use karet_syntax::TableFinder;
 use karet_text::TextBuffer;
 use karet_text::TextSnapshot;
-use karet_treesitter::Edit;
 use karet_treesitter::LanguageId;
 use karet_treesitter::LayeredParser;
 use karet_treesitter::LayeredTree;
@@ -62,7 +62,7 @@ pub(crate) struct HighlightRequest {
     pub semantic: Option<SemanticCommentConfig>,
     /// `Some(edits)` advances the retained tree incrementally; `None` forces a full
     /// parse (a fresh open, a reload, or a language change).
-    pub edits: Option<Vec<Edit>>,
+    pub edits: Option<Vec<AppliedEdit>>,
 }
 
 /// The worker's answer for one document version.
@@ -303,8 +303,8 @@ fn compute(
 mod tests {
     use super::*;
 
-    fn edit(start: usize, old_end: usize, new_end: usize) -> Edit {
-        Edit {
+    fn edit(start: usize, old_end: usize, new_end: usize) -> AppliedEdit {
+        AppliedEdit {
             start_byte: start,
             old_end_byte: old_end,
             new_end_byte: new_end,
@@ -319,7 +319,7 @@ mod tests {
         lang: LanguageId,
         version: u64,
         text: &str,
-        edits: Option<Vec<Edit>>,
+        edits: Option<Vec<AppliedEdit>>,
     ) -> HighlightRequest {
         HighlightRequest {
             doc: DocumentId(1),
@@ -440,7 +440,7 @@ mod tests {
         trees: &mut HashMap<DocumentId, Retained>,
         lang: LanguageId,
         text: &str,
-        edits: Option<Vec<Edit>>,
+        edits: Option<Vec<AppliedEdit>>,
     ) -> Option<Vec<(usize, usize, u16)>> {
         let request = HighlightRequest {
             doc: DocumentId(1),
@@ -494,7 +494,7 @@ mod tests {
 
     /// Replace the first `needle` in `text` with `with`, returning the edit that
     /// describes the change in the frame of the text before it.
-    fn replace(text: &mut String, needle: &str, with: &str) -> Edit {
+    fn replace(text: &mut String, needle: &str, with: &str) -> AppliedEdit {
         let start = text.find(needle).unwrap_or_default();
         let end = start + needle.len();
         let old = text.clone();
@@ -505,7 +505,7 @@ mod tests {
             let col = before.rfind('\n').map_or(byte, |i| byte - i - 1);
             karet_core::BytePoint::new(row, col)
         };
-        Edit {
+        AppliedEdit {
             start_byte: start,
             old_end_byte: end,
             new_end_byte: start + with.len(),
@@ -651,7 +651,7 @@ mod tests {
 
     #[test]
     fn compute_publishes_the_fold_query_regions_with_their_kinds() {
-        use karet_syntax::FoldKind;
+        use karet_core::FoldKind;
         let Some(rust) = karet_treesitter::language_id_from_injection_name("rust") else {
             return; // rust grammar not compiled in; nothing to test
         };

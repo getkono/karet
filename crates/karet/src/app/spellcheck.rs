@@ -2,6 +2,7 @@ use std::path::Path;
 
 use karet_core::Change;
 use karet_core::Diagnostic;
+use karet_core::EditCause;
 use karet_core::LineCol;
 use karet_core::NotificationKind;
 use karet_core::Range;
@@ -9,7 +10,6 @@ use karet_core::TextEdit;
 use karet_editor::editing;
 use karet_session::DocumentId;
 use karet_session::WorkspaceCommand;
-use karet_text::EditCause;
 use ratatui::layout::Rect;
 
 use crate::app::App;

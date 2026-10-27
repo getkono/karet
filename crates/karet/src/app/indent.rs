@@ -7,9 +7,9 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use karet_core::EditCause;
 use karet_core::Range;
 use karet_editor::editing;
-use karet_text::EditCause;
 use karet_text::TextBuffer;
 
 use super::syntax_select::ParsedText;

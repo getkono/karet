@@ -1,3 +1,4 @@
+use karet_core::EditCause;
 use karet_core::HierarchyDirection;
 use karet_core::NotificationKind;
 use karet_core::Range;
@@ -12,7 +13,6 @@ use karet_session::RangeSpec;
 use karet_session::VcsAction;
 use karet_session::VcsCommand;
 use karet_session::WorkspaceCommand;
-use karet_text::EditCause;
 use karet_widgets::PaneId;
 use karet_widgets::SplitDir;
 
@@ -221,8 +221,8 @@ impl App {
             Command::FoldLevel(level) => self.fold_level(level),
             Command::FoldRecursively => self.fold_recursively(),
             Command::UnfoldRecursively => self.unfold_recursively(),
-            Command::FoldAllComments => self.fold_kind(karet_syntax::FoldKind::Comment),
-            Command::FoldAllImports => self.fold_kind(karet_syntax::FoldKind::Imports),
+            Command::FoldAllComments => self.fold_kind(karet_core::FoldKind::Comment),
+            Command::FoldAllImports => self.fold_kind(karet_core::FoldKind::Imports),
             Command::NextChangedFile => self.step_changed_file(1),
             Command::PrevChangedFile => self.step_changed_file(-1),
             Command::OpenDiffFile => self.open_diff_file(),

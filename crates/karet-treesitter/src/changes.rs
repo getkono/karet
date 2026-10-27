@@ -4,11 +4,11 @@
 
 use std::collections::HashMap;
 
+use karet_core::AppliedEdit;
 use karet_core::BytePos;
 use karet_core::Span;
 use karet_core::shift_span;
 
-use crate::Edit;
 use crate::LanguageId;
 use crate::SyntaxTree;
 
@@ -20,7 +20,7 @@ const MAX_TRACKED_EDITS: usize = 256;
 /// The ranges `edits`, applied in order, wrote, in the frame after the last.
 ///
 /// `None` when there are too many to track (see [`MAX_TRACKED_EDITS`]).
-pub(crate) fn edited_ranges(edits: &[Edit]) -> Option<Vec<Span>> {
+pub(crate) fn edited_ranges(edits: &[AppliedEdit]) -> Option<Vec<Span>> {
     if edits.len() > MAX_TRACKED_EDITS {
         return None;
     }
@@ -106,12 +106,12 @@ mod tests {
         }
     }
 
-    fn edit(start: usize, old_end: usize, new_end: usize) -> Edit {
-        Edit {
+    fn edit(start: usize, old_end: usize, new_end: usize) -> AppliedEdit {
+        AppliedEdit {
             start_byte: start,
             old_end_byte: old_end,
             new_end_byte: new_end,
-            ..Edit::default()
+            ..AppliedEdit::default()
         }
     }
 
@@ -133,14 +133,14 @@ mod tests {
     }
 
     /// Replace `old[start..end]` with `with`, returning the new text and its edit.
-    fn replace(old: &str, start: usize, end: usize, with: &str) -> (String, Edit) {
+    fn replace(old: &str, start: usize, end: usize, with: &str) -> (String, AppliedEdit) {
         let new = format!(
             "{}{with}{}",
             old.get(..start).unwrap_or(""),
             old.get(end..).unwrap_or("")
         );
         let new_end = start + with.len();
-        let edit = Edit {
+        let edit = AppliedEdit {
             start_byte: start,
             old_end_byte: end,
             new_end_byte: new_end,

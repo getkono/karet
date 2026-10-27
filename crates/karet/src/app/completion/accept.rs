@@ -4,6 +4,7 @@
 
 use karet_core::Change;
 use karet_core::CompletionItem;
+use karet_core::EditCause;
 use karet_core::LineCol;
 use karet_core::Range;
 use karet_core::TextEdit;
@@ -11,7 +12,6 @@ use karet_editor::editing;
 use karet_session::DocumentId;
 use karet_session::LspCommand;
 use karet_session::RequestId;
-use karet_text::EditCause;
 use karet_text::TextBuffer;
 
 use crate::app::App;

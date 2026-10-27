@@ -49,7 +49,7 @@ fn paint(
     code: &str,
     start: usize,
     end: usize,
-    highlights: &[karet_syntax::HighlightSpan],
+    highlights: &[karet_core::HighlightSpan],
 ) -> Vec<TextSpan> {
     let mut spans = Vec::new();
     let mut cursor = start;

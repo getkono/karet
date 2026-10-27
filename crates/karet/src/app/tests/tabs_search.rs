@@ -496,7 +496,7 @@ fn arrowing_onto_an_already_open_file_activates_it_without_a_new_tab() {
 
 #[test]
 fn find_highlights_matches_in_a_code_tab() {
-    use karet_syntax::Highlights;
+    use karet_core::Highlights;
     use karet_text::TextBuffer;
 
     let mut app = app();
@@ -510,7 +510,7 @@ fn find_highlights_matches_in_a_code_tab() {
             buffer: TextBuffer::from_text("foo bar foo").into(),
             text: "foo bar foo".into(),
             highlights: Highlights::default(),
-            semantic_blocks: karet_syntax::SemanticBlocks::default(),
+            semantic_blocks: karet_core::SemanticBlocks::default(),
             folds: FoldRegions::default(),
             folded: BTreeSet::new(),
             decos: Vec::new(),

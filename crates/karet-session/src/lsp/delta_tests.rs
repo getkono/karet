@@ -7,8 +7,8 @@ use std::path::Path;
 
 use karet_core::Change;
 use karet_core::CursorState;
+use karet_core::EditCause;
 use karet_core::Selection;
-use karet_text::EditCause;
 use karet_text::EditContext;
 
 use super::*;

@@ -22,13 +22,12 @@ use std::collections::VecDeque;
 
 use karet_core::Change;
 use karet_core::CursorState;
+use karet_core::EditCause;
 use karet_core::LineCol;
 use karet_core::TextEdit;
 
 /// Coalesce consecutive typing within this many milliseconds into one undo step.
 const COALESCE_WINDOW_MS: u64 = 200;
-
-pub use karet_core::EditCause;
 
 /// Context supplied alongside a [`Change`] when applying it: the monotonic
 /// coalescing clock (millis), why the edit happened, and the cursor *before* it

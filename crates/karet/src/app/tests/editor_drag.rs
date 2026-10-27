@@ -466,7 +466,7 @@ fn sticky_header_rows_count_as_above_the_text() {
         semantic_blocks, ..
     } = &mut rig.app.tabs[idx].kind
     {
-        *semantic_blocks = karet_syntax::SemanticBlocks::new(vec![karet_syntax::SemanticBlock {
+        *semantic_blocks = karet_core::SemanticBlocks::new(vec![karet_core::SemanticBlock {
             header_start: 0,
             header_end: 0,
             scope_end: 39,

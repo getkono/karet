@@ -585,11 +585,11 @@ async fn disabling_semantic_comments_leaves_comments_plain() -> TestResult {
 #[tokio::test]
 async fn editing_republishes_highlights_for_the_new_text() -> TestResult {
     use karet_core::Change;
+    use karet_core::EditCause;
     use karet_core::LineCol;
     use karet_core::Range;
     use karet_core::TextEdit;
     use karet_core::TokenId;
-    use karet_text::EditCause;
 
     let dir = tempfile::tempdir()?;
     let path = dir.path().join("live.md");
