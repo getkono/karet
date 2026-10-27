@@ -1148,8 +1148,8 @@ pub enum Event {
     /// The adapter or debuggee produced output (unsolicited; text may carry
     /// ANSI styling — render through `karet_widgets::ansi`).
     DebugOutput {
-        /// The stream (`"console"`, `"stdout"`, `"stderr"`, …).
-        category: String,
+        /// The stream it arrived on.
+        category: DebugOutputCategory,
         /// The text, possibly multi-line.
         text: String,
     },
@@ -1157,19 +1157,19 @@ pub enum Event {
     /// empty when the debuggee is not stopped).
     DebugStack {
         /// Top frame first.
-        frames: Vec<DebugFrame>,
+        frames: Vec<StackFrame>,
     },
     /// One frame's variable scopes (answers [`DebugCommand::Scopes`]).
     DebugScopes {
         /// The frame the scopes belong to.
-        frame: i64,
+        frame: FrameId,
         /// The scopes, adapter order.
         scopes: Vec<DebugScope>,
     },
     /// One reference's children (answers [`DebugCommand::Variables`]).
     DebugVariables {
         /// The handle the variables belong to.
-        reference: i64,
+        reference: VariablesRef,
         /// The variables, adapter order.
         variables: Vec<DebugVariable>,
     },
@@ -1178,8 +1178,9 @@ pub enum Event {
     DebugEvaluated {
         /// The rendered result (or error text).
         result: String,
-        /// Non-zero when the result has fetchable children.
-        reference: i64,
+        /// The handle that fetches the result's children;
+        /// [`VariablesRef::NONE`] for a scalar.
+        reference: VariablesRef,
     },
     /// The notebook kernel's state (unsolicited: starting, ready, running,
     /// interrupted, or failed).

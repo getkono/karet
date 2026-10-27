@@ -194,7 +194,10 @@ mod tests {
 
         let category = DebugOutputCategory::Other("important".to_owned());
         let json = serde_json::to_string(&category)?;
-        assert_eq!(serde_json::from_str::<DebugOutputCategory>(&json)?, category);
+        assert_eq!(
+            serde_json::from_str::<DebugOutputCategory>(&json)?,
+            category
+        );
         Ok(())
     }
 }

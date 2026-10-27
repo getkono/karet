@@ -48,15 +48,19 @@
         .await;
         assert_eq!(stack, Some((Some(RequestId(3)), Vec::new())));
 
-        session.handle(RequestId(4), DebugCommand::Scopes { frame: 5 });
+        session.handle(RequestId(4), DebugCommand::Scopes {
+                frame: karet_core::FrameId(5),
+            });
         let scopes = next_matching(&mut events, |id, event| match event {
             Event::DebugScopes { frame, scopes } => Some((id, frame, scopes.len())),
             _ => None,
         })
         .await;
-        assert_eq!(scopes, Some((Some(RequestId(4)), 5, 0)));
+        assert_eq!(scopes, Some((Some(RequestId(4)), karet_core::FrameId(5), 0)));
 
-        session.handle(RequestId(5), DebugCommand::Variables { reference: 11 });
+        session.handle(RequestId(5), DebugCommand::Variables {
+                reference: karet_core::VariablesRef(11),
+            });
         let variables = next_matching(&mut events, |id, event| match event {
             Event::DebugVariables {
                 reference,
@@ -65,7 +69,7 @@
             _ => None,
         })
         .await;
-        assert_eq!(variables, Some((Some(RequestId(5)), 11, 0)));
+        assert_eq!(variables, Some((Some(RequestId(5)), karet_core::VariablesRef(11), 0)));
 
         session.handle(
             RequestId(6),
@@ -81,7 +85,11 @@
         .await;
         assert_eq!(
             evaluated,
-            Some((Some(RequestId(6)), "no debug session".to_owned(), 0))
+            Some((
+                Some(RequestId(6)),
+                "no debug session".to_owned(),
+                karet_core::VariablesRef::NONE
+            ))
         );
 
         session.handle(

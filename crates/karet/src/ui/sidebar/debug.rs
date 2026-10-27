@@ -36,7 +36,7 @@ pub(super) fn draw_debug_panel(
                 } else {
                     " "
                 };
-                let location = frame.path.as_deref().map_or(String::new(), |path| {
+                let location = frame.source_path.as_deref().map_or(String::new(), |path| {
                     let file = path
                         .file_name()
                         .map(|name| name.to_string_lossy().into_owned())
@@ -53,7 +53,7 @@ pub(super) fn draw_debug_panel(
                 let Some(scope) = panel.scopes.get(index) else {
                     return ListItem::new(Line::raw(""));
                 };
-                let chevron = if panel.expanded.contains(&scope.reference) {
+                let chevron = if panel.expanded.contains(&scope.variables_reference) {
                     '▾'
                 } else {
                     '▸'
@@ -76,9 +76,9 @@ pub(super) fn draw_debug_panel(
                     return ListItem::new(Line::raw(""));
                 };
                 let indent = "  ".repeat(usize::from(depth) + 1);
-                let chevron = if variable.reference == 0 {
+                let chevron = if !variable.variables_reference.has_children() {
                     ' '
-                } else if panel.expanded.contains(&variable.reference) {
+                } else if panel.expanded.contains(&variable.variables_reference) {
                     '▾'
                 } else {
                     '▸'
@@ -100,7 +100,8 @@ pub(super) fn draw_debug_panel(
                 };
                 let mut spans = vec![Span::raw("   ")];
                 let styled = karet_widgets::ansi::ansi_spans(text);
-                if category == "stderr" && styled.iter().all(|span| span.style == Style::default())
+                if *category == karet_core::DebugOutputCategory::Stderr
+                    && styled.iter().all(|span| span.style == Style::default())
                 {
                     spans.push(Span::styled(
                         text.clone(),
@@ -142,4 +143,56 @@ pub(super) fn draw_debug_panel(
         ),
         ScrollSurface::DebugResults,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use karet_core::DebugOutputCategory;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    use super::*;
+
+    /// The foreground of the first cell anywhere in `buffer` painting `symbol`.
+    fn fg_of(buffer: &ratatui::buffer::Buffer, symbol: &str) -> Option<Color> {
+        buffer
+            .content()
+            .iter()
+            .find(|cell| cell.symbol() == symbol)
+            .map(|cell| cell.fg)
+    }
+
+    #[test]
+    fn plain_stderr_output_is_tinted_and_other_streams_are_not()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let mut app = App::new(dir.path().to_path_buf(), Vec::new(), Vec::new(), false);
+        app.debugger.output.extend([
+            (DebugOutputCategory::Stdout, "%".to_owned()),
+            (DebugOutputCategory::Stderr, "#".to_owned()),
+            (
+                DebugOutputCategory::Other("stderr-ish".to_owned()),
+                "@".to_owned(),
+            ),
+        ]);
+        app.debugger.rebuild_rows();
+        let theme = app.theme.clone();
+        let mut terminal = Terminal::new(TestBackend::new(30, 12))?;
+        terminal.draw(|frame| {
+            let area = frame.area();
+            draw_debug_panel(frame, &mut app, &theme, area, &mut ScrollHits::default());
+        })?;
+        let buffer = terminal.backend().buffer();
+        let error = theme.style(ThemeRole::DiagnosticError).fg;
+        assert!(error.is_some());
+        assert_eq!(fg_of(buffer, "#"), error, "stderr takes the error tint");
+        assert!(fg_of(buffer, "%").is_some());
+        assert_ne!(fg_of(buffer, "%"), error, "stdout stays plain");
+        assert_ne!(
+            fg_of(buffer, "@"),
+            error,
+            "an unknown category is not stderr"
+        );
+        Ok(())
+    }
 }

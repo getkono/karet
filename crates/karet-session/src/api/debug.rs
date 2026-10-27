@@ -1,4 +1,6 @@
-//! Debugger vocabulary shared by `Debug*` commands and events.
+//! Debugger vocabulary shared by `Debug*` commands and events. Frames,
+//! scopes, variables and their handles are `karet-core`'s neutral model
+//! ([`karet_core::StackFrame`] and its neighbours), carried unchanged.
 
 /// One acknowledged breakpoint of a file (see [`Event::DebugBreakpoints`]).
 ///
@@ -26,43 +28,4 @@ pub enum DebugSessionState {
     Running,
     /// The debuggee is stopped (breakpoint, step, pause, exception).
     Stopped,
-}
-
-/// One call-stack frame (see [`Event::DebugStack`](super::Event::DebugStack)).
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct DebugFrame {
-    /// The frame id `DebugScopes`/`DebugEvaluate` take.
-    pub id: i64,
-    /// The frame name (usually a function).
-    pub name: String,
-    /// The 0-based stopped line.
-    pub line: u32,
-    /// The 0-based column.
-    pub column: u32,
-    /// The source file, when the adapter reports a path.
-    pub path: Option<std::path::PathBuf>,
-}
-
-/// One variables scope of a frame (Locals, Registers, …).
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct DebugScope {
-    /// The scope name.
-    pub name: String,
-    /// The handle `DebugVariables` takes.
-    pub reference: i64,
-    /// Whether fetching this scope is expensive (fetched only on expand).
-    pub expensive: bool,
-}
-
-/// One variable row (see [`Event::DebugVariables`](super::Event::DebugVariables)).
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct DebugVariable {
-    /// The variable name.
-    pub name: String,
-    /// Its rendered value.
-    pub value: String,
-    /// The type, when reported.
-    pub ty: Option<String>,
-    /// Non-zero when the variable has children (fetch via `DebugVariables`).
-    pub reference: i64,
 }

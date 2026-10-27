@@ -373,13 +373,15 @@ async fn inspection_converts_positions_and_rejections_surface() -> TestResult {
     client.start(StartConfig::default(), &[]).await?;
     let stack = client.stack_trace(1).await?;
     assert_eq!(stack.len(), 1);
+    assert_eq!(stack[0].id, FrameId(41));
     assert_eq!(stack[0].line, 9, "wire line 10 → 0-based 9");
     assert_eq!(
         stack[0].source_path.as_deref(),
         Some(Path::new("/w/main.rs"))
     );
-    let ok = client.evaluate("1 + 41", Some(41)).await?;
+    let ok = client.evaluate("1 + 41", Some(FrameId(41))).await?;
     assert_eq!(ok.result, "42");
+    assert_eq!(ok.variables_reference, VariablesRef::NONE);
     let err = client.evaluate("boom", None).await;
     assert!(
         matches!(err, Err(DapError::Adapter(ref m)) if m.contains("invalid expression")),
@@ -464,11 +466,11 @@ async fn threads_drop_entries_without_an_id_and_default_the_name() -> TestResult
 async fn scopes_request_the_frame_and_default_missing_fields() -> TestResult {
     let (mut client, log) = spawn_fake_adapter(full_script());
     client.initialize("fake").await?;
-    let scopes = client.scopes(41).await?;
+    let scopes = client.scopes(FrameId(41)).await?;
     assert_eq!(last_arguments(&log, "scopes"), Some(json!({"frameId": 41})));
     let got: Vec<(&str, i64, bool)> = scopes
         .iter()
-        .map(|s| (s.name.as_str(), s.variables_reference, s.expensive))
+        .map(|s| (s.name.as_str(), s.variables_reference.0, s.expensive))
         .collect();
     assert_eq!(
         got,
@@ -481,16 +483,16 @@ async fn scopes_request_the_frame_and_default_missing_fields() -> TestResult {
 async fn variables_request_the_reference_and_default_missing_fields() -> TestResult {
     let (mut client, log) = spawn_fake_adapter(full_script());
     client.initialize("fake").await?;
-    let variables = client.variables(7).await?;
+    let variables = client.variables(VariablesRef(7)).await?;
     assert_eq!(
         last_arguments(&log, "variables"),
         Some(json!({"variablesReference": 7}))
     );
-    let field = |name: &str, value: &str, ty: Option<&str>, reference| Variable {
+    let field = |name: &str, value: &str, ty: Option<&str>, reference| DebugVariable {
         name: name.to_owned(),
         value: value.to_owned(),
         ty: ty.map(str::to_owned),
-        variables_reference: reference,
+        variables_reference: VariablesRef(reference),
     };
     assert_eq!(
         variables,
@@ -507,7 +509,7 @@ async fn variables_request_the_reference_and_default_missing_fields() -> TestRes
 async fn evaluate_sends_the_frame_only_when_given() -> TestResult {
     let (mut client, log) = spawn_fake_adapter(full_script());
     client.initialize("fake").await?;
-    client.evaluate("a", Some(41)).await?;
+    client.evaluate("a", Some(FrameId(41))).await?;
     assert_eq!(
         last_arguments(&log, "evaluate"),
         Some(json!({"expression": "a", "context": "repl", "frameId": 41}))

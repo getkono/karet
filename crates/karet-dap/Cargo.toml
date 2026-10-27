@@ -19,6 +19,7 @@ publish = false
 default = []
 
 [dependencies]
+karet-core.workspace = true
 karet-jsonrpc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
