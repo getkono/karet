@@ -111,11 +111,7 @@ pub struct SwapStore {
 /// the session; tests leave it unset so they never touch the real user directory.
 #[must_use]
 pub fn default_swap_dir() -> Option<PathBuf> {
-    Some(
-        directories::ProjectDirs::from("", "getkono", "karet")?
-            .data_local_dir()
-            .join("swaps"),
-    )
+    crate::dirs::data_local_dir().map(|dir| dir.join("swaps"))
 }
 
 impl SwapStore {

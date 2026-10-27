@@ -144,8 +144,7 @@ pub(crate) fn heartbeat_json(beat: &Beat, time: f64) -> serde_json::Value {
 
 /// Where undelivered heartbeats wait for connectivity.
 fn queue_path() -> Option<PathBuf> {
-    directories::ProjectDirs::from("", "", "karet")
-        .map(|dirs| dirs.cache_dir().join("wakatime-queue.jsonl"))
+    crate::dirs::cache_dir().map(|dir| dir.join("wakatime-queue.jsonl"))
 }
 
 /// Start the worker; the session sends [`Beat`]s and the status-bar text
@@ -298,6 +297,16 @@ fn save_queue(pending: &[serde_json::Value]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_queue_lives_under_the_canonical_cache_dir() {
+        // Pinned to `dirs::cache_dir()`, the root `migrate_legacy_cache` moves into:
+        // a queue re-pointed elsewhere would strand undelivered heartbeats.
+        assert_eq!(
+            queue_path(),
+            crate::dirs::cache_dir().map(|dir| dir.join("wakatime-queue.jsonl"))
+        );
+    }
 
     #[test]
     fn the_settings_section_parses_key_and_url() {

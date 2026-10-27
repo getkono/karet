@@ -38,6 +38,9 @@
 //! - `latex` — external LaTeX compilation and diagnostics.
 //! - `wakatime` — WakaTime heartbeats.
 //!
+//! Every per-user path (config, swaps, caches, state) resolves through [`dirs`], on
+//! one platform root.
+//!
 //! File-watching runs over `karet-watch`, and external process trees are owned
 //! through `karet-supervisor`. In local mode the UI renders from the [`DocSnapshot`]s pushed on the snapshot
 //! stream (`local`), not by borrowing document state across the actor boundary.
@@ -51,6 +54,7 @@ mod cancellation;
 pub mod config;
 mod dap;
 mod diff_prepare;
+pub mod dirs;
 mod editorconfig;
 mod event_tx;
 mod highlight;

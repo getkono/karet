@@ -72,7 +72,7 @@ fn workspace_key(root: &Path) -> u64 {
 /// this costs a rebuild, and nothing else.
 #[must_use]
 pub fn default_cache_dir() -> Option<PathBuf> {
-    directories::ProjectDirs::from("", "", "karet").map(|dirs| dirs.cache_dir().join("seam"))
+    crate::dirs::cache_dir().map(|dir| dir.join("seam"))
 }
 
 /// Where this workspace's cache lives under `dir`.
@@ -291,6 +291,15 @@ mod tests {
     use super::*;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    #[test]
+    fn the_default_dir_lives_under_the_canonical_cache_dir() {
+        // Pinned to `dirs::cache_dir()`, the root `migrate_legacy_cache` moves into.
+        assert_eq!(
+            default_cache_dir(),
+            crate::dirs::cache_dir().map(|dir| dir.join("seam"))
+        );
+    }
 
     fn contribution(file: &Path) -> FileContribution {
         FileContribution {
