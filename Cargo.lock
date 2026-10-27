@@ -3653,6 +3653,7 @@ version = "0.7.1"
 dependencies = [
  "imara-diff",
  "karet-core",
+ "karet-filetype",
  "ratatui",
  "serde",
  "tempfile",
@@ -3819,6 +3820,7 @@ name = "karet-search"
 version = "0.7.1"
 dependencies = [
  "ignore",
+ "karet-filetype",
  "memchr",
  "regex",
  "regex-syntax 0.8.11",
@@ -3925,7 +3927,6 @@ name = "karet-theme"
 version = "0.7.1"
 dependencies = [
  "karet-core",
- "palette",
  "ratatui",
  "serde",
  "serde_json",
@@ -4006,6 +4007,7 @@ dependencies = [
  "command-group",
  "gix",
  "imara-diff",
+ "karet-filetype",
  "serde",
  "ssh-key",
  "thiserror 2.0.19",
@@ -4894,7 +4896,6 @@ dependencies = [
  "fast-srgb8",
  "libm",
  "palette_derive",
- "phf 0.11.3",
 ]
 
 [[package]]

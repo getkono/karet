@@ -296,6 +296,7 @@ async fn event_loop(
         // how much of the document is on screen.
         app.request_inlay_hints();
         app.request_code_lenses();
+        app.request_links_and_colors();
         // The lightbulb follows the painted caret the same way.
         app.probe_code_actions(Instant::now());
         // And the ghost-text ask, once typing has paused.

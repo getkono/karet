@@ -375,7 +375,8 @@ pub struct Editor {
     pub code_lens: bool,
     /// `editor.semanticHighlighting.*` — semantic tokens over the syntax colours.
     pub semantic_highlighting: SemanticHighlighting,
-    /// Inline swatches on color literals (hex, `rgb()`, `hsl()`).
+    /// Inline swatches on color literals (hex, `rgb()`, `hsl()`) and on the
+    /// colours a language server reports.
     pub color_highlight: ColorHighlight,
     /// `editor.inlineDiagnostics.*` — which diagnostics show their message at
     /// the end of their line.
@@ -582,13 +583,15 @@ impl Default for InlineCompletion {
     }
 }
 
-/// `editor.colorHighlight.*` — inline swatches on color literals.
+/// `editor.colorHighlight.*` — inline swatches on color literals and on the
+/// colours a language server reports.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub struct ColorHighlight {
-    /// Tint color literals (hex 3/4/6/8, `rgb()`/`rgba()`, `hsl()`/`hsla()`)
-    /// with their own color, on the visible lines of the editor.
+    /// Tint color literals (hex 3/4/6/8, `rgb()`/`rgba()`, `hsl()`/`hsla()`),
+    /// and the colours the file's language server reports, with their own
+    /// color, on the visible lines of the editor.
     pub enabled: bool,
 }
 

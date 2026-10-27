@@ -1,7 +1,5 @@
 //! Remotes, repository operation state, synchronization, and recovery.
 
-use std::ffi::OsStr;
-
 use crate::Repository;
 use crate::VcsError;
 
@@ -397,15 +395,6 @@ impl Repository {
             None => return Err(VcsError::Git("no Git operation is in progress".to_string())),
         }?;
         Ok(())
-    }
-
-    pub(crate) fn git_text<I, S>(&self, args: I) -> Result<String, VcsError>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<OsStr>,
-    {
-        let output = self.git_checked(args)?;
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }
 
     pub(crate) fn validate_remote(&self, remote: &str) -> Result<(), VcsError> {

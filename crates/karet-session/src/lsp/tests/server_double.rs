@@ -139,6 +139,9 @@ pub(super) enum Behavior {
     /// Offer semantic tokens like [`Behavior::SemanticTokens`], but cancel
     /// the first request (`ServerCancelled`, `-32802`) and answer the rest.
     CancelsSemanticTokensOnce,
+    /// Serve normally, and offer folding ranges (see
+    /// `folding_tests::double_reply`).
+    Folds,
 }
 
 /// What the scripted server advertises at the handshake.
@@ -174,6 +177,8 @@ fn advertised_capabilities(behavior: Behavior) -> Value {
         "executeCommandProvider": {"commands": ["double.fix", "double.run", "double.accept"]},
         "inlineCompletionProvider": {},
         "codeLensProvider": {"resolveProvider": true},
+        "documentLinkProvider": {"resolveProvider": true},
+        "colorProvider": true,
         "signatureHelpProvider": {
             "triggerCharacters": ["("],
             "retriggerCharacters": [","]
@@ -223,12 +228,12 @@ fn advertised_capabilities(behavior: Behavior) -> Value {
             "full": {"delta": true}
         });
     }
+    if matches!(behavior, Behavior::Folds) {
+        capabilities["foldingRangeProvider"] = json!(true);
+    }
     capabilities
 }
 
-/// The double's answer to `textDocument/diagnostic`: one error on line 0
-/// naming `version`, linked to its documentation and related to line 1 of the
-/// asking file, beside a full report for `elsewhere.rs`.
 /// Whether `behavior` registers pulls on `didOpen` and withdraws them on
 /// `didSave`.
 fn registers_pulls(behavior: Behavior) -> bool {
@@ -238,6 +243,9 @@ fn registers_pulls(behavior: Behavior) -> bool {
     )
 }
 
+/// The double's answer to `textDocument/diagnostic`: one error on line 0
+/// naming `version`, linked to its documentation and related to line 1 of the
+/// asking file, beside a full report for `elsewhere.rs`.
 fn pull_reply(msg: &Value, version: &Value) -> Value {
     let asking = msg["params"]["textDocument"]["uri"]
         .as_str()
@@ -874,6 +882,19 @@ pub(super) fn test_connector(
                         },
                         Some("textDocument/codeLens" | "codeLens/resolve") => {
                             let result = code_lens_reply(&msg);
+                            write_msg(
+                                &mut server_write,
+                                &json!({"jsonrpc": "2.0", "id": msg["id"], "result": result}),
+                            )
+                            .await;
+                        },
+                        Some(
+                            "textDocument/documentLink"
+                            | "documentLink/resolve"
+                            | "textDocument/documentColor"
+                            | "textDocument/foldingRange",
+                        ) => {
+                            let result = super::link_color_tests::double_reply(&msg);
                             write_msg(
                                 &mut server_write,
                                 &json!({"jsonrpc": "2.0", "id": msg["id"], "result": result}),

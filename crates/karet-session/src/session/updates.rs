@@ -208,6 +208,7 @@ impl Session {
             LspUpdate::ApplyEdit { request, .. } => self.adopt_server_edit(request),
             LspUpdate::CodeAction { answer, .. } => self.adopt_code_action(answer),
             LspUpdate::CodeLens { answer, .. } => self.adopt_code_lens(answer),
+            LspUpdate::LinkColor { answer, .. } => self.adopt_link_color(answer),
             LspUpdate::SelectionRanges { answer, .. } => self.adopt_selection_ranges(answer),
             LspUpdate::DocumentHighlights { answer, .. } => self.adopt_document_highlights(answer),
             // A formatting answer either answers a Format command or finishes a
@@ -308,6 +309,7 @@ impl Session {
             LspUpdate::DiagnosticsCleared { server, .. } => {
                 self.clear_lsp_diagnostic_layer(&server, None);
                 self.clear_semantic_tokens_of(&server);
+                self.clear_server_folds_of(&server);
             },
             // The server is up, but no longer answers pulls for a document
             // it was pulled for: what it last answered would otherwise stay
@@ -316,6 +318,7 @@ impl Session {
                 self.clear_lsp_diagnostic_layer(&server, Some(crate::lsp::DiagnosticFeed::Pulled));
             },
             update @ LspUpdate::SemanticTokens { .. } => self.adopt_semantic_tokens(update),
+            update @ LspUpdate::FoldingRanges { .. } => self.adopt_server_folds(update),
             LspUpdate::SyncFailed { server, reason, .. } => self.emit(
                 None,
                 Event::Notification {

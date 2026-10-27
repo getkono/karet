@@ -223,6 +223,7 @@ impl Session {
     ///
     /// The user and system layers keep the override: those are the machine
     /// owner's own files.
+    #[cfg(feature = "aicommit")]
     pub(super) fn ai_commit_options(&self) -> crate::config::schema::AiCommit {
         let mut options = self.config.settings.git.ai_commit.clone();
         let from_project = self

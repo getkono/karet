@@ -514,7 +514,6 @@ fn badge_hit_spans_the_badge_and_reveal_explains_it() {
     };
     let detail = CommitDetail {
         hash: "a".repeat(40),
-        short_hash: "aaaaaaa".to_string(),
         summary: "subject".to_string(),
         body: String::new(),
         author: id(),

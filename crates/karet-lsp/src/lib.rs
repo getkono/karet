@@ -52,7 +52,9 @@
 //! symbols, document highlights, inlay hints, inline completions (LSP 3.18
 //! `textDocument/inlineCompletion`), semantic tokens (whole and delta,
 //! see [`LspClient::semantic_tokens`]), rename, signature help, code actions (with
-//! `codeAction/resolve` and `workspace/executeCommand`), document/range
+//! `codeAction/resolve` and `workspace/executeCommand`), document links (with
+//! `documentLink/resolve`), document colours, folding ranges (see
+//! [`LspClient::folding_ranges`]), document/range
 //! formatting, on-type formatting, linked editing ranges and will-save edits
 //! are implemented as typed, non-panicking operations.
 
@@ -61,8 +63,13 @@ pub use code_action::CodeActionTrigger;
 pub use config::ConnectOptions;
 pub use editing::LinkedEditingRanges;
 pub use editing::SaveReason;
-pub use highlight::DocumentHighlight;
-pub use highlight::HighlightKind;
+/// What [`LspClient::document_highlights`] answers with; defined once in
+/// [`karet_core`] and re-exported so the `karet_lsp::DocumentHighlight` path
+/// this crate published keeps working.
+pub use karet_core::DocumentHighlight;
+/// How a [`DocumentHighlight`] uses its symbol; re-exported from
+/// [`karet_core`] for the same reason.
+pub use karet_core::HighlightKind;
 /// `Content-Length` message framing (the LSP base protocol).
 ///
 /// Re-exported from [`karet_jsonrpc::framing::content_length`], which is where
@@ -93,6 +100,7 @@ mod config;
 mod conn;
 mod convert;
 mod editing;
+mod folding;
 mod gate;
 mod handshake;
 mod hierarchy;
@@ -100,6 +108,7 @@ mod highlight;
 mod inlay;
 mod inline_completion;
 mod launch;
+mod link_color;
 mod navigation;
 mod pull;
 mod selection;

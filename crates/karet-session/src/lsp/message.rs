@@ -36,6 +36,8 @@ use super::code_lens::CodeLensAnswer;
 use super::code_lens::CodeLensCmd;
 use super::delta::DocumentDelta;
 use super::inline_completion::InlineCompletionCmd;
+use super::link_color::LinkColorAnswer;
+use super::link_color::LinkColorCmd;
 use super::slot::SlotKey;
 use super::slot::SlotToken;
 use super::window::Notice;
@@ -259,6 +261,9 @@ pub(crate) enum ServerCmd {
     /// One code-lens step: a listing or a run; always answered with an
     /// [`LspUpdate::CodeLens`].
     CodeLens(CodeLensCmd),
+    /// One document-link or colour step: a listing or a link resolve; always
+    /// answered with an [`LspUpdate::LinkColor`].
+    LinkColor(LinkColorCmd),
     /// One inline-completion step: asking for items, or telling the server
     /// one was accepted. Answered with an [`LspUpdate::InlineCompletions`]
     /// only when there are items to show (see `inline_completion`).
@@ -442,7 +447,7 @@ pub(crate) struct DocumentHighlightsAnswer {
     pub(crate) version: u64,
     /// The occurrences, in UTF-16 columns; `None` when no server answered
     /// (none could be asked, it does not offer highlights, or it failed).
-    pub(crate) highlights: Option<Vec<karet_lsp::DocumentHighlight>>,
+    pub(crate) highlights: Option<Vec<karet_core::DocumentHighlight>>,
 }
 
 /// A result flowing from a server task back to the session actor.
@@ -724,6 +729,12 @@ pub(crate) enum LspUpdate {
         generation: u64,
         answer: CodeLensAnswer,
     },
+    /// The answer to a [`ServerCmd::LinkColor`]; a listing's ranges in
+    /// UTF-16 columns.
+    LinkColor {
+        generation: u64,
+        answer: LinkColorAnswer,
+    },
     /// A complete server diagnostic layer for one file.
     Diagnostics {
         /// The incarnation of the slot that published these.
@@ -753,6 +764,20 @@ pub(crate) enum LspUpdate {
         version: i32,
         /// The tokens, in UTF-16 columns.
         tokens: Vec<karet_core::SemanticToken>,
+    },
+    /// A document's folding ranges from its primary server, replacing the
+    /// grammar's fold regions on its snapshots (see `super::folding`).
+    FoldingRanges {
+        /// The incarnation of the slot that answered.
+        token: SlotToken,
+        /// The slot whose server answered.
+        server: SlotKey,
+        /// The document they fold.
+        path: PathBuf,
+        /// The document version they were asked at.
+        version: i32,
+        /// The regions, normalized.
+        folds: karet_core::FoldRegions,
     },
     /// The server binary could not be started (reported once per language).
     SpawnFailed {

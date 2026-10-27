@@ -1,6 +1,7 @@
 use super::*;
 
 mod code_lens;
+mod link_color;
 
 impl Session {
     pub(super) fn handle_lsp_command(&mut self, id: RequestId, command: &Command) -> bool {
@@ -140,6 +141,14 @@ impl Session {
             },
             Command::RunCodeLens { doc, lens } => {
                 self.run_code_lens(id, *doc, lens.clone());
+                return true;
+            },
+            Command::LinksAndColors { doc } => {
+                self.links_and_colors(id, *doc);
+                return true;
+            },
+            Command::ResolveDocumentLink { doc, link } => {
+                self.resolve_document_link(id, *doc, link.clone());
                 return true;
             },
             Command::RestartLanguageServer { server } => {

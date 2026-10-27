@@ -17,7 +17,7 @@ impl Session {
                 version: doc.buffer.version(),
                 buffer: doc.buffer.content_snapshot(),
                 highlights: doc.display_highlights(),
-                folds: doc.syntax.folds().clone(),
+                folds: doc.display_folds(),
                 semantic_blocks: doc.syntax.semantic_blocks().clone(),
                 syntax_error_lines: doc.syntax.error_lines().clone(),
                 table_lines: doc.syntax.table_lines().clone(),

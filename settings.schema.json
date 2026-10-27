@@ -281,11 +281,11 @@
       ]
     },
     "ColorHighlight": {
-      "description": "`editor.colorHighlight.*` — inline swatches on color literals.",
+      "description": "`editor.colorHighlight.*` — inline swatches on color literals and on the\ncolours a language server reports.",
       "type": "object",
       "properties": {
         "enabled": {
-          "description": "Tint color literals (hex 3/4/6/8, `rgb()`/`rgba()`, `hsl()`/`hsla()`)\nwith their own color, on the visible lines of the editor.",
+          "description": "Tint color literals (hex 3/4/6/8, `rgb()`/`rgba()`, `hsl()`/`hsla()`),\nand the colours the file's language server reports, with their own\ncolor, on the visible lines of the editor.",
           "type": "boolean",
           "default": true
         }
@@ -485,7 +485,7 @@
           "default": true
         },
         "colorHighlight": {
-          "description": "Inline swatches on color literals (hex, `rgb()`, `hsl()`).",
+          "description": "Inline swatches on color literals (hex, `rgb()`, `hsl()`) and on the\ncolours a language server reports.",
           "$ref": "#/$defs/ColorHighlight",
           "default": {
             "enabled": true

@@ -177,6 +177,7 @@ impl App {
             signature: signature::SignatureState::default(),
             inlay_ui: inlay::InlayUi::default(),
             code_lenses: code_lens::CodeLensState::default(),
+            links_colors: link_color::LinkColorState::default(),
             diagnostic_view: None,
             debugger: debugging::Debugger::default(),
             breakpoints: std::collections::HashMap::new(),

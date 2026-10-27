@@ -1,4 +1,6 @@
+    #[cfg(feature = "toml-format")]
     use crate::config::schema::EditorOverride;
+    #[cfg(feature = "toml-format")]
     use crate::config::schema::LanguageSelector;
 
     fn saved(events: &mut EventRx) -> bool {
