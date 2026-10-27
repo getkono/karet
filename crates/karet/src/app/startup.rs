@@ -505,7 +505,13 @@ impl App {
                 kind: FileKind::TooLarge { .. },
                 ..
             }) => EditorTab::Oversize,
-            _ => EditorTab::Plain,
+            None | Some(TabKind::Welcome | TabKind::Code { .. } | TabKind::Placeholder { .. }) => {
+                EditorTab::Plain
+            },
+            #[cfg(feature = "images")]
+            Some(TabKind::Image { .. }) => EditorTab::Plain,
+            #[cfg(feature = "pdf")]
+            Some(TabKind::Document { .. }) => EditorTab::Plain,
         }
     }
 
